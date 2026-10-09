@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mirrorPath } from "../src/acp";
 import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
-import { NotImplementedError, DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
+import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
 import { closeoutBinPath } from "../src/install";
 import { linearTokenPath } from "../src/linear";
 import { runSetup, type SetupFetch } from "../src/setup";
@@ -51,7 +51,19 @@ describe("paws setup", () => {
     expect(config).not.toContain(API_KEY);
     expect(first.stdout.join("\n")).not.toContain(API_KEY);
     expect(first.stderr.join("\n")).not.toContain(API_KEY);
-    expect(() => loadConfigFile(scene.paths.configFile)).toThrow(NotImplementedError);
+    expect(loadConfigFile(scene.paths.configFile)).toMatchObject({
+      linearMode: "comments",
+      linearTeam: "ENG",
+      linearTeamId: "team-1",
+      linearViewerId: "user-1",
+      linearSecret: "secrets/linear-api-key",
+      githubAuth: "gh",
+      repo: "acme/widgets",
+      closeoutBin: closeoutBinPath(scene.home),
+      checkout: scene.checkout,
+      maxTurns: DEFAULT_MAX_TURNS,
+      maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
+    });
 
     const secretPath = join(scene.paths.secretsDir, "linear-api-key");
     expect(readFileSync(secretPath, "utf8")).toBe(`${API_KEY}\n`);

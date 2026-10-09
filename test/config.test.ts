@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { NotImplementedError } from "../src/core";
-import { ensureLayout, loadConfigFile, loadEnv, pawsPaths } from "../src/config";
+import {
+  emptyConfigFile,
+  ensureLayout,
+  loadConfigFile,
+  loadEnv,
+  loadRuntime,
+  pawsPaths,
+  writeConfigFile,
+} from "../src/config";
 import { tempHome } from "./helpers";
 
 describe("config", () => {
@@ -53,16 +60,59 @@ describe("config", () => {
     expect(statSync(paths.home).mode & 0o777).toBe(0o700);
   });
 
-  test("missing config.toml is empty and a present file is not parsed yet", () => {
+  test("missing config.toml is empty", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
-    expect(loadConfigFile(paths.configFile)).toEqual({
-      linearTeam: null,
-      repo: null,
-      publicUrl: null,
-    });
+    expect(loadConfigFile(paths.configFile)).toEqual(emptyConfigFile());
+  });
+
+  test("setup config.toml is the source and env overrides one field", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
     ensureLayout(paths);
-    writeFileSync(paths.configFile, 'repo = "pmdroid/paws-demo"\n');
-    expect(() => loadConfigFile(paths.configFile)).toThrow(NotImplementedError);
+    writeConfigFile(paths.configFile, {
+      linearMode: "comments",
+      linearTeam: "ENG",
+      linearTeamId: "team_eng",
+      linearViewerId: "viewer_1",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "gh",
+      repo: "pmdroid/paws-demo",
+      closeoutBin: join(home, "bin", "closeout"),
+      checkout: home,
+      maxTurns: 40,
+      maxAwakeMs: 1_000,
+    });
+    mkdirSync(paths.secretsDir, { recursive: true });
+    writeFileSync(join(paths.secretsDir, "linear-api-key"), "lin_api_from_file\n", { mode: 0o600 });
+    chmodSync(join(paths.secretsDir, "linear-api-key"), 0o600);
+
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.linearMode).toBe("comments");
+    expect(parsed.linearTeam).toBe("ENG");
+    expect(parsed.repo).toBe("pmdroid/paws-demo");
+    expect(parsed.maxTurns).toBe(40);
+
+    const runtime = loadRuntime({
+      PAWS_HOME: home,
+      PAWS_GITHUB_REPOSITORY: "other/repo",
+    });
+    expect(runtime.configured).toBe(true);
+    expect(runtime.linearMode).toBe("comments");
+    expect(runtime.linearApiKey).toBe("lin_api_from_file");
+    expect(runtime.repo).toBe("other/repo");
+    expect(runtime.githubAuth).toBe("gh");
+    expect(runtime.maxTurns).toBe(40);
+    expect(runtime.webhooks).toBe(false);
+
+    const overridden = loadRuntime({
+      PAWS_HOME: home,
+      LINEAR_API_KEY: "lin_api_from_env",
+      LINEAR_MODE: "agent-session",
+    });
+    expect(overridden.linearMode).toBe("agent-session");
+    expect(overridden.linearApiKey).toBeNull();
+    expect(overridden.linearAccessToken).toBeNull();
   });
 });

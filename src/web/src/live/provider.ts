@@ -11,14 +11,14 @@
  *   DRI, and epic state are not on an exported row. Epics are one group per
  *   `WorkItemRecord.epicId`; the id is the title; the state is derived from
  *   the child items.
- * - No `listRuns`. Only `getRun(db, id)`. The snapshot includes
- *   `currentRunId`. Earlier runs are omitted. The run row has no reviewer,
- *   summary, or activity log.
- * - No question reads. `src/questions` is not re-exported from `src/db`, so
- *   there is no `listOpenQuestions`. An open question is an outbox row with
- *   `op === "elicitation"` whose session matches an `awaiting_input` item.
- *   Recommended option and claim are not on that payload.
- * - No `work_item_block` read. `blockers` stays empty.
+ * - `listRuns` supplies every stored run for the visible items. The run row
+ *   has no reviewer, summary, or activity log; those still come from outbox
+ *   activity. `currentRunId` is the item's linked run.
+ * - `listOpenQuestions` supplies open question rows. An outbox elicitation
+ *   is still used when the question table has no row for that item.
+ *   Recommended option and claim are not stored.
+ * - `listWorkItemBlocks` supplies blockers. A blocker is shown when that
+ *   Linear issue is another item in the same epic.
  * - No Closeout table. Verdicts are parsed from outbox activity
  *   (`${itemId}:verdict:${head}:${outcome}` and `${itemId}:exhausted`) and
  *   from `github.merge` job payloads. Checks are parsed from the evidence
@@ -34,8 +34,21 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { Job, OutboxRow, WorkItemRecord } from "../../../db";
-import { getRun, listJobs, listOutbox, listWorkItemsByStates } from "../../../db";
+import type {
+  Job,
+  OpenQuestionRecord,
+  OutboxRow,
+  WorkItemBlockRecord,
+  WorkItemRecord,
+} from "../../../db";
+import {
+  listJobs,
+  listOpenQuestions,
+  listOutbox,
+  listRuns,
+  listWorkItemBlocks,
+  listWorkItemsByStates,
+} from "../../../db";
 import {
   STATUS_API_VERSION,
   type ActivityKind,
@@ -132,8 +145,12 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   if (records.length === 0) return emptyLiveSnapshot(now, options.project);
   const rows = listOutbox(db);
   const jobs = listJobs(db);
+  const blocks = listWorkItemBlocks(db);
+  const openQuestions = listOpenQuestions(db);
   const runs = runsFor(records, rows, generatedAt, db);
-  const items = records.map((record) => toItem(record, rows, runs, options.project?.repo));
+  const items = records.map((record) =>
+    toItem(record, rows, runs, options.project?.repo, blocks, records),
+  );
   return {
     version: STATUS_API_VERSION,
     source: "live",
@@ -142,7 +159,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     epics: epicsFor(records, rows),
     items,
     runs,
-    questions: questionsFor(records, rows, runs),
+    questions: questionsFor(records, rows, runs, openQuestions),
     verdicts: records.flatMap((record) => verdictFor(record, rows, jobs)),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
@@ -181,6 +198,8 @@ function toItem(
   rows: readonly OutboxRow[],
   runs: readonly StatusRun[],
   repo: string | undefined,
+  blocks: readonly WorkItemBlockRecord[],
+  records: readonly WorkItemRecord[],
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
@@ -192,7 +211,7 @@ function toItem(
     state: itemState(record.state),
     agent: runs.find((run) => run.id === runId)?.agent ?? "Paws",
     assignee: "Unassigned",
-    blockers: [],
+    blockers: blockersFor(record, blocks, records),
     attempts: record.turnCount,
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
@@ -207,17 +226,18 @@ function runsFor(
   generatedAt: string,
   db: Database,
 ): StatusRun[] {
+  const byItem = new Map(records.map((record) => [record.id, record]));
   const runs: StatusRun[] = [];
-  for (const record of records) {
-    if (record.currentRunId === null) continue;
-    const stored = getRun(db, record.currentRunId);
-    if (stored === null) continue;
+  for (const stored of listRuns(db)) {
+    const record = byItem.get(stored.itemId);
+    if (record === undefined) continue;
     const activity = activityFor(record, stored.id, rows);
     const recent = activity.at(-1);
+    const current = record.currentRunId === stored.id;
     runs.push({
       id: stored.id,
       itemId: publicId(record),
-      state: runState(record, stored.status),
+      state: current ? runState(record, stored.status) : "done",
       agent: agentName(stored.agent),
       reviewer: REVIEWER,
       startedAt: iso(stored.createdAt, generatedAt),
@@ -230,15 +250,61 @@ function runsFor(
   return runs;
 }
 
+function blockersFor(
+  record: WorkItemRecord,
+  blocks: readonly WorkItemBlockRecord[],
+  records: readonly WorkItemRecord[],
+): string[] {
+  const ids: string[] = [];
+  for (const block of blocks) {
+    if (block.epicId !== record.epicId || block.blockedLinearIssueId !== record.linearIssueId) {
+      continue;
+    }
+    const blocker = records.find(
+      (item) => item.epicId === record.epicId && item.linearIssueId === block.blockerLinearIssueId,
+    );
+    if (blocker === undefined) continue;
+    const id = publicId(blocker);
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function questionsFor(
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
   runs: readonly StatusRun[],
+  openQuestions: readonly OpenQuestionRecord[],
 ): StatusQuestion[] {
-  const waiting = records.filter((record) => record.state === "awaiting_input");
   const questions: StatusQuestion[] = [];
   const seen = new Set<string>();
+  const coveredItems = new Set<string>();
+  for (const question of openQuestions) {
+    const record = records.find((item) => item.id === question.itemId);
+    if (record === undefined || seen.has(question.id)) continue;
+    seen.add(question.id);
+    coveredItems.add(record.id);
+    const parsed = parseQuestion(question.body);
+    const storedRun = question.runId !== null && runs.some((run) => run.id === question.runId);
+    questions.push({
+      id: question.id,
+      itemId: publicId(record),
+      runId: storedRun ? question.runId : linkedRunId(record, runs),
+      title: parsed.title || question.body,
+      body: parsed.body || question.body,
+      context: parsed.context,
+      kind: "decision",
+      urgency: "blocking",
+      options: question.options,
+      recommendedOption: null,
+      askedAt: iso(question.createdAt),
+      claimedBy: null,
+      links: [],
+    });
+  }
+  const waiting = records.filter((record) => record.state === "awaiting_input");
   for (const record of waiting) {
+    if (coveredItems.has(record.id)) continue;
     const session = record.sessionKey;
     if (session === null || session.length === 0) continue;
     const row = latest(rows, (candidate) => {

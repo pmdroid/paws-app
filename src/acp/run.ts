@@ -95,7 +95,22 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, options.env);
-  const child = spawnAgent(adapter.command, adapter.args, minimalAgentEnv(options.env));
+  const child = spawnAgent(
+    adapter.command,
+    adapter.args,
+    minimalAgentEnv(options.env),
+    options.docker
+      ? {
+          docker: {
+            agent: options.docker.agent,
+            worktree: options.worktreePath,
+            proxyUrl: options.docker.proxyUrl,
+            ...(options.docker.image ? { image: options.docker.image } : {}),
+            ...(options.docker.bin ? { bin: options.docker.bin } : {}),
+          },
+        }
+      : undefined,
+  );
   const stderr = captureStderr(child);
   const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   const transcript = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;

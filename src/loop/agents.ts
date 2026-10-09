@@ -18,6 +18,7 @@ export type AcpAgentDeps = {
   home?: string;
   launch: AgentLaunch;
   signal?: AbortSignal;
+  docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
 const REVIEWER_MODEL = "codex";
@@ -69,6 +70,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
+        ...dockerOf(deps, "codex"),
         onEvent(event) {
           if (event.type !== "session_update") return;
           if (event.update.sessionUpdate !== "agent_message_chunk") return;
@@ -112,6 +114,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
+        ...dockerOf(deps, "claude"),
       });
       if (result.cancelled) return { ok: false, reason: "fix cancelled" };
       if (result.authRequired || result.stopReason === "error" || result.stopReason === "timeout") {
@@ -159,6 +162,24 @@ function isFinding(value: unknown): value is Finding {
     typeof record["explanation"] === "string" &&
     typeof record["evidence"] === "string"
   );
+}
+
+function dockerOf(
+  deps: AcpAgentDeps,
+  agent: "claude" | "codex",
+):
+  | { docker: { agent: "claude" | "codex"; proxyUrl: string; image?: string; bin?: string } }
+  | Record<string, never> {
+  const docker = deps.docker;
+  if (docker === undefined) return {};
+  return {
+    docker: {
+      agent,
+      proxyUrl: docker.proxyUrl,
+      ...(docker.image ? { image: docker.image } : {}),
+      ...(docker.bin ? { bin: docker.bin } : {}),
+    },
+  };
 }
 
 function spawnOf(launch: ReturnType<AgentLaunch>): {
