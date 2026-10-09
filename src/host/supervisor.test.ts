@@ -47,7 +47,11 @@ function recorder(): {
   return { spawn, calls, kills: () => killed };
 }
 
-function boot(agentAlive: (runId: string) => boolean = () => true, platform = "linux") {
+function boot(
+  agentAlive: (runId: string) => boolean = () => true,
+  platform = "linux",
+  restartFromMain?: (item: { id: string; branchName: string }) => void,
+) {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
@@ -58,6 +62,8 @@ function boot(agentAlive: (runId: string) => boolean = () => true, platform = "l
     new KeepAwake(platform, 99, recorded.spawn),
     new WakeDetector(clock),
     agentAlive,
+    250,
+    restartFromMain,
   );
   return { clock, db, recorded, host };
 }
@@ -151,15 +157,48 @@ describe("laptop sleep and wake", () => {
   });
 
   test("exactly two hours resumes instead of starting over", () => {
-    const { clock, db, host } = boot(() => true);
+    const checkouts: string[] = [];
+    const { clock, db, host } = boot(
+      () => true,
+      "linux",
+      (item) => {
+        checkouts.push(item.branchName);
+      },
+    );
     startRun(db, clock);
     host.tick();
     clock.sleep(LONG_SLEEP_MS);
     host.tick();
     expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+    expect(checkouts).toEqual([]);
     expect(activities(db)[0]?.payload).toEqual({
       text: "Paused for 120 min (laptop asleep), resuming.",
     });
+  });
+
+  test("sleep longer than two hours checks out fresh main and keeps the WIP branch", () => {
+    const checkouts: { id: string; branchName: string }[] = [];
+    const { clock, db, host } = boot(
+      () => true,
+      "linux",
+      (item) => {
+        checkouts.push({ id: item.id, branchName: item.branchName });
+      },
+    );
+    startRun(db, clock);
+    host.tick();
+    clock.sleep(LONG_SLEEP_MS + 1);
+    host.tick();
+
+    expect(checkouts).toEqual([{ id: "eng-9", branchName: "paws/eng-9" }]);
+    expect(getWorkItem(db, "eng-9")).toMatchObject({
+      state: "queued",
+      branchName: "paws/eng-9",
+    });
+    const start = listJobs(db).find((job) => job.queue === "item.start");
+    expect(start?.payload).toMatchObject({ from: "fresh_main", wipBranch: "paws/eng-9" });
+    host.tick();
+    expect(checkouts).toHaveLength(1);
   });
 
   test("a merge fails closed across a short sleep and cannot be completed", () => {
@@ -262,6 +301,19 @@ describe("laptop sleep and wake", () => {
     beginImplementRun(db, "eng-9", clock.now(), checkpoint);
     host.tick();
     expect(recorded.calls).toEqual([{ command: "caffeinate", args: ["-i", "-w", "99"] }]);
+  });
+
+  test("SIGTERM commits WIP on the item branch before the run is left recoverable", () => {
+    const { db, clock } = boot();
+    const { run } = startRun(db, clock);
+    const commits: { branchName: string; sha: string }[] = [];
+    prepareShutdown(db, clock.now(), (item) => {
+      expect(getWorkItem(db, item.id)?.state).toBe("running");
+      commits.push({ branchName: item.branchName, sha: "wip-sha" });
+    });
+    expect(commits).toEqual([{ branchName: "paws/eng-9", sha: "wip-sha" }]);
+    expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
+    expect(getRun(db, run.id)?.status).toBe("lost");
   });
 
   test("stop releases keep-awake and leaves the item resumable", () => {
