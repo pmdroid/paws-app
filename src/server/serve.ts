@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
@@ -14,6 +15,9 @@ export type ServerOptions = {
    * Off, every `/webhooks/*` path is 404.
    */
   webhooks?: boolean;
+  /** Engine database. `/api/status` reads it. Omit it and the route stays on the demo snapshot. */
+  db?: Database;
+  statusEnv?: Record<string, string | undefined>;
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -23,7 +27,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
-  const statusProvider = fakeStatusProvider();
+  const db = options.db;
+  const statusEnv = options.statusEnv;
   return Bun.serve({
     hostname,
     port,
@@ -33,7 +38,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         githubWebhookSecret,
         linearWebhook,
         webhooks,
-        statusProvider,
+        ...(db ? { db } : {}),
+        ...(statusEnv ? { statusEnv } : {}),
       });
     },
   });
@@ -44,7 +50,8 @@ type Secrets = {
   githubWebhookSecret: string | null;
   linearWebhook: LinearWebhookDeps | undefined;
   webhooks: boolean;
-  statusProvider: ReturnType<typeof fakeStatusProvider>;
+  db?: Database;
+  statusEnv?: Record<string, string | undefined>;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -52,7 +59,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (request.method === "GET" && path === "/health") {
     return Response.json({ ok: true, service: "paws" });
   }
-  const status = await handleStatusRequest(request, { provider: secrets.statusProvider });
+  const status = await handleStatusRequest(
+    request,
+    secrets.db
+      ? { db: secrets.db, ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}) }
+      : {
+          provider: fakeStatusProvider(),
+          ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
+        },
+  );
   if (status !== null) return status;
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (!secrets.webhooks) return new Response("not found", { status: 404 });

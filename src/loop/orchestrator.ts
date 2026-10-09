@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import type { AskTeamHook } from "../acp";
-import { executeItem, git, removeWorktree, worktreePath } from "../acp";
+import { executeItem, git, removeWorktree, resolveAdapter, worktreePath } from "../acp";
 import {
   createCloseoutGate,
   evaluateCandidate,
@@ -38,7 +38,12 @@ import {
   type OutboxDispatcher,
   type WorkItemRecord,
 } from "../db";
-import { publishAccepted, serialMerge, type GitHubClient } from "../github";
+import {
+  publishAccepted,
+  serialMerge,
+  type GitHubClient,
+  type GitHubTokenProvider,
+} from "../github";
 import { intakeDelegatedIssue } from "../intake";
 import type { AcceptedLinearEvent, TrackerAdapter } from "../linear";
 import {
@@ -62,6 +67,8 @@ export type GitHubBinding = {
   installationId: string;
   privateKeyPem: string;
   client: GitHubClient;
+  /** `github.auth = "gh"`. When set, push and merge do not mint a GitHub App token. */
+  tokenProvider?: GitHubTokenProvider;
 };
 
 export type RepositoryBinding = {
@@ -83,6 +90,11 @@ export type OrchestratorOptions = {
   closeoutBin?: string;
   launch?: AgentLaunch;
   clock?: Clock;
+  /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
+  channel?: "comments" | "agent-session";
+  caps?: { maxTurns: number; maxAwakeMs: number };
+  /** Sandbox for ACP spawns. The host path is unchanged when this is omitted. */
+  docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
 type AnswerWaiter = (answer: string) => void;
@@ -135,7 +147,18 @@ export class Orchestrator {
       sessionId: event.sessionId,
     });
     if (event.sessionId !== null) this.assignSession(result.epic.id, event.sessionId);
-    if (result.ok) this.pump();
+    if (result.ok) {
+      const caps = this.options.caps;
+      if (caps !== undefined) {
+        for (const saved of result.items) {
+          configureWorkItem(this.db, saved.id, {
+            maxTurns: caps.maxTurns,
+            maxAwakeMs: caps.maxAwakeMs,
+          });
+        }
+      }
+      this.pump();
+    }
     await this.flush();
   }
 
@@ -265,6 +288,7 @@ export class Orchestrator {
         },
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
+        ...this.itemDocker("claude"),
       });
       const finished = getWorkItem(this.db, item.id);
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
@@ -319,11 +343,7 @@ export class Orchestrator {
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    const deps = {
-      pawsRoot: this.options.pawsRoot,
-      ...(this.options.home ? { home: this.options.home } : {}),
-      launch: this.launchAgent.bind(this),
-    };
+    const deps = this.agentDeps();
     const reviewer = createAcpCodexReviewer(deps);
     const fixer = createAcpFixRunner(deps);
     const recorder: VerdictRecorder = {
@@ -402,11 +422,7 @@ export class Orchestrator {
       this.fail(item, "reverify", message);
       return;
     }
-    const deps = {
-      pawsRoot: this.options.pawsRoot,
-      ...(this.options.home ? { home: this.options.home } : {}),
-      launch: this.launchAgent.bind(this),
-    };
+    const deps = this.agentDeps();
     const evaluation = await evaluateCandidate({
       worktree,
       taskId: item.linearIdentifier,
@@ -470,11 +486,9 @@ export class Orchestrator {
       owner: repository.owner,
       repo: repository.repo,
       title: item.title,
-      appId: github.appId,
-      installationId: github.installationId,
-      privateKeyPem: github.privateKeyPem,
       client: github.client,
       remoteUrl: repository.remoteUrl,
+      ...this.gitHubCredentials(github),
     });
     if (!published.published) {
       this.fail(item, "publish", published.reason);
@@ -486,11 +500,7 @@ export class Orchestrator {
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
-    const deps = {
-      pawsRoot: this.options.pawsRoot,
-      ...(this.options.home ? { home: this.options.home } : {}),
-      launch: this.launchAgent.bind(this),
-    };
+    const deps = this.agentDeps();
     const reviewer = createAcpCodexReviewer(deps);
     const merged = await serialMerge({
       worktree,
@@ -502,6 +512,7 @@ export class Orchestrator {
       installationId: github.installationId,
       privateKeyPem: github.privateKeyPem,
       client: github.client,
+      ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
       reverify: async (input) => {
         const evaluation = await evaluateCandidate({
@@ -563,8 +574,8 @@ export class Orchestrator {
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
     return {
       ask: async (request, context) => {
-        const sessionId = item.sessionKey;
-        if (sessionId === null || sessionId.length === 0) {
+        const sessionId = this.activitySession(item);
+        if (sessionId === null) {
           throw new Error("ask_team has no Linear session");
         }
         const options = request.options ?? [];
@@ -712,7 +723,7 @@ export class Orchestrator {
       epicId,
       row.state,
     ]);
-    const session = items.find((item) => item.sessionKey !== null)?.sessionKey ?? null;
+    const session = this.epicSession(items);
     if (session === null) return;
     const identifiers = items.map((item) => item.linearIdentifier).join(", ");
     enqueueOutboxOnce(this.db, {
@@ -739,7 +750,7 @@ export class Orchestrator {
       epicId,
       row.state,
     ]);
-    const session = items.find((item) => item.sessionKey !== null)?.sessionKey ?? null;
+    const session = this.epicSession(items);
     if (session === null) return;
     enqueueOutboxOnce(this.db, {
       target: "linear",
@@ -811,8 +822,8 @@ export class Orchestrator {
     body: string,
     key: string,
   ): void {
-    const sessionId = item.sessionKey;
-    if (sessionId === null || sessionId.length === 0 || body.trim() === "") return;
+    const sessionId = this.activitySession(item);
+    if (sessionId === null || body.trim() === "") return;
     enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
@@ -824,7 +835,7 @@ export class Orchestrator {
   }
 
   private postStatus(item: WorkItemRecord, stateType: "started" | "completed" | "canceled"): void {
-    const sessionId = item.sessionKey ?? item.id;
+    const sessionId = this.activitySession(item) ?? item.id;
     enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "status",
@@ -888,7 +899,80 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
-  private launchAgent: AgentLaunch = (input) => this.options.launch?.(input) ?? {};
+  private agentDeps(): {
+    pawsRoot: string;
+    home?: string;
+    launch: AgentLaunch;
+    docker?: { proxyUrl: string; image?: string; bin?: string };
+  } {
+    return {
+      pawsRoot: this.options.pawsRoot,
+      ...(this.options.home ? { home: this.options.home } : {}),
+      launch: this.launchAgent.bind(this),
+      ...(this.options.docker ? { docker: this.options.docker } : {}),
+    };
+  }
+
+  private itemDocker(agent: "claude" | "codex"):
+    | {
+        docker: {
+          agent: "claude" | "codex";
+          proxyUrl: string;
+          image?: string;
+          bin?: string;
+        };
+      }
+    | Record<string, never> {
+    const docker = this.options.docker;
+    if (docker === undefined) return {};
+    return {
+      docker: {
+        agent,
+        proxyUrl: docker.proxyUrl,
+        ...(docker.image ? { image: docker.image } : {}),
+        ...(docker.bin ? { bin: docker.bin } : {}),
+      },
+    };
+  }
+
+  private gitHubCredentials(
+    github: GitHubBinding,
+  ):
+    | { tokenProvider: GitHubTokenProvider }
+    | { appId: string; installationId: string; privateKeyPem: string } {
+    if (github.tokenProvider) return { tokenProvider: github.tokenProvider };
+    return {
+      appId: github.appId,
+      installationId: github.installationId,
+      privateKeyPem: github.privateKeyPem,
+    };
+  }
+
+  private activitySession(item: WorkItemRecord): string | null {
+    if (this.options.channel === "comments") return item.linearIssueId;
+    const session = item.sessionKey;
+    if (session === null || session.length === 0) return null;
+    return session;
+  }
+
+  private epicSession(items: readonly WorkItemRecord[]): string | null {
+    for (const item of items) {
+      const session = this.activitySession(item);
+      if (session !== null) return session;
+    }
+    return null;
+  }
+
+  private launchAgent: AgentLaunch = (input) => {
+    const launched = this.options.launch?.(input) ?? {};
+    if (launched.command) return launched;
+    try {
+      const adapter = resolveAdapter(input.role);
+      return { ...launched, command: adapter.command, args: launched.args ?? adapter.args };
+    } catch {
+      return launched;
+    }
+  };
 
   private now(): number {
     return (this.options.clock ?? systemClock).now();

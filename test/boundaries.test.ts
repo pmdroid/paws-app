@@ -43,7 +43,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   server: ["config", "linear", "github", "web"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions"],
-  doctor: ["config"],
+  doctor: ["config", "acp", "comments", "github", "install"],
   comments: ["core", "linear", "questions"],
   install: ["acp", "closeout"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.

@@ -1,11 +1,13 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { join } from "node:path";
 import { loadEnv, pawsPaths, type EnvSource } from "../config";
+import { realProbeFacts, type ProbeFacts } from "./probe";
 
 export type DoctorCheck = {
   name: string;
   ok: boolean;
   detail: string;
+  /** One next step. Printed only when the check is missing. */
+  fix?: string;
 };
 
 export type DoctorProbe = {
@@ -14,78 +16,123 @@ export type DoctorProbe = {
   canWrite(dir: string): boolean;
   bunVersion: string | null;
   env: EnvSource;
+  facts: ProbeFacts;
 };
 
-const CLAUDE_BIN = "claude-agent-acp";
-const CODEX_BIN = "codex-acp";
+const FIX = {
+  git: "Install git and put it on PATH.",
+  bun: "Install Bun 1.4 or newer and run this process with bun.",
+  home: "Create ~/.paws and make sure this user can write it.",
+  linear: "Create a Linear personal API key and run bun run paws setup.",
+  mode: "Run bun run paws setup. Comment mode is the default.",
+  team: "Run bun run paws setup --linear-team <KEY>.",
+  label: "Run bun run paws setup so the paws label exists on the team.",
+  ghLogin: "Run gh auth login.",
+  ghPush: "Run gh auth login, then grant that login push access to the repository.",
+  adapter: "Run bun install in the paws checkout.",
+  claude: "Run claude auth login.",
+  codex: "Run codex login.",
+  closeout:
+    "pmdroid/closeout has no release assets yet. Run bun run paws setup --closeout-path <binary>.",
+  repo: "Run bun run paws setup --repo owner/name.",
+  webhook: "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret.",
+  publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
+  ngrok: "Install ngrok and put it on PATH.",
+  githubApp: "Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and a private key at mode 0600.",
+} as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
 export function doctorChecks(probe: DoctorProbe): DoctorCheck[] {
   const env = loadEnv(probe.env);
   const paths = pawsPaths(env.home);
-  const repository = env.githubRepository;
-  const repoOk = repository !== null && /^[^/\s]+\/[^/\s]+$/.test(repository);
-  const keyStat =
-    env.githubAppPrivateKeyPath === null ? null : probe.stat(env.githubAppPrivateKeyPath);
-  const keyMode = keyStat === null ? null : keyStat.mode & 0o777;
-  const claude = probe.which(configuredBin(probe.env, "PAWS_CLAUDE_ACP") ?? CLAUDE_BIN);
-  const codex = probe.which(configuredBin(probe.env, "PAWS_CODEX_ACP") ?? CODEX_BIN);
-  const closeout = probe.which(configuredBin(probe.env, "CLOSEOUT_BIN") ?? "closeout");
-  const git = probe.which("git");
-  const ngrok = probe.which("ngrok");
-  const linearReady =
-    optional(probe.env, "LINEAR_ACCESS_TOKEN") !== null ||
-    probe.stat(join(paths.secretsDir, "linear-oauth.json")) !== null;
-  return [
-    check("git", git !== null, git ?? "git is not on PATH"),
-    check("bun", probe.bunVersion !== null, probe.bunVersion ?? "bun is not running this process"),
+  const facts = probe.facts;
+  const repoOk = facts.repo !== null && /^[^/\s]+\/[^/\s]+$/.test(facts.repo);
+  const checks: DoctorCheck[] = [
+    check("git", probe.which("git") !== null, probe.which("git") ?? "git is not on PATH", FIX.git),
+    check(
+      "bun",
+      probe.bunVersion !== null,
+      probe.bunVersion ?? "bun is not running this process",
+      FIX.bun,
+    ),
     check(
       "home",
       probe.canWrite(paths.home),
       probe.canWrite(paths.home) ? paths.home : `cannot write ${paths.home}`,
+      FIX.home,
     ),
+    linearCheck(facts),
+    modeCheck(facts),
+    teamCheck(facts),
+    labelCheck(facts),
+    check("gh-login", facts.ghLogin.ok, facts.ghLogin.detail, FIX.ghLogin),
     check(
-      "linear",
-      linearReady,
-      linearReady ? "token configured" : "set LINEAR_ACCESS_TOKEN or install the Linear app",
+      "gh-push",
+      facts.ghPush.ok,
+      facts.ghPush.detail,
+      facts.ghPush.ok ? undefined : ghPushFix(facts),
     ),
+    check("claude-acp", facts.claudeAdapter.ok, facts.claudeAdapter.detail, FIX.adapter),
+    check("codex-acp", facts.codexAdapter.ok, facts.codexAdapter.detail, FIX.adapter),
+    check("claude", facts.claudeLogin.ok, facts.claudeLogin.detail, FIX.claude),
+    check("codex", facts.codexLogin.ok, facts.codexLogin.detail, FIX.codex),
+    closeoutCheck(facts),
     check(
-      "linear-webhook",
-      env.linearWebhookSecret !== null,
-      env.linearWebhookSecret !== null ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
-    ),
-    check(
-      "public-url",
-      env.publicUrl !== null && env.publicUrl.startsWith("https://"),
-      env.publicUrl ?? "PAWS_PUBLIC_URL must be the https ngrok dev domain",
-    ),
-    check("ngrok", ngrok !== null, ngrok ?? "ngrok is not on PATH"),
-    check("claude", claude !== null, claude ?? `${CLAUDE_BIN} is not on PATH`),
-    check("codex", codex !== null, codex ?? `${CODEX_BIN} is not on PATH`),
-    check("closeout", closeout !== null, closeout ?? "closeout is not on PATH"),
-    check("repository", repoOk, repoOk ? repository : "PAWS_GITHUB_REPOSITORY must be owner/repo"),
-    check(
-      "github-app",
-      env.githubAppId !== null &&
-        env.githubAppInstallationId !== null &&
-        keyStat !== null &&
-        (keyMode === 0o600 || keyMode === 0o400),
-      githubDetail(env.githubAppId, env.githubAppInstallationId, keyStat !== null, keyMode),
+      "repository",
+      repoOk,
+      repoOk ? (facts.repo ?? "") : "repository must be owner/name",
+      FIX.repo,
     ),
   ];
+  if (facts.webhooks) {
+    checks.push(
+      check(
+        "linear-webhook",
+        env.linearWebhookSecret !== null,
+        env.linearWebhookSecret !== null ? "secret configured" : "LINEAR_WEBHOOK_SECRET is empty",
+        FIX.webhook,
+      ),
+      check(
+        "public-url",
+        facts.publicUrl !== null && facts.publicUrl.startsWith("https://"),
+        facts.publicUrl ?? "PAWS_PUBLIC_URL must be the https tunnel origin",
+        FIX.publicUrl,
+      ),
+      check(
+        "ngrok",
+        probe.which("ngrok") !== null,
+        probe.which("ngrok") ?? "ngrok is not on PATH",
+        FIX.ngrok,
+      ),
+    );
+  }
+  if (facts.githubAuth === "app") {
+    checks.push(
+      githubAppCheck(
+        probe,
+        env.githubAppId,
+        env.githubAppInstallationId,
+        env.githubAppPrivateKeyPath,
+      ),
+    );
+  }
+  return checks;
 }
 
 export function formatDoctor(checks: readonly DoctorCheck[]): string {
   const lines = ["paws doctor"];
   for (const item of checks) {
     lines.push(`${item.ok ? "ok" : "missing"} ${item.name}: ${item.detail}`);
+    if (!item.ok && item.fix) lines.push(`  fix: ${item.fix}`);
   }
   return lines.join("\n");
 }
 
-export function realProbe(env: EnvSource = process.env): DoctorProbe {
+export async function realProbe(env: EnvSource = process.env): Promise<DoctorProbe> {
+  const facts = await realProbeFacts(env);
   return {
     env,
+    facts,
     bunVersion: typeof Bun === "undefined" ? null : Bun.version,
     which(bin) {
       const command = bin.split(/\s+/)[0];
@@ -110,20 +157,104 @@ export function realProbe(env: EnvSource = process.env): DoctorProbe {
   };
 }
 
-function check(name: string, ok: boolean, detail: string): DoctorCheck {
-  return { name, ok, detail };
+function linearCheck(facts: ProbeFacts): DoctorCheck {
+  if (facts.configError !== null) {
+    return check("linear", false, facts.configError, FIX.mode);
+  }
+  if (!facts.linear.attempted) {
+    return check("linear", false, "no Linear credential", FIX.linear);
+  }
+  if (!facts.linear.reachable) {
+    return check("linear", false, facts.linear.error ?? "Linear could not be reached", FIX.linear);
+  }
+  if (!facts.linear.viewerMatches) {
+    return check("linear", false, "viewer id does not match config.toml", FIX.linear);
+  }
+  const viewer = facts.linear.viewerId ?? "viewer";
+  return check("linear", true, `viewer ${viewer}`, FIX.linear);
 }
 
-function configuredBin(env: EnvSource, key: string): string | null {
-  const value = env[key];
-  if (value === undefined || value.trim() === "") return null;
-  return value.trim();
+function modeCheck(facts: ProbeFacts): DoctorCheck {
+  if (facts.configError !== null) {
+    return check("linear-mode", false, facts.configError, FIX.mode);
+  }
+  const label = facts.configured ? facts.linearMode : `${facts.linearMode} (default)`;
+  return check("linear-mode", true, label, FIX.mode);
 }
 
-function optional(env: EnvSource, key: string): string | null {
-  const value = env[key];
-  if (value === undefined || value.length === 0) return null;
-  return value;
+function teamCheck(facts: ProbeFacts): DoctorCheck {
+  if (facts.team === null && facts.teamId === null) {
+    return check("linear-team", false, "no Linear team configured", FIX.team);
+  }
+  if (!facts.linear.teamFound) {
+    const detail = facts.linear.reachable ? "team was not found" : "Linear could not be reached";
+    return check("linear-team", false, detail, FIX.team);
+  }
+  return check("linear-team", true, facts.team ?? facts.teamId ?? "team", FIX.team);
+}
+
+function labelCheck(facts: ProbeFacts): DoctorCheck {
+  if (!facts.linear.labelFound) {
+    const detail = facts.linear.reachable ? "paws label is missing" : "Linear could not be reached";
+    return check("linear-label", false, detail, FIX.label);
+  }
+  return check("linear-label", true, "paws", FIX.label);
+}
+
+function closeoutCheck(facts: ProbeFacts): DoctorCheck {
+  if (!facts.closeout.present) {
+    return check("closeout", false, `missing ${facts.closeout.path}`, FIX.closeout);
+  }
+  if (!facts.closeout.executable) {
+    return check("closeout", false, `${facts.closeout.path} is not executable`, FIX.closeout);
+  }
+  if (facts.closeout.checksum === "mismatch") {
+    return check(
+      "closeout",
+      false,
+      `checksum does not match the pin at ${facts.closeout.path}`,
+      FIX.closeout,
+    );
+  }
+  if (facts.closeout.checksum === "skipped") {
+    return check(
+      "closeout",
+      true,
+      `present at ${facts.closeout.path} (no published release checksum yet)`,
+      FIX.closeout,
+    );
+  }
+  return check("closeout", true, `checksum matches ${facts.closeout.path}`, FIX.closeout);
+}
+
+function githubAppCheck(
+  probe: DoctorProbe,
+  appId: string | null,
+  installationId: string | null,
+  keyPath: string | null,
+): DoctorCheck {
+  const keyStat = keyPath === null ? null : probe.stat(keyPath);
+  const mode = keyStat === null ? null : keyStat.mode & 0o777;
+  const ok =
+    appId !== null &&
+    installationId !== null &&
+    keyStat !== null &&
+    (mode === 0o600 || mode === 0o400);
+  return check(
+    "github-app",
+    ok,
+    githubDetail(appId, installationId, keyStat !== null, mode),
+    FIX.githubApp,
+  );
+}
+
+function ghPushFix(facts: ProbeFacts): string {
+  if (facts.repo === null) return FIX.repo;
+  return FIX.ghPush;
+}
+
+function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {
+  return fix === undefined ? { name, ok, detail } : { name, ok, detail, fix };
 }
 
 function githubDetail(
@@ -133,7 +264,7 @@ function githubDetail(
   mode: number | null,
 ): string {
   if (appId === null || installationId === null)
-    return "GITHUB_APP_ID and GITHUB_APP_INSTALLATION_ID are required";
+    return "GitHub App id and installation id are required";
   if (!keyExists) return "GitHub App private key file is missing";
   if (mode !== 0o600 && mode !== 0o400) return "GitHub App private key must be mode 0600";
   return "app configured";

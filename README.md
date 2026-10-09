@@ -10,24 +10,25 @@ Install [Bun](https://bun.sh) 1.4 or newer, then:
 
 ```sh
 bun install
-bun run paws doctor   # git, Linear, ngrok, Claude, Codex, Closeout, GitHub App
+bun run paws setup
+bun run paws doctor
 bun run paws
 ```
 
-A real local run (Linear app, ngrok dev domain, GitHub App, Closeout, and the two ACP logins) is written out in `docs/smoke-test.md`.
+`setup` writes `~/.paws/config.toml` and the secret files it names. Comment mode and `gh` auth are the defaults: no webhook, no public URL, and no GitHub App. `doctor` is all `ok` before `bun run paws`. A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet).
 
-The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready`. Tests use fakes and do not need external accounts. Copy `.env.example` to `.env` when you have Linear and GitHub App credentials, then follow `docs/smoke-test.md`.
+The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts. The real-machine steps are in `docs/smoke-test.md`.
 
 | Path                  | What it is                                   |
 | --------------------- | -------------------------------------------- |
 | `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)       |
-| `~/.paws/config.toml` | Team, repo, and caps (parser not wired yet)  |
+| `~/.paws/config.toml` | Team, repo, mode, and caps from `paws setup` |
 | `~/.paws/secrets/`    | Linear token and GitHub App key, mode `0700` |
 | `~/.paws/worktrees/`  | One git worktree per item                    |
 | `~/.paws/runs/`       | Transcripts and Closeout reports             |
 | `~/.paws/logs/`       | Process logs                                 |
 
-`GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the read-only status snapshot. Until a live reader is wired, that body is the sample stub (`source: "demo"`). `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges. GitHub webhooks still fail closed.
+`GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
 ## Status dashboard
 

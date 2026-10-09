@@ -65,6 +65,17 @@ export function getRun(db: Database, id: string): StoredRun | null {
   return row === null ? null : mapRun(row);
 }
 
+/** Every run, oldest first. Pass `itemId` to keep one work item. */
+export function listRuns(db: Database, itemId?: string): StoredRun[] {
+  if (itemId !== undefined) {
+    return db
+      .query<RunSql, [string]>("SELECT * FROM run WHERE item_id = ? ORDER BY created_at, id")
+      .all(itemId)
+      .map(mapRun);
+  }
+  return db.query<RunSql, []>("SELECT * FROM run ORDER BY created_at, id").all().map(mapRun);
+}
+
 export function markRun(db: Database, id: string, status: RunStatus, now: number): void {
   db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
 }

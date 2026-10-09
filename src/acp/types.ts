@@ -81,6 +81,16 @@ export interface RunAgentOptions {
   askTeam?: AskTeamHook;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */
   checkpoint?: boolean;
+  /**
+   * Run the adapter in the sandbox. The worktree is the only bind mount.
+   * Omit it and the host spawn is unchanged.
+   */
+  docker?: {
+    agent: "claude" | "codex";
+    proxyUrl: string;
+    image?: string;
+    bin?: string;
+  };
 }
 
 export interface RunAgentResult {

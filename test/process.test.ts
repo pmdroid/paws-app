@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { writeConfigFile, pawsPaths, ensureLayout } from "../src/config";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
 
@@ -41,10 +42,52 @@ describe("process", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const text = await readUntil(proc, "paws ready", 5000);
+    const text = await readUntil(proc, "dashboard http://127.0.0.1:", 5000);
     proc.kill();
     await proc.exited;
     expect(text).toContain("paws ready · http://127.0.0.1:");
+    expect(text).toContain("dashboard http://127.0.0.1:");
+    expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/status/);
+  });
+
+  test("a setup-written config listens on loopback and serves live status", async () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeConfigFile(paths.configFile, {
+      linearMode: "comments",
+      linearTeam: "ENG",
+      linearTeamId: "team_eng",
+      linearViewerId: "viewer_1",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "gh",
+      repo: "pmdroid/paws-demo",
+      closeoutBin: `${home}/bin/closeout`,
+      checkout: home,
+      maxTurns: 80,
+      maxAwakeMs: 45 * 60 * 1000,
+    });
+    const paws = startPaws({
+      PAWS_HOME: home,
+      PAWS_PORT: "0",
+      PAWS_HOST: "0.0.0.0",
+    });
+    try {
+      expect(paws.server.hostname).toBe("127.0.0.1");
+      expect(paws.tunnelRequested).toBe(false);
+      expect(paws.tunnelUrl).toBeNull();
+      const base = `http://${paws.server.hostname}:${paws.server.port}`;
+      const health = await fetch(`${base}/health`);
+      expect(health.status).toBe(200);
+      const status = await fetch(`${base}/api/status`);
+      expect(status.status).toBe(200);
+      expect(await status.json()).toMatchObject({ source: "live" });
+      const hidden = await fetch(`${base}/webhooks/linear`, { method: "POST" });
+      expect(hidden.status).toBe(404);
+    } finally {
+      paws.stop();
+    }
   });
 });
 

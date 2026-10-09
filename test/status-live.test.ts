@@ -167,7 +167,8 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       ["ENG-2", "awaiting_input", waiting.epicId],
       ["ENG-3", "merge_queue", waiting.epicId],
     ]);
-    expect(parsed.snapshot.items.every((item) => item.blockers.length === 0)).toBe(true);
+    expect(parsed.snapshot.items.find((item) => item.id === "ENG-2")?.blockers).toEqual([]);
+    expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.blockers).toEqual(["ENG-2"]);
     expect(parsed.snapshot.epics.map((epic) => epic.id)).toEqual([waiting.epicId]);
 
     const parkedRun = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");

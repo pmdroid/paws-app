@@ -57,5 +57,11 @@ export {
 } from "./outbox";
 export { prepareShutdown, recoverOnStartup } from "./recovery";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
-export { getRun, insertRun, markRun, type StoredRun } from "./runs";
+export { getRun, insertRun, listRuns, markRun, type StoredRun } from "./runs";
+export {
+  listOpenQuestions,
+  listWorkItemBlocks,
+  type OpenQuestionRecord,
+  type WorkItemBlockRecord,
+} from "./reads";
 export { immediate } from "./tx";

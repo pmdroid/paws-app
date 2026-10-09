@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
+import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { writeFakeCloseout, type FakeStep } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
@@ -16,6 +17,7 @@ import {
   createFakeGitHub,
   type GitHubClient,
   type GitHubResponse,
+  type GitHubTokenProvider,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
@@ -164,6 +166,220 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
   }
 }, 90_000);
 
+test("the demo epic merges three pull requests in comment mode with gh auth", async () => {
+  const seed = JSON.parse(
+    await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
+  ) as DemoSeed;
+  const layout = await repoLayout();
+  const parentId = "lin-parent";
+  const children = seed.children.map((child, index) => ({
+    ...child,
+    linearIssueId: `lin-${child.slug}`,
+    identifier: `ENG-${index + 2}`,
+  }));
+  const bySlug = new Map(children.map((child) => [child.slug, child]));
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: parentId,
+      identifier: "ENG-1",
+      title: seed.parent.title,
+      description: seed.parent.description,
+      subIssues: children.map((child) => ({
+        linearIssueId: child.linearIssueId,
+        identifier: child.identifier,
+        title: child.title,
+      })),
+    },
+  ]);
+  const edges = children.flatMap((child) =>
+    child.blockedBy.map((slug) => ({
+      blockerLinearIssueId: bySlug.get(slug)?.linearIssueId ?? slug,
+      blockedLinearIssueId: child.linearIssueId,
+    })),
+  );
+  for (const id of [parentId, ...children.map((child) => child.linearIssueId)]) {
+    tracker.deps.set(id, edges);
+  }
+  const board = createFakeCommentBoard({ selfUserId: "paws" });
+  const mode = createCommentMode({ board, selfUserId: "paws" });
+  const comments = withCommentActivities(tracker, {
+    async postProgress(update) {
+      mode.bind({
+        itemId: update.sessionId,
+        linearIssueId: update.sessionId,
+        sessionId: update.sessionId,
+      });
+      await mode.postProgress(update);
+      await tracker.postProgress(update);
+    },
+    async askQuestion(question) {
+      mode.bind({
+        itemId: question.sessionId,
+        linearIssueId: question.sessionId,
+        sessionId: question.sessionId,
+      });
+      await mode.askQuestion(question);
+    },
+  });
+  const closeout = await writeFakeCloseout(layout.root, {
+    version: "0.1.0",
+    steps: [
+      decision("rejected", [failed]),
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+    ],
+  });
+  const github = createFakeGitHub();
+  const apiPaths: string[] = [];
+  const client = githubClient(layout.bare, github, apiPaths);
+  const tokenProvider: GitHubTokenProvider = {
+    mode: "gh",
+    async tokenFor() {
+      return "ghp_comment_mode";
+    },
+  };
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  let scripts = 0;
+  const launch: AgentLaunch = (input) => {
+    scripts += 1;
+    const scriptPath = path.join(layout.root, `demo-script-${scripts}.json`);
+    writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
+    return {
+      command: process.execPath,
+      args: [fakeAgent],
+      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+    };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker: comments,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "",
+      installationId: "",
+      privateKeyPem: "",
+      client,
+      tokenProvider,
+    },
+    closeoutBin: closeout.bin,
+    launch,
+    channel: "comments",
+  });
+
+  const askIssue = bySlug.get("archived-rows");
+  if (askIssue === undefined) throw new Error("demo seed is missing archived-rows");
+  let delivered = false;
+  let whileAsking = "";
+  let stop = false;
+  const answerer = (async () => {
+    for (;;) {
+      if (stop) return;
+      const question = board.comments.find(
+        (comment) => comment.parentId === null && comment.body.includes("Include archived rows?"),
+      );
+      if (question && !delivered) {
+        delivered = true;
+        whileAsking = children.map((child) => stateOf(db, child.identifier) ?? "missing").join("/");
+        board.post({
+          issueId: question.issueId,
+          parentId: question.id,
+          body: "yes",
+          userId: "human",
+        });
+        const synced = await mode.sync(question.issueId);
+        for (const answer of synced.resumed) {
+          await orchestrator.onLinearEvent({
+            dedupeKey: `comment-answer:${answer.questionId}`,
+            deliveryId: null,
+            source: "poll",
+            action: "prompted",
+            sessionId: question.issueId,
+            issueId: question.issueId,
+            activityId: null,
+            body: answer.answer,
+            signal: null,
+            updatedAtMs: Date.now(),
+            payload: "{}",
+          });
+        }
+      }
+      await Bun.sleep(20);
+    }
+  })();
+
+  const created = linearEvent("created", null, null, parentId);
+  created.source = "poll";
+  created.sessionId = parentId;
+  try {
+    await orchestrator.onLinearEvent(created);
+    const deadline = Date.now() + 90_000;
+    let idle = 0;
+    while (Date.now() < deadline && epicState(db) !== "done") {
+      const job = await jobs.tick();
+      if (job === null) {
+        idle += 1;
+        if (idle > 3) break;
+        await Bun.sleep(20);
+      } else {
+        idle = 0;
+      }
+    }
+    stop = true;
+    await answerer;
+
+    expect(created.source).toBe("poll");
+    expect(whileAsking, debug(layout, db)).toBe("merged/merged/awaiting_input");
+    expect(askIssue.title).toContain("Include archived rows?");
+    const question = board.comments.find((comment) =>
+      comment.body.includes("Include archived rows?"),
+    );
+    expect(question?.body).toContain("yes");
+    expect(question?.body).toContain("no");
+    expect(
+      board.comments.some(
+        (comment) =>
+          comment.parentId === question?.id && comment.userId === "human" && comment.body === "yes",
+      ),
+    ).toBe(true);
+    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(
+      children.map((child) => stateOf(db, child.identifier)),
+      debug(layout, db),
+    ).toEqual(["merged", "merged", "merged"]);
+    expect(github.opened.map((pull) => pull.head)).toEqual([
+      "paws/ENG-2",
+      "paws/ENG-3",
+      "paws/ENG-4",
+    ]);
+    expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
+      "Fixes ENG-2",
+      "Fixes ENG-3",
+      "Fixes ENG-4",
+    ]);
+    expect(github.opened[0]?.body).toContain("Fix attempts: 1");
+    expect(github.merged).toHaveLength(3);
+    expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
+    expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+  } finally {
+    stop = true;
+    await answerer;
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("stop from Linear cancels the live run", async () => {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
@@ -248,6 +464,53 @@ function decision(name: "accepted" | "rejected", items: unknown[]): FakeStep {
       items,
       warnings: [],
     },
+  };
+}
+
+type DemoSeed = {
+  parent: { title: string; description: string };
+  children: Array<{ slug: string; title: string; blockedBy: string[] }>;
+};
+
+function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+  if (input.purpose === "fix") {
+    return {
+      steps: [
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "fix.txt"),
+          content: "fixed\n",
+        },
+        { type: "end", stopReason: "end_turn" },
+      ],
+    };
+  }
+  if (input.itemId === "ENG-4") {
+    return {
+      steps: [
+        {
+          type: "ask_team",
+          question: "Include archived rows?",
+          options: ["yes", "no"],
+        },
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "archived.txt"),
+          content: "yes\n",
+        },
+        { type: "end", stopReason: "end_turn" },
+      ],
+    };
+  }
+  return {
+    steps: [
+      {
+        type: "fs_write",
+        path: path.join(input.worktree, `${input.itemId}.txt`),
+        content: "done\n",
+      },
+      { type: "end", stopReason: "end_turn" },
+    ],
   };
 }
 
@@ -364,10 +627,15 @@ function linearEvent(
   };
 }
 
-function githubClient(bare: string, github: ReturnType<typeof createFakeGitHub>): GitHubClient {
+function githubClient(
+  bare: string,
+  github: ReturnType<typeof createFakeGitHub>,
+  seen: string[] = [],
+): GitHubClient {
   let n = 0;
   return {
     async request(req): Promise<GitHubResponse> {
+      seen.push(req.path);
       if (req.path.endsWith("/access_tokens")) {
         n += 1;
         await github.mintInstallationToken({
@@ -384,6 +652,10 @@ function githubClient(bare: string, github: ReturnType<typeof createFakeGitHub>)
             permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read" },
           },
         };
+      }
+      if (req.method === "POST" && req.path.endsWith("/labels")) {
+        if (req.path.includes("/issues/")) return { status: 200, body: [{ name: "paws" }] };
+        return { status: 201, body: { name: "paws" } };
       }
       if (req.method === "POST" && req.path.endsWith("/pulls")) {
         const body = req.body as { title: string; head: string; base: string; body: string };
