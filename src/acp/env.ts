@@ -17,6 +17,7 @@ const BLOCKED_EXACT = new Set([
   "SSH_AGENT_PID",
   "SSH_ASKPASS",
   "SSH_AUTH_SOCK",
+  "XAI_API_KEY",
 ]);
 
 const BLOCKED_PREFIXES = ["AWS_", "AZURE_", "CLOUDSDK_", "GH_", "GITHUB_", "GOOGLE_"];
@@ -27,15 +28,29 @@ export function isBlockedEnv(key: string): boolean {
   return BLOCKED_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
+export type AgentEnvOptions = {
+  /** Pass `XAI_API_KEY` through. Only the Grok implementer sets this, and only when config allows it. */
+  allowXaiApiKey?: boolean;
+};
+
 /**
  * Environment for a spawned adapter.
  * `HOME` is kept so the adapter can use the developer's existing login.
- * This function does not read credential files.
+ * This function does not read credential files or `~/.grok/auth.json`.
+ * `XAI_API_KEY` is removed unless `allowXaiApiKey` is set.
  */
-export function minimalAgentEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function minimalAgentEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  options: AgentEnvOptions = {},
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value == null || isBlockedEnv(key)) continue;
+    if (value == null || isBlockedEnv(key)) {
+      if (key === "XAI_API_KEY" && options.allowXaiApiKey && value != null && value.length > 0) {
+        env[key] = value;
+      }
+      continue;
+    }
     env[key] = value;
   }
   return env;

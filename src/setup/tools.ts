@@ -1,5 +1,5 @@
 import { checkGhAuthStatus } from "../github";
-import { checkDeveloperLogin, type DeveloperCli } from "../install";
+import { checkDeveloperLogin, grokLoginStatus, type DeveloperCli } from "../install";
 import { definedEnv, type SetupIO } from "./io";
 import { stop } from "./stop";
 
@@ -75,6 +75,16 @@ export async function ensureDeveloperLogin(
       : `${check.summary}. Run: ${command}`;
     if (yes) stop(line);
     if ((await waitForLogin(io, line)) === null) stop(line);
+  }
+}
+
+/** `grok agent stdio` auth methods. Prints `Run \`grok login\`` and does not run it. */
+export async function ensureGrokLogin(io: SetupIO, yes: boolean): Promise<void> {
+  for (;;) {
+    const status = await grokLoginStatus({ env: io.env });
+    if (status.loggedIn) return;
+    if (yes) stop(status.detail);
+    if ((await waitForLogin(io, status.detail)) === null) stop(status.detail);
   }
 }
 

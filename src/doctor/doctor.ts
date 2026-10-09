@@ -1,5 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { loadEnv, pawsPaths, type EnvSource } from "../config";
+import { GROK_LOGIN_MESSAGE } from "../acp";
+import { loadEnv, pawsPaths, type AgentsConfig, type EnvSource } from "../config";
+import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type ProbeFacts } from "./probe";
 
 export type DoctorCheck = {
@@ -8,6 +10,14 @@ export type DoctorCheck = {
   detail: string;
   /** One next step. Printed only when the check is missing. */
   fix?: string;
+  /** Shown, and does not fail `paws doctor`. */
+  note?: boolean;
+};
+
+export type DoctorContext = {
+  config?: { agents: AgentsConfig };
+  /** Login probe for `agents.implementer = grok`. */
+  grok?: GrokLoginStatus | null;
 };
 
 export type DoctorProbe = {
@@ -42,7 +52,7 @@ const FIX = {
 } as const;
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
-export function doctorChecks(probe: DoctorProbe): DoctorCheck[] {
+export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): DoctorCheck[] {
   const env = loadEnv(probe.env);
   const paths = pawsPaths(env.home);
   const facts = probe.facts;
@@ -72,10 +82,7 @@ export function doctorChecks(probe: DoctorProbe): DoctorCheck[] {
       facts.ghPush.detail,
       facts.ghPush.ok ? undefined : ghPushFix(facts),
     ),
-    check("claude-acp", facts.claudeAdapter.ok, facts.claudeAdapter.detail, FIX.adapter),
-    check("codex-acp", facts.codexAdapter.ok, facts.codexAdapter.detail, FIX.adapter),
-    check("claude", facts.claudeLogin.ok, facts.claudeLogin.detail, FIX.claude),
-    check("codex", facts.codexLogin.ok, facts.codexLogin.detail, FIX.codex),
+    ...agentChecks(facts, context),
     closeoutCheck(facts),
     check(
       "repository",
@@ -122,7 +129,8 @@ export function doctorChecks(probe: DoctorProbe): DoctorCheck[] {
 export function formatDoctor(checks: readonly DoctorCheck[]): string {
   const lines = ["paws doctor"];
   for (const item of checks) {
-    lines.push(`${item.ok ? "ok" : "missing"} ${item.name}: ${item.detail}`);
+    const label = item.note ? "note" : item.ok ? "ok" : "missing";
+    lines.push(`${label} ${item.name}: ${item.detail}`);
     if (!item.ok && item.fix) lines.push(`  fix: ${item.fix}`);
   }
   return lines.join("\n");
@@ -251,6 +259,48 @@ function githubAppCheck(
 function ghPushFix(facts: ProbeFacts): string {
   if (facts.repo === null) return FIX.repo;
   return FIX.ghPush;
+}
+
+function agentChecks(facts: ProbeFacts, context: DoctorContext): DoctorCheck[] {
+  const implementer = context.config?.agents.implementer ?? "claude";
+  const claudeAcp = check(
+    "claude-acp",
+    facts.claudeAdapter.ok,
+    facts.claudeAdapter.detail,
+    FIX.adapter,
+  );
+  const codexAcp = check(
+    "codex-acp",
+    facts.codexAdapter.ok,
+    facts.codexAdapter.detail,
+    FIX.adapter,
+  );
+  const claude = check("claude", facts.claudeLogin.ok, facts.claudeLogin.detail, FIX.claude);
+  const codex = check("codex", facts.codexLogin.ok, facts.codexLogin.detail, FIX.codex);
+  if (implementer === "claude") return [claudeAcp, codexAcp, claude, codex];
+  const claudeNote = note("claude", `not required when the implementer is ${implementer}`);
+  const claudeAcpShown = facts.claudeAdapter.ok
+    ? claudeAcp
+    : note("claude-acp", `not required when the implementer is ${implementer}`);
+  if (implementer === "grok") {
+    return [claudeAcpShown, codexAcp, grokCheck(context.grok), claudeNote, codex];
+  }
+  return [claudeAcpShown, codexAcp, claudeNote, codex];
+}
+
+function grokCheck(status: GrokLoginStatus | null | undefined): DoctorCheck {
+  if (status == null || !status.installed || !status.loggedIn) {
+    return check(
+      "grok",
+      false,
+      status?.detail && status.detail.length > 0 ? status.detail : GROK_LOGIN_MESSAGE,
+    );
+  }
+  return check("grok", true, status.detail);
+}
+
+function note(name: string, detail: string): DoctorCheck {
+  return { name, ok: true, detail, note: true };
 }
 
 function check(name: string, ok: boolean, detail: string, fix?: string): DoctorCheck {

@@ -67,6 +67,7 @@ describe("process", () => {
       checkout: home,
       maxTurns: 80,
       maxAwakeMs: 45 * 60 * 1000,
+      implementer: "claude",
     });
     const paws = startPaws({
       PAWS_HOME: home,

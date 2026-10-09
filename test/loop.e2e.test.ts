@@ -1,13 +1,14 @@
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import type { FakeScript } from "../src/acp/testing/script";
+import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
+import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { writeFakeCloseout, type FakeStep } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
@@ -435,6 +436,176 @@ test("stop from Linear cancels the live run", async () => {
   db.close();
   await layout.cleanup();
 }, 20_000);
+
+test("grok implementer runs the demo epic with ask_team and one Closeout fix", async () => {
+  const layout = await repoLayout();
+  const argvLog = path.join(layout.root, "grok-argv.log");
+  const wrapper = path.join(layout.root, "grok-wrapper");
+  await writeFile(
+    wrapper,
+    `#!/bin/sh
+if [ -n "$GROK_ARGV_LOG" ]; then
+  printf '%s\\n' "$*" >> "$GROK_ARGV_LOG"
+fi
+exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
+`,
+  );
+  await chmod(wrapper, 0o755);
+  await writeFile(
+    path.join(layout.pawsRoot, "config.toml"),
+    `[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = ${JSON.stringify(wrapper)}\nallow_api_key = false\n`,
+  );
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "parent",
+      identifier: "ENG-1",
+      title: "Add CSV export",
+      description: null,
+      subIssues: [
+        { linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" },
+        { linearIssueId: "iss-3", identifier: "ENG-3", title: "Export the header" },
+      ],
+    },
+  ]);
+  tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
+  const closeout = await writeFakeCloseout(layout.root, {
+    version: "0.1.0",
+    steps: [
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("rejected", [failed, missingReview]),
+      { exit: 0 },
+      decision("rejected", [failed, passedReview]),
+      decision("accepted", [passed, passedReview]),
+      decision("accepted", [passed, passedReview]),
+    ],
+  });
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const results = new Map<string, string>();
+  let scripts = 0;
+  const launch: AgentLaunch = (input) => {
+    scripts += 1;
+    const scriptPath = path.join(layout.root, `grok-script-${scripts}.json`);
+    const resultPath = path.join(layout.root, `grok-result-${scripts}.json`);
+    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    const script = scriptFor(input);
+    if (input.role === "implementer") {
+      script.authMethods = [{ id: "cached_token", name: "Cached login" }];
+    }
+    writeFileSync(scriptPath, JSON.stringify(script));
+    const env = {
+      ...process.env,
+      FAKE_ACP_SCRIPT: scriptPath,
+      FAKE_ACP_RESULT: resultPath,
+      GROK_ARGV_LOG: argvLog,
+      PAWS_TEST_BUN: process.execPath,
+      PAWS_TEST_FAKE_AGENT: fakeAgent,
+      XAI_API_KEY: "xai-should-not-leak",
+      GH_TOKEN: "gh-should-not-leak",
+      SSH_AUTH_SOCK: "/tmp/ssh-should-not-leak",
+      AWS_SECRET_ACCESS_KEY: "aws-should-not-leak",
+    };
+    if (input.role === "reviewer") {
+      return { command: process.execPath, args: [fakeAgent], env };
+    }
+    return { env };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    },
+    closeoutBin: closeout.bin,
+    launch,
+  });
+
+  let delivered = false;
+  let whileAsking = "";
+  let stop = false;
+  const answerer = (async () => {
+    for (;;) {
+      if (stop) return;
+      const question = tracker.questions.at(-1);
+      if (question && !delivered) {
+        delivered = true;
+        whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
+      }
+      await Bun.sleep(20);
+    }
+  })();
+
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+    const deadline = Date.now() + 80_000;
+    let idle = 0;
+    while (Date.now() < deadline && epicState(db) !== "done") {
+      const job = await jobs.tick();
+      if (job === null) {
+        idle += 1;
+        if (idle > 3) break;
+        await Bun.sleep(20);
+      } else {
+        idle = 0;
+      }
+    }
+    stop = true;
+    await answerer;
+
+    expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
+    expect(tracker.questions[0]?.options).toEqual(["yes", "no"]);
+    const asked = JSON.parse(
+      await readFile(results.get("implement:ENG-2") ?? "", "utf8"),
+    ) as FakeResult;
+    expect(asked.askTeam?.text).toBe("yes");
+    expect(asked.authenticate).toEqual({ methodId: "cached_token" });
+    expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, "ENG-2"));
+    expect(asked.env).toMatchObject({
+      xaiApiKey: false,
+      ghToken: false,
+      sshAuthSock: false,
+      aws: false,
+    });
+    expect(JSON.stringify(asked)).not.toContain("xai-should-not-leak");
+    const fixed = JSON.parse(await readFile(results.get("fix:ENG-3") ?? "", "utf8")) as FakeResult;
+    expect(fixed.authenticate).toEqual({ methodId: "cached_token" });
+    const reviewed = JSON.parse(
+      await readFile(results.get("review:ENG-3") ?? "", "utf8"),
+    ) as FakeResult;
+    expect(reviewed.methods).not.toContain("authenticate");
+    const spawned = (await readFile(argvLog, "utf8")).trim().split("\n");
+    expect(spawned.length).toBeGreaterThan(0);
+    for (const line of spawned) {
+      expect(line).toBe(GROK_AGENT_ARGS.join(" "));
+      expect(line).not.toContain("always-approve");
+      expect(line).not.toContain("yolo");
+    }
+    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
+    expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
+    expect(github.opened[1]?.body).toContain("Fix attempts: 1");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+  } finally {
+    stop = true;
+    await answerer;
+    db.close();
+    await layout.cleanup();
+  }
+}, 90_000);
 
 const passed = { id: "typecheck", kind: "command", state: "passed", message: "exited 0" };
 const failed = { id: "typecheck", kind: "command", state: "failed", message: "exited 1" };

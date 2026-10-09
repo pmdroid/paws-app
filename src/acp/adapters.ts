@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { AgentsConfig } from "../config";
 
 export type AgentRole = "implementer" | "reviewer";
 
@@ -15,6 +16,17 @@ export const CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp";
 
 export const CLAUDE_AGENT_ACP_BIN = "claude-agent-acp";
 export const CODEX_ACP_BIN = "codex-acp";
+
+/**
+ * Grok Build ACP entry. Flags stay in this order.
+ * `--always-approve` / `--yolo` are never included: tool permission goes
+ * through Paws `session/request_permission`.
+ */
+export const GROK_AGENT_ARGS = ["--no-auto-update", "agent", "stdio", "--no-leader"] as const;
+
+export const GROK_LOGIN_MESSAGE = "Run `grok login`";
+
+const AUTO_APPROVE = new Set(["--always-approve", "--yolo"]);
 
 const PINS: Record<AgentRole, { bin: string; packageName: string }> = {
   implementer: { bin: CLAUDE_AGENT_ACP_BIN, packageName: CLAUDE_AGENT_ACP_PACKAGE },
@@ -32,6 +44,12 @@ export type AdapterPin = {
   packageName: string;
   version: string;
   command: string;
+};
+
+export type GrokCommand = {
+  command: string;
+  args: string[];
+  error: string | null;
 };
 
 /** Checkout root that contains the paws `package.json`. */
@@ -72,25 +90,123 @@ export function pinnedAdapters(root: string = pawsPackageRoot()): Record<AgentRo
 }
 
 /**
- * Claude Code (implementer) and Codex (reviewer).
- * The default command is the absolute `node_modules/.bin` path from the
- * pinned npm package. Paws does not search PATH and does not install globally.
- * `PAWS_CLAUDE_ACP` / `PAWS_CODEX_ACP` override the executable for local spikes.
+ * Claude Code, Grok, or Codex for the implementer. Codex stays the reviewer.
+ * Claude and Codex default to the absolute `node_modules/.bin` path.
+ * Paws does not search PATH for those two unless `PAWS_CLAUDE_ACP` / `PAWS_CODEX_ACP` is set.
+ * A PATH `grok` is used only when `agents.grok.path` is set.
  */
 export function resolveAdapter(
   role: AgentRole,
   env: NodeJS.ProcessEnv = process.env,
   override?: AdapterCommand,
   root?: string,
+  agents?: AgentsConfig,
 ): AdapterCommand {
   if (override?.command) return { command: override.command, args: override.args ?? [] };
-  const configured = role === "implementer" ? env.PAWS_CLAUDE_ACP : env.PAWS_CODEX_ACP;
-  if (configured?.trim()) {
+  if (role === "reviewer") return fromPinnedOrEnv(env, "PAWS_CODEX_ACP", "reviewer", root);
+  const implementer = agents?.implementer ?? "claude";
+  if (implementer === "grok") {
+    const resolved = resolveGrokCommand(agents, root);
+    if (resolved.error) throw new Error(resolved.error);
+    return { command: resolved.command, args: resolved.args };
+  }
+  if (implementer === "codex") return fromPinnedOrEnv(env, "PAWS_CODEX_ACP", "reviewer", root);
+  return fromPinnedOrEnv(env, "PAWS_CLAUDE_ACP", "implementer", root);
+}
+
+/** Pinned `@xai-official/grok` in `node_modules/.bin`, unless `agents.grok.path` is set. */
+export function resolveGrokCommand(
+  agents?: AgentsConfig,
+  packageRoot: string = pawsPackageRoot(),
+): GrokCommand {
+  const args = [...GROK_AGENT_ARGS];
+  rejectAutoApprove(args);
+  const configured = agents?.grok.path?.trim() ?? "";
+  if (configured.length > 0) {
+    if (configured.includes("/") && !existsSync(configured)) {
+      return {
+        command: configured,
+        args,
+        error: `agents.grok.path does not exist: ${configured}`,
+      };
+    }
+    return { command: configured, args, error: null };
+  }
+  const command = join(packageRoot, "node_modules", ".bin", "grok");
+  if (!existsSync(command)) {
+    return {
+      command,
+      args,
+      error:
+        "Pinned @xai-official/grok is not installed at node_modules/.bin/grok. Run `bun install` in the Paws checkout.",
+    };
+  }
+  const platform = grokPlatformDir(packageRoot);
+  if (!existsSync(platform)) {
+    const target = `${process.platform}-${process.arch}`;
+    return {
+      command,
+      args,
+      error: `@xai-official/grok: no platform binary installed for ${target}. Set agents.grok.path to a grok executable.`,
+    };
+  }
+  return { command, args, error: null };
+}
+
+export function rejectAutoApprove(args: readonly string[]): void {
+  for (const arg of args) {
+    const name = arg.startsWith("--") ? (arg.split("=")[0] ?? arg) : arg;
+    if (AUTO_APPROVE.has(name)) {
+      throw new Error("refusing to spawn grok with --always-approve or --yolo");
+    }
+  }
+}
+
+/**
+ * `cached_token` is the default. `xai.api_key` is selected only when that
+ * method is advertised, `XAI_API_KEY` is set, and `agents.grok.allow_api_key`
+ * is true. The key value is not returned.
+ */
+export function selectGrokAuthMethod(
+  methods: readonly { id: string }[],
+  options: { apiKeyPresent: boolean; allowApiKey: boolean },
+): string | null {
+  const ids = new Set(methods.map((method) => method.id));
+  if (options.apiKeyPresent && options.allowApiKey && ids.has("xai.api_key")) {
+    return "xai.api_key";
+  }
+  if (ids.has("cached_token")) return "cached_token";
+  return null;
+}
+
+/** True when the variable is a non-empty string. The value is not returned. */
+export function xaiApiKeyPresent(env: NodeJS.ProcessEnv): boolean {
+  const value = env.XAI_API_KEY;
+  return typeof value === "string" && value.length > 0;
+}
+
+function fromPinnedOrEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  role: AgentRole,
+  root: string | undefined,
+): AdapterCommand {
+  const configured = env[key];
+  if (configured !== undefined && configured.trim().length > 0) {
     const parts = configured.trim().split(/\s+/);
     const command = parts[0];
     if (command) return { command, args: parts.slice(1) };
   }
   return { command: adapterBinPath(role, root), args: [] };
+}
+
+function grokPlatformDir(packageRoot: string): string {
+  return join(
+    packageRoot,
+    "node_modules",
+    "@xai-official",
+    `grok-${process.platform}-${process.arch}`,
+  );
 }
 
 function pin(role: AgentRole, version: string, root: string): AdapterPin {
