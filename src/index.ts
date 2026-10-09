@@ -454,6 +454,6 @@ if (import.meta.main) {
   const origin = `http://${paws.server.hostname}:${paws.server.port}`;
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
-  console.log(`paws ready · ${origin}${tunnel}`);
-  console.log(`dashboard ${origin}/status`);
+  // One write so a piped reader cannot observe the ready line before the dashboard line exists.
+  console.log(`paws ready · ${origin}${tunnel}\ndashboard ${origin}/status`);
 }

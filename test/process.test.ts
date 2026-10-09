@@ -42,12 +42,12 @@ describe("process", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const text = await readUntil(proc, "paws ready", 5000);
+    const text = await readUntil(proc, "dashboard http://127.0.0.1:", 5000);
     proc.kill();
     await proc.exited;
     expect(text).toContain("paws ready · http://127.0.0.1:");
     expect(text).toContain("dashboard http://127.0.0.1:");
-    expect(text).toContain("/status");
+    expect(text).toMatch(/dashboard http:\/\/127\.0\.0\.1:\d+\/status/);
   });
 
   test("a setup-written config listens on loopback and serves live status", async () => {
