@@ -10,7 +10,6 @@ import {
   buildCredentialProbe,
   buildDockerLogin,
   buildDockerRun,
-  dockerClientEnv,
   loginDocker,
   readDockerRecords,
   writeRecordingDocker,
