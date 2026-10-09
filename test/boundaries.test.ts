@@ -22,6 +22,7 @@ const MODULES = [
   "comments",
   "install",
   "setup",
+  "sandbox",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -34,7 +35,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   db: ["core"],
   linear: ["core"],
   intake: ["core", "linear"],
-  acp: ["core"],
+  acp: ["core", "sandbox"],
   closeout: [],
   github: [],
   questions: ["core"],
@@ -47,6 +48,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   install: ["acp", "closeout"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: ["config", "core", "linear", "comments", "github", "acp", "install"],
+  sandbox: [],
 };
 
 describe("module boundaries", () => {
