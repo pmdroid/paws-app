@@ -1,12 +1,15 @@
-import type { CatchUpSource } from "./catchup";
-import type { AcceptedLinearEvent } from "./events";
+import type { Database } from "bun:sqlite";
+import { JOB_KIND, retryBackoffMs, type LinearCommand } from "../core";
+import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
+import type { IntakePollSource, PolledActivity, PolledComment, PolledIssue } from "./catchup";
+import { activityKey, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 
-/** Steady-state catch-up while the tunnel is forwarding webhooks. */
-export const POLL_INTERVAL_UP_MS = 60_000;
+/** Poll while a work item is open or a question is unanswered. */
+export const POLL_INTERVAL_ACTIVE_MS = 5_000;
 
-/** Faster catch-up when ngrok is down or `--no-tunnel` is set. */
-export const POLL_INTERVAL_DOWN_MS = 3_000;
+/** Poll while nothing is in flight and no question is open. */
+export const POLL_INTERVAL_IDLE_MS = 15_000;
 
 /** Wall clock ahead of monotonic time by more than this is a laptop wake. */
 export const WAKE_GAP_MS = 30_000;
@@ -14,9 +17,20 @@ export const WAKE_GAP_MS = 30_000;
 const CURSOR_NAME = "linear";
 const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
+const STOP_COMMENT = /^\/paws\s+stop\b/i;
 
-export function pollIntervalMs(tunnelUp: boolean): number {
-  return tunnelUp ? POLL_INTERVAL_UP_MS : POLL_INTERVAL_DOWN_MS;
+export function pollIntervalMs(workActive: boolean): number {
+  return workActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+}
+
+/** True when a non-terminal work item exists or a question is still open. */
+export function linearWorkIsHot(db: Database): boolean {
+  if (
+    count(db, "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('merged', 'cancelled')") > 0
+  ) {
+    return true;
+  }
+  return count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open'") > 0;
 }
 
 export function sleepGapMs(input: {
@@ -37,6 +51,7 @@ export type CatchUpPoller = {
   stop(): void;
   noteWake(): void;
   pollNow(): Promise<void>;
+  budget(): LinearRateBudget | null;
   settled: Promise<void>;
 };
 
@@ -66,14 +81,17 @@ export function createTimerSleeper(): Sleeper {
 }
 
 /**
- * Catch-up poller. Runs immediately, then every 60s while the tunnel is up
- * and every 3s while it is down. `noteWake` and a wall/mono gap over 30s poll early.
+ * Intake poll. One tick asks Linear once, dedupes by id, and feeds the inbox.
+ * Active work or an open question waits 5s; idle waits 15s. `RATELIMITED` waits
+ * out the reset, then the next tick resumes. The cursor is the SQLite sync row.
  */
 export function startCatchUpPoller(options: {
-  source: CatchUpSource;
+  source: IntakePollSource;
   store: InboxStore;
   onEvent: (event: AcceptedLinearEvent) => Promise<void> | void;
-  tunnelUp: () => boolean;
+  hot?: () => boolean;
+  submitCommand?: (command: LinearCommand) => void;
+  db?: Database;
   beforeDelay?: () => Promise<void>;
   sleeper?: Sleeper;
   now?: () => number;
@@ -82,10 +100,14 @@ export function startCatchUpPoller(options: {
   const sleeper = options.sleeper ?? createTimerSleeper();
   const now = options.now ?? Date.now;
   const mono = options.mono ?? (() => performance.now());
+  const hot =
+    options.hot ?? (() => (options.db === undefined ? false : linearWorkIsHot(options.db)));
   const control = { stopped: false };
   let wakeRequested = false;
   let running = false;
   let pending = false;
+  let rateAttempts = 0;
+  let latestBudget: LinearRateBudget | null = null;
 
   async function pollOnce(): Promise<void> {
     if (running) {
@@ -104,30 +126,72 @@ export function startCatchUpPoller(options: {
   }
 
   async function pollBody(): Promise<void> {
-    const replay = options.store.listUnhandled();
-    for (const event of replay) {
-      await options.onEvent(event);
-      options.store.markHandled(event.dedupeKey);
+    for (const event of options.store.listUnhandled()) {
+      await deliver(event);
     }
     const saved = options.store.getCursor(CURSOR_NAME);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
-    const events = await options.source.listUpdated(since);
+    const sighting = await options.source.poll(since);
+    if (sighting.budget !== null) latestBudget = sighting.budget;
+    if (!sighting.queried) return;
+    const sessionByIssue = new Map<string, string>();
+    for (const activity of sighting.activities) {
+      if (activity.issueId !== null && activity.sessionId !== null) {
+        sessionByIssue.set(activity.issueId, activity.sessionId);
+      }
+    }
+    const events = [
+      ...sighting.issues.map((issue) => issueEvent(issue, sessionByIssue, options.store)),
+      ...sighting.comments.map((comment) => commentEvent(comment)),
+      ...sighting.activities.map((activity) => activityEvent(activity)),
+    ].filter((event): event is AcceptedLinearEvent => event !== null);
+    events.sort((left, right) => left.updatedAtMs - right.updatedAtMs || rank(left) - rank(right));
     for (const event of events) {
       const committed = options.store.commit(event);
       if (!committed.inserted && committed.handled) continue;
-      await options.onEvent(event);
-      options.store.markHandled(event.dedupeKey);
+      await deliver(event);
     }
-    options.store.setCursor(CURSOR_NAME, now());
+    if (sighting.caughtUp) options.store.setCursor(CURSOR_NAME, now());
+    rateAttempts = 0;
+  }
+
+  async function deliver(event: AcceptedLinearEvent): Promise<void> {
+    await options.onEvent(event);
+    if (event.signal === "stop") submitStops(event);
+    options.store.markHandled(event.dedupeKey);
+  }
+
+  function submitStops(event: AcceptedLinearEvent): void {
+    const submit = options.submitCommand;
+    if (submit === undefined) return;
+    const targets = stopTargets(options.db, event.issueId, event.sessionId);
+    const requestedAt = event.updatedAtMs > 0 ? event.updatedAtMs : now();
+    for (const itemId of targets) {
+      try {
+        submit({ type: "stop", itemId, source: "linear", requestedAt });
+      } catch (error) {
+        if (!isUnique(error)) throw error;
+      }
+    }
   }
 
   const settled = (async () => {
     while (!control.stopped) {
+      let delay = pollIntervalMs(hot());
       try {
         await pollOnce();
+        delay = Math.max(delay, budgetHoldMs(latestBudget, now()));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "catch-up failed";
-        console.error(`linear catch-up failed: ${message}`);
+        if (control.stopped) return;
+        if (error instanceof LinearRateLimitError) {
+          rateAttempts += 1;
+          latestBudget = error.budget;
+          const backoff = retryBackoffMs(rateAttempts, POLL_INTERVAL_ACTIVE_MS, 60_000);
+          delay = Math.max(backoff, error.retryAfterMs);
+        } else {
+          const message = error instanceof Error ? error.message : "intake poll failed";
+          console.error(`linear intake poll failed: ${message}`);
+        }
       }
       if (control.stopped) return;
       if (wakeRequested) {
@@ -138,7 +202,7 @@ export function startCatchUpPoller(options: {
       const previousMonoMs = mono();
       await options.beforeDelay?.();
       if (control.stopped) return;
-      await sleeper.wait(pollIntervalMs(options.tunnelUp()));
+      await sleeper.wait(delay);
       if (control.stopped) return;
       const gap = sleepGapMs({
         previousWallMs,
@@ -160,8 +224,214 @@ export function startCatchUpPoller(options: {
       sleeper.wake();
     },
     pollNow: pollOnce,
+    budget: () => latestBudget,
     settled,
   };
+}
+
+/** Queue a stop in the same shape `submitCommand` drains, without applying it here. */
+export function persistStopCommand(db: Database, command: LinearCommand): void {
+  try {
+    db.run(
+      `INSERT INTO job (
+         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, lane
+       ) VALUES (?, ?, ?, 0, ?, 10, ?, NULL, 'default')`,
+      [
+        JOB_KIND.command,
+        `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
+        JSON.stringify(command),
+        command.requestedAt,
+        command.requestedAt,
+      ],
+    );
+  } catch (error) {
+    if (!isUnique(error)) throw error;
+  }
+}
+
+function issueEvent(
+  issue: PolledIssue,
+  sessionByIssue: ReadonlyMap<string, string>,
+  store: InboxStore,
+): AcceptedLinearEvent | null {
+  const sessionId = sessionByIssue.get(issue.id) ?? null;
+  if (issue.labeled || issue.delegated) {
+    const mode = issue.labeled && issue.delegated ? "both" : issue.labeled ? "label" : "delegate";
+    return inboxEvent({
+      dedupeKey: `issue:${issue.id}:intake`,
+      action: "created",
+      sessionId,
+      issueId: issue.id,
+      body: null,
+      signal: null,
+      updatedAtMs: issue.updatedAtMs,
+      payload: { kind: "intake", mode, identifier: issue.identifier },
+    });
+  }
+  const prior = store.get(`issue:${issue.id}:intake`);
+  if (prior === null || !intakeWasLabeled(prior.payload)) return null;
+  return inboxEvent({
+    dedupeKey: `issue:${issue.id}:unlabel:${issue.updatedAtMs}`,
+    action: "other",
+    sessionId,
+    issueId: issue.id,
+    body: null,
+    signal: "stop",
+    updatedAtMs: issue.updatedAtMs,
+    payload: { kind: "stop", reason: "label" },
+  });
+}
+
+function commentEvent(comment: PolledComment): AcceptedLinearEvent | null {
+  if (!isPawsStop(comment.body)) return null;
+  return inboxEvent({
+    dedupeKey: `comment:${comment.id}`,
+    action: "other",
+    sessionId: null,
+    issueId: comment.issueId,
+    body: comment.body,
+    signal: "stop",
+    updatedAtMs: comment.updatedAtMs,
+    payload: { kind: "stop", reason: "comment" },
+  });
+}
+
+function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
+  const stop = activity.signal === "stop" || isPawsStop(activity.body);
+  if (stop) {
+    return inboxEvent({
+      dedupeKey: `activity:${activity.id}:stop`,
+      action: "other",
+      sessionId: activity.sessionId,
+      issueId: activity.issueId,
+      activityId: activity.id,
+      body: activity.body,
+      signal: "stop",
+      updatedAtMs: activity.updatedAtMs,
+      payload: { kind: "stop", reason: "agent" },
+    });
+  }
+  return inboxEvent({
+    dedupeKey: activityKey(activity.id),
+    action: "prompted",
+    sessionId: activity.sessionId,
+    issueId: activity.issueId,
+    activityId: activity.id,
+    body: activity.body,
+    signal: activity.signal,
+    updatedAtMs: activity.updatedAtMs,
+    payload: {
+      activityId: activity.id,
+      sessionId: activity.sessionId,
+      body: activity.body,
+      signal: activity.signal,
+    },
+  });
+}
+
+function inboxEvent(input: {
+  dedupeKey: string;
+  action: AcceptedLinearEvent["action"];
+  sessionId: string | null;
+  issueId: string | null;
+  activityId?: string | null;
+  body: string | null;
+  signal: string | null;
+  updatedAtMs: number;
+  payload: Record<string, unknown>;
+}): AcceptedLinearEvent {
+  return {
+    dedupeKey: input.dedupeKey,
+    deliveryId: null,
+    source: "poll",
+    action: input.action,
+    sessionId: input.sessionId,
+    issueId: input.issueId,
+    activityId: input.activityId ?? null,
+    body: input.body,
+    signal: input.signal,
+    updatedAtMs: input.updatedAtMs,
+    payload: JSON.stringify(input.payload),
+  };
+}
+
+function intakeWasLabeled(payload: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (!isRecord(parsed)) return false;
+    return parsed["mode"] === "label" || parsed["mode"] === "both";
+  } catch {
+    return false;
+  }
+}
+
+function isPawsStop(body: string | null): boolean {
+  if (body === null) return false;
+  return STOP_COMMENT.test(body.trim());
+}
+
+function rank(eventRow: AcceptedLinearEvent): number {
+  return eventRow.signal === "stop" ? 1 : 0;
+}
+
+function stopTargets(
+  db: Database | undefined,
+  linearIssueId: string | null,
+  sessionId: string | null,
+): string[] {
+  if (db === undefined) return linearIssueId === null ? [] : [linearIssueId];
+  const ids: string[] = [];
+  const push = (id: string) => {
+    if (!ids.includes(id)) ids.push(id);
+  };
+  try {
+    if (linearIssueId !== null) {
+      const rows = db
+        .query<{ id: string }, [string, string]>(
+          `SELECT work_item.id AS id
+           FROM work_item
+           LEFT JOIN epic ON epic.id = work_item.epic_id
+           WHERE work_item.state NOT IN ('merged', 'cancelled')
+             AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
+           ORDER BY work_item.position, work_item.id`,
+        )
+        .all(linearIssueId, linearIssueId);
+      for (const row of rows) push(row.id);
+    }
+    if (sessionId !== null) {
+      const rows = db
+        .query<{ id: string }, [string]>(
+          `SELECT id FROM work_item
+           WHERE session_key = ? AND state NOT IN ('merged', 'cancelled')
+           ORDER BY position, id`,
+        )
+        .all(sessionId);
+      for (const row of rows) push(row.id);
+    }
+  } catch {
+    return linearIssueId === null ? [] : [linearIssueId];
+  }
+  if (ids.length === 0 && linearIssueId !== null) ids.push(linearIssueId);
+  return ids;
+}
+
+function count(db: Database, sql: string): number {
+  try {
+    const row = db.query<{ n: number }, []>(sql).get();
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isUnique(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error ? String(error.code) : "";
+  return code.includes("SQLITE_CONSTRAINT") || error.message.includes("UNIQUE constraint");
 }
 
 function unref(timer: ReturnType<typeof setTimeout>): void {

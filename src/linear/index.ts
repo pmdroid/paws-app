@@ -1,7 +1,15 @@
 export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
 export type { TrackerAdapter } from "./adapter";
-export { createLinearCatchUpSource } from "./catchup";
-export type { CatchUpSource } from "./catchup";
+export { linearBudget, LinearRateLimitError } from "./budget";
+export type { LinearRateBudget } from "./budget";
+export { createIntakePollSource } from "./catchup";
+export type {
+  IntakePollSource,
+  IntakeSighting,
+  PolledActivity,
+  PolledComment,
+  PolledIssue,
+} from "./catchup";
 export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
 export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
 export { createFakeTracker } from "./fake";
@@ -19,14 +27,17 @@ export {
   readLinearEnv,
   readStoredToken,
   refreshLinearToken,
+  webhookChecksNeeded,
   writeStoredToken,
 } from "./oauth";
 export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
 export {
-  POLL_INTERVAL_DOWN_MS,
-  POLL_INTERVAL_UP_MS,
+  POLL_INTERVAL_ACTIVE_MS,
+  POLL_INTERVAL_IDLE_MS,
   WAKE_GAP_MS,
   createTimerSleeper,
+  linearWorkIsHot,
+  persistStopCommand,
   pollIntervalMs,
   sleepGapMs,
   startCatchUpPoller,

@@ -1,3 +1,4 @@
+import { budgetFromHeaders, rateLimitFrom, rememberLinearBudget } from "./budget";
 import type { FetchLike, LinearAuth } from "./oauth";
 
 const GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -8,7 +9,7 @@ export type LinearClient = {
 
 export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLike }): LinearClient {
   const fetchImpl = options.fetch ?? fetch;
-  return {
+  const client: LinearClient = {
     async query(query, variables) {
       const run = async (token: string) =>
         fetchImpl(GRAPHQL_URL, {
@@ -25,10 +26,14 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
         token = await options.auth.forceRefresh();
         response = await run(token);
       }
+      const budget = budgetFromHeaders(response.headers);
+      rememberLinearBudget(client, budget);
+      const json: unknown = await response.json();
+      const limited = rateLimitFrom(response, json, budget);
+      if (limited !== null) throw limited;
       if (!response.ok) {
         throw new Error(`Linear GraphQL HTTP ${response.status}`);
       }
-      const json: unknown = await response.json();
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       const errors = json["errors"];
       if (Array.isArray(errors) && errors.length > 0) {
@@ -43,6 +48,7 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
       return json["data"];
     },
   };
+  return client;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

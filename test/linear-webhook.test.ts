@@ -92,13 +92,38 @@ describe("linear webhooks", () => {
     db.close();
   });
 
-  test("startPaws persists a signed webhook and rejects a bad one", async () => {
+  test("startPaws leaves webhook routes off unless LINEAR_WEBHOOKS is set", async () => {
     const home = tempHome();
     const paws = startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
       PAWS_HOST: "127.0.0.1",
       LINEAR_WEBHOOK_SECRET: SECRET,
+    });
+    try {
+      const now = Date.now();
+      const body = agentBody(now, "ses_http", "iss_http");
+      const base = `http://${paws.server.hostname}:${paws.server.port}`;
+      const hidden = await fetch(`${base}/webhooks/linear`, signedInit(body, SECRET, "del-http"));
+      expect(hidden.status).toBe(404);
+      const github = await fetch(`${base}/webhooks/github`, { method: "POST" });
+      expect(github.status).toBe(404);
+      const count = paws.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
+      expect(count?.n).toBe(0);
+      expect(paws.tunnelRequested).toBe(false);
+    } finally {
+      paws.stop();
+    }
+  });
+
+  test("startPaws persists a signed webhook when LINEAR_WEBHOOKS is on", async () => {
+    const home = tempHome();
+    const paws = startPaws({
+      PAWS_HOME: home,
+      PAWS_PORT: "0",
+      PAWS_HOST: "127.0.0.1",
+      LINEAR_WEBHOOK_SECRET: SECRET,
+      LINEAR_WEBHOOKS: "true",
     });
     try {
       const now = Date.now();

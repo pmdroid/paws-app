@@ -8,11 +8,19 @@ import {
   type PawsEnv,
   type PawsPaths,
 } from "./config";
-import { migrate, openDatabase, prepareShutdown, recoverOnStartup, startLoops } from "./db";
+import {
+  enqueueCommand,
+  migrate,
+  openDatabase,
+  prepareShutdown,
+  recoverOnStartup,
+  startLoops,
+  submitCommand,
+} from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { createFetchGitHubClient, githubHttpsUrl } from "./github";
 import { startHost } from "./host";
-import { openLinear } from "./linear";
+import { openLinear, webhookChecksNeeded } from "./linear";
 import {
   attachOrchestrator,
   type GitHubBinding,
@@ -47,15 +55,25 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
+  const envSource = source ?? process.env;
+  const webhooks = webhookChecksNeeded(envSource);
   const linear = openLinear({
     db,
     secretsDir: paths.secretsDir,
-    env: source ?? process.env,
+    env: envSource,
     publicUrl: env.publicUrl,
     noTunnel: options?.noTunnel,
+    webhooks,
     followUp: async (event) => {
       if (orchestrator === null) throw new Error("loop is not attached");
       await orchestrator.onLinearEvent(event);
+    },
+    submitCommand: (command) => {
+      if (orchestrator === null) {
+        enqueueCommand(db, command);
+        return;
+      }
+      submitCommand(db, orchestrator.bus, command);
     },
   });
   const server = startServer({
@@ -64,6 +82,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     linearWebhookSecret: env.linearWebhookSecret,
     githubWebhookSecret: env.githubWebhookSecret,
     linearWebhook: linear.webhook,
+    webhooks,
   });
   const running = linear.start(server.port ?? env.port);
   const loops = startLoops({

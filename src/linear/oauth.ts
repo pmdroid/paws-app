@@ -19,6 +19,12 @@ export type LinearEnv = {
   refreshToken: string | null;
   ngrokAuthtoken: string | null;
   noTunnel: boolean;
+  /** `linear.webhooks`. Off unless `LINEAR_WEBHOOKS` is `1` or `true`. */
+  webhooks: boolean;
+  /** Team id or key. `LINEAR_TEAM_ID`, then `LINEAR_TEAM`. */
+  teamId: string | null;
+  /** App user id, used when a poll page has no `viewer`. */
+  appUserId: string | null;
 };
 
 export type StoredLinearToken = {
@@ -39,9 +45,14 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
 
 /**
  * Linear OAuth app settings this process expects:
- * actor=app, scopes read + write + app:assignable + app:mentionable,
- * and the Agent session events webhook category pointed at /webhooks/linear.
+ * actor=app, scopes read + write + app:assignable + app:mentionable.
+ * Intake is polling. Webhooks are optional (`LINEAR_WEBHOOKS=true`).
  */
+
+/** Doctor (QM-20) skips webhook, public URL, and ngrok checks while this is false. */
+export function webhookChecksNeeded(source: EnvSource = process.env): boolean {
+  return readLinearEnv(source).webhooks;
+}
 export function linearAuthorizeUrl(input: {
   clientId: string;
   redirectUri: string;
@@ -68,6 +79,9 @@ export function readLinearEnv(source: EnvSource): LinearEnv {
     refreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
     ngrokAuthtoken: optional(source, "NGROK_AUTHTOKEN"),
     noTunnel: noTunnel === "1" || noTunnel === "true",
+    webhooks: flag(source, "LINEAR_WEBHOOKS"),
+    teamId: optional(source, "LINEAR_TEAM_ID") ?? optional(source, "LINEAR_TEAM"),
+    appUserId: optional(source, "LINEAR_APP_USER_ID"),
   };
 }
 
@@ -262,6 +276,11 @@ function optional(source: EnvSource, key: string): string | null {
   const value = source[key];
   if (value === undefined || value.length === 0) return null;
   return value;
+}
+
+function flag(source: EnvSource, key: string): boolean {
+  const value = source[key];
+  return value === "1" || value === "true";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
