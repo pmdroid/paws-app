@@ -108,17 +108,29 @@ test("checksum mismatch fails closed and keeps a previous install", async () => 
         manifest,
         releaseBaseUrl: server.base,
       });
-      const before = await readFile(closeoutBinPath(home));
+      const before = sha256Hex(await readFile(closeoutBinPath(home)));
+      const asset = manifest.assets["linux-x64"];
+      if (!asset) throw new Error("missing linux-x64 asset");
+      const replaced: CloseoutManifest = {
+        ...manifest,
+        assets: {
+          ...manifest.assets,
+          "linux-x64": {
+            ...asset,
+            sha256: sha256Hex(new TextEncoder().encode("expected-replacement")),
+          },
+        },
+      };
       server.files.set("closeout-linux-x64", new TextEncoder().encode("tampered"));
       await expect(
         installCloseout({
           home,
           platform: "linux-x64",
-          manifest,
+          manifest: replaced,
           releaseBaseUrl: server.base,
         }),
       ).rejects.toMatchObject({ name: "CloseoutInstallError", reason: "checksum" });
-      expect(await readFile(closeoutBinPath(home))).toEqual(before);
+      expect(sha256Hex(await readFile(closeoutBinPath(home)))).toBe(before);
       expect(await readdir(join(home, "bin"))).toEqual(["closeout"]);
     });
   });

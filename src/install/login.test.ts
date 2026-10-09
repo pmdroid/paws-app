@@ -87,7 +87,7 @@ test("a hung status command times out", async () => {
   await writeExecutable(
     join(dir, "codex"),
     `#!/bin/sh
-sleep 30
+exec /bin/sleep 30
 `,
   );
   const result = await checkDeveloperLogin({
