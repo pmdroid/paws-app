@@ -12,3 +12,4 @@ coverage
 *.db
 *.db-wal
 *.db-shm
+*.db-journal

@@ -4,8 +4,8 @@ export type Migration = {
 };
 
 /**
- * Append-only. Shipped ids are never edited; add `002_*.sql` as the next entry.
- * Domain tables (epic, work item, run) arrive with the issue that first writes them.
+ * Append-only. Shipped ids are never edited; add the next numbered migration.
+ * Epic and work item landed in 002. Recovery columns, runs, and wake rows are 003.
  */
 export const migrations: readonly Migration[] = [
   {
@@ -129,6 +129,49 @@ CREATE TABLE work_item_block (
   blocker_linear_issue_id TEXT NOT NULL,
   blocked_linear_issue_id TEXT NOT NULL,
   PRIMARY KEY (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
+) STRICT;
+`,
+  },
+  {
+    id: "003_recovery_host",
+    sql: `
+ALTER TABLE job ADD COLUMN recurring_every_ms INTEGER;
+ALTER TABLE job ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE job ADD COLUMN lane TEXT NOT NULL DEFAULT 'default';
+
+ALTER TABLE outbox ADD COLUMN locked_by TEXT;
+ALTER TABLE outbox ADD COLUMN locked_until INTEGER;
+ALTER TABLE outbox ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 5;
+
+ALTER TABLE work_item ADD COLUMN checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint));
+ALTER TABLE work_item ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN awake_ms INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN last_mono_ms INTEGER;
+ALTER TABLE work_item ADD COLUMN turn_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 80;
+ALTER TABLE work_item ADD COLUMN max_awake_ms INTEGER NOT NULL DEFAULT 2700000;
+ALTER TABLE work_item ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE work_item ADD COLUMN session_key TEXT;
+ALTER TABLE work_item ADD COLUMN current_run_id TEXT;
+
+CREATE TABLE run (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item (id),
+  kind TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('provisioning', 'active', 'ended', 'lost')),
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  fresh_session INTEGER NOT NULL DEFAULT 0 CHECK (fresh_session IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX run_item ON run (item_id, created_at);
+
+CREATE TABLE wake (
+  from_wall INTEGER PRIMARY KEY,
+  to_wall INTEGER NOT NULL,
+  slept_ms INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
 ) STRICT;
 `,
   },

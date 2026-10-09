@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { NotImplementedError } from "../src/core";
 import {
   claimNextJob,
   dispatchOutbox,
@@ -55,7 +54,7 @@ describe("sqlite", () => {
     db.close();
   });
 
-  test("enqueueJob round-trips and claim is still a stub", () => {
+  test("enqueueJob round-trips and claim takes the due row", () => {
     const db = openTemp();
     const id = enqueueJob(db, {
       queue: "run",
@@ -71,14 +70,14 @@ describe("sqlite", () => {
       status: "pending",
       priority: 1,
     });
-    expect(() => claimNextJob(db)).toThrow(NotImplementedError);
+    expect(claimNextJob(db, { workerId: "test" })?.id).toBe(id);
     expect(() =>
       db.run("INSERT INTO job (queue, payload, run_at, created_at) VALUES ('q', '{', 0, 0)"),
     ).toThrow();
     db.close();
   });
 
-  test("enqueueOutbox round-trips and dispatch is still a stub", () => {
+  test("enqueueOutbox round-trips, rejects a duplicate key, and dispatch marks it sent", () => {
     const db = openTemp();
     const id = enqueueOutbox(db, {
       target: "linear",
@@ -99,7 +98,14 @@ describe("sqlite", () => {
     expect(() =>
       enqueueOutbox(db, { target: "linear", op: "activity", idempotencyKey: "act-1" }),
     ).toThrow();
-    expect(() => dispatchOutbox(db)).toThrow(NotImplementedError);
+    const delivered: number[] = [];
+    dispatchOutbox(db, {
+      deliver: (row) => {
+        delivered.push(row.id);
+      },
+    });
+    expect(delivered).toEqual([id]);
+    expect(getOutbox(db, id)?.status).toBe("sent");
     db.close();
   });
 });

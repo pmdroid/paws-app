@@ -38,6 +38,13 @@ describe("transition", () => {
     });
   });
 
+  test("recovery fails a merge closed and restarts onto the queue", () => {
+    expect(transition("verifying", "lease_expired")).toMatchObject({ ok: true, to: "recovering" });
+    expect(transition("merge_queue", "lease_expired")).toMatchObject({ ok: true, to: "verifying" });
+    expect(transition("running", "restart")).toMatchObject({ ok: true, to: "queued" });
+    expect(transition("merge_queue", "restart")).toMatchObject({ ok: true, to: "queued" });
+  });
+
   test("rejects an edge the table does not list", () => {
     expect(transition("running", "closeout_accepted")).toEqual({
       ok: false,

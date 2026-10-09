@@ -40,3 +40,13 @@ export type Run = {
   agent: string;
   status: RunStatus;
 };
+
+/** Last place a run can resume. `merge_queue` means a merge was in progress. */
+export type CheckpointPhase = "running" | "verifying" | "awaiting_input" | "merge_queue";
+
+export type Checkpoint = {
+  phase: CheckpointPhase;
+  wipCommit?: string;
+  turn?: number;
+  baseSha?: string;
+};

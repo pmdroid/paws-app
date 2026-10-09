@@ -7,7 +7,8 @@ import {
   type PawsEnv,
   type PawsPaths,
 } from "./config";
-import { migrate, openDatabase } from "./db";
+import { migrate, openDatabase, prepareShutdown, recoverOnStartup, startLoops } from "./db";
+import { startHost } from "./host";
 import { intakeDelegatedIssue } from "./intake";
 import { openLinear } from "./linear";
 import { startServer } from "./server";
@@ -28,13 +29,17 @@ export type StartOptions = {
   noTunnel?: boolean;
 };
 
-/** Open ~/.paws, migrate, and listen. Linear intake runs when a token is configured. */
+/** Open ~/.paws, migrate, recover in-flight work, and listen. Linear intake runs when a token is configured. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
   const env = loadEnv(source);
   const paths = pawsPaths(env.home);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
+  recoverOnStartup(db);
+  const abort = new AbortController();
+  const loops = startLoops({ db, signal: abort.signal });
+  const host = startHost({ db, signal: abort.signal });
   const linear = openLinear({
     db,
     secretsDir: paths.secretsDir,
@@ -67,6 +72,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     tunnelRequested: running.tunnelRequested,
     tunnelUrl: running.tunnelUrl,
     stop() {
+      abort.abort();
+      host.stop();
+      loops.stop();
+      prepareShutdown(db);
       running.stop();
       server.stop(true);
       db.close();
