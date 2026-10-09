@@ -1,6 +1,42 @@
+export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
 export type { TrackerAdapter } from "./adapter";
+export { createLinearCatchUpSource } from "./catchup";
+export type { CatchUpSource } from "./catchup";
+export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
+export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
 export { createFakeTracker } from "./fake";
 export type { FakeTracker } from "./fake";
+export { createLinearClient } from "./graphql";
+export type { LinearClient } from "./graphql";
+export { createInboxStore } from "./inbox";
+export type { CommitResult, InboxStore } from "./inbox";
+export {
+  LINEAR_ACTOR,
+  LINEAR_APP_SCOPES,
+  createLinearAuth,
+  exchangeLinearCode,
+  linearAuthorizeUrl,
+  readLinearEnv,
+  readStoredToken,
+  refreshLinearToken,
+  writeStoredToken,
+} from "./oauth";
+export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
+export {
+  POLL_INTERVAL_DOWN_MS,
+  POLL_INTERVAL_UP_MS,
+  WAKE_GAP_MS,
+  createTimerSleeper,
+  pollIntervalMs,
+  sleepGapMs,
+  startCatchUpPoller,
+} from "./poller";
+export type { CatchUpPoller, Sleeper } from "./poller";
+export { linearTokenPath, openLinear } from "./runtime";
+export type { LinearRunning, OpenLinear } from "./runtime";
+export { createLinearTracker } from "./tracker";
+export { downTunnel, startNgrokTunnel } from "./tunnel";
+export type { SpawnFn, Tunnel } from "./tunnel";
 export type {
   ActivityKind,
   DependencyEdge,
@@ -10,5 +46,10 @@ export type {
   ProgressUpdate,
   StatusUpdate,
 } from "./types";
-export { checkLinearSignature, handleLinearWebhook } from "./webhook";
-export type { SignatureCheck, SignatureInput } from "./webhook";
+export {
+  TIMESTAMP_WINDOW_MS,
+  checkLinearSignature,
+  handleLinearWebhook,
+  parseAgentEvent,
+} from "./webhook";
+export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";

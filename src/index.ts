@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import {
   ensureLayout,
   loadEnv,
@@ -7,36 +8,66 @@ import {
   type PawsPaths,
 } from "./config";
 import { migrate, openDatabase } from "./db";
+import { intakeDelegatedIssue } from "./intake";
+import { openLinear } from "./linear";
 import { startServer } from "./server";
-import type { Database } from "bun:sqlite";
 
 export type PawsProcess = {
   env: PawsEnv;
   paths: PawsPaths;
   db: Database;
   server: Bun.Server<undefined>;
+  catchUp: () => Promise<void>;
+  tunnelUp: () => boolean;
+  tunnelRequested: boolean;
+  tunnelUrl: string | null;
   stop: () => void;
 };
 
-/** Open ~/.paws, migrate, and listen. Adapters stay unwired until their issues land. */
-export function startPaws(source?: EnvSource): PawsProcess {
+export type StartOptions = {
+  noTunnel?: boolean;
+};
+
+/** Open ~/.paws, migrate, and listen. Linear intake runs when a token is configured. */
+export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
   const env = loadEnv(source);
   const paths = pawsPaths(env.home);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
+  const linear = openLinear({
+    db,
+    secretsDir: paths.secretsDir,
+    env: source ?? process.env,
+    publicUrl: env.publicUrl,
+    noTunnel: options?.noTunnel,
+    followUp: async (event, tracker) => {
+      if (event.issueId === null) return;
+      await intakeDelegatedIssue(db, tracker, {
+        linearIssueId: event.issueId,
+        sessionId: event.sessionId,
+      });
+    },
+  });
   const server = startServer({
     hostname: env.host,
     port: env.port,
     linearWebhookSecret: env.linearWebhookSecret,
     githubWebhookSecret: env.githubWebhookSecret,
+    linearWebhook: linear.webhook,
   });
+  const running = linear.start(server.port ?? env.port);
   return {
     env,
     paths,
     db,
     server,
+    catchUp: running.catchUp,
+    tunnelUp: running.tunnelUp,
+    tunnelRequested: running.tunnelRequested,
+    tunnelUrl: running.tunnelUrl,
     stop() {
+      running.stop();
       server.stop(true);
       db.close();
     },
@@ -44,8 +75,10 @@ export function startPaws(source?: EnvSource): PawsProcess {
 }
 
 if (import.meta.main) {
-  const paws = startPaws();
-  console.log(`paws ready · http://${paws.server.hostname}:${paws.server.port}`);
+  const paws = startPaws(process.env, { noTunnel: process.argv.includes("--no-tunnel") });
+  const tunnel =
+    paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
+  console.log(`paws ready · http://${paws.server.hostname}:${paws.server.port}${tunnel}`);
   const shutdown = () => {
     paws.stop();
     process.exit(0);
