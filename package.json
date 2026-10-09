@@ -13,6 +13,8 @@
     "build:status": "bun src/web/build.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.88.0",
+    "@agentclientprotocol/codex-acp": "2.1.1",
     "@agentclientprotocol/sdk": "1.8.0",
     "zod": "^4.1.11"
   },

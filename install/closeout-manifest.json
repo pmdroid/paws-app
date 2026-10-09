@@ -1,0 +1,38 @@
+{
+  "version": "0.1.0",
+  "repository": "pmdroid/closeout",
+  "tag": "v0.1.0",
+  "commit": "baac33e8715aac9d646796035ecc9ba7aaee02ef",
+  "distribution": "github-release",
+  "note": "Reference runner is the Rust crate closeout 0.1.0 in pmdroid/closeout (closeout.fyi, commit baac33e). It is not an npm package and it is not on crates.io. GitHub has no v0.1.0 release assets, so sha256 is the digest of digestPreimage until a published binary replaces it. The installer still refuses bytes that do not match sha256.",
+  "assets": {
+    "darwin-arm64": {
+      "filename": "closeout-darwin-arm64",
+      "target": "aarch64-apple-darwin",
+      "digestKind": "unreleased-placeholder",
+      "digestPreimage": "unpublished:pmdroid/closeout:v0.1.0:closeout-darwin-arm64",
+      "sha256": "d7f1b056903d411cfa57d6913c4fadc96b60e258cc181204888ab00f20d4af27"
+    },
+    "darwin-x64": {
+      "filename": "closeout-darwin-x64",
+      "target": "x86_64-apple-darwin",
+      "digestKind": "unreleased-placeholder",
+      "digestPreimage": "unpublished:pmdroid/closeout:v0.1.0:closeout-darwin-x64",
+      "sha256": "01b2c2d38dd1a48b50eef2aa5fe8a6066017753ba865030c2daa6bc348be02f0"
+    },
+    "linux-x64": {
+      "filename": "closeout-linux-x64",
+      "target": "x86_64-unknown-linux-gnu",
+      "digestKind": "unreleased-placeholder",
+      "digestPreimage": "unpublished:pmdroid/closeout:v0.1.0:closeout-linux-x64",
+      "sha256": "e1803d3f3acfc4c5c9bbc6fa578249e482e32c2f51bbff05f9344aec37cbbcde"
+    },
+    "linux-arm64": {
+      "filename": "closeout-linux-arm64",
+      "target": "aarch64-unknown-linux-gnu",
+      "digestKind": "unreleased-placeholder",
+      "digestPreimage": "unpublished:pmdroid/closeout:v0.1.0:closeout-linux-arm64",
+      "sha256": "29ddc9774db66f7d3fb27a60c50157afddf8dae554b6e0d480fca68a956f3165"
+    }
+  }
+}
