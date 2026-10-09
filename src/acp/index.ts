@@ -1,4 +1,18 @@
-export { resolveAdapter, type AdapterCommand, type AgentRole } from "./adapters";
+export {
+  adapterBinPath,
+  adapterVersions,
+  CLAUDE_AGENT_ACP_BIN,
+  CLAUDE_AGENT_ACP_PACKAGE,
+  CODEX_ACP_BIN,
+  CODEX_ACP_PACKAGE,
+  pawsPackageRoot,
+  pinnedAdapters,
+  resolveAdapter,
+  type AdapterCommand,
+  type AdapterPin,
+  type AdapterVersions,
+  type AgentRole,
+} from "./adapters";
 export {
   ASK_TEAM_TOOL_NAME,
   startAskTeamBridge,
