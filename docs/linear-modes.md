@@ -1,0 +1,104 @@
+# Linear modes
+
+Comment mode is the default. Agent-session mode stays available in `src/linear` and is optional.
+
+Paws runs on the developer's machine. The local MVP does not open a public URL, so it does not depend on Linear delivering a webhook. Comment mode uses a Linear personal API key and ordinary issue comments. Nothing in this tree calls Linear; the notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
+
+## What we needed to know
+
+1. Does delegating an issue create an `AgentSession` that `agentSessions` polling can see?
+2. Do agent activities render when the OAuth app has no webhook URL?
+
+## Findings
+
+### Delegation and `agentSessions`
+
+An `AgentSession` is created when an **agent** is @mentioned or delegated an issue. Delegation means the issue's delegate is the app user (`Issue.delegate`), which requires an OAuth app installed with `actor=app` and the `app:assignable` scope. A mention requires `app:mentionable`. A personal API key authenticates as a human user. Assigning the issue to that human is not an agent delegation and does not create an agent session.
+
+The schema exposes a root query `agentSessions` (pagination, `orderBy` of `createdAt` or `updatedAt`). Each session has `id`, `createdAt`, `updatedAt`, `issue`, and `appUser`. The query has no webhook argument. `src/linear/catchup.ts` already polls it. A session that exists is therefore visible without a webhook delivery succeeding.
+
+Linear's docs separate two facts:
+
+- The session is created on mention or delegation.
+- The Agent Session UI appears once the app subscribes to `AgentSessionEvent` webhooks. That happens as soon as the category is enabled, even if the subscription is only for debugging.
+
+We read that as: the row is probably inserted either way, and the UI is not. The docs do not say the row is skipped when the category is off, and they do not say it is inserted when the category is off. That is the open point in the manual checks.
+
+### Activities with no webhook URL
+
+`agentActivityCreate` is a GraphQL mutation keyed by `agentSessionId`. It does not take a webhook URL. Activities render in the Agent Session UI. Linear shows that UI only after the app subscribes to `AgentSessionEvent`.
+
+Getting started tells you to enable webhooks on the OAuth application and select **Agent session events**. That form takes a webhook endpoint URL. The docs do not describe enabling the category with a blank URL. With no webhook URL, the category stays off, the session UI stays off, and activities do not render there.
+
+A `response`, `elicitation`, or `error` activity also creates a comment in the thread. That comment is a side effect of an activity on a session, not a path that works with only a personal API key.
+
+A created session must receive an activity, or an `externalUrls` update, within 10 seconds or Linear marks it unresponsive. Later activities can go stale after 30 minutes. Paws polls every 3 seconds when no tunnel is up and every 60 seconds when one is (`POLL_INTERVAL_DOWN_MS`, `POLL_INTERVAL_UP_MS` in `src/linear`). Sixty seconds cannot meet the 10 second window. Three seconds meets it only when the new session is already listable and the poll lands in time. Comment mode does not use that deadline.
+
+Ephemeral `thought` and `action` activities are replaced in the session UI by the next activity. That display exists only in the session UI.
+
+## Decision
+
+|                | Comment mode (default)      | Agent-session mode (optional)           |
+| -------------- | --------------------------- | --------------------------------------- |
+| Credential     | Linear personal API key     | OAuth app, `actor=app`                  |
+| Public URL     | None                        | Webhook URL required for the session UI |
+| Progress       | One edited comment per item | `agentActivityCreate`                   |
+| Questions      | A comment thread            | Elicitation activity                    |
+| Where it lives | `src/comments`              | `src/linear`                            |
+
+`DEFAULT_LINEAR_MODE` is `"comments"`.
+
+## Comment mode
+
+`createCommentMode` implements the activity side of `TrackerAdapter` (`postProgress`, `askQuestion`) and `QuestionChannel`.
+
+- Progress (`thought`, `action`, `error`) is one comment per item, prefixed `Paws:`. The first post creates it. Later posts edit that same comment, and at most once every 5 seconds. Posts inside the window are kept and written on the next allowed edit.
+- Final evidence (`response`) is a reply on that status comment, also prefixed `Paws:`.
+- `ask_team` posts a new comment. The body is prefixed `Paws:`, lists options as `1.`, `2.`, …, and ends with `<!-- paws:q:<id> -->` (`pawsQuestionMarker` in `src/questions`).
+- The answer is the first later comment in that thread that Paws did not write. Paws means a comment this process created, a comment whose `user` or `botActor` is the personal-key user, or a body that already starts with `Paws:` or contains the question marker. A second human reply does not replace the first.
+- A comment with its own line `/paws stop` stops the item (command bus `stop`, parked waiters reject). The same line written by Paws does not. A stop from before the item was bound does not.
+- `sync(issueId)` reads comments, flushes a pending status edit when the 5 seconds have passed, resumes a parked run, or stops. There is no webhook.
+
+`withCommentActivities` keeps epic reads and workflow state on the existing tracker and sends progress and questions through comment mode.
+
+The personal-key client sends `Authorization: <api key>` with no `Bearer` prefix, which is what Linear's GraphQL getting-started page shows. `fetchLinearViewerId` is the user id to pass as `selfUserId`.
+
+## What Pascal should verify
+
+These need a real Linear workspace. Do not point a webhook at a tunneled laptop for them.
+
+1. Personal API key. Assign an issue to yourself (human assignee). Query `agentSessions`. Expect no new session for that assignment.
+2. OAuth app installed with `actor=app` and `app:assignable`. Leave **Agent session events** off and set no webhook URL. Delegate an issue to the app. Query:
+
+   ```graphql
+   query {
+     agentSessions(first: 20, orderBy: updatedAt) {
+       nodes {
+         id
+         createdAt
+         issue {
+           id
+         }
+         appUser {
+           id
+         }
+       }
+     }
+   }
+   ```
+
+   Record whether a row appears, and whether the issue shows any Agent Session UI.
+
+3. Enable **Agent session events** with a real webhook URL. Delegate again. Confirm a row in `agentSessions` and the session UI on the issue.
+4. Point that URL at a host that does not answer. Delegate, poll `agentSessions` until the new id appears, then immediately call `agentActivityCreate` with a `thought`. Record whether it renders, and whether waiting past 10 seconds with no activity shows the session as unresponsive.
+5. If step 2 returned a session id, call `agentActivityCreate` anyway. Record whether anything renders on the issue.
+6. Personal API key. `commentCreate` on an issue, `commentUpdate` the same id, then a teammate's reply with `parentId`. Confirm one comment was edited, the reply is a child, and `comment.user.id` matches `viewer { id }`. Confirm a comment from that same user is not treated as someone else's answer.
+
+## Sources
+
+- [Developing the Agent Interaction](https://linear.app/developers/agent-interaction) — session created on mention or delegation; UI appears when you subscribe to `AgentSessionEvent`; 10 second first activity; `agentActivityCreate`; proactive `agentSessionCreateOnIssue`.
+- [Getting started with agents](https://linear.app/developers/agents) — enable webhooks and select Agent session events; `actor=app`; `app:assignable` / `app:mentionable`; delegate is not the assignee.
+- [Interaction best practices](https://linear.app/developers/agent-best-practices) — first activity within 10 seconds; stale after 30 minutes; `response` / `elicitation` / `error` also create a comment; read activities rather than comments for agent sessions.
+- [GraphQL getting started](https://linear.app/developers/graphql) — personal API key header `Authorization: <key>`.
+- [Building the Agent Interaction SDK](https://linear.app/now/our-approach-to-building-the-agent-interaction-sdk) — app user, assignable and mentionable scopes, session as the interaction object, webhook on create.
+- Schema operations in [`@linear/sdk` generated documents](https://github.com/linear/linear/blob/master/packages/sdk/src/_generated_documents.graphql): `query agentSessions`, `mutation commentCreate` (`CommentCreate`), `mutation commentUpdate` (`CommentUpdate`), `query issue_comments`, `query comment_children`. `Comment` has `parentId`, `user`, and `botActor`.
