@@ -1,6 +1,6 @@
 # Paws
 
-Agent workflows for engineering teams. A delegated Linear issue is picked up on the developer's machine, implemented by their own Claude Code session over ACP, checked by Closeout, and merged as a pull request.
+Agent workflows for engineering teams. A delegated Linear issue is picked up on the developer's machine, implemented by that developer's Claude Code, Grok, or Codex session over ACP, checked by Closeout, and merged as a pull request.
 
 This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
 
@@ -10,23 +10,27 @@ Install [Bun](https://bun.sh) 1.4 or newer, then:
 
 ```sh
 bun install
-bun run paws setup
+bun run paws setup    # choose grok when Claude Code is not installed
 bun run paws doctor
 bun run paws
 ```
 
-`setup` writes `~/.paws/config.toml` and the secret files it names. Comment mode and `gh` auth are the defaults: no webhook, no public URL, and no GitHub App. `doctor` is all `ok` before `bun run paws`. A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet).
+`setup` writes `~/.paws/config.toml` and the secret files it names. Comment mode and `gh` auth are the defaults: no webhook, no public URL, and no GitHub App. Without `--yes`, setup lists only installed, loginable implementers (`claude`, `grok`, or `codex`). On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet). If Grok advertises no auth method, doctor prints:
+
+```text
+missing grok: Run `grok login`
+```
 
 The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts. The real-machine steps are in `docs/smoke-test.md`.
 
-| Path                  | What it is                                   |
-| --------------------- | -------------------------------------------- |
-| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)       |
-| `~/.paws/config.toml` | Team, repo, mode, and caps from `paws setup` |
-| `~/.paws/secrets/`    | Linear token and GitHub App key, mode `0700` |
-| `~/.paws/worktrees/`  | One git worktree per item                    |
-| `~/.paws/runs/`       | Transcripts and Closeout reports             |
-| `~/.paws/logs/`       | Process logs                                 |
+| Path                  | What it is                                       |
+| --------------------- | ------------------------------------------------ |
+| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)           |
+| `~/.paws/config.toml` | Team, repo, mode, caps, and `agents.implementer` |
+| `~/.paws/secrets/`    | Linear token and GitHub App key, mode `0700`     |
+| `~/.paws/worktrees/`  | One git worktree per item                        |
+| `~/.paws/runs/`       | Transcripts and Closeout reports                 |
+| `~/.paws/logs/`       | Process logs                                     |
 
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 

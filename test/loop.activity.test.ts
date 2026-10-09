@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { GROK_LOGIN_MESSAGE } from "../src/acp";
 import { createLinearTracker, type LinearClient } from "../src/linear";
 import {
   FIRST_ACTIVITY_MS,
@@ -51,6 +52,10 @@ describe("activity mapping", () => {
       })?.kind,
     ).toBe("response");
     expect(activityFromAcpEvent({ type: "error", message: "boom" })?.kind).toBe("error");
+    expect(activityFromAcpEvent({ type: "error", message: GROK_LOGIN_MESSAGE })).toEqual({
+      kind: "error",
+      body: GROK_LOGIN_MESSAGE,
+    });
     expect(
       activityFromAcpEvent({
         type: "ask_team",

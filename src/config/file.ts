@@ -1,7 +1,42 @@
-import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
 
 export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "gh" | "app";
+
+export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
+
+export type ImplementerName = (typeof IMPLEMENTERS)[number];
+
+export type GrokConfig = {
+  /** Set only to use a PATH or absolute `grok`. Otherwise Paws uses the pinned package. */
+  path: string | null;
+  allowApiKey: boolean;
+};
+
+export type AgentsConfig = {
+  implementer: ImplementerName;
+  grok: GrokConfig;
+};
+
+export function defaultAgents(): AgentsConfig {
+  return {
+    implementer: "claude",
+    grok: { path: null, allowApiKey: false },
+  };
+}
+
+export function isImplementer(value: string): value is ImplementerName {
+  return (IMPLEMENTERS as readonly string[]).includes(value);
+}
 
 /**
  * Parsed `~/.paws/config.toml`. A missing file is empty.
@@ -23,6 +58,7 @@ export type PawsConfigFile = {
   checkout: string | null;
   maxTurns: number | null;
   maxAwakeMs: number | null;
+  agents: AgentsConfig;
 };
 
 /**
@@ -42,6 +78,7 @@ export type PawsSetupConfig = {
   checkout: string;
   maxTurns: number;
   maxAwakeMs: number;
+  implementer: ImplementerName;
 };
 
 export function emptyConfigFile(): PawsConfigFile {
@@ -60,6 +97,7 @@ export function emptyConfigFile(): PawsConfigFile {
     checkout: null,
     maxTurns: null,
     maxAwakeMs: null,
+    agents: defaultAgents(),
   };
 }
 
@@ -77,7 +115,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
   for (let index = 0; index < lines.length; index += 1) {
     const line = stripComment(lines[index] ?? "").trim();
     if (line.length === 0) continue;
-    const heading = /^\[([A-Za-z0-9_-]+)\]$/.exec(line);
+    const heading = /^\[([A-Za-z0-9_.-]+)\]$/.exec(line);
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       continue;
@@ -124,6 +162,12 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     "[caps]",
     `max_turns = ${tomlInt(config.maxTurns)}`,
     `max_awake_ms = ${tomlInt(config.maxAwakeMs)}`,
+    "",
+    "[agents]",
+    `implementer = ${tomlString(config.implementer)}`,
+    "",
+    "[agents.grok]",
+    "allow_api_key = false",
     "",
   );
   return lines.join("\n");
@@ -250,11 +294,70 @@ function assignConfig(
     else if (key === "max_awake_ms") config.maxAwakeMs = asInt(value, line);
     return;
   }
+  if (section === "agents") {
+    if (key === "implementer") config.agents.implementer = implementerName(value, line);
+    return;
+  }
+  if (section === "agents.grok") {
+    if (key === "path") config.agents.grok.path = asString(value, line);
+    else if (key === "allow_api_key") config.agents.grok.allowApiKey = asBoolean(value, line);
+    return;
+  }
   if (section === "" || section === "server") {
     if (key === "public_url") config.publicUrl = asString(value, line);
     else if (key === "repo") config.repo = asString(value, line);
     else if (key === "linear_team" || key === "team") config.linearTeam = asString(value, line);
   }
+}
+
+/** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
+export function writeImplementer(path: string, implementer: ImplementerName): void {
+  if (!isImplementer(implementer)) {
+    throw new Error("agents.implementer must be claude, grok, or codex");
+  }
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const next = setImplementerText(current, implementer);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+function implementerName(value: string | number | boolean, line: number): ImplementerName {
+  const name = asString(value, line);
+  if (!isImplementer(name)) {
+    throw new Error(`config.toml line ${line} agents.implementer must be claude, grok, or codex`);
+  }
+  return name;
+}
+
+function setImplementerText(current: string, implementer: ImplementerName): string {
+  const lines = current.split(/\r?\n/);
+  const assignment = `implementer = "${implementer}"`;
+  let section = "";
+  let header = -1;
+  let replaced = false;
+  const next = lines.map((line, index) => {
+    const trimmed = stripComment(line).trim();
+    const headerMatch = /^\[([A-Za-z0-9_.-]+)]$/.exec(trimmed);
+    if (headerMatch) {
+      section = headerMatch[1] ?? "";
+      if (section === "agents" && header === -1) header = index;
+      return line;
+    }
+    if (section === "agents" && /^implementer\s*=/.test(trimmed)) {
+      replaced = true;
+      const indent = /^(\s*)/.exec(line)?.[1] ?? "";
+      return `${indent}${assignment}`;
+    }
+    return line;
+  });
+  if (replaced) return next.join("\n");
+  if (header >= 0) {
+    next.splice(header + 1, 0, assignment);
+    return next.join("\n");
+  }
+  const body = current.trim().length === 0 ? "" : current.replace(/\s*$/, "\n");
+  return `${body}[agents]\n${assignment}\n`;
 }
 
 function linearMode(value: string | number | boolean, line: number): LinearConfigMode {

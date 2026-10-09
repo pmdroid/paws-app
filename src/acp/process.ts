@@ -20,6 +20,8 @@ export interface SpawnAgentOptions {
    * same command, args, env, detached process group, and stdio pipes.
    */
   docker?: DockerSpawnOption;
+  /** Host working directory. Grok uses the worktree. Ignored for the docker plan. */
+  cwd?: string;
 }
 
 export function spawnAgent(
@@ -29,10 +31,12 @@ export function spawnAgent(
   options?: SpawnAgentOptions,
 ): ChildProcess {
   const plan = options?.docker ? dockerPlan(command, args, env, options.docker) : undefined;
+  const cwd = options?.cwd;
   const child = spawn(plan?.bin ?? command, plan?.args ?? args, {
     env: plan?.env ?? env,
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
+    ...(cwd ? { cwd } : {}),
   });
   child.stdin?.on("error", () => undefined);
   child.stdout?.on("error", () => undefined);

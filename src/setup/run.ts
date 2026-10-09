@@ -3,7 +3,14 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { ensureBareMirror, mirrorPath } from "../acp";
 import { DEFAULT_LINEAR_MODE } from "../comments";
-import { ensureLayout, pawsPaths, writeConfigFile, type PawsSetupConfig } from "../config";
+import {
+  ensureLayout,
+  isImplementer,
+  pawsPaths,
+  writeConfigFile,
+  type ImplementerName,
+  type PawsSetupConfig,
+} from "../config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../core";
 import {
   checkGhPushPermission,
@@ -23,7 +30,14 @@ import { chooseTeam, connectLinear, ensurePawsLabel } from "./linear";
 import { createIO, definedEnv, withProcessPath, type SetupIO, type SetupOptions } from "./io";
 import { writeLinearOAuth, writeSecretFile } from "./secrets";
 import { SetupStopped, stop } from "./stop";
-import { ensureBun, ensureDeveloperLogin, ensureGhLogin, ensureGit } from "./tools";
+import { detectCandidates, loginLine, selectImplementer } from "./setup";
+import {
+  ensureBun,
+  ensureDeveloperLogin,
+  ensureGhLogin,
+  ensureGit,
+  ensureGrokLogin,
+} from "./tools";
 
 const API_KEY_FILE = "secrets/linear-api-key";
 const CLIENT_FILE = "secrets/linear-client.json";
@@ -65,7 +79,9 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   ensureBun(io.env);
   ensureGit(io.env);
   await ensureGhLogin(io, flags.yes);
-  await ensureDeveloperLogin("claude", io, flags.yes);
+  const implementer = await chooseImplementer(flags, io);
+  if (implementer === "claude") await ensureDeveloperLogin("claude", io, flags.yes);
+  if (implementer === "grok") await ensureGrokLogin(io, flags.yes);
   await ensureDeveloperLogin("codex", io, flags.yes);
 
   const home = resolveHome(flags, io);
@@ -138,6 +154,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     checkout,
     maxTurns: DEFAULT_MAX_TURNS,
     maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
+    implementer,
   };
   writeConfigFile(paths.configFile, config);
   assertSecretMode(join(home, config.linearSecret));
@@ -159,6 +176,32 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     stop(`Create .agents/closeout.yaml in ${checkout} before running Paws.`);
   }
   io.stdout(`paws setup wrote ${paths.configFile}`);
+}
+
+async function chooseImplementer(flags: SetupFlags, io: SetupIO): Promise<ImplementerName> {
+  if (flags.implementer !== null) return flags.implementer;
+  if (flags.yes) return "claude";
+  const candidates = detectCandidates({
+    env: io.env,
+    which: (bin) => Bun.which(bin, { PATH: io.env.PATH ?? "" }),
+  });
+  const selected = await selectImplementer({
+    candidates,
+    readLine: () => io.readLine(),
+    write: (text) => {
+      for (const line of text.split("\n")) {
+        if (line.length > 0) io.stdout(line);
+      }
+    },
+  });
+  if (selected === null || !isImplementer(selected.id)) {
+    stop("Choose an installed implementer: claude, grok, or codex.");
+  }
+  const line = loginLine(selected);
+  for (const row of line.split("\n")) {
+    if (row.length > 0) io.stdout(row);
+  }
+  return selected.id;
 }
 
 type LinearSecrets = {

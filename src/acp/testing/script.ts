@@ -34,6 +34,15 @@ export interface FakeScript {
 
 export interface FakeResult {
   methods: string[];
+  argv?: string[];
+  cwd?: string;
+  authenticate?: unknown;
+  env?: {
+    xaiApiKey: boolean;
+    ghToken: boolean;
+    sshAuthSock: boolean;
+    aws: boolean;
+  };
   mcpServers: Array<{
     name?: string;
     command?: string;

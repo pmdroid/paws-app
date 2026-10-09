@@ -1,6 +1,6 @@
 import { appendFile, lstat, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
   PROTOCOL_VERSION,
@@ -14,9 +14,18 @@ import {
   type RequestPermissionResponse,
   type StopReason,
 } from "@agentclientprotocol/sdk";
+import type { AgentsConfig } from "../config";
+import { loadConfigFile } from "../config";
 import { commitCheckpoint } from "./checkpoint";
 import { assertSafeSegment, runDir } from "./paths";
-import { resolveAdapter, type AgentRole } from "./adapters";
+import {
+  GROK_LOGIN_MESSAGE,
+  rejectAutoApprove,
+  resolveAdapter,
+  selectGrokAuthMethod,
+  xaiApiKeyPresent,
+  type AgentRole,
+} from "./adapters";
 import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { minimalAgentEnv } from "./env";
@@ -41,6 +50,8 @@ export interface CheckOwnLoginOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Pass `XAI_API_KEY` through when config allows it. The value is not read here. */
+  allowXaiApiKey?: boolean;
 }
 
 /**
@@ -51,7 +62,11 @@ export async function checkOwnLogin(options: CheckOwnLoginOptions): Promise<Auth
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, options.env);
-  const child = spawnAgent(adapter.command, adapter.args, minimalAgentEnv(options.env));
+  const child = spawnAgent(
+    adapter.command,
+    adapter.args,
+    minimalAgentEnv(options.env, { allowXaiApiKey: options.allowXaiApiKey }),
+  );
   const stderr = captureStderr(child);
   try {
     return await withConnection(child, async (ctx) => {
@@ -76,8 +91,11 @@ export async function checkOwnLogin(options: CheckOwnLoginOptions): Promise<Auth
 }
 
 /**
- * `session/new` + `session/prompt` against Claude Code (`claude-agent-acp`) or
- * Codex (`codex-acp`). Session updates are forwarded through `onEvent`.
+ * `session/new` + `session/prompt` against the selected implementer
+ * (Claude Code, Grok, or Codex) or the Codex reviewer.
+ * Session updates are forwarded through `onEvent`.
+ * Grok is authenticated with the advertised method id only. Paws does not
+ * read `~/.grok/auth.json` or the API key value.
  */
 export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult> {
   assertSafeSegment(options.itemId, "item id");
@@ -92,24 +110,31 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     home,
     pawsRoot: options.pawsRoot,
   };
+  const agents = loadAgents(options.pawsRoot);
+  const grok = options.role === "implementer" && agents.implementer === "grok";
+  const sourceEnv = options.env ?? process.env;
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
-    : resolveAdapter(options.role, options.env);
+    : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents);
+  if (grok) rejectAutoApprove(adapter.args);
   const child = spawnAgent(
     adapter.command,
     adapter.args,
-    minimalAgentEnv(options.env),
-    options.docker
-      ? {
-          docker: {
-            agent: options.docker.agent,
-            worktree: options.worktreePath,
-            proxyUrl: options.docker.proxyUrl,
-            ...(options.docker.image ? { image: options.docker.image } : {}),
-            ...(options.docker.bin ? { bin: options.docker.bin } : {}),
-          },
-        }
-      : undefined,
+    minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+    {
+      ...(grok ? { cwd: options.worktreePath } : {}),
+      ...(options.docker
+        ? {
+            docker: {
+              agent: options.docker.agent,
+              worktree: options.worktreePath,
+              proxyUrl: options.docker.proxyUrl,
+              ...(options.docker.image ? { image: options.docker.image } : {}),
+              ...(options.docker.bin ? { bin: options.docker.bin } : {}),
+            },
+          }
+        : {}),
+    },
   );
   const stderr = captureStderr(child);
   const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
@@ -196,6 +221,33 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       });
       const auth = summarizeAuth(initialized as InitializeResponse);
       await emit({ type: "auth_checked", role: options.role, auth });
+      if (grok) {
+        const methodId = selectGrokAuthMethod(auth.authMethods, {
+          apiKeyPresent: xaiApiKeyPresent(sourceEnv),
+          allowApiKey: agents.grok.allowApiKey,
+        });
+        if (methodId === null) {
+          await emit({ type: "error", message: GROK_LOGIN_MESSAGE });
+          return baseResult(options.role, child, {
+            stopReason: "error",
+            auth,
+            authRequired: true,
+            errorMessage: GROK_LOGIN_MESSAGE,
+          });
+        }
+        try {
+          await ctx.request(methods.agent.authenticate, { methodId });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await emit({ type: "error", message });
+          return baseResult(options.role, child, {
+            stopReason: "error",
+            auth,
+            authRequired: true,
+            errorMessage: message,
+          });
+        }
+      }
 
       let sessionId: string;
       try {
@@ -455,6 +507,10 @@ function selectOption(options: PermissionOption[], allow: boolean): PermissionOp
     if (found) return found;
   }
   return undefined;
+}
+
+function loadAgents(pawsRoot: string): AgentsConfig {
+  return loadConfigFile(join(pawsRoot, "config.toml")).agents;
 }
 
 function clientCapabilities() {

@@ -1,7 +1,9 @@
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
+import { join } from "node:path";
 import type { AskTeamHook } from "../acp";
 import { executeItem, git, removeWorktree, resolveAdapter, worktreePath } from "../acp";
+import { loadConfigFile } from "../config";
 import {
   createCloseoutGate,
   evaluateCandidate,
@@ -967,7 +969,8 @@ export class Orchestrator {
     const launched = this.options.launch?.(input) ?? {};
     if (launched.command) return launched;
     try {
-      const adapter = resolveAdapter(input.role);
+      const agents = loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents;
+      const adapter = resolveAdapter(input.role, process.env, undefined, undefined, agents);
       return { ...launched, command: adapter.command, args: launched.args ?? adapter.args };
     } catch {
       return launched;

@@ -46,6 +46,7 @@ describe("paws setup", () => {
         checkout: scene.checkout,
         maxTurns: DEFAULT_MAX_TURNS,
         maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
+        implementer: "claude",
       }),
     );
     expect(config).not.toContain(API_KEY);
@@ -160,7 +161,7 @@ describe("paws setup", () => {
     let reads = 0;
     const result = await run(
       scene,
-      happyArgs(scene).filter((arg) => arg !== "--yes"),
+      [...happyArgs(scene).filter((arg) => arg !== "--yes"), "--implementer", "claude"],
       {
         readLine: async () => {
           reads += 1;

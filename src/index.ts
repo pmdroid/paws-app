@@ -31,7 +31,7 @@ import {
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { createFetchGitHubClient, createGhCliAuth, githubHttpsUrl } from "./github";
 import { startHost } from "./host";
-import { closeoutBinPath } from "./install";
+import { closeoutBinPath, grokLoginStatus } from "./install";
 import {
   createInboxStore,
   createIntakePollSource,
@@ -408,7 +408,11 @@ function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
 }
 
 async function doctorMain(): Promise<number> {
-  const checks = doctorChecks(await realProbe(process.env));
+  const runtime = loadRuntime(process.env);
+  const agents = runtime.file.agents;
+  const grok =
+    agents.implementer === "grok" ? await grokLoginStatus({ env: process.env, agents }) : null;
+  const checks = doctorChecks(await realProbe(process.env), { config: { agents }, grok });
   console.log(formatDoctor(checks));
   return checks.every((item) => item.ok) ? 0 : 1;
 }

@@ -9,6 +9,7 @@ import {
   loadRuntime,
   pawsPaths,
   writeConfigFile,
+  writeImplementer,
 } from "../src/config";
 import { tempHome } from "./helpers";
 
@@ -83,6 +84,7 @@ describe("config", () => {
       checkout: home,
       maxTurns: 40,
       maxAwakeMs: 1_000,
+      implementer: "claude",
     });
     mkdirSync(paths.secretsDir, { recursive: true });
     writeFileSync(join(paths.secretsDir, "linear-api-key"), "lin_api_from_file\n", { mode: 0o600 });
@@ -114,5 +116,58 @@ describe("config", () => {
     expect(overridden.linearMode).toBe("agent-session");
     expect(overridden.linearApiKey).toBeNull();
     expect(overridden.linearAccessToken).toBeNull();
+  });
+
+  test("missing config.toml defaults the implementer to claude", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    expect(loadConfigFile(paths.configFile).agents).toEqual({
+      implementer: "claude",
+      grok: { path: null, allowApiKey: false },
+    });
+  });
+
+  test("parses agents.implementer and grok settings", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(
+      paths.configFile,
+      [
+        'repo = "pmdroid/paws-demo"',
+        "",
+        "[agents]",
+        'implementer = "grok"',
+        "",
+        "[agents.grok]",
+        'path = "/opt/grok"',
+        "allow_api_key = true",
+        "",
+      ].join("\n"),
+    );
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.repo).toBe("pmdroid/paws-demo");
+    expect(parsed.agents).toEqual({
+      implementer: "grok",
+      grok: { path: "/opt/grok", allowApiKey: true },
+    });
+    writeFileSync(paths.configFile, '[agents]\nimplementer = "gpt"\n');
+    expect(() => loadConfigFile(paths.configFile)).toThrow(/claude, grok, or codex/);
+  });
+
+  test("writeImplementer keeps grok path and other keys", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(
+      paths.configFile,
+      '# team\nrepo = "pmdroid/paws-demo"\n\n[agents.grok]\npath = "/opt/grok"\nallow_api_key = false\n',
+    );
+    writeImplementer(paths.configFile, "grok");
+    const parsed = loadConfigFile(paths.configFile);
+    expect(parsed.repo).toBe("pmdroid/paws-demo");
+    expect(parsed.agents.implementer).toBe("grok");
+    expect(parsed.agents.grok).toEqual({ path: "/opt/grok", allowApiKey: false });
+    expect(statSync(paths.configFile).mode & 0o777).toBe(0o600);
   });
 });

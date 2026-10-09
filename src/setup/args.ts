@@ -16,6 +16,7 @@ export type SetupFlags = {
   linearAccessToken: string | null;
   linearRefreshToken: string | null;
   closeoutPath: string | null;
+  implementer: "claude" | "grok" | "codex" | null;
 };
 
 const VALUE_FLAGS = {
@@ -30,6 +31,7 @@ const VALUE_FLAGS = {
   "--linear-access-token": "linearAccessToken",
   "--linear-refresh-token": "linearRefreshToken",
   "--closeout-path": "closeoutPath",
+  "--implementer": "implementer",
 } as const;
 
 type ValueKey = (typeof VALUE_FLAGS)[keyof typeof VALUE_FLAGS];
@@ -50,6 +52,7 @@ export function parseArgs(argv: readonly string[]): SetupFlags {
     linearAccessToken: null,
     linearRefreshToken: null,
     closeoutPath: null,
+    implementer: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index];
@@ -91,11 +94,17 @@ export const HELP = [
   "  --linear-access-token TOKEN",
   "  --linear-refresh-token TOKEN",
   "  --closeout-path PATH         local closeout binary (no release assets yet)",
+  "  --implementer claude|grok|codex",
+  "                               who implements; omit it to choose from installed agents",
 ].join("\n");
 
 function assign(flags: SetupFlags, key: ValueKey, value: string): void {
   if (key === "linearMode") {
     flags.linearMode = parseMode(value);
+    return;
+  }
+  if (key === "implementer") {
+    flags.implementer = parseImplementer(value);
     return;
   }
   flags[key] = value;
@@ -105,4 +114,9 @@ function parseMode(value: string): LinearModeFlag {
   if (value === "comments") return "comments";
   if (value === "agent" || value === "agent-session") return "agent-session";
   stop("Pass --linear-mode as comments or agent.");
+}
+
+function parseImplementer(value: string): "claude" | "grok" | "codex" {
+  if (value === "claude" || value === "grok" || value === "codex") return value;
+  stop("Pass --implementer as claude, grok, or codex.");
 }

@@ -4,8 +4,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { FakeResult, FakeScript, FakeStep } from "./script";
 
 /**
- * Stdio ACP agent used by tests. It speaks JSON-RPC newline messages and never
- * expects the client to call `authenticate`.
+ * Stdio ACP agent used by tests. It speaks JSON-RPC newline messages.
+ * `authenticate` is answered when a Grok script asks for it; Claude scripts
+ * leave that method unused.
  */
 
 const resultPath = process.env.FAKE_ACP_RESULT;
@@ -16,11 +17,24 @@ const script: FakeScript = scriptPath
 
 const state: FakeResult = {
   methods: [],
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  env: {
+    xaiApiKey: present("XAI_API_KEY"),
+    ghToken: present("GH_TOKEN"),
+    sshAuthSock: present("SSH_AUTH_SOCK"),
+    aws: Object.keys(process.env).some((key) => key.startsWith("AWS_") && present(key)),
+  },
   mcpServers: [],
   permissions: [],
   fs: [],
   terminals: [],
 };
+
+function present(key: string): boolean {
+  const value = process.env[key];
+  return typeof value === "string" && value.length > 0;
+}
 
 let nextId = 1;
 let cancelled = false;
@@ -82,6 +96,13 @@ async function handle(message: {
         authMethods: script.authMethods ?? [],
       },
     });
+    return;
+  }
+
+  if (message.method === "authenticate") {
+    state.authenticate = message.params ?? {};
+    persist();
+    send({ jsonrpc: "2.0", id: message.id, result: {} });
     return;
   }
 
