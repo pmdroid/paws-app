@@ -19,7 +19,7 @@ import { assertSafeSegment, runDir } from "./paths";
 import { resolveAdapter, type AgentRole } from "./adapters";
 import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
-import { minimalAgentEnv } from "./env";
+import { agentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
 import { decidePermission, type GuardContext } from "./permissions";
 import { captureStderr, killTree, spawnAgent, stopChild, waitForExit } from "./process";
@@ -51,7 +51,7 @@ export async function checkOwnLogin(options: CheckOwnLoginOptions): Promise<Auth
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, options.env);
-  const child = spawnAgent(adapter.command, adapter.args, minimalAgentEnv(options.env));
+  const child = spawnAgent(adapter.command, adapter.args, agentEnv(options.env));
   const stderr = captureStderr(child);
   try {
     return await withConnection(child, async (ctx) => {
@@ -95,7 +95,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, options.env);
-  const child = spawnAgent(adapter.command, adapter.args, minimalAgentEnv(options.env));
+  const child = spawnAgent(adapter.command, adapter.args, agentEnv(options.env));
   const stderr = captureStderr(child);
   const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
   const transcript = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;

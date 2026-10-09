@@ -48,6 +48,24 @@ describe("permission guard", () => {
     }
   });
 
+  test("hosted volume still denies secret reads and git push", () => {
+    const hosted: GuardContext = {
+      home: "/root",
+      worktree: "/data/worktrees/ENG-1",
+      pawsRoot: "/data",
+    };
+    expect(
+      decidePermission(
+        { kind: "read", locations: [{ path: "/data/secrets/linear-oauth.json" }] },
+        hosted,
+      ).allow,
+    ).toBe(false);
+    expect(
+      decidePermission({ kind: "execute", rawInput: { command: "git push origin HEAD" } }, hosted)
+        .allow,
+    ).toBe(false);
+  });
+
   test("denies a relative path that resolves outside the worktree", () => {
     const decision = decidePermission(
       { kind: "read", locations: [{ path: "../../paws.db" }] },

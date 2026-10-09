@@ -15,6 +15,8 @@ bun run paws
 
 The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready`. No external accounts are required for this foundation. Copy `.env.example` to `.env` when you have Linear and GitHub App credentials.
 
+Hosted mode runs the same process on Railway. It binds `0.0.0.0` and Railway's `PORT`, stores state on a volume, takes secrets from the environment, and skips ngrok and laptop sleep detection. Deploy steps and the variable list are in [docs/railway.md](docs/railway.md). `bun run paws doctor` checks that environment.
+
 | Path                  | What it is                                   |
 | --------------------- | -------------------------------------------- |
 | `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)       |
@@ -24,7 +26,7 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 | `~/.paws/runs/`       | Transcripts and Closeout reports             |
 | `~/.paws/logs/`       | Process logs                                 |
 
-`GET /health` returns JSON. `GET /status` is a static stub. `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges. GitHub webhooks still fail closed.
+`GET /health` returns JSON. `GET /` redirects to `/status`. `GET /api/status` returns engine rows while the process is running, and demo rows when it is not. On a public host, set `PAWS_DASHBOARD_TOKEN` (Bearer or Basic). `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges. GitHub webhooks still fail closed.
 
 ## Checks
 

@@ -17,6 +17,8 @@ export function startHost(input: {
   spawn?: Spawn;
   agentAlive?: AgentAlive;
   pollMs?: number;
+  /** When false, skip caffeinate/systemd-inhibit and laptop wake detection. */
+  sleepLogic?: boolean;
 }): { stop: () => void; supervisor: HostSupervisor } {
   const clock = input.clock ?? systemClock;
   const supervisor = new HostSupervisor(
@@ -30,6 +32,7 @@ export function startHost(input: {
     new WakeDetector(clock),
     input.agentAlive,
     input.pollMs,
+    input.sleepLogic !== false,
   );
   const task = supervisor.run(input.signal);
   void task.catch(() => undefined);

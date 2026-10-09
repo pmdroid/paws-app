@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { git } from "./git";
-import { minimalAgentEnv } from "./env";
+import { agentEnv as buildAgentEnv, minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
 import { checkOwnLogin, runAgent } from "./run";
 import type { FakeResult, FakeScript } from "./testing/script";
@@ -26,6 +26,8 @@ test("minimal env drops tokens and cloud keys and keeps HOME", () => {
     AWS_SECRET_ACCESS_KEY: "aws",
     ANTHROPIC_API_KEY: "sk",
     OPENAI_API_KEY: "sk",
+    LINEAR_ACCESS_TOKEN: "linear",
+    PAWS_DASHBOARD_TOKEN: "dashboard-token-value",
   });
   expect(env.HOME).toBe("/home/dev");
   expect(env.PATH).toBe("/usr/bin");
@@ -35,6 +37,46 @@ test("minimal env drops tokens and cloud keys and keeps HOME", () => {
   expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   expect(env.ANTHROPIC_API_KEY).toBeUndefined();
   expect(env.OPENAI_API_KEY).toBeUndefined();
+  expect(env.LINEAR_ACCESS_TOKEN).toBeUndefined();
+  expect(env.PAWS_DASHBOARD_TOKEN).toBeUndefined();
+});
+
+test("hosted agent env keeps model credentials and still drops repo secrets", () => {
+  const base = {
+    HOME: "/home/paws",
+    PATH: "/usr/bin",
+    PAWS_MODE: "hosted",
+    ANTHROPIC_API_KEY: "anthropic",
+    OPENAI_API_KEY: "openai",
+    PAWS_MODEL_PROXY_URL: "https://proxy.example",
+    GH_TOKEN: "gh",
+    GITHUB_APP_PRIVATE_KEY: "pem",
+    LINEAR_ACCESS_TOKEN: "linear",
+    LINEAR_CLIENT_SECRET: "oauth",
+    LINEAR_WEBHOOK_SECRET: "hook",
+    PAWS_DASHBOARD_TOKEN: "dashboard-token-value",
+    GITHUB_TOKEN: "github",
+  };
+  const stripped = minimalAgentEnv(base);
+  expect(stripped.ANTHROPIC_API_KEY).toBeUndefined();
+  expect(stripped.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
+
+  const env = buildAgentEnv(base);
+  expect(env.ANTHROPIC_API_KEY).toBe("anthropic");
+  expect(env.OPENAI_API_KEY).toBe("openai");
+  expect(env.ANTHROPIC_BASE_URL).toBe("https://proxy.example");
+  expect(env.OPENAI_BASE_URL).toBe("https://proxy.example");
+  expect(env.GH_TOKEN).toBeUndefined();
+  expect(env.GITHUB_TOKEN).toBeUndefined();
+  expect(env.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
+  expect(env.LINEAR_ACCESS_TOKEN).toBeUndefined();
+  expect(env.LINEAR_CLIENT_SECRET).toBeUndefined();
+  expect(env.LINEAR_WEBHOOK_SECRET).toBeUndefined();
+  expect(env.PAWS_DASHBOARD_TOKEN).toBeUndefined();
+
+  const local = buildAgentEnv({ ...base, PAWS_MODE: "local" });
+  expect(local.ANTHROPIC_API_KEY).toBeUndefined();
+  expect(local.OPENAI_API_KEY).toBeUndefined();
 });
 
 test("initialize reports auth methods and does not call authenticate", async () => {

@@ -1,0 +1,15 @@
+# Attach a Railway volume and mount it at /data (the image sets PAWS_HOME=/data).
+# Config-as-code cannot create the volume. Add it on the service:
+#   mount path /data
+# The volume is not mounted during the image build. SQLite, worktrees, and runs
+# are created on first start. If you mount somewhere else, set PAWS_HOME to that path.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

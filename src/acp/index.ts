@@ -16,7 +16,7 @@ export {
 } from "./auth";
 export { commitCheckpoint, type CheckpointResult } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
-export { isBlockedEnv, minimalAgentEnv } from "./env";
+export { agentEnv, isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";

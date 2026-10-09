@@ -18,7 +18,7 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
-import { isBlockedEnv, minimalAgentEnv } from "./env";
+import { agentEnv, isBlockedEnv } from "./env";
 import { decidePermission, resolveInsideWorktree, type GuardContext } from "./permissions";
 
 const DEFAULT_OUTPUT_LIMIT = 1_000_000;
@@ -58,7 +58,7 @@ export class TerminalRegistry {
 
     const id = `term-${++this.seq}`;
     const limit = params.outputByteLimit ?? DEFAULT_OUTPUT_LIMIT;
-    const env = minimalAgentEnv(this.baseEnv);
+    const env = agentEnv(this.baseEnv);
     for (const variable of params.env ?? []) {
       if (!isBlockedEnv(variable.name)) env[variable.name] = variable.value;
     }

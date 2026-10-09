@@ -83,6 +83,32 @@ function activities(db: ReturnType<typeof boot>["db"]) {
 }
 
 describe("laptop sleep and wake", () => {
+  test("hosted mode does not keep the machine awake or treat a clock gap as sleep", () => {
+    const clock = new FakeClock(1_000_000);
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const recorded = recorder();
+    const host = new HostSupervisor(
+      db,
+      clock,
+      new KeepAwake("linux", 99, recorded.spawn),
+      new WakeDetector(clock),
+      () => true,
+      250,
+      false,
+    );
+    startRun(db, clock);
+    host.tick();
+    clock.sleep(5 * 60_000);
+    host.tick();
+    clock.advance(10);
+    host.tick();
+    expect(recorded.calls).toEqual([]);
+    expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+    expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(10);
+    expect(activities(db)).toHaveLength(0);
+  });
+
   test("a short sleep with a live agent posts one resuming note and keeps the run", () => {
     const { clock, db, recorded, host } = boot(() => true);
     const { run } = startRun(db, clock);

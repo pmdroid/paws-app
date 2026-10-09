@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { insertQueuedItem } from "../src/db";
 import { startPaws } from "../src/index";
+import type { StatusReport } from "../src/web";
 import { tempHome } from "./helpers";
 
 describe("process", () => {
@@ -45,6 +47,74 @@ describe("process", () => {
     proc.kill();
     await proc.exited;
     expect(text).toContain("paws ready · http://127.0.0.1:");
+  });
+
+  test("hosted mode skips ngrok and serves engine status", async () => {
+    const home = tempHome();
+    const paws = startPaws({
+      PAWS_MODE: "hosted",
+      PAWS_HOME: home,
+      PAWS_HOST: "127.0.0.1",
+      PORT: "0",
+      RAILWAY_PUBLIC_DOMAIN: "paws.up.railway.app",
+      PAWS_DASHBOARD_TOKEN: "dashboard-token-value",
+    });
+    try {
+      expect(paws.env.hosted).toBe(true);
+      expect(paws.env.publicUrl).toBe("https://paws.up.railway.app");
+      expect(paws.tunnelRequested).toBe(false);
+      insertQueuedItem(paws.db, { id: "eng-1", title: "Ship hosted mode" });
+      const response = await fetch(
+        `http://${paws.server.hostname}:${paws.server.port}/api/status`,
+        { headers: { authorization: "Bearer dashboard-token-value" } },
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as StatusReport;
+      expect(body.source).toBe("engine");
+      expect(body.mode).toBe("hosted");
+      expect(body.publicUrl).toBe("https://paws.up.railway.app");
+      expect(body.counts.items).toBe(1);
+      expect(body.items[0]).toMatchObject({
+        id: "eng-1",
+        title: "Ship hosted mode",
+        state: "queued",
+      });
+      expect(JSON.stringify(body)).not.toContain("session");
+    } finally {
+      paws.stop();
+    }
+  });
+
+  test("bun src/index.ts doctor reports a hosted environment", async () => {
+    const proc = Bun.spawn(["bun", "src/index.ts", "doctor"], {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: {
+        PATH: process.env.PATH,
+        PAWS_MODE: "hosted",
+        PAWS_HOME: "/data",
+        PORT: "8080",
+        RAILWAY_PUBLIC_DOMAIN: "paws.up.railway.app",
+        LINEAR_CLIENT_ID: "client",
+        LINEAR_CLIENT_SECRET: "secret",
+        LINEAR_WEBHOOK_SECRET: "hook",
+        LINEAR_ACCESS_TOKEN: "token",
+        GITHUB_APP_ID: "11",
+        GITHUB_APP_INSTALLATION_ID: "22",
+        GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+        GITHUB_WEBHOOK_SECRET: "gh-hook",
+        ANTHROPIC_API_KEY: "anthropic",
+        OPENAI_API_KEY: "openai",
+        PAWS_DASHBOARD_TOKEN: "dashboard-token-value",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const text = await new Response(proc.stdout).text();
+    const code = await proc.exited;
+    expect(code).toBe(0);
+    expect(text).toContain("paws doctor · hosted");
+    expect(text).toContain("ready");
+    expect(text).not.toContain("BEGIN PRIVATE KEY");
   });
 });
 

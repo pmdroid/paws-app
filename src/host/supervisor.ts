@@ -24,16 +24,21 @@ export class HostSupervisor {
     /** ACP reports whether the agent child survived wake. The default keeps the current session. */
     readonly agentAlive: AgentAlive = () => true,
     readonly pollMs = 250,
+    /** Laptop sleep detection and keep-awake. Hosted mode turns this off. */
+    readonly sleepLogic = true,
   ) {}
 
   tick(): void {
     if (this.stopped) return;
-    const sample = this.detector.sample();
-    if (sample && sample.gapMs > this.detector.thresholdMs) {
-      this.handleWake(sample);
+    if (this.sleepLogic) {
+      const sample = this.detector.sample();
+      if (sample && sample.gapMs > this.detector.thresholdMs) {
+        this.handleWake(sample);
+      }
+      if (sample) this.detector.commit(sample);
     }
-    if (sample) this.detector.commit(sample);
     this.accrue();
+    if (!this.sleepLogic) return;
     const active = listInFlightItems(this.db).filter((item) => isAwakeItemState(item.state));
     this.keepAwake.setRunActive(active.length > 0);
   }

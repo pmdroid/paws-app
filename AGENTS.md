@@ -20,19 +20,19 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 
 ## Layout
 
-| Path            | Owns                                                      | Depends on                          |
-| --------------- | --------------------------------------------------------- | ----------------------------------- |
-| `src/index.ts`  | Composition root. Opens the database, migrates, listens.  | public indexes only                 |
-| `src/config`    | `~/.paws` paths, env schema, `config.toml` seam           | `core` (for `NotImplementedError`)  |
-| `src/core`      | Domain types, states, `transition()` / `transitionEpic()` | nothing in `src`                    |
-| `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`   | `core`                              |
-| `src/linear`    | `TrackerAdapter`, webhook route, fake                     | `core`                              |
-| `src/acp`       | `AcpRunner`, fake                                         | `core`                              |
-| `src/closeout`  | `CloseoutGate`, fake                                      | nothing in `src`                    |
-| `src/github`    | GitHub App token, pull requests, webhook route, fake      | nothing in `src`                    |
-| `src/questions` | `QuestionChannel`, fake                                   | `core`                              |
-| `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table   | `config`, `linear`, `github`, `web` |
-| `src/web`       | Static status page (`status.html`)                        | nothing in `src`                    |
+| Path            | Owns                                                                           | Depends on                          |
+| --------------- | ------------------------------------------------------------------------------ | ----------------------------------- |
+| `src/index.ts`  | Composition root. Opens the database, migrates, listens.                       | public indexes only                 |
+| `src/config`    | `~/.paws` paths, env schema, `config.toml` seam                                | `core` (for `NotImplementedError`)  |
+| `src/core`      | Domain types, states, `transition()` / `transitionEpic()`                      | nothing in `src`                    |
+| `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`                        | `core`                              |
+| `src/linear`    | `TrackerAdapter`, webhook route, fake                                          | `core`                              |
+| `src/acp`       | `AcpRunner`, fake                                                              | `core`                              |
+| `src/closeout`  | `CloseoutGate`, fake                                                           | nothing in `src`                    |
+| `src/github`    | GitHub App token, pull requests, webhook route, fake                           | nothing in `src`                    |
+| `src/questions` | `QuestionChannel`, fake                                                        | `core`                              |
+| `src/server`    | `Bun.serve`, `/health`, routes. Local `127.0.0.1:8787`; hosted `0.0.0.0:$PORT` | `config`, `linear`, `github`, `web` |
+| `src/web`       | Static status page (`status.html`)                                             | nothing in `src`                    |
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 
@@ -50,8 +50,8 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Prefer `import type` for types (`verbatimModuleSyntax`).
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers in the design are ULIDs. The foundation does not mint them yet.
-- Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The status page is a static file so it can later ship on its own. The process only serves it on localhost.
+- Local secrets stay in `~/.paws/secrets` (directory mode `0700`). Hosted mode reads Linear, GitHub, and model credentials from the environment instead of those files. Never log them and never commit them. Linear and GitHub credentials stay out of the agent environment. Hosted mode passes only the model API keys, or a model-proxy base URL, through to the agent.
+- The status page is a static file so it can later ship on its own. Local mode serves it on localhost. Hosted mode serves `/status` on the public port and requires `PAWS_DASHBOARD_TOKEN`.
 
 ## Parallel work
 

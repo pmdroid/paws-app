@@ -56,6 +56,8 @@ export {
   type OutboxTarget,
 } from "./outbox";
 export { prepareShutdown, recoverOnStartup } from "./recovery";
+export { readEngineSnapshot } from "./status";
+export type { EngineSnapshot, EngineSnapshotItem, EngineSnapshotRun } from "./status";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export { getRun, insertRun, markRun, type StoredRun } from "./runs";
 export { immediate } from "./tx";

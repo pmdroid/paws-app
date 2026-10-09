@@ -10,27 +10,223 @@
         font-family: ui-sans-serif, system-ui, sans-serif;
       }
       body {
-        margin: 2.5rem auto;
-        max-width: 40rem;
-        padding: 0 1.25rem;
-        line-height: 1.5;
+        margin: 2rem auto;
+        max-width: 52rem;
+        padding: 0 1.25rem 3rem;
+        line-height: 1.45;
       }
       h1 {
         font-size: 1.4rem;
         font-weight: 650;
-        margin-bottom: 0.25rem;
+        margin: 0;
       }
-      p {
-        margin: 0.4rem 0;
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: baseline;
+        margin-bottom: 1.25rem;
       }
       .meta {
         opacity: 0.7;
+        margin: 0.2rem 0 1rem;
+      }
+      .banner {
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        border-radius: 0.4rem;
+        padding: 0.6rem 0.75rem;
+        margin-bottom: 1rem;
+      }
+      .counts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+        gap: 0.6rem;
+        margin: 0 0 1.25rem;
+        padding: 0;
+        list-style: none;
+      }
+      .counts li {
+        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        border-radius: 0.4rem;
+        padding: 0.55rem 0.7rem;
+      }
+      .counts strong {
+        display: block;
+        font-size: 1.2rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.4rem 0 1.4rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.35rem 0.4rem;
+        border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        vertical-align: top;
+      }
+      th {
+        font-weight: 600;
+        font-size: 0.82rem;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 0.2rem 0;
+      }
+      code {
+        font-size: 0.92em;
       }
     </style>
   </head>
   <body>
-    <h1>Paws</h1>
-    <p>Status page stub. Items, runs, and attempts are not loaded yet.</p>
-    <p class="meta">Static file served at <code>/status</code> on 127.0.0.1. No live data.</p>
+    <header>
+      <h1>Paws</h1>
+      <span id="mode">status</span>
+    </header>
+    <p id="summary" class="meta">Loading engine state…</p>
+    <div id="banner" class="banner" hidden></div>
+    <ul id="counts" class="counts"></ul>
+    <h2>Items</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>State</th>
+          <th>Turns</th>
+        </tr>
+      </thead>
+      <tbody id="items"></tbody>
+    </table>
+    <h2>Runs</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Run</th>
+          <th>Agent</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="runs"></tbody>
+    </table>
+    <script id="demo-status" type="application/json">
+      {
+        "ok": true,
+        "source": "demo",
+        "service": "paws",
+        "mode": "local",
+        "now": "2026-01-01T00:00:00.000Z",
+        "publicUrl": null,
+        "listener": { "host": "127.0.0.1", "port": 8787 },
+        "counts": {
+          "epics": 1,
+          "items": 2,
+          "runs": 1,
+          "jobsPending": 1,
+          "jobsRunning": 0,
+          "outboxPending": 0
+        },
+        "items": [
+          {
+            "id": "demo-item-1",
+            "identifier": "QM-1",
+            "title": "Sample: wire the status page",
+            "state": "running",
+            "epicId": "demo-epic",
+            "turnCount": 3,
+            "recoveryAttempts": 0
+          },
+          {
+            "id": "demo-item-2",
+            "identifier": "QM-2",
+            "title": "Sample: waiting on review",
+            "state": "verifying",
+            "epicId": "demo-epic",
+            "turnCount": 8,
+            "recoveryAttempts": 1
+          }
+        ],
+        "runs": [
+          {
+            "id": "demo-run-1",
+            "itemId": "demo-item-1",
+            "kind": "implement",
+            "agent": "claude",
+            "status": "active",
+            "updatedAt": 1767225600000
+          }
+        ]
+      }
+    </script>
+    <script>
+      const demo = JSON.parse(document.getElementById("demo-status").textContent);
+      const text = (value) => document.createTextNode(value == null ? "" : String(value));
+      const cell = (row, value) => {
+        const td = document.createElement("td");
+        td.appendChild(text(value));
+        row.appendChild(td);
+      };
+      function render(report, note) {
+        document.getElementById("mode").textContent = report.mode + " · " + report.source;
+        const where = report.listener ? report.listener.host + ":" + report.listener.port : "";
+        const pub = report.publicUrl ? " · " + report.publicUrl : "";
+        document.getElementById("summary").textContent =
+          report.service + " · " + where + pub + " · " + report.now;
+        const banner = document.getElementById("banner");
+        if (report.source === "demo" || note) {
+          banner.hidden = false;
+          banner.textContent =
+            note || "Demo data. The engine is not attached, so these rows are samples.";
+        } else {
+          banner.hidden = true;
+          banner.textContent = "";
+        }
+        const counts = document.getElementById("counts");
+        counts.replaceChildren();
+        const labels = [
+          ["items", report.counts.items],
+          ["runs", report.counts.runs],
+          ["jobs pending", report.counts.jobsPending],
+          ["jobs running", report.counts.jobsRunning],
+          ["outbox", report.counts.outboxPending],
+        ];
+        for (const [label, value] of labels) {
+          const li = document.createElement("li");
+          const strong = document.createElement("strong");
+          strong.appendChild(text(value));
+          li.appendChild(strong);
+          li.appendChild(text(label));
+          counts.appendChild(li);
+        }
+        const items = document.getElementById("items");
+        items.replaceChildren();
+        for (const item of report.items) {
+          const row = document.createElement("tr");
+          cell(row, item.identifier + " " + item.title);
+          cell(row, item.state);
+          cell(row, item.turnCount);
+          items.appendChild(row);
+        }
+        const runs = document.getElementById("runs");
+        runs.replaceChildren();
+        for (const run of report.runs) {
+          const row = document.createElement("tr");
+          cell(row, run.kind + " · " + run.itemId);
+          cell(row, run.agent);
+          cell(row, run.status);
+          runs.appendChild(row);
+        }
+      }
+      async function load() {
+        try {
+          const response = await fetch("/api/status", { headers: { accept: "application/json" } });
+          if (!response.ok) throw new Error("status " + response.status);
+          render(await response.json());
+        } catch (error) {
+          render(demo, "Showing demo data because /api/status was unavailable.");
+        }
+      }
+      load();
+    </script>
   </body>
 </html>
