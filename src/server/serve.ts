@@ -1,7 +1,7 @@
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook } from "../github";
 import { handleLinearWebhook, type LinearWebhookDeps } from "../linear";
-import { statusResponse } from "../web";
+import { fakeStatusProvider, handleStatusRequest } from "../web";
 
 export type ServerOptions = {
   hostname?: string;
@@ -17,11 +17,17 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const linearWebhookSecret = options.linearWebhookSecret ?? null;
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
+  const statusProvider = fakeStatusProvider();
   return Bun.serve({
     hostname,
     port,
     fetch(request) {
-      return route(request, { linearWebhookSecret, githubWebhookSecret, linearWebhook });
+      return route(request, {
+        linearWebhookSecret,
+        githubWebhookSecret,
+        linearWebhook,
+        statusProvider,
+      });
     },
   });
 }
@@ -30,16 +36,16 @@ type Secrets = {
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
   linearWebhook: LinearWebhookDeps | undefined;
+  statusProvider: ReturnType<typeof fakeStatusProvider>;
 };
 
-function route(request: Request, secrets: Secrets): Response | Promise<Response> {
+async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
     return Response.json({ ok: true, service: "paws" });
   }
-  if (request.method === "GET" && path === "/status") {
-    return statusResponse();
-  }
+  const status = await handleStatusRequest(request, { provider: secrets.statusProvider });
+  if (status !== null) return status;
   if (request.method === "POST" && path === "/webhooks/linear") {
     return handleLinearWebhook(request, secrets.linearWebhookSecret, secrets.linearWebhook);
   }

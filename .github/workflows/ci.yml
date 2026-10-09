@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    name: lint, format, types, test
+    name: lint, format, types, test, dashboard build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,3 +22,4 @@ jobs:
       - run: bun run fmt:check
       - run: bun run typecheck
       - run: bun test
+      - run: bun run build:status

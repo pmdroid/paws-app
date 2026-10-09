@@ -15,6 +15,13 @@ describe("server", () => {
       expect(status.headers.get("content-type")).toContain("text/html");
       expect(await status.text()).toContain("Paws");
 
+      const api = await fetch(`${base}/api/status`);
+      expect(api.status).toBe(200);
+      expect(api.headers.get("content-type")).toContain("application/json");
+      expect(api.headers.get("access-control-allow-origin")).toBe("*");
+      const snapshot = await api.json();
+      expect(snapshot).toMatchObject({ version: 1, source: "demo" });
+
       const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(missing.status).toBe(401);
       expect(await missing.json()).toEqual({ ok: false, reason: "missing_signature" });

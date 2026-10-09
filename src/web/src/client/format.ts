@@ -1,0 +1,167 @@
+import type { EpicState, ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
+
+const PALETTE = ["#a9b0ff", "#f6ad6c", "#5dd3a3", "#e46ea9", "#7cb8ff", "#c79cff"];
+
+const ITEM_LABEL: Record<ItemState, string> = {
+  queued: "Queued",
+  planning: "Planning",
+  running: "Running",
+  awaiting_input: "Awaiting input",
+  verifying: "Verifying",
+  signoff: "Needs sign-off",
+  merge_queue: "In merge queue",
+  merged: "Merged",
+  exhausted: "Exhausted",
+  stopped: "Stopped",
+  needs_human: "Needs a person",
+};
+
+const EPIC_LABEL: Record<EpicState, string> = {
+  idle: "Idle",
+  planning: "Planning",
+  running: "Running",
+  awaiting_input: "Awaiting input",
+  done: "Done",
+};
+
+const RUN_LABEL: Record<RunState, string> = {
+  running: "Running",
+  awaiting_input: "Awaiting input",
+  verifying: "Verifying",
+  paused: "Paused",
+  done: "Done",
+  stopped: "Stopped",
+};
+
+const VERDICT_LABEL: Record<VerdictDecision, string> = {
+  accepted: "Accepted",
+  rejected: "Rejected",
+  exhausted: "Exhausted",
+  running: "Verifying…",
+  blocked: "Blocked",
+};
+
+const VERDICT_DETAIL: Record<VerdictDecision, string> = {
+  accepted: "Fresh evidence satisfied the applicable requirements.",
+  rejected: "Findings go back to the implementing agent.",
+  exhausted: "Retry budget for this task is used up.",
+  running: "Closeout is still collecting evidence.",
+  blocked: "Closeout stopped and needs a person.",
+};
+
+const AGENTS: Record<string, { letter: string; color: string }> = {
+  claude: { letter: "C", color: "#d97757" },
+  codex: { letter: "X", color: "#10a37f" },
+  gemini: { letter: "G", color: "#4c9bf5" },
+  cursor: { letter: "Cu", color: "#c9cbd1" },
+  paws: { letter: "P", color: "#a371f7" },
+};
+
+export function esc(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+export function itemLabel(state: ItemState): string {
+  return ITEM_LABEL[state];
+}
+
+export function epicLabel(state: EpicState): string {
+  return EPIC_LABEL[state];
+}
+
+export function runLabel(state: RunState): string {
+  return RUN_LABEL[state];
+}
+
+export function verdictLabel(decision: VerdictDecision): string {
+  return VERDICT_LABEL[decision];
+}
+
+export function verdictDetail(decision: VerdictDecision): string {
+  return VERDICT_DETAIL[decision];
+}
+
+export function statePill(state: string, label: string): string {
+  return `<span class="st ${esc(state)}">${esc(label)}</span>`;
+}
+
+export function agentChip(name: string): string {
+  const style = agentStyle(name);
+  return `<span class="agent"><i style="background:${style.color}">${esc(style.letter)}</i>${esc(name)}</span>`;
+}
+
+export function avatar(name: string, small = false): string {
+  const cls = small ? "av sm" : "av";
+  return `<span class="${cls}" title="${esc(name)}" style="background:${colorFor(name)}">${esc(initials(name))}</span>`;
+}
+
+export function clock(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+export function ago(iso: string, now: string): string {
+  const delta = Date.parse(now) - Date.parse(iso);
+  if (Number.isNaN(delta)) return "";
+  const minutes = Math.max(0, Math.round(delta / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours}h ${rest}m ago` : `${hours}h ago`;
+}
+
+export function linkList(links: StatusLink[]): string {
+  const rendered = links.flatMap((link) => {
+    const href = safeHref(link.href);
+    if (!href) return [];
+    return [
+      `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(link.label)}</a>`,
+    ];
+  });
+  return rendered.join(' <span class="dim">·</span> ');
+}
+
+export function safeHref(href: string): string | null {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function agentStyle(name: string): { letter: string; color: string } {
+  const key = name.toLowerCase();
+  for (const [id, style] of Object.entries(AGENTS)) {
+    if (key.includes(id)) return style;
+  }
+  return { letter: initials(name).slice(0, 2), color: colorFor(name) };
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).slice(0, 2);
+  const letters = parts.map((part) => part[0] ?? "").join("");
+  return letters.toUpperCase() || "?";
+}
+
+function colorFor(name: string): string {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return PALETTE[hash % PALETTE.length] ?? "#a9b0ff";
+}
