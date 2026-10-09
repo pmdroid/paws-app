@@ -1,11 +1,10 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
-/** Static dashboard shell. Later it can be deployed on its own; the loop does not depend on it. */
-export const statusPageHtml = readFileSync(join(import.meta.dir, "status.html"), "utf8");
-
-export function statusResponse(): Response {
-  return new Response(statusPageHtml, {
-    headers: { "content-type": "text/html; charset=utf-8" },
-  });
-}
+export {
+  handleStatusRequest,
+  statusResponse,
+  fakeStatusProvider,
+  startStatusServer,
+} from "./src/server/handler";
+export type { StatusProvider } from "./src/server/handler";
+export { STATUS_API_PATH, STATUS_PAGE_PATH, parseStatusSnapshot } from "./src/contract";
+export type { StatusSnapshot } from "./src/contract";
+export { demoStatus } from "./src/demo";

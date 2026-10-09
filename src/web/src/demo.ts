@@ -1,0 +1,415 @@
+import type { StatusSnapshot } from "./contract";
+
+const AT = "2026-10-09T22:15:00.000Z";
+
+const DEMO: StatusSnapshot = {
+  version: 1,
+  source: "demo",
+  generatedAt: AT,
+  project: {
+    name: "Platform",
+    team: "ENG",
+    repo: "acme/platform",
+    workspace: "acme",
+  },
+  epics: [
+    {
+      id: "ENG-98",
+      title: "Audit log export",
+      description:
+        "Admins can export audit logs as CSV or JSON to a signed URL. Retention rules stay in force.",
+      state: "running",
+      delegated: true,
+      dri: "Jonas Berg",
+      session: [
+        {
+          at: "2026-10-09T18:15:00.000Z",
+          kind: "thought",
+          actor: "Paws",
+          text: "Plan approved by Jonas: 6 work items, blockers respected.",
+        },
+        {
+          at: "2026-10-09T20:15:00.000Z",
+          kind: "action",
+          actor: "Paws",
+          text: "Merged ENG-99 (PR #474). Unblocked ENG-100, ENG-101, ENG-102, and ENG-103.",
+        },
+        {
+          at: "2026-10-09T20:40:00.000Z",
+          kind: "error",
+          actor: "Paws",
+          text: "ENG-100 exhausted its Closeout retry budget (3/3). Asked the team (Q-40).",
+        },
+        {
+          at: "2026-10-09T22:01:00.000Z",
+          kind: "elicitation",
+          actor: "Paws",
+          text: "ENG-103 asked how long export download links should stay valid (Q-41).",
+        },
+      ],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-98" }],
+    },
+    {
+      id: "ENG-120",
+      title: "Team billing",
+      description:
+        "Let teams buy a plan with N seats, assign seats, and sync prices. Not delegated yet.",
+      state: "idle",
+      delegated: false,
+      dri: "Maria Chen",
+      session: [],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-120" }],
+    },
+  ],
+  items: [
+    item({
+      id: "ENG-99",
+      title: "Audit event schema v2",
+      state: "merged",
+      agent: "Claude",
+      assignee: "Jonas Berg",
+      blockers: [],
+      attempts: 1,
+      branch: "jonas/eng-99-audit-event-schema",
+      runId: "r-99",
+      pr: 474,
+    }),
+    item({
+      id: "ENG-100",
+      title: "Retention policy enforcement job",
+      state: "exhausted",
+      agent: "Claude",
+      assignee: "Jonas Berg",
+      blockers: ["ENG-99"],
+      attempts: 3,
+      branch: "jonas/eng-100-retention-policy",
+      runId: "r-100",
+      pr: null,
+    }),
+    item({
+      id: "ENG-101",
+      title: "Export job worker",
+      state: "merge_queue",
+      agent: "Codex",
+      assignee: "Jonas Berg",
+      blockers: ["ENG-99"],
+      attempts: 1,
+      branch: "jonas/eng-101-export-job-worker",
+      runId: "r-101",
+      pr: 479,
+    }),
+    item({
+      id: "ENG-102",
+      title: "CSV / JSON formatters",
+      state: "running",
+      agent: "Gemini",
+      assignee: "Aisha Khan",
+      blockers: ["ENG-99"],
+      attempts: 0,
+      branch: "aisha/eng-102-formatters",
+      runId: "r-102",
+      pr: null,
+    }),
+    item({
+      id: "ENG-103",
+      title: "Signed URL delivery",
+      state: "awaiting_input",
+      agent: "Claude",
+      assignee: "Jonas Berg",
+      blockers: ["ENG-99"],
+      attempts: 0,
+      branch: "jonas/eng-103-signed-url",
+      runId: "r-103",
+      pr: null,
+    }),
+    item({
+      id: "ENG-104",
+      title: "Admin export UI",
+      state: "queued",
+      agent: "Gemini",
+      assignee: "Aisha Khan",
+      blockers: ["ENG-101", "ENG-102", "ENG-103"],
+      attempts: 0,
+      branch: "aisha/eng-104-admin-export-ui",
+      runId: null,
+      pr: null,
+    }),
+  ],
+  runs: [
+    {
+      id: "r-102",
+      itemId: "ENG-102",
+      state: "running",
+      agent: "Gemini",
+      reviewer: "Codex",
+      startedAt: "2026-10-09T21:40:00.000Z",
+      attempt: 0,
+      summary: "Streaming CSV and JSON formatters. Typecheck is clean; unit tests are next.",
+      activity: [
+        {
+          at: "2026-10-09T21:40:00.000Z",
+          kind: "system",
+          text: "ACP session started with Gemini.",
+        },
+        {
+          at: "2026-10-09T21:48:00.000Z",
+          kind: "thought",
+          text: "Formatters must stream. Exports can pass a million rows.",
+        },
+        { at: "2026-10-09T21:55:00.000Z", kind: "tool", text: "edit packages/audit/format/csv.ts" },
+        { at: "2026-10-09T22:08:00.000Z", kind: "ok", text: "typecheck: 0 errors" },
+      ],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-102" }],
+    },
+    {
+      id: "r-103",
+      itemId: "ENG-103",
+      state: "awaiting_input",
+      agent: "Claude",
+      reviewer: "Codex",
+      startedAt: "2026-10-09T21:20:00.000Z",
+      attempt: 0,
+      summary: "Parked on Q-41. The presigned URL expiry is not in the issue.",
+      activity: [
+        {
+          at: "2026-10-09T21:20:00.000Z",
+          kind: "system",
+          text: "ACP session started with Claude.",
+        },
+        { at: "2026-10-09T21:50:00.000Z", kind: "tool", text: "edit apps/api/exports/deliver.ts" },
+        {
+          at: "2026-10-09T22:01:00.000Z",
+          kind: "elicitation",
+          text: "ask_team → Q-41. Run parked until Linear gets an answer.",
+        },
+      ],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-103" }],
+    },
+    {
+      id: "r-101",
+      itemId: "ENG-101",
+      state: "done",
+      agent: "Codex",
+      reviewer: "Claude",
+      startedAt: "2026-10-09T19:10:00.000Z",
+      attempt: 1,
+      summary: "Closeout accepted on attempt 1. Pull request is in the merge queue.",
+      activity: [
+        {
+          at: "2026-10-09T20:55:00.000Z",
+          kind: "ok",
+          text: "Closeout beforePR accepted (attempt 1).",
+        },
+        { at: "2026-10-09T21:05:00.000Z", kind: "action", text: "Opened PR #479." },
+      ],
+      links: [
+        { label: "Linear", href: "https://linear.app/acme/issue/ENG-101" },
+        { label: "PR #479", href: "https://github.com/acme/platform/pull/479" },
+      ],
+    },
+    {
+      id: "r-100",
+      itemId: "ENG-100",
+      state: "done",
+      agent: "Claude",
+      reviewer: "Codex",
+      startedAt: "2026-10-09T18:30:00.000Z",
+      attempt: 3,
+      summary: "Closeout requirement unit failed three times. The item is exhausted.",
+      activity: [
+        {
+          at: "2026-10-09T20:40:00.000Z",
+          kind: "err",
+          text: "unit failed: retention.test.ts keeps rows under legal hold (expected 0, received 14).",
+        },
+        {
+          at: "2026-10-09T20:40:30.000Z",
+          kind: "elicitation",
+          text: "Escalated to the team as Q-40.",
+        },
+      ],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
+    },
+    {
+      id: "r-99",
+      itemId: "ENG-99",
+      state: "done",
+      agent: "Claude",
+      reviewer: "Codex",
+      startedAt: "2026-10-09T16:00:00.000Z",
+      attempt: 1,
+      summary: "Merged PR #474 into main.",
+      activity: [{ at: "2026-10-09T20:15:00.000Z", kind: "ok", text: "Merged PR #474 into main." }],
+      links: [
+        { label: "Linear", href: "https://linear.app/acme/issue/ENG-99" },
+        { label: "PR #474", href: "https://github.com/acme/platform/pull/474" },
+      ],
+    },
+  ],
+  questions: [
+    {
+      id: "Q-41",
+      itemId: "ENG-103",
+      runId: "r-103",
+      title: "How long should export download links stay valid?",
+      body: "The presigned URL needs an expiry. The epic only says “secure download link”.",
+      context: "apps/api/exports/deliver.ts\nexpiresIn: /* ??? seconds */",
+      kind: "decision",
+      urgency: "blocking",
+      options: ["15 minutes", "24 hours", "7 days (max for SigV4)"],
+      recommendedOption: 1,
+      askedAt: "2026-10-09T22:01:00.000Z",
+      claimedBy: "Jonas Berg",
+      links: [{ label: "Answer in Linear", href: "https://linear.app/acme/issue/ENG-103" }],
+    },
+    {
+      id: "Q-40",
+      itemId: "ENG-100",
+      runId: "r-100",
+      title: "Closeout requirement unit exhausted (3/3)",
+      body: "The same legal-hold test failed three times. Closeout stopped further attempts on this task.",
+      context: "FAIL retention.test.ts\nexpected deletions: 0\nreceived deletions: 14",
+      kind: "exhausted",
+      urgency: "blocking",
+      options: [
+        "Give guidance and retry with a new task id",
+        "Reassign to Codex",
+        "Take over manually",
+        "Cancel the item",
+      ],
+      recommendedOption: 0,
+      askedAt: "2026-10-09T20:40:00.000Z",
+      claimedBy: null,
+      links: [{ label: "Answer in Linear", href: "https://linear.app/acme/issue/ENG-100" }],
+    },
+  ],
+  verdicts: [
+    {
+      itemId: "ENG-101",
+      decision: "accepted",
+      attempt: 1,
+      maxAttempts: 3,
+      summary: "All applicable requirements passed on a fresh head. Report is sealed.",
+      failingCheck: null,
+      baseSha: "a1c9e07",
+      headSha: "b7e21aa",
+      sealed: true,
+      checks: [
+        check("typecheck", "command", "passed", "bun run typecheck", null),
+        check("unit", "command", "passed", "bun test", null),
+        check(
+          "adversarial-review",
+          "review",
+          "passed",
+          "reviewer Codex, different session",
+          "0 findings at P1",
+        ),
+      ],
+      links: [
+        { label: "Linear", href: "https://linear.app/acme/issue/ENG-101" },
+        { label: "PR #479", href: "https://github.com/acme/platform/pull/479" },
+      ],
+    },
+    {
+      itemId: "ENG-100",
+      decision: "exhausted",
+      attempt: 3,
+      maxAttempts: 3,
+      summary: "Retry budget for this task is used up. A person decides what happens next.",
+      failingCheck: "unit",
+      baseSha: "a1c9e07",
+      headSha: "91fd0c4",
+      sealed: false,
+      checks: [
+        check("typecheck", "command", "passed", "bun run typecheck", null),
+        check(
+          "unit",
+          "command",
+          "failed",
+          "bun test",
+          "retention.test.ts keeps rows under legal hold: expected 0 deletions, received 14",
+        ),
+        check(
+          "adversarial-review",
+          "review",
+          "skipped",
+          "reviewer Codex",
+          "not run after the failing command",
+        ),
+      ],
+      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
+    },
+  ],
+  mergeQueue: [
+    {
+      position: 1,
+      itemId: "ENG-101",
+      enqueuedAt: "2026-10-09T21:05:00.000Z",
+      steps: [
+        { name: "Rebase onto main", state: "run", detail: "a1c9e07 → main" },
+        { name: "Re-run Closeout", state: "wait", detail: "evidence goes stale after a rebase" },
+        { name: "Required check closeout-verified", state: "wait", detail: null },
+        { name: "Squash merge", state: "wait", detail: null },
+      ],
+    },
+  ],
+  events: [
+    {
+      at: "2026-10-09T21:10:00.000Z",
+      level: "warn",
+      text: "Q-40 is still open. DRI Jonas was pinged.",
+    },
+    {
+      at: "2026-10-09T21:05:00.000Z",
+      level: "ok",
+      text: "ENG-101 accepted by Closeout and entered the merge queue.",
+    },
+    { at: "2026-10-09T22:01:00.000Z", level: "warn", text: "ENG-103 asked the team Q-41." },
+    { at: "2026-10-09T20:15:00.000Z", level: "ok", text: "ENG-99 merged (PR #474)." },
+  ],
+};
+
+export function demoStatus(): StatusSnapshot {
+  return structuredClone(DEMO);
+}
+
+function item(input: {
+  id: string;
+  title: string;
+  state: StatusSnapshot["items"][number]["state"];
+  agent: string;
+  assignee: string;
+  blockers: string[];
+  attempts: number;
+  branch: string | null;
+  runId: string | null;
+  pr: number | null;
+}): StatusSnapshot["items"][number] {
+  return {
+    id: input.id,
+    epicId: "ENG-98",
+    title: input.title,
+    state: input.state,
+    agent: input.agent,
+    assignee: input.assignee,
+    blockers: input.blockers,
+    attempts: input.attempts,
+    branch: input.branch,
+    runId: input.runId,
+    pr:
+      input.pr === null
+        ? null
+        : { number: input.pr, url: `https://github.com/acme/platform/pull/${input.pr}` },
+    links: [{ label: "Linear", href: `https://linear.app/acme/issue/${input.id}` }],
+  };
+}
+
+function check(
+  id: string,
+  kind: StatusSnapshot["verdicts"][number]["checks"][number]["kind"],
+  state: StatusSnapshot["verdicts"][number]["checks"][number]["state"],
+  command: string,
+  detail: string | null,
+): StatusSnapshot["verdicts"][number]["checks"][number] {
+  return { id, kind, state, command, detail };
+}

@@ -32,7 +32,7 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/github`    | GitHub App token, pull requests, webhook route, fake      | nothing in `src`                    |
 | `src/questions` | `QuestionChannel`, fake                                   | `core`                              |
 | `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table   | `config`, `linear`, `github`, `web` |
-| `src/web`       | Static status page (`status.html`)                        | nothing in `src`                    |
+| `src/web`       | Static status dashboard (`/status`, `GET /api/status`)    | nothing in `src`                    |
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 
@@ -51,7 +51,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 - Fakes live next to the interface they implement and are exported from that module. They record calls in memory.
 - Identifiers in the design are ULIDs. The foundation does not mint them yet.
 - Secrets stay in `~/.paws/secrets` (directory mode `0700`). Never log them, never put them in the agent environment, and never commit them.
-- The status page is a static file so it can later ship on its own. The process only serves it on localhost.
+- The status page is static files under `src/web` so it can ship on its own. The process serves them on localhost at `/status` and `GET /api/status`.
 
 ## Parallel work
 
