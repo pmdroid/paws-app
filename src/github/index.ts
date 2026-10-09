@@ -23,6 +23,31 @@ export type { PullRequestClientOptions } from "./pulls";
 export { serialMerge } from "./merge";
 export type { SerialMergeInput } from "./merge";
 export {
+  agentEnv,
+  checkGhAuthStatus,
+  checkGhPushPermission,
+  createAppTokenProvider,
+  createGhCliAuth,
+  createTokenProvider,
+  ghDoctorChecks,
+  githubAuthMode,
+  inferGitHubRepository,
+  PAWS_EVIDENCE_MARKER,
+  PAWS_LABEL,
+  parseGitHubRemote,
+  withPawsEvidenceMarker,
+} from "./auth";
+export type {
+  AppTokenProviderOptions,
+  DoctorCheck,
+  GhCliOptions,
+  GitHubAuthConfig,
+  GitHubAuthMode,
+  GitHubTokenProvider,
+  TokenPurpose,
+} from "./auth";
+export { GhAuthError } from "./auth";
+export {
   GitCommandError,
   GitHubTokenError,
   INSTALLATION_PERMISSIONS,

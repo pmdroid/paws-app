@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { acquireOperationToken } from "./auth/provider";
+import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, redact, withCredential } from "./git";
-import { mintInstallationToken } from "./token";
 import {
   GitCommandError,
   MAX_SHA_GUARD_CYCLES,
@@ -25,6 +26,8 @@ export type SerialMergeInput = {
   installationId: string;
   privateKeyPem: string;
   client: GitHubClient;
+  /** When set, push and merge each ask this provider. Otherwise the App mint path is used. */
+  tokenProvider?: GitHubTokenProvider;
   reverify: (input: ReverifyInput) => Promise<ReverifyResult>;
   remoteUrl?: string;
   now?: () => Date;
@@ -79,17 +82,17 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       };
     }
 
-    const mergeToken = await mintInstallationToken({ ...input, now: input.now?.() });
-    input.onCredential?.("merge", mergeToken.token);
+    const mergeToken = await operationToken(input, "merge");
+    input.onCredential?.("merge", mergeToken);
     const headNow = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
-    await fetchMain(input.worktree, url, mergeToken.token, gitExec);
+    await fetchMain(input.worktree, url, mergeToken, gitExec);
     const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     if (headNow !== pushed.head || baseNow !== pushed.base) {
       lastGuard = "sha";
       continue;
     }
 
-    const merged = await squash(input, mergeToken.token, pushed.head, verified.summary);
+    const merged = await squash(input, mergeToken, pushed.head, verified.summary);
     if (merged.status === 409) {
       lastGuard = "http_409";
       continue;
@@ -134,10 +137,10 @@ async function pushRebased(
   branch: string,
   gitExec: GitExec,
 ): Promise<{ ok: true; base: string; head: string } | { ok: false; result: SerialMergeResult }> {
-  const minted = await mintInstallationToken({ ...input, now: input.now?.() });
-  input.onCredential?.("push", minted.token);
+  const minted = await operationToken(input, "push");
+  input.onCredential?.("push", minted);
   try {
-    await fetchMain(input.worktree, url, minted.token, gitExec);
+    await fetchMain(input.worktree, url, minted, gitExec);
     const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     const rebase = await rebaseOnto(input.worktree, UPSTREAM_MAIN_REF, gitExec);
     if (rebase !== "ok") {
@@ -152,22 +155,22 @@ async function pushRebased(
         },
       };
     }
-    const remote = await remoteBranchSha(input.worktree, url, branch, minted.token, gitExec);
-    await withCredential(minted.token, gitExec, async (helper) => {
+    const remote = await remoteBranchSha(input.worktree, url, branch, minted, gitExec);
+    await withCredential(minted, gitExec, async (helper) => {
       const args = [...helper.argsPrefix, "push"];
       if (remote) args.push(`--force-with-lease=refs/heads/${branch}:${remote}`);
       args.push(url, `HEAD:refs/heads/${branch}`);
       try {
         await helper.exec(args, { cwd: input.worktree, env: helper.env });
       } catch (error) {
-        const stderr = error instanceof GitCommandError ? redact(minted.token, error.stderr) : "";
+        const stderr = error instanceof GitCommandError ? redact(minted, error.stderr) : "";
         throw new Error(`push rejected: ${stderr}`, { cause: error });
       }
     });
     const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
     return { ok: true, base, head };
   } catch (error) {
-    const message = redact(minted.token, error instanceof Error ? error.message : String(error));
+    const message = redact(minted, error instanceof Error ? error.message : String(error));
     return { ok: false, result: { merged: false, outcome: "push_rejected", branch, message } };
   }
 }
@@ -254,6 +257,22 @@ async function squash(
       commit_message: `${fixesLine(input.issue)}\n\n${summary.trim()}\n`,
     },
   });
+}
+
+function operationToken(input: SerialMergeInput, purpose: "push" | "merge"): Promise<string> {
+  return acquireOperationToken(
+    {
+      tokenProvider: input.tokenProvider,
+      client: input.client,
+      appId: input.appId,
+      installationId: input.installationId,
+      privateKeyPem: input.privateKeyPem,
+      owner: input.owner,
+      repo: input.repo,
+      ...(input.now ? { now: input.now() } : {}),
+    },
+    purpose,
+  );
 }
 
 function safeBranch(issue: string): string {
