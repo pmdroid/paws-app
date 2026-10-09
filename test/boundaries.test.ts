@@ -35,7 +35,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   closeout: [],
   github: [],
   questions: ["core"],
-  web: [],
+  web: ["db"],
   server: ["config", "linear", "github", "web"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions"],

@@ -152,6 +152,7 @@ function renderBanner(model: RenderModel): string {
   if (snapshot.source === "live") {
     return `<div class="live-bar" role="status"><span class="n">Live</span><span>Status from ${esc(model.engineUrl ?? "the engine")} · as of ${esc(clock(snapshot.generatedAt))}.</span></div>`;
   }
+  if (snapshot.source !== "demo") return "";
   if (model.via === "engine") {
     return `<div class="demo-bar" role="status"><span class="n">Demo</span><span>The engine answered, and this snapshot is still the sample stub. It is not live work.</span></div>`;
   }
@@ -184,7 +185,10 @@ function renderTabbar(model: RenderModel): string {
     .join("");
 }
 
+const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
+
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
+  if (snapshot.items.length === 0) return `<div class="empty">${esc(EMPTY_ITEMS)}</div>`;
   switch (model.route.view) {
     case "overview":
       return viewOverview(snapshot);
@@ -648,8 +652,9 @@ function barClass(verdict: StatusVerdict): string {
 
 function sourcePill(model: RenderModel): string {
   if (model.phase === "loading") return `<span class="pill">Loading</span>`;
-  if (model.phase === "error" && !model.snapshot)
-    return `<span class="pill demo-pill">Offline</span>`;
+  if (model.snapshot?.source === "demo")
+    return `<span class="pill demo-pill" title="Sample data">Demo data</span>`;
   if (model.snapshot?.source === "live") return `<span class="pill live-pill">Live</span>`;
-  return `<span class="pill demo-pill" title="Sample data">Demo data</span>`;
+  if (model.phase === "error") return `<span class="pill">Offline</span>`;
+  return `<span class="pill">Status</span>`;
 }

@@ -58,8 +58,26 @@ describe("status views", () => {
     snapshot.source = "live";
     const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
     expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Demo data");
     expect(view.banner).toContain("127.0.0.1:8787");
     expect(view.banner.toLowerCase()).not.toContain("sample");
+  });
+
+  test("an empty live database tells the operator to label a Linear issue", () => {
+    const snapshot = demoStatus();
+    snapshot.source = "live";
+    snapshot.epics = [];
+    snapshot.items = [];
+    snapshot.runs = [];
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    snapshot.mergeQueue = [];
+    snapshot.events = [];
+    const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
+    expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Demo data");
+    expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
+    expect(view.content).not.toContain("Audit log export");
   });
 
   test("hash routes cover every status section", () => {

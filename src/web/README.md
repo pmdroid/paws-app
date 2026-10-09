@@ -2,7 +2,7 @@
 
 Read-only status for a local Paws engine: epics, items and their states, current runs, open questions, Closeout verdicts, and the merge queue.
 
-The engine cannot run on Vercel. This directory is a static site plus a small HTTP stub the local process mounts on loopback. It imports nothing else under `src`.
+The engine cannot run on Vercel. This directory is a static site plus the local status routes. The live reader imports `src/db` through its public index.
 
 ## Contract
 
@@ -31,16 +31,18 @@ Example:
 }
 ```
 
-`fakeStatusProvider()` is exported from [`index.ts`](index.ts) and returns the fictional acme / ENG snapshot. The server mounts it like this:
+`createLiveStatusProvider(db)` is exported from [`index.ts`](index.ts) and reads the engine database (`source: "live"`). `fakeStatusProvider()` still returns the fictional acme / ENG snapshot. The server mounts the live reader like this:
 
 ```ts
-import { handleStatusRequest, fakeStatusProvider } from "../web";
+import { createLiveStatusProvider, handleStatusRequest } from "../web";
 
 const response = await handleStatusRequest(request, {
-  provider: fakeStatusProvider(), // replace with a reader over engine state
+  provider: createLiveStatusProvider(db),
 });
 if (response) return response;
 ```
+
+`?engine=demo` or `PAWS_STATUS_DEMO=1` serves the sample snapshot instead.
 
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
@@ -59,7 +61,7 @@ bun run paws
 - Page: http://127.0.0.1:8787/status
 - API: http://127.0.0.1:8787/api/status
 
-When the page is served under `/status`, it calls the same origin's `/api/status`. The stub's body is still `source: "demo"`, and the page says so.
+When the page is served under `/status`, it calls the same origin's `/api/status`. That body is `source: "live"`. An empty database shows no items. The sample snapshot is served only with `?engine=demo` or `PAWS_STATUS_DEMO=1`.
 
 ## Vercel
 
