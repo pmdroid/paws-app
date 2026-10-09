@@ -19,6 +19,9 @@ const MODULES = [
   "host",
   "loop",
   "doctor",
+  "comments",
+  "install",
+  "setup",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -40,6 +43,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions"],
   doctor: ["config"],
+  comments: ["core", "linear", "questions"],
+  install: ["acp", "closeout"],
+  // setup is the wizard. It is allowed to import install (and comments) through index.ts.
+  setup: ["config", "core", "linear", "comments", "github", "acp", "install"],
 };
 
 describe("module boundaries", () => {
