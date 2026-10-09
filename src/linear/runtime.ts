@@ -1,13 +1,25 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
+import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter } from "./adapter";
-import { createLinearCatchUpSource } from "./catchup";
+import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearClient } from "./graphql";
 import { createInboxStore } from "./inbox";
-import { createLinearAuth, readLinearEnv, type EnvSource, type LinearAuth } from "./oauth";
-import { startCatchUpPoller, type CatchUpPoller } from "./poller";
+import {
+  createLinearAuth,
+  readLinearEnv,
+  type EnvSource,
+  type FetchLike,
+  type LinearAuth,
+} from "./oauth";
+import {
+  linearWorkIsHot,
+  persistStopCommand,
+  startCatchUpPoller,
+  type CatchUpPoller,
+} from "./poller";
 import { createLinearTracker } from "./tracker";
 import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunnel";
 import type { LinearWebhookDeps } from "./webhook";
@@ -30,15 +42,22 @@ export function linearTokenPath(secretsDir: string): string {
   return join(secretsDir, "linear-oauth.json");
 }
 
-/** Build the webhook handler. Call `start` with the bound port to launch the tunnel and poller. */
+/**
+ * Build the inbox and tracker. Call `start` with the bound port to poll Linear.
+ * The ngrok child starts only when `webhooks` is on (env `LINEAR_WEBHOOKS`).
+ */
 export function openLinear(options: {
   db: Database;
   secretsDir: string;
   env: EnvSource;
   publicUrl: string | null;
   noTunnel?: boolean;
+  /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
+  webhooks?: boolean;
   followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>;
-  fetch?: typeof fetch;
+  /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
+  submitCommand?: (command: LinearCommand) => void;
+  fetch?: FetchLike;
   spawn?: SpawnFn;
 }): OpenLinear {
   const settings = readLinearEnv(options.env);
@@ -61,14 +80,27 @@ export function openLinear(options: {
     tracker,
     start(port) {
       if (running !== null) return running;
+      const webhooks = options.webhooks ?? settings.webhooks;
       const tunnel = openTunnel({
         port,
         publicUrl: options.publicUrl,
+        webhooks,
         noTunnel: options.noTunnel === true || settings.noTunnel,
         authtoken: settings.ngrokAuthtoken,
         spawn: options.spawn,
       });
-      const poller = startPoller(auth, onEvent, store, tunnel, options.fetch);
+      const poller = startPoller({
+        auth,
+        onEvent,
+        store,
+        tunnel,
+        fetchImpl: options.fetch,
+        db: options.db,
+        teamId: settings.teamId,
+        appUserId: settings.appUserId,
+        submitCommand:
+          options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
+      });
       running = {
         catchUp: () => poller?.pollNow() ?? Promise.resolve(),
         tunnelUp: () => tunnel.isUp(),
@@ -107,11 +139,12 @@ function shareEvents(
 function openTunnel(options: {
   port: number;
   publicUrl: string | null;
+  webhooks: boolean;
   noTunnel: boolean;
   authtoken: string | null;
   spawn: SpawnFn | undefined;
 }): Tunnel {
-  if (options.noTunnel) return downTunnel();
+  if (!options.webhooks || options.noTunnel) return downTunnel();
   if (options.publicUrl === null || !options.publicUrl.startsWith("https://")) return downTunnel();
   return startNgrokTunnel({
     port: options.port,
@@ -121,19 +154,29 @@ function openTunnel(options: {
   });
 }
 
-function startPoller(
-  auth: LinearAuth,
-  onEvent: ((event: AcceptedLinearEvent) => Promise<void>) | undefined,
-  store: ReturnType<typeof createInboxStore>,
-  tunnel: Tunnel,
-  fetchImpl: typeof fetch | undefined,
-): CatchUpPoller | null {
-  if (!auth.hasToken() || onEvent === undefined) return null;
+function startPoller(options: {
+  auth: LinearAuth;
+  onEvent: ((event: AcceptedLinearEvent) => Promise<void>) | undefined;
+  store: ReturnType<typeof createInboxStore>;
+  tunnel: Tunnel;
+  fetchImpl: FetchLike | undefined;
+  db: Database;
+  teamId: string | null;
+  appUserId: string | null;
+  submitCommand: (command: LinearCommand) => void;
+}): CatchUpPoller | null {
+  if (!options.auth.hasToken() || options.onEvent === undefined) return null;
+  const client = createLinearClient({ auth: options.auth, fetch: options.fetchImpl });
   return startCatchUpPoller({
-    source: createLinearCatchUpSource(createLinearClient({ auth, fetch: fetchImpl })),
-    store,
-    onEvent,
-    tunnelUp: () => tunnel.isUp(),
-    beforeDelay: () => tunnel.refresh(),
+    source: createIntakePollSource(client, {
+      teamId: options.teamId,
+      appUserId: options.appUserId,
+    }),
+    store: options.store,
+    onEvent: options.onEvent,
+    db: options.db,
+    hot: () => linearWorkIsHot(options.db),
+    submitCommand: options.submitCommand,
+    beforeDelay: () => options.tunnel.refresh(),
   });
 }

@@ -12,6 +12,7 @@ export type InboxStore = {
   listUnhandled(): AcceptedLinearEvent[];
   getCursor(name: string): number | null;
   setCursor(name: string, cursorMs: number): void;
+  get(dedupeKey: string): AcceptedLinearEvent | null;
 };
 
 type InboxRow = {
@@ -89,6 +90,16 @@ export function createInboxStore(db: Database): InboxStore {
          ON CONFLICT(name) DO UPDATE SET cursor_ms = excluded.cursor_ms`,
         [name, cursorMs],
       );
+    },
+    get(dedupeKey) {
+      const row = db
+        .query<InboxRow, [string]>(
+          `SELECT dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
+                  body, signal, updated_at_ms, payload, handled
+           FROM inbox_event WHERE dedupe_key = ?`,
+        )
+        .get(dedupeKey);
+      return row === null ? null : mapRow(row);
     },
   };
 }

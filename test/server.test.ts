@@ -3,7 +3,7 @@ import { startServer } from "../src/server";
 
 describe("server", () => {
   test("health, status, webhooks, and unknown paths", async () => {
-    const server = startServer({ port: 0, hostname: "127.0.0.1" });
+    const server = startServer({ port: 0, hostname: "127.0.0.1", webhooks: false });
     const base = `http://${server.hostname}:${server.port}`;
     try {
       const health = await fetch(`${base}/health`);
@@ -23,6 +23,30 @@ describe("server", () => {
       expect(snapshot).toMatchObject({ version: 1, source: "demo" });
 
       const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
+      expect(missing.status).toBe(404);
+
+      const github = await fetch(`${base}/webhooks/github`, {
+        method: "POST",
+        headers: { "x-hub-signature-256": "sha256=abc" },
+      });
+      expect(github.status).toBe(404);
+
+      const nested = await fetch(`${base}/webhooks/linear/extra`);
+      expect(nested.status).toBe(404);
+
+      const other = await fetch(`${base}/metrics`);
+      expect(other.status).toBe(404);
+      expect(server.hostname).toBe("127.0.0.1");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("webhook routes fail closed when linear.webhooks is on", async () => {
+    const server = startServer({ port: 0, hostname: "127.0.0.1", webhooks: true });
+    const base = `http://${server.hostname}:${server.port}`;
+    try {
+      const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(missing.status).toBe(401);
       expect(await missing.json()).toEqual({ ok: false, reason: "missing_signature" });
 
@@ -32,9 +56,6 @@ describe("server", () => {
       });
       expect(unsigned.status).toBe(401);
       expect(await unsigned.json()).toEqual({ ok: false, reason: "missing_secret" });
-
-      const other = await fetch(`${base}/metrics`);
-      expect(other.status).toBe(404);
     } finally {
       server.stop(true);
     }
