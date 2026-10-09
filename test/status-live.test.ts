@@ -1,0 +1,235 @@
+import { expect, test } from "bun:test";
+import { formatEvidenceSummary } from "../src/closeout";
+import {
+  applyWorkItemEvent,
+  beginImplementRun,
+  enqueueJob,
+  enqueueOutbox,
+  enterMergeQueue,
+  getWorkItem,
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+} from "../src/db";
+import { elicitationBody, openQuestion } from "../src/questions";
+import { parseStatusSnapshot, statusIntegrity } from "../src/web/src/contract";
+import { render } from "../src/web/src/client/render";
+import { handleStatusRequest } from "../src/web";
+
+const BASE = "a".repeat(40);
+const HEAD = "b".repeat(40);
+const NOW = 1_700_000_000_000;
+
+test("fake e2e rows show up on /api/status as live work", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const waiting = insertQueuedItem(db, {
+      id: "01WAITINGITEM",
+      title: "Export rows",
+      sessionKey: "ses_1",
+      branchName: "paws/ENG-2",
+      now: NOW,
+    });
+    const merging = insertQueuedItem(db, {
+      id: "01MERGINGITEM",
+      title: "Export the header",
+      sessionKey: "ses_1",
+      branchName: "paws/ENG-3",
+      now: NOW,
+    });
+    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-2", waiting.id]);
+    db.run("UPDATE work_item SET epic_id = ?, linear_identifier = ? WHERE id = ?", [
+      waiting.epicId,
+      "ENG-3",
+      merging.id,
+    ]);
+    db.run("DELETE FROM epic WHERE id = ?", [merging.epicId]);
+    db.run(
+      `INSERT INTO work_item_block (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
+       VALUES (?, ?, ?)`,
+      [waiting.epicId, waiting.linearIssueId, merging.linearIssueId],
+    );
+
+    const parked = beginImplementRun(db, waiting.id, NOW);
+    applyWorkItemEvent(db, waiting.id, "blocking_question");
+    beginImplementRun(db, merging.id, NOW);
+    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    const open = getWorkItem(db, waiting.id);
+    expect(open?.state).toBe("awaiting_input");
+    const question = openQuestion(db, {
+      itemId: waiting.id,
+      runId: parked.run.id,
+      sessionId: "ses_1",
+      body: "Include archived rows?",
+      options: ["yes", "no"],
+      now: NOW,
+    });
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: "ses_1",
+      idempotencyKey: `ask:${question.id}`,
+      payload: {
+        sessionId: "ses_1",
+        body: elicitationBody("Include archived rows?"),
+        options: ["yes", "no"],
+      },
+      now: NOW,
+    });
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses_1",
+      idempotencyKey: `${parked.run.id}:thought`,
+      payload: { sessionId: "ses_1", kind: "thought", body: "Need a product decision." },
+      now: NOW,
+    });
+    const summary = formatEvidenceSummary({
+      outcome: "accepted",
+      taskId: "ENG-3",
+      base: BASE,
+      head: HEAD,
+      fixAttempts: 1,
+      evaluations: 2,
+      exitCode: 0,
+      decision: {
+        specVersion: "0.1",
+        decision: "accepted",
+        gate: "beforePR",
+        base: BASE,
+        head: HEAD,
+        message: "fresh evidence",
+        candidate: {
+          task: "ENG-3",
+          session: "impl-session",
+          model: "claude",
+          provider: "anthropic",
+        },
+        policy: { path: ".agents/closeout.yaml", digest: null, absent: false },
+        items: [
+          { id: "typecheck", kind: "command", state: "passed", message: "exited 0" },
+          {
+            id: "adversarial-review",
+            kind: "review",
+            state: "passed",
+            message: "no failing findings",
+          },
+        ],
+        warnings: [],
+      },
+    });
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses_1",
+      idempotencyKey: `${merging.id}:verdict:${HEAD}:accepted`,
+      payload: { sessionId: "ses_1", kind: "response", body: summary },
+      now: NOW,
+    });
+    enqueueJob(db, {
+      queue: "github.merge",
+      lane: "merge",
+      jobKey: `merge:${merging.id}:${HEAD}`,
+      payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
+      now: NOW,
+    });
+    enqueueOutbox(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "ses_1",
+      idempotencyKey: `${merging.id}:pr:4`,
+      payload: {
+        sessionId: "ses_1",
+        kind: "response",
+        body: "Opened https://github.com/pmdroid/paws-demo/pull/4.",
+      },
+      now: NOW,
+    });
+
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    expect(response?.status).toBe(200);
+    const body: unknown = await response?.json();
+    const parsed = parseStatusSnapshot(body);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    expect(parsed.snapshot.source).toBe("live");
+    expect(JSON.stringify(body)).not.toContain("Audit log export");
+    expect(parsed.snapshot.items.map((item) => item.id)).not.toContain("01WAITINGITEM");
+    expect(parsed.snapshot.runs.map((run) => run.itemId)).not.toContain("01MERGINGITEM");
+
+    const rows = parsed.snapshot.items.map((item) => [item.id, item.state, item.epicId]);
+    expect(rows).toEqual([
+      ["ENG-2", "awaiting_input", waiting.epicId],
+      ["ENG-3", "merge_queue", waiting.epicId],
+    ]);
+    expect(parsed.snapshot.items.every((item) => item.blockers.length === 0)).toBe(true);
+    expect(parsed.snapshot.epics.map((epic) => epic.id)).toEqual([waiting.epicId]);
+
+    const parkedRun = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");
+    expect(parkedRun?.state).toBe("awaiting_input");
+    expect(parkedRun?.activity.some((line) => line.text === "Need a product decision.")).toBe(true);
+    expect(parsed.snapshot.runs.some((run) => run.itemId === "ENG-3")).toBe(true);
+
+    expect(parsed.snapshot.questions.map((entry) => entry.title)).toEqual([
+      "Include archived rows?",
+    ]);
+    expect(parsed.snapshot.questions[0]?.itemId).toBe("ENG-2");
+    expect(parsed.snapshot.questions[0]?.options).toEqual(["yes", "no"]);
+    expect(parsed.snapshot.questions[0]?.runId).toBe(parked.run.id);
+
+    const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
+    expect(verdict?.decision).toBe("accepted");
+    expect(verdict?.checks.map((check) => check.id)).toEqual(["typecheck", "adversarial-review"]);
+    expect(verdict?.baseSha).toBe(BASE);
+    expect(verdict?.headSha).toBe(HEAD);
+
+    expect(parsed.snapshot.mergeQueue.map((entry) => [entry.position, entry.itemId])).toEqual([
+      [1, "ENG-3"],
+    ]);
+    expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.pr?.number).toBe(4);
+
+    const hidden = await handleStatusRequest(
+      new Request("http://127.0.0.1/api/status?engine=demo"),
+      { db, env: {} },
+    );
+    const demo = (await hidden?.json()) as { source: string };
+    expect(demo.source).toBe("demo");
+  } finally {
+    db.close();
+  }
+});
+
+test("an empty live snapshot renders the Linear label empty state", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response?.json());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const view = render({
+      route: { view: "overview" },
+      phase: "ready",
+      snapshot: parsed.snapshot,
+      via: "engine",
+      error: null,
+      engineUrl: "http://127.0.0.1:8787",
+      epicView: "graph",
+    });
+    expect(parsed.snapshot.source).toBe("live");
+    expect(parsed.snapshot.items).toEqual([]);
+    expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Demo data");
+    expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
+  } finally {
+    db.close();
+  }
+});

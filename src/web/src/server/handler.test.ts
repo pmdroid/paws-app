@@ -53,6 +53,39 @@ describe("status HTTP stub", () => {
     expect(broken?.status).toBe(500);
   });
 
+  test("defaults to an empty live snapshot and serves demo only when asked", async () => {
+    const server = startStatusServer({ port: 0, hostname: "127.0.0.1", staticDir: null, env: {} });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    const live = await fetch(`${base}/api/status`);
+    expect(live.status).toBe(200);
+    const body = (await live.json()) as {
+      source: string;
+      items: unknown[];
+      project: { name: string };
+    };
+    expect(body.source).toBe("live");
+    expect(body.items).toEqual([]);
+    expect(JSON.stringify(body)).not.toContain("Audit log export");
+
+    const demo = await fetch(`${base}/api/status?engine=demo`);
+    const sample = (await demo.json()) as { source: string; epics: unknown[] };
+    expect(sample.source).toBe("demo");
+    expect(sample.epics.length).toBeGreaterThan(0);
+
+    const flagged = startStatusServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      staticDir: null,
+      env: { PAWS_STATUS_DEMO: "1" },
+    });
+    servers.push(flagged);
+    const forced = await fetch(`http://127.0.0.1:${flagged.port}/api/status`);
+    const forcedBody = (await forced.json()) as { source: string };
+    expect(forcedBody.source).toBe("demo");
+  });
+
   test("serves /status on loopback and ignores path traversal", async () => {
     const dir = await mkdtemp(join(tmpdir(), "paws-status-"));
     dirs.push(dir);

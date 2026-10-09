@@ -1,4 +1,4 @@
-import { parseStatusSnapshot, type StatusSnapshot } from "../contract";
+import { parseStatusSnapshot, STATUS_API_VERSION, type StatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import { parseEngineUrl, statusEndpoint } from "../endpoint";
 import { choiceFromValue, resolveEngineUrl, type SourceChoice } from "../source";
@@ -55,7 +55,7 @@ async function boot(): Promise<void> {
     paint();
     await reload();
   } else {
-    showDemo();
+    showFallback();
     schedule();
   }
 }
@@ -63,7 +63,7 @@ async function boot(): Promise<void> {
 async function reload(): Promise<void> {
   const engineUrl = currentEngine();
   if (!engineUrl) {
-    showDemo();
+    showFallback();
     schedule();
     return;
   }
@@ -88,12 +88,41 @@ async function reload(): Promise<void> {
   schedule();
 }
 
+function showFallback(): void {
+  if (choice.kind === "demo" || !servedLocally()) showDemo();
+  else showLocalEmpty();
+}
+
 function showDemo(): void {
   snapshot = demoStatus();
   via = "bundled";
   phase = "ready";
   error = null;
   paint();
+}
+
+function showLocalEmpty(): void {
+  snapshot = {
+    version: STATUS_API_VERSION,
+    source: "live",
+    generatedAt: new Date().toISOString(),
+    project: { name: "Paws", team: "Paws", repo: "local", workspace: null },
+    epics: [],
+    items: [],
+    runs: [],
+    questions: [],
+    verdicts: [],
+    mergeQueue: [],
+    events: [],
+  };
+  via = "engine";
+  phase = "ready";
+  error = null;
+  paint();
+}
+
+function servedLocally(): boolean {
+  return location.pathname === "/status" || location.pathname.startsWith("/status/");
 }
 
 function schedule(): void {
@@ -186,7 +215,7 @@ function applyChoice(next: SourceChoice): void {
     url.searchParams.delete("engine");
     history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
-  if (!currentEngine()) showDemo();
+  if (!currentEngine()) showFallback();
   else {
     phase = "loading";
     snapshot = null;
@@ -205,6 +234,7 @@ function sourceHelp(): string {
   if (choice.kind === "demo") return "Showing bundled demo data.";
   if (choice.kind === "engine") return `Showing ${choice.url}.`;
   if (engine) return `Automatic. This page will use ${engine}.`;
+  if (servedLocally()) return "Automatic. This page reads the local engine.";
   return "Automatic. This static site shows demo data until an engine URL is saved.";
 }
 

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
+import type { Database } from "bun:sqlite";
 import {
   parseStatusSnapshot,
   STATUS_API_PATH,
@@ -7,18 +8,28 @@ import {
   type StatusSnapshot,
 } from "../contract";
 import { demoStatus } from "../demo";
+import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
 
 export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
 }
 
 export interface StatusServerOptions {
-  provider: StatusProvider;
+  /**
+   * Live reader. Used for `/api/status` unless the request asks for demo data.
+   * Omit it and pass `db` to read the engine database. Omit both for an empty
+   * live snapshot (`source: "live"`, no items).
+   */
+  provider?: StatusProvider;
+  /** Opened engine database. Ignored when `provider` is set. */
+  db?: Database;
   /**
    * Directory from `bun run build:status` (`index.html`, `config.json`, `assets/`).
    * Omit it to use `src/web/dist` when that build exists. Pass `null` to skip files.
    */
   staticDir?: string | null;
+  /** Defaults to `process.env`. `PAWS_STATUS_DEMO=1` forces the sample snapshot. */
+  env?: Record<string, string | undefined>;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -46,7 +57,7 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
-  if (pathname === STATUS_API_PATH) return apiResponse(request, options.provider);
+  if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
     return pageResponse(request, staticDir);
@@ -63,12 +74,15 @@ export function startStatusServer(options?: {
   port?: number;
   hostname?: string;
   provider?: StatusProvider;
+  db?: Database;
   staticDir?: string | null;
+  env?: Record<string, string | undefined>;
 }): ReturnType<typeof Bun.serve> {
   const hostname = options?.hostname ?? "127.0.0.1";
   const port = options?.port ?? 8787;
-  const provider = options?.provider ?? fakeStatusProvider();
+  const provider = liveProvider(options);
   const staticDir = options && "staticDir" in options ? options.staticDir : defaultStaticDir();
+  const env = options?.env;
   return Bun.serve({
     hostname,
     port,
@@ -76,11 +90,33 @@ export function startStatusServer(options?: {
       const response = await handleStatusRequest(request, {
         provider,
         staticDir: staticDir ?? null,
+        ...(env ? { env } : {}),
       });
       if (response) return response;
       return text("Not found", 404);
     },
   });
+}
+
+/**
+ * Demo only when the request asks for it (`?engine=demo`) or the process is
+ * started with `PAWS_STATUS_DEMO=1`. Every other status read is live.
+ */
+export function providerFor(url: URL, options: StatusServerOptions): StatusProvider {
+  if (demoRequested(url, options.env)) return fakeStatusProvider();
+  return liveProvider(options);
+}
+
+function liveProvider(options?: { provider?: StatusProvider; db?: Database }): StatusProvider {
+  if (options?.provider) return options.provider;
+  if (options?.db) return createLiveStatusProvider(options.db);
+  return { snapshot: () => emptyLiveSnapshot() };
+}
+
+function demoRequested(url: URL, env: Record<string, string | undefined> | undefined): boolean {
+  if (url.searchParams.get("engine") === "demo") return true;
+  const source = env ?? process.env;
+  return source.PAWS_STATUS_DEMO === "1";
 }
 
 async function apiResponse(request: Request, provider: StatusProvider): Promise<Response> {
