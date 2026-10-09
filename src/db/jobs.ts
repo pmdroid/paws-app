@@ -3,6 +3,9 @@ import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_LEASE_MS,
+  IN_FLIGHT_ITEM_STATES,
+  JOB_KIND,
+  MERGE_LANE,
   retryBackoffMs,
 } from "../core";
 
@@ -70,22 +73,56 @@ export type ClaimOptions = {
   queues?: readonly string[];
 };
 
+const EXCLUSIVE_QUEUES = [
+  JOB_KIND.start,
+  JOB_KIND.resume,
+  JOB_KIND.reverify,
+  JOB_KIND.merge,
+] as const;
+
+function sqlLiteral(value: string): string {
+  if (!/^[A-Za-z0-9._%-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
+  return `'${value}'`;
+}
+
+/** Item execution. A second one stays pending until the first item is finished. */
+const EXCLUSIVE_SQL = `(
+  candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")})
+  OR candidate.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)}
+  OR candidate.lane = ${sqlLiteral(MERGE_LANE)}
+)`;
+
+const IN_FLIGHT_SQL = IN_FLIGHT_ITEM_STATES.map(sqlLiteral).join(", ");
+
 /**
  * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
  * A running row whose lease has expired is reclaimable. No semicolon: one statement.
+ *
+ * `item.start`, `run.resume`, `run.reverify`, and `github.merge` are exclusive.
+ * A ready item is not claimed while another item is in flight or while one of
+ * those jobs still holds a lease. The in-flight item can still resume, reverify,
+ * and merge. Other queues, including `core.command` and `linear.catchup`, are not held up.
  */
 export function claimJobSql(queueCount: number): string {
   const queueFilter =
     queueCount > 0
-      ? ` AND queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
+      ? ` AND candidate.queue IN (${Array.from({ length: queueCount }, () => "?").join(", ")})`
       : "";
+  const itemId = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
+  const heldExclusive = EXCLUSIVE_SQL.replaceAll("candidate.", "held.");
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
-    "SELECT id FROM job WHERE run_at <= ?" +
+    "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
     queueFilter +
-    " AND (status = 'pending' OR (status = 'running' AND (locked_until IS NULL OR locked_until <= ?))) " +
-    "ORDER BY priority ASC, run_at ASC, id ASC LIMIT 1) RETURNING *"
+    " AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?))) " +
+    `AND NOT (${EXCLUSIVE_SQL} AND (` +
+    "EXISTS (SELECT 1 FROM job AS held WHERE held.id != candidate.id AND held.status = 'running' " +
+    `AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}) ` +
+    `OR (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND EXISTS (SELECT 1 FROM work_item AS active WHERE active.state IN (${IN_FLIGHT_SQL}))) ` +
+    `OR (EXISTS (SELECT 1 FROM work_item AS other WHERE other.state IN (${IN_FLIGHT_SQL}) AND other.id != ${itemId}) ` +
+    `AND NOT EXISTS (SELECT 1 FROM work_item AS mine WHERE mine.state IN (${IN_FLIGHT_SQL}) AND mine.id = ${itemId}))` +
+    ")) ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
 }
 
@@ -158,7 +195,8 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const sql = claimJobSql(queues?.length ?? 0);
   const binds: (string | number)[] = [workerId, now + leaseMs, now];
   if (queues !== undefined) binds.push(...queues);
-  binds.push(now);
+  // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
+  binds.push(now, now);
   const row = db.query<JobRow, Array<string | number>>(sql).get(...binds);
   return row === null ? null : mapJob(row);
 }

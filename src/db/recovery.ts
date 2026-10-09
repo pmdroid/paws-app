@@ -1,9 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { decideStartup, type StartupDecision, type WorkItemState } from "../core";
 import { applyDecision } from "./decisions";
-import { applyWorkItemEvent, listWorkItemsByStates } from "./items";
+import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
+import type { WorkItemRecord } from "./items";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
+
+/** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
+export type ShutdownWipCommit = (item: WorkItemRecord) => void;
 
 const STARTUP_STATES = [
   "running",
@@ -31,10 +35,24 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
 }
 
 /**
- * SIGINT / SIGTERM. Running work moves to recovering without using the one
- * resume attempt. A merge in progress is left for a re-verify.
+ * SIGINT / SIGTERM. Commit WIP on each in-flight item branch, then move running
+ * work to recovering without using the one resume attempt. A merge in progress
+ * is left for a re-verify.
  */
-export function prepareShutdown(db: Database, now = Date.now()): void {
+export function prepareShutdown(
+  db: Database,
+  now = Date.now(),
+  commitWip?: ShutdownWipCommit,
+): void {
+  if (commitWip !== undefined) {
+    for (const item of listInFlightItems(db)) {
+      try {
+        commitWip(item);
+      } catch {
+        // The lease move still happens. A missing worktree is not a reason to skip shutdown.
+      }
+    }
+  }
   immediate(db, () => {
     const running = listWorkItemsByStates(db, ["running", "verifying"]);
     for (const item of running) {

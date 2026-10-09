@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Database } from "bun:sqlite";
+import { commitCheckpointSync, restartFromFreshMain, worktreePath } from "./acp";
 import {
   ensureLayout,
   loadEnv,
@@ -86,6 +87,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
+    restartFromMain: (item) => {
+      const repository = repositoryBinding(env);
+      if (repository === null) return;
+      restartFromFreshMain({
+        pawsRoot: paths.home,
+        owner: repository.owner,
+        repo: repository.repo,
+        itemId: item.linearIdentifier,
+        wipBranch: item.branchName,
+      });
+    },
   });
   return {
     env,
@@ -100,7 +112,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       abort.abort();
       host.stop();
       loops.stop();
-      prepareShutdown(db);
+      prepareShutdown(db, Date.now(), (item) => {
+        commitCheckpointSync(worktreePath(paths.home, item.linearIdentifier));
+      });
       running.stop();
       server.stop(true);
       db.close();
@@ -154,13 +168,13 @@ if (import.meta.main) {
     process.exit(code);
   }
   const paws = startPaws(process.env, { noTunnel: process.argv.includes("--no-tunnel") });
-  const tunnel =
-    paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
-  console.log(`paws ready · http://${paws.server.hostname}:${paws.server.port}${tunnel}`);
   const shutdown = () => {
     paws.stop();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  const tunnel =
+    paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
+  console.log(`paws ready · http://${paws.server.hostname}:${paws.server.port}${tunnel}`);
 }

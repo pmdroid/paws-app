@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeClock } from "../core";
+import { FakeClock, JOB_KIND } from "../core";
 import {
+  applyWorkItemEvent,
+  beginImplementRun,
   claimJobSql,
   claimNextJob,
   completeJob,
@@ -11,6 +13,7 @@ import {
   enqueueJobOnce,
   failJob,
   getJob,
+  insertQueuedItem,
   listJobs,
   migrate,
   openDatabase,
@@ -168,6 +171,60 @@ describe("job queue", () => {
     expect(claim(right, clock, ["tick"], "right")).toBeNull();
     left.close();
     right.close();
+  });
+
+  test("two ready items never run at once", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "eng-2" },
+      now: clock.now(),
+    });
+    enqueueJob(db, { queue: JOB_KIND.catchup, priority: 9, now: clock.now() });
+
+    const first = claim(db, clock, [JOB_KIND.start, JOB_KIND.catchup]);
+    expect(first?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.start, JOB_KIND.catchup])?.queue).toBe(JOB_KIND.catchup);
+    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
+
+    if (first === null) throw new Error("missing claim");
+    expect(completeJob(db, first, clock.now())).toBe(true);
+    beginImplementRun(db, "eng-1", clock.now());
+    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
+
+    applyWorkItemEvent(db, "eng-1", "cancel");
+    expect(claim(db, clock, [JOB_KIND.start])?.payload).toEqual({ itemId: "eng-2" });
+  });
+
+  test("the in-flight item can resume while another start waits", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    beginImplementRun(db, "eng-1", clock.now());
+    applyWorkItemEvent(db, "eng-1", "lease_expired");
+    enqueueJob(db, {
+      queue: JOB_KIND.start,
+      payload: { itemId: "eng-2" },
+      priority: 0,
+      now: clock.now(),
+    });
+    enqueueJob(db, {
+      queue: JOB_KIND.resume,
+      payload: { itemId: "eng-1" },
+      priority: 5,
+      now: clock.now(),
+    });
+    const claimed = claim(db, clock, [JOB_KIND.start, JOB_KIND.resume]);
+    expect(claimed?.queue).toBe(JOB_KIND.resume);
+    expect(claimed?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
   });
 
   test("an open dedupe key collapses to one pending row", () => {

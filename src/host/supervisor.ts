@@ -7,6 +7,7 @@ import {
   listInFlightItems,
   postPauseNote,
 } from "../db";
+import type { WorkItemRecord } from "../db";
 import { decideWake, isAwakeItemState, JOB_KIND, pauseOutcome, sleep, type Clock } from "../core";
 import type { KeepAwake } from "./keep-awake";
 import { WakeDetector, type WakeSample } from "./wake";
@@ -15,6 +16,7 @@ export type AgentAlive = (runId: string) => boolean;
 
 export class HostSupervisor {
   private stopped = false;
+  readonly restartFromMain: (item: WorkItemRecord) => void;
 
   constructor(
     readonly db: Database,
@@ -24,7 +26,10 @@ export class HostSupervisor {
     /** ACP reports whether the agent child survived wake. The default keeps the current session. */
     readonly agentAlive: AgentAlive = () => true,
     readonly pollMs = 250,
-  ) {}
+    restartFromMain: (item: WorkItemRecord) => void = () => {},
+  ) {
+    this.restartFromMain = restartFromMain;
+  }
 
   tick(): void {
     if (this.stopped) return;
@@ -66,6 +71,7 @@ export class HostSupervisor {
   private handleWake(sample: WakeSample): void {
     const sleptMs = sample.gapMs;
     const now = this.clock.now();
+    const restarts: WorkItemRecord[] = [];
     immediate(this.db, () => {
       const inserted = this.db
         .query(
@@ -84,6 +90,7 @@ export class HostSupervisor {
           checkpoint: item.checkpoint,
         });
         applyDecision(this.db, item, decision, now, stamp);
+        if (decision.type === "restart_from_main") restarts.push(item);
         const outcome = pauseOutcome(decision);
         if (outcome) postPauseNote(this.db, item, sleptMs, outcome, sample.fromWall, now);
       }
@@ -94,5 +101,12 @@ export class HostSupervisor {
         now,
       });
     });
+    for (const item of restarts) {
+      try {
+        this.restartFromMain(item);
+      } catch {
+        // item.start is already queued with from: fresh_main. The WIP branch stays as it was.
+      }
+    }
   }
 }

@@ -14,7 +14,13 @@ export {
   type AuthCheckResult,
   type AuthMethodSummary,
 } from "./auth";
-export { commitCheckpoint, type CheckpointResult } from "./checkpoint";
+export {
+  commitCheckpoint,
+  commitCheckpointSync,
+  restartFromFreshMain,
+  type CheckpointResult,
+  type FreshMainCheckout,
+} from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
 export { isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
