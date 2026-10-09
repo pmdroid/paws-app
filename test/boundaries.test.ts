@@ -17,6 +17,8 @@ const MODULES = [
   "server",
   "web",
   "host",
+  "loop",
+  "doctor",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -36,6 +38,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   web: [],
   server: ["config", "linear", "github", "web"],
   host: ["core", "db"],
+  loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions"],
+  doctor: ["config"],
 };
 
 describe("module boundaries", () => {

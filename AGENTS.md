@@ -4,12 +4,13 @@ Paws is one Bun process on the developer's machine. It takes delegated Linear is
 
 The product is Paws. Do not rename it, and do not describe it as a factory.
 
-This tree is the foundation: typed seams and fakes, not the loop. If a function throws `NotImplementedError`, that is the seam a later issue fills in. Do not invent the feature while touching a neighboring module.
+The loop lives in `src/loop` and is wired from `src/index.ts`. A real local run is `docs/smoke-test.md`. Check prerequisites with `bun run paws doctor`. If a function throws `NotImplementedError`, that seam is still open. Do not invent the feature while touching a neighboring module. The dashboard in `src/web` is owned separately.
 
 ## Run
 
 ```sh
 bun install
+bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test
 ```
@@ -27,10 +28,14 @@ Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported fro
 | `src/core`      | Domain types, states, `transition()` / `transitionEpic()` | nothing in `src`                    |
 | `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`   | `core`                              |
 | `src/linear`    | `TrackerAdapter`, webhook route, fake                     | `core`                              |
-| `src/acp`       | `AcpRunner`, fake                                         | `core`                              |
+| `src/intake`    | Delegated issues and `blocks` order                       | `core`, `linear`                    |
+| `src/acp`       | ACP executor, worktrees, fake agent                       | `core`                              |
 | `src/closeout`  | `CloseoutGate`, fake                                      | nothing in `src`                    |
-| `src/github`    | GitHub App token, pull requests, webhook route, fake      | nothing in `src`                    |
-| `src/questions` | `QuestionChannel`, fake                                   | `core`                              |
+| `src/github`    | GitHub App token, pull requests, serial merge, fake       | nothing in `src`                    |
+| `src/questions` | Elicitation text, question rows, `QuestionChannel`        | `core`                              |
+| `src/loop`      | Orchestrator: intake, ACP, Closeout, PR, merge            | the modules it composes             |
+| `src/doctor`    | `bun run paws doctor` prerequisite checks                 | `config`                            |
+| `src/host`      | Sleep, wake, and `agentAlive`                             | `core`, `db`                        |
 | `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table   | `config`, `linear`, `github`, `web` |
 | `src/web`       | Static status dashboard (`/status`, `GET /api/status`)    | nothing in `src`                    |
 

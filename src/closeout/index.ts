@@ -6,6 +6,7 @@ export type { CloseoutGateOptions } from "./gate";
 export type { FixRequest, FixResult, FixRunner } from "./fixer";
 export { assertTaskId, interpretCloseoutOutput, parseDecisionJson } from "./parse";
 export type { VerdictRecorder } from "./report";
+export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export { evaluateCandidate, runCloseoutGate } from "./run";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";

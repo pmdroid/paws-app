@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
   ensureLayout,
@@ -8,9 +9,16 @@ import {
   type PawsPaths,
 } from "./config";
 import { migrate, openDatabase, prepareShutdown, recoverOnStartup, startLoops } from "./db";
+import { doctorChecks, formatDoctor, realProbe } from "./doctor";
+import { createFetchGitHubClient, githubHttpsUrl } from "./github";
 import { startHost } from "./host";
-import { intakeDelegatedIssue } from "./intake";
 import { openLinear } from "./linear";
+import {
+  attachOrchestrator,
+  type GitHubBinding,
+  type Orchestrator,
+  type RepositoryBinding,
+} from "./loop";
 import { startServer } from "./server";
 
 export type PawsProcess = {
@@ -38,20 +46,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   migrate(db);
   recoverOnStartup(db);
   const abort = new AbortController();
-  const loops = startLoops({ db, signal: abort.signal });
-  const host = startHost({ db, signal: abort.signal });
+  let orchestrator: Orchestrator | null = null;
   const linear = openLinear({
     db,
     secretsDir: paths.secretsDir,
     env: source ?? process.env,
     publicUrl: env.publicUrl,
     noTunnel: options?.noTunnel,
-    followUp: async (event, tracker) => {
-      if (event.issueId === null) return;
-      await intakeDelegatedIssue(db, tracker, {
-        linearIssueId: event.issueId,
-        sessionId: event.sessionId,
-      });
+    followUp: async (event) => {
+      if (orchestrator === null) throw new Error("loop is not attached");
+      await orchestrator.onLinearEvent(event);
     },
   });
   const server = startServer({
@@ -62,6 +66,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     linearWebhook: linear.webhook,
   });
   const running = linear.start(server.port ?? env.port);
+  const loops = startLoops({
+    db,
+    signal: abort.signal,
+    prepare(created) {
+      orchestrator = attachOrchestrator({
+        db,
+        jobs: created.jobs,
+        outbox: created.outbox,
+        pawsRoot: paths.home,
+        tracker: linear.tracker,
+        catchUp: () => running.catchUp(),
+        repository: repositoryBinding(env),
+        github: githubBinding(env),
+      });
+    },
+  });
+  const host = startHost({
+    db,
+    signal: abort.signal,
+    agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
+  });
   return {
     env,
     paths,
@@ -83,7 +108,51 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 }
 
+function repositoryBinding(env: PawsEnv): RepositoryBinding | null {
+  const value = env.githubRepository;
+  if (value === null) return null;
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash !== value.lastIndexOf("/")) return null;
+  const owner = value.slice(0, slash);
+  const repo = value.slice(slash + 1);
+  try {
+    return { owner, repo, remoteUrl: githubHttpsUrl(owner, repo) };
+  } catch {
+    return null;
+  }
+}
+
+function githubBinding(env: PawsEnv): GitHubBinding | null {
+  if (
+    env.githubAppId === null ||
+    env.githubAppInstallationId === null ||
+    env.githubAppPrivateKeyPath === null
+  ) {
+    return null;
+  }
+  try {
+    return {
+      appId: env.githubAppId,
+      installationId: env.githubAppInstallationId,
+      privateKeyPem: readFileSync(env.githubAppPrivateKeyPath, "utf8"),
+      client: createFetchGitHubClient(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function doctorMain(): Promise<number> {
+  const checks = doctorChecks(realProbe(process.env));
+  console.log(formatDoctor(checks));
+  return checks.every((item) => item.ok) ? 0 : 1;
+}
+
 if (import.meta.main) {
+  if (process.argv.includes("doctor")) {
+    const code = await doctorMain();
+    process.exit(code);
+  }
   const paws = startPaws(process.env, { noTunnel: process.argv.includes("--no-tunnel") });
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";

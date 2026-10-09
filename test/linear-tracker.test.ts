@@ -71,6 +71,36 @@ describe("linear tracker", () => {
     expect(calls.some((query) => query.includes("agentActivityCreate"))).toBe(true);
   });
 
+  test("askQuestion sends a select signal and keeps the body as free text", async () => {
+    const inputs: unknown[] = [];
+    const client: LinearClient = {
+      async query(_query, variables) {
+        inputs.push(variables?.["input"]);
+        return {};
+      },
+    };
+    const tracker = createLinearTracker(client);
+    await tracker.askQuestion({
+      sessionId: "ses_1",
+      body: "Include archived rows?\n\nReply with one of the options, or answer in your own words.",
+      options: ["yes", "no"],
+    });
+    expect(inputs[0]).toEqual({
+      agentSessionId: "ses_1",
+      content: {
+        type: "elicitation",
+        body: "Include archived rows?\n\nReply with one of the options, or answer in your own words.",
+      },
+      signal: "select",
+      signalMetadata: {
+        options: [
+          { label: "yes", value: "yes" },
+          { label: "no", value: "no" },
+        ],
+      },
+    });
+  });
+
   test("posts the first activity before a slow follow-up", async () => {
     const tracker = createFakeTracker();
     let release = () => {};

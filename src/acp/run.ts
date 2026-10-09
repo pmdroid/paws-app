@@ -337,7 +337,8 @@ async function runPrompt(options: {
   };
 
   const onAbort = () => beginStop("cancel");
-  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener("abort", onAbort, { once: true });
 
   let acpStopReason: StopReason | undefined;
   let errorMessage: string | undefined;

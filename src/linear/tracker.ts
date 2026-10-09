@@ -167,14 +167,16 @@ function activityInput(update: ProgressUpdate): Record<string, unknown> {
 
 function elicitationInput(question: Elicitation): Record<string, unknown> {
   const options = question.options ?? [];
-  const body =
-    options.length === 0
-      ? question.body
-      : `${question.body}\n\n${options.map((option) => `- ${option}`).join("\n")}`;
-  return {
+  const input: Record<string, unknown> = {
     agentSessionId: question.sessionId,
-    content: { type: "elicitation", body },
+    content: { type: "elicitation", body: question.body },
   };
+  if (options.length === 0) return input;
+  input["signal"] = "select";
+  input["signalMetadata"] = {
+    options: options.map((option) => ({ label: option, value: option })),
+  };
+  return input;
 }
 
 function pickStateId(data: unknown, stateType: StatusUpdate["stateType"]): string | null {

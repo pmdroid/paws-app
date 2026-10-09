@@ -1,0 +1,508 @@
+import { generateKeyPairSync } from "node:crypto";
+import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { expect, test } from "bun:test";
+import type { Database } from "bun:sqlite";
+import type { FakeScript } from "../src/acp/testing/script";
+import { writeFakeCloseout, type FakeStep } from "../src/closeout";
+import { JOB_KIND, systemClock } from "../src/core";
+import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  INSTALLATION_PERMISSIONS,
+  createFakeGitHub,
+  type GitHubClient,
+  type GitHubResponse,
+} from "../src/github";
+import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
+import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+
+const exec = promisify(execFile);
+const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
+const { privateKey } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+});
+const PRIVATE_KEY = privateKey as string;
+
+test("a two-item epic asks once, fixes one rejection, and merges in blocks order", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "parent",
+      identifier: "ENG-1",
+      title: "Add CSV export",
+      description: null,
+      subIssues: [
+        { linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" },
+        { linearIssueId: "iss-3", identifier: "ENG-3", title: "Export the header" },
+      ],
+    },
+  ]);
+  tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
+  const closeout = await writeFakeCloseout(layout.root, {
+    version: "0.1.0",
+    steps: [
+      decision("accepted", [passed]),
+      decision("accepted", [passed]),
+      decision("rejected", [failed, missingReview]),
+      { exit: 0 },
+      decision("rejected", [failed, passedReview]),
+      decision("accepted", [passed, passedReview]),
+      decision("accepted", [passed, passedReview]),
+    ],
+  });
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const results = new Map<string, string>();
+  let scripts = 0;
+  const launch: AgentLaunch = (input) => {
+    scripts += 1;
+    const scriptPath = path.join(layout.root, `script-${scripts}.json`);
+    const resultPath = path.join(layout.root, `result-${scripts}.json`);
+    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    writeFileSync(scriptPath, JSON.stringify(scriptFor(input)));
+    return {
+      command: process.execPath,
+      args: [fakeAgent],
+      env: {
+        ...process.env,
+        FAKE_ACP_SCRIPT: scriptPath,
+        FAKE_ACP_RESULT: resultPath,
+      },
+    };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    },
+    closeoutBin: closeout.bin,
+    launch,
+  });
+
+  let delivered = false;
+  let whileAsking = "";
+  let stop = false;
+  const answerer = (async () => {
+    for (;;) {
+      if (stop) return;
+      const question = tracker.questions.at(-1);
+      if (question && !delivered) {
+        delivered = true;
+        whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
+      }
+      await Bun.sleep(20);
+    }
+  })();
+
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+    const deadline = Date.now() + 80_000;
+    let idle = 0;
+    while (Date.now() < deadline && epicState(db) !== "done") {
+      const job = await jobs.tick();
+      if (job === null) {
+        idle += 1;
+        if (idle > 3) break;
+        await Bun.sleep(20);
+      } else {
+        idle = 0;
+      }
+    }
+    stop = true;
+    await answerer;
+
+    expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
+    const question = tracker.questions[0];
+    expect(question?.options).toEqual(["yes", "no"]);
+    expect(question?.body).toContain("Include archived rows?");
+    expect(question?.body).toContain("answer in your own words");
+    const asked = JSON.parse(await readFile(results.get("implement:ENG-2") ?? "", "utf8")) as {
+      askTeam?: { text?: string };
+    };
+    expect(asked.askTeam?.text).toBe("yes");
+    const kinds = new Set(tracker.progress.map((update) => update.kind));
+    expect(kinds.has("thought")).toBe(true);
+    expect(kinds.has("action")).toBe(true);
+    expect(kinds.has("response")).toBe(true);
+    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
+    expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
+    expect(github.opened.map((pull) => pull.head)).toEqual(["paws/ENG-2", "paws/ENG-3"]);
+    expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
+      "Fixes ENG-2",
+      "Fixes ENG-3",
+    ]);
+    expect(github.opened[0]?.body).toContain("Closeout:");
+    expect(github.opened[1]?.body).toContain("Fix attempts: 1");
+    expect(github.merged).toHaveLength(2);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+  } finally {
+    stop = true;
+    await answerer;
+    db.close();
+    await layout.cleanup();
+  }
+}, 90_000);
+
+test("stop from Linear cancels the live run", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "iss-9",
+      identifier: "ENG-9",
+      title: "Hang",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const launch: AgentLaunch = () => {
+    const scriptPath = path.join(layout.root, "hang.json");
+    writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
+    return {
+      command: process.execPath,
+      args: [fakeAgent],
+      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+    };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    closeoutBin: "/bin/false",
+    launch,
+  });
+  const running = (async () => {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
+    await jobs.tick();
+  })();
+  const deadline = Date.now() + 15_000;
+  while (
+    Date.now() < deadline &&
+    !tracker.progress.some((update) => update.body.includes("Working on ENG-9"))
+  ) {
+    await Bun.sleep(20);
+  }
+  expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
+  await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+  await running;
+  expect(stateOf(db, "ENG-9")).toBe("cancelled");
+  expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
+  expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+  db.close();
+  await layout.cleanup();
+}, 20_000);
+
+const passed = { id: "typecheck", kind: "command", state: "passed", message: "exited 0" };
+const failed = { id: "typecheck", kind: "command", state: "failed", message: "exited 1" };
+const missingReview = {
+  id: "adversarial-review",
+  kind: "review",
+  state: "missing",
+  message: "no evidence for this candidate and policy",
+};
+const passedReview = { ...missingReview, state: "passed", message: "no failing findings" };
+
+function decision(name: "accepted" | "rejected", items: unknown[]): FakeStep {
+  return {
+    exit: name === "accepted" ? 0 : 1,
+    decision: {
+      specVersion: "0.1",
+      decision: name,
+      gate: "beforePR",
+      base: "a".repeat(40),
+      head: "b".repeat(40),
+      candidate: { task: "ENG-2", session: "impl-session", model: "claude", provider: "anthropic" },
+      policy: {
+        path: ".agents/closeout.yaml",
+        digest: `sha256:${"c".repeat(64)}`,
+        absent: false,
+      },
+      items,
+      warnings: [],
+    },
+  };
+}
+
+function scriptFor(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+  if (input.purpose === "review") {
+    return {
+      steps: [
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "[]" },
+          },
+        },
+        { type: "end", stopReason: "end_turn" },
+      ],
+    };
+  }
+  if (input.purpose === "fix") {
+    return {
+      steps: [
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "fix.txt"),
+          content: "fixed\n",
+        },
+        { type: "end", stopReason: "end_turn" },
+      ],
+    };
+  }
+  if (input.itemId === "ENG-2") {
+    return {
+      steps: [
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: "Need a product decision." },
+          },
+        },
+        {
+          type: "update",
+          update: { sessionUpdate: "tool_call", toolCallId: "write-export", title: "Write export" },
+        },
+        {
+          type: "ask_team",
+          question: "Include archived rows?",
+          options: ["yes", "no"],
+        },
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "export.txt"),
+          content: "archived=yes\n",
+        },
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Wrote the export." },
+          },
+        },
+        { type: "end", stopReason: "end_turn" },
+      ],
+    };
+  }
+  return {
+    steps: [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "Adding the header." },
+        },
+      },
+      {
+        type: "update",
+        update: { sessionUpdate: "tool_call", toolCallId: "write-header", title: "Write header" },
+      },
+      {
+        type: "fs_write",
+        path: path.join(input.worktree, "header.txt"),
+        content: "column\n",
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Header is in." },
+        },
+      },
+      { type: "end", stopReason: "end_turn" },
+    ],
+  };
+}
+
+function linearEvent(
+  action: "created" | "prompted",
+  body: string | null,
+  signal: string | null,
+  issueId: string | null = null,
+): AcceptedLinearEvent {
+  return {
+    dedupeKey: `${action}:${issueId ?? body ?? signal ?? "x"}`,
+    deliveryId: null,
+    source: "webhook",
+    action,
+    sessionId: "ses_1",
+    issueId,
+    activityId: action === "prompted" ? "act-1" : null,
+    body,
+    signal,
+    updatedAtMs: Date.now(),
+    payload: "{}",
+  };
+}
+
+function githubClient(bare: string, github: ReturnType<typeof createFakeGitHub>): GitHubClient {
+  let n = 0;
+  return {
+    async request(req): Promise<GitHubResponse> {
+      if (req.path.endsWith("/access_tokens")) {
+        n += 1;
+        await github.mintInstallationToken({
+          installationId: "2",
+          repository: "pmdroid/paws-demo",
+        });
+        return {
+          status: 201,
+          body: {
+            token: `ghs_e2e_${n}`,
+            expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+            repository_selection: "selected",
+            repositories: [{ name: "paws-demo", full_name: "pmdroid/paws-demo" }],
+            permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read" },
+          },
+        };
+      }
+      if (req.method === "POST" && req.path.endsWith("/pulls")) {
+        const body = req.body as { title: string; head: string; base: string; body: string };
+        const opened = await github.open({
+          repository: "pmdroid/paws-demo",
+          title: body.title,
+          head: body.head,
+          base: body.base,
+          body: body.body,
+        });
+        return {
+          status: 201,
+          body: { number: opened.number, html_url: opened.url, body: body.body },
+        };
+      }
+      if (req.method === "PUT" && req.path.endsWith("/merge")) {
+        const body = req.body as { sha?: string };
+        const number = Number(req.path.split("/").at(-2));
+        await github.merge({
+          repository: "pmdroid/paws-demo",
+          number,
+          expectedHeadSha: body.sha ?? "",
+        });
+        const sha = await squashBranch(bare, body.sha ?? "", body);
+        return { status: 200, body: { sha, merged: true } };
+      }
+      return { status: 404, body: {} };
+    },
+  };
+}
+
+async function squashBranch(
+  bare: string,
+  expected: string,
+  body: { sha?: string; commit_message?: string },
+): Promise<string> {
+  const tmp = await mkdtemp(path.join(tmpdir(), "paws-squash-"));
+  try {
+    await exec("git", ["clone", bare, tmp]);
+    await gitIdentity(tmp);
+    const listed = (
+      await exec("git", [
+        "-C",
+        tmp,
+        "for-each-ref",
+        "--format=%(objectname) %(refname)",
+        "refs/remotes/origin/paws",
+      ])
+    ).stdout.trim();
+    const match = listed.split("\n").find((line) => line.startsWith(`${expected} `));
+    if (!match) throw new Error(`no pushed branch at ${expected}`);
+    const ref = match.slice(expected.length).trim();
+    await exec("git", ["-C", tmp, "merge", "--squash", ref]);
+    await exec("git", ["-C", tmp, "commit", "-m", body.commit_message ?? "squash"]);
+    await exec("git", ["-C", tmp, "push", "origin", "HEAD:main"]);
+    return (await exec("git", ["-C", tmp, "rev-parse", "HEAD"])).stdout.trim();
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+async function repoLayout(): Promise<{
+  root: string;
+  bare: string;
+  pawsRoot: string;
+  home: string;
+  cleanup: () => Promise<void>;
+}> {
+  const root = await mkdtemp(path.join(tmpdir(), "paws-e2e-"));
+  const bare = path.join(root, "origin.git");
+  const seed = path.join(root, "seed");
+  const pawsRoot = path.join(root, "paws");
+  const home = path.join(root, "home");
+  await mkdir(home, { recursive: true });
+  await mkdir(pawsRoot, { recursive: true });
+  await exec("git", ["init", "--bare", "-b", "main", bare]);
+  await exec("git", ["clone", bare, seed]);
+  await gitIdentity(seed);
+  await writeFile(path.join(seed, "README.md"), "paws demo\n");
+  await exec("git", ["-C", seed, "add", "README.md"]);
+  await exec("git", ["-C", seed, "commit", "-m", "init"]);
+  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+  return {
+    root,
+    bare,
+    pawsRoot,
+    home,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+async function gitIdentity(dir: string): Promise<void> {
+  await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
+  await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
+  await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
+}
+
+function stateOf(db: Database, identifier: string): string | null {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  if (!row) return null;
+  return getWorkItem(db, row.id)?.state ?? null;
+}
+
+function epicState(db: Database): string | null {
+  return db.query<{ state: string }, []>("SELECT state FROM epic LIMIT 1").get()?.state ?? null;
+}
+
+function debug(layout: { pawsRoot: string }, db: Database): string {
+  try {
+    const jobs = listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`);
+    const items = db
+      .query<{ linear_identifier: string; state: string }, []>(
+        "SELECT linear_identifier, state FROM work_item ORDER BY position",
+      )
+      .all();
+    return JSON.stringify({ paws: layout.pawsRoot, epic: epicState(db), items, jobs });
+  } catch {
+    return "db closed";
+  }
+}
