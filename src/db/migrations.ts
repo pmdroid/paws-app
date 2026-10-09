@@ -6,6 +6,7 @@ export type Migration = {
 /**
  * Append-only. Shipped ids are never edited; add the next numbered migration.
  * Epic and work item landed in 002. Recovery columns, runs, and wake rows are 003.
+ * Open questions for ask_team are 004.
  */
 export const migrations: readonly Migration[] = [
   {
@@ -173,6 +174,25 @@ CREATE TABLE wake (
   slept_ms INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 ) STRICT;
+`,
+  },
+  {
+    id: "004_questions",
+    sql: `
+CREATE TABLE question (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT NOT NULL,
+  body TEXT NOT NULL,
+  options TEXT CHECK (options IS NULL OR json_valid(options)),
+  status TEXT NOT NULL CHECK (status IN ('open', 'answered')),
+  answer TEXT,
+  answered_by TEXT,
+  created_at INTEGER NOT NULL,
+  answered_at INTEGER
+) STRICT;
+CREATE INDEX question_session_open ON question (session_id, status);
 `,
   },
 ];

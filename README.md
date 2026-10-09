@@ -10,10 +10,13 @@ Install [Bun](https://bun.sh) 1.4 or newer, then:
 
 ```sh
 bun install
+bun run paws doctor   # git, Linear, ngrok, Claude, Codex, Closeout, GitHub App
 bun run paws
 ```
 
-The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready`. No external accounts are required for this foundation. Copy `.env.example` to `.env` when you have Linear and GitHub App credentials.
+A real local run (Linear app, ngrok dev domain, GitHub App, Closeout, and the two ACP logins) is written out in `docs/smoke-test.md`.
+
+The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready`. Tests use fakes and do not need external accounts. Copy `.env.example` to `.env` when you have Linear and GitHub App credentials, then follow `docs/smoke-test.md`.
 
 | Path                  | What it is                                   |
 | --------------------- | -------------------------------------------- |

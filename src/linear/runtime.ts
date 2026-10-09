@@ -22,6 +22,7 @@ export type LinearRunning = {
 
 export type OpenLinear = {
   webhook: LinearWebhookDeps;
+  tracker: TrackerAdapter | null;
   start(port: number): LinearRunning;
 };
 
@@ -57,6 +58,7 @@ export function openLinear(options: {
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
+    tracker,
     start(port) {
       if (running !== null) return running;
       const tunnel = openTunnel({
