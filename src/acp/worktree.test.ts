@@ -1,0 +1,83 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test } from "bun:test";
+import { commitCheckpoint } from "./checkpoint";
+import { git } from "./git";
+import { createWorktree, ensureBareMirror, removeWorktree } from "./worktree";
+import { branchName } from "./paths";
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+test("bare mirror and worktree stay off the developer checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-wt-"));
+  roots.push(root);
+  const source = join(root, "checkout");
+  const pawsRoot = join(root, "home", ".paws");
+  await initRepo(source);
+
+  const mirror = await ensureBareMirror({
+    remoteUrl: source,
+    owner: "acme",
+    repo: "demo",
+    pawsRoot,
+  });
+  const worktree = await createWorktree({
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-7",
+    pawsRoot,
+  });
+
+  expect(worktree.branch).toBe(branchName("ENG-7"));
+  expect(worktree.path).toBe(join(pawsRoot, "worktrees", "ENG-7"));
+  expect(await readFile(join(worktree.path, "README.md"), "utf8")).toBe("hello\n");
+  expect((await git(["-C", source, "status", "--porcelain"])).trim()).toBe("");
+  expect((await git(["-C", source, "branch", "--show-current"])).trim()).toBe("main");
+
+  await writeFile(join(worktree.path, "notes.txt"), "wip\n");
+  const checkpoint = await commitCheckpoint(worktree.path, "wip: ENG-7 checkpoint");
+  expect(checkpoint.committed).toBe(true);
+  expect(await readFile(join(worktree.path, "notes.txt"), "utf8")).toBe("wip\n");
+  expect((await git(["-C", worktree.path, "log", "-1", "--format=%s"])).trim()).toBe(
+    "wip: ENG-7 checkpoint",
+  );
+
+  const again = await createWorktree({
+    owner: "acme",
+    repo: "demo",
+    itemId: "ENG-7",
+    pawsRoot,
+  });
+  expect(again.path).toBe(worktree.path);
+
+  await removeWorktree({ owner: "acme", repo: "demo", itemId: "ENG-7", pawsRoot });
+  const stillThere = (
+    await git(["--git-dir", mirror.path, "rev-parse", "--verify", worktree.branch])
+  ).trim();
+  if (!checkpoint.sha) throw new Error("checkpoint did not record a sha");
+  expect(stillThere).toBe(checkpoint.sha);
+}, 20_000);
+
+async function initRepo(dir: string): Promise<void> {
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(dir, { recursive: true });
+  await git(["init", "-b", "main"], { cwd: dir });
+  await writeFile(join(dir, "README.md"), "hello\n");
+  await git(["-C", dir, "add", "README.md"]);
+  await git([
+    "-C",
+    dir,
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "user.name=Test",
+    "commit",
+    "-m",
+    "init",
+  ]);
+}
