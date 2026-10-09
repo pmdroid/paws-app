@@ -1,0 +1,30 @@
+{
+  "teamKey": "ENG",
+  "repo": "pmdroid/paws-demo",
+  "label": "paws",
+  "parent": {
+    "slug": "row-export",
+    "title": "Export rows",
+    "description": "Delegate this parent to Paws. Three sub-issues merge in order with no manual git.\n\n1. Fix the seeded export test. Closeout fails once, then the fix loop repairs exportRows.\n2. Add a header helper in the same file. Blocked by the export fix.\n3. Call ask_team before choosing whether archived rows are included.\n\nThe acceptance target is three merged pull requests, one Linear answer, and one fix loop."
+  },
+  "children": [
+    {
+      "slug": "export-rows",
+      "title": "Fix exportRows in src/export.ts so src/export.test.ts passes without editing the test",
+      "description": "src/export.ts exports exportRows. The body drops every row, so src/export.test.ts fails.\n\nMake that test pass. Two sample rows become \"1,Ada\\n2,Grace\\n\". Archived rows are included. The header is a later issue.\n\nDo not edit the test. Do not add exportWithHeader or includeArchived in this issue. A pull request that still fails bun test is rejected. Use the test output and fix exportRows.",
+      "blockedBy": []
+    },
+    {
+      "slug": "export-header",
+      "title": "Add exportWithHeader to src/export.ts returning the header id,name plus exportRows",
+      "description": "Blocked by the exportRows issue. Edit the same file, src/export.ts.\n\nAdd exportWithHeader(rows). It returns the line id,name, a newline, then exportRows(rows). Add src/export-header.test.ts that expects exportWithHeader of Ada's row to be \"id,name\\n1,Ada\\n\".\n\nDo not change exportRows or src/export.test.ts.",
+      "blockedBy": ["export-rows"]
+    },
+    {
+      "slug": "archived-rows",
+      "title": "Call ask_team \"Include archived rows?\" with options yes and no, then set includeArchived in src/export.ts from the answer",
+      "description": "Blocked by the header issue. This needs a product decision before any code change.\n\nCall the ask_team tool with question \"Include archived rows?\" and options yes and no. Wait for the answer. Do not pick a default yourself.\n\nThen, in src/export.ts, add includeArchived() that returns true only when the answer was yes. Add rowsForExport(rows) that returns every row when the answer was yes, and only rows with archived set to false when the answer was no. Add src/archived.test.ts for the answer you received.\n\nDo not change exportRows, exportWithHeader, or their tests.",
+      "blockedBy": ["export-header"]
+    }
+  ]
+}

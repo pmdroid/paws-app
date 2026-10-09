@@ -1,0 +1,28 @@
+specVersion: "0.1"
+description: Bun install, typecheck, and tests must pass before a pull request. The export test is seeded to fail until exportRows is fixed.
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+setup:
+  - id: install
+    exec: ["bun", "install", "--frozen-lockfile"]
+    timeoutSeconds: 600
+items:
+  - id: typecheck
+    kind: command
+    gate: beforePR
+    exec: ["bun", "run", "typecheck"]
+    timeoutSeconds: 120
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test"]
+    timeoutSeconds: 120
+  - id: adversarial-review
+    kind: review
+    gate: beforePR
+    skill: .agents/skills/adversarial-review/SKILL.md
+    independence:
+      differentSession: true
+      differentModel: true
+    failOn: P1
