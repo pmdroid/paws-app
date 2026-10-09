@@ -17,14 +17,27 @@ describe("process", () => {
 
   test("bun src/index.ts prints ready", async () => {
     const home = tempHome();
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      PAWS_HOME: home,
+      PAWS_PORT: "0",
+      PAWS_HOST: "127.0.0.1",
+    };
+    for (const key of [
+      "LINEAR_ACCESS_TOKEN",
+      "LINEAR_REFRESH_TOKEN",
+      "LINEAR_CLIENT_ID",
+      "LINEAR_CLIENT_SECRET",
+      "LINEAR_WEBHOOK_SECRET",
+      "NGROK_AUTHTOKEN",
+      "PAWS_PUBLIC_URL",
+      "PAWS_NO_TUNNEL",
+    ]) {
+      delete env[key];
+    }
     const proc = Bun.spawn(["bun", "src/index.ts"], {
       cwd: new URL("..", import.meta.url).pathname,
-      env: {
-        ...process.env,
-        PAWS_HOME: home,
-        PAWS_PORT: "0",
-        PAWS_HOST: "127.0.0.1",
-      },
+      env,
       stdout: "pipe",
       stderr: "pipe",
     });

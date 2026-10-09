@@ -24,7 +24,7 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 | `~/.paws/runs/`       | Transcripts and Closeout reports             |
 | `~/.paws/logs/`       | Process logs                                 |
 
-`GET /health` returns JSON. `GET /status` is a static stub. Webhook routes fail closed until signature checks are implemented.
+`GET /health` returns JSON. `GET /status` is a static stub. `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges. GitHub webhooks still fail closed.
 
 ## Checks
 

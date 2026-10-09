@@ -25,10 +25,14 @@ describe("fakes", () => {
     expect(tracker.progress).toHaveLength(1);
     expect(tracker.questions).toHaveLength(1);
     expect(tracker.statuses).toHaveLength(1);
-    expect(checkLinearSignature({ signature: "sig", secret: "secret" })).toEqual({
-      ok: false,
-      reason: "not_implemented",
-    });
+    expect(
+      checkLinearSignature({
+        signature: "ab".repeat(32),
+        secret: "secret",
+        rawBody: "{}",
+        timestampMs: Date.now(),
+      }),
+    ).toEqual({ ok: false, reason: "bad_signature" });
   });
 
   test("acp, closeout, github, and questions record calls", async () => {
