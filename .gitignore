@@ -1,0 +1,14 @@
+node_modules
+dist
+out
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea
+*.db
+*.db-wal
+*.db-shm
