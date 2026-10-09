@@ -1,0 +1,358 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
+import type { FakeResult, FakeScript, FakeStep } from "./script";
+
+/**
+ * Stdio ACP agent used by tests. It speaks JSON-RPC newline messages and never
+ * expects the client to call `authenticate`.
+ */
+
+const resultPath = process.env.FAKE_ACP_RESULT;
+const scriptPath = process.env.FAKE_ACP_SCRIPT;
+const script: FakeScript = scriptPath
+  ? (JSON.parse(readFileSync(scriptPath, "utf8")) as FakeScript)
+  : { steps: [] };
+
+const state: FakeResult = {
+  methods: [],
+  mcpServers: [],
+  permissions: [],
+  fs: [],
+  terminals: [],
+};
+
+let nextId = 1;
+let cancelled = false;
+const pending = new Map<
+  number,
+  { resolve: (value: unknown) => void; reject: (error: Error) => void }
+>();
+
+function persist(): void {
+  if (!resultPath) return;
+  writeFileSync(resultPath, JSON.stringify(state, null, 2));
+}
+
+function send(message: unknown): void {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
+
+function request(method: string, params: unknown): Promise<unknown> {
+  const id = nextId++;
+  send({ jsonrpc: "2.0", id, method, params });
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+  });
+}
+
+function record(method: string): void {
+  state.methods.push(method);
+  persist();
+}
+
+const sessionId = "fake-session";
+
+async function handle(message: {
+  id?: number | string | null;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: { message?: string };
+}): Promise<void> {
+  if (message.id != null && message.method == null) {
+    const waiter = pending.get(Number(message.id));
+    if (!waiter) return;
+    pending.delete(Number(message.id));
+    if (message.error) waiter.reject(new Error(message.error.message ?? "request failed"));
+    else waiter.resolve(message.result);
+    return;
+  }
+  if (!message.method) return;
+  record(message.method);
+
+  if (message.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        protocolVersion: 1,
+        agentInfo: { name: "fake-acp", version: "0.0.0" },
+        agentCapabilities: { mcpCapabilities: { http: false, sse: false } },
+        authMethods: script.authMethods ?? [],
+      },
+    });
+    return;
+  }
+
+  if (message.method === "session/new") {
+    const servers = Array.isArray(message.params?.mcpServers) ? message.params.mcpServers : [];
+    state.mcpServers = servers.map((server) => {
+      const recordServer = server as {
+        name?: string;
+        command?: string;
+        args?: string[];
+        env?: Array<{ name: string; value: string }>;
+      };
+      return {
+        name: recordServer.name,
+        command: recordServer.command,
+        args: recordServer.args,
+        env: recordServer.env,
+      };
+    });
+    persist();
+    send({ jsonrpc: "2.0", id: message.id, result: { sessionId } });
+    return;
+  }
+
+  if (message.method === "session/cancel") {
+    cancelled = true;
+    return;
+  }
+
+  if (message.method === "session/prompt") {
+    try {
+      const finished = await runSteps(script.steps, message.id ?? null);
+      if (!finished) {
+        send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: text } });
+    }
+    return;
+  }
+
+  if (message.id != null) {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32601, message: `unexpected method ${message.method}` },
+    });
+  }
+}
+
+async function runSteps(steps: FakeStep[], prompt: number | string | null): Promise<boolean> {
+  for (const step of steps) {
+    if (step.type === "update") {
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId, update: step.update },
+      });
+      continue;
+    }
+    if (step.type === "permission") {
+      const outcome = await request("session/request_permission", {
+        sessionId,
+        toolCall: {
+          toolCallId: step.toolCall.toolCallId,
+          title: step.toolCall.title ?? step.toolCall.toolCallId,
+          name: step.toolCall.name,
+          kind: step.toolCall.kind,
+          status: "pending",
+          locations: step.toolCall.locations,
+          rawInput: step.toolCall.rawInput,
+        },
+        options: step.options ?? [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "deny", name: "Deny", kind: "reject_once" },
+        ],
+      });
+      state.permissions.push({ toolCallId: step.toolCall.toolCallId, outcome });
+      persist();
+      continue;
+    }
+    if (step.type === "fs_read" || step.type === "fs_write") {
+      const method = step.type === "fs_read" ? "fs/read_text_file" : "fs/write_text_file";
+      const params =
+        step.type === "fs_read"
+          ? { sessionId, path: step.path }
+          : { sessionId, path: step.path, content: step.content };
+      try {
+        const response = (await request(method, params)) as { content?: string };
+        state.fs.push({
+          op: step.type === "fs_read" ? "read" : "write",
+          path: step.path,
+          ok: true,
+          ...(response.content != null ? { content: response.content } : {}),
+        });
+      } catch (error) {
+        state.fs.push({
+          op: step.type === "fs_read" ? "read" : "write",
+          path: step.path,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      persist();
+      continue;
+    }
+    if (step.type === "terminal") {
+      try {
+        const created = (await request("terminal/create", {
+          sessionId,
+          command: step.command,
+          args: step.args ?? [],
+          ...(step.cwd ? { cwd: step.cwd } : {}),
+        })) as { terminalId: string };
+        const waited = (await request("terminal/wait_for_exit", {
+          sessionId,
+          terminalId: created.terminalId,
+        })) as { exitCode?: number | null };
+        const output = (await request("terminal/output", {
+          sessionId,
+          terminalId: created.terminalId,
+        })) as { output?: string };
+        await request("terminal/release", { sessionId, terminalId: created.terminalId });
+        state.terminals.push({
+          command: step.command,
+          ok: true,
+          output: output.output,
+          exitCode: waited.exitCode,
+        });
+      } catch (error) {
+        state.terminals.push({
+          command: step.command,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      persist();
+      continue;
+    }
+    if (step.type === "ask_team") {
+      const server = state.mcpServers[0];
+      if (!server?.command) {
+        state.askTeam = { ok: false, error: "no mcp server" };
+        persist();
+        continue;
+      }
+      try {
+        const text = await callAskTeam(server, step.question, step.options, step.context);
+        state.askTeam = { ok: true, text };
+      } catch (error) {
+        state.askTeam = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      persist();
+      continue;
+    }
+    if (step.type === "hang") {
+      if (script.ignoreCancel) await new Promise(() => undefined);
+      await new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+          if (cancelled) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 15);
+      });
+      send({ jsonrpc: "2.0", id: prompt, result: { stopReason: "cancelled" } });
+      return true;
+    }
+    if (step.type === "end") {
+      send({ jsonrpc: "2.0", id: prompt, result: { stopReason: step.stopReason ?? "end_turn" } });
+      return true;
+    }
+  }
+  return false;
+}
+
+async function callAskTeam(
+  server: { command?: string; args?: string[]; env?: Array<{ name: string; value: string }> },
+  question: string,
+  options?: string[],
+  context?: string,
+): Promise<string> {
+  const env: Record<string, string> = {};
+  if (process.env.PATH) env.PATH = process.env.PATH;
+  for (const item of server.env ?? []) env[item.name] = item.value;
+  const child = spawn(server.command ?? "", server.args ?? [], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env,
+  }) as ChildProcessWithoutNullStreams;
+  return speakMcp(child, question, options, context);
+}
+
+function speakMcp(
+  child: ChildProcessWithoutNullStreams,
+  question: string,
+  options?: string[],
+  context?: string,
+): Promise<string> {
+  let next = 1;
+  const waiters = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+  const lines = createInterface({ input: child.stdout });
+  lines.on("line", (line) => {
+    if (!line.trim()) return;
+    const message = JSON.parse(line) as {
+      id?: number;
+      result?: unknown;
+      error?: { message?: string };
+    };
+    if (message.id == null) return;
+    const waiter = waiters.get(message.id);
+    if (!waiter) return;
+    waiters.delete(message.id);
+    if (message.error) waiter.reject(new Error(message.error.message ?? "mcp error"));
+    else waiter.resolve(message.result);
+  });
+  const call = (method: string, params: unknown) => {
+    const id = next++;
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    return new Promise((resolve, reject) => waiters.set(id, { resolve, reject }));
+  };
+  return (async () => {
+    await call("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "fake-acp", version: "0.0.0" },
+    });
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+    );
+    await call("tools/list", {});
+    const result = (await call("tools/call", {
+      name: "ask_team",
+      arguments: { question, ...(options ? { options } : {}), ...(context ? { context } : {}) },
+    })) as { content?: Array<{ text?: string }>; isError?: boolean };
+    child.stdin.end();
+    const text = result.content?.[0]?.text ?? "";
+    if (result.isError) throw new Error(text);
+    return text;
+  })();
+}
+
+async function readInput(): Promise<void> {
+  const lines = createInterface({ input: process.stdin });
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line) as {
+      id?: number | string | null;
+      method?: string;
+      params?: Record<string, unknown>;
+      result?: unknown;
+      error?: { message?: string };
+    };
+    void handle(message);
+  }
+}
+
+const entry = process.argv[1] ?? "";
+if (entry.endsWith("fake-agent.ts") || entry.endsWith("fake-agent.js")) {
+  if (script.ignoreCancel) {
+    process.on("SIGTERM", () => undefined);
+    process.on("SIGINT", () => undefined);
+  }
+  readInput().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}

@@ -1,4 +1,7 @@
 import type { ItemId } from "../core";
+import type { AgentRole } from "./adapters";
+import type { AskTeamHook } from "./ask-team";
+import type { AcpEventListener } from "./types";
 
 export type AcpStopReason =
   | "end_turn"
@@ -20,6 +23,18 @@ export type StartAcpRun = {
   worktree: string;
   prompt: string;
   onUpdate?: (update: AcpUpdate) => void;
+  /** Richer stream. Linear maps these; `onUpdate` stays the short summary. */
+  onEvent?: AcpEventListener;
+  role?: AgentRole;
+  runId?: string;
+  pawsRoot?: string;
+  home?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  askTeam?: AskTeamHook;
+  command?: string;
+  args?: string[];
+  env?: NodeJS.ProcessEnv;
 };
 
 /**
