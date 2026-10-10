@@ -42,6 +42,44 @@ export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; bod
   }
 }
 
+export function createAcpActivityReporter(
+  post: (activity: { kind: ActivityKind; body: string }) => void,
+): { onEvent(event: AcpEvent): void; flush(): void } {
+  let pending: { kind: "thought" | "response"; body: string } | null = null;
+
+  function flush(final = false): boolean {
+    if (pending === null) return false;
+    const activity = clip(final ? pending.kind : "thought", pending.body);
+    pending = null;
+    if (activity !== null) post(activity);
+    return activity !== null;
+  }
+
+  return {
+    onEvent(event) {
+      if (event.type === "session_update") {
+        const update = event.update;
+        if (
+          update.sessionUpdate === "agent_message_chunk" ||
+          update.sessionUpdate === "agent_thought_chunk"
+        ) {
+          const kind = update.sessionUpdate === "agent_message_chunk" ? "response" : "thought";
+          if (pending !== null && pending.kind !== kind) flush();
+          pending ??= { kind, body: "" };
+          pending.body += textOf(update.content);
+          return;
+        }
+      }
+      const activity = activityFromAcpEvent(event);
+      if (activity === null) return;
+      const flushed = flush(event.type === "prompt_complete" && event.stopReason === "end_turn");
+      if (event.type === "prompt_complete" && flushed) return;
+      post(event.type === "prompt_complete" ? { ...activity, kind: "thought" } : activity);
+    },
+    flush,
+  };
+}
+
 export function clipActivity(body: string): string {
   const trimmed = body.trim();
   if (trimmed.length <= ACTIVITY_LIMIT) return trimmed;
@@ -55,8 +93,9 @@ function fromSessionUpdate(update: SessionUpdate): { kind: ActivityKind; body: s
     case "agent_message_chunk":
       return clip("response", textOf(update.content));
     case "tool_call":
-    case "tool_call_update":
       return clip("action", update.title?.trim() || update.toolCallId);
+    case "tool_call_update":
+      return update.title ? clip("action", update.title) : null;
     case "plan": {
       const body = update.entries
         .map((entry) => entry.content)

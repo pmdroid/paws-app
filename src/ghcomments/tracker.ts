@@ -148,7 +148,7 @@ export function createGitHubCommentTracker(
     const issueId = ensure(update.sessionId);
     if (stopped(update.sessionId)) return;
     await mode.postProgress(update);
-    await applyLabel(issueId, labelForProgress(update.kind));
+    if (update.kind !== "response") await applyLabel(issueId, labelForProgress(update.kind));
   }
 
   async function askQuestion(question: Elicitation): Promise<void> {
@@ -235,7 +235,6 @@ export function createGitHubCommentTracker(
 
 function labelForProgress(kind: ProgressUpdate["kind"]): string {
   if (kind === "elicitation") return PAWS_LABEL_AWAITING;
-  if (kind === "response") return PAWS_LABEL_DONE;
   return PAWS_LABEL_RUNNING;
 }
 

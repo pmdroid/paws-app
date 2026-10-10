@@ -55,7 +55,7 @@ import {
   handoffNote,
   openQuestion,
 } from "../questions";
-import { activityFromAcpEvent, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
@@ -258,6 +258,12 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
+    const activity = createAcpActivityReporter((update) => {
+      if (update.kind === "elicitation") return;
+      posted = true;
+      this.activitySeq += 1;
+      this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`);
+    });
 
     const prompt = implementPrompt({
       identifier: item.linearIdentifier,
@@ -286,13 +292,7 @@ export class Orchestrator {
         home: this.options.home ?? homedir(),
         signal: controller.signal,
         askTeam,
-        onEvent: (event) => {
-          const activity = activityFromAcpEvent(event);
-          if (activity === null || activity.kind === "elicitation") return;
-          posted = true;
-          this.activitySeq += 1;
-          this.post(item, activity.kind, activity.body, `${run.id}:acp:${this.activitySeq}`);
-        },
+        onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
         ...this.itemDocker("claude"),
@@ -326,6 +326,7 @@ export class Orchestrator {
         this.fail(current, "run_error", message);
       }
     } finally {
+      activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
       this.live.delete(run.id);
@@ -791,7 +792,7 @@ export class Orchestrator {
       now: this.now(),
       status: "active",
       kind: "implement",
-      agent: "claude",
+      agent: this.implementerName(),
       freshSession: true,
     });
     setCurrentRun(this.db, item.id, run.id);

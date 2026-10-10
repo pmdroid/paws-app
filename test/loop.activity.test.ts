@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { GROK_LOGIN_MESSAGE } from "../src/acp";
+import { GROK_LOGIN_MESSAGE, type AcpEvent } from "../src/acp";
 import { createLinearTracker, type LinearClient } from "../src/linear";
 import {
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
   LINEAR_STALE_MS,
   activityFromAcpEvent,
+  createAcpActivityReporter,
   deliverLinearOutbox,
   shouldKeepAlive,
   shouldPostFirstActivity,
@@ -69,6 +70,73 @@ describe("activity mapping", () => {
         phase: "answered",
         question: "Include archived rows?",
         answer: "yes",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("streamed activity", () => {
+  function chunk(text: string, thought = false): AcpEvent {
+    return {
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: thought ? "agent_thought_chunk" : "agent_message_chunk",
+        content: { type: "text", text },
+      },
+    };
+  }
+
+  test("joins fragments and whitespace before posting progress or final evidence", () => {
+    const posted: { kind: string; body: string }[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent(chunk("I"));
+    reporter.onEvent(chunk(" will"));
+    reporter.onEvent(chunk(" "));
+    reporter.onEvent(chunk("check."));
+    expect(posted).toEqual([]);
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Run checks" },
+    });
+    expect(posted).toEqual([
+      { kind: "thought", body: "I will check." },
+      { kind: "action", body: "Run checks" },
+    ]);
+    reporter.onEvent(chunk("Verified"));
+    reporter.onEvent(chunk(" locally."));
+    reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
+    reporter.flush();
+    expect(posted.slice(2)).toEqual([{ kind: "response", body: "Verified locally." }]);
+  });
+
+  test("thoughts and interrupted messages stay progress", () => {
+    const posted: { kind: string; body: string }[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent(chunk("Thinking", true));
+    reporter.onEvent(chunk(" through it.", true));
+    reporter.onEvent(chunk("Partially "));
+    reporter.onEvent(chunk("done."));
+    reporter.onEvent({ type: "cancelled", reason: "timeout" });
+    reporter.flush();
+    expect(posted).toEqual([
+      { kind: "thought", body: "Thinking through it." },
+      { kind: "thought", body: "Partially done." },
+      { kind: "error", body: "Run timed out." },
+    ]);
+  });
+
+  test("a title-free tool update does not publish its opaque identifier", () => {
+    expect(
+      activityFromAcpEvent({
+        type: "session_update",
+        sessionId: "s",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "exec-123",
+          status: "in_progress",
+        },
       }),
     ).toBeNull();
   });
