@@ -11,7 +11,15 @@ import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  getWorkItem,
+  listJobs,
+  listRuns,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -354,60 +362,70 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
   }
 }, 120_000);
 
-test("stop from Linear cancels the live run", async () => {
-  const layout = await repoLayout();
-  const tracker = createFakeTracker([
-    {
-      linearIssueId: "iss-9",
-      identifier: "ENG-9",
-      title: "Hang",
-      description: null,
-      subIssues: [],
-    },
-  ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
-  const launch: AgentLaunch = () => {
-    const scriptPath = path.join(layout.root, "hang.json");
-    writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
-    return {
-      command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+test.each(["claude", "codex", "grok"])(
+  "stop from Linear cancels the live %s run",
+  async (implementer) => {
+    const layout = await repoLayout();
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      `[agents]\nimplementer = "${implementer}"\n`,
+    );
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "iss-9",
+        identifier: "ENG-9",
+        title: "Hang",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const launch: AgentLaunch = () => {
+      const scriptPath = path.join(layout.root, "hang.json");
+      writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
+      return {
+        command: process.execPath,
+        args: [fakeAgent],
+        env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      };
     };
-  };
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    launch,
-  });
-  const running = (async () => {
-    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
-    await jobs.tick();
-  })();
-  const deadline = Date.now() + 15_000;
-  while (
-    Date.now() < deadline &&
-    !tracker.progress.some((update) => update.body.includes("Working on ENG-9"))
-  ) {
-    await Bun.sleep(20);
-  }
-  expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
-  await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
-  await running;
-  expect(stateOf(db, "ENG-9")).toBe("cancelled");
-  expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-  db.close();
-  await layout.cleanup();
-}, 20_000);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      launch,
+    });
+    const running = (async () => {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
+      await jobs.tick();
+    })();
+    const deadline = Date.now() + 15_000;
+    while (
+      Date.now() < deadline &&
+      !tracker.progress.some((update) => update.body.includes("Working on ENG-9"))
+    ) {
+      await Bun.sleep(20);
+    }
+    expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
+    await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+    await running;
+    expect(stateOf(db, "ENG-9")).toBe("cancelled");
+    expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
+    expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    const agents = listRuns(db).map((run) => run.agent);
+    db.close();
+    await layout.cleanup();
+    expect(agents).toEqual([implementer]);
+  },
+  20_000,
+);
 
 test("a missing reviewer blocks the item and needs a person", async () => {
   const layout = await repoLayout();

@@ -73,6 +73,8 @@ describe("GitHub comment tracker", () => {
       "Paws: working\n\n<!-- paws -->",
       "Paws: Merged acme/app#7.\n\n<!-- paws -->",
     ]);
+    expect(github.labelsOn(7)).toEqual([PAWS_LABEL_RUNNING]);
+    await tracker.setStatus({ linearIssueId: SESSION, stateType: "completed" });
     expect(github.labelsOn(7)).toEqual([PAWS_LABEL_DONE]);
   });
 
