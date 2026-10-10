@@ -52,7 +52,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: ["config", "core", "linear", "comments", "github", "acp", "install", "auth"],
   auth: ["config", "github"],
-  ghissues: ["core", "linear", "intake"],
+  ghissues: ["core", "linear", "intake", "auth"],
   ghcomments: ["comments", "core", "linear"],
   sandbox: [],
 };

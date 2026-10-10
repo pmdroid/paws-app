@@ -1,13 +1,3 @@
-/**
- * Matches the `GitHubTokenProvider` QM-24 exports from `src/auth`.
- * This module accepts one as a parameter and does not import `src/auth`.
- */
-export type GitHubTokenProvider = {
-  token(): Promise<string>;
-  user(): Promise<{ login: string; id: number }>;
-  source: "oauth" | "gh" | "app";
-};
-
 export type GitHubRepoRef = {
   owner: string;
   repo: string;

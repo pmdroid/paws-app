@@ -1,13 +1,15 @@
+import type { GitHubTokenProvider } from "../auth";
 import type {
   GitHubComment,
   GitHubIssue,
   GitHubList,
   GitHubRateSnapshot,
   GitHubRepoRef,
-  GitHubTokenProvider,
   GitHubTrackerConfig,
 } from "./types";
 import { githubTrackerConfig } from "./types";
+
+export type { GitHubTokenProvider };
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 

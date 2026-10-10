@@ -4,7 +4,7 @@ export {
   createGitHubIssuesClient,
   rateHoldMs,
 } from "./client";
-export type { FetchLike, GitHubIssuesClient } from "./client";
+export type { FetchLike, GitHubIssuesClient, GitHubTokenProvider } from "./client";
 export { startFakeGitHubRest } from "./fake";
 export type {
   FakeComment,
@@ -44,7 +44,6 @@ export type {
   GitHubList,
   GitHubRateSnapshot,
   GitHubRepoRef,
-  GitHubTokenProvider,
   GitHubTrackerConfig,
   GitHubTrackerInput,
 } from "./types";
