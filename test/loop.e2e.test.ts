@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -62,12 +62,8 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     writeFileSync(scriptPath, JSON.stringify(scriptFor(input)));
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: {
-        ...process.env,
-        FAKE_ACP_SCRIPT: scriptPath,
-        FAKE_ACP_RESULT: resultPath,
-      },
+      args: [fakeAgent, resultPath, scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({
@@ -228,8 +224,8 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
     writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({
@@ -374,8 +370,8 @@ test("stop from Linear cancels the live run", async () => {
     writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({
@@ -435,8 +431,8 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     );
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({
@@ -472,16 +468,6 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");
   await writeFile(
-    wrapper,
-    `#!/bin/sh
-if [ -n "$GROK_ARGV_LOG" ]; then
-  printf '%s\\n' "$*" >> "$GROK_ARGV_LOG"
-fi
-exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
-`,
-  );
-  await chmod(wrapper, 0o755);
-  await writeFile(
     path.join(layout.pawsRoot, "config.toml"),
     `[agents]\nimplementer = "grok"\n\n[agents.grok]\npath = ${JSON.stringify(wrapper)}\nallow_api_key = false\n`,
   );
@@ -516,20 +502,22 @@ exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
       script.authMethods = [{ id: "cached_token", name: "Cached login" }];
     }
     writeFileSync(scriptPath, JSON.stringify(script));
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\n` +
+        `printf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\n` +
+        `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeAgent)} ${JSON.stringify(resultPath)} ${JSON.stringify(scriptPath)} "$@"\n`,
+      { mode: 0o755 },
+    );
     const env = {
       ...process.env,
-      FAKE_ACP_SCRIPT: scriptPath,
-      FAKE_ACP_RESULT: resultPath,
-      GROK_ARGV_LOG: argvLog,
-      PAWS_TEST_BUN: process.execPath,
-      PAWS_TEST_FAKE_AGENT: fakeAgent,
       XAI_API_KEY: "xai-should-not-leak",
       GH_TOKEN: "gh-should-not-leak",
       SSH_AUTH_SOCK: "/tmp/ssh-should-not-leak",
       AWS_SECRET_ACCESS_KEY: "aws-should-not-leak",
     };
     if (input.role === "reviewer") {
-      return { command: process.execPath, args: [fakeAgent], env };
+      return { command: process.execPath, args: [fakeAgent, resultPath, scriptPath], env };
     }
     return { env };
   };
