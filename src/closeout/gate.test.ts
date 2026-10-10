@@ -367,7 +367,7 @@ function committingFixer(dir: string, fixes: number[], file = "note.txt", body =
   return {
     async applyFix(request) {
       fixes.push(request.fixAttempt);
-      await writeFile(path.join(dir, file), body);
+      await writeFile(path.join(dir, file), `${body.trimEnd()}\n${request.fixAttempt}\n`);
       await exec("git", ["-C", dir, "add", file]);
       await exec("git", ["-C", dir, "commit", "-m", `fix ${request.fixAttempt}`]);
       const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"]);

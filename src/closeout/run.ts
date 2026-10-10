@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
 import type { CodexReviewer } from "./reviewer";
@@ -13,7 +15,12 @@ import {
   type GateResult,
 } from "./types";
 import { isSha, readHead } from "./worktree";
-import { addReview, decision, run, type DecisionDocument as SpecDecision } from "../closeout-spec";
+import {
+  addReview,
+  decision as decide,
+  run,
+  type DecisionDocument as SpecDecision,
+} from "../closeout-spec";
 
 export type EvaluateInput = {
   worktree: string;
@@ -66,6 +73,7 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
     return failure("invalid", null, "base and head must be commit ids", input.head);
   }
 
+  const evidenceDir = evidencePath(input.taskId, input.pawsHome);
   let ran: SpecDecision;
   try {
     ran = await run({
@@ -75,6 +83,7 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
       gate: CLOSEOUT_GATE,
       task: input.taskId,
       candidate: input.candidate,
+      evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
     });
@@ -93,18 +102,19 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
   const gaps = reviewGaps(first);
   if (gaps.length === 0) return finish(first, input.base, input.head, reviewFindings);
 
-  const filled = await addReviewEvidence(input, gaps, reviewFindings);
+  const filled = await addReviewEvidence(input, gaps, reviewFindings, evidenceDir);
   if (filled) return filled;
 
   let judged: SpecDecision;
   try {
-    judged = await decision({
+    judged = await decide({
       repo: input.worktree,
       base: input.base,
       head: input.head,
       gate: CLOSEOUT_GATE,
       task: input.taskId,
       candidate: input.candidate,
+      evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
     });
   } catch (error) {
@@ -235,6 +245,7 @@ async function addReviewEvidence(
   input: EvaluateInput,
   items: CloseoutItem[],
   reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  evidenceDir: string,
 ): Promise<Evaluation | null> {
   for (const item of items) {
     let added;
@@ -247,6 +258,7 @@ async function addReviewEvidence(
         task: input.taskId,
         itemId: item.id,
         candidate: input.candidate,
+        evidenceDir,
         ...(input.home !== undefined ? { home: input.home } : {}),
         reviewer: {
           async review(request) {
@@ -377,6 +389,11 @@ function exitOf(name: DecisionDocument["decision"]): 0 | 1 | 3 {
   if (name === "accepted") return 0;
   if (name === "rejected") return 1;
   return 3;
+}
+
+function evidencePath(taskId: string, pawsHome: string | undefined): string {
+  const safe = taskId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 200);
+  return path.join(pawsHome ?? tmpdir(), "closeout", "evidence", safe);
 }
 
 function assertTaskId(taskId: string): string | null {
