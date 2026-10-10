@@ -101,7 +101,7 @@ for (const target of ["child", "epic", "epic-before-progress"] as const) {
       channel: "comments",
       launch: () => ({
         command: process.execPath,
-        args: [wrapper],
+        args: [wrapper, resultPath, scriptPath],
         env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath, FAKE_ACP_RESULT: resultPath },
       }),
     });
