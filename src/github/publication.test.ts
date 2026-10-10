@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import { runGitHubGit } from "./auth/oauth";
 import { serialMerge } from "./merge";
 import { publishAccepted, pushBranch } from "./pulls";
-import type { GitHubClient } from "./types";
+import { defaultGitExec } from "./git";
+import type { GitExec, GitHubClient } from "./types";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -25,7 +26,8 @@ async function fixture() {
   const remote = path.join(root, "remote.git");
   await exec("git", ["init", "--bare", "--initial-branch=main", remote]);
   await exec("git", ["init", "--initial-branch=main", worktree]);
-  const git = async (...args: string[]) => (await exec("git", args, { cwd: worktree })).stdout.trim();
+  const git = async (...args: string[]) =>
+    (await exec("git", args, { cwd: worktree })).stdout.trim();
   await git("config", "user.name", "Synthetic User");
   await git("config", "user.email", "synthetic@example.invalid");
   await writeFile(path.join(worktree, "file"), "base\n");
@@ -57,15 +59,36 @@ for (const hookMode of ["default", "include"]) {
       await chmod(path.join(f.worktree, ".git/hooks/pre-push"), 0o700);
     } else {
       const include = path.join(f.root, "candidate.config");
-      await writeFile(include, `[core]\n hooksPath = ${hooks}\n[credential]\n helper = !${f.hook}\n`);
+      await writeFile(
+        include,
+        `[core]\n hooksPath = ${hooks}\n[credential]\n helper = !${f.hook}\n`,
+      );
       await f.git("config", "include.path", include);
     }
+    const realExec = defaultGitExec();
+    const checkedExec: GitExec = async (args, options) => {
+      if (args.includes("push")) {
+        expect(options.cwd).not.toBe(f.worktree);
+        const gitDir = args[args.indexOf("--git-dir") + 1];
+        expect(gitDir).toContain("paws-publication-");
+        expect(await readFile(path.join(gitDir!, "config"), "utf8")).not.toContain("include");
+      }
+      if (options.cwd === f.worktree) expect(JSON.stringify(options.env)).not.toContain(token);
+      return realExec(args, options);
+    };
     const result = await pushBranch({
-      worktree: f.worktree, issue: "ENG-38", owner: "synthetic", repo: "repo",
-      remoteUrl: f.remote, tokenProvider,
+      worktree: f.worktree,
+      issue: "ENG-38",
+      owner: "synthetic",
+      repo: "repo",
+      remoteUrl: f.remote,
+      tokenProvider,
+      gitExec: checkedExec,
     });
     expect(await captured(f.canary)).not.toContain(token);
-    expect(await f.git("--git-dir", f.remote, "rev-parse", "refs/heads/paws/ENG-38")).toBe(result.head);
+    expect(await f.git("--git-dir", f.remote, "rev-parse", "refs/heads/paws/ENG-38")).toBe(
+      result.head,
+    );
   });
 }
 
@@ -73,17 +96,42 @@ test("candidate URL rewriting and external transports never receive a publicatio
   const f = await fixture();
   await f.git("config", "protocol.ext.allow", "always");
   await f.git("config", `url.ext::${f.hook}.insteadOf`, f.remote);
-  await pushBranch({ worktree: f.worktree, issue: "ENG-38", owner: "synthetic", repo: "repo", remoteUrl: f.remote, tokenProvider });
+  await pushBranch({
+    worktree: f.worktree,
+    issue: "ENG-38",
+    owner: "synthetic",
+    repo: "repo",
+    remoteUrl: f.remote,
+    tokenProvider,
+  });
   expect(await captured(f.canary)).not.toContain(token);
 });
 
 test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior", async () => {
   const f = await fixture();
+  await f.git("checkout", "--detach");
   const dest = path.join(f.root, "mirror.git");
   await runGitHubGit({ operation: "clone", cwd: f.root, dest, remoteUrl: f.remote, token });
   await exec("git", ["--git-dir", dest, "config", "url.ext::false.insteadOf", f.remote]);
+  await exec("git", ["--git-dir", dest, "update-ref", "refs/heads/stale", "main"]);
   await runGitHubGit({ operation: "fetch", cwd: f.root, dest, remoteUrl: f.remote, token });
-  await runGitHubGit({ operation: "push", cwd: f.worktree, remoteUrl: f.remote, refspec: "HEAD:refs/heads/oauth", token });
+  expect(
+    await exec("git", ["--git-dir", dest, "for-each-ref", "refs/heads/stale"]).then(
+      (result) => result.stdout,
+    ),
+  ).toBe("");
+  expect(
+    await exec("git", ["--git-dir", dest, "rev-parse", "refs/heads/main"]).then((result) =>
+      result.stdout.trim(),
+    ),
+  ).toBe((await exec("git", ["--git-dir", f.remote, "rev-parse", "main"])).stdout.trim());
+  await runGitHubGit({
+    operation: "push",
+    cwd: f.worktree,
+    remoteUrl: f.remote,
+    refspec: "HEAD:refs/heads/oauth",
+    token,
+  });
   const client: GitHubClient = {
     async request(input) {
       expect(input.token).toBe(token);
@@ -92,12 +140,41 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
       throw new Error("unexpected request");
     },
   };
-  const published = await publishAccepted({ accepted: true, evidence: "synthetic accepted", worktree: f.worktree, issue: "ENG-38", owner: "synthetic", repo: "repo", remoteUrl: f.remote, tokenProvider, client });
+  const published = await publishAccepted({
+    accepted: true,
+    evidence: "synthetic accepted",
+    worktree: f.worktree,
+    issue: "ENG-38",
+    owner: "synthetic",
+    repo: "repo",
+    remoteUrl: f.remote,
+    tokenProvider,
+    client,
+  });
   expect(published.published).toBe(true);
+  await exec("git", ["clone", f.remote, path.join(f.root, "upstream")]);
+  const upstream = path.join(f.root, "upstream");
+  await exec("git", ["config", "user.name", "Synthetic User"], { cwd: upstream });
+  await exec("git", ["config", "user.email", "synthetic@example.invalid"], { cwd: upstream });
+  await writeFile(path.join(upstream, "other"), "upstream change\n");
+  await exec("git", ["add", "."], { cwd: upstream });
+  await exec("git", ["commit", "-m", "advance main"], { cwd: upstream });
+  await exec("git", ["push", "origin", "main"], { cwd: upstream });
   await f.git("config", "core.hooksPath", f.root);
   await writeFile(path.join(f.root, "pre-rebase"), await readFile(f.hook));
   await chmod(path.join(f.root, "pre-rebase"), 0o700);
-  const merged = await serialMerge({ worktree: f.worktree, issue: "ENG-38", owner: "synthetic", repo: "repo", prNumber: 38, appId: "", installationId: "", privateKeyPem: "", remoteUrl: f.remote, tokenProvider, client,
+  const merged = await serialMerge({
+    worktree: f.worktree,
+    issue: "ENG-38",
+    owner: "synthetic",
+    repo: "repo",
+    prNumber: 38,
+    appId: "",
+    installationId: "",
+    privateKeyPem: "",
+    remoteUrl: f.remote,
+    tokenProvider,
+    client,
     reverify: async () => ({ accepted: true, outcome: "merged", summary: "synthetic verified" }),
   });
   expect(merged.merged).toBe(true);
