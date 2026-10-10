@@ -10,6 +10,7 @@ import {
   readSignedInUser,
 } from "../src/auth";
 import { ensureGitHubSignIn } from "../src/setup/github";
+import { doctorChecks, formatDoctor, type ProbeFacts } from "../src/doctor";
 
 const homes: string[] = [];
 const unavailable =
@@ -96,6 +97,59 @@ test("interactive setup recovers unavailable Secret Service through device login
   const fresh = s.makeStore();
   expect(fresh.backend).toBe("file");
   expect(fresh.warning).toBe(FILE_TOKEN_STORE_DOCTOR_WARNING);
+  const ready = { ok: true, detail: "injected" };
+  const facts: ProbeFacts = {
+    configError: null,
+    configured: true,
+    linearMode: "comments",
+    githubAuth: "oauth",
+    trackerKind: "github",
+    oauthClientId: s.input.oauthClientId,
+    githubDoctor: {
+      placeholder: false,
+      storeKind: fresh.backend === "secret-tool" ? "libsecret" : fresh.backend,
+      storeWarning: fresh.warning,
+      signedIn: ready,
+      push: ready,
+      label: ready,
+      rate: ready,
+    },
+    webhooks: false,
+    publicUrl: null,
+    repo: "acme/widgets",
+    team: null,
+    teamId: null,
+    ghLogin: ready,
+    ghPush: ready,
+    claudeAdapter: ready,
+    codexAdapter: ready,
+    claudeLogin: ready,
+    codexLogin: ready,
+    closeout: { ...ready, fix: null },
+    linear: {
+      attempted: false,
+      reachable: false,
+      viewerId: null,
+      viewerMatches: false,
+      teamFound: false,
+      labelFound: false,
+      error: null,
+    },
+  };
+  const checks = doctorChecks({
+    env: { HOME: s.home, PAWS_HOME: s.home },
+    facts,
+    which: () => "/injected/tool",
+    stat: () => ({ mode: 0o100600 }),
+    canWrite: () => true,
+    bunVersion: "1.4.2",
+  });
+  expect(checks.find((check) => check.name === "github-token-store")).toMatchObject({
+    ok: true,
+    note: true,
+  });
+  expect(formatDoctor(checks)).toContain(FILE_TOKEN_STORE_DOCTOR_WARNING);
+  expect(formatDoctor(checks)).not.toContain(result.token);
   expect((await fresh.load())?.accessToken).toBe(result.token);
   expect(await readSignedInUser({ store: fresh })).toEqual({ login: "octocat", id: 7 });
   expect(s.commands).toEqual(["lookup", "store"]);

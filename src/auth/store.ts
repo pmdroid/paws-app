@@ -165,7 +165,7 @@ async function saveToken(
   if (result.code !== 0) throw new Error("Could not save the GitHub token with secret-tool");
 }
 
-class SecretServiceUnavailableError extends Error {
+export class SecretServiceUnavailableError extends Error {
   constructor() {
     super(
       "Secret Service is unavailable. Restore the session service and retry, or sign in again to save a private file fallback.",

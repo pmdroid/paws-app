@@ -27,10 +27,11 @@ export type LoginIO = {
 const RESTARTS = 1;
 
 export async function loginGitHub(options: LoginIO = {}): Promise<{ login: string; id: number }> {
-  const user = await completeLogin(options);
+  const store = storeFor(options);
+  const user = await completeLogin({ ...options, store });
   const stdout = options.stdout ?? ((line: string) => console.log(line));
   stdout(`Signed in as ${user.login}`);
-  const warning = storeFor(options).warning;
+  const warning = store.warning;
   if (warning !== null) stdout(warning);
   return user;
 }

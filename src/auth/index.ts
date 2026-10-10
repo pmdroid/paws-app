@@ -19,7 +19,7 @@ export {
 export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
 export { createGitHubTokenProvider } from "./provider";
 export type { GitHubAuthSource, GitHubTokenProvider, GitHubTokenProviderConfig } from "./provider";
-export { createTokenStore, githubOAuthPath } from "./store";
+export { createTokenStore, githubOAuthPath, SecretServiceUnavailableError } from "./store";
 export type { GitHubTokenStore, StoredGitHubOAuth, TokenBackend } from "./store";
 export {
   ACCESS_TOKEN_URL,
