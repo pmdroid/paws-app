@@ -20,7 +20,7 @@ import {
   type GitHubTokenProvider,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, createAcpCodexReviewer, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -740,6 +740,46 @@ for (const review of invalidReviews) {
     }
   }, 30_000);
 }
+
+test("ACP review timeout rejects a partial clean array", async () => {
+  const layout = await repoLayout();
+  const scriptPath = path.join(layout.root, "timeout-review.json");
+  const script: FakeScript = {
+    steps: [
+      {
+        type: "update",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
+      },
+      { type: "hang" },
+    ],
+  };
+  writeFileSync(scriptPath, JSON.stringify(script));
+  const reviewer = createAcpCodexReviewer({
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    timeoutMs: 500,
+    launch: () => ({
+      command: process.execPath,
+      args: [fakeAgent],
+      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+    }),
+  });
+  try {
+    const head = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    await expect(
+      reviewer.review({
+        worktree: path.join(layout.root, "seed"),
+        taskId: "timeout-review",
+        itemId: "adversarial-review",
+        base: head,
+        head,
+        candidate: { session: "implementer", model: "claude", provider: "anthropic" },
+      }),
+    ).rejects.toThrow("timeout");
+  } finally {
+    await layout.cleanup();
+  }
+}, 15_000);
 
 type DemoSeed = {
   parent: { title: string; description: string };
