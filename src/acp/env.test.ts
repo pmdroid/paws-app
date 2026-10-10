@@ -148,7 +148,7 @@ test("proxy settings cannot forward embedded credentials or token parameters", (
     "all_proxy",
   ]) {
     for (const value of [
-      "http://synthetic-user:synthetic-password@proxy.example.test:8080",
+      credentialedProxy(),
       "http://synthetic-token@proxy.example.test:8080",
       "http://proxy.example.test:8080?token=synthetic-token",
       "http://proxy.example.test:8080/synthetic-token",
@@ -219,7 +219,7 @@ test("host terminal child cannot inherit or reintroduce rejected environment", a
     env: Object.entries({
       ...credentials,
       ...injection,
-      HTTPS_PROXY: "http://synthetic-user:synthetic-password@proxy.example.test:8080",
+      HTTPS_PROXY: credentialedProxy(),
       LANG: "C.UTF-8",
     }).map(([name, value]) => ({ name, value })),
   });
@@ -233,6 +233,13 @@ test("host terminal child cannot inherit or reintroduce rejected environment", a
     terminals.release({ sessionId: "synthetic-session", terminalId });
   }
 });
+
+function credentialedProxy(): string {
+  const url = new URL("http://proxy.example.test:8080");
+  url.username = "synthetic-user";
+  url.password = "synthetic-password";
+  return url.href;
+}
 
 async function tempRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "paws-env-test-"));
