@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createTokenStore, githubOAuthPath, FILE_TOKEN_STORE_DOCTOR_WARNING } from "../src/auth";
@@ -114,6 +122,39 @@ describe("operational token storage", () => {
     expect(await restarted.load()).toEqual(token);
     await restarted.markInvalid();
     expect((await restarted.load())?.invalid).toBe(true);
+  });
+
+  test("replacing a permissive file makes both file and directory private", async () => {
+    const path = home();
+    const file = githubOAuthPath(path);
+    mkdirSync(dirname(file), { mode: 0o755 });
+    writeFileSync(file, JSON.stringify({ ...token, invalid: true }), { mode: 0o644 });
+    const store = storeAt(path, async () => {
+      throw new Error("unexpected keyring command");
+    });
+    await store.save(token);
+    expect(await store.load()).toEqual(token);
+    expectPrivateFile(path);
+  });
+
+  test("a failed fallback write does not discard the existing file or claim success", async () => {
+    const path = home();
+    const file = githubOAuthPath(path);
+    mkdirSync(file, { recursive: true });
+    const sentinel = join(file, "preserved");
+    writeFileSync(sentinel, "unchanged");
+    const store = storeAt(path, async () => unavailable);
+    await expect(store.save(token)).rejects.toThrow();
+    expect(readFileSync(sentinel, "utf8")).toBe("unchanged");
+  });
+
+  test("a store created before fallback also reports and reads the actual file backend", async () => {
+    const path = home();
+    const reader = storeAt(path, keyring(JSON.stringify({ ...token, invalid: true })).run);
+    await storeAt(path, async () => unavailable).save(token);
+    expect(reader.backend).toBe("file");
+    expect(reader.warning).toBe(FILE_TOKEN_STORE_DOCTOR_WARNING);
+    expect(await reader.load()).toEqual(token);
   });
 
   test("a disappeared executable can safely fall back", async () => {

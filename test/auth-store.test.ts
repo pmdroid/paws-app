@@ -143,7 +143,7 @@ function fakeSecretTool(): { run: CommandRunner; argv: string[][]; stdin: string
       return { code: 0, stdout: "", stderr: "" };
     }
     if (args[0] === "lookup") {
-      if (payload.length === 0) return { code: 1, stdout: "", stderr: "not found" };
+      if (payload.length === 0) return { code: 1, stdout: "", stderr: "" };
       return { code: 0, stdout: payload, stderr: "" };
     }
     if (args[0] === "clear") {
