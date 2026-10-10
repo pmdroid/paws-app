@@ -74,6 +74,9 @@ const injection = Object.fromEntries(
     "SSLKEYLOGFILE",
     "NODE_TLS_REJECT_UNAUTHORIZED",
     "LC_SECRET",
+    "DBUS_SYSTEM_BUS_ADDRESS",
+    "DBUS_STARTER_ADDRESS",
+    "DBUS_FUTURE_SECRET",
   ].map((key) => [key, `synthetic-${key.toLowerCase()}`]),
 );
 
@@ -95,6 +98,7 @@ const benign = {
   XDG_DATA_HOME: "/tmp/synthetic-data",
   XDG_STATE_HOME: "/tmp/synthetic-state",
   XDG_RUNTIME_DIR: "/tmp/synthetic-runtime",
+  DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/synthetic-nondefault-session/bus",
   CODEX_HOME: "/tmp/synthetic-codex",
   CLAUDE_CONFIG_DIR: "/tmp/synthetic-claude",
   BUN_INSTALL: "/tmp/synthetic-bun",
@@ -187,7 +191,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `,
     );
-    const base = { ...benign, HOME: home, ...credentials };
+    const base = {
+      ...benign,
+      HOME: home,
+      ...credentials,
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/tmp/synthetic-system/bus",
+      DBUS_STARTER_ADDRESS: "unix:path=/tmp/synthetic-starter/bus",
+      DBUS_FUTURE_SECRET: "synthetic-dbus-secret",
+    };
     const auth = await checkOwnLogin({
       role: "implementer",
       command: process.execPath,
@@ -199,6 +210,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     expect(auth.authMethods.map((method) => method.id)).toEqual(["own-login"]);
     const observed = JSON.parse(await readFile(resultPath, "utf8"));
     expect(observed.login).toEqual({ account: "synthetic-own-login" });
+    expect(observed.env.DBUS_SESSION_BUS_ADDRESS).toBe(benign.DBUS_SESSION_BUS_ADDRESS);
+    expect(observed.env.DBUS_SYSTEM_BUS_ADDRESS).toBeUndefined();
+    expect(observed.env.DBUS_STARTER_ADDRESS).toBeUndefined();
+    expect(observed.env.DBUS_FUTURE_SECRET).toBeUndefined();
     expect(observed.env).toEqual({
       ...benign,
       HOME: home,
