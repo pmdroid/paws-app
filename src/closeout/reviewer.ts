@@ -1,3 +1,5 @@
+import type { ProducerIdentity } from "../closeout-spec";
+import { createReviewer } from "../closeout-spec";
 import type { CandidateIdentity, Finding } from "./types";
 
 /**
@@ -27,4 +29,70 @@ export type ReviewResult = {
 
 export interface CodexReviewer {
   review(request: ReviewRequest): Promise<ReviewResult>;
+}
+
+/**
+ * One turn of the reviewer ACP session.
+ * `fresh` is true for the first prompt. A re-ask sets `sessionId` and `fresh` false.
+ * `checkpoint` stays false so the read-only checkout is left uncommitted.
+ */
+export type CodexAcpStart = {
+  role: "reviewer";
+  itemId: string;
+  worktree: string;
+  prompt: string;
+  readOnly: true;
+  checkpoint: false;
+  fresh: boolean;
+  sessionId?: string;
+};
+
+export type CodexAcpReply = {
+  sessionId?: string;
+  /** Model id reported by the agent, when it reports one. */
+  model?: string;
+  text: string;
+};
+
+/** Existing ACP runner seam, narrowed to a fresh Codex reviewer session. */
+export interface CodexAcpRunner {
+  start(input: CodexAcpStart): Promise<CodexAcpReply>;
+}
+
+export type CodexReviewerOptions = {
+  /** Configured model id, used when the session does not report one. */
+  model: string;
+  evaluator?: ProducerIdentity;
+  attempt?: number;
+};
+
+/**
+ * Native Closeout reviewer on the Codex ACP hook.
+ * The runner opens the session. Findings, identity, and the re-ask live on the port.
+ * The evaluator computes independence from the candidate and the producer.
+ */
+export function createCodexReviewer(runner: CodexAcpRunner, options: CodexReviewerOptions) {
+  return createReviewer(
+    {
+      async run(input) {
+        const reply = await runner.start({
+          role: "reviewer",
+          itemId: input.itemId,
+          worktree: input.worktree,
+          prompt: input.prompt,
+          readOnly: true,
+          checkpoint: false,
+          fresh: input.sessionId === undefined,
+          ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        });
+        const reported = reply.model?.trim();
+        return {
+          sessionId: reply.sessionId ?? "",
+          ...(reported ? { model: reported } : {}),
+          text: reply.text,
+        };
+      },
+    },
+    options,
+  );
 }
