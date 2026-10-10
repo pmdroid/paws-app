@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mirrorPath } from "../src/acp";
-import { createTokenStore, GITHUB_REAUTH_MESSAGE, PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/auth";
+import {
+  createTokenStore,
+  GITHUB_REAUTH_MESSAGE,
+  MISSING_GITHUB_CLIENT_ID_MESSAGE,
+} from "../src/auth";
 import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
 import { linearTokenPath } from "../src/linear";
@@ -541,6 +545,18 @@ function writeBin(dir: string, name: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
+function acceptHeader(init: RequestInit | undefined): string {
+  const headers = init?.headers;
+  if (headers === undefined) return "";
+  if (headers instanceof Headers) return headers.get("accept") ?? "";
+  if (Array.isArray(headers)) {
+    const found = headers.find((entry) => entry[0]?.toLowerCase() === "accept");
+    return found?.[1] ?? "";
+  }
+  const record = headers as Record<string, string>;
+  return record.Accept ?? record.accept ?? "";
+}
+
 function authorization(init: RequestInit | undefined): string {
   const headers = init?.headers;
   if (headers === undefined) return "";
@@ -609,7 +625,7 @@ exit 1
 const SETUP_TOKEN = "gho_setup_secret_token_value";
 
 describe("paws setup github", () => {
-  test("--yes while signed out fails with the login command", async () => {
+  test("--yes while signed out without a client id names the OAuth App", async () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const stderr: string[] = [];
     const code = await runSetup(
@@ -626,7 +642,57 @@ describe("paws setup github", () => {
       },
     );
     expect(code).toBe(1);
+    expect(stderr).toEqual([MISSING_GITHUB_CLIENT_ID_MESSAGE]);
+    expect(stderr[0]).not.toContain("login github");
+  });
+
+  test("--yes while signed out with a client id still asks for login", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const github = new FakeGitHubApi();
+    const stderr: string[] = [];
+    const code = await runSetup(
+      ["--yes", "--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      {
+        env: { ...setupEnv(scene), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        github: {
+          store: createTokenStore({ home: scene.home, which: () => null, platform: "linux" }),
+        },
+      },
+    );
+    expect(code).toBe(1);
     expect(stderr).toEqual([GITHUB_REAUTH_MESSAGE]);
+    expect(github.deviceCodes).toBe(0);
+  });
+
+  test("a placeholder client id fails before GitHub is called", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const github = new FakeGitHubApi();
+    const stderr: string[] = [];
+    const code = await runSetup(
+      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      {
+        env: setupEnv(scene),
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        readLine: async () => {
+          throw new Error("setup prompted");
+        },
+        github: {
+          store: createTokenStore({ home: scene.home, which: () => null, platform: "linux" }),
+          sleep: async () => undefined,
+          openBrowser: async () => undefined,
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(stderr).toEqual([MISSING_GITHUB_CLIENT_ID_MESSAGE]);
+    expect(github.deviceCodes).toBe(0);
   });
 
   test("device flow, repo picker, bare mirror, tracker, and labels", async () => {
@@ -646,7 +712,7 @@ describe("paws setup github", () => {
     const result = await runSetup(
       ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
       {
-        env: setupEnv(scene, gitLog),
+        env: { ...setupEnv(scene, gitLog), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
         cwd: scene.checkout,
         fetch: github.fetch,
         stdout: (line) => stdout.push(line),
@@ -674,7 +740,8 @@ describe("paws setup github", () => {
     expect(github.bodies.join("\n")).not.toContain("client_secret");
     const parsed = loadConfigFile(scene.paths.configFile);
     expect(parsed.githubAuth).toBe("oauth");
-    expect(parsed.oauthClientId).toBe(PAWS_GITHUB_OAUTH_CLIENT_ID);
+    expect(parsed.oauthClientId).toBe("Iv1.real-client");
+    expect(github.deviceAccepts).toEqual(["application/json"]);
     expect(parsed.trackerKind).toBe("github");
     expect(parsed.trackerGithub).toMatchObject({
       triggerLabel: "paws",
@@ -744,6 +811,83 @@ describe("paws setup github", () => {
     expect(github.deviceCodes).toBe(0);
     expect(loadConfigFile(scene.paths.configFile).repo).toBe("acme/widgets");
   });
+
+  test("github.oauth_client_id in config.toml is sent and kept", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const gitLog = join(scene.root, "git.log");
+    writeFileSync(join(scene.bin, "git"), recordingGit(gitLog), { mode: 0o755 });
+    chmodSync(join(scene.bin, "git"), 0o755);
+    mkdirSync(scene.home, { recursive: true });
+    writeFileSync(
+      scene.paths.configFile,
+      '[github]\nauth = "oauth"\noauth_client_id = "Iv1.from-file"\n',
+      { mode: 0o600 },
+    );
+    const store = createTokenStore({
+      home: scene.home,
+      which: () => null,
+      platform: "linux",
+    });
+    const github = new FakeGitHubApi();
+    const lines = ["", "1"];
+    const code = await runSetup(
+      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      {
+        env: setupEnv(scene, gitLog),
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: () => undefined,
+        stderr: (line) => {
+          throw new Error(line);
+        },
+        readLine: async () => lines.shift() ?? null,
+        github: { store, sleep: async () => undefined, openBrowser: async () => undefined },
+      },
+    );
+    expect(code).toBe(0);
+    expect(github.bodies.join("\n")).toContain("client_id=Iv1.from-file");
+    expect(github.deviceAccepts).toEqual(["application/json"]);
+    expect(loadConfigFile(scene.paths.configFile).oauthClientId).toBe("Iv1.from-file");
+  });
+
+  test("a GitHub device-code error is the setup line", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const github = new FakeGitHubApi();
+    github.deviceCodeResponse = () =>
+      Response.json(
+        {
+          error: "device_flow_disabled",
+          error_description: "Device flow must be explicitly enabled for this App",
+        },
+        { status: 400 },
+      );
+    const stderr: string[] = [];
+    const code = await runSetup(
+      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      {
+        env: { ...setupEnv(scene), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        readLine: async () => {
+          throw new Error("setup prompted");
+        },
+        github: {
+          store: createTokenStore({ home: scene.home, which: () => null, platform: "linux" }),
+          sleep: async () => undefined,
+          openBrowser: async () => undefined,
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(stderr).toEqual([
+      "GitHub device-code error (device_flow_disabled: Device flow must be explicitly enabled for this App). Enable Device Flow on the OAuth App.",
+    ]);
+    expect(stderr[0]).not.toContain("login github");
+    expect(github.deviceAccepts).toEqual(["application/json"]);
+    expect(github.polls).toBe(0);
+  });
 });
 
 class FakeGitHubApi {
@@ -753,13 +897,18 @@ class FakeGitHubApi {
   labels: string[] = [];
   bodies: string[] = [];
   repoReads: string[] = [];
+  deviceAccepts: string[] = [];
+  deviceCodeResponse: (() => Response) | null = null;
 
   readonly fetch: SetupFetch = async (input, init) => {
     const url = String(input);
-    const body = typeof init?.body === "string" ? init.body : String(init?.body ?? "");
+    const body =
+      init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body ?? "");
     this.bodies.push(body);
     if (url.includes("/login/device/code")) {
       this.deviceCodes += 1;
+      this.deviceAccepts.push(acceptHeader(init));
+      if (this.deviceCodeResponse !== null) return this.deviceCodeResponse();
       return Response.json({
         device_code: "device-1",
         user_code: "PAWS-1234",
@@ -818,6 +967,7 @@ function setupEnv(scene: Scene, gitLog?: string): NodeJS.ProcessEnv {
   delete env.GITHUB_TOKEN;
   delete env.GH_TOKEN;
   delete env.PAWS_GITHUB_TOKEN;
+  delete env.PAWS_GITHUB_CLIENT_ID;
   if (gitLog !== undefined) env.GIT_FAKE_LOG = gitLog;
   return env;
 }

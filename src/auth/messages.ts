@@ -1,6 +1,13 @@
 /** Shown when a stored GitHub token can no longer be used. No retry. */
 export const GITHUB_REAUTH_MESSAGE = "Run `bun run paws login github`";
 
+/**
+ * No OAuth App client id yet. Printed before any GitHub request.
+ * Login would fail the same way, so this does not mention `paws login github`.
+ */
+export const MISSING_GITHUB_CLIENT_ID_MESSAGE =
+  "No GitHub OAuth App client id. Create one (Settings > Developer settings > OAuth Apps, enable Device Flow) and set PAWS_GITHUB_CLIENT_ID or github.oauth_client_id. See docs/github-login.md.";
+
 export const DEVICE_CODE_EXPIRED_MESSAGE = `The GitHub device code expired. ${GITHUB_REAUTH_MESSAGE}.`;
 
 export const DEVICE_ACCESS_DENIED_MESSAGE = `GitHub denied the sign-in. ${GITHUB_REAUTH_MESSAGE}.`;

@@ -7,7 +7,7 @@ import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import type { AgentsConfig } from "../src/config";
 import { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/config";
-import { FILE_TOKEN_STORE_DOCTOR_WARNING } from "../src/auth";
+import { FILE_TOKEN_STORE_DOCTOR_WARNING, MISSING_GITHUB_CLIENT_ID_MESSAGE } from "../src/auth";
 import {
   doctorChecks,
   formatDoctor,
@@ -259,13 +259,20 @@ test("a placeholder GitHub client id is one actionable line", () => {
   const missing = formatDoctor(checks)
     .split("\n")
     .filter((line) => line.startsWith("missing"));
-  expect(missing).toEqual([
-    "missing github-auth: set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID",
-  ]);
-  expect(formatDoctor(checks)).toContain(
-    "fix: set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID",
-  );
+  expect(missing).toEqual([`missing github-auth: ${MISSING_GITHUB_CLIENT_ID_MESSAGE}`]);
+  expect(formatDoctor(checks)).toContain(`fix: ${MISSING_GITHUB_CLIENT_ID_MESSAGE}`);
+  expect(formatDoctor(checks)).not.toContain("login github");
   expect(formatDoctor(checks)).not.toContain(PAWS_GITHUB_OAUTH_CLIENT_ID);
+
+  const empty = probe(true);
+  empty.facts = {
+    ...ready.facts,
+    trackerKind: "github",
+    githubAuth: "oauth",
+    oauthClientId: "",
+    githubDoctor: { ...githubReady(), placeholder: false },
+  };
+  expect(formatDoctor(doctorChecks(empty))).toContain(MISSING_GITHUB_CLIENT_ID_MESSAGE);
 });
 
 test("a file token store is a note and does not fail doctor", () => {

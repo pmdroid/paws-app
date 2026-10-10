@@ -5,13 +5,13 @@ import {
   createTokenStore,
   DEVICE_SCOPE_MESSAGE,
   GITHUB_REAUTH_MESSAGE,
+  missingGitHubClientId,
   scopesGrantRepoAndOrg,
   type GitHubTokenProvider,
 } from "../auth";
 import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
   loadRuntime,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
   type EnvSource,
   type GitHubConfigAuth,
   type LinearConfigMode,
@@ -316,7 +316,7 @@ async function githubDoctorFact(
   const unused = idleGitHubFacts();
   if (runtime.trackerKind === "linear") return unused;
   const placeholder =
-    runtime.githubAuth === "oauth" && runtime.oauthClientId === PAWS_GITHUB_OAUTH_CLIENT_ID;
+    runtime.githubAuth === "oauth" && missingGitHubClientId(runtime.oauthClientId);
   const store =
     runtime.githubAuth === "oauth" ? createTokenStore({ home: runtime.env.home }) : null;
   const facts: GitHubDoctorFacts = {
