@@ -1,0 +1,248 @@
+import { join } from "node:path";
+import {
+  createTokenStore,
+  loginGitHub,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
+  type GitHubTokenStore,
+} from "../../src/auth";
+import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
+import { CommandBus, FakeClock, JOB_KIND } from "../../src/core";
+import {
+  applyWorkItemEvent,
+  beginImplementRun,
+  enqueueJobOnce,
+  enterMergeQueue,
+  getWorkItem,
+  insertQueuedItem,
+  listJobs,
+  migrate,
+  openDatabase,
+  recoverOnStartup,
+  submitCommand,
+} from "../../src/db";
+import { createFakeGitHubComments, createGitHubCommentTracker } from "../../src/ghcomments";
+import { ingestGitHubComments } from "../../src/index";
+import { detectCandidates } from "../../src/setup";
+
+export async function probeBoundaries(
+  root: string,
+  observe: (name: string, passed: boolean, observed: unknown) => void,
+) {
+  const store: GitHubTokenStore = {
+    backend: "file",
+    warning: null,
+    load: async () => null,
+    save: async () => {},
+    markInvalid: async () => {},
+    delete: async () => {},
+  };
+  const logged: string[] = [];
+  const log = console.log;
+  let clientId = "";
+  console.log = (...args: unknown[]) => {
+    logged.push(args.join(" "));
+  };
+  try {
+    await loginGitHub({
+      store,
+      oauthClientId: "Iv1.local-verification-fixture",
+      sleep: async () => {},
+      openBrowser: async () => {},
+      fetch: async (url, init) => {
+        if (url.endsWith("/device/code")) {
+          clientId = new URLSearchParams(String(init?.body)).get("client_id") ?? "";
+          return Response.json({
+            device_code: "fake-device",
+            user_code: "LOCAL-CODE",
+            verification_uri: "https://github.com/login/device",
+            expires_in: 900,
+            interval: 1,
+          });
+        }
+        if (url.endsWith("/access_token"))
+          return Response.json({
+            access_token: "fake-token",
+            token_type: "bearer",
+            scope: "repo read:org",
+          });
+        return Response.json(
+          { login: "local-user", id: 1 },
+          { headers: { "x-oauth-scopes": "repo, read:org" } },
+        );
+      },
+    });
+  } finally {
+    console.log = log;
+  }
+  observe(
+    "configured OAuth client reaches the device request",
+    clientId === "Iv1.local-verification-fixture",
+    clientId,
+  );
+  observe(
+    "default OAuth client is configured",
+    PAWS_GITHUB_OAUTH_CLIENT_ID !== "Iv1.paws-oauth-placeholder",
+    { configuredDefault: PAWS_GITHUB_OAUTH_CLIENT_ID },
+  );
+  observe(
+    "CLI login prints the device code before polling",
+    logged.some((line) => line.includes("LOCAL-CODE")),
+    logged,
+  );
+  const candidate = detectCandidates({
+    which: (bin) => (bin === "claude-agent-acp" ? "/fake/claude-agent-acp" : null),
+  }).find((entry) => entry.id === "claude");
+  observe(
+    "adapter-only installation is not advertised as loginable",
+    candidate?.loginable === false,
+    candidate,
+  );
+  const brokenStore = createTokenStore({
+    home: join(root, "token-probe"),
+    platform: "linux",
+    which: () => "/fake/secret-tool",
+    run: async () => ({ code: 1, stdout: "", stderr: "No Secret Service" }),
+  });
+  let storeError = "";
+  try {
+    await brokenStore.save({
+      accessToken: "fake-token",
+      refreshToken: null,
+      expiresAtMs: null,
+      scope: "repo",
+      login: "local-user",
+      id: 1,
+      invalid: false,
+    });
+  } catch (error) {
+    storeError = String(error);
+  }
+  observe("unavailable Secret Service falls back to the isolated token file", storeError === "", {
+    backend: brokenStore.backend,
+    storeError,
+  });
+  const clock = new FakeClock(1000);
+  const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
+  const first = createCommentMode({ board, clock });
+  const binding = { itemId: "item", linearIssueId: "issue", sessionId: "issue" };
+  first.bind(binding);
+  await first.ask({ itemId: "item", title: "Proceed?", body: "Choose yes or no." });
+  const restarted = createCommentMode({ board, clock });
+  restarted.bind(binding);
+  clock.advance(1000);
+  board.post({ issueId: "issue", parentId: board.comments[0]!.id, body: "yes", userId: "human" });
+  const afterRestart = await restarted.sync("issue");
+  const withoutRestart = await first.sync("issue");
+  observe("question reply survives comment-adapter restart", afterRestart.resumed.length === 1, {
+    afterRestart,
+    withoutRestart,
+  });
+  const personalBoard = createFakeCommentBoard({ clock, selfUserId: "personal-token-owner" });
+  const personal = createCommentMode({
+    board: personalBoard,
+    clock,
+    selfUserId: "personal-token-owner",
+  });
+  personal.bind(binding);
+  await personal.ask({ itemId: "item", title: "Proceed?", body: "Choose yes or no." });
+  clock.advance(1000);
+  personalBoard.post({
+    issueId: "issue",
+    parentId: personalBoard.comments[0]!.id,
+    userId: "personal-token-owner",
+    body: "yes",
+  });
+  const ownReply = await personal.sync("issue");
+  observe(
+    "Linear personal-token owner can answer their own question",
+    ownReply.resumed.length === 1,
+    { ownReply, phase: personal.phase("item") },
+  );
+  const db = openDatabase(":memory:");
+  migrate(db);
+  try {
+    const item = insertQueuedItem(db, { id: "durable-item", now: clock.now() });
+    beginImplementRun(db, item.id, clock.now());
+    const comments = createFakeGitHubComments({ clock, selfLogin: "local-user" });
+    const tracker = createGitHubCommentTracker({
+      request: comments.request,
+      owner: "local",
+      repo: "fixture",
+      clock,
+    });
+    const issue = "github:local/fixture#1";
+    db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
+      issue,
+      "fixture#1",
+      item.id,
+    ]);
+    await tracker.postProgress({ sessionId: issue, kind: "thought", body: "Working" });
+    clock.advance(1000);
+    comments.post({
+      issueNumber: 1,
+      body: "/paws stop",
+      login: "local-user",
+      association: "OWNER",
+    });
+    let deliveredId = "";
+    await ingestGitHubComments(
+      tracker,
+      issue,
+      async () => {},
+      (itemId, at) => {
+        deliveredId = itemId;
+        submitCommand(db, new CommandBus(), {
+          type: "stop",
+          itemId,
+          source: "linear",
+          requestedAt: at,
+        });
+      },
+    );
+    observe(
+      "GitHub stop targets the durable work item",
+      getWorkItem(db, item.id)?.state === "cancelled",
+      {
+        deliveredId,
+        durableId: item.id,
+        state: getWorkItem(db, item.id)?.state,
+        commentPhase: tracker.phase(issue),
+      },
+    );
+    const checkpoint = {
+      phase: "merge_queue" as const,
+      baseSha: "a".repeat(40),
+      wipCommit: "b".repeat(40),
+    };
+    const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
+    beginImplementRun(db, recovering.id, clock.now());
+    enterMergeQueue(db, recovering.id, checkpoint);
+    const jobKey = `merge:${recovering.id}:${checkpoint.wipCommit}`;
+    const original = enqueueJobOnce(db, {
+      queue: JOB_KIND.merge,
+      jobKey,
+      payload: { itemId: recovering.id },
+      now: clock.now(),
+    });
+    recoverOnStartup(db, clock.now());
+    if (getWorkItem(db, recovering.id)?.state === "verifying")
+      applyWorkItemEvent(db, recovering.id, "closeout_accepted");
+    const retry = enqueueJobOnce(db, {
+      queue: JOB_KIND.merge,
+      jobKey,
+      payload: { itemId: recovering.id },
+      now: clock.now(),
+    });
+    observe(
+      "reverified merge schedules a runnable retry",
+      listJobs(db).some((job) => job.queue === JOB_KIND.merge && job.status === "pending"),
+      {
+        original,
+        retry,
+        jobs: listJobs(db).map(({ id, queue, status }) => ({ id, queue, status })),
+      },
+    );
+  } finally {
+    db.close();
+  }
+}
