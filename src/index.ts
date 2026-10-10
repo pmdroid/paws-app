@@ -17,7 +17,13 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
-import { WORK_ITEM_STATES, type Clock, type LinearCommand } from "./core";
+import {
+  transitionEpic,
+  WORK_ITEM_STATES,
+  type Clock,
+  type EpicState,
+  type LinearCommand,
+} from "./core";
 import {
   enqueueCommand,
   listWorkItemsByStates,
@@ -242,32 +248,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       if (orchestrator === null) throw new Error("loop is not attached");
       await orchestrator.onLinearEvent(event);
     };
-    const stopItem = (itemId: string, at: number): void => {
-      if (orchestrator === null) {
-        enqueueCommand(db, { type: "stop", itemId, source: "linear", requestedAt: at });
-        return;
-      }
-      submitCommand(db, orchestrator.bus, {
-        type: "stop",
-        itemId,
-        source: "linear",
-        requestedAt: at,
-      });
-    };
+    const ingest = createGitHubCommentIngestor(db, githubWork.comments, deliver, submit);
     githubPoller = startGitHubIssuePoller({
       db,
       client: githubWork.client,
       onTrigger: (event) => deliver(githubCreatedEvent(event.issueId, event.updatedAtMs)),
-      onComment: (event) =>
-        ingestGitHubComments(githubWork.comments, event.issueId, deliver, stopItem),
+      onComment: (event) => ingest(event.issueId),
     });
     githubSync = setInterval(() => {
-      void syncOpenGitHubIssues(db, githubWork.comments, deliver, stopItem).catch(
-        (error: unknown) => {
-          const message = error instanceof Error ? error.message : "github comment sync failed";
-          console.error(`github comment sync failed: ${message}`);
-        },
-      );
+      void syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "github comment sync failed";
+        console.error(`github comment sync failed: ${message}`);
+      });
     }, 5_000);
     githubSync.unref?.();
   }
@@ -613,6 +605,7 @@ export function openGitHubWork(options: {
   });
   const tracker: TrackerAdapter = {
     async loadEpic(id) {
+      comments.bind({ itemId: id, issueId: id, sessionId: id });
       return loadGitHubEpic(client, requireGitHubIssue(id));
     },
     async listDeps(id) {
@@ -678,11 +671,49 @@ export async function ingestGitHubComments(
   }
 }
 
-async function syncOpenGitHubIssues(
+export function createGitHubCommentIngestor(
   db: Database,
   comments: GitHubCommentTracker,
   deliver: (event: AcceptedLinearEvent) => Promise<void>,
-  stop: (itemId: string, at: number) => void,
+  submit: (command: LinearCommand) => void,
+): (issueId: string) => Promise<void> {
+  return (issueId) => {
+    comments.bind({ itemId: issueId, issueId, sessionId: issueId });
+    return ingestGitHubComments(comments, issueId, deliver, (_key, requestedAt) => {
+      const epic = db
+        .query<{ id: string; state: EpicState }, [string]>(
+          "SELECT id, state FROM epic WHERE linear_issue_id = ?",
+        )
+        .get(issueId);
+      if (epic !== null) {
+        const cancelled = transitionEpic(epic.state, "cancel");
+        if (cancelled.ok) {
+          db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
+            cancelled.to,
+            epic.id,
+            epic.state,
+          ]);
+        }
+      }
+      const targets = db
+        .query<{ id: string }, [string, string]>(
+          `SELECT work_item.id FROM work_item
+           JOIN epic ON epic.id = work_item.epic_id
+           WHERE work_item.state NOT IN ('merged', 'cancelled')
+             AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
+           ORDER BY work_item.position, work_item.id`,
+        )
+        .all(issueId, issueId);
+      for (const { id } of targets) {
+        submit({ type: "stop", itemId: id, source: "linear", requestedAt });
+      }
+    });
+  };
+}
+
+async function syncOpenGitHubIssues(
+  db: Database,
+  ingest: (issueId: string) => Promise<void>,
 ): Promise<void> {
   const issues = new Set<string>();
   for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
@@ -695,7 +726,7 @@ async function syncOpenGitHubIssues(
     if (epic.linear_issue_id.startsWith("github:")) issues.add(epic.linear_issue_id);
   }
   for (const issueId of issues) {
-    await ingestGitHubComments(comments, issueId, deliver, stop);
+    await ingest(issueId);
   }
 }
 
