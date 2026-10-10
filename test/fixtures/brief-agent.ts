@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const purpose = process.env.BRIEF_PURPOSE;
-const evidence = process.env.BRIEF_EVIDENCE;
+const purpose = process.argv[2];
+const evidence = process.argv[3];
 const send = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
 for await (const line of createInterface({ input: process.stdin })) {

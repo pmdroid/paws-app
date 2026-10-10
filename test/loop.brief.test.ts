@@ -74,8 +74,8 @@ for (const source of ["linear", "github"] as const) {
     migrate(db);
     const launch = (input: { purpose: string }) => ({
       command: process.execPath,
-      args: [agent],
-      env: { ...process.env, BRIEF_PURPOSE: input.purpose, BRIEF_EVIDENCE: evidence },
+      args: [agent, input.purpose, evidence],
+      env: process.env,
     });
     const repository = { owner: "acme", repo: "widgets", remoteUrl: bare };
     let jobs = new JobLoop(db, systemClock);
