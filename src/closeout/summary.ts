@@ -1,3 +1,4 @@
+import type { DecisionDocument as SpecDecision, DecisionItem } from "../closeout-spec";
 import type { DecisionDocument, Finding, GateResult } from "./types";
 
 export function formatEvidenceSummary(
@@ -45,4 +46,64 @@ export function formatFixFeedback(
     }
   }
   return lines.join("\n");
+}
+
+/** How a verified artifact is shown. A mismatch is not linked as the recorded bytes. */
+export type ArtifactLink = {
+  /** Portable path relative to the evidence root (`logs/...` or another artifact). */
+  path: string;
+  status: "ok" | "mismatch" | "unreadable";
+};
+
+export type RequirementLinks = {
+  itemId: string;
+  attempt?: number;
+  artifacts: readonly ArtifactLink[];
+};
+
+/**
+ * Decision text for a pull request body, a GitHub or Linear evidence comment, and the dashboard.
+ * The labels match the summary the dashboard already reads. Skipped requirements are omitted.
+ * Log lines are added by `renderCloseoutEvidence` after the artifact bytes are checked.
+ */
+export function formatCloseoutEvidence(
+  decision: SpecDecision,
+  links: readonly RequirementLinks[] = [],
+): string {
+  const lines = [
+    `Closeout: ${decision.decision}`,
+    `Base: ${decision.base}`,
+    `Head: ${decision.head}`,
+    `Policy: ${decision.policy.digest ?? "none"}`,
+  ];
+  if (decision.message) lines.push(`Message: ${decision.message}`);
+  const shown = decision.items.filter((item) => item.state !== "skipped");
+  if (shown.length === 0 && decision.items.length === 0) {
+    lines.push("Items:", "- (none)");
+  } else if (shown.length > 0) {
+    lines.push("Items:");
+    for (const item of shown) {
+      const attempt = item.attempt === undefined ? "" : ` attempt ${item.attempt}`;
+      lines.push(`- ${item.id} (${item.kind}): ${item.state}${attempt} — ${item.message}`);
+      for (const link of linksFor(item, links)) lines.push(`  ${formatArtifactLink(link)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function linksFor(item: DecisionItem, links: readonly RequirementLinks[]): readonly ArtifactLink[] {
+  const matched = links.filter((entry) => entry.itemId === item.id);
+  if (item.attempt !== undefined) {
+    return matched.find((entry) => entry.attempt === item.attempt)?.artifacts ?? [];
+  }
+  return matched[0]?.artifacts ?? [];
+}
+
+function formatArtifactLink(link: ArtifactLink): string {
+  const label = link.path.startsWith("logs/") || link.path.length === 0 ? "log" : "artifact";
+  if (link.path.length === 0) return "log: artifacts exceed 16";
+  if (link.status === "mismatch") return `${label}: ${link.path} (hash mismatch)`;
+  if (link.status === "unreadable") return `${label}: ${link.path} (unreadable)`;
+  const href = link.path;
+  return `${label}: [${href}](${href})`;
 }
