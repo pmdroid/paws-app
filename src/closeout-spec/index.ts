@@ -1,0 +1,62 @@
+/**
+ * Closeout draft 0.1 seam.
+ *
+ * Public surface is the frozen types plus the spec pin (`SPEC_VERSION`,
+ * `SPEC_COMMIT`). Policy loading, command execution, review, and the
+ * acceptance decision are separate modules that import this one.
+ */
+
+export { SPEC_COMMIT, SPEC_VERSION } from "./types";
+
+export type {
+  Artifact,
+  CandidateIdentity,
+  CommandExec,
+  CommandRecord,
+  CommandRunRequest,
+  CommandRunResult,
+  CommandRunner,
+  DecisionDocument,
+  DecisionItem,
+  DecisionName,
+  DecisionPolicy,
+  DecisionWarning,
+  EvidenceInvalid,
+  EvidenceRecord,
+  EvidenceSnapshot,
+  EvidenceStore,
+  Finding,
+  Gate,
+  Independence,
+  ItemState,
+  PolicyCommand,
+  PolicyDocument,
+  PolicyFile,
+  PolicyIdentity,
+  PolicyImport,
+  PolicyItem,
+  PolicyLoadResult,
+  PolicyPaths,
+  PolicyReview,
+  PolicySetupStep,
+  PolicySource,
+  ProducerIdentity,
+  ResolvedCommand,
+  ResolvedItem,
+  ResolvedPolicy,
+  ResolvedPolicyAbsent,
+  ResolvedPolicyPresent,
+  ResolvedRequirement,
+  ResolvedReview,
+  ResolvedSetup,
+  ResolvedUnsupported,
+  RetryPolicy,
+  RetryScope,
+  Reviewer,
+  ReviewProducer,
+  ReviewRecord,
+  ReviewRequest,
+  ReviewResult,
+  Severity,
+  SpecVersion,
+} from "./types";
