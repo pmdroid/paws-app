@@ -4,5 +4,8 @@
   "semi": true,
   "singleQuote": false,
   "trailingComma": "all",
-  "ignorePatterns": ["src/closeout-spec/schema/*.schema.json"]
+  "ignorePatterns": [
+    "src/closeout-spec/schema/*.schema.json",
+    "test/fixtures/closeout-conformance/**"
+  ]
 }
