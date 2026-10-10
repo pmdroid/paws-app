@@ -720,7 +720,7 @@ for (const review of invalidReviews) {
         writeFileSync(scriptPath, JSON.stringify(script));
         return {
           command: process.execPath,
-          args: [fakeAgent],
+          args: [fakeAgent, "", scriptPath],
           env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
         };
       },
@@ -760,7 +760,7 @@ test("ACP review timeout rejects a partial clean array", async () => {
     timeoutMs: 500,
     launch: () => ({
       command: process.execPath,
-      args: [fakeAgent],
+      args: [fakeAgent, "", scriptPath],
       env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
     }),
   });
