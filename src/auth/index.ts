@@ -13,6 +13,7 @@ export {
   DEVICE_SCOPE_MESSAGE,
   FILE_TOKEN_STORE_DOCTOR_WARNING,
   GITHUB_REAUTH_MESSAGE,
+  MISSING_GITHUB_CLIENT_ID_MESSAGE,
   WORKFLOW_SCOPE_NOTE,
 } from "./messages";
 export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
@@ -20,4 +21,10 @@ export { createGitHubTokenProvider } from "./provider";
 export type { GitHubAuthSource, GitHubTokenProvider, GitHubTokenProviderConfig } from "./provider";
 export { createTokenStore, githubOAuthPath } from "./store";
 export type { GitHubTokenStore, StoredGitHubOAuth, TokenBackend } from "./store";
-export { ACCESS_TOKEN_URL, DEVICE_CODE_URL, scopesGrantRepoAndOrg } from "./github-device";
+export {
+  ACCESS_TOKEN_URL,
+  DEVICE_CODE_URL,
+  missingGitHubClientId,
+  resolveGitHubOAuthClientId,
+  scopesGrantRepoAndOrg,
+} from "./github-device";

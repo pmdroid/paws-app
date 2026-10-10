@@ -10,7 +10,7 @@ The Linear comment-mode run is [optional](#optional-linear) and comes after the 
 
 ## Prerequisite
 
-The smoke run uses Pascal's OAuth App. Put that client id in `github.oauth_client_id` (setup asks when the key is empty). Registering a different app is in [GitHub sign-in](github-login.md).
+The smoke run uses Pascal's OAuth App. Put that client id in `github.oauth_client_id` or `PAWS_GITHUB_CLIENT_ID` before setup. An empty or placeholder id stops before GitHub is called. Registering a different app is in [GitHub sign-in](github-login.md).
 
 Closeout is the in-process engine. `origin/main` needs a `.agents/closeout.yaml` that loads. Setup can write a starter policy in the checkout; commit it before `doctor` and `bun run paws`.
 

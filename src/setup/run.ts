@@ -6,7 +6,6 @@ import { DEFAULT_LINEAR_MODE } from "../comments";
 import {
   ensureLayout,
   isImplementer,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
   pawsPaths,
   writeConfigFile,
   type ImplementerName,
@@ -31,6 +30,7 @@ import {
   cloneGitHubMirror,
   ensureGitHubLabels,
   ensureGitHubSignIn,
+  resolveSetupGitHubClientId,
   tokenStore,
 } from "./github";
 import { HELP, parseArgs, type LinearModeFlag, type SetupFlags, type TrackerFlag } from "./args";
@@ -91,6 +91,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   const home = resolveHome(flags, io);
   const paths = pawsPaths(home);
   ensureLayout(paths);
+  const oauthClientId = resolveSetupGitHubClientId(home, io.env);
   let githubToken: string | null = null;
   if (tracker === "github" || tracker === "both") {
     const signedIn = await ensureGitHubSignIn({
@@ -99,7 +100,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       env: io.env,
       io,
       secrets,
-      oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
+      oauthClientId,
     });
     githubToken = signedIn.token;
   }
@@ -198,7 +199,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     linearSecret: mode === "comments" ? API_KEY_FILE : OAUTH_FILE,
     linearClientFile: mode === "agent-session" ? CLIENT_FILE : null,
     githubAuth,
-    ...(githubAuth === "oauth" ? { oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID } : {}),
+    ...(githubAuth === "oauth" ? { oauthClientId } : {}),
     trackerKind: tracker,
     repo: `${repository.owner}/${repository.repo}`,
     checkout,

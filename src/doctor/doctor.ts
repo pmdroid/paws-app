@@ -1,12 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
-import {
-  loadEnv,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
-  pawsPaths,
-  type AgentsConfig,
-  type EnvSource,
-} from "../config";
+import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
+import { loadEnv, pawsPaths, type AgentsConfig, type EnvSource } from "../config";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
 
@@ -59,8 +54,6 @@ const FIX = {
   githubLabel: "Create the paws label on the repository.",
   githubRate: "Wait for the GitHub rate limit to recover.",
 } as const;
-
-const PLACEHOLDER_LINE = "set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID";
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
 export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): DoctorCheck[] {
@@ -188,9 +181,16 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
 function githubTrackerChecks(facts: ProbeFacts): DoctorCheck[] {
   if (
     facts.githubAuth === "oauth" &&
-    (facts.githubDoctor.placeholder || facts.oauthClientId === PAWS_GITHUB_OAUTH_CLIENT_ID)
+    (facts.githubDoctor.placeholder || missingGitHubClientId(facts.oauthClientId))
   ) {
-    return [check("github-auth", false, PLACEHOLDER_LINE, PLACEHOLDER_LINE)];
+    return [
+      check(
+        "github-auth",
+        false,
+        MISSING_GITHUB_CLIENT_ID_MESSAGE,
+        MISSING_GITHUB_CLIENT_ID_MESSAGE,
+      ),
+    ];
   }
   const github = facts.githubDoctor;
   const loginFix = facts.githubAuth === "gh" ? FIX.ghLogin : FIX.githubLogin;

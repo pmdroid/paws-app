@@ -6,9 +6,12 @@ import {
   createTokenStore,
   GITHUB_REAUTH_MESSAGE,
   loginGitHub,
-  PAWS_GITHUB_OAUTH_CLIENT_ID,
+  MISSING_GITHUB_CLIENT_ID_MESSAGE,
+  missingGitHubClientId,
+  resolveGitHubOAuthClientId,
   type GitHubTokenStore,
 } from "../auth";
+import { loadConfigFile, pawsPaths } from "../config";
 import { runGitHubGit } from "../github";
 import type { SetupFetch, SetupGitHubHooks, SetupIO } from "./io";
 import { stop } from "./stop";
@@ -24,6 +27,14 @@ export const GITHUB_STATUS_LABELS = [
   { name: "paws:done", color: "5319E7", description: "Paws finished" },
 ] as const;
 
+/** Client id setup will send. Env wins, then `github.oauth_client_id` in config.toml. */
+export function resolveSetupGitHubClientId(home: string, env: NodeJS.ProcessEnv): string {
+  return resolveGitHubOAuthClientId({
+    env: env.PAWS_GITHUB_CLIENT_ID,
+    configured: loadConfigFile(pawsPaths(home).configFile).oauthClientId,
+  });
+}
+
 export async function ensureGitHubSignIn(input: {
   yes: boolean;
   home: string;
@@ -38,12 +49,17 @@ export async function ensureGitHubSignIn(input: {
     remember(input.secrets, existing.accessToken);
     return { login: existing.login, id: existing.id, token: existing.accessToken };
   }
+  const clientId = resolveGitHubOAuthClientId({
+    env: input.env.PAWS_GITHUB_CLIENT_ID,
+    configured: input.oauthClientId,
+  });
+  if (missingGitHubClientId(clientId)) stop(MISSING_GITHUB_CLIENT_ID_MESSAGE);
   if (input.yes) stop(GITHUB_REAUTH_MESSAGE);
   const fetchImpl = input.io.fetch;
   const user = await loginGitHub({
     home: input.home,
     env: input.env,
-    oauthClientId: input.oauthClientId ?? PAWS_GITHUB_OAUTH_CLIENT_ID,
+    oauthClientId: clientId,
     store,
     ...(fetchImpl ? { fetch: fetchImpl } : {}),
     stdout: (line) => input.io.stdout(line),

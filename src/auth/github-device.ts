@@ -1,9 +1,11 @@
+import { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
 import {
   DEVICE_ACCESS_DENIED_MESSAGE,
   DEVICE_CODE_EXPIRED_MESSAGE,
   DEVICE_SCOPE,
   DEVICE_SCOPE_MESSAGE,
   GITHUB_REAUTH_MESSAGE,
+  MISSING_GITHUB_CLIENT_ID_MESSAGE,
   WORKFLOW_SCOPE_NOTE,
 } from "./messages";
 
@@ -41,6 +43,29 @@ export class DeviceFlowError extends Error {
   }
 }
 
+/** Empty, or still the setup placeholder. Do not send this to GitHub. */
+export function missingGitHubClientId(clientId: string | null | undefined): boolean {
+  const trimmed = clientId?.trim() ?? "";
+  return trimmed.length === 0 || trimmed === PAWS_GITHUB_OAUTH_CLIENT_ID;
+}
+
+/**
+ * `PAWS_GITHUB_CLIENT_ID` wins when it is a real client id.
+ * A placeholder falls through to `github.oauth_client_id`.
+ */
+export function resolveGitHubOAuthClientId(input: {
+  env?: string | null;
+  configured?: string | null;
+}): string {
+  const fromEnv = input.env?.trim() ?? "";
+  const fromConfig = input.configured?.trim() ?? "";
+  if (!missingGitHubClientId(fromEnv)) return fromEnv;
+  if (!missingGitHubClientId(fromConfig)) return fromConfig;
+  if (fromEnv.length > 0) return fromEnv;
+  if (fromConfig.length > 0) return fromConfig;
+  return PAWS_GITHUB_OAUTH_CLIENT_ID;
+}
+
 /**
  * GitHub's device flow.
  * The OAuth client id is public. No client secret is sent.
@@ -51,20 +76,30 @@ export async function requestDeviceCode(input: {
   fetch: DeviceFetch;
   scope?: string;
 }): Promise<DeviceCode> {
+  if (missingGitHubClientId(input.clientId)) {
+    throw new DeviceFlowError(MISSING_GITHUB_CLIENT_ID_MESSAGE);
+  }
   const scope = input.scope ?? DEVICE_SCOPE;
   if (scope.split(/\s+/).includes("workflow")) {
     throw new DeviceFlowError(WORKFLOW_SCOPE_NOTE);
   }
   const response = await postForm(input.fetch, DEVICE_CODE_URL, {
-    client_id: input.clientId,
+    client_id: input.clientId.trim(),
     scope,
   });
   const body = await readJson(response);
   const deviceCode = readString(body, "device_code");
   const userCode = readString(body, "user_code");
   const verificationUri = readString(body, "verification_uri");
-  if (deviceCode === null || userCode === null || verificationUri === null) {
-    throw new DeviceFlowError(`GitHub did not return a device code. ${GITHUB_REAUTH_MESSAGE}.`);
+  const error = readString(body, "error");
+  if (
+    !response.ok ||
+    error !== null ||
+    deviceCode === null ||
+    userCode === null ||
+    verificationUri === null
+  ) {
+    throw new DeviceFlowError(deviceCodeFailure(response, body));
   }
   return {
     deviceCode,
@@ -227,14 +262,77 @@ function githubHeaders(token: string): Record<string, string> {
   };
 }
 
+/** Device-code failures name GitHub's error and a fix. They do not say to log in again. */
+function deviceCodeFailure(response: Response, body: unknown): string {
+  const error = readString(body, "error");
+  const description = readString(body, "error_description") ?? readString(body, "message");
+  return `GitHub device-code error (${deviceErrorSummary(response, error, description)}). ${deviceErrorFix(error, response.status)}`;
+}
+
+function deviceErrorSummary(
+  response: Response,
+  error: string | null,
+  description: string | null,
+): string {
+  if (error !== null) {
+    const named = description !== null ? `${error}: ${description}` : error;
+    if (response.status === 404) return `404 Not Found; ${named}`;
+    return named;
+  }
+  if (response.status === 404) return "404 Not Found";
+  const statusText = response.statusText.trim();
+  const http = statusText.length > 0 ? `${response.status} ${statusText}` : String(response.status);
+  if (description !== null && description.toLowerCase() !== statusText.toLowerCase()) {
+    return `${http}: ${description}`;
+  }
+  return http;
+}
+
+function deviceErrorFix(error: string | null, status: number): string {
+  if (error === "device_flow_disabled") return "Enable Device Flow on the OAuth App.";
+  if (error === "unauthorized_client") {
+    return "Enable Device Flow on the OAuth App and check the client id.";
+  }
+  if (error === "incorrect_client_credentials" || error === "not_found" || status === 404) {
+    return "Check the client id.";
+  }
+  return "Check the client id and enable Device Flow on the OAuth App.";
+}
+
 async function readJson(response: Response): Promise<unknown> {
   const text = await response.text();
-  if (text.trim().length === 0) return {};
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return {};
+  return parseOAuthBody(text, response.headers.get("content-type"));
+}
+
+function parseOAuthBody(text: string, contentType: string | null): unknown {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return {};
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return { message: clip(trimmed) };
+    }
   }
+  const type = contentType ?? "";
+  if (type.includes("application/x-www-form-urlencoded") || isFormBody(trimmed)) {
+    const params = new URLSearchParams(trimmed);
+    const record: Record<string, string> = {};
+    for (const [key, value] of params) {
+      if (record[key] === undefined) record[key] = value;
+    }
+    if (Object.keys(record).length > 0) return record;
+  }
+  return { message: clip(trimmed) };
+}
+
+function isFormBody(text: string): boolean {
+  return /^[A-Za-z0-9_]+=/.test(text) && !text.includes("<");
+}
+
+function clip(text: string): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > 180 ? `${one.slice(0, 180)}…` : one;
 }
 
 function readString(body: unknown, key: string): string | null {

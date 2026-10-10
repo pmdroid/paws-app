@@ -4,11 +4,11 @@ import {
   pollDeviceToken,
   refreshDeviceToken,
   requestDeviceCode,
+  resolveGitHubOAuthClientId,
   type DeviceCode,
   type DeviceFetch,
   type DeviceGrant,
 } from "./github-device";
-import { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
 import { DEVICE_CODE_EXPIRED_MESSAGE, GITHUB_REAUTH_MESSAGE } from "./messages";
 import { createTokenStore, type GitHubTokenStore, type StoredGitHubOAuth } from "./store";
 
@@ -185,11 +185,10 @@ function storeFor(options: LoginIO): GitHubTokenStore {
 }
 
 function clientId(options: LoginIO): string {
-  const fromEnv = options.env?.PAWS_GITHUB_CLIENT_ID?.trim();
-  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  const fromConfig = options.oauthClientId?.trim();
-  if (fromConfig !== undefined && fromConfig.length > 0) return fromConfig;
-  return PAWS_GITHUB_OAUTH_CLIENT_ID;
+  return resolveGitHubOAuthClientId({
+    env: options.env?.PAWS_GITHUB_CLIENT_ID,
+    configured: options.oauthClientId,
+  });
 }
 
 function fetchOf(options: LoginIO): DeviceFetch {
