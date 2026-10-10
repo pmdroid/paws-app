@@ -7,7 +7,7 @@ import type { CandidateIdentity, Finding } from "./types";
  * in a different session and a different model from the implementer.
  * The gate does not spawn Codex itself.
  *
- * Independence is decided by `closeout decision` from the identities on
+ * Independence is decided by the native decision from the identities on
  * the evidence record. An empty session or model does not satisfy a
  * `true` independence flag.
  */

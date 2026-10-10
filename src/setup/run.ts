@@ -34,7 +34,7 @@ import {
   tokenStore,
 } from "./github";
 import { HELP, parseArgs, type LinearModeFlag, type SetupFlags, type TrackerFlag } from "./args";
-import { ensureCloseoutPolicy, installCloseoutBinary } from "./closeout";
+import { ensureCloseoutPolicy } from "./closeout";
 import { chooseTeam, connectLinear, ensurePawsLabel } from "./linear";
 import { createIO, definedEnv, withProcessPath, type SetupIO, type SetupOptions } from "./io";
 import { writeLinearOAuth, writeSecretFile } from "./secrets";
@@ -186,12 +186,6 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     }
   }
 
-  const closeoutBin = await installCloseoutBinary({
-    home,
-    closeoutPath: flags.closeoutPath,
-    cwd: io.cwd,
-    fetch: io.fetch,
-  });
   await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
 
   if (linear !== null) writeLinearSecrets(paths.secretsDir, mode, linear);
@@ -207,7 +201,6 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     ...(githubAuth === "oauth" ? { oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID } : {}),
     trackerKind: tracker,
     repo: `${repository.owner}/${repository.repo}`,
-    closeoutBin,
     checkout,
     maxTurns: DEFAULT_MAX_TURNS,
     maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
@@ -228,9 +221,6 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     for (const check of doctor) {
       if (!check.ok) stop(check.message);
     }
-  }
-  if (!existsSync(closeoutBin) || (statSync(closeoutBin).mode & 0o111) === 0) {
-    stop(`Closeout was not installed at ${closeoutBin}. Pass --closeout-path to a local binary.`);
   }
   const policy = join(checkout, ".agents", "closeout.yaml");
   if (!existsSync(policy)) {

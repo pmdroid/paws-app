@@ -19,7 +19,7 @@ Add the `paws` label to an issue in the repository you picked. Paws polls that r
 
 `setup` writes `~/.paws/config.toml`. It runs the GitHub device-flow sign-in, asks which repository to use, sets `[tracker] kind` to `github`, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button that starts the same device flow. The default path uses no webhook, no public URL, and no GitHub App.
 
-Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet). If Grok advertises no auth method, doctor prints:
+Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
 
 ```text
 missing grok: Run `grok login`

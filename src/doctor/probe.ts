@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { adapterVersions, resolveAdapter } from "../acp";
 import {
   createGitHubTokenProvider,
@@ -18,14 +18,9 @@ import {
   type RuntimeConfig,
   type TrackerKind,
 } from "../config";
+import { validate } from "../closeout-spec";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
-import {
-  checkDeveloperLogin,
-  closeoutBinPath,
-  closeoutPlatform,
-  loadCloseoutManifest,
-  sha256Hex,
-} from "../install";
+import { checkDeveloperLogin } from "../install";
 
 /** Core REST calls left after a signed-in doctor check. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
@@ -61,10 +56,10 @@ export type ProbeFacts = {
   claudeLogin: { ok: boolean; detail: string };
   codexLogin: { ok: boolean; detail: string };
   closeout: {
-    path: string;
-    present: boolean;
-    executable: boolean;
-    checksum: "match" | "mismatch" | "skipped" | "missing";
+    ok: boolean;
+    detail: string;
+    /** One next step when the policy did not load. */
+    fix: string | null;
   };
   linear: {
     attempted: boolean;
@@ -108,7 +103,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     codexAdapter: adapterFact("reviewer"),
     claudeLogin,
     codexLogin,
-    closeout: closeoutFact(runtime.closeoutBin, runtime.env.home),
+    closeout: closeoutPolicyFact(runtime.checkout, runtime.env.home),
     linear,
   };
 }
@@ -188,36 +183,35 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
   }
 }
 
-function closeoutFact(configured: string | null, home: string): ProbeFacts["closeout"] {
-  const path = configured ?? closeoutBinPath(home);
-  let unreleased = true;
-  let expected = "";
-  try {
-    const manifest = loadCloseoutManifest();
-    const asset = manifest.assets[closeoutPlatform()];
-    unreleased = asset.digestKind === "unreleased-placeholder";
-    expected = asset.sha256;
-  } catch {
-    return { path, present: false, executable: false, checksum: "missing" };
+function closeoutPolicyFact(checkout: string | null, home: string): ProbeFacts["closeout"] {
+  if (checkout === null || checkout.trim().length === 0) {
+    return {
+      ok: false,
+      detail: "checkout is not configured",
+      fix: "Run bun run paws setup so the checkout path is set.",
+    };
   }
-  if (!existsSync(path)) return { path, present: false, executable: false, checksum: "missing" };
-  let executable = false;
-  try {
-    executable = (statSync(path).mode & 0o111) !== 0;
-  } catch {
-    return { path, present: false, executable: false, checksum: "missing" };
+  const loaded = validate(checkout, home);
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      detail: "policy on origin/main is malformed",
+      fix: oneLine(loaded.message),
+    };
   }
-  if (!executable) return { path, present: true, executable: false, checksum: "missing" };
-  if (unreleased || expected.length === 0) {
-    return { path, present: true, executable: true, checksum: "skipped" };
+  if (loaded.absent) {
+    return {
+      ok: false,
+      detail: "origin/main has no closeout policy",
+      fix: "Commit .agents/closeout.yaml on origin/main.",
+    };
   }
-  const actual = sha256Hex(new Uint8Array(readFileSync(path)));
-  return {
-    path,
-    present: true,
-    executable: true,
-    checksum: actual === expected ? "match" : "mismatch",
-  };
+  return { ok: true, detail: "policy loads on origin/main", fix: null };
+}
+
+function oneLine(message: string): string {
+  const line = message.replace(/\s+/g, " ").trim();
+  return line.length > 0 ? line : "Fix .agents/closeout.yaml on origin/main.";
 }
 
 async function linearFact(runtime: ReturnType<typeof loadRuntime>): Promise<ProbeFacts["linear"]> {

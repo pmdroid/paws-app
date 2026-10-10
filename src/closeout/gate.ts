@@ -20,8 +20,8 @@ export type CloseoutVerdict = {
 };
 
 /**
- * Runs the pinned `closeout` runner in the worktree.
- * Command items and the Codex review item are QM-06; this module only owns the gate seam.
+ * Runs native Closeout in the worktree.
+ * Command items and the Codex review item stay on this gate seam.
  */
 export interface CloseoutGate {
   run(input: CloseoutRunInput): Promise<CloseoutVerdict>;
@@ -32,8 +32,10 @@ export type CloseoutGateOptions = {
   candidate: CandidateIdentity;
   reviewer: CodexReviewer;
   fixer: FixRunner;
-  closeoutBin?: string;
-  pinnedVersion?: string;
+  /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
+  home?: string;
+  /** `~/.paws` for the detached command worktree. */
+  pawsHome?: string;
   reportDir?: string;
   recorder?: GateInput["recorder"];
   maxFixAttempts?: number;
@@ -61,8 +63,8 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         candidate: options.candidate,
         reviewer: options.reviewer,
         fixer: options.fixer,
-        ...(options.closeoutBin ? { closeoutBin: options.closeoutBin } : {}),
-        ...(options.pinnedVersion ? { pinnedVersion: options.pinnedVersion } : {}),
+        ...(options.home !== undefined ? { home: options.home } : {}),
+        ...(options.pawsHome !== undefined ? { pawsHome: options.pawsHome } : {}),
         ...(options.reportDir ? { reportDir: options.reportDir } : {}),
         ...(options.recorder ? { recorder: options.recorder } : {}),
         ...(options.maxFixAttempts !== undefined ? { maxFixAttempts: options.maxFixAttempts } : {}),

@@ -12,11 +12,7 @@ The Linear comment-mode run is [optional](#optional-linear) and comes after the 
 
 The smoke run uses Pascal's OAuth App. Put that client id in `github.oauth_client_id` (setup asks when the key is empty). Registering a different app is in [GitHub sign-in](github-login.md).
 
-`pmdroid/closeout` has no release assets yet. Pass the binary you already have:
-
-```sh
-bun run paws setup --closeout-path /absolute/path/to/closeout
-```
+Closeout is the in-process engine. `origin/main` needs a `.agents/closeout.yaml` that loads. Setup can write a starter policy in the checkout; commit it before `doctor` and `bun run paws`.
 
 ## 1. Install
 
@@ -41,10 +37,10 @@ That creates `pmdroid/paws-demo` when it is missing and force-pushes `main`. Ove
 From the Paws repository root:
 
 ```sh
-bun run paws setup --closeout-path /absolute/path/to/closeout
+bun run paws setup
 ```
 
-Setup runs the GitHub device flow (a code, approved at [github.com/login/device](https://github.com/login/device)), asks which repository to use (`pmdroid/paws-demo`), leaves the tracker on `github`, and asks for the implementer (`claude`, `grok`, or `codex`). It writes `~/.paws/config.toml` and copies Closeout to `~/.paws/bin/closeout`. The keys that matter:
+Setup runs the GitHub device flow (a code, approved at [github.com/login/device](https://github.com/login/device)), asks which repository to use (`pmdroid/paws-demo`), leaves the tracker on `github`, and asks for the implementer (`claude`, `grok`, or `codex`). It writes `~/.paws/config.toml` and can write a starter `.agents/closeout.yaml` in the checkout. The keys that matter:
 
 ```toml
 [github]
@@ -106,7 +102,7 @@ Grok is spawned as `grok --no-auto-update agent stdio --no-leader` with the work
 bun run paws doctor
 ```
 
-Every required line must be `ok`, and the command exits `0`. A `missing` line names the check and prints one `fix:` line. For the GitHub tracker those checks cover git, Bun, the home directory, GitHub sign-in, push access to `github.repo`, the implementer, Codex, Closeout, and the checkout. A missing sign-in tells you to run `bun run paws login github`. When Closeout is absent, the fix is `bun run paws setup --closeout-path <binary>`. When `agents.implementer` is `grok`, a missing Claude install is a `note` and does not fail the command. If Grok advertises no auth method, doctor prints one actionable line:
+Every required line must be `ok`, and the command exits `0`. A `missing` line names the check and prints one `fix:` line. For the GitHub tracker those checks cover git, Bun, the home directory, GitHub sign-in, push access to `github.repo`, the implementer, Codex, Closeout, and the checkout. A missing sign-in tells you to run `bun run paws login github`. The Closeout line is `policy loads on origin/main`. A missing or malformed `.agents/closeout.yaml` prints one fix line. When `agents.implementer` is `grok`, a missing Claude install is a `note` and does not fail the command. If Grok advertises no auth method, doctor prints one actionable line:
 
 ```text
 missing grok: Run `grok login`

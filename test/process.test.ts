@@ -63,7 +63,6 @@ describe("process", () => {
       linearClientFile: null,
       githubAuth: "gh",
       repo: "pmdroid/paws-demo",
-      closeoutBin: `${home}/bin/closeout`,
       checkout: home,
       maxTurns: 80,
       maxAwakeMs: 45 * 60 * 1000,

@@ -1,24 +1,7 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import {
-  closeoutBinPath,
-  closeoutPlatform,
-  installCloseout,
-  loadCloseoutManifest,
-} from "../install";
-import type { SetupFetch, SetupIO } from "./io";
-import { stop, SetupStopped } from "./stop";
-
-const UNRELEASED =
-  "pmdroid/closeout has no published release assets yet. Re-run with --closeout-path set to a local closeout binary.";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { SetupIO } from "./io";
+import { stop } from "./stop";
 
 /** Starter `.agents/closeout.yaml`. A file that already exists is left alone. */
 export const CLOSEOUT_STARTER = `specVersion: "0.1"
@@ -38,51 +21,6 @@ items:
     timeoutSeconds: 120
 `;
 
-/**
- * Install Closeout into `~/.paws/bin/closeout`.
- * The pinned manifest has no GitHub release assets yet, so a download fails
- * with one line unless `--closeout-path` points at a local binary.
- */
-export async function installCloseoutBinary(input: {
-  home: string;
-  closeoutPath: string | null;
-  cwd: string;
-  fetch?: SetupFetch;
-}): Promise<string> {
-  const dest = closeoutBinPath(input.home);
-  if (input.closeoutPath !== null) {
-    const source = resolve(input.cwd, input.closeoutPath);
-    if (!existsSync(source) || !statSync(source).isFile()) {
-      stop(`--closeout-path is not a file (${source}). Pass a local closeout binary.`);
-    }
-    copyExecutable(source, dest);
-    return dest;
-  }
-  let digestKind: string;
-  try {
-    const manifest = loadCloseoutManifest();
-    const platform = closeoutPlatform();
-    digestKind = manifest.assets[platform].digestKind;
-  } catch (error) {
-    if (error instanceof SetupStopped) throw error;
-    const message =
-      error instanceof Error ? error.message : "Could not read the closeout manifest.";
-    stop(message);
-  }
-  if (digestKind === "unreleased-placeholder") stop(UNRELEASED);
-  try {
-    await installCloseout({
-      home: input.home,
-      ...(input.fetch ? { fetch: input.fetch } : {}),
-    });
-  } catch (error) {
-    if (error instanceof SetupStopped) throw error;
-    const message = error instanceof Error ? error.message : "Closeout install failed.";
-    stop(message);
-  }
-  return dest;
-}
-
 export async function ensureCloseoutPolicy(input: {
   checkout: string;
   yes: boolean;
@@ -100,23 +38,4 @@ export async function ensureCloseoutPolicy(input: {
   }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, CLOSEOUT_STARTER, { mode: 0o644 });
-}
-
-function copyExecutable(source: string, dest: string): void {
-  if (resolve(source) === resolve(dest)) {
-    if ((statSync(dest).mode & 0o111) === 0) chmodSync(dest, 0o755);
-    return;
-  }
-  const bytes = readFileSync(source);
-  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-  if (existsSync(dest)) {
-    const current = readFileSync(dest);
-    const executable = (statSync(dest).mode & 0o111) !== 0;
-    if (current.equals(bytes) && executable) return;
-  }
-  const tmp = `${dest}.${process.pid}.tmp`;
-  writeFileSync(tmp, bytes, { mode: 0o755 });
-  chmodSync(tmp, 0o755);
-  renameSync(tmp, dest);
-  chmodSync(dest, 0o755);
 }
