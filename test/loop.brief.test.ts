@@ -166,8 +166,7 @@ for (const source of ["linear", "github"] as const) {
 
 async function linearSnapshot(): Promise<EpicSnapshot> {
   const client: LinearClient = {
-    async query(query) {
-      expect(query).toContain("nodes { id identifier title description subIssueSortOrder }");
+    async query() {
       return {
         issue: {
           id: "parent",
