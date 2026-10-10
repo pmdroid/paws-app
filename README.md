@@ -27,14 +27,14 @@ missing grok: Run `grok login`
 
 The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts.
 
-| Path                  | What it is                                                                                          |
-| --------------------- | --------------------------------------------------------------------------------------------------- |
-| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)                                                              |
-| `~/.paws/config.toml` | `github` auth and repo, `[tracker] kind`, caps, and `agents.implementer`                            |
+| Path                  | What it is                                                                                                       |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
+| `~/.paws/config.toml` | `github` auth and repo, `[tracker] kind`, caps, and `agents.implementer`                                         |
 | `~/.paws/secrets/`    | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
-| `~/.paws/worktrees/`  | One git worktree per item                                                                           |
-| `~/.paws/runs/`       | Transcripts and Closeout reports                                                                    |
-| `~/.paws/logs/`       | Process logs                                                                                        |
+| `~/.paws/worktrees/`  | One git worktree per item                                                                                        |
+| `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |
+| `~/.paws/logs/`       | Process logs                                                                                                     |
 
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 

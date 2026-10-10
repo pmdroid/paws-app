@@ -25,10 +25,10 @@ The `workflow` scope stays off the request. GitHub then rejects a push that chan
 
 ## Where the token lives
 
-| Host | Store |
-| ---- | ----- |
-| macOS | Keychain |
-| Linux | libsecret (Secret Service) |
+| Host                                   | Store                                            |
+| -------------------------------------- | ------------------------------------------------ |
+| macOS                                  | Keychain                                         |
+| Linux                                  | libsecret (Secret Service)                       |
 | Either, when that store is unavailable | `~/.paws/secrets/github-oauth.json`, mode `0600` |
 
 `~/.paws/secrets/` is mode `0700`. The JSON file holds the access token and the GitHub login it belongs to. `github.oauth_client_id` stays in `config.toml`. The token stays out of `config.toml`.
@@ -59,11 +59,11 @@ oauth_client_id = "<client id>"
 repo = "owner/name"
 ```
 
-| Key | Values |
-| --- | ------ |
-| `auth` | `oauth` (this device flow), `gh` (the `gh` CLI login), or `app` (a GitHub App installation) |
-| `oauth_client_id` | Client id of the OAuth App. Required when `auth` is `oauth`. |
-| `repo` | `owner/name` Paws pushes to and opens pull requests against |
+| Key               | Values                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `auth`            | `oauth` (this device flow), `gh` (the `gh` CLI login), or `app` (a GitHub App installation) |
+| `oauth_client_id` | Client id of the OAuth App. Required when `auth` is `oauth`.                                |
+| `repo`            | `owner/name` Paws pushes to and opens pull requests against                                 |
 
 Setup writes `auth = "oauth"` after the device flow succeeds.
 

@@ -22,14 +22,14 @@ awaiting_input = "paws:awaiting-input"
 done = "paws:done"
 ```
 
-| Key | Role |
-| --- | ---- |
-| `[tracker] kind` | `github` (default) or `linear` |
-| `trigger_label` | Label that hands an issue to Paws. Default `paws` |
-| `mention` | Plain-text trigger. Default `@paws` |
-| `trusted` | GitHub author associations that may trigger, answer, and stop. The signed-in user is trusted as well |
-| `repos` | `owner/name` repositories to poll |
-| `status_labels` | Labels Paws sets while an item is running, waiting for an answer, or done |
+| Key              | Role                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------- |
+| `[tracker] kind` | `github` (default) or `linear`                                                                       |
+| `trigger_label`  | Label that hands an issue to Paws. Default `paws`                                                    |
+| `mention`        | Plain-text trigger. Default `@paws`                                                                  |
+| `trusted`        | GitHub author associations that may trigger, answer, and stop. The signed-in user is trusted as well |
+| `repos`          | `owner/name` repositories to poll                                                                    |
+| `status_labels`  | Labels Paws sets while an item is running, waiting for an answer, or done                            |
 
 `github.repo` is the repository Paws pushes branches to. `tracker.github.repos` is the set it polls. A one-repository setup lists the same `owner/name` in both places. `agents.implementer` is `claude`, `grok`, or `codex`.
 
@@ -70,11 +70,11 @@ The comment protocol matches [Linear comment mode](linear-modes.md), on GitHub i
 
 These labels are separate from the trigger label `paws`. Paws sets one of them for the current state, using the names in `status_labels`:
 
-| State | Label |
-| ----- | ----- |
-| Work in progress | `paws:running` |
+| State                 | Label                 |
+| --------------------- | --------------------- |
+| Work in progress      | `paws:running`        |
 | Waiting on a question | `paws:awaiting-input` |
-| Item finished | `paws:done` |
+| Item finished         | `paws:done`           |
 
 Paws creates a missing status label in the repository when it first needs it.
 
@@ -86,10 +86,10 @@ When every work item has merged, Paws comments `Epic complete.` on the epic and 
 
 ## Polling
 
-| Situation | Interval |
-| --------- | -------- |
-| A watched item is running or waiting for an answer | 5 seconds |
-| Idle | 15 seconds |
+| Situation                                          | Interval   |
+| -------------------------------------------------- | ---------- |
+| A watched item is running or waiting for an answer | 5 seconds  |
+| Idle                                               | 15 seconds |
 
 Requests send `If-None-Match` after GitHub has returned an ETag. An HTTP 304 does not count against the primary rate limit. GitHub documents that in [Best practices for using the REST API](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
 
