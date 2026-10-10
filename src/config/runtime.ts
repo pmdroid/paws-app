@@ -5,9 +5,12 @@ import { loadEnv, type EnvSource, type PawsEnv } from "./env";
 import {
   emptyConfigFile,
   loadConfigFile,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
   type GitHubConfigAuth,
   type LinearConfigMode,
   type PawsConfigFile,
+  type TrackerGithubConfig,
+  type TrackerKind,
 } from "./file";
 import { pawsPaths } from "./paths";
 
@@ -33,6 +36,9 @@ export type RuntimeConfig = {
   linearClientId: string | null;
   linearClientSecret: string | null;
   githubAuth: GitHubConfigAuth;
+  oauthClientId: string | null;
+  trackerKind: TrackerKind;
+  trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
   closeoutBin: string | null;
@@ -64,6 +70,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearMode === "comments" ? (apiFromEnv ?? accessFromEnv ?? secrets.apiKey) : null;
   const linearAccessToken =
     linearMode === "agent-session" ? (accessFromEnv ?? secrets.accessToken) : null;
+  const githubAuth = resolveGitHubAuth(file, source, configured);
 
   return {
     env,
@@ -82,7 +89,10 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN") ?? secrets.refreshToken,
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
-    githubAuth: resolveGitHubAuth(file, source, configured),
+    githubAuth,
+    oauthClientId: resolveOAuthClientId(file, source, githubAuth),
+    trackerKind: resolveTrackerKind(file),
+    trackerGithub: file.trackerGithub,
     repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
     closeoutBin: optional(source, "CLOSEOUT_BIN") ?? file.closeoutBin,
@@ -120,8 +130,8 @@ function resolveGitHubAuth(
   source: EnvSource,
   configured: boolean,
 ): GitHubConfigAuth {
-  const flagged = optional(source, "GITHUB_AUTH");
-  if (flagged === "gh" || flagged === "app") return flagged;
+  const flagged = optional(source, "GITHUB_AUTH") ?? optional(source, "PAWS_GITHUB_AUTH");
+  if (flagged === "oauth" || flagged === "gh" || flagged === "app") return flagged;
   if (file.githubAuth !== null) return file.githubAuth;
   if (
     !configured &&
@@ -131,7 +141,27 @@ function resolveGitHubAuth(
   ) {
     return "app";
   }
+  // An existing file that omits github.auth is an old config and stays on gh.
+  // A missing file also stays on gh so the process keeps the gh CLI path.
+  // New configs written by setup set auth = "oauth" explicitly.
   return "gh";
+}
+
+function resolveOAuthClientId(
+  file: PawsConfigFile,
+  source: EnvSource,
+  auth: GitHubConfigAuth,
+): string | null {
+  const fromEnv = optional(source, "PAWS_GITHUB_CLIENT_ID");
+  if (fromEnv !== null) return fromEnv;
+  if (file.oauthClientId !== null) return file.oauthClientId;
+  if (auth === "oauth") return PAWS_GITHUB_OAUTH_CLIENT_ID;
+  return null;
+}
+
+function resolveTrackerKind(file: PawsConfigFile): TrackerKind {
+  if (!file.trackerSpecified) return "linear";
+  return file.trackerKind ?? "github";
 }
 
 function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {

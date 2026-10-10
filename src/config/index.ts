@@ -19,7 +19,10 @@ export type {
   LinearConfigMode,
   PawsConfigFile,
   PawsSetupConfig,
+  TrackerGithubConfig,
+  TrackerKind,
 } from "./file";
+export { DEFAULT_TRACKER_GITHUB, PAWS_GITHUB_OAUTH_CLIENT_ID } from "./file";
 export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
 export { loadRuntime } from "./runtime";

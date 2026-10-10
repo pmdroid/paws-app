@@ -6,6 +6,7 @@ import { DEFAULT_LINEAR_MODE } from "../comments";
 import {
   ensureLayout,
   isImplementer,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
   pawsPaths,
   writeConfigFile,
   type ImplementerName,
@@ -24,7 +25,15 @@ import {
   linearTokenPath,
   type StoredLinearToken,
 } from "../linear";
-import { HELP, parseArgs, type LinearModeFlag, type SetupFlags } from "./args";
+import { GITHUB_REAUTH_MESSAGE } from "../auth";
+import {
+  chooseGitHubRepo,
+  cloneGitHubMirror,
+  ensureGitHubLabels,
+  ensureGitHubSignIn,
+  tokenStore,
+} from "./github";
+import { HELP, parseArgs, type LinearModeFlag, type SetupFlags, type TrackerFlag } from "./args";
 import { ensureCloseoutPolicy, installCloseoutBinary } from "./closeout";
 import { chooseTeam, connectLinear, ensurePawsLabel } from "./linear";
 import { createIO, definedEnv, withProcessPath, type SetupIO, type SetupOptions } from "./io";
@@ -78,58 +87,103 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
 
   ensureBun(io.env);
   ensureGit(io.env);
-  await ensureGhLogin(io, flags.yes);
+  const tracker: TrackerFlag = flags.tracker ?? "github";
+  const home = resolveHome(flags, io);
+  const paths = pawsPaths(home);
+  ensureLayout(paths);
+  let githubToken: string | null = null;
+  if (tracker === "github" || tracker === "both") {
+    const signedIn = await ensureGitHubSignIn({
+      yes: flags.yes,
+      home,
+      env: io.env,
+      io,
+      secrets,
+      oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
+    });
+    githubToken = signedIn.token;
+  }
+  if (tracker === "linear") await ensureGhLogin(io, flags.yes);
   const implementer = await chooseImplementer(flags, io);
   if (implementer === "claude") await ensureDeveloperLogin("claude", io, flags.yes);
   if (implementer === "grok") await ensureGrokLogin(io, flags.yes);
   await ensureDeveloperLogin("codex", io, flags.yes);
 
-  const home = resolveHome(flags, io);
-  const paths = pawsPaths(home);
-  ensureLayout(paths);
   const checkout = resolve(io.cwd, flags.checkout ?? io.cwd);
   if (!existsSync(checkout) || !statSync(checkout).isDirectory()) {
     stop(`Checkout ${checkout} does not exist. Pass --checkout pointing at a local clone.`);
   }
 
   const mode = flags.linearMode ?? DEFAULT_LINEAR_MODE;
-  const linear = await resolveLinear(flags, io, mode, secrets);
-  const connected = await connectLinear({ mode, secret: linear.apiSecret, fetch: io.fetch });
-  const team = await chooseTeam({
-    client: connected.client,
-    mode,
-    wanted: flags.linearTeam,
-    yes: flags.yes,
-    io,
-  });
-  await ensurePawsLabel(connected.client, team.id, mode);
+  const useLinear = tracker === "linear" || tracker === "both";
+  let linear: LinearSecrets | null = null;
+  let team: { key: string; id: string } | null = null;
+  let viewerId = "";
+  if (useLinear) {
+    linear = await resolveLinear(flags, io, mode, secrets);
+    const connected = await connectLinear({ mode, secret: linear.apiSecret, fetch: io.fetch });
+    team = await chooseTeam({
+      client: connected.client,
+      mode,
+      wanted: flags.linearTeam,
+      yes: flags.yes,
+      io,
+    });
+    viewerId = connected.viewerId;
+    await ensurePawsLabel(connected.client, team.id, mode);
+  }
 
-  const repository = await withProcessPath(io.env.PATH, () =>
-    resolveRepository(flags, io, checkout),
-  );
-  const remoteUrl = githubHttpsUrl(repository.owner, repository.repo);
-  const permission = await checkGhPushPermission({
-    owner: repository.owner,
-    repo: repository.repo,
-    env: io.env,
-  });
-  if (!permission.ok) stop(permission.message);
-  const mirror = mirrorPath(home, repository.owner, repository.repo);
-  try {
-    await withProcessPath(io.env.PATH, () =>
-      ensureBareMirror({
-        remoteUrl,
-        owner: repository.owner,
-        repo: repository.repo,
-        pawsRoot: home,
-      }),
-    );
-    await keepCleanOrigin(mirror, remoteUrl, io.env);
-  } catch (error) {
-    if (error instanceof SetupStopped) throw error;
-    stop(
-      `Could not create the bare mirror of ${repository.owner}/${repository.repo}. Confirm gh can reach the repo and try again.`,
-    );
+  let repository: { owner: string; repo: string };
+  if (tracker === "github" || tracker === "both") {
+    if (githubToken === null) stop(GITHUB_REAUTH_MESSAGE);
+    const store = tokenStore(home, io.github);
+    repository = await chooseGitHubRepo({
+      token: githubToken,
+      repo: flags.repo,
+      yes: flags.yes,
+      io,
+      store,
+    });
+    await cloneGitHubMirror({
+      home,
+      owner: repository.owner,
+      repo: repository.repo,
+      token: githubToken,
+      env: io.env,
+    });
+    await ensureGitHubLabels({
+      token: githubToken,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...(io.fetch ? { fetch: io.fetch } : {}),
+      store,
+    });
+  } else {
+    repository = await withProcessPath(io.env.PATH, () => resolveRepository(flags, io, checkout));
+    const remoteUrl = githubHttpsUrl(repository.owner, repository.repo);
+    const permission = await checkGhPushPermission({
+      owner: repository.owner,
+      repo: repository.repo,
+      env: io.env,
+    });
+    if (!permission.ok) stop(permission.message);
+    const mirror = mirrorPath(home, repository.owner, repository.repo);
+    try {
+      await withProcessPath(io.env.PATH, () =>
+        ensureBareMirror({
+          remoteUrl,
+          owner: repository.owner,
+          repo: repository.repo,
+          pawsRoot: home,
+        }),
+      );
+      await keepCleanOrigin(mirror, remoteUrl, io.env);
+    } catch (error) {
+      if (error instanceof SetupStopped) throw error;
+      stop(
+        `Could not create the bare mirror of ${repository.owner}/${repository.repo}. Confirm gh can reach the repo and try again.`,
+      );
+    }
   }
 
   const closeoutBin = await installCloseoutBinary({
@@ -140,15 +194,18 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   });
   await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
 
-  writeLinearSecrets(paths.secretsDir, mode, linear);
+  if (linear !== null) writeLinearSecrets(paths.secretsDir, mode, linear);
+  const githubAuth = tracker === "linear" ? "gh" : "oauth";
   const config: PawsSetupConfig = {
     linearMode: mode,
-    linearTeam: team.key,
-    linearTeamId: team.id,
-    linearViewerId: connected.viewerId,
+    linearTeam: team?.key ?? "",
+    linearTeamId: team?.id ?? "",
+    linearViewerId: viewerId,
     linearSecret: mode === "comments" ? API_KEY_FILE : OAUTH_FILE,
     linearClientFile: mode === "agent-session" ? CLIENT_FILE : null,
-    githubAuth: "gh",
+    githubAuth,
+    ...(githubAuth === "oauth" ? { oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID } : {}),
+    trackerKind: tracker,
     repo: `${repository.owner}/${repository.repo}`,
     closeoutBin,
     checkout,
@@ -157,16 +214,20 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     implementer,
   };
   writeConfigFile(paths.configFile, config);
-  assertSecretMode(join(home, config.linearSecret));
-  if (config.linearClientFile !== null) assertSecretMode(join(home, config.linearClientFile));
+  if (linear !== null) {
+    assertSecretMode(join(home, config.linearSecret));
+    if (config.linearClientFile !== null) assertSecretMode(join(home, config.linearClientFile));
+  }
 
-  const doctor = await ghDoctorChecks({
-    owner: repository.owner,
-    repo: repository.repo,
-    env: io.env,
-  });
-  for (const check of doctor) {
-    if (!check.ok) stop(check.message);
+  if (githubAuth === "gh") {
+    const doctor = await ghDoctorChecks({
+      owner: repository.owner,
+      repo: repository.repo,
+      env: io.env,
+    });
+    for (const check of doctor) {
+      if (!check.ok) stop(check.message);
+    }
   }
   if (!existsSync(closeoutBin) || (statSync(closeoutBin).mode & 0o111) === 0) {
     stop(`Closeout was not installed at ${closeoutBin}. Pass --closeout-path to a local binary.`);

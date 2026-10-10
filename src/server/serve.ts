@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
@@ -29,6 +30,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const webhooks = options.webhooks ?? webhookChecksNeeded();
   const db = options.db;
   const statusEnv = options.statusEnv;
+  const githubAuth = createDashboardGitHubAuth({ env: process.env });
   return Bun.serve({
     hostname,
     port,
@@ -38,6 +40,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         githubWebhookSecret,
         linearWebhook,
         webhooks,
+        githubAuth,
         ...(db ? { db } : {}),
         ...(statusEnv ? { statusEnv } : {}),
       });
@@ -50,6 +53,7 @@ type Secrets = {
   githubWebhookSecret: string | null;
   linearWebhook: LinearWebhookDeps | undefined;
   webhooks: boolean;
+  githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
 };
@@ -59,15 +63,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (request.method === "GET" && path === "/health") {
     return Response.json({ ok: true, service: "paws" });
   }
-  const status = await handleStatusRequest(
-    request,
-    secrets.db
+  const status = await handleStatusRequest(request, {
+    githubAuth: secrets.githubAuth,
+    ...(secrets.db
       ? { db: secrets.db, ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}) }
       : {
           provider: fakeStatusProvider(),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
-        },
-  );
+        }),
+  });
   if (status !== null) return status;
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (!secrets.webhooks) return new Response("not found", { status: 404 });

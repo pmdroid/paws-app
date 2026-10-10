@@ -3,8 +3,12 @@ import type { GitHubClient } from "../types";
 /** One GitHub operation. Each call fetches a new token; nothing is cached. */
 export type TokenPurpose = "push" | "pr" | "merge";
 
-/** `github.auth` in config. The default is the developer's `gh` login. */
-export type GitHubAuthMode = "gh" | "app";
+/**
+ * `github.auth` in config.
+ * Omitted still selects `gh` here so existing callers keep the developer login.
+ * New configs set `oauth` explicitly. `src/auth` is the selector those configs use.
+ */
+export type GitHubAuthMode = "gh" | "app" | "oauth";
 
 /**
  * Supplies a token for one push, pull request, or merge.

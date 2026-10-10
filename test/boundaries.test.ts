@@ -23,6 +23,7 @@ const MODULES = [
   "install",
   "setup",
   "sandbox",
+  "auth",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -40,14 +41,15 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   github: [],
   questions: ["core"],
   web: ["db"],
-  server: ["config", "linear", "github", "web"],
+  server: ["config", "linear", "github", "web", "auth"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions", "config"],
   doctor: ["config", "acp", "comments", "github", "install"],
   comments: ["core", "linear", "questions"],
   install: ["acp", "closeout", "config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
-  setup: ["config", "core", "linear", "comments", "github", "acp", "install"],
+  setup: ["config", "core", "linear", "comments", "github", "acp", "install", "auth"],
+  auth: ["config", "github"],
   sandbox: [],
 };
 

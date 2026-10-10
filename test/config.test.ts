@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   emptyConfigFile,
@@ -7,6 +7,7 @@ import {
   loadConfigFile,
   loadEnv,
   loadRuntime,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
   pawsPaths,
   writeConfigFile,
   writeImplementer,
@@ -169,5 +170,64 @@ describe("config", () => {
     expect(parsed.agents.implementer).toBe("grok");
     expect(parsed.agents.grok).toEqual({ path: "/opt/grok", allowApiKey: false });
     expect(statSync(paths.configFile).mode & 0o777).toBe(0o600);
+  });
+
+  test("old configs without github.auth or tracker load as gh and linear", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeFileSync(
+      paths.configFile,
+      ['repo = "pmdroid/paws-demo"', "", "[linear]", 'mode = "comments"', ""].join("\n"),
+      { mode: 0o600 },
+    );
+    const runtime = loadRuntime({ PAWS_HOME: home });
+    expect(runtime.githubAuth).toBe("gh");
+    expect(runtime.trackerKind).toBe("linear");
+    expect(runtime.oauthClientId).toBeNull();
+    expect(runtime.file.githubAuth).toBeNull();
+    expect(runtime.file.trackerSpecified).toBe(false);
+  });
+
+  test("new github tracker config keeps the frozen keys", () => {
+    const home = tempHome();
+    const paths = pawsPaths(home);
+    ensureLayout(paths);
+    writeConfigFile(paths.configFile, {
+      linearMode: "comments",
+      linearTeam: "ENG",
+      linearTeamId: "team_eng",
+      linearViewerId: "viewer_1",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "oauth",
+      oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
+      trackerKind: "github",
+      repo: "pmdroid/paws-demo",
+      closeoutBin: join(home, "bin", "closeout"),
+      checkout: home,
+      maxTurns: 40,
+      maxAwakeMs: 1_000,
+      implementer: "claude",
+    });
+    const runtime = loadRuntime({
+      PAWS_HOME: home,
+      PAWS_GITHUB_CLIENT_ID: "Iv1.from-env",
+    });
+    expect(runtime.githubAuth).toBe("oauth");
+    expect(runtime.oauthClientId).toBe("Iv1.from-env");
+    expect(runtime.trackerKind).toBe("github");
+    expect(runtime.trackerGithub).toEqual({
+      triggerLabel: "paws",
+      mention: "@paws",
+      trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
+      repos: [],
+      statusLabels: true,
+    });
+    const text = readFileSync(paths.configFile, "utf8");
+    expect(text).toContain('auth = "oauth"');
+    expect(text).toContain('kind = "github"');
+    expect(text).toContain('mention = "@paws"');
+    expect(text).toContain("status_labels = true");
   });
 });

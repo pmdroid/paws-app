@@ -1,4 +1,12 @@
 import { createInterface } from "node:readline";
+import type { GitHubTokenStore } from "../auth";
+
+export type SetupGitHubHooks = {
+  sleep?: (ms: number) => Promise<void>;
+  openBrowser?: (url: string) => Promise<void>;
+  store?: GitHubTokenStore;
+  now?: () => number;
+};
 
 /** Enough of `fetch` for Linear and, later, a published Closeout download. */
 export type SetupFetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -10,6 +18,7 @@ export type SetupIO = {
   stdout: (line: string) => void;
   stderr: (line: string) => void;
   readLine: () => Promise<string | null>;
+  github?: SetupGitHubHooks;
 };
 
 export type SetupOptions = {
@@ -19,6 +28,7 @@ export type SetupOptions = {
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   readLine?: () => Promise<string | null>;
+  github?: SetupGitHubHooks;
 };
 
 export function createIO(options?: SetupOptions): SetupIO {
@@ -29,6 +39,7 @@ export function createIO(options?: SetupOptions): SetupIO {
     stdout: options?.stdout ?? ((line) => console.log(line)),
     stderr: options?.stderr ?? ((line) => console.error(line)),
     readLine: options?.readLine ?? readStdinLine,
+    ...(options?.github ? { github: options.github } : {}),
   };
 }
 

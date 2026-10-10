@@ -336,7 +336,10 @@ describe("gh auth token provider", () => {
     expect(githubAuthMode(undefined)).toBe("gh");
     expect(githubAuthMode({ auth: "" })).toBe("gh");
     expect(githubAuthMode({ auth: "app" })).toBe("app");
-    expect(() => githubAuthMode({ auth: "pat" })).toThrow(/github\.auth must be "gh" or "app"/);
+    expect(githubAuthMode({ auth: "oauth" })).toBe("oauth");
+    expect(() => githubAuthMode({ auth: "pat" })).toThrow(
+      /github\.auth must be "gh", "app", or "oauth"/,
+    );
     const provider = createTokenProvider(
       { auth: "app" },
       {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mirrorPath } from "../src/acp";
+import { createTokenStore, GITHUB_REAUTH_MESSAGE, PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/auth";
 import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
 import { closeoutBinPath } from "../src/install";
@@ -41,6 +42,7 @@ describe("paws setup", () => {
         linearSecret: "secrets/linear-api-key",
         linearClientFile: null,
         githubAuth: "gh",
+        trackerKind: "linear",
         repo: "acme/widgets",
         closeoutBin: closeoutBinPath(scene.home),
         checkout: scene.checkout,
@@ -114,6 +116,8 @@ describe("paws setup", () => {
     const scene = await arrange({ bearer: true });
     const args = [
       "--yes",
+      "--tracker",
+      "linear",
       "--home",
       scene.home,
       "--checkout",
@@ -494,6 +498,8 @@ async function arrange(tweak: Tweak = {}): Promise<Scene> {
 function happyArgs(scene: Scene): string[] {
   return [
     "--yes",
+    "--tracker",
+    "linear",
     "--home",
     scene.home,
     "--checkout",
@@ -632,5 +638,289 @@ if [ "$1" = "login" ] && [ "$2" = "status" ]; then
   exit 0
 fi
 exit 1
+`;
+}
+
+const SETUP_TOKEN = "gho_setup_secret_token_value";
+
+describe("paws setup github", () => {
+  test("--yes while signed out fails with the login command", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const stderr: string[] = [];
+    const code = await runSetup(
+      [
+        "--yes",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--closeout-path",
+        scene.closeoutSource,
+      ],
+      {
+        env: setupEnv(scene),
+        cwd: scene.checkout,
+        fetch: scene.linear.fetch,
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        github: {
+          store: createTokenStore({ home: scene.home, which: () => null, platform: "linux" }),
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(stderr).toEqual([GITHUB_REAUTH_MESSAGE]);
+  });
+
+  test("device flow, repo picker, bare mirror, tracker, and labels", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const gitLog = join(scene.root, "git.log");
+    writeFileSync(join(scene.bin, "git"), recordingGit(gitLog), { mode: 0o755 });
+    chmodSync(join(scene.bin, "git"), 0o755);
+    const store = createTokenStore({
+      home: scene.home,
+      which: () => null,
+      platform: "linux",
+    });
+    const github = new FakeGitHubApi();
+    const opened: string[] = [];
+    const stdout: string[] = [];
+    const lines = ["", "1"];
+    const result = await runSetup(
+      [
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--closeout-path",
+        scene.closeoutSource,
+      ],
+      {
+        env: setupEnv(scene, gitLog),
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: (line) => stdout.push(line),
+        stderr: (line) => {
+          throw new Error(line);
+        },
+        readLine: async () => lines.shift() ?? null,
+        github: {
+          store,
+          sleep: async () => undefined,
+          openBrowser: async (url) => {
+            opened.push(url);
+          },
+        },
+      },
+    );
+    expect(result).toBe(0);
+    expect(stdout).toContain("Signed in as octocat");
+    expect(stdout.join("\n")).toContain("PAWS-1234");
+    expect(stdout.join("\n")).not.toContain(SETUP_TOKEN);
+    expect(lines).toEqual([]);
+    expect(opened).toEqual(["https://github.com/login/device"]);
+    expect(github.repoPages).toBe(2);
+    expect(github.labels).toEqual(["paws", "paws:running", "paws:awaiting-input", "paws:done"]);
+    expect(github.bodies.join("\n")).not.toContain("client_secret");
+    const parsed = loadConfigFile(scene.paths.configFile);
+    expect(parsed.githubAuth).toBe("oauth");
+    expect(parsed.oauthClientId).toBe(PAWS_GITHUB_OAUTH_CLIENT_ID);
+    expect(parsed.trackerKind).toBe("github");
+    expect(parsed.trackerGithub).toMatchObject({
+      triggerLabel: "paws",
+      mention: "@paws",
+      statusLabels: true,
+      trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
+      repos: [],
+    });
+    expect(parsed.repo).toBe("acme/widgets");
+    expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
+    const recorded = readFileSync(gitLog, "utf8");
+    expect(recorded).toContain("https://github.com/acme/widgets.git");
+    expect(recorded).toContain("credential.helper=");
+    expect(recorded).not.toContain(SETUP_TOKEN);
+    expect(statSync(join(scene.paths.secretsDir, "github-oauth.json")).mode & 0o777).toBe(0o600);
+  });
+
+  test("--repo skips the repository list", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const gitLog = join(scene.root, "git.log");
+    writeFileSync(join(scene.bin, "git"), recordingGit(gitLog), { mode: 0o755 });
+    chmodSync(join(scene.bin, "git"), 0o755);
+    const store = createTokenStore({
+      home: scene.home,
+      which: () => null,
+      platform: "linux",
+    });
+    await store.save({
+      accessToken: SETUP_TOKEN,
+      refreshToken: null,
+      expiresAtMs: null,
+      scope: "repo, read:org",
+      login: "octocat",
+      id: 7,
+      invalid: false,
+    });
+    const github = new FakeGitHubApi();
+    const code = await runSetup(
+      [
+        "--yes",
+        "--repo",
+        "acme/widgets",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--closeout-path",
+        scene.closeoutSource,
+      ],
+      {
+        env: setupEnv(scene, gitLog),
+        cwd: scene.checkout,
+        fetch: github.fetch,
+        stdout: () => undefined,
+        stderr: (line) => {
+          throw new Error(line);
+        },
+        readLine: async () => {
+          throw new Error("setup prompted");
+        },
+        github: { store, sleep: async () => undefined, openBrowser: async () => undefined },
+      },
+    );
+    expect(code).toBe(0);
+    expect(github.repoPages).toBe(0);
+    expect(github.repoReads).toEqual(["acme/widgets"]);
+    expect(github.deviceCodes).toBe(0);
+    expect(loadConfigFile(scene.paths.configFile).repo).toBe("acme/widgets");
+  });
+});
+
+class FakeGitHubApi {
+  repoPages = 0;
+  deviceCodes = 0;
+  polls = 0;
+  labels: string[] = [];
+  bodies: string[] = [];
+  repoReads: string[] = [];
+
+  readonly fetch: SetupFetch = async (input, init) => {
+    const url = String(input);
+    const body = typeof init?.body === "string" ? init.body : String(init?.body ?? "");
+    this.bodies.push(body);
+    if (url.includes("/login/device/code")) {
+      this.deviceCodes += 1;
+      return Response.json({
+        device_code: "device-1",
+        user_code: "PAWS-1234",
+        verification_uri: "https://github.com/login/device",
+        expires_in: 900,
+        interval: 0,
+      });
+    }
+    if (url.includes("/login/oauth/access_token")) {
+      this.polls += 1;
+      return Response.json({
+        access_token: SETUP_TOKEN,
+        token_type: "bearer",
+        scope: "repo read:org",
+      });
+    }
+    if (url.includes("/user/repos")) {
+      this.repoPages += 1;
+      if (!url.includes("page=2")) {
+        return Response.json(
+          [
+            { full_name: "no-push/hidden", permissions: { push: false } },
+            { full_name: "acme/widgets", permissions: { push: true } },
+          ],
+          { headers: { link: '<https://api.github.com/user/repos?page=2>; rel="next"' } },
+        );
+      }
+      return Response.json([
+        { full_name: "acme/other", permissions: { push: true } },
+        { full_name: "secret/no", permissions: { push: false } },
+      ]);
+    }
+    if (url.includes("/repos/acme/widgets") && (init?.method ?? "GET") === "GET") {
+      this.repoReads.push("acme/widgets");
+      return Response.json({ permissions: { push: true } });
+    }
+    if (url.endsWith("/labels")) {
+      const parsed = JSON.parse(body) as { name?: string };
+      if (parsed.name) this.labels.push(parsed.name);
+      return Response.json({ name: parsed.name }, { status: 201 });
+    }
+    if (url.endsWith("/user")) {
+      return Response.json(
+        { login: "octocat", id: 7 },
+        { headers: { "X-OAuth-Scopes": "repo, read:org" } },
+      );
+    }
+    return new Response("missing", { status: 404 });
+  };
+}
+
+function setupEnv(scene: Scene, gitLog?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: scene.bin };
+  delete env.PAWS_HOME;
+  delete env.PAWS_GITHUB_REPOSITORY;
+  delete env.GITHUB_TOKEN;
+  delete env.GH_TOKEN;
+  delete env.PAWS_GITHUB_TOKEN;
+  if (gitLog !== undefined) env.GIT_FAKE_LOG = gitLog;
+  return env;
+}
+
+function recordingGit(log: string): string {
+  return `#!/bin/sh
+real=${REAL_GIT}
+printf '%s\\n' "$*" >> "${log}"
+printf 'env PAWS_GITHUB_TOKEN=%s GH_TOKEN=%s GITHUB_TOKEN=%s\\n' "\${PAWS_GITHUB_TOKEN-}" "\${GH_TOKEN-}" "\${GITHUB_TOKEN-}" >> "${log}"
+env >> "${log}"
+for arg in "$@"; do
+  case "$arg" in
+    credential.helper=/*)
+      script="\${arg#credential.helper=}"
+      if [ -f "$script" ]; then
+        echo HELPER >> "${log}"
+        cat "$script" >> "${log}"
+      fi
+      ;;
+  esac
+done
+args=""
+skip=0
+for arg in "$@"; do
+  if [ "$skip" = "1" ]; then
+    skip=0
+    continue
+  fi
+  if [ "$arg" = "-c" ]; then
+    skip=1
+    continue
+  fi
+  args="$args $arg"
+done
+set -- $args
+if [ "$1" = "clone" ] && [ "$2" = "--bare" ]; then
+  "$real" init --bare "$4" >/dev/null
+  "$real" --git-dir "$4" remote add origin "$3"
+  exit 0
+fi
+if [ "$1" = "--version" ]; then
+  echo "git version 2.43.0"
+  exit 0
+fi
+if [ "$1" = "fetch" ]; then
+  exit 0
+fi
+exec "$real" "$@"
 `;
 }
