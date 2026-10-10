@@ -9,7 +9,8 @@
     "fmt:check": "oxfmt --check",
     "typecheck": "tsc --noEmit && tsc -p src/web/tsconfig.client.json --noEmit",
     "test": "bun test",
-    "check": "bun run lint && bun run fmt:check && bun run typecheck && bun test && bun run build:status",
+    "links": "bun scripts/check-markdown-links.ts",
+    "check": "bun run lint && bun run fmt:check && bun run typecheck && bun test && bun run build:status && bun run links",
     "build:status": "bun src/web/build.ts"
   },
   "dependencies": {

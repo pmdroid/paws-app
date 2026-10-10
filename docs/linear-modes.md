@@ -1,6 +1,8 @@
 # Linear modes
 
-Comment mode is the default. Agent-session mode stays available in `src/linear` and is optional.
+GitHub issues are the default tracker ([GitHub issues](github-issues.md), sign-in in [GitHub sign-in](github-login.md)). This page is the optional Linear path.
+
+Comment mode is the Linear mode Paws writes for a local run. Agent-session mode stays available in `src/linear` and is optional.
 
 Paws runs on the developer's machine. The local MVP does not open a public URL, so it does not depend on Linear delivering a webhook. Comment mode uses a Linear personal API key and ordinary issue comments. Nothing in this tree calls Linear; the notes below are from Linear's docs and the published GraphQL operations, plus what Pascal should confirm in a workspace.
 

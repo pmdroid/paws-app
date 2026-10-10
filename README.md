@@ -1,8 +1,8 @@
 # Paws
 
-Agent workflows for engineering teams. A delegated Linear issue is picked up on the developer's machine, implemented by that developer's Claude Code, Grok, or Codex session over ACP, checked by Closeout, and merged as a pull request.
+Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, implements the change with your Claude Code, Grok, or Codex session over ACP, checks it with Closeout, and merges a pull request.
 
-This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
+GitHub issues are the default tracker. Linear remains available. This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
 
 ## Setup
 
@@ -10,27 +10,31 @@ Install [Bun](https://bun.sh) 1.4 or newer, then:
 
 ```sh
 bun install
-bun run paws setup    # choose grok when Claude Code is not installed
+bun run paws setup    # sign in with GitHub, pick a repo; tracker defaults to github; implementer is claude, grok, or codex
 bun run paws doctor
 bun run paws
 ```
 
-`setup` writes `~/.paws/config.toml` and the secret files it names. Comment mode and `gh` auth are the defaults: no webhook, no public URL, and no GitHub App. Without `--yes`, setup lists only installed, loginable implementers (`claude`, `grok`, or `codex`). On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet). If Grok advertises no auth method, doctor prints:
+Add the `paws` label to an issue in the repository you picked. Paws polls that repository and starts the work. Sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). Triggers, epic order, and the comment protocol are in [docs/github-issues.md](docs/github-issues.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
+
+`setup` writes `~/.paws/config.toml`. It runs the GitHub device-flow sign-in, asks which repository to use, sets `[tracker] kind` to `github`, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button that starts the same device flow. The default path uses no webhook, no public URL, and no GitHub App.
+
+Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. When Closeout is not on disk yet, that line is `bun run paws setup --closeout-path <binary>` (`pmdroid/closeout` has no release assets yet). If Grok advertises no auth method, doctor prints:
 
 ```text
 missing grok: Run `grok login`
 ```
 
-The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts. The real-machine steps are in `docs/smoke-test.md`.
+The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts.
 
-| Path                  | What it is                                       |
-| --------------------- | ------------------------------------------------ |
-| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)           |
-| `~/.paws/config.toml` | Team, repo, mode, caps, and `agents.implementer` |
-| `~/.paws/secrets/`    | Linear token and GitHub App key, mode `0700`     |
-| `~/.paws/worktrees/`  | One git worktree per item                        |
-| `~/.paws/runs/`       | Transcripts and Closeout reports                 |
-| `~/.paws/logs/`       | Process logs                                     |
+| Path                  | What it is                                                                                                       |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
+| `~/.paws/config.toml` | `github` auth and repo, `[tracker] kind`, caps, and `agents.implementer`                                         |
+| `~/.paws/secrets/`    | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
+| `~/.paws/worktrees/`  | One git worktree per item                                                                                        |
+| `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |
+| `~/.paws/logs/`       | Process logs                                                                                                     |
 
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
@@ -68,6 +72,7 @@ bun run fmt:check     # oxfmt, check only
 bun run typecheck     # tsc --noEmit, plus the browser client
 bun test
 bun run build:status  # static dashboard → src/web/dist
+bun run links         # local markdown links in README.md and docs/
 bun run check         # all of the above
 ```
 
