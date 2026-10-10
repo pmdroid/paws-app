@@ -2,6 +2,12 @@ import { parseStatusSnapshot, STATUS_API_VERSION, type StatusSnapshot } from "..
 import { demoStatus } from "../demo";
 import { parseEngineUrl, statusEndpoint } from "../endpoint";
 import { choiceFromValue, resolveEngineUrl, type SourceChoice } from "../source";
+import {
+  loadGitHubUser,
+  readCsrfToken,
+  renderGitHubSignIn,
+  startGitHubDevice,
+} from "./github-auth";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 
@@ -38,6 +44,7 @@ demoButton?.addEventListener("click", () => {
 });
 
 void boot();
+void paintGitHubAuth(null);
 
 async function boot(): Promise<void> {
   const query = new URLSearchParams(location.search).get("engine");
@@ -168,6 +175,7 @@ function onClick(event: Event): void {
   if (!action) return;
   if (action === "drawer") document.body.classList.add("drawer-open");
   if (action === "drawer-close") document.body.classList.remove("drawer-open");
+  if (action === "github-signin") void signInWithGitHub();
   if (action === "refresh") void reload();
   if (action === "source") openDialog();
   if (action === "epic-view") {
@@ -176,6 +184,35 @@ function onClick(event: Event): void {
       epicView = mode;
       paint();
     }
+  }
+}
+
+async function paintGitHubAuth(
+  device: { userCode: string; verificationUri: string } | null,
+): Promise<void> {
+  const slot = document.querySelector("#github-auth");
+  if (!slot) return;
+  const user = await loadGitHubUser().catch(() => null);
+  slot.innerHTML = renderGitHubSignIn({ user, device: user ? null : device });
+}
+
+async function signInWithGitHub(): Promise<void> {
+  const slot = document.querySelector("#github-auth");
+  try {
+    const device = await startGitHubDevice(readCsrfToken(document));
+    if (slot) slot.innerHTML = renderGitHubSignIn({ user: null, device });
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 1500);
+      });
+      const user = await loadGitHubUser().catch(() => null);
+      if (user) {
+        if (slot) slot.innerHTML = renderGitHubSignIn({ user, device: null });
+        return;
+      }
+    }
+  } catch {
+    if (slot) slot.innerHTML = renderGitHubSignIn({ user: null, device: null });
   }
 }
 

@@ -1,7 +1,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { adapterVersions, resolveAdapter } from "../acp";
 import { createPersonalLinearClient, type CommentFetch } from "../comments";
-import { loadRuntime, type EnvSource, type LinearConfigMode } from "../config";
+import {
+  loadRuntime,
+  type EnvSource,
+  type GitHubConfigAuth,
+  type LinearConfigMode,
+} from "../config";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
 import {
   checkDeveloperLogin,
@@ -15,7 +20,7 @@ export type ProbeFacts = {
   configError: string | null;
   configured: boolean;
   linearMode: LinearConfigMode;
-  githubAuth: "gh" | "app";
+  githubAuth: GitHubConfigAuth;
   webhooks: boolean;
   publicUrl: string | null;
   repo: string | null;

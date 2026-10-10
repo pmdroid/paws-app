@@ -2,10 +2,13 @@ import { stop } from "./stop";
 
 export type LinearModeFlag = "comments" | "agent-session";
 
+export type TrackerFlag = "github" | "linear" | "both";
+
 export type SetupFlags = {
   help: boolean;
   yes: boolean;
   home: string | null;
+  tracker: TrackerFlag | null;
   checkout: string | null;
   repo: string | null;
   linearMode: LinearModeFlag | null;
@@ -21,6 +24,7 @@ export type SetupFlags = {
 
 const VALUE_FLAGS = {
   "--home": "home",
+  "--tracker": "tracker",
   "--checkout": "checkout",
   "--repo": "repo",
   "--linear-mode": "linearMode",
@@ -42,6 +46,7 @@ export function parseArgs(argv: readonly string[]): SetupFlags {
     help: false,
     yes: false,
     home: null,
+    tracker: null,
     checkout: null,
     repo: null,
     linearMode: null,
@@ -83,6 +88,7 @@ export function parseArgs(argv: readonly string[]): SetupFlags {
 export const HELP = [
   "paws setup",
   "  --yes                        non-interactive; missing answers exit",
+  "  --tracker github|linear|both GitHub is the default; linear keeps the previous setup",
   "  --home DIR                   ~/.paws directory (or PAWS_HOME)",
   "  --checkout DIR               local clone used to infer owner/repo",
   "  --repo OWNER/REPO            GitHub repository you can push to",
@@ -103,11 +109,20 @@ function assign(flags: SetupFlags, key: ValueKey, value: string): void {
     flags.linearMode = parseMode(value);
     return;
   }
+  if (key === "tracker") {
+    flags.tracker = parseTracker(value);
+    return;
+  }
   if (key === "implementer") {
     flags.implementer = parseImplementer(value);
     return;
   }
   flags[key] = value;
+}
+
+function parseTracker(value: string): "github" | "linear" | "both" {
+  if (value === "github" || value === "linear" || value === "both") return value;
+  stop("Pass --tracker as github, linear, or both.");
 }
 
 function parseMode(value: string): LinearModeFlag {

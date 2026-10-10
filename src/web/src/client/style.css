@@ -37,6 +37,23 @@ input {
   font: inherit;
   color: inherit;
 }
+.github-auth {
+  position: fixed;
+  z-index: 30;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  max-width: 280px;
+}
+.github-auth .github-code {
+  margin: 0;
+  color: var(--muted);
+}
+.github-user {
+  color: var(--text);
+}
 a {
   color: var(--accent2);
   text-decoration: none;

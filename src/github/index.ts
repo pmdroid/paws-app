@@ -28,13 +28,16 @@ export {
   checkGhPushPermission,
   createAppTokenProvider,
   createGhCliAuth,
+  createOAuthGitAuth,
   createTokenProvider,
   ghDoctorChecks,
   githubAuthMode,
   inferGitHubRepository,
+  OAUTH_REAUTH_MESSAGE,
   PAWS_EVIDENCE_MARKER,
   PAWS_LABEL,
   parseGitHubRemote,
+  runGitHubGit,
   withPawsEvidenceMarker,
 } from "./auth";
 export type {

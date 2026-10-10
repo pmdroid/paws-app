@@ -10,7 +10,27 @@ import {
 import { dirname } from "node:path";
 
 export type LinearConfigMode = "comments" | "agent-session";
-export type GitHubConfigAuth = "gh" | "app";
+export type GitHubConfigAuth = "oauth" | "gh" | "app";
+export type TrackerKind = "github" | "linear" | "both";
+
+export type TrackerGithubConfig = {
+  triggerLabel: string;
+  mention: string;
+  trusted: string[];
+  repos: string[];
+  statusLabels: boolean;
+};
+
+export const DEFAULT_TRACKER_GITHUB: TrackerGithubConfig = {
+  triggerLabel: "paws",
+  mention: "@paws",
+  trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
+  repos: [],
+  statusLabels: true,
+};
+
+/** Public OAuth client id. `PAWS_GITHUB_CLIENT_ID` overrides it. No secret. */
+export const PAWS_GITHUB_OAUTH_CLIENT_ID = "Iv1.paws-oauth-placeholder";
 
 export const IMPLEMENTERS = ["claude", "grok", "codex"] as const;
 
@@ -52,6 +72,11 @@ export type PawsConfigFile = {
   linearClientFile: string | null;
   webhooks: boolean | null;
   githubAuth: GitHubConfigAuth | null;
+  oauthClientId: string | null;
+  /** True when `[tracker]` or `[tracker.github]` is present. Absent means linear. */
+  trackerSpecified: boolean;
+  trackerKind: TrackerKind | null;
+  trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
   closeoutBin: string | null;
@@ -72,7 +97,10 @@ export type PawsSetupConfig = {
   linearViewerId: string;
   linearSecret: string;
   linearClientFile: string | null;
-  githubAuth: "gh";
+  githubAuth: GitHubConfigAuth;
+  oauthClientId?: string;
+  trackerKind?: TrackerKind;
+  trackerGithub?: TrackerGithubConfig;
   repo: string;
   closeoutBin: string;
   checkout: string;
@@ -91,6 +119,14 @@ export function emptyConfigFile(): PawsConfigFile {
     linearClientFile: null,
     webhooks: null,
     githubAuth: null,
+    oauthClientId: null,
+    trackerSpecified: false,
+    trackerKind: null,
+    trackerGithub: {
+      ...DEFAULT_TRACKER_GITHUB,
+      trusted: [...DEFAULT_TRACKER_GITHUB.trusted],
+      repos: [...DEFAULT_TRACKER_GITHUB.repos],
+    },
     repo: null,
     publicUrl: null,
     closeoutBin: null,
@@ -147,11 +183,27 @@ export function renderConfigToml(config: PawsSetupConfig): string {
   if (config.linearClientFile !== null) {
     lines.push(`client_file = ${tomlString(config.linearClientFile)}`);
   }
+  lines.push("", "[github]", `auth = ${tomlString(config.githubAuth)}`);
+  if (config.oauthClientId !== undefined && config.oauthClientId.length > 0) {
+    lines.push(`oauth_client_id = ${tomlString(config.oauthClientId)}`);
+  }
+  lines.push(`repo = ${tomlString(config.repo)}`);
+  if (config.trackerKind !== undefined) {
+    const github = config.trackerGithub ?? DEFAULT_TRACKER_GITHUB;
+    lines.push(
+      "",
+      "[tracker]",
+      `kind = ${tomlString(config.trackerKind)}`,
+      "",
+      "[tracker.github]",
+      `trigger_label = ${tomlString(github.triggerLabel)}`,
+      `mention = ${tomlString(github.mention)}`,
+      `trusted = ${tomlStringArray(github.trusted)}`,
+      `repos = ${tomlStringArray(github.repos)}`,
+      `status_labels = ${github.statusLabels ? "true" : "false"}`,
+    );
+  }
   lines.push(
-    "",
-    "[github]",
-    `auth = ${tomlString(config.githubAuth)}`,
-    `repo = ${tomlString(config.repo)}`,
     "",
     "[closeout]",
     `bin = ${tomlString(config.closeoutBin)}`,
@@ -189,6 +241,10 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   renameSync(tmp, path);
   chmodSync(path, 0o600);
   return true;
+}
+
+function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
 }
 
 function tomlString(value: string): string {
@@ -229,12 +285,57 @@ function stripComment(line: string): string {
   return line;
 }
 
-function parseValue(raw: string, line: number): string | number | boolean {
+function parseValue(raw: string, line: number): string | number | boolean | string[] {
   if (raw === "true") return true;
   if (raw === "false") return false;
+  if (raw.startsWith("[")) return parseArray(raw, line);
   if (/^-?\d+$/.test(raw)) return Number(raw);
   if (raw.startsWith('"')) return parseString(raw, line);
   throw new Error(`config.toml line ${line} has an unsupported value`);
+}
+
+function parseArray(raw: string, line: number): string[] {
+  if (!raw.endsWith("]")) throw new Error(`config.toml line ${line} has an unclosed array`);
+  const inner = raw.slice(1, -1).trim();
+  if (inner.length === 0) return [];
+  const parts: string[] = [];
+  let buf = "";
+  let quote = false;
+  let escaped = false;
+  for (let index = 0; index < inner.length; index += 1) {
+    const char = inner[index] ?? "";
+    if (quote) {
+      buf += char;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') quote = false;
+      continue;
+    }
+    if (char === '"') {
+      quote = true;
+      buf += char;
+      continue;
+    }
+    if (char === ",") {
+      parts.push(buf.trim());
+      buf = "";
+      continue;
+    }
+    buf += char;
+  }
+  if (buf.trim().length > 0) parts.push(buf.trim());
+  return parts.map((part) => {
+    if (!part.startsWith('"')) {
+      throw new Error(`config.toml line ${line} has an unsupported array value`);
+    }
+    return parseString(part, line);
+  });
 }
 
 function parseString(raw: string, line: number): string {
@@ -263,7 +364,7 @@ function assignConfig(
   config: PawsConfigFile,
   section: string,
   key: string,
-  value: string | number | boolean,
+  value: string | number | boolean | string[],
   line: number,
 ): void {
   if (section === "linear") {
@@ -278,7 +379,22 @@ function assignConfig(
   }
   if (section === "github") {
     if (key === "auth") config.githubAuth = githubAuth(value, line);
+    else if (key === "oauth_client_id") config.oauthClientId = asString(value, line);
     else if (key === "repo") config.repo = asString(value, line);
+    return;
+  }
+  if (section === "tracker") {
+    config.trackerSpecified = true;
+    if (key === "kind") config.trackerKind = trackerKind(value, line);
+    return;
+  }
+  if (section === "tracker.github") {
+    config.trackerSpecified = true;
+    if (key === "trigger_label") config.trackerGithub.triggerLabel = asString(value, line);
+    else if (key === "mention") config.trackerGithub.mention = asString(value, line);
+    else if (key === "trusted") config.trackerGithub.trusted = asStringArray(value, line);
+    else if (key === "repos") config.trackerGithub.repos = asStringArray(value, line);
+    else if (key === "status_labels") config.trackerGithub.statusLabels = asBoolean(value, line);
     return;
   }
   if (section === "closeout") {
@@ -322,7 +438,10 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
   chmodSync(path, 0o600);
 }
 
-function implementerName(value: string | number | boolean, line: number): ImplementerName {
+function implementerName(
+  value: string | number | boolean | string[],
+  line: number,
+): ImplementerName {
   const name = asString(value, line);
   if (!isImplementer(name)) {
     throw new Error(`config.toml line ${line} agents.implementer must be claude, grok, or codex`);
@@ -360,30 +479,43 @@ function setImplementerText(current: string, implementer: ImplementerName): stri
   return `${body}[agents]\n${assignment}\n`;
 }
 
-function linearMode(value: string | number | boolean, line: number): LinearConfigMode {
+function linearMode(value: string | number | boolean | string[], line: number): LinearConfigMode {
   const mode = asString(value, line);
   if (mode === "comments" || mode === "agent-session") return mode;
   if (mode === "agent") return "agent-session";
   throw new Error(`config.toml line ${line} linear.mode must be comments or agent-session`);
 }
 
-function githubAuth(value: string | number | boolean, line: number): GitHubConfigAuth {
+function githubAuth(value: string | number | boolean | string[], line: number): GitHubConfigAuth {
   const auth = asString(value, line);
-  if (auth === "gh" || auth === "app") return auth;
-  throw new Error(`config.toml line ${line} github.auth must be gh or app`);
+  if (auth === "oauth" || auth === "gh" || auth === "app") return auth;
+  throw new Error(`config.toml line ${line} github.auth must be oauth, gh, or app`);
 }
 
-function asString(value: string | number | boolean, line: number): string {
+function trackerKind(value: string | number | boolean | string[], line: number): TrackerKind {
+  const kind = asString(value, line);
+  if (kind === "github" || kind === "linear" || kind === "both") return kind;
+  throw new Error(`config.toml line ${line} tracker.kind must be github, linear, or both`);
+}
+
+function asString(value: string | number | boolean | string[], line: number): string {
   if (typeof value !== "string") throw new Error(`config.toml line ${line} must be a string`);
   return value;
 }
 
-function asBoolean(value: string | number | boolean, line: number): boolean {
+function asStringArray(value: string | number | boolean | string[], line: number): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`config.toml line ${line} must be an array of strings`);
+  }
+  return value;
+}
+
+function asBoolean(value: string | number | boolean | string[], line: number): boolean {
   if (typeof value !== "boolean") throw new Error(`config.toml line ${line} must be true or false`);
   return value;
 }
 
-function asInt(value: string | number | boolean, line: number): number {
+function asInt(value: string | number | boolean | string[], line: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(`config.toml line ${line} must be a non-negative integer`);
   }

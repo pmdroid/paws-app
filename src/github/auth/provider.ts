@@ -1,6 +1,7 @@
 import { createGitHubApp, mintInstallationToken } from "../token";
 import { GitHubTokenError, type GitHubClient } from "../types";
 import { createGhCliAuth, type GhCliOptions } from "./gh";
+import { createOAuthGitAuth } from "./oauth";
 import type { GitHubAuthMode, GitHubTokenProvider, TokenPurpose } from "./types";
 
 export type AppTokenProviderOptions = {
@@ -18,12 +19,17 @@ export type GitHubAuthConfig = {
   auth?: string | null;
 };
 
-/** `github.auth = "app"` selects the GitHub App. The default is `"gh"`. */
+/**
+ * `github.auth = "app"` selects the GitHub App.
+ * `oauth` selects the signed-in user token.
+ * Omitted or empty stays `"gh"` so old configs keep the developer login.
+ */
 export function githubAuthMode(config?: GitHubAuthConfig | null): GitHubAuthMode {
   const auth = config?.auth;
   if (auth === undefined || auth === null || auth === "" || auth === "gh") return "gh";
   if (auth === "app") return "app";
-  throw new Error(`github.auth must be "gh" or "app", got ${auth}`);
+  if (auth === "oauth") return "oauth";
+  throw new Error(`github.auth must be "gh", "app", or "oauth", got ${auth}`);
 }
 
 /** Installation token via the existing GitHub App mint path. One token per call. */
@@ -56,6 +62,7 @@ export function createTokenProvider(
   options: {
     gh?: GhCliOptions;
     app?: AppTokenProviderOptions;
+    oauth?: { owner: string; repo: string; token: () => Promise<string> };
   },
 ): GitHubTokenProvider {
   const mode = githubAuthMode(config);
@@ -64,6 +71,12 @@ export function createTokenProvider(
       throw new Error('github.auth is "app" but GitHub App credentials were not provided');
     }
     return createAppTokenProvider(options.app);
+  }
+  if (mode === "oauth") {
+    if (!options.oauth) {
+      throw new Error('github.auth is "oauth" but an OAuth token source was not provided');
+    }
+    return createOAuthGitAuth(options.oauth);
   }
   if (!options.gh) {
     throw new Error('github.auth is "gh" but gh CLI options were not provided');

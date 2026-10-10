@@ -9,6 +9,7 @@ import {
 } from "../contract";
 import { demoStatus } from "../demo";
 import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
+import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
 
 export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
@@ -30,6 +31,9 @@ export interface StatusServerOptions {
   staticDir?: string | null;
   /** Defaults to `process.env`. `PAWS_STATUS_DEMO=1` forces the sample snapshot. */
   env?: Record<string, string | undefined>;
+  /** Loopback GitHub sign-in. Omit it and GET /api/auth/github reports no user. */
+  githubAuth?: GitHubSignIn;
+  csrfToken?: string;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -57,10 +61,12 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
+  const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);
+  if (auth !== null) return auth;
   if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
-    return pageResponse(request, staticDir);
+    return pageResponse(request, staticDir, options.csrfToken);
   }
   return null;
 }
@@ -136,18 +142,18 @@ async function apiResponse(request: Request, provider: StatusProvider): Promise<
   }
 }
 
-function pageResponse(request: Request, staticDir: string | null): Response {
+function pageResponse(request: Request, staticDir: string | null, csrfToken?: string): Response {
   if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
   const url = new URL(request.url);
   const relative =
     url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
   if (!relative) return text("Not found", 404);
-  if (relative === "index.html" || !isPublicFile(relative)) return indexHtml(staticDir);
+  if (relative === "index.html" || !isPublicFile(relative)) return indexHtml(staticDir, csrfToken);
   if (!staticDir) return text("Not found", 404);
   const file = safeFile(staticDir, relative);
   if (!file || !existsSync(file)) {
     if (relative.startsWith("assets/")) return text("Not found", 404);
-    return indexHtml(staticDir);
+    return indexHtml(staticDir, csrfToken);
   }
   const cache = relative.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store";
   return new Response(Bun.file(file), {
@@ -193,10 +199,10 @@ function safeFile(staticDir: string, relative: string): string | null {
   return target;
 }
 
-function indexHtml(staticDir: string | null): Response {
+function indexHtml(staticDir: string | null, csrfToken?: string): Response {
   const file = staticDir ? safeFile(staticDir, "index.html") : null;
   const body = file && existsSync(file) ? readFileSync(file, "utf8") : MISSING_PAGE;
-  return html(withBase(body));
+  return html(injectCsrf(withBase(body), csrfToken));
 }
 
 /** Engine pages live at `/status`, so relative asset URLs need that base. The Vercel build does not. */

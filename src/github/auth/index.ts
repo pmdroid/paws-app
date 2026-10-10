@@ -6,6 +6,7 @@ export {
   createGhCliAuth,
   ghDoctorChecks,
 } from "./gh";
+export { createOAuthGitAuth, OAUTH_REAUTH_MESSAGE, runGitHubGit } from "./oauth";
 export { applyPawsLabel, PAWS_EVIDENCE_MARKER, PAWS_LABEL, withPawsEvidenceMarker } from "./pr";
 export {
   acquireOperationToken,
