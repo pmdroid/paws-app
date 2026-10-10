@@ -1,8 +1,14 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
-import { loadEnv, pawsPaths, type AgentsConfig, type EnvSource } from "../config";
+import {
+  loadEnv,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
+  pawsPaths,
+  type AgentsConfig,
+  type EnvSource,
+} from "../config";
 import type { GrokLoginStatus } from "../install";
-import { realProbeFacts, type ProbeFacts } from "./probe";
+import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
 
 export type DoctorCheck = {
   name: string;
@@ -49,7 +55,13 @@ const FIX = {
   publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
   ngrok: "Install ngrok and put it on PATH.",
   githubApp: "Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and a private key at mode 0600.",
+  githubLogin: "Run bun run paws login github.",
+  githubPush: "Grant this login push access to the repository.",
+  githubLabel: "Create the paws label on the repository.",
+  githubRate: "Wait for the GitHub rate limit to recover.",
 } as const;
+
+const PLACEHOLDER_LINE = "set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID";
 
 /** Prerequisite checks for a real local run. Missing tools are reported, not thrown. */
 export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): DoctorCheck[] {
@@ -57,6 +69,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   const paths = pawsPaths(env.home);
   const facts = probe.facts;
   const repoOk = facts.repo !== null && /^[^/\s]+\/[^/\s]+$/.test(facts.repo);
+  const githubTracker = facts.trackerKind === "github" || facts.trackerKind === "both";
+  const linearTracker = facts.trackerKind !== "github";
   const checks: DoctorCheck[] = [
     check("git", probe.which("git") !== null, probe.which("git") ?? "git is not on PATH", FIX.git),
     check(
@@ -71,17 +85,24 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       probe.canWrite(paths.home) ? paths.home : `cannot write ${paths.home}`,
       FIX.home,
     ),
-    linearCheck(facts),
-    modeCheck(facts),
-    teamCheck(facts),
-    labelCheck(facts),
-    check("gh-login", facts.ghLogin.ok, facts.ghLogin.detail, FIX.ghLogin),
-    check(
-      "gh-push",
-      facts.ghPush.ok,
-      facts.ghPush.detail,
-      facts.ghPush.ok ? undefined : ghPushFix(facts),
-    ),
+  ];
+  if (linearTracker) {
+    checks.push(linearCheck(facts), modeCheck(facts), teamCheck(facts), labelCheck(facts));
+  }
+  if (githubTracker) {
+    checks.push(...githubTrackerChecks(facts));
+  } else {
+    checks.push(
+      check("gh-login", facts.ghLogin.ok, facts.ghLogin.detail, FIX.ghLogin),
+      check(
+        "gh-push",
+        facts.ghPush.ok,
+        facts.ghPush.detail,
+        facts.ghPush.ok ? undefined : ghPushFix(facts),
+      ),
+    );
+  }
+  checks.push(
     ...agentChecks(facts, context),
     closeoutCheck(facts),
     check(
@@ -90,7 +111,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       repoOk ? (facts.repo ?? "") : "repository must be owner/name",
       FIX.repo,
     ),
-  ];
+  );
   if (facts.webhooks) {
     checks.push(
       check(
@@ -163,6 +184,42 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
       }
     },
   };
+}
+
+function githubTrackerChecks(facts: ProbeFacts): DoctorCheck[] {
+  if (
+    facts.githubAuth === "oauth" &&
+    (facts.githubDoctor.placeholder || facts.oauthClientId === PAWS_GITHUB_OAUTH_CLIENT_ID)
+  ) {
+    return [check("github-auth", false, PLACEHOLDER_LINE, PLACEHOLDER_LINE)];
+  }
+  const github = facts.githubDoctor;
+  const loginFix = facts.githubAuth === "gh" ? FIX.ghLogin : FIX.githubLogin;
+  const checks: DoctorCheck[] = [
+    check("github-auth", github.signedIn.ok, github.signedIn.detail, loginFix),
+    tokenStoreCheck(github),
+    check(
+      "github-push",
+      github.push.ok,
+      github.push.detail,
+      github.push.ok ? undefined : FIX.githubPush,
+    ),
+    check("github-label", github.label.ok, github.label.detail, FIX.githubLabel),
+    check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
+  ];
+  return checks;
+}
+
+function tokenStoreCheck(github: GitHubDoctorFacts): DoctorCheck {
+  if (github.storeKind === "file") {
+    return {
+      name: "github-token-store",
+      ok: true,
+      note: true,
+      detail: github.storeWarning ?? "token file",
+    };
+  }
+  return check("github-token-store", true, github.storeKind);
 }
 
 function linearCheck(facts: ProbeFacts): DoctorCheck {

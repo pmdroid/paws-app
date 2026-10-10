@@ -1,11 +1,22 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { adapterVersions, resolveAdapter } from "../acp";
+import {
+  createGitHubTokenProvider,
+  createTokenStore,
+  DEVICE_SCOPE_MESSAGE,
+  GITHUB_REAUTH_MESSAGE,
+  scopesGrantRepoAndOrg,
+  type GitHubTokenProvider,
+} from "../auth";
 import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
   loadRuntime,
+  PAWS_GITHUB_OAUTH_CLIENT_ID,
   type EnvSource,
   type GitHubConfigAuth,
   type LinearConfigMode,
+  type RuntimeConfig,
+  type TrackerKind,
 } from "../config";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
 import {
@@ -16,11 +27,28 @@ import {
   sha256Hex,
 } from "../install";
 
+/** Core REST calls left after a signed-in doctor check. Below this, doctor reports no headroom. */
+export const GITHUB_RATE_HEADROOM = 100;
+
+export type GitHubDoctorFacts = {
+  /** `github.oauth_client_id` is still the setup placeholder. */
+  placeholder: boolean;
+  storeKind: "keychain" | "libsecret" | "file" | "gh" | "app";
+  storeWarning: string | null;
+  signedIn: { ok: boolean; detail: string };
+  push: { ok: boolean; detail: string };
+  label: { ok: boolean; detail: string };
+  rate: { ok: boolean; detail: string };
+};
+
 export type ProbeFacts = {
   configError: string | null;
   configured: boolean;
   linearMode: LinearConfigMode;
   githubAuth: GitHubConfigAuth;
+  trackerKind: TrackerKind;
+  oauthClientId: string | null;
+  githubDoctor: GitHubDoctorFacts;
   webhooks: boolean;
   publicUrl: string | null;
   repo: string | null;
@@ -54,17 +82,21 @@ const LOGIN_TIMEOUT_MS = 2_500;
 export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   const runtime = loadRuntime(env);
   const repo = splitRepo(runtime.repo);
-  const [gh, claudeLogin, codexLogin, linear] = await Promise.all([
+  const [gh, claudeLogin, codexLogin, linear, githubDoctor] = await Promise.all([
     ghFacts(repo),
     loginFact("claude", env),
     loginFact("codex", env),
     linearFact(runtime),
+    githubDoctorFact(runtime, repo),
   ]);
   return {
     configError: runtime.configError,
     configured: runtime.configured,
     linearMode: runtime.linearMode,
     githubAuth: runtime.githubAuth,
+    trackerKind: runtime.trackerKind,
+    oauthClientId: runtime.oauthClientId,
+    githubDoctor: applyGhFallback(runtime, githubDoctor, gh),
     webhooks: runtime.webhooks,
     publicUrl: runtime.publicUrl,
     repo: runtime.repo,
@@ -266,4 +298,186 @@ function readString(record: Record<string, unknown>, key: string): string | null
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function applyGhFallback(
+  runtime: RuntimeConfig,
+  facts: GitHubDoctorFacts,
+  gh: { login: { ok: boolean; detail: string }; push: { ok: boolean; detail: string } },
+): GitHubDoctorFacts {
+  if (runtime.trackerKind === "linear" || runtime.githubAuth !== "gh" || facts.placeholder) {
+    return facts;
+  }
+  return {
+    ...facts,
+    signedIn: gh.login,
+    push: gh.push,
+  };
+}
+
+async function githubDoctorFact(
+  runtime: RuntimeConfig,
+  repo: { owner: string; repo: string } | null,
+): Promise<GitHubDoctorFacts> {
+  const unused = idleGitHubFacts();
+  if (runtime.trackerKind === "linear") return unused;
+  const placeholder =
+    runtime.githubAuth === "oauth" && runtime.oauthClientId === PAWS_GITHUB_OAUTH_CLIENT_ID;
+  const store =
+    runtime.githubAuth === "oauth" ? createTokenStore({ home: runtime.env.home }) : null;
+  const facts: GitHubDoctorFacts = {
+    placeholder,
+    storeKind:
+      store === null
+        ? runtime.githubAuth === "app"
+          ? "app"
+          : "gh"
+        : store.backend === "secret-tool"
+          ? "libsecret"
+          : store.backend,
+    storeWarning: store?.warning ?? null,
+    signedIn: { ok: false, detail: GITHUB_REAUTH_MESSAGE },
+    push: {
+      ok: false,
+      detail: repo === null ? "repository must be owner/name" : "repository is not pushable",
+    },
+    label: { ok: false, detail: "paws label is missing" },
+    rate: { ok: false, detail: "rate limit was not read" },
+  };
+  if (placeholder || repo === null) return facts;
+  try {
+    const provider = githubProvider(runtime, repo);
+    const token = await provider.token();
+    if (runtime.githubAuth !== "gh") {
+      const user = await githubGet(token, "/user");
+      const login = readString(user.body, "login");
+      if (runtime.githubAuth === "oauth") {
+        const scopes = user.header("x-oauth-scopes") ?? "";
+        if (!user.ok || !scopesGrantRepoAndOrg(scopes)) {
+          facts.signedIn = {
+            ok: false,
+            detail: user.ok ? DEVICE_SCOPE_MESSAGE : GITHUB_REAUTH_MESSAGE,
+          };
+        } else {
+          facts.signedIn = { ok: true, detail: `signed in as ${login ?? "github"}` };
+        }
+      } else if (!user.ok) {
+        facts.signedIn = { ok: false, detail: GITHUB_REAUTH_MESSAGE };
+      } else {
+        facts.signedIn = { ok: true, detail: `signed in as ${login ?? "github"}` };
+      }
+      const repoBody = await githubGet(token, `/repos/${repo.owner}/${repo.repo}`);
+      const permissions = isRecord(repoBody.body) ? repoBody.body["permissions"] : null;
+      const push = repoBody.ok && isRecord(permissions) && permissions["push"] === true;
+      facts.push = {
+        ok: push,
+        detail: push
+          ? `push access to ${repo.owner}/${repo.repo}`
+          : `no push access to ${repo.owner}/${repo.repo}`,
+      };
+    }
+    const label = await githubGet(
+      token,
+      `/repos/${repo.owner}/${repo.repo}/labels/${encodeURIComponent("paws")}`,
+    );
+    facts.label =
+      label.status === 200
+        ? { ok: true, detail: "paws" }
+        : { ok: false, detail: "paws label is missing" };
+    const rate = await githubGet(token, "/rate_limit");
+    const remaining = coreRemaining(rate.body);
+    if (!rate.ok || remaining === null) {
+      facts.rate = { ok: false, detail: "rate limit was not read" };
+    } else if (remaining < GITHUB_RATE_HEADROOM) {
+      facts.rate = { ok: false, detail: `${remaining} remaining` };
+    } else {
+      facts.rate = { ok: true, detail: `${remaining} remaining` };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "GitHub could not be reached";
+    if (!facts.signedIn.ok) facts.signedIn = { ok: false, detail: message };
+  }
+  return facts;
+}
+
+function idleGitHubFacts(): GitHubDoctorFacts {
+  return {
+    placeholder: false,
+    storeKind: "gh",
+    storeWarning: null,
+    signedIn: { ok: true, detail: "not used" },
+    push: { ok: true, detail: "not used" },
+    label: { ok: true, detail: "not used" },
+    rate: { ok: true, detail: "not used" },
+  };
+}
+
+function githubProvider(
+  runtime: RuntimeConfig,
+  repo: { owner: string; repo: string },
+): GitHubTokenProvider {
+  const env = runtime.env;
+  let privateKeyPem: string | null = null;
+  if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
+    try {
+      privateKeyPem = readFileSync(env.githubAppPrivateKeyPath, "utf8");
+    } catch {
+      privateKeyPem = null;
+    }
+  }
+  return createGitHubTokenProvider({
+    auth: runtime.githubAuth,
+    oauthClientId: runtime.oauthClientId,
+    repo: `${repo.owner}/${repo.repo}`,
+    home: env.home,
+    env: process.env,
+    appId: env.githubAppId,
+    installationId: env.githubAppInstallationId,
+    privateKeyPem,
+  });
+}
+
+type GitHubGet = {
+  ok: boolean;
+  status: number;
+  body: Record<string, unknown>;
+  header(name: string): string | null;
+};
+
+async function githubGet(token: string, path: string): Promise<GitHubGet> {
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "paws",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    signal: AbortSignal.timeout(8_000),
+  });
+  const text = await response.text();
+  let parsed: unknown = {};
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = {};
+    }
+  }
+  const body = isRecord(parsed) ? parsed : {};
+  return {
+    ok: response.ok,
+    status: response.status,
+    body,
+    header(name: string) {
+      return response.headers.get(name);
+    },
+  };
+}
+
+function coreRemaining(body: Record<string, unknown>): number | null {
+  const resources = isRecord(body["resources"]) ? body["resources"] : null;
+  const core = resources !== null && isRecord(resources["core"]) ? resources["core"] : null;
+  if (core === null) return null;
+  const remaining = core["remaining"];
+  return typeof remaining === "number" && Number.isFinite(remaining) ? remaining : null;
 }
