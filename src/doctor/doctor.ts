@@ -48,8 +48,7 @@ const FIX = {
   adapter: "Run bun install in the paws checkout.",
   claude: "Run claude auth login.",
   codex: "Run codex login.",
-  closeout:
-    "pmdroid/closeout has no release assets yet. Run bun run paws setup --closeout-path <binary>.",
+  closeout: "Fix .agents/closeout.yaml on origin/main.",
   repo: "Run bun run paws setup --repo owner/name.",
   webhook: "Set LINEAR_WEBHOOK_SECRET to the Linear webhook signing secret.",
   publicUrl: "Set PAWS_PUBLIC_URL to the https tunnel origin.",
@@ -267,29 +266,8 @@ function labelCheck(facts: ProbeFacts): DoctorCheck {
 }
 
 function closeoutCheck(facts: ProbeFacts): DoctorCheck {
-  if (!facts.closeout.present) {
-    return check("closeout", false, `missing ${facts.closeout.path}`, FIX.closeout);
-  }
-  if (!facts.closeout.executable) {
-    return check("closeout", false, `${facts.closeout.path} is not executable`, FIX.closeout);
-  }
-  if (facts.closeout.checksum === "mismatch") {
-    return check(
-      "closeout",
-      false,
-      `checksum does not match the pin at ${facts.closeout.path}`,
-      FIX.closeout,
-    );
-  }
-  if (facts.closeout.checksum === "skipped") {
-    return check(
-      "closeout",
-      true,
-      `present at ${facts.closeout.path} (no published release checksum yet)`,
-      FIX.closeout,
-    );
-  }
-  return check("closeout", true, `checksum matches ${facts.closeout.path}`, FIX.closeout);
+  if (facts.closeout.ok) return check("closeout", true, facts.closeout.detail);
+  return check("closeout", false, facts.closeout.detail, facts.closeout.fix ?? FIX.closeout);
 }
 
 function githubAppCheck(

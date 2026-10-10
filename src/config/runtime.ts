@@ -41,7 +41,6 @@ export type RuntimeConfig = {
   trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
-  closeoutBin: string | null;
   checkout: string | null;
   maxTurns: number;
   maxAwakeMs: number;
@@ -95,7 +94,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     trackerGithub: file.trackerGithub,
     repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
-    closeoutBin: optional(source, "CLOSEOUT_BIN") ?? file.closeoutBin,
     checkout: optional(source, "PAWS_CHECKOUT") ?? file.checkout,
     maxTurns: positiveInt(optional(source, "PAWS_MAX_TURNS")) ?? file.maxTurns ?? DEFAULT_MAX_TURNS,
     maxAwakeMs:

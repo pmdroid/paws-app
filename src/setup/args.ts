@@ -18,7 +18,6 @@ export type SetupFlags = {
   linearClientSecret: string | null;
   linearAccessToken: string | null;
   linearRefreshToken: string | null;
-  closeoutPath: string | null;
   implementer: "claude" | "grok" | "codex" | null;
 };
 
@@ -34,7 +33,6 @@ const VALUE_FLAGS = {
   "--linear-client-secret": "linearClientSecret",
   "--linear-access-token": "linearAccessToken",
   "--linear-refresh-token": "linearRefreshToken",
-  "--closeout-path": "closeoutPath",
   "--implementer": "implementer",
 } as const;
 
@@ -56,7 +54,6 @@ export function parseArgs(argv: readonly string[]): SetupFlags {
     linearClientSecret: null,
     linearAccessToken: null,
     linearRefreshToken: null,
-    closeoutPath: null,
     implementer: null,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -99,7 +96,6 @@ export const HELP = [
   "  --linear-client-secret SECRET",
   "  --linear-access-token TOKEN",
   "  --linear-refresh-token TOKEN",
-  "  --closeout-path PATH         local closeout binary (no release assets yet)",
   "  --implementer claude|grok|codex",
   "                               who implements; omit it to choose from installed agents",
 ].join("\n");

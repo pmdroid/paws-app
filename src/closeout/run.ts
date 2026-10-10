@@ -1,24 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import type { FixRunner } from "./fixer";
-import { assertTaskId, interpretCloseoutOutput, isSha } from "./parse";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
 import type { CodexReviewer } from "./reviewer";
-import {
-  decisionArgs,
-  evidenceAddArgs,
-  runArgs,
-  spawnCloseout,
-  validateFindings,
-  versionMatches,
-  type SpawnResult,
-} from "./spawn";
 import { formatEvidenceSummary, formatFixFeedback } from "./summary";
 import {
   CLOSEOUT_GATE,
   MAX_FIX_ATTEMPTS,
-  PINNED_CLOSEOUT_VERSION,
   type CandidateIdentity,
   type CloseoutItem,
   type DecisionDocument,
@@ -26,7 +12,8 @@ import {
   type GateOutcome,
   type GateResult,
 } from "./types";
-import { readHead } from "./worktree";
+import { isSha, readHead } from "./worktree";
+import { addReview, decision, run, type DecisionDocument as SpecDecision } from "../closeout-spec";
 
 export type EvaluateInput = {
   worktree: string;
@@ -35,8 +22,10 @@ export type EvaluateInput = {
   head: string;
   candidate: CandidateIdentity;
   reviewer: CodexReviewer;
-  closeoutBin?: string;
-  pinnedVersion?: string;
+  /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
+  home?: string;
+  /** `~/.paws` for the detached command worktree. */
+  pawsHome?: string;
 };
 
 export type Evaluation = {
@@ -59,17 +48,16 @@ export type GateInput = {
   fixer: FixRunner;
   recorder?: VerdictRecorder;
   reportDir?: string;
-  closeoutBin?: string;
-  pinnedVersion?: string;
+  home?: string;
+  pawsHome?: string;
   maxFixAttempts?: number;
 };
 
-type Invocation = { exitCode: number | null; decision: DecisionDocument | null; error?: string };
-
 /**
- * One Closeout evaluation: `closeout run`, then Codex review evidence for
- * any review item that is missing or stale, then `closeout decision`.
+ * One Closeout evaluation: native `run`, then Codex review evidence for any
+ * review item that is missing or stale, then native `decision`.
  * Does not ask the implementer to fix anything.
+ * Task id is the work item id.
  */
 export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluation> {
   const taskError = assertTaskId(input.taskId);
@@ -78,67 +66,63 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
     return failure("invalid", null, "base and head must be commit ids", input.head);
   }
 
-  const bin = input.closeoutBin ?? process.env.CLOSEOUT_BIN ?? "closeout";
-  const pinned = input.pinnedVersion ?? PINNED_CLOSEOUT_VERSION;
-  const version = await spawnCloseout({ bin, args: ["--version"], cwd: input.worktree });
-  if (version.spawnError) {
-    return failure(
-      "blocked",
-      null,
-      `pinned closeout binary is missing: ${version.spawnError}`,
-      input.head,
-    );
+  let ran: SpecDecision;
+  try {
+    ran = await run({
+      repo: input.worktree,
+      base: input.base,
+      head: input.head,
+      gate: CLOSEOUT_GATE,
+      task: input.taskId,
+      candidate: input.candidate,
+      ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return failure("blocked", null, message, input.head);
   }
-  const versionText = `${version.stdout}\n${version.stderr}`;
-  if (version.exitCode !== 0 || !versionMatches(versionText, pinned)) {
-    return failure(
-      "blocked",
-      version.exitCode,
-      `closeout version is not pinned to ${pinned}`,
-      input.head,
-    );
-  }
-
-  const run = await invoke(bin, input.worktree, runArgs(input));
   const moved = await headUnmoved(input.worktree, input.head);
-  if (moved) return failure("blocked", run.exitCode, moved, input.head);
-  if (!run.decision) {
-    return failure("invalid", run.exitCode, run.error ?? "closeout run failed", input.head);
-  }
-  if (run.decision.base !== input.base || run.decision.head !== input.head) {
-    return failure(
-      "blocked",
-      run.exitCode,
-      "decision commit ids do not match the candidate",
-      input.head,
-    );
+  if (moved) return failure("blocked", exitOf(ran.decision), moved, input.head);
+  if (ran.gate !== CLOSEOUT_GATE) {
+    return failure("invalid", exitOf(ran.decision), "decision gate is not beforePR", input.head);
   }
 
+  const first = toGateDecision(ran);
   const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
-  const gaps = reviewGaps(run.decision);
-  if (gaps.length > 0) {
-    const filled = await addReviewEvidence({ bin, input, items: gaps, reviewFindings });
-    if (filled) return { ...filled, reviewFindings };
-    const decided = await invoke(bin, input.worktree, decisionArgs(input));
-    const movedAfter = await headUnmoved(input.worktree, input.head);
-    if (movedAfter) return failure("blocked", decided.exitCode, movedAfter, input.head);
-    if (!decided.decision) {
-      return failure(
-        "invalid",
-        decided.exitCode,
-        decided.error ?? "closeout decision failed",
-        input.head,
-      );
-    }
-    return finish(decided, input.base, input.head, reviewFindings);
-  }
+  const gaps = reviewGaps(first);
+  if (gaps.length === 0) return finish(first, input.base, input.head, reviewFindings);
 
-  return finish(run, input.base, input.head, reviewFindings);
+  const filled = await addReviewEvidence(input, gaps, reviewFindings);
+  if (filled) return filled;
+
+  let judged: SpecDecision;
+  try {
+    judged = await decision({
+      repo: input.worktree,
+      base: input.base,
+      head: input.head,
+      gate: CLOSEOUT_GATE,
+      task: input.taskId,
+      candidate: input.candidate,
+      ...(input.home !== undefined ? { home: input.home } : {}),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return failure("blocked", null, message, input.head);
+  }
+  const movedAfter = await headUnmoved(input.worktree, input.head);
+  if (movedAfter) return failure("blocked", exitOf(judged.decision), movedAfter, input.head);
+  if (judged.gate !== CLOSEOUT_GATE) {
+    return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
+  }
+  return finish(toGateDecision(judged), input.base, input.head, reviewFindings);
 }
 
 /**
  * Run the gate. A rejection is handed to {@link FixRunner} at most
- * {@link MAX_FIX_ATTEMPTS} times. Blocked, invalid, and exhausted
+ * {@link MAX_FIX_ATTEMPTS} times. A requirement the spec marks `exhausted`
+ * stops the loop and needs a person. Blocked, invalid, and exhausted
  * results do not merge.
  */
 export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
@@ -247,120 +231,78 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
   }
 }
 
-async function addReviewEvidence(input: {
-  bin: string;
-  input: EvaluateInput;
-  items: CloseoutItem[];
-  reviewFindings: Array<{ itemId: string; findings: Finding[] }>;
-}): Promise<Evaluation | null> {
-  for (const item of input.items) {
-    let review;
+async function addReviewEvidence(
+  input: EvaluateInput,
+  items: CloseoutItem[],
+  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+): Promise<Evaluation | null> {
+  for (const item of items) {
+    let added;
     try {
-      review = await input.input.reviewer.review({
-        worktree: input.input.worktree,
-        taskId: input.input.taskId,
+      added = await addReview({
+        repo: input.worktree,
+        base: input.base,
+        head: input.head,
+        gate: CLOSEOUT_GATE,
+        task: input.taskId,
         itemId: item.id,
-        base: input.input.base,
-        head: input.input.head,
-        candidate: input.input.candidate,
+        candidate: input.candidate,
+        ...(input.home !== undefined ? { home: input.home } : {}),
+        reviewer: {
+          async review(request) {
+            const result = await input.reviewer.review({
+              worktree: request.worktree,
+              taskId: input.taskId,
+              itemId: request.item.id,
+              base: request.base,
+              head: request.head,
+              candidate: {
+                session: request.candidate.session,
+                model: request.candidate.model,
+                provider: request.candidate.provider,
+              },
+            });
+            return {
+              producer: {
+                session: result.session,
+                model: result.model,
+                provider: result.provider,
+              },
+              findings: result.findings,
+              artifacts: [],
+            };
+          },
+        },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return failure(
-        "blocked",
-        null,
-        `reviewer failed for ${item.id}: ${message}`,
-        input.input.head,
-      );
+      return failure("blocked", null, `reviewer failed for ${item.id}: ${message}`, input.head);
     }
-    const findingsError = validateFindings(review.findings);
-    if (findingsError) {
-      return failure("blocked", null, `${item.id}: ${findingsError}`, input.input.head);
+    if (!added.ok) {
+      return failure("blocked", null, `${item.id}: ${added.message}`, input.head);
     }
-    input.reviewFindings.push({ itemId: item.id, findings: review.findings });
-    const dir = await mkdtemp(path.join(tmpdir(), "paws-findings-"));
-    const findingsPath = path.join(dir, "findings.json");
-    try {
-      await writeFile(findingsPath, JSON.stringify(review.findings));
-      const added = await spawnCloseout({
-        bin: input.bin,
-        cwd: input.input.worktree,
-        args: evidenceAddArgs({
-          itemId: item.id,
-          base: input.input.base,
-          head: input.input.head,
-          taskId: input.input.taskId,
-          session: review.session,
-          model: review.model,
-          provider: review.provider,
-          findingsPath,
-        }),
-      });
-      if (added.spawnError || added.exitCode !== 0) {
-        return failure(
-          "blocked",
-          added.exitCode,
-          added.spawnError ?? `evidence add failed for ${item.id}: ${added.stderr.trim()}`,
-          input.input.head,
-        );
-      }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    reviewFindings.push({ itemId: item.id, findings: added.record.findings });
   }
   return null;
 }
 
-async function invoke(bin: string, cwd: string, args: string[]): Promise<Invocation> {
-  const spawned = await spawnCloseout({ bin, args, cwd });
-  return invocationFrom(spawned);
-}
-
-function invocationFrom(spawned: SpawnResult): Invocation {
-  if (spawned.spawnError) {
-    return { exitCode: null, decision: null, error: spawned.spawnError };
-  }
-  const interpreted = interpretCloseoutOutput(spawned.exitCode, spawned.stdout);
-  if (!interpreted.ok) {
-    return { exitCode: spawned.exitCode, decision: null, error: interpreted.error };
-  }
-  if (interpreted.decision.gate !== CLOSEOUT_GATE) {
-    return { exitCode: spawned.exitCode, decision: null, error: "decision gate is not beforePR" };
-  }
-  return { exitCode: spawned.exitCode, decision: interpreted.decision };
-}
-
 function finish(
-  invocation: Invocation,
+  decision: DecisionDocument,
   requestedBase: string,
   requestedHead: string,
   reviewFindings: Evaluation["reviewFindings"],
 ): Evaluation {
-  const decision = invocation.decision;
-  if (!decision) {
-    return failure(
-      "invalid",
-      invocation.exitCode,
-      invocation.error ?? "no decision",
-      requestedHead,
-    );
-  }
+  const exitCode = exitOf(decision.decision);
   if (decision.base !== requestedBase || decision.head !== requestedHead) {
     return failure(
       "blocked",
-      invocation.exitCode,
+      exitCode,
       "decision commit ids do not match the candidate",
       requestedHead,
     );
   }
   if (decision.items.some((item) => item.state === "exhausted")) {
-    return {
-      outcome: "exhausted",
-      exitCode: invocation.exitCode,
-      decision,
-      reviewFindings,
-      head: requestedHead,
-    };
+    return { outcome: "exhausted", exitCode, decision, reviewFindings, head: requestedHead };
   }
   const unsatisfied = decision.items.some(
     (item) => item.state !== "passed" && item.state !== "skipped",
@@ -368,36 +310,18 @@ function finish(
   if (decision.decision === "accepted" && unsatisfied) {
     return failure(
       "invalid",
-      invocation.exitCode,
+      exitCode,
       "accepted decision contains an unsatisfied item",
       requestedHead,
     );
   }
   if (decision.decision === "accepted") {
-    return {
-      outcome: "accepted",
-      exitCode: invocation.exitCode,
-      decision,
-      reviewFindings,
-      head: requestedHead,
-    };
+    return { outcome: "accepted", exitCode, decision, reviewFindings, head: requestedHead };
   }
   if (decision.decision === "rejected") {
-    return {
-      outcome: "rejected",
-      exitCode: invocation.exitCode,
-      decision,
-      reviewFindings,
-      head: requestedHead,
-    };
+    return { outcome: "rejected", exitCode, decision, reviewFindings, head: requestedHead };
   }
-  return {
-    outcome: "blocked",
-    exitCode: invocation.exitCode,
-    decision,
-    reviewFindings,
-    head: requestedHead,
-  };
+  return { outcome: "blocked", exitCode, decision, reviewFindings, head: requestedHead };
 }
 
 function failure(
@@ -413,6 +337,59 @@ function reviewGaps(decision: DecisionDocument): CloseoutItem[] {
   return decision.items.filter(
     (item) => item.kind === "review" && (item.state === "missing" || item.state === "stale"),
   );
+}
+
+function toGateDecision(document: SpecDecision): DecisionDocument {
+  const decision: DecisionDocument = {
+    specVersion: "0.1",
+    decision: document.decision,
+    gate: CLOSEOUT_GATE,
+    base: document.base,
+    head: document.head,
+    candidate: {
+      session: document.candidate.session,
+      model: document.candidate.model,
+      provider: document.candidate.provider,
+      ...(document.candidate.task !== undefined ? { task: document.candidate.task } : {}),
+    },
+    policy: {
+      path: document.policy.path,
+      digest: document.policy.digest,
+      absent: document.policy.absent,
+    },
+    items: document.items.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      state: item.state,
+      message: item.message,
+      ...(item.attempt !== undefined ? { attempt: item.attempt } : {}),
+    })),
+    warnings: document.warnings.map((warning) => ({
+      code: warning.code,
+      message: warning.message,
+    })),
+  };
+  if (document.message !== undefined) decision.message = document.message;
+  return decision;
+}
+
+function exitOf(name: DecisionDocument["decision"]): 0 | 1 | 3 {
+  if (name === "accepted") return 0;
+  if (name === "rejected") return 1;
+  return 3;
+}
+
+function assertTaskId(taskId: string): string | null {
+  if (typeof taskId !== "string" || taskId.length === 0 || taskId.trim() !== taskId) {
+    return "task id must be a nonblank string";
+  }
+  if (taskId.includes("\0") || taskId.startsWith("-")) {
+    return "task id must not start with '-' or contain NUL";
+  }
+  if (Buffer.byteLength(taskId, "utf8") > 256) {
+    return "task id must be at most 256 bytes";
+  }
+  return null;
 }
 
 async function headUnmoved(worktree: string, head: string): Promise<string | null> {

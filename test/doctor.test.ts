@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
@@ -10,6 +11,7 @@ import { FILE_TOKEN_STORE_DOCTOR_WARNING } from "../src/auth";
 import {
   doctorChecks,
   formatDoctor,
+  realProbe,
   type DoctorProbe,
   type GitHubDoctorFacts,
   type ProbeFacts,
@@ -68,10 +70,55 @@ test("doctor names what is missing and does not print secret values", () => {
   expect(text).toContain("ok linear-webhook:");
   expect(text).toContain("missing ngrok:");
   expect(text).toContain("missing public-url:");
-  expect(text).toContain("bun run paws setup --closeout-path <binary>");
+  expect(text).toContain(".agents/closeout.yaml: invalid YAML");
   expect(checks.filter((item) => !item.ok).every((item) => item.fix !== undefined)).toBe(true);
   expect(text).not.toContain("whsec_do_not_print");
 });
+
+test("doctor loads the closeout policy from origin/main", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
+  const bare = join(root, "origin.git");
+  const repo = join(root, "repo");
+  const home = join(root, "home");
+  mkdirSync(home);
+  execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+  execFileSync("git", ["clone", bare, repo]);
+  execFileSync("git", ["-C", repo, "config", "user.email", "paws-test@example.com"]);
+  execFileSync("git", ["-C", repo, "config", "user.name", "Paws Test"]);
+  execFileSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+  mkdirSync(join(repo, ".agents"), { recursive: true });
+  const policy = join(repo, ".agents", "closeout.yaml");
+  writeFileSync(
+    policy,
+    'specVersion: "0.1"\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ["true"]\n    timeoutSeconds: 30\n',
+  );
+  execFileSync("git", ["-C", repo, "add", ".agents/closeout.yaml"]);
+  execFileSync("git", ["-C", repo, "commit", "-m", "policy"]);
+  execFileSync("git", ["-C", repo, "push", "origin", "HEAD:main"]);
+  const env = { HOME: home, PAWS_HOME: home, PAWS_CHECKOUT: repo, PATH: process.env.PATH ?? "" };
+  const ready = await realProbe(env);
+  expect(ready.facts.closeout).toEqual({
+    ok: true,
+    detail: "policy loads on origin/main",
+    fix: null,
+  });
+
+  writeFileSync(policy, 'specVersion: "0.1"\nitems: [\n');
+  execFileSync("git", ["-C", repo, "add", ".agents/closeout.yaml"]);
+  execFileSync("git", ["-C", repo, "commit", "-m", "malformed"]);
+  execFileSync("git", ["-C", repo, "push", "origin", "HEAD:main"]);
+  const broken = await realProbe(env);
+  expect(broken.facts.closeout.ok).toBe(false);
+  expect(broken.facts.closeout.detail).toBe("policy on origin/main is malformed");
+  expect(broken.facts.closeout.fix?.includes("\n")).toBe(false);
+  expect(broken.facts.closeout.fix?.length).toBeGreaterThan(0);
+  const text = formatDoctor(doctorChecks(broken));
+  const lines = text.split("\n");
+  const index = lines.findIndex((line) => line.startsWith("missing closeout:"));
+  expect(lines[index]).toBe("missing closeout: policy on origin/main is malformed");
+  expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
+  expect(lines.filter((line) => line.startsWith("missing closeout:"))).toHaveLength(1);
+}, 30_000);
 
 test("bun run paws doctor exits nonzero until prerequisites exist", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-doctor-"));
@@ -368,12 +415,7 @@ function greenFacts(): ProbeFacts {
     codexAdapter: { ok: true, detail: "codex-acp 2.1.1" },
     claudeLogin: { ok: true, detail: "claude.ai" },
     codexLogin: { ok: true, detail: "logged in" },
-    closeout: {
-      path: "/tmp/paws-home/bin/closeout",
-      present: true,
-      executable: true,
-      checksum: "skipped",
-    },
+    closeout: { ok: true, detail: "policy loads on origin/main", fix: null },
     linear: {
       attempted: true,
       reachable: true,
@@ -415,10 +457,9 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     claudeLogin: { ok: false, detail: "claude auth login" },
     codexLogin: { ok: false, detail: "codex login" },
     closeout: {
-      path: "/tmp/paws-home/bin/closeout",
-      present: false,
-      executable: false,
-      checksum: "missing",
+      ok: false,
+      detail: "policy on origin/main is malformed",
+      fix: ".agents/closeout.yaml: invalid YAML",
     },
     linear: {
       attempted: false,

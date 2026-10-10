@@ -8,7 +8,7 @@ export type SetupGitHubHooks = {
   now?: () => number;
 };
 
-/** Enough of `fetch` for Linear and, later, a published Closeout download. */
+/** Enough of `fetch` for Linear. */
 export type SetupFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export type SetupIO = {

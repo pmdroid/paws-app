@@ -79,7 +79,6 @@ export type PawsConfigFile = {
   trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
-  closeoutBin: string | null;
   checkout: string | null;
   maxTurns: number | null;
   maxAwakeMs: number | null;
@@ -102,7 +101,6 @@ export type PawsSetupConfig = {
   trackerKind?: TrackerKind;
   trackerGithub?: TrackerGithubConfig;
   repo: string;
-  closeoutBin: string;
   checkout: string;
   maxTurns: number;
   maxAwakeMs: number;
@@ -129,7 +127,6 @@ export function emptyConfigFile(): PawsConfigFile {
     },
     repo: null,
     publicUrl: null,
-    closeoutBin: null,
     checkout: null,
     maxTurns: null,
     maxAwakeMs: null,
@@ -204,9 +201,6 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     );
   }
   lines.push(
-    "",
-    "[closeout]",
-    `bin = ${tomlString(config.closeoutBin)}`,
     "",
     "[checkout]",
     `path = ${tomlString(config.checkout)}`,
@@ -398,7 +392,6 @@ function assignConfig(
     return;
   }
   if (section === "closeout") {
-    if (key === "bin") config.closeoutBin = asString(value, line);
     return;
   }
   if (section === "checkout") {

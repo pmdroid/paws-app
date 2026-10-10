@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { writeFakeCloseout, type FakeStep } from "./fake-cli";
 import { createCloseoutGate } from "./gate";
 import type { FixRunner } from "./fixer";
 import { runCloseoutGate } from "./run";
@@ -12,45 +11,22 @@ import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
 
 const exec = promisify(execFile);
-const BASE = "a".repeat(40);
 const TASK = "ENG-123";
 
-function template(decision: string, items: unknown[]): FakeStep {
-  return {
-    exit: decision === "accepted" ? 0 : decision === "rejected" ? 1 : 3,
-    decision: {
-      specVersion: "0.1",
-      decision,
-      gate: "beforePR",
-      base: BASE,
-      head: "b".repeat(40),
-      candidate: { task: TASK, session: "impl-session", model: "claude", provider: "anthropic" },
-      policy: {
-        path: ".agents/closeout.yaml",
-        digest: `sha256:${"c".repeat(64)}`,
-        absent: false,
-      },
-      items,
-      warnings: [],
-    },
-  };
-}
+const SKILL = `---
+name: adversarial-review
+description: Review the candidate. Report findings. Do not decide acceptance.
+---
 
-const passed = { id: "typecheck", kind: "command", state: "passed", message: "exited 0" };
-const failed = { id: "typecheck", kind: "command", state: "failed", message: "exited 1" };
-const missingReview = {
-  id: "adversarial-review",
-  kind: "review",
-  state: "missing",
-  message: "no evidence for this candidate and policy",
-};
+# Review
+
+Report findings. An empty list means the change is fine.
+`;
 
 describe("closeout gate", () => {
   test("feeds a failing command back and accepts on attempt 2", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [template("rejected", [failed]), template("accepted", [passed])],
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([commandUntilOk("test")]),
     });
     const fixes: number[] = [];
     const previousToken = process.env.GITHUB_TOKEN;
@@ -62,12 +38,13 @@ describe("closeout gate", () => {
       result = await runCloseoutGate({
         worktree: repo.dir,
         taskId: TASK,
-        base: BASE,
+        base: repo.head,
         head: repo.head,
         candidate: candidate(),
-        closeoutBin: fake.bin,
+        home: repo.home,
+        pawsHome: repo.pawsHome,
         reviewer: throwingReviewer(),
-        fixer: committingFixer(repo.dir, fixes),
+        fixer: committingFixer(repo.dir, fixes, "ok.txt", "ok\n"),
         reportDir: path.join(repo.root, "report"),
         recorder: {
           async record(verdict) {
@@ -85,37 +62,28 @@ describe("closeout gate", () => {
     expect(result.fixAttempts).toBe(1);
     expect(result.evaluations).toBe(2);
     expect(fixes).toEqual([1]);
-    expect(result.summary).toContain("typecheck");
+    expect(result.summary).toContain("test");
+    expect(result.summary).toContain(TASK);
     const report = await readFile(path.join(repo.root, "report", "closeout-verdict.json"), "utf8");
     expect(report).toContain('"outcome": "accepted"');
-    const calls = (await fake.invocations()).filter((call) => !call.argv.includes("--version"));
-    expect(calls.every((call) => call.argv.includes("--task") && call.argv.includes(TASK))).toBe(
-      true,
-    );
-    expect(calls.every((call) => call.githubToken === false && call.ssh === false)).toBe(true);
     await repo.cleanup();
   });
 
   test("exhausts the item after two failed fixes and does not ask for a third", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [
-        template("rejected", [failed]),
-        template("rejected", [failed]),
-        template("rejected", [failed]),
-      ],
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
     });
     const fixes: number[] = [];
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: BASE,
+      base: repo.head,
       head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: throwingReviewer(),
-      fixer: committingFixer(repo.dir, fixes),
+      fixer: committingFixer(repo.dir, fixes, "note.txt", "still failing\n"),
     });
     expect(result.outcome).toBe("exhausted");
     expect(result.fixAttempts).toBe(MAX_FIX_ATTEMPTS);
@@ -125,38 +93,28 @@ describe("closeout gate", () => {
   });
 
   test("records review evidence, then a fix, then accepts", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [
-        { ...template("blocked", [failed, missingReview]), marker: true },
-        { exit: 0 },
-        template("rejected", [
-          failed,
-          { ...missingReview, state: "passed", message: "no failing findings" },
-        ]),
-        template("blocked", [passed, missingReview]),
-        { exit: 0 },
-        template("accepted", [
-          passed,
-          { ...missingReview, state: "passed", message: "no failing findings" },
-        ]),
-      ],
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy(
+        [commandUntilOk("test"), reviewItem("adversarial-review")],
+        5,
+      ),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
     const reviews: string[] = [];
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: BASE,
+      base: repo.head,
       head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: {
         async review(request) {
           reviews.push(request.itemId);
           return {
             session: "codex-session",
-            model: "gpt-5-codex",
+            model: "codex",
             provider: "openai",
             findings: [
               {
@@ -169,42 +127,28 @@ describe("closeout gate", () => {
           };
         },
       },
-      fixer: committingFixer(repo.dir, []),
+      fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
     });
     expect(result.outcome).toBe("accepted");
     expect(reviews).toEqual(["adversarial-review", "adversarial-review"]);
-    const evidence = (await fake.invocations()).filter((call) => call.argv[0] === "evidence");
-    expect(evidence).toHaveLength(2);
-    expect(evidence[0]?.argv).toContain("--task");
-    expect(evidence[0]?.argv).toContain(TASK);
-    expect(evidence[0]?.findings).toEqual([
-      {
-        severity: "P2",
-        location: "src/export",
-        explanation: "export skips the header row",
-        evidence: "the test output shows one missing column name",
-      },
-    ]);
-    expect(await readFile(path.join(repo.dir, ".closeout", "keep"), "utf8")).toBe("kept\n");
+    expect(result.summary).toContain("test");
+    expect(result.decision?.candidate.task).toBe(TASK);
     await repo.cleanup();
   });
 
   test("stops when the policy retry limit is exhausted", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [
-        template("blocked", [{ ...failed, state: "exhausted", message: "retry limit reached" }]),
-      ],
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 1),
     });
     let fixes = 0;
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: BASE,
+      base: repo.head,
       head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: throwingReviewer(),
       fixer: {
         async applyFix() {
@@ -214,25 +158,31 @@ describe("closeout gate", () => {
       },
     });
     expect(result.outcome).toBe("exhausted");
+    expect(result.summary).toContain("exhausted");
     expect(fixes).toBe(0);
     await repo.cleanup();
   });
 
-  test("blocks when closeout moves HEAD", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [{ ...template("accepted", [passed]), mutate: "commit" }],
+  test("blocks when the worktree HEAD moves during review", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
     });
     let fixes = 0;
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: BASE,
+      base: repo.head,
       head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
-      reviewer: throwingReviewer(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: {
+        async review() {
+          await exec("git", ["-C", repo.dir, "commit", "--allow-empty", "-m", "moved"]);
+          return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
+        },
+      },
       fixer: {
         async applyFix() {
           fixes += 1;
@@ -246,44 +196,18 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
-  test("blocks when the binary is not the pinned version", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "paws-pin-"));
-    const fake = await writeFakeCloseout(root, {
-      version: "9.9.9",
-      steps: [template("accepted", [passed])],
+  test("rejects a blank or oversized task id before running closeout", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysPass("test")]),
     });
-    const result = await runCloseoutGate({
-      worktree: root,
-      taskId: TASK,
-      base: BASE,
-      head: "b".repeat(40),
-      candidate: candidate(),
-      closeoutBin: fake.bin,
-      reviewer: throwingReviewer(),
-      fixer: {
-        async applyFix() {
-          return { ok: false, reason: "no" };
-        },
-      },
-    });
-    expect(result.outcome).toBe("blocked");
-    expect(result.summary).toContain("0.1.0");
-    const calls = await fake.invocations();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.argv).toEqual(["--version"]);
-    await rm(root, { recursive: true, force: true });
-  });
-
-  test("rejects a blank or oversized task id before spawning closeout", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "paws-task-"));
-    const fake = await writeFakeCloseout(root, { version: "0.1.0", steps: [] });
     const blank = await runCloseoutGate({
-      worktree: root,
+      worktree: repo.dir,
       taskId: " ",
-      base: BASE,
-      head: "b".repeat(40),
+      base: repo.head,
+      head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: throwingReviewer(),
       fixer: {
         async applyFix() {
@@ -292,12 +216,13 @@ describe("closeout gate", () => {
       },
     });
     const huge = await runCloseoutGate({
-      worktree: root,
+      worktree: repo.dir,
       taskId: "x".repeat(257),
-      base: BASE,
-      head: "b".repeat(40),
+      base: repo.head,
+      head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: throwingReviewer(),
       fixer: {
         async applyFix() {
@@ -307,46 +232,51 @@ describe("closeout gate", () => {
     });
     expect(blank.outcome).toBe("invalid");
     expect(huge.outcome).toBe("invalid");
-    expect(await fake.invocations()).toEqual([]);
-    await rm(root, { recursive: true, force: true });
+    await repo.cleanup();
   });
 
-  test("treats an exit and document mismatch as invalid", async () => {
-    const repo = await gitRepo();
-    const step = template("rejected", [failed]);
-    step.exit = 0;
-    const fake = await writeFakeCloseout(repo.root, { version: "0.1.0", steps: [step] });
+  test("blocks a malformed policy and does not ask for a fix", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": 'specVersion: "0.1"\nitems: [\n',
+    });
+    let fixes = 0;
     const result = await runCloseoutGate({
       worktree: repo.dir,
       taskId: TASK,
-      base: BASE,
+      base: repo.head,
       head: repo.head,
       candidate: candidate(),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
       reviewer: throwingReviewer(),
-      fixer: committingFixer(repo.dir, []),
+      fixer: {
+        async applyFix() {
+          fixes += 1;
+          return { ok: false, reason: "no" };
+        },
+      },
     });
-    expect(result.outcome).toBe("invalid");
-    expect(result.fixAttempts).toBe(0);
+    expect(result.outcome).toBe("blocked");
+    expect(fixes).toBe(0);
+    expect(result.summary).toContain("closeout.yaml");
     await repo.cleanup();
   });
 
   test("createCloseoutGate maps an accepted run onto the foundation verdict", async () => {
-    const repo = await gitRepo();
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [template("accepted", [passed])],
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysPass("test")]),
     });
     const gate = createCloseoutGate({
       candidate: candidate(),
       reviewer: throwingReviewer(),
       fixer: committingFixer(repo.dir, []),
-      closeoutBin: fake.bin,
+      home: repo.home,
+      pawsHome: repo.pawsHome,
     });
     const verdict = await gate.run({
       taskId: TASK,
       worktree: repo.dir,
-      baseSha: BASE,
+      baseSha: repo.head,
       headSha: repo.head,
       attempt: 1,
     });
@@ -356,7 +286,7 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
-  test("createCloseoutGate rejects a non-positive attempt before spawning", async () => {
+  test("createCloseoutGate rejects a non-positive attempt before running", async () => {
     const gate = createCloseoutGate({
       candidate: candidate(),
       reviewer: throwingReviewer(),
@@ -369,12 +299,55 @@ describe("closeout gate", () => {
     const verdict = await gate.run({
       taskId: TASK,
       worktree: "/tmp/none",
-      baseSha: BASE,
+      baseSha: "a".repeat(40),
       headSha: "b".repeat(40),
       attempt: 0,
     });
     expect(verdict.decision).toBe("invalid");
     expect(verdict.summary).toContain("attempt");
+  });
+
+  test("does not pass github or ssh credentials to a closeout command", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([
+        {
+          id: "env",
+          kind: "command",
+          gate: "beforePR",
+          exec: [
+            "bun",
+            "-e",
+            "if (process.env.GITHUB_TOKEN || process.env.SSH_AUTH_SOCK) process.exit(1)",
+          ],
+          timeoutSeconds: 30,
+        },
+      ]),
+    });
+    const previousToken = process.env.GITHUB_TOKEN;
+    const previousSsh = process.env.SSH_AUTH_SOCK;
+    process.env.GITHUB_TOKEN = "ghs_should_not_leak";
+    process.env.SSH_AUTH_SOCK = "/tmp/agent-ssh";
+    let result;
+    try {
+      result = await runCloseoutGate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+        fixer: committingFixer(repo.dir, []),
+      });
+    } finally {
+      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousToken;
+      if (previousSsh === undefined) delete process.env.SSH_AUTH_SOCK;
+      else process.env.SSH_AUTH_SOCK = previousSsh;
+    }
+    expect(result.outcome).toBe("accepted");
+    await repo.cleanup();
   });
 });
 
@@ -390,39 +363,129 @@ function throwingReviewer(): CodexReviewer {
   };
 }
 
-function committingFixer(dir: string, fixes: number[]): FixRunner {
+function committingFixer(dir: string, fixes: number[], file = "note.txt", body = "x\n"): FixRunner {
   return {
     async applyFix(request) {
       fixes.push(request.fixAttempt);
-      expect(request.summary).toContain("typecheck");
-      await exec("git", ["-C", dir, "commit", "--allow-empty", "-m", `fix ${request.fixAttempt}`]);
+      await writeFile(path.join(dir, file), body);
+      await exec("git", ["-C", dir, "add", file]);
+      await exec("git", ["-C", dir, "commit", "-m", `fix ${request.fixAttempt}`]);
       const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"]);
       return { ok: true, head: stdout.trim() };
     },
   };
 }
 
-async function gitRepo(): Promise<{
+function policy(items: unknown[], maxFailedAttempts = 3): string {
+  return [
+    'specVersion: "0.1"',
+    "retry:",
+    `  maxFailedAttemptsPerItem: ${maxFailedAttempts}`,
+    "  scope: task",
+    "items:",
+    ...items.flatMap((item) => yamlItem(item as Record<string, unknown>)),
+    "",
+  ].join("\n");
+}
+
+function yamlItem(item: Record<string, unknown>): string[] {
+  const lines = [
+    `  - id: ${String(item.id)}`,
+    `    kind: ${String(item.kind)}`,
+    "    gate: beforePR",
+  ];
+  if (item.kind === "command") {
+    const execArgs = item.exec as string[];
+    lines.push(
+      `    exec: [${execArgs.map((arg) => JSON.stringify(arg)).join(", ")}]`,
+      `    timeoutSeconds: ${String(item.timeoutSeconds)}`,
+    );
+  }
+  if (item.kind === "review") {
+    lines.push(
+      `    skill: ${String(item.skill)}`,
+      "    independence:",
+      "      differentSession: true",
+      "      differentModel: true",
+      "    failOn: P1",
+    );
+  }
+  return lines;
+}
+
+function commandUntilOk(id: string) {
+  return {
+    id,
+    kind: "command",
+    gate: "beforePR",
+    exec: ["bun", "-e", "if (!require('node:fs').existsSync('ok.txt')) process.exit(1)"],
+    timeoutSeconds: 30,
+  };
+}
+
+function alwaysFail(id: string) {
+  return {
+    id,
+    kind: "command",
+    gate: "beforePR",
+    exec: ["bun", "-e", "process.exit(1)"],
+    timeoutSeconds: 30,
+  };
+}
+
+function alwaysPass(id: string) {
+  return {
+    id,
+    kind: "command",
+    gate: "beforePR",
+    exec: ["bun", "-e", "process.exit(0)"],
+    timeoutSeconds: 30,
+  };
+}
+
+function reviewItem(id: string) {
+  return {
+    id,
+    kind: "review",
+    skill: ".agents/skills/adversarial-review/SKILL.md",
+  };
+}
+
+async function originRepo(files: Record<string, string>): Promise<{
   root: string;
   dir: string;
   head: string;
+  home: string;
+  pawsHome: string;
   cleanup: () => Promise<void>;
 }> {
   const root = await mkdtemp(path.join(tmpdir(), "paws-closeout-"));
+  const bare = path.join(root, "origin.git");
   const dir = path.join(root, "repo");
-  await mkdir(dir);
-  await exec("git", ["init", "-b", "main", dir]);
+  const home = path.join(root, "home");
+  const pawsHome = path.join(root, "paws");
+  await mkdir(home);
+  await mkdir(pawsHome);
+  await exec("git", ["init", "--bare", "-b", "main", bare]);
+  await exec("git", ["clone", bare, dir]);
   await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
   await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
   await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
-  await writeFile(path.join(dir, "README.md"), "paws\n");
-  await exec("git", ["-C", dir, "add", "README.md"]);
+  for (const [name, body] of Object.entries(files)) {
+    const target = path.join(dir, name);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, body);
+  }
+  await exec("git", ["-C", dir, "add", "."]);
   await exec("git", ["-C", dir, "commit", "-m", "init"]);
+  await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
   const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"]);
   return {
     root,
     dir,
     head: stdout.trim(),
+    home,
+    pawsHome,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }

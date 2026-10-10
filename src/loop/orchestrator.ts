@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { AskTeamHook } from "../acp";
 import { executeItem, git, removeWorktree, resolveAdapter, worktreePath } from "../acp";
-import { loadConfigFile } from "../config";
+import { loadConfigFile, type ImplementerName } from "../config";
 import {
   createCloseoutGate,
   evaluateCandidate,
@@ -90,7 +90,6 @@ export type OrchestratorOptions = {
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   github?: GitHubBinding | null;
-  closeoutBin?: string;
   launch?: AgentLaunch;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
@@ -319,11 +318,7 @@ export class Orchestrator {
       ).trim();
       saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
       markRunEnded(this.db, run.id, this.now());
-      await this.verify(finished, executed.worktreePath, base, head, {
-        session: run.id,
-        model: "claude-code",
-        provider: "anthropic",
-      });
+      await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
       if (current && current.state !== "cancelled" && !current.cancelRequested) {
@@ -370,7 +365,7 @@ export class Orchestrator {
       fixer,
       recorder,
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
-      ...(this.options.closeoutBin ? { closeoutBin: this.options.closeoutBin } : {}),
+      ...this.closeoutHome(),
     });
     const verdict = await gate.run({
       taskId: itemPathId(item),
@@ -436,13 +431,9 @@ export class Orchestrator {
       taskId: itemPathId(item),
       base,
       head,
-      candidate: {
-        session: item.currentRunId ?? item.id,
-        model: "claude-code",
-        provider: "anthropic",
-      },
+      candidate: this.candidateFor(item.currentRunId ?? item.id),
       reviewer: createAcpCodexReviewer(deps),
-      ...(this.options.closeoutBin ? { closeoutBin: this.options.closeoutBin } : {}),
+      ...this.closeoutHome(),
     });
     if (evaluation.outcome !== "accepted") {
       this.post(
@@ -528,13 +519,9 @@ export class Orchestrator {
           taskId: itemPathId(item),
           base: input.base,
           head: input.head,
-          candidate: {
-            session: item.currentRunId ?? item.id,
-            model: "claude-code",
-            provider: "anthropic",
-          },
+          candidate: this.candidateFor(item.currentRunId ?? item.id),
           reviewer,
-          ...(this.options.closeoutBin ? { closeoutBin: this.options.closeoutBin } : {}),
+          ...this.closeoutHome(),
         });
         return {
           accepted: evaluation.outcome === "accepted",
@@ -981,6 +968,25 @@ export class Orchestrator {
     return null;
   }
 
+  private candidateFor(session: string): CandidateIdentity {
+    return { session, ...implementerIdentity(this.implementerName()) };
+  }
+
+  private closeoutHome(): { home?: string; pawsHome: string } {
+    return {
+      ...(this.options.home !== undefined ? { home: this.options.home } : {}),
+      pawsHome: this.options.pawsRoot,
+    };
+  }
+
+  private implementerName(): ImplementerName {
+    try {
+      return loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents.implementer;
+    } catch {
+      return "claude";
+    }
+  }
+
   private launchAgent: AgentLaunch = (input) => {
     const launched = this.options.launch?.(input) ?? {};
     if (launched.command) return launched;
@@ -1000,6 +1006,16 @@ export class Orchestrator {
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
+}
+
+const IMPLEMENTER_IDENTITY: Record<ImplementerName, { model: string; provider: string }> = {
+  claude: { model: "claude", provider: "anthropic" },
+  grok: { model: "grok", provider: "xai" },
+  codex: { model: "codex", provider: "openai" },
+};
+
+function implementerIdentity(name: ImplementerName): { model: string; provider: string } {
+  return IMPLEMENTER_IDENTITY[name];
 }
 
 function markRunEnded(db: Database, runId: string, now: number): void {

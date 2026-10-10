@@ -8,7 +8,6 @@ import { mirrorPath } from "../src/acp";
 import { createTokenStore, GITHUB_REAUTH_MESSAGE, PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/auth";
 import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
-import { closeoutBinPath } from "../src/install";
 import { linearTokenPath } from "../src/linear";
 import { runSetup, type SetupFetch } from "../src/setup";
 
@@ -44,7 +43,6 @@ describe("paws setup", () => {
         githubAuth: "gh",
         trackerKind: "linear",
         repo: "acme/widgets",
-        closeoutBin: closeoutBinPath(scene.home),
         checkout: scene.checkout,
         maxTurns: DEFAULT_MAX_TURNS,
         maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
@@ -62,7 +60,6 @@ describe("paws setup", () => {
       linearSecret: "secrets/linear-api-key",
       githubAuth: "gh",
       repo: "acme/widgets",
-      closeoutBin: closeoutBinPath(scene.home),
       checkout: scene.checkout,
       maxTurns: DEFAULT_MAX_TURNS,
       maxAwakeMs: DEFAULT_MAX_AWAKE_MS,
@@ -72,8 +69,6 @@ describe("paws setup", () => {
     expect(readFileSync(secretPath, "utf8")).toBe(`${API_KEY}\n`);
     expect(statSync(secretPath).mode & 0o777).toBe(0o600);
     expect(statSync(scene.paths.secretsDir).mode & 0o777).toBe(0o700);
-    expect(readFileSync(closeoutBinPath(scene.home))).toEqual(readFileSync(scene.closeoutSource));
-    expect(statSync(closeoutBinPath(scene.home)).mode & 0o777).toBe(0o755);
     expect(readFileSync(join(scene.checkout, ".agents", "closeout.yaml"), "utf8")).toContain(
       'exec: ["bun", "test"]',
     );
@@ -122,8 +117,6 @@ describe("paws setup", () => {
       scene.home,
       "--checkout",
       scene.checkout,
-      "--closeout-path",
-      scene.closeoutSource,
       "--linear-mode",
       "agent",
       "--linear-client-id",
@@ -278,26 +271,6 @@ exit 1
         tweak: { gh: pushDenied },
         line: "gh login does not have push permission on acme/widgets",
       },
-      {
-        name: "closeout has no release assets",
-        tweak: {
-          args: (scene) =>
-            happyArgs(scene).filter(
-              (arg) => arg !== scene.closeoutSource && arg !== "--closeout-path",
-            ),
-        },
-        line: "pmdroid/closeout has no published release assets yet. Re-run with --closeout-path set to a local closeout binary.",
-      },
-      {
-        name: "closeout path missing",
-        tweak: {
-          args: (scene) => [
-            ...happyArgs(scene).filter((arg) => arg !== scene.closeoutSource),
-            "/tmp/paws-closeout-missing",
-          ],
-        },
-        line: "--closeout-path is not a file (/tmp/paws-closeout-missing). Pass a local closeout binary.",
-      },
     ];
 
     for (const item of cases) {
@@ -338,7 +311,6 @@ type Scene = {
   home: string;
   checkout: string;
   bin: string;
-  closeoutSource: string;
   mirror: string;
   paths: ReturnType<typeof pawsPaths>;
   linear: FakeLinear;
@@ -448,9 +420,6 @@ async function arrange(tweak: Tweak = {}): Promise<Scene> {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   mkdirSync(checkout, { recursive: true });
-  const closeoutSource = join(root, "closeout-local");
-  writeFileSync(closeoutSource, "#!/bin/sh\necho closeout 0.1.0\n", { mode: 0o755 });
-  chmodSync(closeoutSource, 0o755);
 
   const bun =
     tweak.bun === undefined
@@ -488,7 +457,6 @@ async function arrange(tweak: Tweak = {}): Promise<Scene> {
     home,
     checkout,
     bin,
-    closeoutSource,
     mirror: mirrorPath(home, "acme", "widgets"),
     paths: pawsPaths(home),
     linear,
@@ -506,8 +474,6 @@ function happyArgs(scene: Scene): string[] {
     scene.checkout,
     "--linear-api-key",
     API_KEY,
-    "--closeout-path",
-    scene.closeoutSource,
   ];
 }
 
@@ -547,7 +513,6 @@ function originUrl(scene: Scene): string {
 function stamp(scene: Scene, secretNames = ["linear-api-key"]): Record<string, string | number> {
   const files = [
     scene.paths.configFile,
-    closeoutBinPath(scene.home),
     join(scene.checkout, ".agents", "closeout.yaml"),
     ...secretNames.map((name) => join(scene.paths.secretsDir, name)),
   ];
@@ -648,17 +613,7 @@ describe("paws setup github", () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const stderr: string[] = [];
     const code = await runSetup(
-      [
-        "--yes",
-        "--home",
-        scene.home,
-        "--checkout",
-        scene.checkout,
-        "--implementer",
-        "claude",
-        "--closeout-path",
-        scene.closeoutSource,
-      ],
+      ["--yes", "--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
       {
         env: setupEnv(scene),
         cwd: scene.checkout,
@@ -689,16 +644,7 @@ describe("paws setup github", () => {
     const stdout: string[] = [];
     const lines = ["", "1"];
     const result = await runSetup(
-      [
-        "--home",
-        scene.home,
-        "--checkout",
-        scene.checkout,
-        "--implementer",
-        "claude",
-        "--closeout-path",
-        scene.closeoutSource,
-      ],
+      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
       {
         env: setupEnv(scene, gitLog),
         cwd: scene.checkout,
@@ -777,8 +723,6 @@ describe("paws setup github", () => {
         scene.checkout,
         "--implementer",
         "claude",
-        "--closeout-path",
-        scene.closeoutSource,
       ],
       {
         env: setupEnv(scene, gitLog),

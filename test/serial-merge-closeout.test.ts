@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "bun:test";
-import { evaluateCandidate, writeFakeCloseout, type Evaluation } from "../src/closeout";
+import { evaluateCandidate, type Evaluation } from "../src/closeout";
 import {
   INSTALLATION_PERMISSIONS,
   serialMerge,
@@ -27,29 +27,9 @@ const PRIVATE_KEY = privateKey;
  * the reverify callback is the seam between them.
  */
 describe("serial merge re-runs closeout", () => {
-  test("re-runs the pinned closeout CLI on the rebased head", async () => {
+  test("re-runs native closeout on the rebased head", async () => {
     const repo = await oneClone();
     await commitFile(repo.work, "file.txt", "checked\n");
-    const fake = await writeFakeCloseout(repo.root, {
-      version: "0.1.0",
-      steps: [
-        {
-          exit: 0,
-          decision: {
-            specVersion: "0.1",
-            decision: "accepted",
-            gate: "beforePR",
-            base: "a".repeat(40),
-            head: "b".repeat(40),
-            candidate: { session: "impl", model: "claude", provider: "anthropic" },
-            policy: { path: null, digest: null, absent: true },
-            items: [],
-            warnings: [],
-            message: "no closeout policy",
-          },
-        },
-      ],
-    });
     const client = mergingClient(repo.bare);
     let reviewed = 0;
     const reportDir = path.join(repo.root, "report");
@@ -69,10 +49,11 @@ describe("serial merge re-runs closeout", () => {
           reviewer: {
             async review() {
               reviewed += 1;
-              return { session: "codex", model: "gpt-5-codex", provider: "openai", findings: [] };
+              return { session: "codex", model: "codex", provider: "openai", findings: [] };
             },
           },
-          closeoutBin: fake.bin,
+          home: repo.home,
+          pawsHome: repo.pawsHome,
         });
         await mkdir(reportDir, { recursive: true });
         await writeFile(
@@ -89,13 +70,14 @@ describe("serial merge re-runs closeout", () => {
     });
     expect(result.merged).toBe(true);
     expect(reviewed).toBe(0);
-    const calls = (await fake.invocations()).filter((call) => call.argv[0] === "run");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.argv).toContain("--task");
-    expect(calls[0]?.argv).toContain("ENG-5");
-    expect(calls[0]?.argv).toContain("--json");
-    const report = await readFile(path.join(reportDir, "closeout-reverify.json"), "utf8");
-    expect(report).toContain("accepted");
+    const report = JSON.parse(
+      await readFile(path.join(reportDir, "closeout-reverify.json"), "utf8"),
+    ) as { evaluation: Evaluation };
+    expect(report.evaluation.outcome).toBe("accepted");
+    expect(report.evaluation.decision?.candidate.task).toBe("ENG-5");
+    expect(report.evaluation.decision?.items).toEqual([
+      expect.objectContaining({ id: "test", kind: "command", state: "passed" }),
+    ]);
     await repo.cleanup();
   });
 });
@@ -194,22 +176,50 @@ async function oneClone(): Promise<{
   root: string;
   bare: string;
   work: string;
+  home: string;
+  pawsHome: string;
   cleanup: () => Promise<void>;
 }> {
   const root = await mkdtemp(path.join(tmpdir(), "paws-gh-"));
   const bare = path.join(root, "origin.git");
   const work = path.join(root, "work");
+  const home = path.join(root, "home");
+  const pawsHome = path.join(root, "paws");
+  await mkdir(home);
+  await mkdir(pawsHome);
   await exec("git", ["init", "--bare", "-b", "main", bare]);
   await exec("git", ["clone", bare, work]);
   await gitIdentity(work);
+  await mkdir(path.join(work, ".agents"), { recursive: true });
+  await writeFile(
+    path.join(work, ".agents", "closeout.yaml"),
+    `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "-e", "process.exit(0)"]
+    timeoutSeconds: 30
+`,
+  );
   await writeFile(
     path.join(work, "file.txt"),
     `${Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join("\n")}\n`,
   );
-  await exec("git", ["-C", work, "add", "file.txt"]);
+  await exec("git", ["-C", work, "add", "."]);
   await exec("git", ["-C", work, "commit", "-m", "init"]);
   await exec("git", ["-C", work, "push", "origin", "HEAD:main"]);
-  return { root, bare, work, cleanup: () => rm(root, { recursive: true, force: true }) };
+  return {
+    root,
+    bare,
+    work,
+    home,
+    pawsHome,
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
 }
 
 async function commitFile(dir: string, file: string, contents: string): Promise<void> {

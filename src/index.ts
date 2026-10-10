@@ -52,7 +52,7 @@ import {
 } from "./ghcomments";
 import { createFetchGitHubClient, githubHttpsUrl, type GitHubTokenProvider } from "./github";
 import { startHost } from "./host";
-import { closeoutBinPath, grokLoginStatus } from "./install";
+import { grokLoginStatus } from "./install";
 import {
   createInboxStore,
   createIntakePollSource,
@@ -115,7 +115,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const useGitHub = runtime.trackerKind !== "linear";
   const auth = repository === null ? null : authProvider(runtime, repository);
   const github = githubBinding(auth);
-  const closeoutBin = runtime.closeoutBin ?? closeoutBinPath(paths.home);
   const webhooks = useLinear && runtime.webhooks;
   const channel: "comments" | "agent-session" =
     useLinear && runtime.linearMode === "agent-session" ? "agent-session" : "comments";
@@ -201,7 +200,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repository,
         github,
-        closeoutBin,
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
         ...(docker ? { docker } : {}),

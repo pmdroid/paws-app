@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
-import { writeFakeCloseout, type FakeStep } from "../src/closeout";
 import { FakeClock, JOB_KIND, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
 import { createFakeGitHubComments } from "../src/ghcomments";
@@ -62,21 +61,7 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
     baseUrl: rest.origin,
     clock,
   });
-  const closeout = await writeFakeCloseout(layout.root, {
-    version: "0.1.0",
-    steps: [
-      decision("rejected", [failed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-    ],
-  });
+  const prompts: string[] = [];
   const github = createFakeGitHub();
   const apiPaths: string[] = [];
   const client = githubClient(layout.bare, github, apiPaths);
@@ -86,6 +71,7 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
   const outbox = new OutboxDispatcher(db, systemClock);
   let scripts = 0;
   const launch: AgentLaunch = (input) => {
+    prompts.push(input.prompt);
     scripts += 1;
     const scriptPath = path.join(layout.root, `gh-script-${scripts}.json`);
     writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
@@ -110,7 +96,6 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
       client,
       tokenProvider: gitHostToken(provider),
     },
-    closeoutBin: closeout.bin,
     launch,
     channel: "comments",
   });
@@ -197,6 +182,12 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
       "Closes #4",
     ]);
     expect(github.opened[0]?.body).toContain("Fix attempts: 1");
+    expect(prompts.some((prompt) => prompt.includes("P1") && prompt.includes("failOn"))).toBe(true);
+    const history = await readFile(
+      path.join(layout.pawsRoot, "runs", "gh-pmdroid-paws-demo-2", "closeout-history.jsonl"),
+      "utf8",
+    );
+    expect(history).toContain("failOn P1");
     expect(github.merged).toHaveLength(3);
     expect(comments.commentUpdates).toBeGreaterThan(0);
     const question = comments.comments.find((comment) => comment.body.includes("<!-- paws:q:"));
@@ -265,10 +256,6 @@ test("linear and github issues share one queue and report to their own tracker",
       subIssues: [],
     },
   ]);
-  const closeout = await writeFakeCloseout(layout.root, {
-    version: "0.1.0",
-    steps: Array.from({ length: 16 }, () => decision("accepted", [passed])),
-  });
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github, []);
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -307,7 +294,6 @@ test("linear and github issues share one queue and report to their own tracker",
       client,
       tokenProvider: gitHostToken(provider),
     },
-    closeoutBin: closeout.bin,
     launch,
     channel: "comments",
   });
@@ -473,57 +459,56 @@ function heldSleeper(): Sleeper {
   };
 }
 
-const passed = { id: "typecheck", kind: "command", state: "passed", message: "exited 0" };
-const failed = { id: "typecheck", kind: "command", state: "failed", message: "exited 1" };
-
-function decision(name: "accepted" | "rejected", items: unknown[]): FakeStep {
-  return {
-    exit: name === "accepted" ? 0 : 1,
-    decision: {
-      specVersion: "0.1",
-      decision: name,
-      gate: "beforePR",
-      base: "a".repeat(40),
-      head: "b".repeat(40),
-      candidate: { task: "ENG-2", session: "impl-session", model: "claude", provider: "anthropic" },
-      policy: {
-        path: ".agents/closeout.yaml",
-        digest: `sha256:${"c".repeat(64)}`,
-        absent: false,
-      },
-      items,
-      warnings: [],
-    },
-  };
-}
+const P1_FINDING = JSON.stringify([
+  {
+    severity: "P1",
+    location: "src/export.ts",
+    explanation: "export drops every row",
+    evidence: "the seeded test fails until the fix lands",
+  },
+]);
 
 type DemoSeed = {
   parent: { title: string; description: string };
   children: Array<{ slug: string; title: string; blockedBy: string[] }>;
 };
 
+function reviewText(worktree: string, p1: boolean): string {
+  if (p1 && !existsSync(path.join(worktree, "fixed.txt"))) return P1_FINDING;
+  return "[]";
+}
+
+function reviewScript(text: string): FakeScript {
+  return {
+    steps: [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text },
+        },
+      },
+      { type: "end", stopReason: "end_turn" },
+    ],
+  };
+}
+
 function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
   if (input.purpose === "review") {
-    return {
-      steps: [
-        {
-          type: "update",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "[]" },
-          },
-        },
-        { type: "end", stopReason: "end_turn" },
-      ],
-    };
+    return reviewScript(reviewText(input.worktree, input.itemId.endsWith("-2")));
   }
   if (input.purpose === "fix") {
     return {
       steps: [
         {
           type: "fs_write",
-          path: path.join(input.worktree, "fix.txt"),
+          path: path.join(input.worktree, "fixed.txt"),
           content: "fixed\n",
+        },
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "ok.txt"),
+          content: "ok\n",
         },
         { type: "end", stopReason: "end_turn" },
       ],
@@ -542,12 +527,22 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
           path: path.join(input.worktree, "archived.txt"),
           content: "yes\n",
         },
+        {
+          type: "fs_write",
+          path: path.join(input.worktree, "ok.txt"),
+          content: "ok\n",
+        },
         { type: "end", stopReason: "end_turn" },
       ],
     };
   }
   return {
     steps: [
+      {
+        type: "fs_write",
+        path: path.join(input.worktree, "ok.txt"),
+        content: "ok\n",
+      },
       {
         type: "fs_write",
         path: path.join(input.worktree, `${input.itemId}.txt`),
@@ -559,22 +554,14 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
 }
 
 function plainScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
-  if (input.purpose === "review") {
-    return {
-      steps: [
-        {
-          type: "update",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "[]" },
-          },
-        },
-        { type: "end", stopReason: "end_turn" },
-      ],
-    };
-  }
+  if (input.purpose === "review") return reviewScript("[]");
   return {
     steps: [
+      {
+        type: "fs_write",
+        path: path.join(input.worktree, "ok.txt"),
+        content: "ok\n",
+      },
       {
         type: "fs_write",
         path: path.join(input.worktree, `${input.itemId}.txt`),
@@ -699,8 +686,8 @@ async function repoLayout(): Promise<{
   await exec("git", ["init", "--bare", "-b", "main", bare]);
   await exec("git", ["clone", bare, seed]);
   await gitIdentity(seed);
-  await writeFile(path.join(seed, "README.md"), "paws demo\n");
-  await exec("git", ["-C", seed, "add", "README.md"]);
+  await seedCloseoutPolicy(seed);
+  await exec("git", ["-C", seed, "add", "."]);
   await exec("git", ["-C", seed, "commit", "-m", "init"]);
   await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
   return {
@@ -716,6 +703,58 @@ async function gitIdentity(dir: string): Promise<void> {
   await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
   await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
   await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
+}
+
+const CLOSEOUT_POLICY = `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test", "check.test.ts"]
+    timeoutSeconds: 60
+  - id: adversarial-review
+    kind: review
+    gate: beforePR
+    skill: .agents/skills/adversarial-review/SKILL.md
+    independence:
+      differentSession: true
+      differentModel: true
+    failOn: P1
+`;
+
+const REVIEW_SKILL = `---
+name: adversarial-review
+description: Review the candidate. Report findings. Do not decide acceptance.
+---
+
+# Review
+
+Report findings. An empty list means the change is fine.
+`;
+
+const SEEDED_TEST = `import { expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+
+test("seeded check", () => {
+  expect(existsSync("ok.txt")).toBe(true);
+  if (existsSync("header.txt")) {
+    expect(readFileSync("ok.txt", "utf8").includes("header")).toBe(true);
+  }
+});
+`;
+
+async function seedCloseoutPolicy(seed: string): Promise<void> {
+  await mkdir(path.join(seed, ".agents", "skills", "adversarial-review"), { recursive: true });
+  await writeFile(path.join(seed, ".agents", "closeout.yaml"), CLOSEOUT_POLICY);
+  await writeFile(
+    path.join(seed, ".agents", "skills", "adversarial-review", "SKILL.md"),
+    REVIEW_SKILL,
+  );
+  await writeFile(path.join(seed, "check.test.ts"), SEEDED_TEST);
+  await writeFile(path.join(seed, "README.md"), "paws demo\n");
 }
 
 function stateOf(db: Database, identifier: string): string | null {

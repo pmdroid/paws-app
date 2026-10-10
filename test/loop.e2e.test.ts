@@ -10,7 +10,6 @@ import type { Database } from "bun:sqlite";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
-import { writeFakeCloseout, type FakeStep } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
 import {
@@ -47,18 +46,6 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     },
   ]);
   tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
-  const closeout = await writeFakeCloseout(layout.root, {
-    version: "0.1.0",
-    steps: [
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("rejected", [failed, missingReview]),
-      { exit: 0 },
-      decision("rejected", [failed, passedReview]),
-      decision("accepted", [passed, passedReview]),
-      decision("accepted", [passed, passedReview]),
-    ],
-  });
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -97,7 +84,6 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       privateKeyPem: PRIVATE_KEY,
       client,
     },
-    closeoutBin: closeout.bin,
     launch,
   });
 
@@ -222,18 +208,6 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
       await mode.askQuestion(question);
     },
   });
-  const closeout = await writeFakeCloseout(layout.root, {
-    version: "0.1.0",
-    steps: [
-      decision("rejected", [failed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-    ],
-  });
   const github = createFakeGitHub();
   const apiPaths: string[] = [];
   const client = githubClient(layout.bare, github, apiPaths);
@@ -273,7 +247,6 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
       client,
       tokenProvider,
     },
-    closeoutBin: closeout.bin,
     launch,
     channel: "comments",
   });
@@ -413,7 +386,6 @@ test("stop from Linear cancels the live run", async () => {
     home: layout.home,
     tracker,
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    closeoutBin: "/bin/false",
     launch,
   });
   const running = (async () => {
@@ -436,6 +408,64 @@ test("stop from Linear cancels the live run", async () => {
   db.close();
   await layout.cleanup();
 }, 20_000);
+
+test("a missing reviewer blocks the item and needs a person", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "iss-7",
+      identifier: "ENG-7",
+      title: "Needs a reviewer",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const launch: AgentLaunch = (input) => {
+    if (input.purpose === "review") return { command: "/bin/false", args: [] };
+    const scriptPath = path.join(layout.root, "reviewer-missing.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }],
+      }),
+    );
+    return {
+      command: process.execPath,
+      args: [fakeAgent],
+      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+    };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    launch,
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-7"));
+    const deadline = Date.now() + 40_000;
+    while (Date.now() < deadline && stateOf(db, "ENG-7") !== "failed") {
+      const job = await jobs.tick();
+      if (job === null) await Bun.sleep(20);
+    }
+    expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("failed");
+    expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    const notes = tracker.progress.map((update) => update.body).join("\n");
+    expect(notes).toContain("Closeout: blocked");
+    expect(notes).toContain("reviewer failed");
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+}, 60_000);
 
 test("grok implementer runs the demo epic with ask_team and one Closeout fix", async () => {
   const layout = await repoLayout();
@@ -468,18 +498,6 @@ exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
     },
   ]);
   tracker.deps.set("iss-2", [{ blockerLinearIssueId: "iss-2", blockedLinearIssueId: "iss-3" }]);
-  const closeout = await writeFakeCloseout(layout.root, {
-    version: "0.1.0",
-    steps: [
-      decision("accepted", [passed]),
-      decision("accepted", [passed]),
-      decision("rejected", [failed, missingReview]),
-      { exit: 0 },
-      decision("rejected", [failed, passedReview]),
-      decision("accepted", [passed, passedReview]),
-      decision("accepted", [passed, passedReview]),
-    ],
-  });
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
@@ -529,7 +547,6 @@ exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
       privateKeyPem: PRIVATE_KEY,
       client,
     },
-    closeoutBin: closeout.bin,
     launch,
   });
 
@@ -607,54 +624,34 @@ exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
   }
 }, 90_000);
 
-const passed = { id: "typecheck", kind: "command", state: "passed", message: "exited 0" };
-const failed = { id: "typecheck", kind: "command", state: "failed", message: "exited 1" };
-const missingReview = {
-  id: "adversarial-review",
-  kind: "review",
-  state: "missing",
-  message: "no evidence for this candidate and policy",
-};
-const passedReview = { ...missingReview, state: "passed", message: "no failing findings" };
-
-function decision(name: "accepted" | "rejected", items: unknown[]): FakeStep {
-  return {
-    exit: name === "accepted" ? 0 : 1,
-    decision: {
-      specVersion: "0.1",
-      decision: name,
-      gate: "beforePR",
-      base: "a".repeat(40),
-      head: "b".repeat(40),
-      candidate: { task: "ENG-2", session: "impl-session", model: "claude", provider: "anthropic" },
-      policy: {
-        path: ".agents/closeout.yaml",
-        digest: `sha256:${"c".repeat(64)}`,
-        absent: false,
-      },
-      items,
-      warnings: [],
-    },
-  };
-}
-
 type DemoSeed = {
   parent: { title: string; description: string };
   children: Array<{ slug: string; title: string; blockedBy: string[] }>;
 };
 
-function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
-  if (input.purpose === "fix") {
-    return {
-      steps: [
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "fix.txt"),
-          content: "fixed\n",
+function emptyReview(): FakeScript {
+  return {
+    steps: [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "[]" },
         },
-        { type: "end", stopReason: "end_turn" },
-      ],
-    };
+      },
+      { type: "end", stopReason: "end_turn" },
+    ],
+  };
+}
+
+function writeOk(worktree: string, content = "ok\n"): FakeScript["steps"][number] {
+  return { type: "fs_write", path: path.join(worktree, "ok.txt"), content };
+}
+
+function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+  if (input.purpose === "review") return emptyReview();
+  if (input.purpose === "fix") {
+    return { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
   }
   if (input.itemId === "ENG-4") {
     return {
@@ -686,30 +683,10 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
 }
 
 function scriptFor(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
-  if (input.purpose === "review") {
-    return {
-      steps: [
-        {
-          type: "update",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "[]" },
-          },
-        },
-        { type: "end", stopReason: "end_turn" },
-      ],
-    };
-  }
+  if (input.purpose === "review") return emptyReview();
   if (input.purpose === "fix") {
     return {
-      steps: [
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "fix.txt"),
-          content: "fixed\n",
-        },
-        { type: "end", stopReason: "end_turn" },
-      ],
+      steps: [writeOk(input.worktree, "header\n"), { type: "end", stopReason: "end_turn" }],
     };
   }
   if (input.itemId === "ENG-2") {
@@ -736,6 +713,7 @@ function scriptFor(input: { purpose: string; itemId: string; worktree: string })
           path: path.join(input.worktree, "export.txt"),
           content: "archived=yes\n",
         },
+        writeOk(input.worktree),
         {
           type: "update",
           update: {
@@ -905,8 +883,8 @@ async function repoLayout(): Promise<{
   await exec("git", ["init", "--bare", "-b", "main", bare]);
   await exec("git", ["clone", bare, seed]);
   await gitIdentity(seed);
-  await writeFile(path.join(seed, "README.md"), "paws demo\n");
-  await exec("git", ["-C", seed, "add", "README.md"]);
+  await seedCloseoutPolicy(seed);
+  await exec("git", ["-C", seed, "add", "."]);
   await exec("git", ["-C", seed, "commit", "-m", "init"]);
   await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
   return {
@@ -922,6 +900,58 @@ async function gitIdentity(dir: string): Promise<void> {
   await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
   await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
   await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
+}
+
+const CLOSEOUT_POLICY = `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test", "check.test.ts"]
+    timeoutSeconds: 60
+  - id: adversarial-review
+    kind: review
+    gate: beforePR
+    skill: .agents/skills/adversarial-review/SKILL.md
+    independence:
+      differentSession: true
+      differentModel: true
+    failOn: P1
+`;
+
+const REVIEW_SKILL = `---
+name: adversarial-review
+description: Review the candidate. Report findings. Do not decide acceptance.
+---
+
+# Review
+
+Report findings. An empty list means the change is fine.
+`;
+
+const SEEDED_TEST = `import { expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+
+test("seeded check", () => {
+  expect(existsSync("ok.txt")).toBe(true);
+  if (existsSync("header.txt")) {
+    expect(readFileSync("ok.txt", "utf8").includes("header")).toBe(true);
+  }
+});
+`;
+
+async function seedCloseoutPolicy(seed: string): Promise<void> {
+  await mkdir(path.join(seed, ".agents", "skills", "adversarial-review"), { recursive: true });
+  await writeFile(path.join(seed, ".agents", "closeout.yaml"), CLOSEOUT_POLICY);
+  await writeFile(
+    path.join(seed, ".agents", "skills", "adversarial-review", "SKILL.md"),
+    REVIEW_SKILL,
+  );
+  await writeFile(path.join(seed, "check.test.ts"), SEEDED_TEST);
+  await writeFile(path.join(seed, "README.md"), "paws demo\n");
 }
 
 function stateOf(db: Database, identifier: string): string | null {
