@@ -24,6 +24,8 @@ const MODULES = [
   "setup",
   "sandbox",
   "auth",
+  "ghissues",
+  "ghcomments",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -50,6 +52,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: ["config", "core", "linear", "comments", "github", "acp", "install", "auth"],
   auth: ["config", "github"],
+  ghissues: ["core", "linear", "intake"],
+  ghcomments: ["comments", "core", "linear"],
   sandbox: [],
 };
 

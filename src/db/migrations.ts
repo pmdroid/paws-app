@@ -7,6 +7,7 @@ export type Migration = {
  * Append-only. Shipped ids are never edited; add the next numbered migration.
  * Epic and work item landed in 002. Recovery columns, runs, and wake rows are 003.
  * Open questions for ask_team are 004.
+ * GitHub issue poll cursors and ETags are 005.
  */
 export const migrations: readonly Migration[] = [
   {
@@ -193,6 +194,31 @@ CREATE TABLE question (
   answered_at INTEGER
 ) STRICT;
 CREATE INDEX question_session_open ON question (session_id, status);
+`,
+  },
+  {
+    id: "005_github_poll",
+    sql: `
+CREATE TABLE github_poll_state (
+  repo TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('issues', 'comments')),
+  cursor_ms INTEGER NOT NULL,
+  etag TEXT,
+  url TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, kind)
+) STRICT;
+
+CREATE TABLE github_seen (
+  dedupe_key TEXT PRIMARY KEY,
+  seen_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE github_label_state (
+  issue_key TEXT PRIMARY KEY,
+  labeled INTEGER NOT NULL CHECK (labeled IN (0, 1)),
+  updated_at INTEGER NOT NULL
+) STRICT;
 `,
   },
 ];
