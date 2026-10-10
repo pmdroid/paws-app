@@ -1,10 +1,9 @@
 /**
  * Closeout draft 0.1 seam.
  *
- * Public surface is the frozen types plus the spec pin (`SPEC_VERSION`,
- * `SPEC_COMMIT`). The review port is re-exported from `./review` so other
- * modules reach it through this index. Policy loading, command execution,
- * and the acceptance decision stay in their own modules and import these types.
+ * Public surface is the frozen types, the spec pin (`SPEC_VERSION`,
+ * `SPEC_COMMIT`), and the operations the gate calls: `validate`, `run`,
+ * `addReview`, `decision`, and `digest`.
  */
 
 export { SPEC_COMMIT, SPEC_VERSION } from "./types";
@@ -61,6 +60,17 @@ export type {
   Severity,
   SpecVersion,
 } from "./types";
+
+export { addReview, decision, digest, run, validate } from "./facade";
+export type {
+  AddReviewInput,
+  AddReviewResult,
+  DecisionInput,
+  DigestResult,
+  ReviewIntake,
+  RunRequest,
+  ValidateResult,
+} from "./facade";
 
 export { createReviewer, formatFixFeedback } from "./review/index";
 export type {
