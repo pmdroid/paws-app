@@ -221,4 +221,10 @@ CREATE TABLE github_label_state (
 ) STRICT;
 `,
   },
+  {
+    id: "006_work_brief",
+    sql: `
+ALTER TABLE work_item ADD COLUMN brief TEXT CHECK (brief IS NULL OR json_valid(brief));
+`,
+  },
 ];

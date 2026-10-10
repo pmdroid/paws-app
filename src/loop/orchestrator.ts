@@ -64,6 +64,7 @@ import {
   type AgentLaunch,
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
+import { renderWorkBrief } from "./brief";
 
 export type GitHubBinding = {
   appId: string;
@@ -262,6 +263,7 @@ export class Orchestrator {
     const prompt = implementPrompt({
       identifier: item.linearIdentifier,
       title: item.title,
+      brief: renderWorkBrief(item.brief),
       ...(handoff ? { handoff } : {}),
     });
     const launched = this.launchAgent({
@@ -346,7 +348,7 @@ export class Orchestrator {
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const reviewer = createAcpCodexReviewer(deps);
     const fixer = createAcpFixRunner(deps);
     const recorder: VerdictRecorder = {
@@ -425,7 +427,7 @@ export class Orchestrator {
       this.fail(item, "reverify", message);
       return;
     }
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const evaluation = await evaluateCandidate({
       worktree,
       taskId: itemPathId(item),
@@ -499,7 +501,7 @@ export class Orchestrator {
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const reviewer = createAcpCodexReviewer(deps);
     const merged = await serialMerge({
       worktree,
@@ -896,8 +898,9 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
-  private agentDeps(): {
+  private agentDeps(item: WorkItemRecord): {
     pawsRoot: string;
+    brief: string;
     home?: string;
     launch: AgentLaunch;
     docker?: { proxyUrl: string; image?: string; bin?: string };
@@ -906,6 +909,7 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
+      brief: renderWorkBrief(item.brief),
       ...(this.options.docker ? { docker: this.options.docker } : {}),
     };
   }

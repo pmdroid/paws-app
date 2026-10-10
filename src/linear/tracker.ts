@@ -17,7 +17,7 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     title
     description
     children(first: 50, after: $after) {
-      nodes { id identifier title subIssueSortOrder }
+      nodes { id identifier title description subIssueSortOrder }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -94,6 +94,7 @@ export function createLinearTracker(client: LinearClient): TrackerAdapter {
             linearIssueId: id,
             identifier,
             title,
+            description: readString(node, "description"),
             sort: readNumber(node, "subIssueSortOrder"),
           });
         }

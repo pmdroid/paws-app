@@ -8,6 +8,7 @@ import {
   type Checkpoint,
   type WorkItemEvent,
   type WorkItemState,
+  type WorkBrief,
 } from "../core";
 import { cancelOpenJobs } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
@@ -34,6 +35,7 @@ export type WorkItemRecord = {
   cancelRequested: boolean;
   sessionKey: string | null;
   currentRunId: string | null;
+  brief: WorkBrief | null;
 };
 
 type ItemSql = {
@@ -56,6 +58,7 @@ type ItemSql = {
   cancel_requested: number;
   session_key: string | null;
   current_run_id: string | null;
+  brief: string | null;
 };
 
 export class TransitionRejectedError extends Error {
@@ -317,6 +320,7 @@ function mapItem(row: ItemSql): WorkItemRecord {
     cancelRequested: row.cancel_requested === 1,
     sessionKey: row.session_key,
     currentRunId: row.current_run_id,
+    brief: row.brief === null ? null : (JSON.parse(row.brief) as WorkBrief),
   };
 }
 
