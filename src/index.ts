@@ -17,7 +17,7 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
-import { WORK_ITEM_STATES, type LinearCommand } from "./core";
+import { WORK_ITEM_STATES, type Clock, type LinearCommand } from "./core";
 import {
   enqueueCommand,
   listWorkItemsByStates,
@@ -29,7 +29,28 @@ import {
   submitCommand,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
-import { createFetchGitHubClient, createGhCliAuth, githubHttpsUrl } from "./github";
+import {
+  createGitHubTokenProvider,
+  loginGitHub,
+  logoutGitHub,
+  type GitHubTokenProvider as AuthTokenProvider,
+} from "./auth";
+import {
+  createGitHubIssuesClient,
+  githubIssueKey,
+  githubTrackerConfig,
+  loadGitHubEpic,
+  parseGitHubIssueKey,
+  startGitHubIssuePoller,
+  type FetchLike,
+  type GitHubIssuesClient,
+} from "./ghissues";
+import {
+  createGitHubCommentTracker,
+  type GitHubCommentRequest,
+  type GitHubCommentTracker,
+} from "./ghcomments";
+import { createFetchGitHubClient, githubHttpsUrl, type GitHubTokenProvider } from "./github";
 import { startHost } from "./host";
 import { closeoutBinPath, grokLoginStatus } from "./install";
 import {
@@ -44,6 +65,9 @@ import {
 } from "./linear";
 import {
   attachOrchestrator,
+  itemPathId,
+  routeBySource,
+  worktreeBranch,
   type GitHubBinding,
   type Orchestrator,
   type RepositoryBinding,
@@ -87,12 +111,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   const repository = repositoryBinding(runtime.repo);
-  const github = githubBinding(runtime, repository);
+  const useLinear = runtime.trackerKind !== "github";
+  const useGitHub = runtime.trackerKind !== "linear";
+  const auth = repository === null ? null : authProvider(runtime, repository);
+  const github = githubBinding(auth);
   const closeoutBin = runtime.closeoutBin ?? closeoutBinPath(paths.home);
-  const webhooks = runtime.webhooks;
-  const channel = runtime.linearMode;
+  const webhooks = useLinear && runtime.webhooks;
+  const channel: "comments" | "agent-session" =
+    useLinear && runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const docker = sandboxOptions(options);
   const inbox = createInboxStore(db);
+  let githubPoller: { stop(): void; pollNow(): Promise<void> } | null = null;
+  let githubSync: ReturnType<typeof setInterval> | null = null;
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
     if (orchestrator === null) throw new Error("loop is not attached");
@@ -107,7 +137,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 
   const linear =
-    channel === "agent-session"
+    useLinear && channel === "agent-session"
       ? openLinear({
           db,
           secretsDir: paths.secretsDir,
@@ -133,7 +163,28 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
 
-  const comment = channel === "comments" ? openComments(runtime) : null;
+  const comment = useLinear && channel === "comments" ? openComments(runtime) : null;
+  const githubWork =
+    useGitHub && auth !== null && repository !== null
+      ? openGitHubWork({
+          provider: auth,
+          owner: repository.owner,
+          repo: repository.repo,
+          repos: runtime.trackerGithub.repos,
+          triggerLabel: runtime.trackerGithub.triggerLabel,
+          mention: runtime.trackerGithub.mention,
+          trusted: runtime.trackerGithub.trusted,
+          labels: runtime.trackerGithub.statusLabels,
+        })
+      : null;
+  const linearPort =
+    comment !== null
+      ? commentTracker(db, comment.tracker, comment.mode)
+      : (linear?.tracker ?? null);
+  const tracker =
+    linearPort !== null && githubWork !== null
+      ? routeBySource({ linear: linearPort, github: githubWork.tracker })
+      : (githubWork?.tracker ?? linearPort);
   const loops = startLoops({
     db,
     signal: abort.signal,
@@ -143,8 +194,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         jobs: created.jobs,
         outbox: created.outbox,
         pawsRoot: paths.home,
-        tracker: linear?.tracker ?? comment?.tracker ?? null,
-        catchUp: () => running.catchUp(),
+        tracker,
+        catchUp: async () => {
+          await running.catchUp();
+          await githubPoller?.pollNow();
+        },
         repository,
         github,
         closeoutBin,
@@ -152,7 +206,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
         ...(docker ? { docker } : {}),
       });
-      if (comment !== null) attached.setTracker(commentTracker(db, comment.tracker, comment.mode));
       orchestrator = attached;
     },
   });
@@ -186,6 +239,41 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     };
   }
 
+  if (githubWork !== null) {
+    const deliver = async (event: AcceptedLinearEvent): Promise<void> => {
+      if (orchestrator === null) throw new Error("loop is not attached");
+      await orchestrator.onLinearEvent(event);
+    };
+    const stopItem = (itemId: string, at: number): void => {
+      if (orchestrator === null) {
+        enqueueCommand(db, { type: "stop", itemId, source: "linear", requestedAt: at });
+        return;
+      }
+      submitCommand(db, orchestrator.bus, {
+        type: "stop",
+        itemId,
+        source: "linear",
+        requestedAt: at,
+      });
+    };
+    githubPoller = startGitHubIssuePoller({
+      db,
+      client: githubWork.client,
+      onTrigger: (event) => deliver(githubCreatedEvent(event.issueId, event.updatedAtMs)),
+      onComment: (event) =>
+        ingestGitHubComments(githubWork.comments, event.issueId, deliver, stopItem),
+    });
+    githubSync = setInterval(() => {
+      void syncOpenGitHubIssues(db, githubWork.comments, deliver, stopItem).catch(
+        (error: unknown) => {
+          const message = error instanceof Error ? error.message : "github comment sync failed";
+          console.error(`github comment sync failed: ${message}`);
+        },
+      );
+    }, 5_000);
+    githubSync.unref?.();
+  }
+
   const host = startHost({
     db,
     signal: abort.signal,
@@ -196,8 +284,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         pawsRoot: paths.home,
         owner: repository.owner,
         repo: repository.repo,
-        itemId: item.linearIdentifier,
-        wipBranch: item.branchName,
+        itemId: itemPathId(item),
+        wipBranch: worktreeBranch(item),
       });
     },
   });
@@ -207,7 +295,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     paths,
     db,
     server,
-    catchUp: () => running.catchUp(),
+    catchUp: async () => {
+      await running.catchUp();
+      await githubPoller?.pollNow();
+    },
     tunnelUp: () => running.tunnelUp(),
     get tunnelRequested() {
       return running.tunnelRequested;
@@ -220,8 +311,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       host.stop();
       loops.stop();
       prepareShutdown(db, Date.now(), (item) => {
-        commitCheckpointSync(worktreePath(paths.home, item.linearIdentifier));
+        commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
       });
+      if (githubSync !== null) clearInterval(githubSync);
+      githubPoller?.stop();
       running.stop();
       server.stop(true);
       db.close();
@@ -359,38 +452,45 @@ function repositoryBinding(value: string | null): RepositoryBinding | null {
   }
 }
 
-function githubBinding(
-  runtime: RuntimeConfig,
-  repository: RepositoryBinding | null,
-): GitHubBinding | null {
-  if (repository === null) return null;
-  if (runtime.githubAuth === "app") {
-    const env = runtime.env;
-    if (
-      env.githubAppId === null ||
-      env.githubAppInstallationId === null ||
-      env.githubAppPrivateKeyPath === null
-    ) {
-      return null;
-    }
-    try {
-      return {
-        appId: env.githubAppId,
-        installationId: env.githubAppInstallationId,
-        privateKeyPem: readFileSync(env.githubAppPrivateKeyPath, "utf8"),
-        client: createFetchGitHubClient(),
-      };
-    } catch {
-      return null;
-    }
-  }
+function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
+  if (auth === null) return null;
   return {
     appId: "",
     installationId: "",
     privateKeyPem: "",
     client: createFetchGitHubClient(),
-    tokenProvider: createGhCliAuth({ owner: repository.owner, repo: repository.repo }),
+    tokenProvider: gitHostToken(auth),
   };
+}
+
+function authProvider(
+  runtime: RuntimeConfig,
+  repository: RepositoryBinding,
+): AuthTokenProvider | null {
+  const env = runtime.env;
+  let privateKeyPem: string | null = null;
+  if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
+    try {
+      privateKeyPem = readFileSync(env.githubAppPrivateKeyPath, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return createGitHubTokenProvider({
+      auth: runtime.githubAuth,
+      oauthClientId: runtime.oauthClientId,
+      repo: `${repository.owner}/${repository.repo}`,
+      home: env.home,
+      env: process.env,
+      appId: env.githubAppId,
+      installationId: env.githubAppInstallationId,
+      privateKeyPem,
+      client: createFetchGitHubClient(),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
@@ -426,10 +526,16 @@ if (import.meta.main) {
   if (command === "setup") {
     process.exit(await runSetup(argv));
   }
+  if (command === "login" && argv[1] === "github") {
+    process.exit(await loginGitHubCommand());
+  }
+  if (command === "logout") {
+    process.exit(await logoutGitHubCommand());
+  }
   if (command === "login") {
     const agent = argv[1];
     if ((agent !== "claude" && agent !== "codex") || !argv.includes("--docker")) {
-      console.error("usage: paws login <claude|codex> --docker");
+      console.error("usage: paws login github | paws login <claude|codex> --docker");
       process.exit(1);
     }
     try {
@@ -460,4 +566,214 @@ if (import.meta.main) {
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
   // One write so a piped reader cannot observe the ready line before the dashboard line exists.
   console.log(`paws ready · ${origin}${tunnel}\ndashboard ${origin}/status`);
+}
+
+/** One signed-in provider, shared by issues, comments, and git. */
+export function gitHostToken(provider: AuthTokenProvider): GitHubTokenProvider {
+  return {
+    mode: provider.source,
+    tokenFor: () => provider.token(),
+  };
+}
+
+export function openGitHubWork(options: {
+  provider: AuthTokenProvider;
+  owner: string;
+  repo: string;
+  repos?: readonly string[];
+  triggerLabel?: string;
+  mention?: string;
+  trusted?: readonly string[];
+  labels?: boolean;
+  fetch?: FetchLike;
+  baseUrl?: string;
+  clock?: Clock;
+}): { client: GitHubIssuesClient; comments: GitHubCommentTracker; tracker: TrackerAdapter } {
+  const repos =
+    options.repos !== undefined && options.repos.length > 0
+      ? [...options.repos]
+      : [`${options.owner}/${options.repo}`];
+  const client = createGitHubIssuesClient({
+    provider: options.provider,
+    config: githubTrackerConfig({
+      ...(options.triggerLabel === undefined ? {} : { trigger_label: options.triggerLabel }),
+      ...(options.mention === undefined ? {} : { mention: options.mention }),
+      ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
+      repos,
+    }),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+  });
+  const request = githubCommentRequest(options.provider, options.fetch, options.baseUrl);
+  const comments = createGitHubCommentTracker({
+    request,
+    owner: options.owner,
+    repo: options.repo,
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
+    ...(options.trusted === undefined ? {} : { trustedAssociations: options.trusted }),
+    ...(options.labels === false ? { labels: false } : {}),
+  });
+  const tracker: TrackerAdapter = {
+    async loadEpic(id) {
+      return loadGitHubEpic(client, requireGitHubIssue(id));
+    },
+    async listDeps(id) {
+      const ref = requireGitHubIssue(id);
+      const blockers = await client.listBlockedBy({ owner: ref.owner, repo: ref.repo }, ref.number);
+      return blockers
+        .filter((issue) => !issue.pullRequest)
+        .map((issue) => ({
+          blockerLinearIssueId: githubIssueKey(issue.owner, issue.repo, issue.number),
+          blockedLinearIssueId: id,
+        }));
+    },
+    async postProgress(update) {
+      await comments.postProgress(update);
+      if (update.body.includes("Epic complete.")) await closeGitHubIssue(request, update.sessionId);
+    },
+    askQuestion: (question) => comments.askQuestion(question),
+    setStatus: (update) => comments.setStatus(update),
+  };
+  return { client, comments, tracker };
+}
+
+export function githubCreatedEvent(issueId: string, updatedAtMs: number): AcceptedLinearEvent {
+  return {
+    dedupeKey: `github:created:${issueId}`,
+    deliveryId: null,
+    source: "poll",
+    action: "created",
+    sessionId: issueId,
+    issueId,
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs,
+    payload: "{}",
+  };
+}
+
+export async function ingestGitHubComments(
+  comments: GitHubCommentTracker,
+  issueId: string,
+  deliver: (event: AcceptedLinearEvent) => Promise<void>,
+  stop: (itemId: string, at: number) => void,
+): Promise<void> {
+  const result = await comments.sync(issueId);
+  for (const answer of result.resumed) {
+    await deliver({
+      dedupeKey: `github-answer:${answer.questionId}`,
+      deliveryId: null,
+      source: "poll",
+      action: "prompted",
+      sessionId: issueId,
+      issueId,
+      activityId: null,
+      body: answer.answer,
+      signal: null,
+      updatedAtMs: Date.now(),
+      payload: "{}",
+    });
+  }
+  for (const stopped of result.stopped) {
+    stop(stopped.itemId, stopped.requestedAt);
+  }
+}
+
+async function syncOpenGitHubIssues(
+  db: Database,
+  comments: GitHubCommentTracker,
+  deliver: (event: AcceptedLinearEvent) => Promise<void>,
+  stop: (itemId: string, at: number) => void,
+): Promise<void> {
+  const issues = new Set<string>();
+  for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
+    if (!item.linearIssueId.startsWith("github:")) continue;
+    if (item.state === "merged" || item.state === "cancelled") continue;
+    issues.add(item.linearIssueId);
+  }
+  const epics = db.query<{ linear_issue_id: string }, []>("SELECT linear_issue_id FROM epic").all();
+  for (const epic of epics) {
+    if (epic.linear_issue_id.startsWith("github:")) issues.add(epic.linear_issue_id);
+  }
+  for (const issueId of issues) {
+    await ingestGitHubComments(comments, issueId, deliver, stop);
+  }
+}
+
+function githubCommentRequest(
+  provider: AuthTokenProvider,
+  fetchImpl: FetchLike = fetch,
+  baseUrl = "https://api.github.com",
+): GitHubCommentRequest {
+  const root = baseUrl.replace(/\/$/, "");
+  return async (input) => {
+    const token = await provider.token();
+    const response = await fetchImpl(`${root}${input.path}`, {
+      method: input.method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "paws",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(input.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+    });
+    const text = await response.text();
+    let body: unknown = {};
+    if (text.length > 0) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = {};
+      }
+    }
+    return { status: response.status, body, link: response.headers.get("link") };
+  };
+}
+
+async function closeGitHubIssue(request: GitHubCommentRequest, issueId: string): Promise<void> {
+  const ref = parseGitHubIssueKey(issueId);
+  if (ref === null) return;
+  const closed = await request({
+    method: "PATCH",
+    path: `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/issues/${ref.number}`,
+    body: { state: "closed" },
+  });
+  if (closed.status !== 200) {
+    throw new Error(`closing GitHub issue #${ref.number} failed with status ${closed.status}`);
+  }
+}
+
+function requireGitHubIssue(id: string): { owner: string; repo: string; number: number } {
+  const ref = parseGitHubIssueKey(id);
+  if (ref === null) throw new Error(`invalid GitHub issue id: ${id}`);
+  return ref;
+}
+
+async function loginGitHubCommand(): Promise<number> {
+  try {
+    const runtime = loadRuntime(process.env);
+    await loginGitHub({
+      env: process.env,
+      home: runtime.env.home,
+      oauthClientId: runtime.oauthClientId,
+    });
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "GitHub login failed");
+    return 1;
+  }
+}
+
+async function logoutGitHubCommand(): Promise<number> {
+  try {
+    const runtime = loadRuntime(process.env);
+    await logoutGitHub({ env: process.env, home: runtime.env.home });
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "GitHub logout failed");
+    return 1;
+  }
 }

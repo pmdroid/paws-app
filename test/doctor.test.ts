@@ -5,7 +5,15 @@ import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import type { AgentsConfig } from "../src/config";
-import { doctorChecks, formatDoctor, type DoctorProbe, type ProbeFacts } from "../src/doctor";
+import { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/config";
+import { FILE_TOKEN_STORE_DOCTOR_WARNING } from "../src/auth";
+import {
+  doctorChecks,
+  formatDoctor,
+  type DoctorProbe,
+  type GitHubDoctorFacts,
+  type ProbeFacts,
+} from "../src/doctor";
 import { grokLoginStatus } from "../src/install";
 
 const NAMES = [
@@ -137,6 +145,131 @@ test("doctor is green with no claude when the implementer is grok", async () => 
   expect(text).not.toContain("missing");
 });
 
+test("doctor is green for a GitHub tracker with no Linear config", () => {
+  const ready = probe(true);
+  ready.facts = {
+    ...ready.facts,
+    trackerKind: "github",
+    githubAuth: "oauth",
+    oauthClientId: "Iv1.real-client",
+    team: null,
+    teamId: null,
+    linear: {
+      attempted: false,
+      reachable: false,
+      viewerId: null,
+      viewerMatches: false,
+      teamFound: false,
+      labelFound: false,
+      error: null,
+    },
+    githubDoctor: githubReady(),
+  };
+  const checks = doctorChecks(ready);
+  expect(checks.every((item) => item.ok)).toBe(true);
+  const names = checks.map((item) => item.name);
+  expect(names).toContain("github-auth");
+  expect(names).toContain("github-push");
+  expect(names).toContain("github-label");
+  expect(names).toContain("github-rate");
+  expect(names).toContain("github-token-store");
+  expect(names).not.toContain("linear");
+  expect(names).not.toContain("linear-mode");
+  expect(names).not.toContain("linear-team");
+  expect(names).not.toContain("linear-label");
+  expect(names).not.toContain("gh-login");
+  expect(names).not.toContain("gh-push");
+  const text = formatDoctor(checks);
+  expect(text).toContain("ok github-auth: signed in as octocat");
+  expect(text).toContain("ok github-label: paws");
+  expect(text).toContain("ok github-rate: 4800 remaining");
+  expect(text).toContain("ok github-token-store: keychain");
+  expect(text).not.toContain("missing");
+  expect(text).not.toContain("gho_");
+});
+
+test("a placeholder GitHub client id is one actionable line", () => {
+  const ready = probe(true);
+  ready.facts = {
+    ...ready.facts,
+    trackerKind: "github",
+    githubAuth: "oauth",
+    oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
+    team: null,
+    teamId: null,
+    linear: {
+      attempted: false,
+      reachable: false,
+      viewerId: null,
+      viewerMatches: false,
+      teamFound: false,
+      labelFound: false,
+      error: null,
+    },
+    githubDoctor: { ...githubReady(), placeholder: true },
+  };
+  const checks = doctorChecks(ready);
+  const missing = formatDoctor(checks)
+    .split("\n")
+    .filter((line) => line.startsWith("missing"));
+  expect(missing).toEqual([
+    "missing github-auth: set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID",
+  ]);
+  expect(formatDoctor(checks)).toContain(
+    "fix: set github.oauth_client_id or PAWS_GITHUB_CLIENT_ID",
+  );
+  expect(formatDoctor(checks)).not.toContain(PAWS_GITHUB_OAUTH_CLIENT_ID);
+});
+
+test("a file token store is a note and does not fail doctor", () => {
+  const ready = probe(true);
+  ready.facts = {
+    ...ready.facts,
+    trackerKind: "github",
+    githubAuth: "oauth",
+    oauthClientId: "Iv1.real-client",
+    team: null,
+    teamId: null,
+    linear: {
+      attempted: false,
+      reachable: false,
+      viewerId: null,
+      viewerMatches: false,
+      teamFound: false,
+      labelFound: false,
+      error: null,
+    },
+    githubDoctor: {
+      ...githubReady(),
+      storeKind: "file",
+      storeWarning: FILE_TOKEN_STORE_DOCTOR_WARNING,
+    },
+  };
+  const checks = doctorChecks(ready);
+  expect(checks.every((item) => item.ok)).toBe(true);
+  const text = formatDoctor(checks);
+  expect(text).toContain("note github-token-store:");
+  expect(text).toContain("github-oauth.json");
+  expect(text).not.toContain("missing");
+});
+
+test("both trackers keep Linear checks and GitHub checks", () => {
+  const ready = probe(true);
+  ready.facts = {
+    ...ready.facts,
+    trackerKind: "both",
+    githubAuth: "oauth",
+    oauthClientId: "Iv1.real-client",
+    githubDoctor: githubReady(),
+  };
+  const names = doctorChecks(ready).map((item) => item.name);
+  expect(names).toContain("linear");
+  expect(names).toContain("linear-label");
+  expect(names).toContain("github-auth");
+  expect(names).toContain("github-label");
+  expect(names).not.toContain("gh-login");
+});
+
 test("doctor fails with one actionable line when grok has no auth method", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-doctor-nologin-"));
   const scriptPath = join(root, "script.json");
@@ -195,12 +328,35 @@ function probe(
   };
 }
 
+function githubReady(): GitHubDoctorFacts {
+  return {
+    placeholder: false,
+    storeKind: "keychain",
+    storeWarning: null,
+    signedIn: { ok: true, detail: "signed in as octocat" },
+    push: { ok: true, detail: "push access to pmdroid/paws-demo" },
+    label: { ok: true, detail: "paws" },
+    rate: { ok: true, detail: "4800 remaining" },
+  };
+}
+
 function greenFacts(): ProbeFacts {
   return {
     configError: null,
     configured: true,
     linearMode: "comments",
     githubAuth: "gh",
+    trackerKind: "linear",
+    oauthClientId: null,
+    githubDoctor: {
+      placeholder: false,
+      storeKind: "gh",
+      storeWarning: null,
+      signedIn: { ok: true, detail: "not used" },
+      push: { ok: true, detail: "not used" },
+      label: { ok: true, detail: "not used" },
+      rate: { ok: true, detail: "not used" },
+    },
     webhooks: false,
     publicUrl: null,
     repo: "pmdroid/paws-demo",
@@ -236,6 +392,17 @@ function redFacts(override: Partial<ProbeFacts>): ProbeFacts {
     configured: false,
     linearMode: "comments",
     githubAuth: "gh",
+    trackerKind: "linear",
+    oauthClientId: null,
+    githubDoctor: {
+      placeholder: false,
+      storeKind: "gh",
+      storeWarning: null,
+      signedIn: { ok: false, detail: "not signed in" },
+      push: { ok: false, detail: "repository is not pushable" },
+      label: { ok: false, detail: "paws label is missing" },
+      rate: { ok: false, detail: "rate limit was not read" },
+    },
     webhooks: false,
     publicUrl: null,
     repo: null,

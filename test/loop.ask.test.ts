@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { systemClock } from "../src/core";
+import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -9,7 +9,6 @@ import {
   insertQueuedItem,
   listJobs,
 } from "../src/db";
-import { JOB_KIND } from "../src/core";
 import type { AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { elicitationBody, handoffNote } from "../src/questions";
@@ -30,14 +29,16 @@ test("a prompted answer with no waiting session resumes as a fresh session", asy
   const parked = getWorkItem(db, seeded.id);
   expect(parked?.state).toBe("awaiting_input");
 
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
+  const clock = new FakeClock(1_000);
+  const jobs = new JobLoop(db, clock);
+  const outbox = new OutboxDispatcher(db, clock);
   const orchestrator = attachOrchestrator({
     db,
     jobs,
     outbox,
     pawsRoot: "/tmp/paws-ask",
     tracker: null,
+    clock,
   });
   db.run(
     `INSERT INTO question (

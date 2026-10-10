@@ -56,6 +56,7 @@ import {
   openQuestion,
 } from "../questions";
 import { activityFromAcpEvent, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   createAcpFixRunner,
@@ -229,6 +230,11 @@ export class Orchestrator {
       return;
     }
     if (this.stopped(item.id)) return;
+    const pathId = itemPathId(item);
+    const branch = worktreeBranch(item);
+    if (item.branchName !== branch) {
+      this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
+    }
     const run = this.ensureRun(item);
     const controller = new AbortController();
     this.live.set(run.id, { itemId: item.id, controller });
@@ -262,8 +268,8 @@ export class Orchestrator {
     const launched = this.launchAgent({
       role: "implementer",
       purpose: "implement",
-      itemId: item.linearIdentifier,
-      worktree: worktreePath(this.options.pawsRoot, item.linearIdentifier),
+      itemId: pathId,
+      worktree: worktreePath(this.options.pawsRoot, pathId),
       prompt,
     });
     try {
@@ -271,7 +277,7 @@ export class Orchestrator {
       if (this.stopped(item.id)) return;
       const executed = await executeItem({
         role: "implementer",
-        itemId: item.linearIdentifier,
+        itemId: pathId,
         runId: run.id,
         prompt,
         owner: repository.owner,
@@ -363,11 +369,11 @@ export class Orchestrator {
       reviewer,
       fixer,
       recorder,
-      reportDir: `${this.options.pawsRoot}/runs/${item.linearIdentifier}`,
+      reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...(this.options.closeoutBin ? { closeoutBin: this.options.closeoutBin } : {}),
     });
     const verdict = await gate.run({
-      taskId: item.linearIdentifier,
+      taskId: itemPathId(item),
       worktree,
       baseSha: base,
       headSha: head,
@@ -411,7 +417,7 @@ export class Orchestrator {
       this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
       return;
     }
-    const worktree = `${this.options.pawsRoot}/worktrees/${item.linearIdentifier}`;
+    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     let head = "";
     let base = item.checkpoint?.baseSha ?? "";
     try {
@@ -427,7 +433,7 @@ export class Orchestrator {
     const deps = this.agentDeps();
     const evaluation = await evaluateCandidate({
       worktree,
-      taskId: item.linearIdentifier,
+      taskId: itemPathId(item),
       base,
       head,
       candidate: {
@@ -478,13 +484,13 @@ export class Orchestrator {
       return;
     }
     if (item.state !== "merge_queue") return;
-    const worktree = `${this.options.pawsRoot}/worktrees/${item.linearIdentifier}`;
+    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
     const published = await publishAccepted({
       accepted: true,
       evidence: summary,
       worktree,
-      issue: item.linearIdentifier,
+      issue: publishIssueKey(item),
       owner: repository.owner,
       repo: repository.repo,
       title: item.title,
@@ -506,7 +512,7 @@ export class Orchestrator {
     const reviewer = createAcpCodexReviewer(deps);
     const merged = await serialMerge({
       worktree,
-      issue: item.linearIdentifier,
+      issue: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
       prNumber: published.pull.number,
@@ -519,7 +525,7 @@ export class Orchestrator {
       reverify: async (input) => {
         const evaluation = await evaluateCandidate({
           worktree: input.worktree,
-          taskId: item.linearIdentifier,
+          taskId: itemPathId(item),
           base: input.base,
           head: input.head,
           candidate: {
@@ -566,7 +572,7 @@ export class Orchestrator {
     await removeWorktree({
       owner: repository.owner,
       repo: repository.repo,
-      itemId: item.linearIdentifier,
+      itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     }).catch(() => undefined);
     this.pump();
@@ -725,7 +731,9 @@ export class Orchestrator {
       epicId,
       row.state,
     ]);
-    const session = this.epicSession(items);
+    const epicIssueId = this.epicIssueId(epicId);
+    const session =
+      epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
     if (session === null) return;
     const identifiers = items.map((item) => item.linearIdentifier).join(", ");
     enqueueOutboxOnce(this.db, {
@@ -950,7 +958,15 @@ export class Orchestrator {
     };
   }
 
+  private epicIssueId(epicId: string): string | null {
+    const row = this.db
+      .query<{ linear_issue_id: string }, [string]>("SELECT linear_issue_id FROM epic WHERE id = ?")
+      .get(epicId);
+    return row?.linear_issue_id ?? null;
+  }
+
   private activitySession(item: WorkItemRecord): string | null {
+    if (isGitHubIssue(item.linearIssueId)) return item.linearIssueId;
     if (this.options.channel === "comments") return item.linearIssueId;
     const session = item.sessionKey;
     if (session === null || session.length === 0) return null;

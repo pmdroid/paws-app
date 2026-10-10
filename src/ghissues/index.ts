@@ -28,6 +28,7 @@ export {
   hasTriggerLabel,
   isPawsStop,
   mentionsPaws,
+  parseGitHubIssueKey,
   parseTaskList,
 } from "./text";
 export type { TaskRef } from "./text";

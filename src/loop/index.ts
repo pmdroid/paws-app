@@ -22,3 +22,10 @@ export {
   type OrchestratorOptions,
   type RepositoryBinding,
 } from "./orchestrator";
+export {
+  isGitHubIssue,
+  itemPathId,
+  publishIssueKey,
+  routeBySource,
+  worktreeBranch,
+} from "./sources";
