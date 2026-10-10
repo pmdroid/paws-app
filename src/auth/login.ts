@@ -27,8 +27,8 @@ export type LoginIO = {
 const RESTARTS = 1;
 
 export async function loginGitHub(options: LoginIO = {}): Promise<{ login: string; id: number }> {
-  const user = await completeLogin(options);
   const stdout = options.stdout ?? ((line: string) => console.log(line));
+  const user = await completeLogin({ ...options, stdout });
   stdout(`Signed in as ${user.login}`);
   const warning = storeFor(options).warning;
   if (warning !== null) stdout(warning);
@@ -50,7 +50,7 @@ export async function beginGitHubDevice(options: LoginIO = {}): Promise<{
 }> {
   const first = await requestDeviceCode({ clientId: clientId(options), fetch: fetchOf(options) });
   announce(options, first);
-  await (options.openBrowser ?? openVerificationPage)(first.verificationUri);
+  await (options.openBrowser ?? openVerificationPage)(first.verificationUri).catch(() => undefined);
   const completed = completeFrom(options, first, 0);
   return {
     userCode: first.userCode,
@@ -90,7 +90,9 @@ async function completeLogin(options: LoginIO): Promise<{ login: string; id: num
   const id = clientId(options);
   let device = await requestDeviceCode({ clientId: id, fetch: fetchImpl });
   announce(options, device);
-  await (options.openBrowser ?? openVerificationPage)(device.verificationUri);
+  await (options.openBrowser ?? openVerificationPage)(device.verificationUri).catch(
+    () => undefined,
+  );
   return completeFrom(options, device, 0);
 }
 
@@ -116,7 +118,9 @@ async function completeFrom(
     if (restarts < RESTARTS && isExpired(error)) {
       const next = await requestDeviceCode({ clientId: id, fetch: fetchImpl });
       announce(options, next);
-      await (options.openBrowser ?? openVerificationPage)(next.verificationUri);
+      await (options.openBrowser ?? openVerificationPage)(next.verificationUri).catch(
+        () => undefined,
+      );
       return completeFrom(options, next, restarts + 1);
     }
     throw error;
