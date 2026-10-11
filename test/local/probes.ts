@@ -21,7 +21,7 @@ import {
   submitCommand,
 } from "../../src/db";
 import { createFakeGitHubComments, createGitHubCommentTracker } from "../../src/ghcomments";
-import { ingestGitHubComments } from "../../src/index";
+import { createGitHubCommentIngestor } from "../../src/index";
 import { detectCandidates } from "../../src/setup";
 
 export async function probeBoundaries(
@@ -161,7 +161,17 @@ export async function probeBoundaries(
   const db = openDatabase(":memory:");
   migrate(db);
   try {
-    const item = insertQueuedItem(db, { id: "durable-item", now: clock.now() });
+    const issue = "github:local/fixture#1";
+    const item = insertQueuedItem(db, {
+      id: "durable-item",
+      now: clock.now(),
+      sessionKey: issue,
+    });
+    db.run("UPDATE epic SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
+      issue,
+      "fixture#1",
+      item.epicId,
+    ]);
     beginImplementRun(db, item.id, clock.now());
     const comments = createFakeGitHubComments({ clock, selfLogin: "local-user" });
     const tracker = createGitHubCommentTracker({
@@ -170,7 +180,6 @@ export async function probeBoundaries(
       repo: "fixture",
       clock,
     });
-    const issue = "github:local/fixture#1";
     db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
       issue,
       "fixture#1",
@@ -185,23 +194,20 @@ export async function probeBoundaries(
       association: "OWNER",
     });
     let deliveredId = "";
-    await ingestGitHubComments(
+    const commands = new CommandBus();
+    const ingest = createGitHubCommentIngestor(
+      db,
       tracker,
-      issue,
       async () => {},
-      (itemId, at) => {
-        deliveredId = itemId;
-        submitCommand(db, new CommandBus(), {
-          type: "stop",
-          itemId,
-          source: "linear",
-          requestedAt: at,
-        });
+      (command) => {
+        deliveredId = command.itemId;
+        submitCommand(db, commands, command);
       },
     );
+    await ingest(issue);
     observe(
       "GitHub stop targets the durable work item",
-      getWorkItem(db, item.id)?.state === "cancelled",
+      getWorkItem(db, item.id)?.state === "cancelled" && deliveredId === item.id,
       {
         deliveredId,
         durableId: item.id,
