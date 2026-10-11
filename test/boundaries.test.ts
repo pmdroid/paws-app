@@ -17,6 +17,7 @@ const MODULES = [
   "github",
   "questions",
   "server",
+  "settings",
   "web",
   "host",
   "loop",
@@ -47,7 +48,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   github: [],
   questions: ["core"],
   web: ["db"],
-  server: ["config", "linear", "github", "web", "auth"],
+  server: ["config", "linear", "github", "web", "auth", "settings"],
+  settings: ["config"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions", "config"],
   doctor: [

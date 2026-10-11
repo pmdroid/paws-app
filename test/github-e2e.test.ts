@@ -72,10 +72,16 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
   const outbox = new OutboxDispatcher(db, systemClock);
   let scripts = 0;
   const launch: AgentLaunch = (input) => {
-    prompts.push(input.prompt);
+    if (input.purpose !== "prepare") prompts.push(input.prompt);
     scripts += 1;
     const scriptPath = path.join(layout.root, `gh-script-${scripts}.json`);
-    writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        ...demoScript(input),
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+      }),
+    );
     return {
       command: process.execPath,
       args: [fakeAgent, "", scriptPath],
@@ -273,7 +279,13 @@ test("linear and github issues share one queue and report to their own tracker",
     }
     scripts += 1;
     const scriptPath = path.join(layout.root, `both-script-${scripts}.json`);
-    writeFileSync(scriptPath, JSON.stringify(plainScript(input)));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        ...plainScript(input),
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+      }),
+    );
     return {
       command: process.execPath,
       args: [fakeAgent, "", scriptPath],

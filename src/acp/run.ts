@@ -14,8 +14,7 @@ import {
   type RequestPermissionResponse,
   type StopReason,
 } from "@agentclientprotocol/sdk";
-import type { AgentsConfig } from "../config";
-import { loadConfigFile } from "../config";
+import { loadConfigFile, resolveAgentProfiles } from "../config";
 import { commitCheckpoint } from "./checkpoint";
 import { assertSafeSegment, runDir } from "./paths";
 import {
@@ -28,6 +27,7 @@ import {
 } from "./adapters";
 import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
+import { sessionModel, selectSessionModel, providerFor } from "./model";
 import { minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
 import { decidePermission, type GuardContext } from "./permissions";
@@ -110,12 +110,14 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     home,
     pawsRoot: options.pawsRoot,
   };
-  const agents = loadAgents(options.pawsRoot);
-  const grok = options.role === "implementer" && agents.implementer === "grok";
+  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
+  const agents = config.agents;
+  const profile = options.profile ?? resolveAgentProfiles(config)[options.role];
+  const grok = profile.agent === "grok";
   const sourceEnv = options.env ?? process.env;
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
-    : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents);
+    : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents, profile.agent);
   if (grok) rejectAutoApprove(adapter.args);
   const child = spawnAgent(
     adapter.command,
@@ -150,6 +152,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     resume() {},
   };
   const runAbort = new AbortController();
+  const phaseSignal = AbortSignal.any([
+    runAbort.signal,
+    ...(options.signal ? [options.signal] : []),
+  ]);
   let bridge: AskTeamBridge | undefined;
   let emitQueue: Promise<void> = Promise.resolve();
   const emit: AcpEventListener = (event) => {
@@ -175,16 +181,41 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     });
   }
 
+  let observedModel: string | null = null;
+  let changedModel = false;
   const app = client({ name: "paws" })
     .onRequest(methods.client.session.requestPermission, (ctx) =>
-      answerPermission(ctx.params, guard, () => state.cancelling, emit),
+      answerPermission(
+        ctx.params,
+        guard,
+        () => state.cancelling || options.readOnly === true,
+        emit,
+      ),
     )
-    .onNotification(methods.client.session.update, (ctx) =>
-      emit({ type: "session_update", sessionId: ctx.params.sessionId, update: ctx.params.update }),
-    )
+    .onNotification(methods.client.session.update, (ctx) => {
+      const update = ctx.params.update;
+      if (update.sessionUpdate === "config_option_update") {
+        const model = sessionModel({ configOptions: update.configOptions }).model;
+        if (
+          observedModel &&
+          update.configOptions.some(
+            (option) => option.category === "model" || option.id === "model",
+          ) &&
+          model !== observedModel
+        )
+          changedModel = true;
+      }
+      return emit({ type: "session_update", sessionId: ctx.params.sessionId, update });
+    })
     .onRequest(methods.client.fs.readTextFile, (ctx) => readGuarded(ctx.params, guard))
-    .onRequest(methods.client.fs.writeTextFile, (ctx) => writeGuarded(ctx.params, guard))
-    .onRequest(methods.client.terminal.create, (ctx) => terminals.create(ctx.params))
+    .onRequest(methods.client.fs.writeTextFile, (ctx) => {
+      if (options.readOnly) throw new Error("This agent session is read-only");
+      return writeGuarded(ctx.params, guard);
+    })
+    .onRequest(methods.client.terminal.create, (ctx) => {
+      if (options.readOnly) throw new Error("This agent session is read-only");
+      return terminals.create(ctx.params);
+    })
     .onRequest(methods.client.terminal.output, (ctx) => terminals.output(ctx.params))
     .onRequest(methods.client.terminal.waitForExit, (ctx) => terminals.wait(ctx.params))
     .onRequest(methods.client.terminal.kill, (ctx) => terminals.kill(ctx.params))
@@ -213,98 +244,148 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
     );
-    result = await app.connectWith(stream, async (ctx) => {
-      const initialized = await ctx.request(methods.agent.initialize, {
-        protocolVersion: PROTOCOL_VERSION,
-        clientInfo: CLIENT_INFO,
-        clientCapabilities: clientCapabilities(),
-      });
-      const auth = summarizeAuth(initialized as InitializeResponse);
-      await emit({ type: "auth_checked", role: options.role, auth });
-      if (grok) {
-        const methodId = selectGrokAuthMethod(auth.authMethods, {
-          apiKeyPresent: xaiApiKeyPresent(sourceEnv),
-          allowApiKey: agents.grok.allowApiKey,
-        });
-        if (methodId === null) {
-          await emit({ type: "error", message: GROK_LOGIN_MESSAGE });
-          return baseResult(options.role, child, {
-            stopReason: "error",
-            auth,
-            authRequired: true,
-            errorMessage: GROK_LOGIN_MESSAGE,
-          });
-        }
-        try {
-          await ctx.request(methods.agent.authenticate, { methodId });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await emit({ type: "error", message });
-          return baseResult(options.role, child, {
-            stopReason: "error",
-            auth,
-            authRequired: true,
-            errorMessage: message,
-          });
-        }
-      }
-
-      let sessionId: string;
-      try {
-        const created = await ctx.request(methods.agent.session.new, {
-          cwd: options.worktreePath,
-          mcpServers: bridge ? [bridge.mcpServer] : [],
-        });
-        sessionId = created.sessionId;
-      } catch (error) {
-        if (isAuthRequired(error)) {
-          await emit({ type: "error", message: AUTH_REQUIRED_MESSAGE });
-          return baseResult(options.role, child, {
-            stopReason: "error",
-            auth,
-            authRequired: true,
-            errorMessage: AUTH_REQUIRED_MESSAGE,
-          });
-        }
-        throw error;
-      }
-      await emit({
-        type: "session_started",
-        role: options.role,
-        sessionId,
-        cwd: options.worktreePath,
-      });
-
-      const outcome = await runPrompt({
-        ctx,
-        child,
-        sessionId,
-        prompt: options.prompt,
-        state,
-        timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
-        graceMs,
-        signal: options.signal,
-        runAbort,
-        clock,
-      });
-
-      if (
-        outcome.errorMessage &&
-        !outcome.cancelled &&
-        !outcome.timedOut &&
-        !outcome.authRequired
-      ) {
-        await emit({ type: "error", message: outcome.errorMessage });
-      }
-      if (outcome.acpStopReason && !outcome.cancelled && !outcome.timedOut) {
-        await emit({ type: "prompt_complete", stopReason: outcome.acpStopReason });
-      }
-      if (outcome.cancelled || outcome.timedOut) {
-        await notifyCancelled(outcome.timedOut ? "timeout" : "cancel");
-      }
-
-      return baseResult(options.role, child, { ...outcome, sessionId, auth });
+    const exit = new Promise<never>((_, reject) => {
+      child.once("exit", (code) =>
+        reject(new Error(`Agent exited (${code}) before completing the session`)),
+      );
+      child.once("error", reject);
     });
+    result = await Promise.race([
+      exit,
+      app.connectWith(stream, async (ctx) => {
+        const initialized = await withTimeout(
+          ctx.request(methods.agent.initialize, {
+            protocolVersion: PROTOCOL_VERSION,
+            clientInfo: CLIENT_INFO,
+            clientCapabilities: clientCapabilities(),
+          }),
+          30_000,
+          phaseSignal,
+        );
+        const auth = summarizeAuth(initialized as InitializeResponse);
+        await emit({ type: "auth_checked", role: options.role, auth });
+        if (grok) {
+          const methodId = selectGrokAuthMethod(auth.authMethods, {
+            apiKeyPresent: xaiApiKeyPresent(sourceEnv),
+            allowApiKey: agents.grok.allowApiKey,
+          });
+          if (methodId === null) {
+            await emit({ type: "error", message: GROK_LOGIN_MESSAGE });
+            return baseResult(options.role, child, {
+              stopReason: "error",
+              auth,
+              authRequired: true,
+              errorMessage: GROK_LOGIN_MESSAGE,
+            });
+          }
+          try {
+            await withTimeout(
+              ctx.request(methods.agent.authenticate, { methodId }),
+              30_000,
+              phaseSignal,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await emit({ type: "error", message });
+            return baseResult(options.role, child, {
+              stopReason: "error",
+              auth,
+              authRequired: true,
+              errorMessage: message,
+            });
+          }
+        }
+
+        let sessionId: string;
+        let model: Awaited<ReturnType<typeof selectSessionModel>>;
+        try {
+          const created = await withTimeout(
+            ctx.request(methods.agent.session.new, {
+              cwd: options.worktreePath,
+              mcpServers: bridge ? [bridge.mcpServer] : [],
+            }),
+            30_000,
+            phaseSignal,
+          );
+          sessionId = created.sessionId;
+          model = await withTimeout(
+            selectSessionModel(ctx, created, profile.model),
+            30_000,
+            phaseSignal,
+          );
+          observedModel = model.model;
+        } catch (error) {
+          if (isAuthRequired(error)) {
+            await emit({ type: "error", message: AUTH_REQUIRED_MESSAGE });
+            return baseResult(options.role, child, {
+              stopReason: "error",
+              auth,
+              authRequired: true,
+              errorMessage: AUTH_REQUIRED_MESSAGE,
+            });
+          }
+          throw error;
+        }
+        const identity = model.model
+          ? { session: sessionId, model: model.model, provider: providerFor(profile.agent) }
+          : undefined;
+        await emit({
+          type: "session_started",
+          ...(identity ? { identity } : {}),
+          role: options.role,
+          sessionId,
+          cwd: options.worktreePath,
+        });
+
+        if (options.prepareOnly)
+          return baseResult(options.role, child, {
+            stopReason: "end_turn",
+            sessionId,
+            identity,
+            models: model.models,
+            auth,
+          });
+        const outcome = await runPrompt({
+          ctx,
+          child,
+          sessionId,
+          prompt: options.prompt,
+          state,
+          timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+          graceMs,
+          signal: options.signal,
+          runAbort,
+          clock,
+        });
+
+        if (
+          outcome.errorMessage &&
+          !outcome.cancelled &&
+          !outcome.timedOut &&
+          !outcome.authRequired
+        ) {
+          await emit({ type: "error", message: outcome.errorMessage });
+        }
+        if (outcome.acpStopReason && !outcome.cancelled && !outcome.timedOut) {
+          await emit({ type: "prompt_complete", stopReason: outcome.acpStopReason });
+        }
+        if (outcome.cancelled || outcome.timedOut) {
+          await notifyCancelled(outcome.timedOut ? "timeout" : "cancel");
+        }
+
+        if (changedModel)
+          throw new Error(
+            "Agent changed model during the session; candidate identity is not stable",
+          );
+        return baseResult(options.role, child, {
+          ...outcome,
+          sessionId,
+          identity,
+          models: model.models,
+          auth,
+        });
+      }),
+    ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const detail = stderr.text().trim();
@@ -322,6 +403,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       await emit({ type: "error", message: result.errorMessage ?? message });
     }
   } finally {
+    runAbort.abort();
     result.agentExited = await stopChild(child, graceMs);
     result.pid = child.pid;
     if (options.checkpoint !== false) {
@@ -509,10 +591,6 @@ function selectOption(options: PermissionOption[], allow: boolean): PermissionOp
   return undefined;
 }
 
-function loadAgents(pawsRoot: string): AgentsConfig {
-  return loadConfigFile(join(pawsRoot, "config.toml")).agents;
-}
-
 function clientCapabilities() {
   return {
     fs: { readTextFile: true, writeTextFile: true },
@@ -543,7 +621,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
       clearTimeout(timer);
       reject(new Error("cancelled"));
     };
-    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     promise.then(resolve, reject).finally(() => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
