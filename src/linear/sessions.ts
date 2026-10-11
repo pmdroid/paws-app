@@ -1,4 +1,4 @@
-import type { TrackerAdapter } from "./adapter";
+import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { isRecord, readString } from "./read";
 import type {
@@ -13,11 +13,20 @@ import type {
 } from "./types";
 
 export interface LinearSessionAdapter extends TrackerAdapter {
-  createActivity(update: ProgressUpdate): Promise<ActivityReceipt>;
-  createElicitation(question: SessionElicitation): Promise<ActivityReceipt>;
-  updateSession(update: SessionUpdate): Promise<SessionReceipt>;
-  createSessionOnIssue(input: SessionOnIssue): Promise<SessionReceipt>;
-  createSessionOnComment(input: SessionOnComment): Promise<SessionReceipt>;
+  createActivity(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<ActivityReceipt>;
+  createElicitation(
+    question: SessionElicitation,
+    options?: TrackerRequestOptions,
+  ): Promise<ActivityReceipt>;
+  updateSession(update: SessionUpdate, options?: TrackerRequestOptions): Promise<SessionReceipt>;
+  createSessionOnIssue(
+    input: SessionOnIssue,
+    options?: TrackerRequestOptions,
+  ): Promise<SessionReceipt>;
+  createSessionOnComment(
+    input: SessionOnComment,
+    options?: TrackerRequestOptions,
+  ): Promise<SessionReceipt>;
 }
 
 const ACTIVITY_MUTATION = `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
@@ -37,8 +46,13 @@ const SESSION_COMMENT_MUTATION = `mutation AgentSessionCreateOnComment($input: A
 }`;
 
 export function createLinearSessionMethods(client: LinearClient) {
-  async function sendActivity(input: Record<string, unknown>): Promise<ActivityReceipt> {
-    const data = await client.query(ACTIVITY_MUTATION, { input });
+  async function sendActivity(
+    input: Record<string, unknown>,
+    options?: TrackerRequestOptions,
+  ): Promise<ActivityReceipt> {
+    options?.signal?.throwIfAborted();
+    const data = await client.query(ACTIVITY_MUTATION, { input }, options);
+    options?.signal?.throwIfAborted();
     const receipt = mutationReceipt(data, "agentActivityCreate", "agentActivity");
     if (input["id"] !== undefined && receipt.id !== input["id"]) {
       throw new Error("Linear agentActivityCreate returned a different activity ID");
@@ -47,30 +61,51 @@ export function createLinearSessionMethods(client: LinearClient) {
   }
 
   return {
-    async createActivity(update: ProgressUpdate): Promise<ActivityReceipt> {
-      return sendActivity(activityInput(update));
+    async createActivity(
+      update: ProgressUpdate,
+      options?: TrackerRequestOptions,
+    ): Promise<ActivityReceipt> {
+      return sendActivity(activityInput(update), options);
     },
-    async createElicitation(question: SessionElicitation): Promise<ActivityReceipt> {
-      return sendActivity(elicitationInput(question));
+    async createElicitation(
+      question: SessionElicitation,
+      options?: TrackerRequestOptions,
+    ): Promise<ActivityReceipt> {
+      return sendActivity(elicitationInput(question), options);
     },
-    async updateSession(update: SessionUpdate): Promise<SessionReceipt> {
+    async updateSession(
+      update: SessionUpdate,
+      options?: TrackerRequestOptions,
+    ): Promise<SessionReceipt> {
+      options?.signal?.throwIfAborted();
       const { sessionId, ...input } = update;
       validateSessionUpdate(update);
-      const data = await client.query(SESSION_UPDATE_MUTATION, { id: sessionId, input });
+      const data = await client.query(SESSION_UPDATE_MUTATION, { id: sessionId, input }, options);
+      options?.signal?.throwIfAborted();
       const receipt = mutationReceipt(data, "agentSessionUpdate", "agentSession");
       if (receipt.id !== sessionId) {
         throw new Error("Linear agentSessionUpdate returned a different session ID");
       }
       return receipt;
     },
-    async createSessionOnIssue(input: SessionOnIssue): Promise<SessionReceipt> {
+    async createSessionOnIssue(
+      input: SessionOnIssue,
+      options?: TrackerRequestOptions,
+    ): Promise<SessionReceipt> {
+      options?.signal?.throwIfAborted();
       validateUrls(input.externalUrls);
-      const data = await client.query(SESSION_ISSUE_MUTATION, { input });
+      const data = await client.query(SESSION_ISSUE_MUTATION, { input }, options);
+      options?.signal?.throwIfAborted();
       return mutationReceipt(data, "agentSessionCreateOnIssue", "agentSession");
     },
-    async createSessionOnComment(input: SessionOnComment): Promise<SessionReceipt> {
+    async createSessionOnComment(
+      input: SessionOnComment,
+      options?: TrackerRequestOptions,
+    ): Promise<SessionReceipt> {
+      options?.signal?.throwIfAborted();
       validateUrls(input.externalUrls);
-      const data = await client.query(SESSION_COMMENT_MUTATION, { input });
+      const data = await client.query(SESSION_COMMENT_MUTATION, { input }, options);
+      options?.signal?.throwIfAborted();
       return mutationReceipt(data, "agentSessionCreateOnComment", "agentSession");
     },
   };

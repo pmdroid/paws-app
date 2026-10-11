@@ -130,22 +130,29 @@ export function createLinearTracker(client: LinearClient): LinearSessionAdapter 
       }
       return edges;
     },
-    async postProgress(update) {
-      await sessions.createActivity(update);
+    async postProgress(update, options) {
+      await sessions.createActivity(update, options);
     },
-    async askQuestion(question) {
-      await sessions.createElicitation(question);
+    async askQuestion(question, options) {
+      await sessions.createElicitation(question, options);
     },
-    async setStatus(update) {
-      const data = await client.query(STATES_QUERY, { id: update.linearIssueId });
+    async setStatus(update, options) {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(STATES_QUERY, { id: update.linearIssueId }, options);
+      options?.signal?.throwIfAborted();
       const stateId = pickStateId(data, update.stateType);
       if (stateId === null) {
         throw new Error(`Linear issue ${update.linearIssueId} has no ${update.stateType} state`);
       }
-      await client.query(STATUS_MUTATION, {
-        id: update.linearIssueId,
-        input: { stateId },
-      });
+      await client.query(
+        STATUS_MUTATION,
+        {
+          id: update.linearIssueId,
+          input: { stateId },
+        },
+        options,
+      );
+      options?.signal?.throwIfAborted();
     },
   };
 }
