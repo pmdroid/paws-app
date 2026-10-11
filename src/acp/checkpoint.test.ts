@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,34 @@ for (const conflict of ["lock", "index", "head"] as const) {
     }
   });
 }
+
+test("checkpoint rolls back its ref when locked index publication fails", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  await writeFile(join(tree, "partial.txt"), "partial\n");
+  const index = (
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+  ).trim();
+  const originalIndex = await readFile(index);
+  const originalHead = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+  let reached = false;
+  const rename = spyOn(fs, "renameSync").mockImplementation(() => {
+    const currentHead = Bun.spawnSync(["git", "-C", tree, "rev-parse", "HEAD"]);
+    expect(new TextDecoder().decode(currentHead.stdout).trim()).not.toBe(originalHead);
+    reached = true;
+    throw new Error("injected index rename failure");
+  });
+  try {
+    await expect(commitCheckpoint(tree)).rejects.toThrow("injected index rename failure");
+    expect(reached).toBe(true);
+    expect((await git(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(originalHead);
+    expect(await readFile(index)).toEqual(originalIndex);
+    expect(await readFile(join(tree, "partial.txt"), "utf8")).toBe("partial\n");
+    await expect(readFile(`${index}.lock`)).rejects.toThrow();
+  } finally {
+    rename.mockRestore();
+  }
+});
 
 test("async checkpoint publishes a clean index and skips hooks and signing", async () => {
   const layout = await itemWorktree("ENG-21");
