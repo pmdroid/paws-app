@@ -3,6 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { publicationExec } from "./publication";
 import { GitCommandError, type GitExec } from "./types";
 
 const exec = promisify(execFile);
@@ -14,10 +15,10 @@ if [ "$1" = "get" ]; then
 fi
 `;
 
-export function defaultGitExec(): GitExec {
+export function defaultGitExec(bin = "/usr/bin/git"): GitExec {
   return async (args, options) => {
     try {
-      const { stdout, stderr } = await exec("git", args, {
+      const { stdout, stderr } = await exec(bin, args, {
         cwd: options.cwd,
         env: options.env,
         encoding: "utf8",
@@ -54,17 +55,29 @@ export async function withCredential<T>(
   token: string,
   gitExec: GitExec,
   fn: (helper: { argsPrefix: string[]; env: NodeJS.ProcessEnv; exec: GitExec }) => Promise<T>,
+  tokenInFile = false,
 ): Promise<T> {
   if (/\s/.test(token)) throw new Error("refusing to pass a token that contains whitespace");
   const dir = await mkdtemp(path.join(tmpdir(), "paws-git-"));
   const helperPath = path.join(dir, "cred.sh");
-  await writeFile(helperPath, HELPER, { mode: 0o700 });
+  const tokenPath = path.join(dir, "token");
+  const script = tokenInFile
+    ? HELPER.replace('"$PAWS_GITHUB_TOKEN"', `"$(cat '${tokenPath.replaceAll("'", "'\\''")}')"`)
+    : HELPER;
+  await writeFile(helperPath, script, { mode: 0o700 });
   await chmod(helperPath, 0o700);
   try {
     return await fn({
-      argsPrefix: ["-c", "credential.helper=", "-c", `credential.helper=${helperPath}`],
-      env: gitEnv(token),
-      exec: gitExec,
+      argsPrefix: [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "credential.helper=",
+        "-c",
+        `credential.helper=${helperPath}`,
+      ],
+      env: gitEnv(tokenInFile ? undefined : token),
+      exec: publicationExec(gitExec, tokenInFile ? { path: tokenPath, token } : undefined),
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
