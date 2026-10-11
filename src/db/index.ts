@@ -92,3 +92,12 @@ export {
   listGitHubDeliveries,
   type IntegrationEvent,
 } from "./integration-events";
+
+export {
+  saveLinearSessionContext,
+  hasLinearSessionSnapshotContext,
+  saveLinearSessionSnapshotContext,
+  getLinearSessionContext,
+  saveLinearActivitySnapshot,
+  listLinearActivitySnapshots,
+} from "./linear-context";

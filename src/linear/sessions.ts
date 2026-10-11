@@ -1,3 +1,5 @@
+import { createLinearSessionReads } from "./history";
+import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { isRecord, readString } from "./read";
@@ -13,6 +15,11 @@ import type {
 } from "./types";
 
 export interface LinearSessionAdapter extends TrackerAdapter {
+  getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;
+  listSessionActivities?(
+    id: string,
+    options?: TrackerRequestOptions,
+  ): Promise<readonly LinearActivitySnapshot[]>;
   createActivity(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<ActivityReceipt>;
   createElicitation(
     question: SessionElicitation,
@@ -61,6 +68,7 @@ export function createLinearSessionMethods(client: LinearClient) {
   }
 
   return {
+    ...createLinearSessionReads(client),
     async createActivity(
       update: ProgressUpdate,
       options?: TrackerRequestOptions,

@@ -1,3 +1,4 @@
+import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
@@ -48,7 +49,9 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-export function createLinearTracker(client: LinearClient): LinearSessionAdapter {
+export function createLinearTracker(
+  client: LinearClient,
+): LinearSessionAdapter & ReturnType<typeof createLinearSessionReads> {
   const sessions = createLinearSessionMethods(client);
   return {
     ...sessions,

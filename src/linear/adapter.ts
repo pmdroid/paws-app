@@ -1,3 +1,4 @@
+import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type {
   DependencyEdge,
   Elicitation,
@@ -13,6 +14,11 @@ export type TrackerRequestOptions = { signal?: AbortSignal };
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;
+  listSessionActivities?(
+    id: string,
+    options?: TrackerRequestOptions,
+  ): Promise<readonly LinearActivitySnapshot[]>;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;

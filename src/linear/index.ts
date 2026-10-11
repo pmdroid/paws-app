@@ -85,3 +85,13 @@ export {
   parseAgentEvent,
 } from "./webhook";
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
+
+export { parseLinearSessionContext, renderLinearSessionContext } from "./context";
+export type { LinearSessionContext } from "./context";
+
+export type {
+  LinearSessionSnapshot,
+  LinearActivitySnapshot,
+  LinearActivityContent,
+  LinearSessionStatus,
+} from "./history";

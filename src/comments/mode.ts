@@ -429,6 +429,10 @@ export function withCommentActivities(
   mode: Pick<TrackerAdapter, "postProgress" | "askQuestion">,
 ): TrackerAdapter {
   return {
+    ...(tracker.getSession ? { getSession: tracker.getSession.bind(tracker) } : {}),
+    ...(tracker.listSessionActivities
+      ? { listSessionActivities: tracker.listSessionActivities.bind(tracker) }
+      : {}),
     loadEpic: (linearIssueId) => tracker.loadEpic(linearIssueId),
     listDeps: (linearIssueId) => tracker.listDeps(linearIssueId),
     setStatus: (update) => tracker.setStatus(update),
