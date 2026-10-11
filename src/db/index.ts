@@ -123,6 +123,7 @@ export {
   markArtifact,
   listArtifacts,
   artifactPublicationReady,
+  getArtifact,
   type StoredArtifact,
 } from "./artifacts";
 

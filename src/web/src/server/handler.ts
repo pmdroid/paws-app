@@ -10,6 +10,7 @@ import {
 import { demoStatus } from "../demo";
 import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
+import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
 
 export interface StatusProvider {
@@ -37,6 +38,7 @@ export interface StatusServerOptions {
   csrfToken?: string;
   closeoutHome?: string;
   evidenceRoot?: string;
+  readLinearArtifact?: ReadLinearArtifact;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -64,6 +66,8 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
+  const artifact = await handleLinearArtifactRequest(request, options.readLinearArtifact);
+  if (artifact !== null) return artifact;
   const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);
   if (auth !== null) return auth;
   if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));

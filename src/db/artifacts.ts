@@ -56,6 +56,12 @@ export function listArtifacts(db: Database, itemId: string): StoredArtifact[] {
     .all(itemId);
 }
 
+export function getArtifact(db: Database, id: string): StoredArtifact | null {
+  return db
+    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE id = ?`)
+    .get(id);
+}
+
 export function artifactPublicationReady(db: Database, itemId: string): boolean {
   return (
     db

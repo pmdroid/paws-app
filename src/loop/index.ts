@@ -32,5 +32,5 @@ export {
   worktreeBranch,
 } from "./sources";
 
-export { createLinearArtifactPublisher } from "./artifacts";
 export { createLinearInputLoader, inputSources } from "./input-files";
+export { createLinearArtifactPublisher, createLinearArtifactReader } from "./artifacts";
