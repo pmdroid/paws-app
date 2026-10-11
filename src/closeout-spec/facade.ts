@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
+import { evidenceAttemptKey } from "./retry";
 import { loadPolicy } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
@@ -76,6 +77,7 @@ export type DecisionInput = {
   evidenceDir?: string;
   /** Home directory for `~/.agents/closeout.yaml` when origin has no entry. */
   home?: string;
+  retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
 };
@@ -91,6 +93,7 @@ export type RunRequest = {
   home?: string;
   /** `~/.paws` override for the detached worktree. */
   pawsHome?: string;
+  retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
@@ -114,6 +117,7 @@ export type AddReviewInput = {
   reviewer: ReviewIntake;
   evidenceDir?: string;
   home?: string;
+  retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
 };
@@ -169,6 +173,24 @@ export function validate(repo: string, home?: string): ValidateResult {
   const loaded = loadOrigin(repo, home);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
+}
+
+export function policyFixBudget(repo: string, home?: string): number | null {
+  const loaded = loadOrigin(repo, home);
+  if (!loaded.ok) return null;
+  const policy = loaded.policy;
+  if (policy.source === "none" || policy.retry === undefined) return null;
+  return Math.max(
+    0,
+    policy.retry.maxFailedAttemptsPerItem * Math.max(1, policy.items.length + policy.setup.length) -
+      1,
+  );
+}
+
+export async function retryBaseline(evidenceDir: string): Promise<string[]> {
+  const snapshot = await createEvidenceStore({ root: evidenceDir }).load();
+  if (snapshot.invalid) throw new Error(snapshot.invalid.message);
+  return snapshot.records.map(evidenceAttemptKey);
 }
 
 /**
@@ -239,6 +261,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.pawsHome !== undefined ? { home: input.pawsHome } : {}),
     ...(input.env !== undefined ? { env: input.env } : {}),
     ...(input.progress !== undefined ? { progress: input.progress } : {}),
+    ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(
@@ -413,7 +436,13 @@ async function finish(
 }
 
 function requestOf(
-  input: { base: string; head: string; gate: Gate; task?: string },
+  input: {
+    base: string;
+    head: string;
+    gate: Gate;
+    task?: string;
+    retryBaseline?: readonly string[];
+  },
   candidate: CandidateIdentity,
   extra: Partial<EvaluateRequest> & { base?: string; head?: string },
 ): EvaluateRequest {
@@ -424,6 +453,7 @@ function requestOf(
     candidate,
   };
   if (input.task !== undefined) request.task = input.task;
+  if (input.retryBaseline !== undefined) request.retryBaseline = input.retryBaseline;
   if (extra.changedPaths !== undefined) request.changedPaths = extra.changedPaths;
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;

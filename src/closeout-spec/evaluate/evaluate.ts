@@ -28,6 +28,7 @@ import {
   type ReviewRecord,
   type Severity,
 } from "../index";
+import { evidenceAttemptKey } from "../retry";
 import { anyPathMatches } from "./paths";
 import { producerTrusted, type EvaluateTrust } from "./trust";
 
@@ -70,6 +71,7 @@ export type EvaluateRequest = {
   task?: string;
   candidate: CandidateIdentity;
   changedPaths?: readonly string[] | null;
+  retryBaseline?: readonly string[];
   evidenceError?: string;
   policyLoadError?: string;
 };
@@ -267,7 +269,11 @@ function retryBlock(
     const key = `${record.base}\0${record.head}\0${record.attempt}`;
     if (seen.has(key)) return row(item, "invalid", "duplicate evidence attempt");
     seen.add(key);
-    if (recordFailed(item, record, request, trust)) failed += 1;
+    if (
+      !request.retryBaseline?.includes(evidenceAttemptKey(record)) &&
+      recordFailed(item, record, request, trust)
+    )
+      failed += 1;
   }
   if (failed < retry.maxFailedAttemptsPerItem) return undefined;
   return row(

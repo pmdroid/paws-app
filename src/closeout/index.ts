@@ -8,7 +8,7 @@ export type { FixRequest, FixResult, FixRunner } from "./fixer";
 export type { VerdictRecorder } from "./report";
 export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
-export { evaluateCandidate, runCloseoutGate } from "./run";
+export { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
   CloseoutOutputStream,
@@ -27,3 +27,6 @@ export type {
   GateOutcome,
   GateResult,
 } from "./types";
+
+export { bypassable } from "./bypass";
+export type { CloseoutBypass } from "./bypass";

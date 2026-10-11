@@ -51,7 +51,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       seq += 1;
       const prompt = [
         ...(deps.brief ? [deps.brief] : []),
-        "Review the change.",
+        request.prompt ?? "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
         `Base ${request.base}, head ${request.head}.`,
         FINDING_FORMAT,

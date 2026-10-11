@@ -84,4 +84,5 @@ export type GateResult = {
   decision: DecisionDocument | null;
   summary: string;
   reportPath?: string;
+  bypasses?: readonly import("./bypass").CloseoutBypass[];
 };

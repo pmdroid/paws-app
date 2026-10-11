@@ -17,6 +17,7 @@ export type CloseoutVerdict = {
   decision: CloseoutDecision;
   exhausted: boolean;
   summary: string;
+  result?: GateResult;
 };
 
 /**
@@ -39,6 +40,8 @@ export type CloseoutGateOptions = {
   reportDir?: string;
   recorder?: GateInput["recorder"];
   maxFixAttempts?: number;
+  retryBaseline?: readonly string[];
+  bypasses?: GateInput["bypasses"];
   progress?: GateInput["progress"];
 };
 
@@ -69,6 +72,8 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.reportDir ? { reportDir: options.reportDir } : {}),
         ...(options.recorder ? { recorder: options.recorder } : {}),
         ...(options.maxFixAttempts !== undefined ? { maxFixAttempts: options.maxFixAttempts } : {}),
+        ...(options.bypasses ? { bypasses: options.bypasses } : {}),
+        ...(options.retryBaseline ? { retryBaseline: options.retryBaseline } : {}),
         ...(options.progress ? { progress: options.progress } : {}),
       });
       return toVerdict(result, input.attempt);
@@ -79,13 +84,13 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
 function toVerdict(result: GateResult, attempt: number): CloseoutVerdict {
   const summary = `${result.summary}\nCaller attempt: ${attempt}`;
   if (result.outcome === "accepted") {
-    return { decision: "accepted", exhausted: false, summary };
+    return { decision: "accepted", exhausted: false, summary, result };
   }
   if (result.outcome === "invalid") {
-    return { decision: "invalid", exhausted: false, summary };
+    return { decision: "invalid", exhausted: false, summary, result };
   }
   const exhausted = result.outcome === "exhausted";
   const decision: CloseoutDecision =
     result.decision?.decision === "rejected" ? "rejected" : "blocked";
-  return { decision, exhausted, summary };
+  return { decision, exhausted, summary, result };
 }

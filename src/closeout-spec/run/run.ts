@@ -12,6 +12,7 @@ import type {
   ResolvedReview,
   ResolvedSetup,
 } from "../types";
+import { evidenceAttemptKey } from "../retry";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
@@ -66,6 +67,7 @@ export type CloseoutRunInput = {
   /** Parent environment for setup steps and commands. Credentials are removed. */
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
+  retryBaseline?: readonly string[];
 };
 
 type Runnable = ResolvedSetup | ResolvedCommand;
@@ -243,7 +245,15 @@ function classify(
       disposition: { id: item.id, kind: item.kind, state: "skipped", message: "setup failed" },
     };
   }
-  const blocked = retryBlock(input.policy, item, base, head, input.candidate, records);
+  const blocked = retryBlock(
+    input.policy,
+    item,
+    base,
+    head,
+    input.candidate,
+    records,
+    input.retryBaseline,
+  );
   if (blocked !== null) {
     return {
       kind: "skip",
@@ -525,6 +535,7 @@ function retryBlock(
   head: string,
   candidate: CandidateIdentity,
   records: readonly EvidenceRecord[],
+  baseline?: readonly string[],
 ): string | null {
   if (policy.source === "none") return null;
   const retry = policy.retry;
@@ -536,7 +547,8 @@ function retryBlock(
     const key = `${record.base}\0${record.head}\0${record.attempt}`;
     if (seen.has(key)) return "duplicate evidence attempt";
     seen.add(key);
-    if (countsAsFailed(item, record)) failed += 1;
+    if (!baseline?.includes(evidenceAttemptKey(record)) && countsAsFailed(item, record))
+      failed += 1;
   }
   if (failed < retry.maxFailedAttemptsPerItem) return null;
   return `${failed} of ${retry.maxFailedAttemptsPerItem} allowed failed attempts used. Stop retrying and ask for help.`;
