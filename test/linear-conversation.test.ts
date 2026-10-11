@@ -18,6 +18,7 @@ import {
   migrate,
   openDatabase,
 } from "../src/db";
+import { findOpenQuestion } from "../src/questions";
 import { worktreePath } from "../src/acp";
 import { createFakeTracker, createInboxStore, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
@@ -66,6 +67,7 @@ function fixture(
   hang: "implement" | "review" | "classify" | null,
   taskModes = false,
   children = false,
+  initialMode: "answer" | "artifact" = "answer",
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-"));
   const pawsRoot = join(root, "paws");
@@ -126,13 +128,32 @@ function fixture(
       existsSync(evidence + ".descendant")
     )
       expect(running(Number(readFileSync(evidence + ".descendant", "utf8")))).toBe(false);
-    if (taskModes && (input.purpose === "classify" || input.purpose === "answer")) {
+    if (taskModes && (input.purpose === "classify" || input.purpose === initialMode)) {
       const path = join(root, `${starts.length}.script.json`);
       writeFileSync(
         path,
         JSON.stringify({
           steps: [
             ...(behavior ? [{ type: "hang" }] : []),
+            ...(input.purpose === initialMode
+              ? [
+                  {
+                    type: "update",
+                    update: {
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: "ANSWER_OBSERVATION" },
+                    },
+                  },
+                  {
+                    type: "update",
+                    update: {
+                      sessionUpdate: "agent_thought_chunk",
+                      content: { type: "text", text: "PRIVATE_ANSWER_HIDDEN" },
+                    },
+                  },
+                  { type: "ask_team", question: "What should I explain?", options: [] },
+                ]
+              : []),
             {
               type: "update",
               update: {
@@ -141,7 +162,9 @@ function fixture(
                   type: "text",
                   text:
                     input.purpose === "classify"
-                      ? JSON.stringify({ mode: starts.includes("answer") ? "code" : "answer" })
+                      ? JSON.stringify({
+                          mode: starts.includes(initialMode) ? "code" : initialMode,
+                        })
                       : "Complete answer",
                 },
               },
@@ -307,12 +330,16 @@ test("new prompt after completion creates a new task and preserves the terminal 
     await f.jobs.tick();
     const original = f.item();
     applyWorkItemEvent(f.db, original.id, "merge_accepted");
+    expect(getConversation(f.db, original.id).entries).toContain(
+      "Append the required fixed suffix.",
+    );
     await f.orchestrator.onLinearEvent(event("later", "ANOTHER_REQUEST", 4));
     const next = f.item();
     expect(next.id).not.toBe(original.id);
     expect(next.linearIssueId).toBe(original.linearIssueId);
     expect(itemPathId(next)).not.toBe(itemPathId(original));
     expect(getWorkItem(f.db, original.id)?.state).toBe("merged");
+    f.reopen();
     for (let attempt = 0; attempt < 3 && f.item().state === "queued"; attempt++)
       await f.jobs.tick();
     expect(f.item().state).toBe("merge_queue");
@@ -322,6 +349,12 @@ test("new prompt after completion creates a new task and preserves the terminal 
         .filter((row) => row.purpose === "implement")
         .at(-1)!.prompt,
     ).toContain("ANOTHER_REQUEST");
+    expect(
+      f
+        .prompts()
+        .filter((row) => row.purpose === "implement")
+        .at(-1)!.prompt,
+    ).toContain("Append the required fixed suffix.");
   } finally {
     await f.close();
   }
@@ -434,6 +467,41 @@ test("unresolved early prompt remains durable until creation supplies its issue"
   }
 }, 15000);
 
+test("an accepted answer question redirects through classification before code execution", async () => {
+  const f = fixture(null, true);
+  try {
+    await f.orchestrator.onLinearEvent(event("created", null, 1));
+    const task = f.item().id;
+    const original = f.jobs.tick();
+    await until(() => Boolean(findOpenQuestion(f.db, "session")));
+    expect(getTaskMode(f.db, task)).toBe("answer");
+    expect(f.starts).toEqual(["classify", "answer"]);
+    const reply = {
+      ...event("redirect", "Also implement the change", Date.now()),
+      actorId: "human",
+      activityCreatedAtMs: Date.now(),
+    };
+    await f.orchestrator.onLinearEvent(reply);
+    await original;
+    expect(findOpenQuestion(f.db, "session")).toBeNull();
+    expect(f.item().id).toBe(task);
+    expect(f.tracker.progress.filter((row) => row.kind === "response")).toHaveLength(0);
+    await f.jobs.tick();
+    expect(getTaskMode(f.db, task)).toBe("code");
+    expect(f.starts.indexOf("implement")).toBeGreaterThan(f.starts.lastIndexOf("classify"));
+    expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
+      "Also implement the change",
+    );
+    const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;
+    expect(implementation).toContain("ANSWER_OBSERVATION");
+    expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
+    expect(getConversation(f.db, task).entries).toContain("ANSWER_OBSERVATION");
+    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+}, 20000);
+
 test("a prompt interrupts intake classification and is routed once after the old owner exits", async () => {
   const f = fixture("classify", true);
   try {
@@ -473,6 +541,51 @@ test("shutdown retains a queued start without allowing a new writer", async () =
     await f.close();
   }
 });
+
+test.each(["answer", "artifact"] as const)(
+  "a %s redirect fans out the parent and carries public ACP context into its children after reopen",
+  async (mode) => {
+    const f = fixture(null, true, true, mode);
+    try {
+      await f.orchestrator.onLinearEvent(event("created", null, 1));
+      const discussion = f.item().id;
+      const original = f.jobs.tick();
+      await until(() => Boolean(findOpenQuestion(f.db, "session")));
+      const reply = {
+        ...event("redirect-children", "Also implement both child changes", Date.now()),
+        actorId: "human",
+        activityCreatedAtMs: Date.now(),
+      };
+      await f.orchestrator.onLinearEvent(reply);
+      await original;
+      await f.jobs.tick();
+      expect(getWorkItem(f.db, discussion)?.state).toBe("cancelled");
+      const children = f.db
+        .query<{ id: string; linear_issue_id: string }, []>(
+          "SELECT id, linear_issue_id FROM work_item WHERE linear_issue_id != 'issue' ORDER BY position",
+        )
+        .all();
+      expect(children.map((child) => child.linear_issue_id)).toEqual(["first", "second"]);
+      expect(children.map((child) => getTaskMode(f.db, child.id))).toEqual(["code", "code"]);
+      expect(f.starts).toEqual(["classify", mode, "classify"]);
+      f.reopen();
+      await f.orchestrator.onLinearEvent(event("created", null, 1));
+      await f.jobs.tick();
+      expect(f.item().id).toBe(children[0]!.id);
+      expect(f.item().state).toBe("merge_queue");
+      const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;
+      expect(implementation).toContain("ANSWER_OBSERVATION");
+      expect(implementation).toContain("Also implement both child changes");
+      expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
+      expect(getConversation(f.db, children[0]!.id).entries).toContain("ANSWER_OBSERVATION");
+      expect(f.starts.filter((purpose) => purpose === "classify")).toHaveLength(2);
+      expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(3);
+    } finally {
+      await f.close();
+    }
+  },
+  20000,
+);
 
 test("an unhandled Stop replay after reopen preserves a newer explicit task", async () => {
   const f = fixture(null);
