@@ -9,6 +9,7 @@ import type { FixRunner } from "./fixer";
 import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
 import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
+import { reviewRequirements } from "./index";
 
 const exec = promisify(execFile);
 const TASK = "ENG-123";
@@ -24,6 +25,37 @@ Report findings. An empty list means the change is fine.
 `;
 
 describe("closeout gate", () => {
+  test("preflight reads review independence from trusted origin policy", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    try {
+      await writeFile(path.join(repo.dir, ".agents/closeout.yaml"), policy([]));
+      expect(reviewRequirements(repo.dir, repo.home)).toEqual({
+        ok: true,
+        items: [
+          {
+            id: "adversarial-review",
+            gate: "beforePR",
+            independence: { differentSession: true, differentModel: true },
+          },
+        ],
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("preflight fails closed when the trusted policy cannot load", async () => {
+    const repo = await originRepo({ ".agents/closeout.yaml": "specVersion: invalid\n" });
+    try {
+      expect(reviewRequirements(repo.dir, repo.home).ok).toBe(false);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("feeds a failing command back and accepts on attempt 2", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([commandUntilOk("test")]),

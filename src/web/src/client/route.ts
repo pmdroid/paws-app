@@ -4,7 +4,8 @@ export type Route =
   | { view: "runs"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "verdicts"; id: string | null }
-  | { view: "queue" };
+  | { view: "queue" }
+  | { view: "settings" };
 
 export function parseRoute(hash: string): Route {
   const parts = hash
@@ -28,6 +29,8 @@ export function parseRoute(hash: string): Route {
       return { view: "verdicts", id };
     case "queue":
       return { view: "queue" };
+    case "settings":
+      return { view: "settings" };
     default:
       return { view: "overview" };
   }
@@ -35,7 +38,7 @@ export function parseRoute(hash: string): Route {
 
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "#/";
-  if (route.view === "queue") return "#/queue";
+  if (route.view === "queue" || route.view === "settings") return `#/${route.view}`;
   return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
 }
 
