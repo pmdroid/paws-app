@@ -69,30 +69,33 @@ const sessionId = script.sessionId ?? crypto.randomUUID();
 let currentModel = script.model === undefined ? "test-claude-model" : script.model;
 let currentEffort = script.effort ?? "medium";
 const configOptions = () => {
-  const models = currentModel === null
-    ? []
-    : [
-        {
-          id: "model",
-          type: "select",
-          name: "Model",
-          category: "model",
-          currentValue: currentModel,
-          options: (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
-        },
-      ];
+  const models =
+    currentModel === null
+      ? []
+      : [
+          {
+            id: "model",
+            type: "select",
+            name: "Model",
+            category: "model",
+            currentValue: currentModel,
+            options: (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
+          },
+        ];
   const efforts = (currentModel && script.modelEfforts?.[currentModel]) ?? script.efforts;
   return [
     ...models,
     ...(efforts
-      ? [{
-          id: "reasoning_effort",
-          type: "select",
-          name: "Effort",
-          category: "thought_level",
-          currentValue: currentEffort,
-          options: efforts.map((value) => ({ value, name: value })),
-        }]
+      ? [
+          {
+            id: "reasoning_effort",
+            type: "select",
+            name: "Effort",
+            category: "thought_level",
+            currentValue: currentEffort,
+            options: efforts.map((value) => ({ value, name: value })),
+          },
+        ]
       : []),
   ];
 };
@@ -162,7 +165,11 @@ async function handle(message: {
       state.effortSelection = message.params;
       persist();
       if (script.effortError)
-        send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: script.effortError } });
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32602, message: script.effortError },
+        });
       else {
         currentEffort = script.confirmEffort ?? String(message.params?.value);
         send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });

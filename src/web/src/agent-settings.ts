@@ -1,4 +1,8 @@
-export type AgentProfile = { agent: "claude" | "codex" | "grok"; model: string | null };
+export type AgentProfile = {
+  agent: "claude" | "codex" | "grok";
+  model: string | null;
+  effort?: string;
+};
 export type AgentRole = "implementer" | "reviewer";
 export type AgentSettings = {
   defaults: Record<AgentRole, AgentProfile>;
@@ -9,5 +13,7 @@ export type AgentConnection = {
   agent: AgentProfile["agent"];
   model: string | null;
   models: { id: string; name: string }[];
+  effort?: string | null;
+  efforts?: { id: string; name: string }[];
   message: string;
 };

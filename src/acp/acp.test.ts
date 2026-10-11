@@ -678,17 +678,30 @@ test("ACP selects effort from the chosen model before prompting", async () => {
   expect(result.stopReason).toBe("end_turn");
   expect(result.identity?.model).toBe("model-b");
   expect(result.effort).toBe("high");
-  expect(result.efforts).toEqual([{ id: "medium", name: "medium" }, { id: "high", name: "high" }]);
+  expect(result.efforts).toEqual([
+    { id: "medium", name: "medium" },
+    { id: "high", name: "high" },
+  ]);
   const trace = await readResult(files.resultPath);
-  expect(trace.effortSelection).toEqual({ sessionId: result.sessionId, configId: "reasoning_effort", value: "high" });
-  expect(trace.methods.slice(-3)).toEqual(["session/set_config_option", "session/set_config_option", "session/prompt"]);
+  expect(trace.effortSelection).toEqual({
+    sessionId: result.sessionId,
+    configId: "reasoning_effort",
+    value: "high",
+  });
+  expect(trace.methods.slice(-3)).toEqual([
+    "session/set_config_option",
+    "session/set_config_option",
+    "session/prompt",
+  ]);
 });
 
 for (const failure of ["unsupported", "unadvertised", "rejected", "unconfirmed"] as const) {
   test(`ACP refuses ${failure} effort selection before prompting`, async () => {
     const layout = await layoutRepo();
     const files = await writeScript(layout.root, {
-      ...(failure === "unsupported" ? {} : { efforts: failure === "unadvertised" ? ["medium"] : ["medium", "high"] }),
+      ...(failure === "unsupported"
+        ? {}
+        : { efforts: failure === "unadvertised" ? ["medium"] : ["medium", "high"] }),
       ...(failure === "rejected" ? { effortError: "effort unavailable" } : {}),
       ...(failure === "unconfirmed" ? { confirmEffort: "medium" } : {}),
       steps: [{ type: "end" }],

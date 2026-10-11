@@ -30,17 +30,40 @@ describe("agent settings config", () => {
         implementer: { ...settings.defaults.implementer, effort: "high" },
         reviewer: settings.defaults.reviewer,
       },
-      projects: [{ repo: "pmdroid/barkvisor", reviewer: { agent: "codex", model: "another-model", effort: "xhigh" } }],
+      projects: [
+        {
+          repo: "pmdroid/barkvisor",
+          reviewer: { agent: "codex", model: "another-model", effort: "xhigh" },
+        },
+      ],
     };
     writeAgentSettings(path, next);
     expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
-    expect(resolveAgentProfiles(loadConfigFile(path), "pmdroid/barkvisor").reviewer.effort).toBe("xhigh");
+    expect(resolveAgentProfiles(loadConfigFile(path), "pmdroid/barkvisor").reviewer.effort).toBe(
+      "xhigh",
+    );
     writeImplementer(path, "claude");
     expect(readAgentSettings(loadConfigFile(path))).toEqual(next);
     writeImplementer(path, "grok");
     expect(resolveAgentProfiles(loadConfigFile(path)).implementer.effort).toBeUndefined();
-    expect(() => parseAgentSettings({ ...next, defaults: { ...next.defaults, implementer: { ...next.defaults.implementer, effort: "bad\neffort" } } })).toThrow();
-    expect(() => parseAgentSettings({ ...next, defaults: { implementer: { agent: "codex", model: null, effort: "low" }, reviewer: { agent: "codex", model: null, effort: "high" } } })).toThrow(/different/);
+    expect(() =>
+      parseAgentSettings({
+        ...next,
+        defaults: {
+          ...next.defaults,
+          implementer: { ...next.defaults.implementer, effort: "bad\neffort" },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseAgentSettings({
+        ...next,
+        defaults: {
+          implementer: { agent: "codex", model: null, effort: "low" },
+          reviewer: { agent: "codex", model: null, effort: "high" },
+        },
+      }),
+    ).toThrow(/different/);
   });
   test("legacy implementer remains the default and reviewer inherits Codex", () => {
     const config = emptyConfigFile();
