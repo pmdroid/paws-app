@@ -9,15 +9,15 @@ import type { FakeResult, FakeScript, FakeStep } from "./script";
  * leave that method unused.
  */
 
-const resultPath = process.env.FAKE_ACP_RESULT;
-const scriptPath = process.env.FAKE_ACP_SCRIPT;
+const resultPath = process.argv[2];
+const scriptPath = process.argv[3];
 const script: FakeScript = scriptPath
   ? (JSON.parse(readFileSync(scriptPath, "utf8")) as FakeScript)
   : { steps: [] };
 
 const state: FakeResult = {
   methods: [],
-  argv: process.argv.slice(2),
+  argv: process.argv.slice(4),
   cwd: process.cwd(),
   env: {
     xaiApiKey: present("XAI_API_KEY"),

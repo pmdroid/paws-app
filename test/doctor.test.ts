@@ -156,16 +156,14 @@ test("doctor is green with no claude when the implementer is grok", async () => 
   const status = await grokLoginStatus({
     agents,
     command: process.execPath,
-    args: [fakeAgent, ...GROK_AGENT_ARGS],
+    args: [fakeAgent, resultPath, scriptPath, ...GROK_AGENT_ARGS],
     env: {
       ...process.env,
-      FAKE_ACP_SCRIPT: scriptPath,
-      FAKE_ACP_RESULT: resultPath,
     },
   });
   expect(status.loggedIn).toBe(true);
   expect(status.detail).toBe("cached_token");
-  expect(status.args).toEqual([fakeAgent, ...GROK_AGENT_ARGS]);
+  expect(status.args).toEqual([fakeAgent, resultPath, scriptPath, ...GROK_AGENT_ARGS]);
   expect(status.args.join(" ")).not.toContain("yolo");
   expect(status.args.join(" ")).not.toContain("always-approve");
   const trace = JSON.parse(await Bun.file(resultPath).text()) as FakeResult;
@@ -336,11 +334,9 @@ test("doctor fails with one actionable line when grok has no auth method", async
   const status = await grokLoginStatus({
     agents,
     command: process.execPath,
-    args: [fakeAgent, ...GROK_AGENT_ARGS],
+    args: [fakeAgent, resultPath, scriptPath, ...GROK_AGENT_ARGS],
     env: {
       ...process.env,
-      FAKE_ACP_SCRIPT: scriptPath,
-      FAKE_ACP_RESULT: resultPath,
     },
     timeoutMs: 5_000,
   });

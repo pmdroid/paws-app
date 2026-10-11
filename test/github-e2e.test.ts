@@ -77,8 +77,8 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
     writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({
@@ -275,8 +275,8 @@ test("linear and github issues share one queue and report to their own tracker",
     writeFileSync(scriptPath, JSON.stringify(plainScript(input)));
     return {
       command: process.execPath,
-      args: [fakeAgent],
-      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
     };
   };
   const orchestrator = attachOrchestrator({

@@ -271,12 +271,12 @@ async function scenario(name: string, reviewerText = "[]", implementer = "claude
         process.execPath,
         "--no-env-file",
         fakeAgent,
+        join(dir, `agent-${sequence}-result.json`),
+        scriptPath,
       ],
       env: {
         ...process.env,
         PAWS_HOME: pawsRoot,
-        FAKE_ACP_SCRIPT: scriptPath,
-        FAKE_ACP_RESULT: join(dir, `agent-${sequence}-result.json`),
       },
     };
   };

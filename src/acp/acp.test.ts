@@ -59,8 +59,8 @@ test("initialize reports auth methods and does not call authenticate", async () 
   const auth = await checkOwnLogin({
     role: "implementer",
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
   });
   expect(auth.authenticateCalled).toBe(false);
   expect(auth.credentialsRead).toBe(false);
@@ -195,8 +195,8 @@ test("fake agent streams events, guards permissions, and checkpoints", async () 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
     timeoutMs: 10_000,
     onEvent: (event) => {
       events.push(event);
@@ -263,8 +263,8 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
     askTeam: {
       async ask(request) {
         expect(request.question).toBe("Include archived rows?");
@@ -301,8 +301,8 @@ test("timeout kills an agent that ignores cancel and keeps a WIP commit", async 
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
     timeoutMs: 400,
     cancelGraceMs: 200,
     onEvent: (event) => {
@@ -336,8 +336,8 @@ test("cancel leaves no agent process", async () => {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
     timeoutMs: 10_000,
     cancelGraceMs: 1_000,
     signal: controller.signal,
@@ -387,9 +387,9 @@ test("grok authenticates with cached_token, scrubs the key, and denies a path ou
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent, ...GROK_AGENT_ARGS],
+    args: [...fakeAgentArgs(files), ...GROK_AGENT_ARGS],
     env: {
-      ...agentEnv(files.resultPath, files.scriptPath),
+      ...agentEnv(),
       XAI_API_KEY: "xai-should-not-leak",
       AWS_SECRET_ACCESS_KEY: "aws-should-not-leak",
     },
@@ -435,9 +435,9 @@ test("grok passes XAI_API_KEY only when allow_api_key is set and authenticates w
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
+    args: fakeAgentArgs(files),
     env: {
-      ...agentEnv(files.resultPath, files.scriptPath),
+      ...agentEnv(),
       XAI_API_KEY: "xai-allowed",
       GH_TOKEN: "gh-no",
     },
@@ -468,8 +468,8 @@ test("grok with no auth method posts the login line and does not hang", async ()
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
     timeoutMs: 5_000,
     onEvent: (event) => {
       events.push(event);
@@ -523,8 +523,8 @@ test("cancel still stops a grok session", async () => {
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     command: process.execPath,
-    args: [fakeAgent, ...GROK_AGENT_ARGS],
-    env: agentEnv(files.resultPath, files.scriptPath),
+    args: [...fakeAgentArgs(files), ...GROK_AGENT_ARGS],
+    env: agentEnv(),
     timeoutMs: 10_000,
     cancelGraceMs: 1_000,
     signal: controller.signal,
@@ -611,11 +611,13 @@ async function writeScript(
   return { scriptPath, resultPath };
 }
 
-function agentEnv(resultPath: string, scriptPath: string): NodeJS.ProcessEnv {
+function fakeAgentArgs(files: { resultPath: string; scriptPath: string }): string[] {
+  return [fakeAgent, files.resultPath, files.scriptPath];
+}
+
+function agentEnv(): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    FAKE_ACP_RESULT: resultPath,
-    FAKE_ACP_SCRIPT: scriptPath,
     GH_TOKEN: "should-not-pass",
     SSH_AUTH_SOCK: "/tmp/agent-sock",
   };
