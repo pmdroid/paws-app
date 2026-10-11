@@ -1,5 +1,5 @@
 export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
-export type { TrackerAdapter } from "./adapter";
+export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export { linearBudget, LinearRateLimitError } from "./budget";
 export type { LinearRateBudget } from "./budget";
@@ -10,11 +10,19 @@ export type {
   PolledActivity,
   PolledComment,
   PolledIssue,
+  PolledSession,
 } from "./catchup";
 export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
 export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
 export { createFakeTracker } from "./fake";
 export type { FakeTracker } from "./fake";
+export { createLinearFileTransfer } from "./files";
+export type {
+  DownloadedLinearFile,
+  LinearFileMetadata,
+  LinearFileTransfer,
+  UploadedLinearFile,
+} from "./files";
 export { createLinearClient } from "./graphql";
 export type { LinearClient } from "./graphql";
 export { createInboxStore } from "./inbox";
@@ -47,15 +55,27 @@ export type { CatchUpPoller, Sleeper } from "./poller";
 export { linearTokenPath, openLinear } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
+export type { LinearSessionAdapter } from "./sessions";
 export { downTunnel, startNgrokTunnel } from "./tunnel";
 export type { SpawnFn, Tunnel } from "./tunnel";
 export type {
+  ActionDetails,
   ActivityKind,
+  ActivityReceipt,
+  AuthSignal,
   DependencyEdge,
   Elicitation,
   EpicSnapshot,
   LinearSubIssue,
   ProgressUpdate,
+  SelectOption,
+  SessionElicitation,
+  SessionOnComment,
+  SessionOnIssue,
+  SessionPlanStep,
+  SessionReceipt,
+  SessionUpdate,
+  SessionUrl,
   StatusUpdate,
 } from "./types";
 export {

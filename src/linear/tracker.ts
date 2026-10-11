@@ -1,14 +1,8 @@
-import type { TrackerAdapter } from "./adapter";
+import type { LinearSessionAdapter } from "./sessions";
+import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
 import { isRecord, readNumber, readString } from "./read";
-import type {
-  DependencyEdge,
-  Elicitation,
-  EpicSnapshot,
-  LinearSubIssue,
-  ProgressUpdate,
-  StatusUpdate,
-} from "./types";
+import type { DependencyEdge, EpicSnapshot, LinearSubIssue, StatusUpdate } from "./types";
 
 const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
   issue(id: $id) {
@@ -44,10 +38,6 @@ const STATES_QUERY = `query IssueStates($id: String!) {
   }
 }`;
 
-const ACTIVITY_MUTATION = `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
-  agentActivityCreate(input: $input) { success }
-}`;
-
 const STATUS_MUTATION = `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success }
 }`;
@@ -58,8 +48,10 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-export function createLinearTracker(client: LinearClient): TrackerAdapter {
+export function createLinearTracker(client: LinearClient): LinearSessionAdapter {
+  const sessions = createLinearSessionMethods(client);
   return {
+    ...sessions,
     async loadEpic(linearIssueId) {
       const children: Array<LinearSubIssue & { sort: number | null }> = [];
       let after: string | null = null;
@@ -138,46 +130,31 @@ export function createLinearTracker(client: LinearClient): TrackerAdapter {
       }
       return edges;
     },
-    async postProgress(update) {
-      await client.query(ACTIVITY_MUTATION, { input: activityInput(update) });
+    async postProgress(update, options) {
+      await sessions.createActivity(update, options);
     },
-    async askQuestion(question) {
-      await client.query(ACTIVITY_MUTATION, { input: elicitationInput(question) });
+    async askQuestion(question, options) {
+      await sessions.createElicitation(question, options);
     },
-    async setStatus(update) {
-      const data = await client.query(STATES_QUERY, { id: update.linearIssueId });
+    async setStatus(update, options) {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(STATES_QUERY, { id: update.linearIssueId }, options);
+      options?.signal?.throwIfAborted();
       const stateId = pickStateId(data, update.stateType);
       if (stateId === null) {
         throw new Error(`Linear issue ${update.linearIssueId} has no ${update.stateType} state`);
       }
-      await client.query(STATUS_MUTATION, {
-        id: update.linearIssueId,
-        input: { stateId },
-      });
+      await client.query(
+        STATUS_MUTATION,
+        {
+          id: update.linearIssueId,
+          input: { stateId },
+        },
+        options,
+      );
+      options?.signal?.throwIfAborted();
     },
   };
-}
-
-function activityInput(update: ProgressUpdate): Record<string, unknown> {
-  const content =
-    update.kind === "action"
-      ? { type: "action", action: "update", parameter: update.body }
-      : { type: update.kind, body: update.body };
-  return { agentSessionId: update.sessionId, content };
-}
-
-function elicitationInput(question: Elicitation): Record<string, unknown> {
-  const options = question.options ?? [];
-  const input: Record<string, unknown> = {
-    agentSessionId: question.sessionId,
-    content: { type: "elicitation", body: question.body },
-  };
-  if (options.length === 0) return input;
-  input["signal"] = "select";
-  input["signalMetadata"] = {
-    options: options.map((option) => ({ label: option, value: option })),
-  };
-  return input;
 }
 
 function pickStateId(data: unknown, stateType: StatusUpdate["stateType"]): string | null {

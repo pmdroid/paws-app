@@ -254,7 +254,7 @@ export function failWorkItem(
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
     idempotencyKey: `fail:${item.id}:${reason}`,
-    payload: { text },
+    payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
     now,
   });
 }
@@ -274,7 +274,11 @@ function failForCap(
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
     idempotencyKey: `cap:${item.id}:${reason}`,
-    payload: { text: capActivityText(reason, item.maxTurns, item.maxAwakeMs) },
+    payload: {
+      sessionId: item.sessionKey ?? item.id,
+      kind: "error",
+      body: capActivityText(reason, item.maxTurns, item.maxAwakeMs),
+    },
     now,
   });
 }

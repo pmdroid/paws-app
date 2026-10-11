@@ -159,10 +159,10 @@ describe("paws setup", () => {
     const second = await run(scene, args);
     expect(second.code).toBe(0);
     expect(stamp(scene, ["linear-oauth.json", "linear-client.json"])).toEqual(before);
-    expect(scene.linear.creates).toHaveLength(1);
+    expect(scene.linear.creates).toHaveLength(0);
   });
 
-  test("interactive agent setup authorizes through a real callback and saves the returned expiry", async () => {
+  test("interactive agent setup saves OAuth credentials when the app cannot create labels", async () => {
     const scene = await arrange({ bearer: true, policy: "custom: true\n" });
     const started = Date.now();
     let redirectUri = "";
@@ -232,6 +232,8 @@ describe("paws setup", () => {
     expect(statSync(join(scene.paths.secretsDir, "linear-client.json")).mode & 0o777).toBe(0o600);
     expect(statSync(scene.paths.secretsDir).mode & 0o777).toBe(0o700);
     expect(loadConfigFile(scene.paths.configFile).linearMode).toBe("agent-session");
+    expect(loadConfigFile(scene.paths.configFile).trackerKind).toBe("linear");
+    expect(scene.linear.creates).toHaveLength(0);
     expect(scene.linear.auths.every((header) => header === `Bearer ${ACCESS_TOKEN}`)).toBe(true);
     const output = [
       ...result.stdout,
@@ -248,6 +250,96 @@ describe("paws setup", () => {
     }
     expect(result.stdout).toContain(`Linear redirect URI: ${redirectUri}`);
     await expect(fetch(redirectUri)).rejects.toThrow();
+  });
+
+  test.each([
+    { query: "Viewer", operation: "checking the Linear viewer", status: 200 },
+    { query: "Teams", operation: "listing Linear teams", status: 400 },
+  ])("browser setup reports $operation errors and redacts credentials", async (failure) => {
+    const scene = await arrange({ bearer: true, policy: "custom: true\n" });
+    const refreshToken = "fake-browser-refresh-token";
+    const detail = `Permission denied: ${ACCESS_TOKEN} ${CLIENT_SECRET} ${refreshToken}`;
+    const result = await run(scene, browserAgentArgs(scene), {
+      fetch: async (url, init) => {
+        if (url === "https://api.linear.app/oauth/token") {
+          return Response.json({
+            access_token: ACCESS_TOKEN,
+            refresh_token: refreshToken,
+            expires_in: 3600,
+          });
+        }
+        const body = JSON.parse(String(init?.body)) as { query: string };
+        if (new RegExp(`^(query|mutation) ${failure.query}[ (]`).test(body.query)) {
+          return Response.json({ errors: [{ message: detail }] }, { status: failure.status });
+        }
+        return scene.linear.fetch(url, init);
+      },
+      linear: {
+        port: 0,
+        timeoutMs: 2_000,
+        async onAuthorize(link) {
+          const auth = new URL(link);
+          const callback = new URL(auth.searchParams.get("redirect_uri")!);
+          callback.searchParams.set("state", auth.searchParams.get("state")!);
+          callback.searchParams.set("code", "fake-browser-code");
+          const response = await fetch(callback);
+          expect(response.status).toBe(200);
+        },
+      },
+    });
+    expect(result.code).toBe(1);
+    const status = failure.status === 200 ? "" : ` HTTP ${failure.status}`;
+    expect(result.stderr).toEqual([
+      `Linear request failed while ${failure.operation}. Linear GraphQL${status}: Permission denied: [redacted] [redacted] [redacted]`,
+    ]);
+    expect(existsSync(scene.paths.configFile)).toBe(false);
+    expect(existsSync(linearTokenPath(scene.paths.secretsDir))).toBe(false);
+  });
+
+  test.each([
+    { query: "TeamLabels", operation: "reading team labels" },
+    { query: "IssueLabelCreate", operation: "creating the paws label" },
+  ])("comment setup reports errors while $operation", async (failure) => {
+    const scene = await arrange();
+    const result = await run(scene, happyArgs(scene), {
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init?.body)) as { query: string };
+        if (body.query.includes(failure.query)) {
+          return Response.json({ errors: [{ message: "not allowed to take action" }] });
+        }
+        return scene.linear.fetch(url, init);
+      },
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toEqual([
+      `Linear request failed while ${failure.operation}. Linear GraphQL: not allowed to take action`,
+    ]);
+  });
+
+  test("a non-JSON Linear HTTP error retains its status", async () => {
+    const scene = await arrange({ policy: "custom: true\n" });
+    const result = await run(
+      scene,
+      [...browserAgentArgs(scene), "--yes", "--linear-access-token", ACCESS_TOKEN],
+      {
+        fetch: async () => new Response("Bad gateway", { status: 502 }),
+      },
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toEqual([
+      "Linear request failed while checking the Linear viewer. Linear GraphQL HTTP 502",
+    ]);
+  });
+
+  test("comment setup preserves Linear errors and redacts the API key", async () => {
+    const scene = await arrange();
+    const result = await run(scene, happyArgs(scene), {
+      fetch: async () => Response.json({ errors: [{ message: `Permission denied: ${API_KEY}` }] }),
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toEqual([
+      "Linear request failed while checking the Linear viewer. Linear GraphQL: Permission denied: [redacted]",
+    ]);
   });
 
   test("denied browser authorization leaves setup credentials and config unwritten", async () => {
@@ -468,6 +560,9 @@ class FakeLinear {
     if (query.includes("issueLabelCreate")) {
       const created = body.variables?.input ?? {};
       this.creates.push(created);
+      if (this.options.bearer) {
+        return Response.json({ errors: [{ message: "not allowed to take action" }] });
+      }
       this.labels.push({ id: "label-1", name: "paws" });
       return Response.json({
         data: {
