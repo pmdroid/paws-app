@@ -69,12 +69,13 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
-  test("exhausts the item after two failed fixes and does not ask for a third", async () => {
+  test("an explicit fix cap stops after two failed fixes", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
     });
     const fixes: number[] = [];
     const result = await runCloseoutGate({
+      maxFixAttempts: 2,
       worktree: repo.dir,
       taskId: TASK,
       base: repo.head,
@@ -89,6 +90,47 @@ describe("closeout gate", () => {
     expect(result.fixAttempts).toBe(MAX_FIX_ATTEMPTS);
     expect(fixes).toEqual([1, 2]);
     expect(result.evaluations).toBe(3);
+    await repo.cleanup();
+  });
+
+  test("uses the configured retry budget beyond two fixes and includes command output", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy(
+        [
+          {
+            id: "test",
+            kind: "command",
+            exec: ["sh", "-c", "test -f ok.txt || { echo expected-output >&2; exit 1; }"],
+            timeoutSeconds: 30,
+          },
+        ],
+        5,
+      ),
+    });
+    const fixes: number[] = [];
+    const result = await runCloseoutGate({
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          expect(request.summary).toContain("expected-output");
+          return committingFixer(
+            repo.dir,
+            fixes,
+            request.fixAttempt === 3 ? "ok.txt" : "note.txt",
+            `fix ${request.fixAttempt}\n`,
+          ).applyFix(request);
+        },
+      },
+    });
+    expect(result.outcome).toBe("accepted");
+    expect(fixes).toEqual([1, 2, 3]);
     await repo.cleanup();
   });
 
