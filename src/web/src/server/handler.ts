@@ -126,10 +126,14 @@ function liveProvider(options?: {
   provider?: StatusProvider;
   db?: Database;
   env?: Record<string, string | undefined>;
+  closeoutHome?: string;
 }): StatusProvider {
   if (options?.provider) return options.provider;
   if (options?.db) {
-    return createLiveStatusProvider(options.db, options.env ? { env: options.env } : {});
+    return createLiveStatusProvider(options.db, {
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
+    });
   }
   return { snapshot: () => emptyLiveSnapshot() };
 }
