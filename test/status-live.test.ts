@@ -224,6 +224,7 @@ test("an empty live snapshot renders the Linear label empty state", async () => 
       error: null,
       engineUrl: "http://127.0.0.1:8787",
       epicView: "graph",
+      selectedCheck: null,
     });
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.items).toEqual([]);

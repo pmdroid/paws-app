@@ -12,11 +12,56 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
     error: null,
     engineUrl: null,
     epicView: "graph",
+    selectedCheck: null,
     ...patch,
   };
 }
 
 describe("status views", () => {
+  test("terminal closeout outcomes override a stale verifying run in both views", () => {
+    for (const [decision, detail] of [
+      ["blocked", "Closeout is blocked and needs a person."],
+      ["exhausted", "Closeout stopped after its retry budget."],
+    ] as const) {
+      const snapshot = demoStatus();
+      const verdict = snapshot.verdicts[0];
+      const item = snapshot.items.find((entry) => entry.id === verdict?.itemId);
+      const run = snapshot.runs.find((entry) => entry.itemId === item?.id);
+      if (!verdict || !item || !run) throw new Error("missing fixture");
+      verdict.decision = decision;
+      item.state = decision === "blocked" ? "needs_human" : "exhausted";
+      run.state = "verifying";
+      for (const route of [
+        { view: "verdicts", id: item.id },
+        { view: "runs", id: run.id },
+      ] as const) {
+        const html = render(model({ snapshot, route })).content;
+        expect(html).toContain(detail);
+        expect(html).not.toContain("Closeout is verifying this candidate.");
+      }
+    }
+  });
+  test("artifact links use the selected engine and wait for completed checks", () => {
+    const snapshot = demoStatus();
+    const verdict = snapshot.verdicts[0];
+    const check = verdict?.checks[0];
+    if (!verdict || !check) throw new Error("missing verdict");
+    check.logPath = "logs/check/1.log";
+    check.evidencePath = "evidence/check/1.json";
+    check.stdout = "Live output\n";
+    const input = model({
+      snapshot,
+      engineUrl: "https://engine.example/api/status",
+      route: { view: "verdicts", id: verdict.itemId },
+    });
+    expect(render(input).content).toContain('href="https://engine.example/api/closeout-artifact?');
+    check.state = "running";
+    check.active = true;
+    const live = render(input).content;
+    expect(live).not.toContain("/api/closeout-artifact?");
+    expect(live).toContain("Download log");
+  });
+
   test("overview labels demo data and lists the sample epic, question, and queue", () => {
     const view = render(model());
     expect(view.top).toContain("Demo data");

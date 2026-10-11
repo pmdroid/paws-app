@@ -1,5 +1,6 @@
 import type {
   ItemState,
+  StatusCheck,
   StatusEpic,
   StatusItem,
   StatusMergeEntry,
@@ -13,16 +14,19 @@ import {
   ago,
   avatar,
   clock,
+  durationLabel,
   epicLabel,
   esc,
   itemLabel,
   linkList,
   runLabel,
   statePill,
+  taskPhase,
   verdictDetail,
   verdictLabel,
 } from "./format";
 import { routeHref, type Route } from "./route";
+import { parseEngineUrl } from "../endpoint";
 
 export interface RenderModel {
   route: Route;
@@ -32,6 +36,7 @@ export interface RenderModel {
   error: string | null;
   engineUrl: string | null;
   epicView: "graph" | "board";
+  selectedCheck: { itemId: string; checkId: string } | null;
 }
 
 export interface Rendered {
@@ -195,11 +200,11 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "epics":
       return viewEpics(snapshot, model.route.id, model.epicView);
     case "runs":
-      return viewRuns(snapshot, model.route.id);
+      return viewRuns(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "verdicts":
-      return viewVerdicts(snapshot, model.route.id);
+      return viewVerdicts(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "queue":
       return viewQueue(snapshot);
   }
@@ -272,7 +277,12 @@ function viewEpics(snapshot: StatusSnapshot, id: string | null, mode: "graph" | 
     </div></div>`;
 }
 
-function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
+function viewRuns(
+  snapshot: StatusSnapshot,
+  id: string | null,
+  selectedCheck: { itemId: string; checkId: string } | null,
+  engineUrl: string | null,
+): string {
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
@@ -282,16 +292,20 @@ function viewRuns(snapshot: StatusSnapshot, id: string | null): string {
   const buttons = runs
     .map((run) => {
       const cls = run.id === selected.id ? "btn sm primary" : "btn sm ghost";
-      return `<a class="${cls}" href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)} · ${esc(run.itemId)} ${statePill(run.state, runLabel(run.state))}</a>`;
+      const runItem = findItem(snapshot, run.itemId);
+      return `<a class="${cls}" href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)} · ${esc(run.itemId)} ${phasePill(runItem, run, itemVerdict(snapshot, run.itemId))}</a>`;
     })
     .join("");
   const title = item?.title ?? selected.itemId;
+  const verdict = itemVerdict(snapshot, selected.itemId);
   return `<div class="row wrap">${buttons}</div>
     <div class="split" style="margin-top:12px"><div>
-      <div class="row">${itemLink(item)}${statePill(selected.state, runLabel(selected.state))}${agentChip(selected.agent)}</div>
+      <div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}${agentChip(selected.agent)}</div>
       <h1>${esc(title)}</h1>
       <p class="muted">${esc(selected.summary)}</p>
+      ${phaseStrip(item, selected, verdict)}
       <div class="log">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
+      ${runCloseout(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>
     <div class="card"><h3>Run</h3><div class="kv">
       <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>
@@ -314,7 +328,12 @@ function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
     ${cards || '<div class="empty">No open questions.</div>'}`;
 }
 
-function viewVerdicts(snapshot: StatusSnapshot, id: string | null): string {
+function viewVerdicts(
+  snapshot: StatusSnapshot,
+  id: string | null,
+  selectedCheck: { itemId: string; checkId: string } | null,
+  engineUrl: string | null,
+): string {
   const verdicts = snapshot.verdicts;
   const selected = verdicts.find((verdict) => verdict.itemId === id) ?? verdicts[0];
   if (!selected) return `<div class="empty">No Closeout verdicts yet.</div>`;
@@ -335,17 +354,19 @@ function viewVerdicts(snapshot: StatusSnapshot, id: string | null): string {
       ? `<div class="mono" style="color:#ff9f9f;margin-top:3px">${esc(selected.failingCheck)}</div>`
       : "";
   return `<div class="row wrap">${buttons}</div>
-    <div class="between" style="margin:12px 0"><div>
+    <div class="between closeout-head" style="margin:12px 0"><div>
       <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
       <h1>Closeout · ${esc(item?.title ?? selected.itemId)}</h1>
+      ${item ? phaseStrip(item, runForItem(snapshot, item.id), selected) : ""}
       <div class="muted">${esc(selected.summary)}</div>
     </div>
     <div style="text-align:right"><div class="muted" style="font-size:12px;margin-bottom:5px">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
     <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted" style="flex:1">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card" style="padding:0;margin-top:14px">${checks(selected)}</div>
+    <div class="card" style="padding:0;margin-top:14px">${checks(selected, selectedCheck, engineUrl)}</div>
     <div class="card" style="margin-top:14px"><h3>Report</h3><div class="kv">
       <span class="k">Base</span><span class="mono">${esc(selected.baseSha ?? "—")}</span>
       <span class="k">Head</span><span class="mono">${esc(selected.headSha ?? "—")}</span>
+      <span class="k">Policy</span><span class="mono">${esc(policyLabel(selected))}</span>
       <span class="k">Sealed</span><span>${selected.sealed ? "yes" : "no"}</span>
       <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
     </div></div>`;
@@ -582,21 +603,188 @@ function events(snapshot: StatusSnapshot): string {
     .join("");
 }
 
-function checks(verdict: StatusVerdict): string {
-  return verdict.checks
+function checks(
+  verdict: StatusVerdict,
+  selectedCheck: { itemId: string; checkId: string } | null,
+  engineUrl: string | null,
+): string {
+  const picked = chosenCheck(verdict, selectedCheck);
+  const rows = verdict.checks
     .map((check) => {
-      const mark =
-        check.state === "passed"
-          ? "✓"
-          : check.state === "failed"
-            ? "✕"
-            : check.state === "skipped"
-              ? "–"
-              : "";
+      const on = check.id === picked?.id ? " on" : "";
+      const current = check.id === picked?.id ? ` aria-current="true"` : "";
       const detail = check.detail ? `<div class="dim">${esc(check.detail)}</div>` : "";
-      return `<div class="chk"><span class="ico ${esc(check.state)}">${mark}</span><span class="mono">${esc(check.id)}</span><span><span class="mono muted">${esc(check.command)}</span>${detail}</span><span class="tag">${esc(check.kind)}</span></div>`;
+      const meta = checkMeta(check);
+      return `<button class="chk${on}" type="button" data-action="select-check" data-item="${esc(verdict.itemId)}" data-check="${esc(check.id)}"${current}><span class="ico ${esc(check.state)}">${checkMark(check.state)}</span><span class="mono">${esc(check.id)}</span><span><span class="mono muted">${esc(check.command)}</span>${detail}${meta ? `<div class="dim">${meta}</div>` : ""}</span><span class="tag">${esc(check.kind)}</span></button>`;
     })
     .join("");
+  return `${rows}${picked ? checkDetail(verdict, picked, engineUrl) : ""}`;
+}
+
+function chosenCheck(
+  verdict: StatusVerdict,
+  selectedCheck: { itemId: string; checkId: string } | null,
+): StatusCheck | undefined {
+  if (selectedCheck?.itemId === verdict.itemId) {
+    const chosen = verdict.checks.find((check) => check.id === selectedCheck.checkId);
+    if (chosen) return chosen;
+  }
+  return (
+    verdict.checks.find((check) => check.active) ??
+    verdict.checks.find((check) => check.state === "failed" || check.state === "blocked") ??
+    verdict.checks[0]
+  );
+}
+
+function checkDetail(verdict: StatusVerdict, check: StatusCheck, engineUrl: string | null): string {
+  const meta = checkMeta(check);
+  const findings = check.findings
+    ? `<h3>Findings</h3><pre class="out" tabindex="0" data-log="${logKey(verdict.itemId, check.id, "findings")}">${esc(check.findings)}</pre>`
+    : "";
+  const paths =
+    check.state === "running" || check.state === "pending"
+      ? ""
+      : [
+          check.logPath
+            ? artifactLink(verdict, check, "log", "Log", "closeout.log", engineUrl)
+            : "",
+          check.evidencePath
+            ? artifactLink(verdict, check, "evidence", "Evidence", "evidence.json", engineUrl)
+            : "",
+        ].join("");
+  const download =
+    check.stdout || check.stderr
+      ? `<button class="btn sm ghost" type="button" data-action="download-output" data-item="${esc(verdict.itemId)}" data-check="${esc(check.id)}">Download log</button>`
+      : "";
+  return `<div class="check-detail"><div class="between"><h3 style="margin:0">${esc(check.id)}</h3>${download}</div>${meta ? `<div class="dim" style="margin:6px 0 10px">${meta}</div>` : ""}${commandOutput(verdict.itemId, check)}${findings}${paths ? `<div class="artifact">${paths}</div>` : ""}</div>`;
+}
+
+function artifactLink(
+  verdict: StatusVerdict,
+  check: StatusCheck,
+  kind: "log" | "evidence",
+  label: string,
+  filename: string,
+  engineUrl: string | null,
+): string {
+  const params = new URLSearchParams({
+    item: verdict.itemId,
+    check: check.id,
+    kind,
+    head: verdict.headSha ?? "",
+    policy: verdict.policyDigest ?? "",
+  });
+  const path = `/api/closeout-artifact?${params.toString()}`;
+  const engine = parseEngineUrl(engineUrl ?? "");
+  const href = engine === null ? path : new URL(path, engine).href;
+  return `<a href="${esc(href)}" download="${filename}">${label}</a>`;
+}
+
+function commandOutput(itemId: string, check: StatusCheck): string {
+  const stdout = check.stdout ?? "";
+  const stderr = check.stderr ?? "";
+  if (!stdout && !stderr) {
+    return check.state === "running" ? `<p class="muted">Waiting for output.</p>` : "";
+  }
+  const blocks = [
+    stdout
+      ? `<div class="stream"><span>stdout</span><pre class="out" tabindex="0" data-log="${logKey(itemId, check.id, "stdout")}">${esc(stdout)}</pre></div>`
+      : "",
+    stderr
+      ? `<div class="stream"><span>stderr</span><pre class="out" tabindex="0" data-log="${logKey(itemId, check.id, "stderr")}">${esc(stderr)}</pre></div>`
+      : "",
+  ].join("");
+  const note = check.truncated ? `<p class="muted">Output truncated.</p>` : "";
+  return `${blocks}${note}`;
+}
+
+function logKey(itemId: string, checkId: string, stream: string): string {
+  return `${encodeURIComponent(itemId)}:${encodeURIComponent(checkId)}:${stream}`;
+}
+
+function checkMeta(check: StatusCheck): string {
+  const parts: string[] = [];
+  if (check.attempt) parts.push(`attempt ${check.attempt}`);
+  if (typeof check.elapsedMs === "number") {
+    parts.push(`${durationLabel(check.elapsedMs)} elapsed`);
+  }
+  if (typeof check.timeoutSeconds === "number") {
+    parts.push(`timeout ${durationLabel(check.timeoutSeconds * 1000)}`);
+  }
+  if (typeof check.exitCode === "number") parts.push(`exit ${check.exitCode}`);
+  if (check.timedOut) parts.push(check.timeoutReason || "timed out");
+  return parts.join(" · ");
+}
+
+function checkMark(state: string): string {
+  if (state === "passed") return "✓";
+  if (state === "failed" || state === "blocked" || state === "exhausted") return "✕";
+  if (state === "skipped") return "–";
+  return "";
+}
+
+function phaseStrip(
+  item: StatusItem | undefined,
+  run: StatusRun | undefined,
+  verdict?: StatusVerdict,
+): string {
+  const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
+  const names = ["Implementation", "Closeout", "Waiting to merge", "Complete"];
+  const marks = names
+    .map((name, index) => {
+      const cls = index < phase.current ? "done" : index === phase.current ? "now" : "wait";
+      return `<span class="ph ${cls}">${esc(name)}</span>`;
+    })
+    .join("");
+  return `<div class="phase"><div class="phs">${marks}</div><p>${esc(phase.detail)}</p></div>`;
+}
+
+function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
+  const recheck =
+    verdict?.decision === "running" &&
+    item?.state !== "running" &&
+    item?.state !== "queued" &&
+    item?.state !== "planning" &&
+    item?.state !== "awaiting_input";
+  if (item?.state === "merged") return statePill("merged", "Complete");
+  if (recheck) return statePill("verifying", "Closeout");
+  if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
+  if (verdict?.decision === "exhausted" || item?.state === "exhausted")
+    return statePill("exhausted", "Exhausted");
+  if (verdict?.decision === "rejected") return statePill("stopped", "Closeout failed");
+  if (item?.state === "needs_human") return statePill("needs_human", "Needs a person");
+  if (item?.state === "merge_queue") return statePill("merge_queue", "Waiting to merge");
+  if (item?.state === "verifying" || run.state === "verifying")
+    return statePill("verifying", "Closeout");
+  return statePill(run.state, runLabel(run.state));
+}
+
+function runCloseout(
+  snapshot: StatusSnapshot,
+  itemId: string,
+  selectedCheck: { itemId: string; checkId: string } | null,
+  engineUrl: string | null,
+): string {
+  const verdict = snapshot.verdicts.find((entry) => entry.itemId === itemId);
+  if (!verdict || verdict.checks.length === 0) return "";
+  const check = chosenCheck(verdict, selectedCheck);
+  if (!check) return "";
+  return `<div class="card" style="margin-top:14px"><div class="between"><h3 style="margin:0">Closeout</h3><a href="${routeHref({ view: "verdicts", id: itemId })}">All checks</a></div>${checkDetail(verdict, check, engineUrl)}</div>`;
+}
+
+function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
+  return snapshot.verdicts.find((entry) => entry.itemId === itemId);
+}
+
+function runForItem(snapshot: StatusSnapshot, itemId: string): StatusRun | undefined {
+  return snapshot.runs.find((run) => run.itemId === itemId);
+}
+
+function policyLabel(verdict: StatusVerdict): string {
+  if (verdict.policyPath && verdict.policyDigest) {
+    return `${verdict.policyPath} ${verdict.policyDigest}`;
+  }
+  return verdict.policyDigest || verdict.policyPath || "—";
 }
 
 function stateStrip(items: StatusItem[]): string {
