@@ -24,7 +24,7 @@ describe("activity mapping", () => {
     expect(shouldKeepAlive(KEEPALIVE_MS)).toBe(true);
   });
 
-  test("maps ACP thoughts, tool calls, and messages onto Linear activity kinds", () => {
+  test("keeps reasoning private and maps public messages to progress", () => {
     expect(
       activityFromAcpEvent({
         type: "session_update",
@@ -33,8 +33,8 @@ describe("activity mapping", () => {
           sessionUpdate: "agent_thought_chunk",
           content: { type: "text", text: "thinking" },
         },
-      })?.kind,
-    ).toBe("thought");
+      }),
+    ).toBeNull();
     expect(
       activityFromAcpEvent({
         type: "session_update",
@@ -51,7 +51,7 @@ describe("activity mapping", () => {
           content: { type: "text", text: "done" },
         },
       })?.kind,
-    ).toBe("response");
+    ).toBe("thought");
     expect(activityFromAcpEvent({ type: "error", message: "boom" })?.kind).toBe("error");
     expect(activityFromAcpEvent({ type: "error", message: GROK_LOGIN_MESSAGE })).toEqual({
       kind: "error",
@@ -62,8 +62,8 @@ describe("activity mapping", () => {
         type: "ask_team",
         phase: "asked",
         question: "Include archived rows?",
-      })?.kind,
-    ).toBe("thought");
+      }),
+    ).toBeNull();
     expect(
       activityFromAcpEvent({
         type: "ask_team",
@@ -87,7 +87,7 @@ describe("streamed activity", () => {
     };
   }
 
-  test("joins fragments and whitespace before posting progress or final evidence", () => {
+  test("joins public fragments and preserves final content without completing the session", () => {
     const posted: { kind: string; body: string }[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent(chunk("I"));
@@ -108,10 +108,21 @@ describe("streamed activity", () => {
     reporter.onEvent(chunk(" locally."));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
     reporter.flush();
-    expect(posted.slice(2)).toEqual([{ kind: "response", body: "Verified locally." }]);
+    expect(posted.slice(2)).toEqual([{ kind: "thought", body: "Verified locally." }]);
+    expect(reporter.resultBody()).toBe("Verified locally.");
   });
 
-  test("thoughts and interrupted messages stay progress", () => {
+  test("retains the entire final message while clipping public progress", () => {
+    const posted: { kind: string; body: string }[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    const body = "a".repeat(4000) + " Required final detail.";
+    reporter.onEvent(chunk(body));
+    reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
+    expect(posted[0]?.body.length).toBe(3500);
+    expect(reporter.resultBody()).toBe(body);
+  });
+
+  test("private reasoning is discarded and interruption emits an error", () => {
     const posted: { kind: string; body: string }[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent(chunk("Thinking", true));
@@ -121,7 +132,6 @@ describe("streamed activity", () => {
     reporter.onEvent({ type: "cancelled", reason: "timeout" });
     reporter.flush();
     expect(posted).toEqual([
-      { kind: "thought", body: "Thinking through it." },
       { kind: "thought", body: "Partially done." },
       { kind: "error", body: "Run timed out." },
     ]);
@@ -140,6 +150,15 @@ describe("streamed activity", () => {
       }),
     ).toBeNull();
   });
+
+  test("a follow-up interruption does not report cancellation or completion", () => {
+    const posted: { kind: string; body: string }[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent({ type: "cancelled", reason: "follow_up" });
+    reporter.flush();
+    expect(posted).toEqual([]);
+    expect(activityFromAcpEvent({ type: "cancelled", reason: "cancel" })?.kind).toBe("error");
+  });
 });
 
 describe("linear outbox dispatch", () => {
@@ -148,7 +167,7 @@ describe("linear outbox dispatch", () => {
     const client: LinearClient = {
       async query(_query, variables) {
         inputs.push(variables?.["input"]);
-        return {};
+        return { agentActivityCreate: { success: true, agentActivity: { id: "activity" } } };
       },
     };
     const tracker = createLinearTracker(client);
@@ -168,6 +187,38 @@ describe("linear outbox dispatch", () => {
       content: { type: "thought", body: "hello" },
     });
     expect(caughtUp).toBe(1);
+  });
+  test("a superseded claimed row cannot call the tracker", async () => {
+    let calls = 0;
+    const tracker = createLinearTracker({
+      async query() {
+        calls += 1;
+        return {};
+      },
+    });
+    await expect(
+      deliverLinearOutbox(
+        row("activity", { kind: "thought", body: "stale" }),
+        tracker,
+        async () => {},
+        {
+          signal: new AbortController().signal,
+          isCurrent: () => false,
+        },
+      ),
+    ).rejects.toThrow("superseded");
+    expect(calls).toBe(0);
+  });
+
+  test.each([undefined, "unknown", "prompt"])("rejects invalid activity kind %s", async (kind) => {
+    const tracker = createLinearTracker({
+      async query() {
+        return { agentActivityCreate: { success: true, agentActivity: { id: "activity" } } };
+      },
+    });
+    await expect(
+      deliverLinearOutbox(row("activity", { body: "Legacy text", kind }), tracker, async () => {}),
+    ).rejects.toThrow("valid kind");
   });
 });
 

@@ -18,6 +18,7 @@ import {
   startCatchUpPoller,
   webhookChecksNeeded,
   type LinearAuth,
+  type AcceptedLinearEvent,
   type Sleeper,
 } from "../src/linear";
 import { tempDb, tempHome } from "./helpers";
@@ -26,6 +27,100 @@ const NOW = 1_700_000_000_000;
 const TEAM = "team_1";
 
 describe("linear intake poll", () => {
+  test("binds the latest own session without any agent activities", async () => {
+    const db = tempDb();
+    const seen: AcceptedLinearEvent[] = [];
+    const { client } = scripted(() => ({
+      ...page([issue("iss_delegate", "ENG-8", [], "app_1")]),
+      agentSessions: {
+        nodes: [
+          session("session-old", "iss_delegate", NOW - 1_000),
+          session("session-new", "iss_delegate", NOW),
+          {
+            ...session("session-ended", "iss_delegate", NOW + 3_000),
+            endedAt: new Date(NOW + 4_000).toISOString(),
+          },
+          {
+            ...session("session-dismissed", "iss_delegate", NOW + 3_000),
+            dismissedAt: new Date(NOW + 4_000).toISOString(),
+          },
+          {
+            ...session("session-other-app", "iss_delegate", NOW + 1_000),
+            appUser: { id: "other" },
+          },
+          {
+            ...session("session-other-team", "iss_delegate", NOW + 2_000),
+            issue: { id: "iss_delegate", team: { id: "other-team", key: "OTHER" } },
+          },
+        ],
+      },
+    }));
+    const poller = startCatchUpPoller({
+      source: createIntakePollSource(client, { teamId: TEAM }),
+      store: createInboxStore(db),
+      onEvent: (event) => {
+        seen.push(event);
+      },
+      sleeper: blockedSleeper(),
+      now: () => NOW,
+    });
+    await waitFor(() => seen.length > 0);
+    poller.stop();
+    await poller.settled;
+    db.close();
+    expect(seen.map((event) => event.sessionId)).toEqual(["session-new"]);
+  });
+
+  test.each([true, false])(
+    "attaches a late session once with issue present=%s",
+    async (issuePresent) => {
+      const db = tempDb();
+      const store = createInboxStore(db);
+      const seen: AcceptedLinearEvent[] = [];
+      let polls = 0;
+      const { client } = scripted(() => {
+        polls += 1;
+        return {
+          ...page(polls === 1 || issuePresent ? [issue("iss_delegate", "ENG-8", [], "app_1")] : []),
+          agentSessions: {
+            nodes: polls === 1 ? [] : [session("session-late", "iss_delegate", NOW)],
+          },
+        };
+      });
+      const poller = startCatchUpPoller({
+        source: createIntakePollSource(client, { teamId: TEAM }),
+        store,
+        onEvent: (event) => {
+          seen.push(event);
+        },
+        sleeper: blockedSleeper(),
+        now: () => NOW + 60_000,
+      });
+      await waitFor(() => seen.length > 0);
+      await poller.pollNow();
+      await poller.pollNow();
+      poller.stop();
+      await poller.settled;
+      db.close();
+      expect(seen.map((event) => event.sessionId)).toEqual([null, "session-late"]);
+    },
+  );
+
+  test.each([
+    { team: "cda507e8-3b78-4fe3-a6c1-170e8a82508f", field: "id" },
+    { team: "ENG", field: "key" },
+  ])("uses a typed team filter for $field", async ({ team, field }) => {
+    const { client } = scripted(({ query, variables }) => {
+      expect(query).toContain("$team: TeamFilter!");
+      expect(variables["team"]).toEqual({ [field]: { eq: team } });
+      return page([]);
+    });
+    const source = createIntakePollSource(client, { teamId: team });
+    const result = await source.poll(NOW);
+    expect(result.queried).toBe(true);
+    expect(result.caughtUp).toBe(true);
+  });
+
   test("waits 5s while work is active and 15s while idle", async () => {
     expect(pollIntervalMs(true)).toBe(POLL_INTERVAL_ACTIVE_MS);
     expect(pollIntervalMs(false)).toBe(POLL_INTERVAL_IDLE_MS);
@@ -431,6 +526,16 @@ function issue(
     updatedAt: "2026-01-01T00:00:00.000Z",
     delegate: delegate === null ? null : { id: delegate },
     labels: { nodes: labels.map((name) => ({ name })) },
+  };
+}
+
+function session(id: string, issueId: string, createdAt: number): Record<string, unknown> {
+  return {
+    id,
+    createdAt: new Date(createdAt).toISOString(),
+    updatedAt: new Date(createdAt).toISOString(),
+    appUser: { id: "app_1" },
+    issue: { id: issueId, team: { id: TEAM, key: "ENG" } },
   };
 }
 

@@ -132,7 +132,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       io,
     });
     viewerId = connected.viewerId;
-    await ensurePawsLabel(connected.client, team.id, mode);
+    if (mode === "comments") await ensurePawsLabel(connected.client, team.id, mode);
   }
 
   let repository: { owner: string; repo: string };

@@ -1,7 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, retryBackoffMs, type LinearCommand } from "../core";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
-import type { IntakePollSource, PolledActivity, PolledComment, PolledIssue } from "./catchup";
+import type {
+  IntakePollSource,
+  PolledActivity,
+  PolledComment,
+  PolledIssue,
+  PolledSession,
+} from "./catchup";
 import { activityKey, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 
@@ -140,8 +146,15 @@ export function startCatchUpPoller(options: {
         sessionByIssue.set(activity.issueId, activity.sessionId);
       }
     }
+    for (const session of sighting.sessions) sessionByIssue.set(session.issueId, session.id);
+    const issueEvents = sighting.issues
+      .map((issue) => issueEvent(issue, sessionByIssue, options.store))
+      .filter((event): event is AcceptedLinearEvent => event !== null);
     const events = [
-      ...sighting.issues.map((issue) => issueEvent(issue, sessionByIssue, options.store)),
+      ...issueEvents,
+      ...sighting.sessions
+        .filter((session) => !issueEvents.some((event) => event.issueId === session.issueId))
+        .map((session) => sessionEvent(session, since, options.store)),
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),
     ].filter((event): event is AcceptedLinearEvent => event !== null);
@@ -229,6 +242,26 @@ export function startCatchUpPoller(options: {
   };
 }
 
+function sessionEvent(
+  session: PolledSession,
+  since: number,
+  store: InboxStore,
+): AcceptedLinearEvent | null {
+  const prior = store.get(`issue:${session.issueId}:intake`);
+  if (prior?.sessionId === session.id) return null;
+  if (prior === null && session.updatedAtMs < since) return null;
+  return inboxEvent({
+    dedupeKey: `session:${session.id}:created`,
+    action: "created",
+    sessionId: session.id,
+    issueId: session.issueId,
+    body: null,
+    signal: null,
+    updatedAtMs: session.updatedAtMs,
+    payload: { kind: "session" },
+  });
+}
+
 /** Queue a stop in the same shape `submitCommand` drains, without applying it here. */
 export function persistStopCommand(db: Database, command: LinearCommand): void {
   try {
@@ -256,9 +289,13 @@ function issueEvent(
 ): AcceptedLinearEvent | null {
   const sessionId = sessionByIssue.get(issue.id) ?? null;
   if (issue.labeled || issue.delegated) {
+    const prior = store.get(`issue:${issue.id}:intake`);
     const mode = issue.labeled && issue.delegated ? "both" : issue.labeled ? "label" : "delegate";
     return inboxEvent({
-      dedupeKey: `issue:${issue.id}:intake`,
+      dedupeKey:
+        prior !== null && sessionId !== null && prior.sessionId !== sessionId
+          ? `session:${sessionId}:created`
+          : `issue:${issue.id}:intake`,
       action: "created",
       sessionId,
       issueId: issue.id,
