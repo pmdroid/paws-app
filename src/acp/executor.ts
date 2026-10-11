@@ -21,7 +21,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
     pawsRoot: options.pawsRoot,
     ...(options.startRef ? { startRef: options.startRef } : {}),
   });
-  const run = await runAgent({
+  const run = await (options.promptRunner ?? runAgent)({
     ...options,
     role: options.role ?? "implementer",
     worktreePath: worktree.path,

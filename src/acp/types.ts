@@ -138,6 +138,7 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
   remoteUrl: string;
   role?: AgentRole;
   startRef?: string;
+  promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
 }
 
 export interface ExecuteItemResult {

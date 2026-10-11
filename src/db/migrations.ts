@@ -516,4 +516,14 @@ CREATE TABLE task_request (
 ) STRICT;
 `,
   },
+  {
+    id: "018_acp_conversation",
+    sql: `CREATE TABLE linear_conversation (
+      item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+      entries TEXT NOT NULL CHECK(json_valid(entries)),
+      transcript TEXT,
+      transcript_offset INTEGER NOT NULL DEFAULT 0,
+      blocked INTEGER NOT NULL DEFAULT 0 CHECK(blocked IN (0,1))
+    ) STRICT;`,
+  },
 ];
