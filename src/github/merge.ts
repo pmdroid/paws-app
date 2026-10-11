@@ -20,6 +20,7 @@ import {
 export type SerialMergeInput = {
   worktree: string;
   issue: string;
+  branchKey?: string;
   owner: string;
   repo: string;
   prNumber: number;
@@ -51,11 +52,11 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     return {
       merged: false,
       outcome: "merge_denied",
-      branch: safeBranch(input.issue),
+      branch: safeBranch(input.branchKey ?? input.issue),
       message: "pull number is invalid",
     };
   }
-  const branch = branchForIssue(input.issue);
+  const branch = branchForIssue(input.branchKey ?? input.issue);
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const status = await git(input.worktree, ["status", "--porcelain"], gitExec);

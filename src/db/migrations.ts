@@ -1,6 +1,7 @@
 export type Migration = {
   id: string;
   sql: string;
+  foreignKeys?: false;
 };
 
 /**
@@ -340,6 +341,121 @@ CREATE TABLE linear_activity_snapshot (
   snapshot TEXT NOT NULL CHECK (json_valid(snapshot))
 ) STRICT;
 CREATE INDEX linear_activity_session ON linear_activity_snapshot (session_id, created_at, id);
+`,
+  },
+  {
+    id: "012_linear_task_identity",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE epic_task_identity (
+  id TEXT PRIMARY KEY,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'awaiting_plan_approval',
+    'running',
+    'stalled',
+    'done',
+    'cancelled'
+  )),
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO epic_task_identity SELECT id,linear_issue_id,linear_identifier,title,state,version,'initial:' || linear_issue_id,created_at FROM epic;
+DROP TABLE epic;
+ALTER TABLE epic_task_identity RENAME TO epic;
+CREATE TABLE work_item_task_identity (
+  id TEXT PRIMARY KEY,
+  epic_id TEXT NOT NULL REFERENCES epic (id),
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'exhausted',
+    'failed',
+    'awaiting_signoff',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief))
+) STRICT;
+INSERT INTO work_item_task_identity SELECT id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,version,'initial:' || linear_issue_id,created_at,checkpoint,recovery_attempts,awake_ms,last_mono_ms,turn_count,max_turns,max_awake_ms,cancel_requested,session_key,current_run_id,brief FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_task_identity RENAME TO work_item;
+CREATE INDEX work_item_epic_position ON work_item (epic_id, position);
+CREATE TABLE linear_session (
+  session_id TEXT PRIMARY KEY,
+  issue_id TEXT,
+  organization_id TEXT,
+  app_user_id TEXT,
+  creator_id TEXT,
+  current_epic_id TEXT REFERENCES epic(id),
+  active_item_id TEXT REFERENCES work_item(id),
+  generation INTEGER NOT NULL DEFAULT 0,
+  stopped_at INTEGER,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE linear_session_task (
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  epic_id TEXT NOT NULL UNIQUE REFERENCES epic(id),
+  owner_actor_id TEXT,
+  PRIMARY KEY (session_id, epic_id)
+) STRICT;
+CREATE TABLE linear_turn (
+  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_key TEXT NOT NULL UNIQUE,
+  activity_id TEXT UNIQUE,
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  actor_id TEXT,
+  body TEXT NOT NULL,
+  payload TEXT NOT NULL CHECK (json_valid(payload)),
+  created_at_ms INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  item_id TEXT REFERENCES work_item(id),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','applied','cancelled'))
+) STRICT;
+CREATE INDEX linear_turn_pending ON linear_turn(session_id,state,created_at_ms,ordinal);
+INSERT INTO linear_session (session_id, issue_id, current_epic_id, active_item_id, generation, created_at)
+SELECT session_key, linear_issue_id, epic_id, id, generation, created_at FROM (
+  SELECT w.session_key, e.linear_issue_id, w.epic_id, w.id, COALESCE(f.generation,0) AS generation, w.created_at,
+    ROW_NUMBER() OVER (PARTITION BY w.session_key ORDER BY CASE
+      WHEN w.state NOT IN ('queued','merged','cancelled','completed') THEN 0
+      WHEN w.state = 'queued' THEN 1 ELSE 2 END, w.position, w.created_at, w.id) AS route_rank
+  FROM work_item w JOIN epic e ON e.id = w.epic_id
+  LEFT JOIN outbox_session_fence f ON f.target = 'linear' AND f.ordering_key = w.session_key
+  WHERE w.session_key IS NOT NULL AND w.linear_issue_id NOT LIKE 'github:%'
+    AND e.linear_issue_id NOT LIKE 'github:%' AND w.session_key != w.linear_issue_id
+    AND w.session_key != e.linear_issue_id
+) WHERE route_rank = 1;
+INSERT INTO linear_session_task (session_id,epic_id) SELECT session_id,current_epic_id FROM linear_session;
 `,
   },
 ];

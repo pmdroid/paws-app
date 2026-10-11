@@ -34,6 +34,7 @@ import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import {
   attachOrchestrator,
+  itemPathId,
   createAcpCodexReviewer,
   KEEPALIVE_MS,
   type AgentLaunch,
@@ -75,7 +76,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     scripts += 1;
     const scriptPath = path.join(layout.root, `script-${scripts}.json`);
     const resultPath = path.join(layout.root, `result-${scripts}.json`);
-    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    results.set(`${input.purpose}:${sourceIdentifier(input.itemId)}`, resultPath);
     writeFileSync(
       scriptPath,
       JSON.stringify({
@@ -187,7 +188,10 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(epicState(db), debug(layout, db)).toBe("done");
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
-    expect(github.opened.map((pull) => pull.head)).toEqual(["paws/ENG-2", "paws/ENG-3"]);
+    expect(github.opened.map((pull) => pull.head)).toEqual([
+      `paws/${taskPath(db, "ENG-2")}`,
+      `paws/${taskPath(db, "ENG-3")}`,
+    ]);
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
       "Fixes ENG-3",
@@ -671,7 +675,7 @@ for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
       runtime = attach();
       expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
       if (recovery === "stale bypass") {
-        const worktree = worktreePath(layout.pawsRoot, "ENG-8");
+        const worktree = worktreePath(layout.pawsRoot, taskPath(db, "ENG-8"));
         await gitIdentity(worktree);
         await exec("git", ["-C", worktree, "commit", "--allow-empty", "-m", "candidate changed"]);
       }
@@ -753,7 +757,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     scripts += 1;
     const scriptPath = path.join(layout.root, `grok-script-${scripts}.json`);
     const resultPath = path.join(layout.root, `grok-result-${scripts}.json`);
-    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    results.set(`${input.purpose}:${sourceIdentifier(input.itemId)}`, resultPath);
     const script = scriptFor(input);
     if (input.role === "implementer") {
       script.authMethods = [{ id: "cached_token", name: "Cached login" }];
@@ -855,7 +859,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     ) as FakeResult;
     expect(asked.askTeam?.text).toBe("yes");
     expect(asked.authenticate).toEqual({ methodId: "cached_token" });
-    expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, "ENG-2"));
+    expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, taskPath(db, "ENG-2")));
     expect(asked.env).toMatchObject({
       xaiApiKey: false,
       ghToken: false,
@@ -1308,7 +1312,7 @@ function scriptFor(input: { purpose: string; itemId: string; worktree: string })
       steps: [writeOk(input.worktree, "header\n"), { type: "end", stopReason: "end_turn" }],
     };
   }
-  if (input.itemId === "ENG-2") {
+  if (sourceIdentifier(input.itemId) === "ENG-2") {
     return {
       steps: [
         {
@@ -1601,4 +1605,16 @@ function debug(layout: { pawsRoot: string }, db: Database): string {
   } catch {
     return "db closed";
   }
+}
+
+function sourceIdentifier(taskId: string): string {
+  return taskId.replace(/-[0-9A-Z]{26}$/, "");
+}
+
+function taskPath(db: Database, identifier: string): string {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  if (!row) throw new Error("Fixture task missing");
+  return itemPathId(getWorkItem(db, row.id)!);
 }

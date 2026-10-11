@@ -101,3 +101,18 @@ export {
   saveLinearActivitySnapshot,
   listLinearActivitySnapshots,
 } from "./linear-context";
+export {
+  getLinearSession,
+  ensureLinearSession,
+  bindLinearSessionTask,
+  activateLinearItem,
+  linearSessionForEpic,
+  recordLinearTurn,
+  listPendingLinearTurns,
+  applyLinearTurns,
+  getLinearSessionGeneration,
+  getTaskLinearActor,
+  advanceLinearSessionGeneration,
+  type StoredLinearSession,
+  type StoredLinearTurn,
+} from "./linear-sessions";

@@ -24,13 +24,14 @@ export async function pushBranch(
   input: {
     worktree: string;
     issue: string;
+    branchKey?: string;
     owner: string;
     repo: string;
     remoteUrl?: string;
     gitExec?: GitExec;
   } & GitHubCredentialInput,
 ): Promise<{ branch: string; head: string }> {
-  const branch = branchForIssue(branchKey(input.issue));
+  const branch = branchForIssue(input.branchKey ?? branchKey(input.issue));
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
@@ -58,6 +59,7 @@ export async function pushBranch(
 export async function openPullRequest(
   input: {
     issue: string;
+    branchKey?: string;
     owner: string;
     repo: string;
     title?: string;
@@ -65,7 +67,7 @@ export async function openPullRequest(
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
-  const branch = branchForIssue(branchKey(input.issue));
+  const branch = branchForIssue(input.branchKey ?? branchKey(input.issue));
   const body = developerBody(
     input.tokenProvider,
     closingBody(input.issue, input.owner, input.repo, input.evidence),
@@ -240,6 +242,7 @@ export async function publishAccepted(
     evidence: string;
     worktree: string;
     issue: string;
+    branchKey?: string;
     owner: string;
     repo: string;
     title?: string;
