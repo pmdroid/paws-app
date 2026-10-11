@@ -6,9 +6,18 @@
  * decision stay in their own modules.
  */
 
-export { scrubCommandEnv } from "./env";
+export { credentialSecrets, scrubCommandEnv } from "./env";
 export { createCommandRunner } from "./exec";
 export type { CommandRunnerOptions, LoggedCommandRequest, PawsCommandRunner } from "./exec";
 export { matchPaths } from "./paths";
+export type {
+  CloseoutOutputStream,
+  CloseoutProgress,
+  CloseoutProgressIdentity,
+  CloseoutProgressStep,
+  CloseoutStepKind,
+  CloseoutStepState,
+} from "./progress";
 export { PAWS_CLOSEOUT_PRODUCER, runCloseoutCommands } from "./run";
 export type { CloseoutRunInput, CloseoutRunResult, CommandDisposition } from "./run";
+export { createStreamScrubber, scrubText } from "./scrub";

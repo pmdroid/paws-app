@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { CommandRunRequest, CommandRunResult, CommandRunner } from "../types";
-import { scrubCommandEnv } from "./env";
+import { credentialSecrets, scrubCommandEnv } from "./env";
+import type { CloseoutOutputStream } from "./progress";
+import { createStreamScrubber, scrubText } from "./scrub";
 
 /** Combined stdout and stderr are capped per stream. Past this, `truncated` is set. */
 const OUTPUT_CAP_BYTES = 256 * 1024;
@@ -30,6 +33,7 @@ export type LoggedCommandRequest = CommandRunRequest & {
   logFile: string;
   artifactPath: string;
   expectedHead: string;
+  onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
 };
 
 export type PawsCommandRunner = CommandRunner & {
@@ -70,6 +74,7 @@ export function createCommandRunner(options: CommandRunnerOptions = {}): PawsCom
         expectedHead: request.expectedHead,
         logFile: request.logFile,
         artifactPath: request.artifactPath,
+        ...(request.onOutput ? { onOutput: request.onOutput } : {}),
       });
     },
   };
@@ -83,16 +88,21 @@ export async function executeCommand(input: {
   expectedHead?: string;
   logFile: string;
   artifactPath: string;
+  onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
 }): Promise<CommandRunResult> {
+  const secrets = credentialSecrets(input.env);
   const env = scrubCommandEnv(input.env);
   const before = await porcelain(input.cwd, env);
   const expected = input.expectedHead ?? (await readHead(input.cwd, env)) ?? "";
   const started = Date.now();
-  const spawned = await spawnArgv(input.argv, input.cwd, env, input.timeoutSeconds);
+  const spawned = await spawnArgv(input.argv, input.cwd, env, input.timeoutSeconds, {
+    secrets,
+    ...(input.onOutput ? { onText: input.onOutput } : {}),
+  });
   const durationMs = Math.max(0, Date.now() - started);
   const after = await porcelain(input.cwd, env);
   const head = await readHead(input.cwd, env);
-  const log = `STDOUT\n${spawned.stdout}\nSTDERR\n${spawned.stderr}`;
+  const log = scrubText(`STDOUT\n${spawned.stdout}\nSTDERR\n${spawned.stderr}`, secrets);
   const bytes = Buffer.from(log, "utf8");
   mkdirSync(dirname(input.logFile), { recursive: true });
   writeFileSync(input.logFile, bytes);
@@ -225,11 +235,17 @@ type Spawned = {
  * Argv execution with no shell. `timeoutSeconds` kills the child's process
  * group, so grandchildren started by the command die with it.
  */
+type StreamTap = {
+  secrets: readonly string[];
+  onText?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+};
+
 function spawnArgv(
   argv: string[],
   cwd: string,
   env: Record<string, string>,
   timeoutSeconds: number,
+  tap?: StreamTap,
 ): Promise<Spawned> {
   const program = argv[0];
   if (program === undefined || program.length === 0) {
@@ -252,8 +268,16 @@ function spawnArgv(
 
     let settled = false;
     let timedOut = false;
-    const stdout = collect(child.stdout, OUTPUT_CAP_BYTES);
-    const stderr = collect(child.stderr, OUTPUT_CAP_BYTES);
+    const stdout = tap
+      ? collectText(child.stdout, OUTPUT_CAP_BYTES, tap.secrets, (text, truncated) => {
+          tap.onText?.("stdout", text, truncated);
+        })
+      : collect(child.stdout, OUTPUT_CAP_BYTES);
+    const stderr = tap
+      ? collectText(child.stderr, OUTPUT_CAP_BYTES, tap.secrets, (text, truncated) => {
+          tap.onText?.("stderr", text, truncated);
+        })
+      : collect(child.stderr, OUTPUT_CAP_BYTES);
     const timer = setTimeout(() => {
       timedOut = true;
       killGroup(child.pid);
@@ -314,6 +338,74 @@ function killGroup(pid: number | undefined): void {
       // The process already exited.
     }
   }
+}
+
+function collectText(
+  stream: NodeJS.ReadableStream | null,
+  cap: number,
+  secrets: readonly string[],
+  onText: (text: string, truncated: boolean) => void,
+): Promise<{ text: string; bytes: Buffer; truncated: boolean }> {
+  return new Promise((resolve) => {
+    if (stream === null) {
+      resolve({ text: "", bytes: Buffer.alloc(0), truncated: false });
+      return;
+    }
+    const decoder = new StringDecoder("utf8");
+    const scrubber = createStreamScrubber(secrets);
+    let text = "";
+    let truncated = false;
+    let settled = false;
+    const emit = (chunk: string) => {
+      if (chunk.length === 0 || truncated) return;
+      const room = cap - Buffer.byteLength(text);
+      if (room <= 0) {
+        truncated = true;
+        onText("", true);
+        return;
+      }
+      let piece = chunk;
+      if (Buffer.byteLength(piece) > room) {
+        piece = clipUtf8(piece, room);
+        truncated = true;
+      }
+      if (piece.length === 0) {
+        truncated = true;
+        onText("", true);
+        return;
+      }
+      text += piece;
+      onText(piece, truncated);
+    };
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      emit(scrubber.push(decoder.end()));
+      emit(scrubber.flush());
+      const bytes = Buffer.from(text);
+      resolve({ text, bytes, truncated });
+    };
+    stream.on("data", (chunk: Buffer | string) => {
+      if (truncated) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      emit(scrubber.push(decoder.write(buf)));
+    });
+    stream.on("end", done);
+    stream.on("error", done);
+    stream.on("close", done);
+  });
+}
+
+function clipUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0) {
+    const byte = bytes.at(end);
+    if (byte === undefined || (byte & 0xc0) !== 0x80) break;
+    end -= 1;
+  }
+  return bytes.subarray(0, end).toString("utf8");
 }
 
 function collect(

@@ -33,8 +33,19 @@ export function scrubCommandEnv(parent: NodeJS.ProcessEnv = process.env): Record
   return env;
 }
 
+export function credentialSecrets(parent: NodeJS.ProcessEnv = process.env): string[] {
+  const found = new Set<string>();
+  for (const [key, value] of Object.entries(parent)) {
+    if (value === undefined || value.length < 8) continue;
+    if (!isScrubbed(key)) continue;
+    found.add(value);
+  }
+  return [...found].sort((left, right) => right.length - left.length);
+}
+
 function isScrubbed(key: string): boolean {
   if (DENY.has(key)) return true;
   if (PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
-  return key.includes("OAUTH") && key.includes("TOKEN");
+  if (key.includes("OAUTH") && key.includes("TOKEN")) return true;
+  return /API_KEY|PASSWORD|SECRET|TOKEN/i.test(key);
 }
