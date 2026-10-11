@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Database } from "bun:sqlite";
-import { commitCheckpointSync, restartFromFreshMain, worktreePath } from "./acp";
+import { commitCheckpointSync, probeAgentProfile, restartFromFreshMain, worktreePath } from "./acp";
 import {
   createCommentMode,
   createLinearCommentBoard,
@@ -165,6 +165,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     statusEnv: envSource,
     closeoutHome: paths.home,
+    agentSettings: {
+      configPath: paths.configFile,
+      repos: runtime.repo ? [runtime.repo] : [],
+      probe: (profile) =>
+        probeAgentProfile({
+          profile,
+          pawsRoot: paths.home,
+          worktree: paths.home,
+          signal: abort.signal,
+        }),
+    },
   });
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
