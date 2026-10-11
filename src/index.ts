@@ -1,3 +1,4 @@
+import { loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import { commitCheckpointSync, probeAgentProfile, restartFromFreshMain, worktreePath } from "./acp";
@@ -160,6 +161,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     port: env.port,
     linearWebhookSecret: env.linearWebhookSecret,
     githubWebhookSecret: env.githubWebhookSecret,
+    slackSigningSecret:
+      envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
     linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
     webhooks,
     db,
@@ -527,13 +530,33 @@ if (import.meta.main) {
   if (command === "login" && argv[1] === "github") {
     process.exit(await loginGitHubCommand(argv.slice(2)));
   }
+  if (command === "login" && argv[1] === "slack") {
+    try {
+      if (argv.length !== 2) throw new Error("usage: paws login slack");
+      const runtime = loadRuntime(process.env);
+      await loginSlack({
+        home: runtime.env.home,
+        env: process.env,
+        onAuthorize(url) {
+          console.log(`Authorize Paws: ${url}`);
+        },
+      });
+      console.log("Slack connected.");
+      process.exit(0);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Slack login failed");
+      process.exit(1);
+    }
+  }
   if (command === "logout") {
     process.exit(await logoutGitHubCommand());
   }
   if (command === "login") {
     const agent = argv[1];
     if ((agent !== "claude" && agent !== "codex") || !argv.includes("--docker")) {
-      console.error("usage: paws login github | paws login <claude|codex> --docker");
+      console.error(
+        "usage: paws login github | paws login slack | paws login <claude|codex> --docker",
+      );
       process.exit(1);
     }
     try {

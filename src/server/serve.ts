@@ -1,3 +1,4 @@
+import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
@@ -11,6 +12,7 @@ export type ServerOptions = {
   port?: number;
   linearWebhookSecret?: string | null;
   githubWebhookSecret?: string | null;
+  slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
   /**
    * Webhook routes. Default follows `LINEAR_WEBHOOKS` via `webhookChecksNeeded`.
@@ -29,6 +31,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const hostname = options.hostname ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
   const linearWebhookSecret = options.linearWebhookSecret ?? null;
+  const slackSigningSecret = options.slackSigningSecret ?? null;
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
@@ -43,6 +46,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     port,
     fetch(request) {
       return route(request, {
+        slackSigningSecret,
         linearWebhookSecret,
         githubWebhookSecret,
         linearWebhook,
@@ -62,6 +66,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
   linearWebhook: LinearWebhookDeps | undefined;
@@ -100,6 +105,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         }),
   });
   if (status !== null) return status;
+  if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (!secrets.webhooks) return new Response("not found", { status: 404 });
     if (request.method === "POST" && path === "/webhooks/linear") {

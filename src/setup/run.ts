@@ -82,6 +82,8 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     io.stdout(HELP);
     return;
   }
+  flags.linearClientId ??= io.env.LINEAR_CLIENT_ID ?? null;
+  flags.linearClientSecret ??= io.env.LINEAR_CLIENT_SECRET ?? null;
   remember(secrets, flags.linearApiKey);
   remember(secrets, flags.linearClientSecret);
   remember(secrets, flags.linearAccessToken);
@@ -196,6 +198,8 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
 
   if (linear !== null) writeLinearSecrets(paths.secretsDir, mode, linear);
+  const webhookSecret = io.env.LINEAR_WEBHOOK_SECRET;
+  if (webhookSecret) writeSecretFile(join(paths.secretsDir, "linear-webhook"), webhookSecret);
   const githubAuth = useGitHubApp ? "app" : tracker === "linear" ? "gh" : "oauth";
   const config: PawsSetupConfig = {
     linearMode: mode,

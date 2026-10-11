@@ -32,12 +32,20 @@ test("GitHub App sign-in persists private credentials and repository work uses o
     pawsPaths(scene.home).configFile,
     '[github]\nauth = "gh"\nrepo = "old/repo"\n[agents]\nimplementer = "codex"\n[tracker]\nkind = "github"\n',
   );
+  scene.options.env = {
+    ...scene.options.env,
+    ...{ GITHUB_WEBHOOK_SECRET: "synthetic-github-webhook-secret" },
+  };
   const user = await loginGitHub(scene.options);
   expect(user).toEqual({ login: "octocat", id: 7 });
   expect(await readSignedInUser({ store: scene.store })).toEqual(user);
   expect((await scene.store.load())?.appId).toBe("99");
   expect((await scene.store.load())?.expiresAtMs).toBeGreaterThan(Date.now());
   const runtime = loadRuntime({ PAWS_HOME: scene.home });
+  expect(runtime.env.githubWebhookSecret).toBe("synthetic-github-webhook-secret");
+  expect(readFileSync(join(scene.home, "secrets", "github-webhook"), "utf8")).not.toContain(
+    "synthetic-github-webhook-secret",
+  );
   expect(runtime.githubAuth).toBe("app");
   expect(runtime.repo).toBe("acme/widgets");
   expect(runtime.file.agents.implementer).toBe("codex");
