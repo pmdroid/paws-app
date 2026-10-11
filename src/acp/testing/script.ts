@@ -34,11 +34,13 @@ export interface FakeScript {
   confirmModel?: string;
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
+  hangInitialize?: boolean;
   steps: FakeStep[];
 }
 
 export interface FakeResult {
   methods: string[];
+  prompts?: unknown[];
   modelSelection?: unknown;
   argv?: string[];
   cwd?: string;

@@ -34,6 +34,7 @@ export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; bod
     case "prompt_complete":
       return clip("thought", `Agent turn ended (${event.stopReason}).`);
     case "cancelled":
+      if (event.reason === "follow_up") return null;
       return clip("error", event.reason === "timeout" ? "Run timed out." : "Run cancelled.");
     case "ask_team":
       return null;

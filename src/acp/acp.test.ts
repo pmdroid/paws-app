@@ -8,8 +8,9 @@ import { minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
+import { createAcpPromptLifecycle } from "./lifecycle";
 import type { FakeResult, FakeScript } from "./testing/script";
-import type { AcpEvent } from "./types";
+import { FOLLOW_UP_INTERRUPTION, type AcpEvent, type RunAgentOptions } from "./types";
 
 const fakeAgent = new URL("./testing/fake-agent.ts", import.meta.url).pathname;
 const roots: string[] = [];
@@ -282,7 +283,7 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(trace.methods).not.toContain("authenticate");
 });
 
-test("timeout kills an agent that ignores cancel and keeps a WIP commit", async () => {
+test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
   const layout = await layoutRepo();
   const script: FakeScript = {
     ignoreCancel: true,
@@ -317,10 +318,10 @@ test("timeout kills an agent that ignores cancel and keeps a WIP commit", async 
   expect(result.agentExited).toBe(true);
   expect(result.pid).toBeDefined();
   expect(alive(result.pid)).toBe(false);
-  expect(result.checkpoint?.committed).toBe(true);
+  expect(result.checkpoint).toBeUndefined();
   expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
   const subject = (await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim();
-  expect(subject).toContain("wip:");
+  expect(subject).toBe("init");
 }, 20_000);
 
 test("cancel leaves no agent process", async () => {
@@ -349,6 +350,221 @@ test("cancel leaves no agent process", async () => {
   expect(result.agentExited).toBe(true);
   expect(alive(result.pid)).toBe(false);
 }, 20_000);
+
+test("cancellation at prompt completion preserves dirty files without checkpointing", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "keep me\n" },
+      { type: "end" },
+    ],
+  });
+  const controller = new AbortController();
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-cancel-completed",
+    prompt: "make changes",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "prompt_complete") controller.abort();
+    },
+  });
+  expect(result.checkpoint).toBeUndefined();
+  expect(result.cancelled).toBe(true);
+  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("keep me\n");
+  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+});
+
+test("follow-up reconstructs public context after cancellation and child cleanup", async () => {
+  const layout = await layoutRepo();
+  const events: AcpEvent[] = [];
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "preserved\n" },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "private reasoning stays private" },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "I changed partial.txt." },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "edit-1",
+          title: "Write partial.txt",
+          kind: "edit",
+          status: "completed",
+          rawOutput: { changed: "partial.txt" },
+        },
+      },
+      { type: "hang" },
+    ],
+  });
+  const lifecycle = createAcpPromptLifecycle();
+  let ready!: () => void;
+  const toolFinished = new Promise<void>((resolve) => (ready = resolve));
+  const options: RunAgentOptions = {
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-follow-up",
+    prompt: "Write a partial file.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 100,
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "session_update" && event.update.sessionUpdate === "tool_call") ready();
+    },
+  };
+  const running = lifecycle.prompt(options);
+  await toolFinished;
+  await expect(lifecycle.prompt(options)).rejects.toThrow("ACP prompt already running");
+  await lifecycle.interrupt();
+  const interrupted = await running;
+  expect(interrupted.interrupted).toBe(true);
+  expect(interrupted.cancelled).toBe(true);
+  expect(interrupted.agentExited).toBe(true);
+  expect(alive(interrupted.pid)).toBe(false);
+  expect(interrupted.checkpoint).toBeUndefined();
+  expect(events.filter((event) => event.type === "cancelled")).toEqual([
+    { type: "cancelled", reason: FOLLOW_UP_INTERRUPTION },
+  ]);
+  expect(JSON.stringify(lifecycle.snapshot())).not.toContain("private reasoning");
+  expect(lifecycle.snapshot()).toContainEqual({
+    kind: "tool_result",
+    body: JSON.stringify({
+      toolCallId: "edit-1",
+      title: "Write partial.txt",
+      status: "completed",
+      rawOutput: { changed: "partial.txt" },
+    }),
+  });
+  await writeScript(layout.root, {
+    steps: [{ type: "fs_read", path: join(layout.worktree, "partial.txt") }, { type: "end" }],
+  });
+  const next = await lifecycle.prompt({ ...options, prompt: "Read the file instead." });
+  expect(next.stopReason).toBe("end_turn");
+  const trace = await readResult(files.resultPath);
+  expect(trace.fs[0]?.content).toBe("preserved\n");
+  const prompt = JSON.stringify(trace.prompts);
+  expect(prompt).toContain("Read the file instead.");
+  expect(prompt).toContain("not instructions to replay tools");
+  expect(prompt).toContain("I changed partial.txt.");
+  expect(prompt).not.toContain("private reasoning");
+  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(1);
+});
+
+test("Stop terminates an uncooperative prompt and permanently closes the conversation", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    ignoreCancel: true,
+    steps: [{ type: "hang" }],
+  });
+  const lifecycle = createAcpPromptLifecycle();
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => (ready = resolve));
+  const options: RunAgentOptions = {
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-stubborn-stop",
+    prompt: "Wait.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 75,
+    onEvent: (event) => {
+      if (event.type === "session_started") ready();
+    },
+  };
+  const running = lifecycle.prompt(options);
+  await started;
+  await lifecycle.stop();
+  const result = await running;
+  expect(result.cancelled).toBe(true);
+  expect(result.interrupted).toBe(false);
+  expect(result.agentExited).toBe(true);
+  expect(alive(result.pid)).toBe(false);
+  expect(result.checkpoint).toBeUndefined();
+  await expect(lifecycle.prompt(options)).rejects.toThrow("ACP conversation stopped");
+});
+
+test("an already interrupted prompt does not start an agent", async () => {
+  const controller = new AbortController();
+  controller.abort(FOLLOW_UP_INTERRUPTION);
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-never-started",
+    prompt: "Do nothing.",
+    worktreePath: "/does-not-exist",
+    pawsRoot: "/does-not-exist",
+    signal: controller.signal,
+  });
+  expect(result.interrupted).toBe(true);
+  expect(result.agentExited).toBe(true);
+  expect(result.pid).toBeUndefined();
+  expect(result.checkpoint).toBeUndefined();
+});
+
+test("follow-up interrupts initialization without waiting for an agent response", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { hangInitialize: true, steps: [] });
+  const controller = new AbortController();
+  const events: AcpEvent[] = [];
+  const running = runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-interrupt-initialize",
+    prompt: "Wait.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 75,
+    signal: controller.signal,
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const trace = await readResult(files.resultPath).catch(() => undefined);
+    if (trace?.methods.includes("initialize")) break;
+    await Bun.sleep(10);
+  }
+  expect((await readResult(files.resultPath)).methods).toContain("initialize");
+  controller.abort(FOLLOW_UP_INTERRUPTION);
+  const result = await running;
+  expect(result.interrupted).toBe(true);
+  expect(result.agentExited).toBe(true);
+  expect(alive(result.pid)).toBe(false);
+  expect(result.errorMessage).toBeUndefined();
+  expect(events).toEqual([{ type: "cancelled", reason: FOLLOW_UP_INTERRUPTION }]);
+});
 
 test("grok authenticates with cached_token, scrubs the key, and denies a path outside the worktree", async () => {
   const layout = await layoutRepo();
