@@ -26,6 +26,23 @@ const TOOL = {
   },
 };
 
+const ARTIFACT_TOOL = {
+  name: "publish_artifact",
+  description: "Publish a file from the workspace and return a link to share with the user.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Workspace-relative path to the file to publish." },
+      displayName: { type: "string", description: "Optional file name shown to the user." },
+      mimeType: { type: "string", description: "Optional MIME type, such as image/png." },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+};
+
+const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
+
 type Rpc = {
   jsonrpc?: string;
   id?: number | string | null;
@@ -52,17 +69,21 @@ function fail(id: number | string | null, code: number, message: string): void {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function askParent(socketPath: string, args: Record<string, unknown>): Promise<string> {
+function askParent(
+  socketPath: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
   const payload = JSON.stringify({
     id: Date.now(),
-    question: args.question,
-    options: args.options,
-    context: args.context,
+    tool,
+    arguments: args,
   });
   return new Promise((resolve, reject) => {
     const socket = connect(socketPath);
     let buffer = "";
     socket.on("error", reject);
+    socket.on("close", () => reject(new Error("host tool connection closed")));
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
@@ -89,14 +110,16 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
         protocolVersion:
           typeof params.protocolVersion === "string" ? params.protocolVersion : "2024-11-05",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "paws-ask-team", version: "0.0.0" },
+        serverInfo: { name: "paws-host-tools", version: "0.0.0" },
       });
       return;
     case "ping":
       respond(message.id, {});
       return;
     case "tools/list":
-      respond(message.id, { tools: [TOOL] });
+      respond(message.id, {
+        tools: [TOOL, ARTIFACT_TOOL].filter((tool) => enabledTools.has(tool.name)),
+      });
       return;
     case "prompts/list":
       respond(message.id, { prompts: [] });
@@ -107,7 +130,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
     case "tools/call": {
       const name = params.name;
       const args = (params.arguments ?? {}) as Record<string, unknown>;
-      if (name !== "ask_team") {
+      if (typeof name !== "string" || !enabledTools.has(name)) {
         respond(message.id, {
           content: [{ type: "text", text: `unknown tool ${String(name)}` }],
           isError: true,
@@ -115,7 +138,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
         return;
       }
       try {
-        const answer = await askParent(socketPath, args);
+        const answer = await askParent(socketPath, name, args);
         respond(message.id, { content: [{ type: "text", text: answer }], isError: false });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);

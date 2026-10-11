@@ -80,6 +80,17 @@ export function markRun(db: Database, id: string, status: RunStatus, now: number
   db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
 }
 
+export function saveRunResult(db: Database, id: string, resultBody: string, now: number): void {
+  const run = getRun(db, id);
+  if (run === null) throw new Error(`run ${id} not found`);
+  const checkpoint = { ...(run.checkpoint ?? { phase: "running" }), resultBody };
+  db.run("UPDATE run SET checkpoint = ?, updated_at = ? WHERE id = ?", [
+    JSON.stringify(checkpoint),
+    now,
+    id,
+  ]);
+}
+
 function mapRun(row: RunSql): StoredRun {
   return {
     id: row.id,

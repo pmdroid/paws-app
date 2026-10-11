@@ -19,6 +19,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { minimalAgentEnv } from "./env";
+import { killTree, stopChild } from "./process";
 import { decidePermission, resolveInsideWorktree, type GuardContext } from "./permissions";
 
 const DEFAULT_OUTPUT_LIMIT = 1_000_000;
@@ -35,7 +36,9 @@ interface LiveTerminal {
 
 export class TerminalRegistry {
   private readonly terminals = new Map<string, LiveTerminal>();
+  private readonly children = new Set<ChildProcess>();
   private seq = 0;
+  private closing: Promise<void> | undefined;
 
   constructor(
     private readonly guard: GuardContext,
@@ -43,6 +46,7 @@ export class TerminalRegistry {
   ) {}
 
   create(params: CreateTerminalRequest): CreateTerminalResponse {
+    if (this.closing) throw RequestError.invalidParams({}, "run cancelled");
     const decision = decidePermission(
       {
         kind: "execute",
@@ -68,6 +72,7 @@ export class TerminalRegistry {
       cwd: params.cwd ? resolveInsideWorktree(params.cwd, this.guard) : this.guard.worktree,
       env,
       shell: false,
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const terminal: LiveTerminal = {
@@ -100,6 +105,7 @@ export class TerminalRegistry {
       });
     });
     this.terminals.set(id, terminal);
+    this.children.add(child);
     return { terminalId: id };
   }
 
@@ -121,15 +127,25 @@ export class TerminalRegistry {
   }
 
   kill(params: KillTerminalRequest): KillTerminalResponse {
-    this.get(params.terminalId).child.kill("SIGTERM");
+    killTree(this.get(params.terminalId).child, "SIGTERM");
     return {};
   }
 
   release(params: ReleaseTerminalRequest): ReleaseTerminalResponse {
     const terminal = this.get(params.terminalId);
-    terminal.child.kill("SIGTERM");
+    killTree(terminal.child, "SIGTERM");
     this.terminals.delete(params.terminalId);
     return {};
+  }
+
+  close(graceMs: number): Promise<void> {
+    this.closing ??= Promise.all([...this.children].map((child) => stopChild(child, graceMs))).then(
+      () => {
+        this.terminals.clear();
+        this.children.clear();
+      },
+    );
+    return this.closing;
   }
 
   private get(id: string): LiveTerminal {

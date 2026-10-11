@@ -45,6 +45,7 @@ export type Run = {
 export type CheckpointPhase = "running" | "verifying" | "awaiting_input" | "merge_queue";
 
 export type Checkpoint = {
+  resultBody?: string;
   phase: CheckpointPhase;
   wipCommit?: string;
   turn?: number;

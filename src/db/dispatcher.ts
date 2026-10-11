@@ -1,8 +1,19 @@
 import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
-import { claimOutboxHeads, completeOutbox, retryOutbox, type OutboxRow } from "./outbox";
+import {
+  claimOutboxHeads,
+  completeOutbox,
+  isOutboxCurrent,
+  retryOutbox,
+  releaseOutboxLease,
+  type OutboxRow,
+} from "./outbox";
 
-export type OutboxHandler = (message: OutboxRow) => Promise<void> | void;
+export type OutboxDeliveryContext = { signal: AbortSignal; isCurrent(): boolean };
+export type OutboxHandler = (
+  message: OutboxRow,
+  context: OutboxDeliveryContext,
+) => Promise<void> | void;
 
 /**
  * Delivers the head of every ready session at once. A session whose head is
@@ -11,6 +22,7 @@ export type OutboxHandler = (message: OutboxRow) => Promise<void> | void;
 export class OutboxDispatcher {
   private handler: OutboxHandler | null = null;
   private readonly pending = new Set<Promise<void>>();
+  private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
 
   constructor(
     readonly db: Database,
@@ -33,13 +45,22 @@ export class OutboxDispatcher {
 
   tick(): OutboxRow[] {
     if (this.handler === null) return [];
+    for (const { row, controller } of this.active.values()) {
+      if (!isOutboxCurrent(this.db, row))
+        controller.abort(new Error("Delivery superseded by a session fence."));
+    }
     const claimed = claimOutboxHeads(this.db, {
+      blockedKeys: [...this.active.values()].flatMap(({ row }) =>
+        row.orderingKey === null ? [] : [`${row.target}:${row.orderingKey}`],
+      ),
       workerId: this.options.workerId ?? "outbox",
       now: this.clock.now(),
       limit: this.options.batchSize ?? 32,
     });
     for (const message of claimed) {
-      this.track(this.deliver(message));
+      const controller = new AbortController();
+      this.active.set(message.id, { row: message, controller });
+      this.track(this.deliver(message, controller));
     }
     return claimed;
   }
@@ -67,17 +88,24 @@ export class OutboxDispatcher {
     });
   }
 
-  private async deliver(message: OutboxRow): Promise<void> {
+  private async deliver(message: OutboxRow, controller: AbortController): Promise<void> {
     const handler = this.handler;
     if (handler === null) return;
     try {
-      await handler(message);
+      if (!isOutboxCurrent(this.db, message)) return;
+      await handler(message, {
+        signal: controller.signal,
+        isCurrent: () => isOutboxCurrent(this.db, message),
+      });
       completeOutbox(this.db, message, this.clock.now());
     } catch (error) {
       retryOutbox(this.db, message, error, {
         now: this.clock.now(),
         baseMs: this.options.backoffBaseMs,
       });
+    } finally {
+      releaseOutboxLease(this.db, message);
+      this.active.delete(message.id);
     }
   }
 }
