@@ -17,7 +17,7 @@ bun run paws setup --repo owner/name
 
 Paws opens the App's authorization page. After you approve it, Paws checks your repository access, discovers the installation, and verifies that it can mint a token restricted to that repository. It sets `github.auth = "app"` and preserves the rest of your config. [GitHub App user authorization](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app) uses the App's permissions rather than OAuth App scopes.
 
-The private key and App credentials are saved as `~/.paws/secrets/github-app.pem` and `github-app.json`, both mode `0600`, inside the mode `0700` secrets directory. Subsequent starts load these files. Environment variables override saved credentials. Your sign-in token uses the token store described below. Repository operations mint installation tokens and appear as `<app-slug>[bot]`.
+The private key and App credentials are envelope-encrypted and saved as `~/.paws/secrets/github-app.pem` and `github-app.json`, both mode `0600`, inside the mode `0700` secrets directory. Subsequent starts load these files. Environment variables override saved credentials. Your sign-in token uses the token store described below. Repository operations mint installation tokens and appear as `<app-slug>[bot]`.
 
 With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. Setup keeps App mode for GitHub, Linear, and combined trackers.
 
@@ -50,7 +50,7 @@ The `workflow` scope stays off the request. GitHub then rejects a push that chan
 | Linux                                  | libsecret (Secret Service)                       |
 | Either, when that store is unavailable | `~/.paws/secrets/github-oauth.json`, mode `0600` |
 
-`~/.paws/secrets/` is mode `0700`. The JSON file holds the access token and the GitHub login it belongs to. `github.oauth_client_id` stays in `config.toml`. The token stays out of `config.toml`.
+`~/.paws/secrets/` is mode `0700`. The file holds an envelope-encrypted access token and the GitHub login it belongs to. Its key-encryption key is `~/.paws/secrets/.envelope-key`, outside the database. `github.oauth_client_id` stays in `config.toml`. The token stays out of `config.toml`.
 
 Paws does not write the token to logs or to `paws doctor` output.
 

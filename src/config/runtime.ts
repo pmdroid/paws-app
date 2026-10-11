@@ -51,6 +51,12 @@ export type RuntimeConfig = {
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const env = loadEnv(source);
+  env.linearWebhookSecret ??= readSecretFile(
+    join(pawsPaths(env.home).secretsDir, "linear-webhook"),
+  );
+  env.githubWebhookSecret ??= readSecretFile(
+    join(pawsPaths(env.home).secretsDir, "github-webhook"),
+  );
   const app = loadGitHubAppCredentials(env.home, source);
   if (app !== null) {
     env.githubAppId = app.appId;

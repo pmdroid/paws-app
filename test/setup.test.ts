@@ -12,7 +12,7 @@ import {
   GITHUB_REAUTH_MESSAGE,
   MISSING_GITHUB_CLIENT_ID_MESSAGE,
 } from "../src/auth";
-import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
+import { pawsPaths, loadConfigFile, loadRuntime, renderConfigToml } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
 import {
   LINEAR_APP_SCOPES,
@@ -167,7 +167,16 @@ describe("paws setup", () => {
     const started = Date.now();
     let redirectUri = "";
     let exchanges = 0;
-    const result = await run(scene, browserAgentArgs(scene), {
+    const args = browserAgentArgs(scene).filter(
+      (arg) =>
+        !["--linear-client-id", "client-id", "--linear-client-secret", CLIENT_SECRET].includes(arg),
+    );
+    const result = await run(scene, args, {
+      env: {
+        LINEAR_CLIENT_ID: "client-id",
+        LINEAR_CLIENT_SECRET: CLIENT_SECRET,
+        LINEAR_WEBHOOK_SECRET: "synthetic-linear-webhook-secret",
+      },
       fetch: async (url, init) => {
         if (url !== "https://api.linear.app/oauth/token") return scene.linear.fetch(url, init);
         exchanges += 1;
@@ -202,6 +211,12 @@ describe("paws setup", () => {
     expect(result.code).toBe(0);
     expect(result.stderr).toEqual([]);
     expect(exchanges).toBe(1);
+    expect(loadRuntime({ PAWS_HOME: scene.home }).env.linearWebhookSecret).toBe(
+      "synthetic-linear-webhook-secret",
+    );
+    expect(readFileSync(join(scene.paths.secretsDir, "linear-webhook"), "utf8")).not.toContain(
+      "synthetic-linear-webhook-secret",
+    );
     expect(LINEAR_REDIRECT_URI).toBe("http://localhost:3000/oauth/callback");
     const tokenPath = linearTokenPath(scene.paths.secretsDir);
     const token = readStoredToken(tokenPath);
@@ -588,11 +603,11 @@ function happyArgs(scene: Scene): string[] {
 async function run(
   scene: Scene,
   args: string[],
-  extra?: Pick<SetupOptions, "readLine" | "linear" | "fetch">,
+  extra?: Pick<SetupOptions, "readLine" | "linear" | "fetch" | "env">,
 ): Promise<{ code: number; stdout: string[]; stderr: string[] }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: scene.bin };
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: scene.bin, ...extra?.env };
   delete env.PAWS_GITHUB_REPOSITORY;
   delete env.PAWS_HOME;
   const code = await runSetup(args, {

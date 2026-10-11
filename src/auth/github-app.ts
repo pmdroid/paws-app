@@ -1,4 +1,5 @@
-import { readSecretFile } from "../credentials";
+import { join } from "node:path";
+import { readSecretFile, writeSecretFile } from "../credentials";
 import {
   loadGitHubAppCredentials,
   pawsPaths,
@@ -116,6 +117,9 @@ export async function loginGitHubApp(options: LoginIO): Promise<{ login: string;
     invalid: false,
   });
   saveGitHubAppCredentials(home, { ...app, installationId });
+  const webhookSecret = options.env?.GITHUB_WEBHOOK_SECRET;
+  if (webhookSecret)
+    writeSecretFile(join(pawsPaths(home).secretsDir, "github-webhook"), webhookSecret);
   writeGitHubAuth(pawsPaths(home).configFile, "app", app.clientId, repo);
   return { login: account.login, id: account.id };
 }

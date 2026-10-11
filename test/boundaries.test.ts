@@ -7,6 +7,7 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 const MODULES = [
   "config",
   "credentials",
+  "slack",
   "core",
   "db",
   "linear",
@@ -37,6 +38,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
   config: ["core", "credentials"],
   credentials: ["db"],
+  slack: ["config", "credentials"],
   core: [],
   db: ["core"],
   linear: ["core", "credentials"],
@@ -47,7 +49,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   github: [],
   questions: ["core"],
   web: ["db"],
-  server: ["config", "linear", "github", "web", "auth"],
+  server: ["slack", "config", "linear", "github", "web", "auth"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions", "config"],
   doctor: [
