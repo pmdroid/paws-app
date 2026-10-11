@@ -2,6 +2,7 @@ export type Route =
   | { view: "overview" }
   | { view: "epics"; id: string | null }
   | { view: "runs"; id: string | null }
+  | { view: "sessions"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "verdicts"; id: string | null }
   | { view: "queue" }
@@ -23,6 +24,8 @@ export function parseRoute(hash: string): Route {
       return { view: "epics", id };
     case "runs":
       return { view: "runs", id };
+    case "sessions":
+      return { view: "sessions", id };
     case "questions":
       return { view: "questions", id };
     case "verdicts":
