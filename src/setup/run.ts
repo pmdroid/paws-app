@@ -21,6 +21,7 @@ import {
 import {
   LINEAR_ACTOR,
   LINEAR_APP_SCOPES,
+  authorizeLinear,
   linearTokenPath,
   type StoredLinearToken,
 } from "../linear";
@@ -261,6 +262,7 @@ type LinearSecrets = {
   clientId: string | null;
   clientSecret: string | null;
   refreshToken: string | null;
+  oauthToken?: StoredLinearToken;
 };
 
 async function resolveLinear(
@@ -294,15 +296,32 @@ async function resolveLinear(
     "Linear OAuth client secret:",
     APP_PROMPT,
   );
+  remember(secrets, clientSecret);
+  let oauthToken: StoredLinearToken | undefined;
+  if (!flags.linearAccessToken?.trim() && !flags.yes) {
+    oauthToken = await authorizeLinear({
+      clientId,
+      clientSecret,
+      ...(io.fetch ? { fetch: (url, init) => io.fetch!(String(url), init) } : {}),
+      ...(io.linear?.port !== undefined ? { port: io.linear.port } : {}),
+      ...(io.linear?.timeoutMs !== undefined ? { timeoutMs: io.linear.timeoutMs } : {}),
+      async onAuthorize(url) {
+        io.stdout(`Linear redirect URI: ${new URL(url).searchParams.get("redirect_uri")}`);
+        io.stdout("Open this link to install Paws in Linear:");
+        io.stdout(url);
+        await io.linear?.onAuthorize?.(url);
+      },
+    });
+  }
   const apiSecret = await askSecret(
-    flags.linearAccessToken,
+    oauthToken?.accessToken ?? flags.linearAccessToken,
     flags.yes,
     io,
     "Linear access token:",
     TOKEN_PROMPT,
   );
-  let refreshToken = flags.linearRefreshToken?.trim() ?? "";
-  if (refreshToken.length === 0 && !flags.yes) {
+  let refreshToken = oauthToken?.refreshToken ?? flags.linearRefreshToken?.trim() ?? "";
+  if (refreshToken.length === 0 && !flags.yes && oauthToken === undefined) {
     io.stdout("Linear refresh token (optional):");
     refreshToken = (await io.readLine())?.trim() ?? "";
   }
@@ -314,6 +333,7 @@ async function resolveLinear(
     clientId,
     clientSecret,
     refreshToken: refreshToken.length > 0 ? refreshToken : null,
+    ...(oauthToken ? { oauthToken } : {}),
   };
 }
 
@@ -394,7 +414,7 @@ function writeLinearSecrets(secretsDir: string, mode: LinearModeFlag, linear: Li
     scope: LINEAR_APP_SCOPES,
     actor: LINEAR_ACTOR,
   };
-  writeLinearOAuth(linearTokenPath(secretsDir), token);
+  writeLinearOAuth(linearTokenPath(secretsDir), linear.oauthToken ?? token);
 }
 
 function assertSecretMode(path: string): void {
