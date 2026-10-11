@@ -339,9 +339,10 @@ test("linear and github issues share one queue and report to their own tracker",
     expect(comments.comments.some((comment) => comment.body.includes("paws-demo#8"))).toBe(true);
     expect(comments.comments.some((comment) => comment.body.includes("ENG-9"))).toBe(false);
     const responses = comments.comments.filter((comment) =>
-      comment.body.startsWith("Paws: Verified locally."),
+      comment.body.includes("paws-demo#8: Verified locally."),
     );
     expect(responses).toHaveLength(1);
+    expect(responses[0]?.body).toContain("Epic complete. Merged paws-demo#8.");
     expect(
       comments.comments.some((comment) =>
         /^Paws: (?:I|Verified| locally\.|Finished \(end_turn\)\.)\n/.test(comment.body),

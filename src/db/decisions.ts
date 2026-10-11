@@ -71,6 +71,7 @@ export function postPauseNote(
   fromWall: number,
   now: number,
 ): void {
+  if (item.state === "awaiting_input" || item.state === "paused") return;
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
