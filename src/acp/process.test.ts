@@ -77,6 +77,31 @@ test.skipIf(process.platform !== "linux")(
   },
 );
 
+test.skipIf(process.platform !== "linux")(
+  "shutdown retries captured descendants when group signalling observes leader exit",
+  async () => {
+    const { child, descendant } = await processFamily();
+    const originalKill = process.kill;
+    const kill = spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === -child.pid! && signal === "SIGTERM") {
+        child.kill("SIGKILL");
+        Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
+        throw Object.assign(new Error("group disappeared"), { code: "ESRCH" });
+      }
+      return originalKill(pid, signal);
+    });
+    try {
+      expect(await stopChild(child, 100)).toBe(true);
+      expect(kill).toHaveBeenCalledWith(descendant, "SIGKILL");
+      await waitUntilStopped(descendant);
+    } finally {
+      kill.mockRestore();
+      if (running(child.pid!)) originalKill(child.pid!, "SIGKILL");
+      if (running(descendant)) originalKill(descendant, "SIGKILL");
+    }
+  },
+);
+
 async function processFamily(): Promise<{ child: ChildProcess; descendant: number }> {
   const root = await tempDir();
   const pidFile = join(root, "descendant.pid");

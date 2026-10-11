@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "./adapters";
 import { git } from "./git";
+import * as gitCommands from "./git";
 import { minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
@@ -324,6 +325,44 @@ test("timeout kills an agent that ignores cancel and leaves changes uncommitted"
   expect(subject).toBe("init");
 }, 20_000);
 
+test("a cooperative timeout returns cancelled without publishing a checkpoint", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "partial\n" },
+      { type: "hang" },
+    ],
+  });
+  const events: AcpEvent[] = [];
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-cooperative-timeout",
+    prompt: "Wait after writing.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    timeoutMs: 100,
+    cancelGraceMs: 200,
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  expect(result).toMatchObject({
+    timedOut: true,
+    cancelled: true,
+    acpStopReason: "cancelled",
+    agentExited: true,
+  });
+  expect(result.checkpoint).toBeUndefined();
+  expect(events.some((event) => event.type === "checkpoint")).toBe(false);
+  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
+});
+
 test("cancel leaves no agent process", async () => {
   const layout = await layoutRepo();
   const script: FakeScript = { steps: [{ type: "hang" }] };
@@ -381,6 +420,55 @@ test("cancellation at prompt completion preserves dirty files without checkpoint
   expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("keep me\n");
   expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
 });
+
+for (const boundary of ["publication", "activity"] as const) {
+  test(`a checkpoint published before follow-up ${boundary} stays completed`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      steps: [
+        { type: "fs_write", path: join(layout.worktree, "complete.txt"), content: "complete\n" },
+        { type: "end" },
+      ],
+    });
+    const controller = new AbortController();
+    const originalGit = gitCommands.git;
+    const calls = spyOn(gitCommands, "git").mockImplementation(async (args, options) => {
+      const result = await originalGit(args, options);
+      if (boundary === "publication" && (args.includes("commit") || args.includes("commit-tree")))
+        queueMicrotask(() => queueMicrotask(() => controller.abort(FOLLOW_UP_INTERRUPTION)));
+      return result;
+    });
+    try {
+      const result = await runAgent({
+        role: "implementer",
+        itemId: "ENG-1",
+        runId: "run-checkpoint-publication",
+        prompt: "Finish the file.",
+        worktreePath: layout.worktree,
+        pawsRoot: layout.pawsRoot,
+        home: layout.home,
+        command: process.execPath,
+        args: fakeAgentArgs(files),
+        env: agentEnv(),
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (boundary === "activity" && event.type === "checkpoint" && event.checkpoint.committed)
+            controller.abort(FOLLOW_UP_INTERRUPTION);
+        },
+      });
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.checkpoint?.committed).toBe(true);
+      expect(result.cancelled).toBe(false);
+      expect(result.interrupted).not.toBe(true);
+      expect(result.stopReason).toBe("end_turn");
+      expect((await git(["-C", layout.worktree, "rev-parse", "HEAD"])).trim()).toBe(
+        result.checkpoint?.sha ?? "",
+      );
+    } finally {
+      calls.mockRestore();
+    }
+  });
+}
 
 test("follow-up reconstructs public context after cancellation and child cleanup", async () => {
   const layout = await layoutRepo();
