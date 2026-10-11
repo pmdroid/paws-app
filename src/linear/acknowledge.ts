@@ -8,6 +8,7 @@ export async function acknowledgeNewSession(
   tracker: TrackerAdapter,
   event: AcceptedLinearEvent,
   followUp?: (event: AcceptedLinearEvent) => Promise<void>,
+  options?: { propagateFailure?: boolean },
 ): Promise<void> {
   if (event.signal === "stop") return;
   if (event.action !== "created" && event.action !== "prompted") return;
@@ -24,11 +25,13 @@ export async function acknowledgeNewSession(
   } catch (error) {
     const message = error instanceof Error ? error.message : "follow-up failed";
     console.error(`linear session follow-up failed: ${message}`);
-    if (event.sessionId === null) return;
-    await tracker.postProgress({
-      sessionId: event.sessionId,
-      kind: "error",
-      body: "Could not load the Linear issue.",
-    });
+    if (event.sessionId !== null) {
+      await tracker.postProgress({
+        sessionId: event.sessionId,
+        kind: "error",
+        body: "Could not load the Linear issue.",
+      });
+    }
+    if (options?.propagateFailure) throw error;
   }
 }

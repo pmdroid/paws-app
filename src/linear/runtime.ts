@@ -21,6 +21,7 @@ import {
   type CatchUpPoller,
 } from "./poller";
 import { createLinearTracker } from "./tracker";
+import { createSessionStarter } from "./start-session";
 import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunnel";
 import type { LinearWebhookDeps } from "./webhook";
 
@@ -35,6 +36,7 @@ export type LinearRunning = {
 export type OpenLinear = {
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
+  startSession: ReturnType<typeof createSessionStarter> | null;
   start(port: number): LinearRunning;
 };
 
@@ -71,14 +73,17 @@ export function openLinear(options: {
     bootstrapRefreshToken: settings.refreshToken,
     fetch: options.fetch,
   });
-  const tracker = auth.hasToken()
-    ? createLinearTracker(createLinearClient({ auth, fetch: options.fetch }))
-    : null;
+  const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
+  const tracker = client === null ? null : createLinearTracker(client);
   const onEvent = tracker === null ? undefined : shareEvents(tracker, options.followUp);
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
     tracker,
+    startSession:
+      client === null || onEvent === undefined
+        ? null
+        : createSessionStarter({ client, store, appUserId: settings.appUserId, onEvent }),
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
@@ -129,6 +134,7 @@ function shareEvents(
       tracker,
       event,
       (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
+      { propagateFailure: true },
     ).finally(() => {
       inflight.delete(event.dedupeKey);
     });

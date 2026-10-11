@@ -170,6 +170,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     statusEnv: envSource,
     closeoutHome: paths.home,
+    ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
     agentSettings: {
       configPath: paths.configFile,
       repos: runtime.repo ? [runtime.repo] : [],

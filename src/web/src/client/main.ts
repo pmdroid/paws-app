@@ -12,8 +12,10 @@ import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 
 import { createAgentSettings } from "./agent-settings";
+import { createSessionStart } from "./session-start";
 
 const settings = createAgentSettings(() => paint());
+const sessionStart = createSessionStart(reload);
 
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
@@ -165,6 +167,8 @@ function paint(): void {
   setHtml("#tabbar", view.tabbar);
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
+  const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
+  if (sessionRoot) sessionStart.mount(sessionRoot, currentEngine(), snapshot?.source);
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {
