@@ -46,7 +46,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
     db.run(
       "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
     );
-    for (const migration of migrations.filter((entry) => entry.id !== "012_linear_task_identity")) {
+    for (const migration of migrations.filter((entry) => entry.id < "012_linear_task_identity")) {
       db.run(migration.sql);
       db.run("INSERT INTO schema_migration VALUES (?,0)", [migration.id]);
     }

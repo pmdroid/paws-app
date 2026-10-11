@@ -1,4 +1,4 @@
-export { drainCommands, enqueueCommand, submitCommand } from "./commands";
+export { drainCommands, enqueueCommand, submitCommand, applyLinearCommand } from "./commands";
 export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
 export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
 export {
@@ -117,6 +117,11 @@ export {
   linearSessionForEpic,
   recordLinearTurn,
   listPendingLinearTurns,
+  listLinearTurnsForItem,
+  announceLinearTurn,
+  acceptLinearStop,
+  getLinearTurnGeneration,
+  discardLinearTurns,
   applyLinearTurns,
   getLinearSessionGeneration,
   getTaskLinearActor,
