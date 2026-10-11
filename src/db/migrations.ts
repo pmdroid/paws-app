@@ -503,4 +503,8 @@ CREATE TABLE linear_input (
 ) STRICT;
 `,
   },
+  {
+    id: "017_task_mode_generation",
+    sql: `ALTER TABLE work_item_task ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];

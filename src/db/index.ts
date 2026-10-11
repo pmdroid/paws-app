@@ -1,7 +1,14 @@
 export { drainCommands, enqueueCommand, submitCommand } from "./commands";
 export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
 export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
-export { completeAnswerTask, getTaskMode, saveTaskMode } from "./tasks";
+export {
+  completeAnswerTask,
+  completeArtifactTask,
+  getTaskMode,
+  getTaskModeGeneration,
+  saveTaskMode,
+  selectTaskModeForTurn,
+} from "./tasks";
 export {
   TransitionRejectedError,
   accrueAwake,
