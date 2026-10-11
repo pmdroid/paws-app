@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
@@ -32,7 +32,12 @@ import {
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
-import { attachOrchestrator, createAcpCodexReviewer, type AgentLaunch } from "../src/loop";
+import {
+  attachOrchestrator,
+  createAcpCodexReviewer,
+  KEEPALIVE_MS,
+  type AgentLaunch,
+} from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -104,6 +109,16 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     launch,
   });
 
+  const interval = globalThis.setInterval;
+  const keepAliveTicks: Array<() => void> = [];
+  const intervalSpy = spyOn(globalThis, "setInterval").mockImplementation(((
+    handler: (...args: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    if (delay === KEEPALIVE_MS) keepAliveTicks.push(() => handler(...args));
+    return interval(handler, delay, ...args);
+  }) as typeof setInterval);
   let delivered = false;
   let whileAsking = "";
   let stop = false;
@@ -113,7 +128,13 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       const question = tracker.questions.at(-1);
       if (question && !delivered) {
         delivered = true;
+        const publicUpdates = tracker.progress.length;
+        expect(keepAliveTicks.length).toBeGreaterThan(0);
+        for (const tick of keepAliveTicks) tick();
+        await outbox.idle();
+        expect(tracker.progress).toHaveLength(publicUpdates);
         whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
         await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
       await Bun.sleep(20);
@@ -138,6 +159,19 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
+    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
+      expect.objectContaining({
+        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
+      }),
+    ]);
+    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
+    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(
+      tracker.progress.some((update) => update.body.includes("Need a product decision.")),
+    ).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Adding the header."))).toBe(
+      false,
+    );
     const question = tracker.questions[0];
     expect(question?.options).toEqual(["yes", "no"]);
     expect(question?.body).toContain("Include archived rows?");
@@ -161,8 +195,13 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(github.opened[0]?.body).toContain("Closeout:");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
     expect(github.merged).toHaveLength(2);
+    const completedUpdates = tracker.progress.length;
+    for (const tick of keepAliveTicks) tick();
+    await outbox.idle();
+    expect(tracker.progress).toHaveLength(completedUpdates);
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
   } finally {
+    intervalSpy.mockRestore();
     stop = true;
     await answerer;
     db.close();
@@ -432,7 +471,11 @@ test.each(["claude", "codex", "grok"])(
     await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
     await running;
     expect(stateOf(db, "ENG-9")).toBe("cancelled");
-    expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
+    expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(false);
+    expect(tracker.progress.at(-1)).toMatchObject({
+      kind: "response",
+      body: "Stopped from Linear.",
+    });
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const agents = listRuns(db).map((run) => run.agent);
     db.close();
@@ -441,6 +484,38 @@ test.each(["claude", "codex", "grok"])(
   },
   20_000,
 );
+
+test("an unconfigured repository halts with an error and never completes the session", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "failure",
+      identifier: "ENG-99",
+      title: "Failure",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const orchestrator = attachOrchestrator({ db, tracker, jobs, outbox, pawsRoot: "/unused" });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "failure"));
+    await jobs.tick();
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(stateOf(db, "ENG-99")).toBe("failed");
+    expect(
+      tracker.progress.some(
+        (update) => update.kind === "error" && update.body.includes("PAWS_GITHUB_REPOSITORY"),
+      ),
+    ).toBe(true);
+    expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+    expect(tracker.progress.at(-1)?.kind).toBe("error");
+  } finally {
+    db.close();
+  }
+});
 
 test("a missing reviewer blocks the item and needs a person", async () => {
   const layout = await repoLayout();
@@ -490,6 +565,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
       if (job === null) await Bun.sleep(20);
     }
     expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("awaiting_input");
+    expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
     expect(tracker.questions).toHaveLength(1);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const notes = tracker.progress.map((update) => update.body).join("\n");
@@ -735,6 +811,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
       if (question && !delivered) {
         delivered = true;
         whileAsking = `${stateOf(db, "ENG-2") ?? "missing"}/${stateOf(db, "ENG-3") ?? "missing"}`;
+        expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
         await orchestrator.onLinearEvent(linearEvent("prompted", "yes", null));
       }
       await Bun.sleep(20);
@@ -759,6 +836,19 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
+    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
+      expect.objectContaining({
+        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
+      }),
+    ]);
+    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
+    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(
+      tracker.progress.some((update) => update.body.includes("Need a product decision.")),
+    ).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Adding the header."))).toBe(
+      false,
+    );
     expect(tracker.questions[0]?.options).toEqual(["yes", "no"]);
     const asked = JSON.parse(
       await readFile(results.get("implement:ENG-2") ?? "", "utf8"),
@@ -1029,6 +1119,7 @@ for (const sameModel of [true, false]) {
       if (sameModel) {
         expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("awaiting_input");
         expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
+        expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
         expect(tracker.questions[0]?.body).toContain("different reviewer model");
         expect(github.opened).toHaveLength(0);
       } else {
@@ -1128,6 +1219,9 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       await jobs.tick();
       expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("awaiting_input");
       expect(launched).toHaveLength(beforeHandoff);
+      expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
+      expect(tracker.questions).toHaveLength(1);
+      expect(tracker.questions[0]?.body).toContain("no recorded ACP session model");
       expect(github.opened).toHaveLength(0);
       expect(github.merged).toHaveLength(0);
       const question = findOpenQuestion(db, "ses_1")!;
@@ -1461,7 +1555,7 @@ description: Review the candidate. Report findings. Do not decide acceptance.
 Report findings. An empty list means the change is fine.
 `;
 
-const SEEDED_TEST = `import { expect, test } from "bun:test";
+const SEEDED_TEST = `import { expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 
 test("seeded check", () => {

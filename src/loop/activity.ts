@@ -32,11 +32,11 @@ export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; bod
     case "permission":
       return clip("action", event.title?.trim() || event.reason);
     case "prompt_complete":
-      return clip("response", `Finished (${event.stopReason}).`);
+      return clip("thought", `Agent turn ended (${event.stopReason}).`);
     case "cancelled":
       return clip("error", event.reason === "timeout" ? "Run timed out." : "Run cancelled.");
     case "ask_team":
-      return event.phase === "asked" ? clip("thought", `Asking the team: ${event.question}`) : null;
+      return null;
     default:
       return null;
   }
@@ -44,39 +44,38 @@ export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; bod
 
 export function createAcpActivityReporter(
   post: (activity: { kind: ActivityKind; body: string }) => void,
-): { onEvent(event: AcpEvent): void; flush(): void } {
-  let pending: { kind: "thought" | "response"; body: string } | null = null;
+): { onEvent(event: AcpEvent): void; flush(): void; resultBody(): string } {
+  let pending = "";
+  let resultBody = "";
 
-  function flush(final = false): boolean {
-    if (pending === null) return false;
-    const activity = clip(final ? pending.kind : "thought", pending.body);
-    pending = null;
-    if (activity !== null) post(activity);
-    return activity !== null;
+  function flush(): boolean {
+    const body = pending.trim();
+    const activity = clip("thought", body);
+    pending = "";
+    if (activity === null) return false;
+    resultBody = body;
+    post(activity);
+    return true;
   }
 
   return {
     onEvent(event) {
       if (event.type === "session_update") {
         const update = event.update;
-        if (
-          update.sessionUpdate === "agent_message_chunk" ||
-          update.sessionUpdate === "agent_thought_chunk"
-        ) {
-          const kind = update.sessionUpdate === "agent_message_chunk" ? "response" : "thought";
-          if (pending !== null && pending.kind !== kind) flush();
-          pending ??= { kind, body: "" };
-          pending.body += textOf(update.content);
+        if (update.sessionUpdate === "agent_thought_chunk") return;
+        if (update.sessionUpdate === "agent_message_chunk") {
+          pending += textOf(update.content);
           return;
         }
       }
       const activity = activityFromAcpEvent(event);
       if (activity === null) return;
-      const flushed = flush(event.type === "prompt_complete" && event.stopReason === "end_turn");
+      const flushed = flush();
       if (event.type === "prompt_complete" && flushed) return;
-      post(event.type === "prompt_complete" ? { ...activity, kind: "thought" } : activity);
+      post(activity);
     },
     flush,
+    resultBody: () => resultBody,
   };
 }
 
@@ -89,9 +88,9 @@ export function clipActivity(body: string): string {
 function fromSessionUpdate(update: SessionUpdate): { kind: ActivityKind; body: string } | null {
   switch (update.sessionUpdate) {
     case "agent_thought_chunk":
-      return clip("thought", textOf(update.content));
+      return null;
     case "agent_message_chunk":
-      return clip("response", textOf(update.content));
+      return clip("thought", textOf(update.content));
     case "tool_call":
       return clip("action", update.title?.trim() || update.toolCallId);
     case "tool_call_update":

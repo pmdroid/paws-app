@@ -527,10 +527,14 @@ try {
       happy.merged.length === 2,
     { states: happy.states, parked: happy.parked, merges: happy.merged.length },
   );
+  const completed = happy.comments.filter((comment) =>
+    comment.body.startsWith("Paws: Epic complete."),
+  );
   observe(
-    "ACP chunks form complete comments",
-    happy.comments.filter((comment) => comment.body.startsWith("Paws: Verified locally."))
-      .length === 2 &&
+    "one final completion preserves complete results from both ACP turns",
+    completed.length === 1 &&
+      completed[0]!.body.includes("fixture#2: Verified locally.") &&
+      completed[0]!.body.includes("fixture#3: Verified locally.") &&
       !happy.comments.some((comment) => /^Paws: (I|Verified)\n/.test(comment.body)),
     happy.comments
       .filter((comment) => comment.body.includes("Verified"))
