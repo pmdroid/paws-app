@@ -6,7 +6,7 @@ Paws supports GitHub App browser sign-in with repository work performed by the A
 
 Create a GitHub App under **Settings > Developer settings > GitHub Apps**. Set its callback URL to `http://127.0.0.1:3000/oauth/github/callback`. This listener runs during sign-in; the Paws dashboard uses port `8787`.
 
-Grant repository **Contents**, **Pull requests**, **Checks**, and **Issues** permissions with **Read and write** access. GitHub grants **Metadata** read access automatically. Paws polls GitHub, so leave the webhook **Active** checkbox unchecked. Install the App on the repositories Paws will work on.
+Grant repository **Contents**, **Pull requests**, **Checks**, and **Issues** permissions with **Read and write** access. GitHub grants **Metadata** read access automatically. Set the webhook URL to your HTTPS tunnel followed by `/webhooks/github`, choose a webhook secret, and set `GITHUB_WEBHOOK_SECRET` before sign-in. Subscribe to **Pull requests**, **Check runs**, **Check suites**, **Pushes**, **Installations** and **Installation repositories**. Signed deliveries are stored durably and deduplicated by delivery ID. Install the App on the repositories Paws will work on.
 
 Generate a client secret and a private key. Set `GITHUB_APP_ID`, `PAWS_GITHUB_CLIENT_ID`, `PAWS_GITHUB_CLIENT_SECRET`, and `GITHUB_APP_PRIVATE_KEY_PATH` in your local environment, then run:
 

@@ -313,4 +313,15 @@ CREATE TABLE outbox_session_fence (
 CREATE INDEX outbox_session_delivery ON outbox (target, ordering_key, delivery_generation, status);
 `,
   },
+  {
+    id: "010_github_deliveries",
+    sql: `
+CREATE TABLE github_delivery (
+  delivery_id TEXT PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

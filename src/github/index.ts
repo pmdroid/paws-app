@@ -70,3 +70,4 @@ export type {
   ReverifyResult,
   SerialMergeResult,
 } from "./types";
+export type { GitHubWebhook } from "./webhook";
