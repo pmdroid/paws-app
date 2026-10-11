@@ -10,6 +10,7 @@ export {
   failWorkItem,
   getWorkItem,
   listInFlightItems,
+  listWorkItems,
   listWorkItemsByStates,
   recordTurn,
   saveCheckpoint,
@@ -65,3 +66,14 @@ export {
   type WorkItemBlockRecord,
 } from "./reads";
 export { immediate } from "./tx";
+export {
+  appendCloseoutOutput,
+  ensureCloseoutProgress,
+  finishCloseoutProgress,
+  listCloseoutProgress,
+  upsertCloseoutStep,
+  type CloseoutProgressIdentity,
+  type CloseoutProgressRecord,
+  type CloseoutStepRecord,
+  type CloseoutStepWrite,
+} from "./closeout-progress";

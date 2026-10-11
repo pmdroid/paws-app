@@ -76,6 +76,13 @@ export function getWorkItem(db: Database, id: string): WorkItemRecord | null {
   return row === null ? null : mapItem(row);
 }
 
+export function listWorkItems(db: Database): WorkItemRecord[] {
+  return db
+    .query<ItemSql, []>("SELECT * FROM work_item ORDER BY created_at, id")
+    .all()
+    .map(mapItem);
+}
+
 export function listWorkItemsByStates(
   db: Database,
   states: readonly WorkItemState[],

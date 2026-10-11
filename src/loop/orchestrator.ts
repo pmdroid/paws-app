@@ -56,6 +56,7 @@ import {
   openQuestion,
 } from "../questions";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import { createDbCloseoutProgress } from "./closeout-progress";
 import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
@@ -377,6 +378,7 @@ export class Orchestrator {
       recorder,
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(),
+      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
     const verdict = await gate.run({
       taskId: itemPathId(item),
@@ -445,6 +447,7 @@ export class Orchestrator {
       candidate: this.candidateFor(item.currentRunId ?? item.id),
       reviewer: createAcpCodexReviewer(deps),
       ...this.closeoutHome(),
+      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
     if (evaluation.outcome !== "accepted") {
       this.post(
@@ -538,6 +541,7 @@ export class Orchestrator {
           candidate: this.candidateFor(item.currentRunId ?? item.id),
           reviewer,
           ...this.closeoutHome(),
+          progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
         });
         return {
           accepted: evaluation.outcome === "accepted",
