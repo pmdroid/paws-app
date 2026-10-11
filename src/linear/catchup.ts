@@ -6,13 +6,16 @@ import { isRecord, readString } from "./read";
  * One GraphQL document per tick: team issues updated after the cursor,
  * plus comments and agent activities updated after the same cursor.
  */
-const INTAKE_QUERY = `query IntakePoll($team: String!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String) {
+const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String) {
   viewer { id }
+  agentSessions(first: 50, orderBy: createdAt) {
+    nodes { id createdAt updatedAt endedAt dismissedAt appUser { id } issue { id team { id key } } }
+  }
   issues(
     first: 50
     after: $issueAfter
     orderBy: updatedAt
-    filter: { updatedAt: { gt: $since }, team: { or: [{ id: { eq: $team } }, { key: { eq: $team } }] } }
+    filter: { updatedAt: { gt: $since }, team: $team }
   ) {
     nodes {
       id
@@ -27,7 +30,7 @@ const INTAKE_QUERY = `query IntakePoll($team: String!, $since: DateTimeOrDuratio
     first: 50
     after: $commentAfter
     orderBy: updatedAt
-    filter: { updatedAt: { gt: $since }, issue: { team: { or: [{ id: { eq: $team } }, { key: { eq: $team } }] } } }
+    filter: { updatedAt: { gt: $since }, issue: { team: $team } }
   ) {
     nodes {
       id
@@ -69,6 +72,13 @@ export type PolledComment = {
   updatedAtMs: number;
 };
 
+export type PolledSession = {
+  id: string;
+  issueId: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
 export type PolledActivity = {
   id: string;
   issueId: string | null;
@@ -79,6 +89,7 @@ export type PolledActivity = {
 };
 
 export type IntakeSighting = {
+  sessions: readonly PolledSession[];
   issues: readonly PolledIssue[];
   comments: readonly PolledComment[];
   activities: readonly PolledActivity[];
@@ -94,6 +105,7 @@ export type IntakePollSource = {
 };
 
 const EMPTY: IntakeSighting = {
+  sessions: [],
   issues: [],
   comments: [],
   activities: [],
@@ -117,7 +129,9 @@ export function createIntakePollSource(
       const teamId = options.teamId;
       if (teamId === null || teamId.length === 0) return EMPTY;
       const data = await client.query(INTAKE_QUERY, {
-        team: teamId,
+        team: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamId)
+          ? { id: { eq: teamId } }
+          : { key: { eq: teamId } },
         since: new Date(sinceMs).toISOString(),
         issueAfter,
         commentAfter,
@@ -158,6 +172,7 @@ export function createIntakePollSource(
         activityAfter = null;
       }
       return {
+        sessions: readSessions(root, appUserId, teamId),
         issues: dedupeIssues(issues.nodes, appUserId),
         comments: dedupeComments(comments.nodes),
         activities: dedupeActivities(activities.nodes),
@@ -167,6 +182,33 @@ export function createIntakePollSource(
       };
     },
   };
+}
+
+function readSessions(
+  root: Record<string, unknown>,
+  appUserId: string | null,
+  teamId: string,
+): PolledSession[] {
+  const latest = new Map<string, PolledSession>();
+  for (const node of readConnection(root, "agentSessions").nodes) {
+    if (readString(node, "endedAt") !== null || readString(node, "dismissedAt") !== null) continue;
+    const user = isRecord(node["appUser"]) ? node["appUser"] : null;
+    const issue = isRecord(node["issue"]) ? node["issue"] : null;
+    const team = issue !== null && isRecord(issue["team"]) ? issue["team"] : null;
+    if (user === null || readString(user, "id") !== appUserId || issue === null || team === null)
+      continue;
+    if (readString(team, "id") !== teamId && readString(team, "key") !== teamId) continue;
+    const id = readString(node, "id");
+    const issueId = readString(issue, "id");
+    const createdAtMs = readTime(node, "createdAt");
+    const updatedAtMs = readTime(node, "updatedAt");
+    if (id === null || issueId === null || createdAtMs === null || updatedAtMs === null) continue;
+    const prior = latest.get(issueId);
+    if (prior === undefined || createdAtMs > prior.createdAtMs) {
+      latest.set(issueId, { id, issueId, createdAtMs, updatedAtMs });
+    }
+  }
+  return [...latest.values()];
 }
 
 function advance(
