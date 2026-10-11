@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { evaluateCandidate, type Evaluation } from "../src/closeout";
 import {
   INSTALLATION_PERMISSIONS,
+  fakeMergeReadiness,
   serialMerge,
   type GitHubClient,
   type GitHubResponse,
@@ -122,6 +123,10 @@ function mergingClient(bare: string, onMerge?: () => GitHubResponse | null): Git
   let n = 0;
   return {
     async request(req) {
+      if (req.path === "/graphql") {
+        const { head } = (req.body as { variables: { head: string } }).variables;
+        return { status: 200, body: fakeMergeReadiness(head) };
+      }
       if (req.path.endsWith("/access_tokens")) {
         n += 1;
         return { status: 201, body: tokenBody(`ghs_merge_${n}`) };

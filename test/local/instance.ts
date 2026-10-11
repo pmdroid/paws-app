@@ -13,7 +13,7 @@ import {
 } from "../../src/db";
 import { createFakeGitHubComments, type GitHubCommentMethod } from "../../src/ghcomments";
 import { startFakeGitHubRest, startGitHubIssuePoller, type FetchLike } from "../../src/ghissues";
-import { createFakeGitHub, type GitHubClient } from "../../src/github";
+import { createFakeGitHub, fakeMergeReadiness, type GitHubClient } from "../../src/github";
 import {
   githubCreatedEvent,
   ingestGitHubComments,
@@ -189,6 +189,10 @@ async function scenario(name: string, reviewerText = "[]", implementer = "claude
   const client: GitHubClient = {
     async request(request) {
       requests.push(request);
+      if (request.path === "/graphql") {
+        const { head } = (request.body as { variables: { head: string } }).variables;
+        return { status: 200, body: fakeMergeReadiness(head) };
+      }
       if (request.method === "POST" && request.path.endsWith("/pulls")) {
         const body = request.body as { title: string; head: string; base: string; body: string };
         const pull = await pulls.open({ repository: "local/fixture", ...body });

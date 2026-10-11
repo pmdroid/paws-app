@@ -190,7 +190,15 @@ export class Orchestrator {
       this.executeQueued(job.payload, context.extendLease),
     );
     jobs.register(JOB_KIND.reverify, (job) => this.reverify(job.payload));
-    jobs.register(JOB_KIND.merge, (job) => this.merge(job.payload));
+    jobs.register(JOB_KIND.merge, async (job, context) => {
+      const lease = setInterval(() => context.extendLease(60_000), 10_000);
+      lease.unref?.();
+      try {
+        await this.merge(job.payload);
+      } finally {
+        clearInterval(lease);
+      }
+    });
     this.options.outbox.setHandler(async (message) => {
       if (message.target !== "linear") return;
       const tracker = this.tracker;
@@ -516,6 +524,11 @@ export class Orchestrator {
       client: github.client,
       ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
+      isCancelled: () => this.stopped(item.id),
+      onWait: async (message) => {
+        this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
+        await this.flush();
+      },
       reverify: async (input) => {
         const evaluation = await evaluateCandidate({
           worktree: input.worktree,
@@ -533,6 +546,7 @@ export class Orchestrator {
         };
       },
     });
+    if (this.stopped(item.id)) return;
     if (!merged.merged) {
       this.post(
         item,

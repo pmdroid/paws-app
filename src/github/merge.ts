@@ -5,6 +5,7 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, redact, withCredential } from "./git";
+import { waitForMergeReadiness } from "./readiness";
 import {
   GitCommandError,
   MAX_SHA_GUARD_CYCLES,
@@ -35,6 +36,9 @@ export type SerialMergeInput = {
   /** Observability for the host. Do not log the token. */
   onCredential?: (purpose: "push" | "merge", token: string) => void;
   commitTitle?: string;
+  sleep?: (ms: number) => Promise<void>;
+  isCancelled?: () => boolean;
+  onWait?: (message: string) => Promise<void>;
 };
 
 /**
@@ -61,6 +65,9 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
 
   let lastGuard: "sha" | "http_409" = "sha";
   for (let cycle = 1; cycle <= MAX_SHA_GUARD_CYCLES; cycle++) {
+    if (input.isCancelled?.()) {
+      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
+    }
     const pushed = await pushRebased(input, url, branch, gitExec);
     if (!pushed.ok) return { ...pushed.result, cycle };
 
@@ -82,6 +89,22 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       };
     }
 
+    const readiness = await waitForMergeReadiness({
+      ...input,
+      head: pushed.head,
+      token: () => operationToken(input, "merge"),
+    });
+    if (readiness.outcome !== "ready") {
+      return {
+        merged: false,
+        outcome: readiness.outcome === "sha_moved" ? "sha_moved" : "blocked",
+        branch,
+        base: pushed.base,
+        head: pushed.head,
+        cycle,
+        message: readiness.message,
+      };
+    }
     const mergeToken = await operationToken(input, "merge");
     input.onCredential?.("merge", mergeToken);
     const headNow = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
@@ -92,6 +115,9 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       continue;
     }
 
+    if (input.isCancelled?.()) {
+      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
+    }
     const merged = await squash(input, mergeToken, pushed.head, verified.summary);
     if (merged.status === 409) {
       lastGuard = "http_409";

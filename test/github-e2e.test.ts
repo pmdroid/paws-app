@@ -21,6 +21,7 @@ import type { FakeGitHubRest } from "../src/ghissues";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
+  fakeMergeReadiness,
   type GitHubClient,
   type GitHubResponse,
 } from "../src/github";
@@ -617,6 +618,10 @@ function githubClient(
   return {
     async request(req): Promise<GitHubResponse> {
       seen.push(req.path);
+      if (req.path === "/graphql") {
+        const { head } = (req.body as { variables: { head: string } }).variables;
+        return { status: 200, body: fakeMergeReadiness(head) };
+      }
       if (req.path.endsWith("/access_tokens")) {
         await github.mintInstallationToken({
           installationId: "2",
