@@ -281,10 +281,33 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         continue;
       }
       try {
-        const text = await callAskTeam(server, step.question, step.options, step.context);
+        const text = await callHostTool(server, "ask_team", {
+          question: step.question,
+          ...(step.options ? { options: step.options } : {}),
+          ...(step.context ? { context: step.context } : {}),
+        });
         state.askTeam = { ok: true, text };
       } catch (error) {
         state.askTeam = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      persist();
+      continue;
+    }
+    if (step.type === "publish_artifact") {
+      try {
+        const server = state.mcpServers[0];
+        if (!server?.command) throw new Error("no mcp server");
+        const text = await callHostTool(server, "publish_artifact", {
+          path: step.path,
+          ...(step.displayName ? { displayName: step.displayName } : {}),
+          ...(step.mimeType ? { mimeType: step.mimeType } : {}),
+        });
+        state.artifact = { ok: true, text };
+      } catch (error) {
+        state.artifact = {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         };
@@ -313,11 +336,10 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
   return false;
 }
 
-async function callAskTeam(
+async function callHostTool(
   server: { command?: string; args?: string[]; env?: Array<{ name: string; value: string }> },
-  question: string,
-  options?: string[],
-  context?: string,
+  tool: string,
+  args: Record<string, unknown>,
 ): Promise<string> {
   const env: Record<string, string> = {};
   if (process.env.PATH) env.PATH = process.env.PATH;
@@ -326,14 +348,13 @@ async function callAskTeam(
     stdio: ["pipe", "pipe", "pipe"],
     env,
   }) as ChildProcessWithoutNullStreams;
-  return speakMcp(child, question, options, context);
+  return speakMcp(child, tool, args);
 }
 
 function speakMcp(
   child: ChildProcessWithoutNullStreams,
-  question: string,
-  options?: string[],
-  context?: string,
+  tool: string,
+  args: Record<string, unknown>,
 ): Promise<string> {
   let next = 1;
   const waiters = new Map<
@@ -369,10 +390,12 @@ function speakMcp(
     child.stdin.write(
       `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
     );
-    await call("tools/list", {});
+    const listed = (await call("tools/list", {})) as { tools: Array<{ name: string }> };
+    state.tools = listed.tools.map((entry) => entry.name);
+    persist();
     const result = (await call("tools/call", {
-      name: "ask_team",
-      arguments: { question, ...(options ? { options } : {}), ...(context ? { context } : {}) },
+      name: tool,
+      arguments: args,
     })) as { content?: Array<{ text?: string }>; isError?: boolean };
     child.stdin.end();
     const text = result.content?.[0]?.text ?? "";

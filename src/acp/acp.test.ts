@@ -10,6 +10,7 @@ import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
 import { createAcpPromptLifecycle } from "./lifecycle";
+import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
 import type { FakeResult, FakeScript } from "./testing/script";
 import { FOLLOW_UP_INTERRUPTION, type AcpEvent, type RunAgentOptions } from "./types";
 
@@ -280,8 +281,162 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
   expect(trace.askTeam).toEqual({ ok: true, text: "yes" });
+  expect(trace.tools).toEqual(["ask_team"]);
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
+});
+
+test("publish_artifact publishes a snapshot through MCP without an ask_team hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "shot.png"), content: "image bytes" },
+      { type: "publish_artifact", path: "shot.png", displayName: "shot[1].png" },
+      { type: "end" },
+    ],
+  });
+  let received: ArtifactSnapshot | undefined;
+  let context: PublishArtifactContext | undefined;
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-artifact",
+    prompt: "Return a screenshot.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    publishArtifact: {
+      publish: async (artifact, input) => {
+        received = artifact;
+        context = input;
+        await writeFile(join(layout.worktree, "shot.png"), "changed after snapshot");
+        return { url: "https://uploads.example/asset.png" };
+      },
+    },
+  });
+  expect(result.stopReason).toBe("end_turn");
+  expect(await received?.bytes.text()).toBe("image bytes");
+  expect(received?.mimeType).toBe("image/png");
+  expect(context?.itemId).toBe("ENG-1");
+  expect(context?.runId).toBe("run-artifact");
+  expect(context?.worktreePath).toBe(layout.worktree);
+  expect(context?.role).toBe("implementer");
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["publish_artifact"]);
+  expect(trace.artifact).toEqual({
+    ok: true,
+    text: "[shot\\[1\\].png](<https://uploads.example/asset.png>)",
+  });
+});
+
+test.each([
+  { path: ".env", maxBytes: 10, message: "secrets or credentials" },
+  { path: "report.txt", maxBytes: 4, message: "exceeds 4 bytes" },
+])("publish_artifact rejects $path before invoking the host upload hook", async (input) => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, input.path), content: "12345" },
+      { type: "publish_artifact", path: input.path },
+      { type: "end" },
+    ],
+  });
+  let uploads = 0;
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-denied-artifact",
+    prompt: "Publish a file.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    artifactLimits: { maxBytes: input.maxBytes },
+    publishArtifact: {
+      publish: async () => {
+        uploads += 1;
+        return { url: "https://uploads.example/asset" };
+      },
+    },
+  });
+  expect(uploads).toBe(0);
+  expect((await readResult(files.resultPath)).artifact?.error).toContain(input.message);
+});
+
+test.each(["hook failure", "signed URL"])(
+  "publish_artifact hides credentials from %s",
+  async (mode) => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      steps: [
+        { type: "fs_write", path: join(layout.worktree, "report.txt"), content: "report" },
+        { type: "publish_artifact", path: "report.txt" },
+        { type: "end" },
+      ],
+    });
+    await runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: "run-private-upload-error",
+      prompt: "Publish a file.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      publishArtifact: {
+        publish: async () => {
+          if (mode === "hook failure") throw new Error("upload failed: bearer secret-token");
+          return { url: "https://uploads.example/upload?token=secret-token" };
+        },
+      },
+    });
+    const error = (await readResult(files.resultPath)).artifact?.error;
+    expect(error).toContain(mode === "hook failure" ? "upload failed" : "invalid asset URL");
+    expect(error).not.toContain("secret-token");
+    expect(error).not.toContain("https://uploads.example/upload");
+  },
+);
+
+test("ask_team and publish_artifact share one MCP server", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "report.txt"), content: "report" },
+      { type: "ask_team", question: "Publish the report?" },
+      { type: "publish_artifact", path: "report.txt" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-both-tools",
+    prompt: "Ask and then publish.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    askTeam: { ask: async () => ({ answer: "yes" }) },
+    publishArtifact: { publish: async () => ({ url: "https://uploads.example/report.txt" }) },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.mcpServers).toHaveLength(1);
+  expect(trace.tools).toEqual(["ask_team", "publish_artifact"]);
+  expect(trace.askTeam?.text).toBe("yes");
+  expect(trace.artifact?.ok).toBe(true);
 });
 
 test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
