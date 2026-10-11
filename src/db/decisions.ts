@@ -71,12 +71,17 @@ export function postPauseNote(
   fromWall: number,
   now: number,
 ): void {
+  if (item.state === "awaiting_input" || item.state === "paused") return;
   enqueueOutboxOnce(db, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
     idempotencyKey: `wake:${item.id}:${fromWall}`,
-    payload: { text: formatPauseNote(sleptMs, outcome) },
+    payload: {
+      sessionId: item.sessionKey ?? item.id,
+      kind: "thought",
+      body: formatPauseNote(sleptMs, outcome),
+    },
     now,
   });
 }

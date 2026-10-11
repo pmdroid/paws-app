@@ -4,9 +4,11 @@ import type { CheckpointResult } from "./checkpoint";
 import type { AgentRole } from "./adapters";
 import type { AuthCheckResult } from "./auth";
 import type { AskTeamHook } from "./ask-team";
+import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
 
 export const DEFAULT_RUN_TIMEOUT_MS = 45 * 60 * 1000;
 export const DEFAULT_CANCEL_GRACE_MS = 2_000;
+export const FOLLOW_UP_INTERRUPTION = "follow_up";
 
 export type RunOutcome = StopReason | "timeout" | "error";
 
@@ -51,7 +53,7 @@ export type AcpEvent =
     }
   | {
       type: "cancelled";
-      reason: "timeout" | "cancel";
+      reason: "timeout" | "cancel" | typeof FOLLOW_UP_INTERRUPTION;
     }
   | {
       type: "checkpoint";
@@ -86,6 +88,8 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   onEvent?: AcpEventListener;
   askTeam?: AskTeamHook;
+  publishArtifact?: PublishArtifactHook;
+  artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */
   checkpoint?: boolean;
   /**
@@ -111,6 +115,8 @@ export interface RunAgentResult {
   checkpoint?: CheckpointResult;
   timedOut: boolean;
   cancelled: boolean;
+  interrupted?: boolean;
+  transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;
   pid?: number;

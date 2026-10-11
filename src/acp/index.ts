@@ -23,12 +23,24 @@ export {
 export {
   ASK_TEAM_TOOL_NAME,
   startAskTeamBridge,
+  startHostToolBridge,
   type AskTeamBridge,
   type AskTeamContext,
   type AskTeamHook,
   type AskTeamRequest,
   type AskTeamResponse,
 } from "./ask-team";
+export {
+  DEFAULT_MAX_ARTIFACT_BYTES,
+  PUBLISH_ARTIFACT_TOOL_NAME,
+  snapshotArtifactFile,
+  type ArtifactLimits,
+  type ArtifactSnapshot,
+  type PublishedArtifact,
+  type PublishArtifactContext,
+  type PublishArtifactHook,
+  type PublishArtifactRequest,
+} from "./artifacts";
 export {
   AUTH_REQUIRED_MESSAGE,
   summarizeAuth,
@@ -43,6 +55,12 @@ export {
   type FreshMainCheckout,
 } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
+export {
+  createAcpPromptLifecycle,
+  reconstructAcpPrompt,
+  type AcpConversationEntry,
+  type AcpPromptLifecycle,
+} from "./lifecycle";
 export { isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
@@ -69,6 +87,7 @@ export type { AcpRunner, AcpStopReason, AcpUpdate, AcpUpdateKind, StartAcpRun } 
 export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_RUN_TIMEOUT_MS,
+  FOLLOW_UP_INTERRUPTION,
   type AcpEvent,
   type AgentIdentity,
   type AcpEventListener,

@@ -15,7 +15,7 @@ import {
   errorText,
   noteJobError,
 } from "./jobs";
-import { enqueueOutboxOnce } from "./outbox";
+import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -50,13 +50,17 @@ export function applyLinearCommand(
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     cancelOpenJobs(db, { itemId: item.id, reason: command.type, now });
+    const sessionId = item.sessionKey ?? item.id;
+    const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const text = command.type === "stop" ? "Stopped from Linear." : "Cancelled from Linear.";
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
-      orderingKey: item.sessionKey ?? item.id,
-      idempotencyKey: `command:${command.type}:${item.id}:${command.requestedAt}`,
-      payload: { text },
+      orderingKey: sessionId,
+      delivery: "stop",
+      generation,
+      idempotencyKey: `command:stop:${sessionId}:${generation}`,
+      payload: { sessionId: item.sessionKey ?? item.id, kind: "response", body: text },
       now,
     });
     return { applied: true };

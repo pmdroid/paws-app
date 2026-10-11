@@ -1,5 +1,5 @@
-import type { ActivityKind, TrackerAdapter } from "../linear";
-import type { OutboxRow } from "../db";
+import type { ActivityKind, TrackerAdapter, TrackerRequestOptions } from "../linear";
+import type { OutboxRow, OutboxDeliveryContext } from "../db";
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
 
@@ -7,20 +7,25 @@ const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "respon
  * Deliver `linear` outbox rows to the tracker.
  * `activity` / `linear.activity` post progress. `linear.catchup` runs the poller.
  */
-export function deliverLinearOutbox(
+export async function deliverLinearOutbox(
   message: OutboxRow,
   tracker: TrackerAdapter,
   catchUp: () => Promise<void>,
+  context?: OutboxDeliveryContext,
 ): Promise<void> {
+  context?.signal.throwIfAborted();
+  if (context && !context.isCurrent())
+    throw new Error("Linear delivery superseded by a session fence.");
   const payload = isRecord(message.payload) ? message.payload : {};
+  const options = context ? { signal: context.signal } : undefined;
   if (message.op === "activity" || message.op === "linear.activity") {
-    return postActivity(message, payload, tracker);
+    return postActivity(message, payload, tracker, options);
   }
   if (message.op === "elicitation") {
-    return postElicitation(payload, tracker);
+    return postElicitation(payload, tracker, options);
   }
   if (message.op === "status") {
-    return postStatus(payload, tracker);
+    return postStatus(payload, tracker, options);
   }
   if (message.op === "catchup" || message.op === "linear.catchup") {
     return catchUp();
@@ -32,18 +37,21 @@ async function postActivity(
   message: OutboxRow,
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
+  options?: TrackerRequestOptions,
 ): Promise<void> {
   const sessionId = readString(payload, "sessionId") ?? message.orderingKey;
   const body = readString(payload, "body") ?? readString(payload, "text");
   if (sessionId === null || sessionId.length === 0) throw new Error("activity has no session");
   if (body === null) throw new Error("activity has no body");
-  const kind = readKind(payload["kind"]) ?? "thought";
-  await tracker.postProgress({ sessionId, kind, body });
+  const kind = readKind(payload["kind"]);
+  if (kind === null) throw new Error("activity has no valid kind");
+  await tracker.postProgress({ sessionId, kind, body }, options);
 }
 
 async function postElicitation(
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
+  requestOptions?: TrackerRequestOptions,
 ): Promise<void> {
   const sessionId = readString(payload, "sessionId");
   const body = readString(payload, "body");
@@ -51,24 +59,28 @@ async function postElicitation(
     throw new Error("elicitation is missing session or body");
   const options = readOptions(payload["options"]);
   const questionId = readString(payload, "questionId");
-  await tracker.askQuestion({
-    sessionId,
-    body,
-    ...(questionId === null ? {} : { questionId }),
-    ...(options.length > 0 ? { options } : {}),
-  });
+  await tracker.askQuestion(
+    {
+      sessionId,
+      body,
+      ...(questionId === null ? {} : { questionId }),
+      ...(options.length > 0 ? { options } : {}),
+    },
+    requestOptions,
+  );
 }
 
 async function postStatus(
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
+  options?: TrackerRequestOptions,
 ): Promise<void> {
   const linearIssueId = readString(payload, "linearIssueId");
   const stateType = readString(payload, "stateType");
   if (linearIssueId === null || !isStateType(stateType)) {
     throw new Error("status update is missing an issue or state");
   }
-  await tracker.setStatus({ linearIssueId, stateType });
+  await tracker.setStatus({ linearIssueId, stateType }, options);
 }
 
 function readKind(value: unknown): ActivityKind | null {

@@ -1,6 +1,6 @@
 export { drainCommands, enqueueCommand, submitCommand } from "./commands";
 export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
-export { OutboxDispatcher, type OutboxHandler } from "./dispatcher";
+export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
 export {
   TransitionRejectedError,
   accrueAwake,
@@ -42,6 +42,9 @@ export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";
 export {
+  advanceOutboxSession,
+  stopOutboxSession,
+  isOutboxCurrent,
   claimOutboxHeads,
   completeOutbox,
   dispatchOutbox,
@@ -52,13 +55,14 @@ export {
   OUTBOX_STATUSES,
   OUTBOX_TARGETS,
   type NewOutbox,
+  type OutboxDelivery,
   type OutboxRow,
   type OutboxStatus,
   type OutboxTarget,
 } from "./outbox";
 export { prepareShutdown, recoverOnStartup } from "./recovery";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
-export { getRun, insertRun, listRuns, markRun, type StoredRun } from "./runs";
+export { getRun, insertRun, listRuns, markRun, saveRunResult, type StoredRun } from "./runs";
 export {
   listOpenQuestions,
   listWorkItemBlocks,
