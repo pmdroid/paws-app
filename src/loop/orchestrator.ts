@@ -313,7 +313,7 @@ export class Orchestrator {
         markRunEnded(this.db, run.id, this.now());
         this.post(
           item,
-          "error",
+          "thought",
           `Closeout: blocked\nreviewer failed: ${error instanceof Error ? error.message : String(error)}`,
           `${run.id}:profile-preflight`,
         );
