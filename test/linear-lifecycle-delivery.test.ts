@@ -7,6 +7,8 @@ import {
   advanceLinearSessionGeneration,
   insertQueuedItem,
   listOutbox,
+  openDatabase,
+  migrate,
 } from "../src/db";
 import { attachOrchestrator } from "../src/loop";
 import { createFakeTracker, openLinear, type AcceptedLinearEvent } from "../src/linear";
@@ -31,6 +33,7 @@ function created(): AcceptedLinearEvent {
 for (const [body, existing] of [
   ["Picked up this issue.", true],
   ["Picked up ENG-1.", false],
+  ["Picked up this issue.", false],
 ] as const) {
   test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
     const db = tempDb();
@@ -296,3 +299,60 @@ test.each([false, true])(
     }
   },
 );
+
+test("item Stop delivery retains one UUID through failure, reopen and duplicate replay", async () => {
+  const path = join(tempHome(), "stop.db");
+  let db = openDatabase(path);
+  migrate(db);
+  const clock = new FakeClock(1_000);
+  const tracker = createFakeTracker();
+  const ids: (string | undefined)[] = [];
+  tracker.postProgress = async (update) => {
+    ids.push(update.id);
+    if (ids.length === 1) throw new Error("retry Stop delivery");
+  };
+  let outbox = new OutboxDispatcher(db, clock);
+  const options = () => ({
+    db,
+    clock,
+    tracker,
+    outbox,
+    jobs: new JobLoop(db, clock),
+    pawsRoot: tempHome(),
+  });
+  let orchestrator = attachOrchestrator(options());
+  try {
+    insertQueuedItem(db, { id: "stopped", sessionKey: "session" });
+    const stop = {
+      ...created(),
+      dedupeKey: "stop-retry",
+      action: "prompted" as const,
+      signal: "stop",
+      updatedAtMs: 1_000,
+    };
+    await orchestrator.onLinearEvent(stop);
+    const row = listOutbox(db).find((entry) => entry.delivery === "stop")!;
+    const id = (row.payload as { id: string }).id;
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(ids).toEqual([id]);
+    await orchestrator.shutdown();
+    db.close();
+    db = openDatabase(path);
+    migrate(db);
+    clock.advance(60_000);
+    outbox = new OutboxDispatcher(db, clock);
+    orchestrator = attachOrchestrator(options());
+    await orchestrator.onLinearEvent(stop);
+    outbox.tick();
+    await outbox.idle();
+    expect(ids).toEqual([id, id]);
+    expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("sent");
+    await orchestrator.onLinearEvent(stop);
+    expect(ids).toEqual([id, id]);
+    expect(listOutbox(db)).toHaveLength(1);
+  } finally {
+    await orchestrator.shutdown();
+    await outbox.idle();
+    db.close();
+  }
+});

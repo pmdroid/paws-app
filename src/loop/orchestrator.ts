@@ -33,6 +33,7 @@ import {
   MERGE_LANE,
   transitionEpic,
   type Clock,
+  type LinearCommand,
   type EpicState,
   systemClock,
 } from "../core";
@@ -41,7 +42,7 @@ import {
   getTaskModeGeneration,
   getLinearSessionGeneration,
   getLinearSession,
-  advanceLinearSessionGeneration,
+  acceptLinearStop,
   listPendingLinearTurns,
   saveTaskMode,
   selectTaskModeForTurn,
@@ -88,7 +89,7 @@ import {
   saveLinearActivitySnapshot,
   listLinearActivitySnapshots,
   setCurrentRun,
-  submitCommand,
+  applyLinearCommand,
   type JobLoop,
   type OutboxDispatcher,
   type WorkItemRecord,
@@ -187,6 +188,7 @@ export class Orchestrator {
     string,
     { itemId: string; controller: AbortController; done: Promise<void>; finish(): void }
   >();
+  private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void>>();
   private readonly conversations = new Map<
     string,
@@ -234,11 +236,19 @@ export class Orchestrator {
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.signal === "stop") {
-      if (event.sessionId) {
-        advanceLinearSessionGeneration(this.db, event.sessionId, { stop: true, now: this.now() });
-        await this.taskPlanner.stop(event.sessionId);
+      const receiptKey = JSON.stringify(
+        event.activityId ? ["activity", event.activityId] : ["event", event.dedupeKey],
+      );
+      const key = JSON.stringify([event.sessionId, receiptKey]);
+      const previous = this.stopEvents.get(key);
+      if (previous) return previous;
+      const done = this.stopSession(event.sessionId, receiptKey, event.updatedAtMs);
+      this.stopEvents.set(key, done);
+      try {
+        await done;
+      } finally {
+        if (this.stopEvents.get(key) === done) this.stopEvents.delete(key);
       }
-      this.stopSession(event.sessionId, event.updatedAtMs);
       return;
     }
     if (
@@ -286,7 +296,7 @@ export class Orchestrator {
     const owned = [...this.live.values()];
     for (const live of owned) live.controller.abort();
     await Promise.all(owned.map((live) => live.done));
-    await Promise.allSettled([...this.sessionEvents.values()]);
+    await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
     if (this.allItems().some((item) => getConversation(this.db, item.id).blocked))
       throw new Error("ACP process cleanup could not be verified");
   }
@@ -1489,20 +1499,53 @@ export class Orchestrator {
     return outcome;
   }
 
-  private stopSession(sessionId: string | null, at: number): void {
+  private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
     const requestedAt = at > 0 ? at : this.now();
-    for (const item of this.itemsForSession(sessionId)) {
-      if (item.state === "completed" || item.state === "merged" || item.state === "cancelled")
-        continue;
-      submitCommand(this.db, this.bus, {
-        type: "stop",
-        itemId: item.id,
-        source: "linear",
-        requestedAt,
-      });
+    const agentSession = this.options.channel !== "comments" && !isGitHubIssue(sessionId);
+    const commands: LinearCommand[] = [];
+    const accepted = immediate(this.db, () => {
+      if (agentSession && acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null)
+        return false;
+      const items = this.itemsForSession(sessionId);
+      if (items.length === 0 && agentSession)
+        enqueueOutboxOnce(this.db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: sessionId,
+          delivery: "stop",
+          generation: getLinearSessionGeneration(this.db, sessionId),
+          idempotencyKey: `command:stop:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`,
+          payload: {
+            sessionId,
+            kind: "response",
+            body: "Stopped from Linear.",
+            id: crypto.randomUUID(),
+          },
+          now: requestedAt,
+        });
+      for (const item of items) {
+        if (item.state === "completed" || item.state === "merged" || item.state === "cancelled")
+          continue;
+        const command: LinearCommand = {
+          type: "stop",
+          itemId: item.id,
+          source: "linear",
+          requestedAt,
+        };
+        if (!applyLinearCommand(this.db, command).applied)
+          throw new Error(`Could not stop Linear task ${item.id}`);
+        commands.push(command);
+      }
+      return true;
+    });
+    if (!accepted) return;
+    try {
+      for (const command of commands) this.bus.emit(command);
+    } finally {
+      await this.interruptLinearSession(sessionId);
     }
-    void this.flush();
+    await this.flush();
   }
 
   private pump(): void {

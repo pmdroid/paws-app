@@ -61,7 +61,7 @@ export function applyLinearCommand(
       delivery: "stop",
       generation,
       idempotencyKey: `command:stop:${sessionId}:${generation}`,
-      payload: { sessionId, kind: "response", body: text },
+      payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });
     return { applied: true };
