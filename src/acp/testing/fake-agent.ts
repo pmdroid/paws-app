@@ -65,7 +65,21 @@ function record(method: string): void {
   persist();
 }
 
-const sessionId = "fake-session";
+const sessionId = script.sessionId ?? crypto.randomUUID();
+let currentModel = script.model === undefined ? "test-claude-model" : script.model;
+const configOptions = () =>
+  currentModel === null
+    ? []
+    : [
+        {
+          id: "model",
+          type: "select",
+          name: "Model",
+          category: "model",
+          currentValue: currentModel,
+          options: (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
+        },
+      ];
 
 async function handle(message: {
   id?: number | string | null;
@@ -124,7 +138,19 @@ async function handle(message: {
       };
     });
     persist();
-    send({ jsonrpc: "2.0", id: message.id, result: { sessionId } });
+    send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: configOptions() } });
+    return;
+  }
+
+  if (message.method === "session/set_config_option") {
+    state.modelSelection = message.params;
+    persist();
+    if (script.modelError)
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: script.modelError } });
+    else {
+      currentModel = script.confirmModel ?? String(message.params?.value);
+      send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
+    }
     return;
   }
 
