@@ -2,9 +2,10 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -59,15 +60,32 @@ export function createTokenStore(options: {
   const platform = options.platform ?? process.platform;
   const which = options.which ?? ((bin: string) => Bun.which(bin));
   const run = options.run ?? runCommand;
-  const backend = selectBackend(platform, which);
-  return {
-    backend,
-    warning: backend === "file" ? FILE_TOKEN_STORE_DOCTOR_WARNING : null,
-    load: () => loadToken(options.home, backend, run),
-    save: (token) => saveToken(options.home, backend, run, token),
-    markInvalid: () => markInvalid(options.home, backend, run),
-    delete: () => deleteToken(options.home, backend, run),
+  const preferred = selectBackend(platform, which);
+  let backend = existsSync(githubOAuthPath(options.home)) ? ("file" as const) : preferred;
+  const store: GitHubTokenStore = {
+    get backend() {
+      return existsSync(githubOAuthPath(options.home)) ? "file" : backend;
+    },
+    get warning() {
+      return store.backend === "file" ? FILE_TOKEN_STORE_DOCTOR_WARNING : null;
+    },
+    load: () => loadToken(options.home, store.backend, run),
+    async save(token) {
+      try {
+        await saveToken(options.home, store.backend, run, token);
+      } catch (error) {
+        if (!(error instanceof SecretServiceUnavailableError)) throw error;
+        await saveToken(options.home, "file", run, token);
+        backend = "file";
+      }
+    },
+    async markInvalid() {
+      const current = await store.load();
+      if (current !== null) await store.save({ ...current, invalid: true });
+    },
+    delete: () => deleteToken(options.home, preferred, run),
   };
+  return store;
 }
 
 export async function runCommand(
@@ -112,8 +130,9 @@ async function loadToken(
     if (result.code !== 0) return null;
     return parseStored(result.stdout);
   }
-  const result = await run("secret-tool", ["lookup", "service", KEYCHAIN_SERVICE]);
-  if (result.code !== 0) return null;
+  const result = await runSecretTool(run, ["lookup", "service", KEYCHAIN_SERVICE]);
+  if (result.code === 1 && result.stdout.trim() === "" && result.stderr.trim() === "") return null;
+  if (result.code !== 0) throw new Error("Could not load the GitHub token with secret-tool");
   return parseStored(result.stdout);
 }
 
@@ -138,37 +157,69 @@ async function saveToken(
     if (result.code !== 0) throw new Error("Could not save the GitHub token to the keychain");
     return;
   }
-  const result = await run(
-    "secret-tool",
+  const result = await runSecretTool(
+    run,
     ["store", "--label=paws-github", "service", KEYCHAIN_SERVICE, "account", token.login],
     payload,
   );
   if (result.code !== 0) throw new Error("Could not save the GitHub token with secret-tool");
 }
 
-async function markInvalid(home: string, backend: TokenBackend, run: CommandRunner): Promise<void> {
-  const current = await loadToken(home, backend, run);
-  if (current === null) return;
-  await saveToken(home, backend, run, { ...current, invalid: true });
+export class SecretServiceUnavailableError extends Error {
+  constructor() {
+    super(
+      "Secret Service is unavailable. Restore the session service and retry, or sign in again to save a private file fallback.",
+    );
+  }
+}
+
+async function runSecretTool(
+  run: CommandRunner,
+  args: readonly string[],
+  stdin?: string,
+): Promise<CommandResult> {
+  let result: CommandResult;
+  try {
+    result = await run("secret-tool", args, stdin);
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") throw new SecretServiceUnavailableError();
+    throw error;
+  }
+  if (result.code !== 0 && secretServiceUnavailable(result.stderr)) {
+    throw new SecretServiceUnavailableError();
+  }
+  return result;
+}
+
+function secretServiceUnavailable(stderr: string): boolean {
+  if (
+    /permission denied|accessdenied|not authorized|authentication|cancelled|canceled|islocked|locked/i.test(
+      stderr,
+    )
+  )
+    return false;
+  return /(?:cannot|unable to) autolaunch (?:a )?(?:d-?bus|dbus-daemon)|could not connect: (?:no such file or directory|connection refused)|org\.freedesktop\.DBus\.Error\.(?:ServiceUnknown|NoServer)|the name org\.freedesktop\.secrets was not provided by any \.service files|(?:StartServiceByName for org\.freedesktop\.secrets|Process org\.freedesktop\.secrets).*exited with status/i.test(
+    stderr,
+  );
 }
 
 async function deleteToken(home: string, backend: TokenBackend, run: CommandRunner): Promise<void> {
   if (backend === "keychain") {
     const current = await loadToken(home, backend, run);
     if (current !== null) {
-      await run("security", [
+      const result = await run("security", [
         "delete-generic-password",
         "-s",
         KEYCHAIN_SERVICE,
         "-a",
         current.login,
       ]);
+      if (result.code !== 0) throw new Error("Could not delete the GitHub token from the keychain");
     }
   } else if (backend === "secret-tool") {
-    const current = await loadToken(home, backend, run);
-    const account = current?.login;
-    if (account !== undefined) {
-      await run("secret-tool", ["clear", "service", KEYCHAIN_SERVICE, "account", account]);
+    const result = await runSecretTool(run, ["clear", "service", KEYCHAIN_SERVICE]);
+    if (result.code !== 0 && !(result.code === 1 && result.stderr.trim() === "")) {
+      throw new Error("Could not delete the GitHub token with secret-tool");
     }
   }
   const path = githubOAuthPath(home);
@@ -186,9 +237,15 @@ function writeFileToken(home: string, payload: string): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  writeFileSync(path, payload, { mode: 0o600 });
-  chmodSync(path, 0o600);
-  if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
+  const staging = mkdtempSync(join(dir, ".github-oauth-"));
+  try {
+    const temporary = join(staging, OAUTH_FILE_NAME);
+    writeFileSync(temporary, payload, { mode: 0o600, flag: "wx" });
+    chmodSync(temporary, 0o600);
+    renameSync(temporary, path);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }
 
 function parseStored(text: string): StoredGitHubOAuth | null {

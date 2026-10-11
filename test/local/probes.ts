@@ -1,6 +1,8 @@
-import { join } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   createTokenStore,
+  githubOAuthPath,
   loginGitHub,
   PAWS_GITHUB_OAUTH_CLIENT_ID,
   type GitHubTokenStore,
@@ -101,7 +103,12 @@ export async function probeBoundaries(
     home: join(root, "token-probe"),
     platform: "linux",
     which: () => "/fake/secret-tool",
-    run: async () => ({ code: 1, stdout: "", stderr: "No Secret Service" }),
+    run: async () => ({
+      code: 1,
+      stdout: "",
+      stderr:
+        "secret-tool: The name org.freedesktop.secrets was not provided by any .service files",
+    }),
   });
   let storeError = "";
   try {
@@ -117,10 +124,19 @@ export async function probeBoundaries(
   } catch (error) {
     storeError = String(error);
   }
-  observe("unavailable Secret Service falls back to the isolated token file", storeError === "", {
-    backend: brokenStore.backend,
-    storeError,
-  });
+  const saved = storeError === "" ? await brokenStore.load() : null;
+  const file = githubOAuthPath(join(root, "token-probe"));
+  const mode = saved === null ? null : statSync(file).mode & 0o777;
+  const dirMode = saved === null ? null : statSync(dirname(file)).mode & 0o777;
+  observe(
+    "unavailable Secret Service falls back to the isolated token file",
+    storeError === "" &&
+      brokenStore.backend === "file" &&
+      saved?.accessToken === "fake-token" &&
+      mode === 0o600 &&
+      dirMode === 0o700,
+    { backend: brokenStore.backend, storeError, mode, dirMode, reloaded: saved !== null },
+  );
   const clock = new FakeClock(1000);
   const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
   const first = createCommentMode({ board, clock });

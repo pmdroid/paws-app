@@ -9,6 +9,8 @@ import {
   MISSING_GITHUB_CLIENT_ID_MESSAGE,
   missingGitHubClientId,
   resolveGitHubOAuthClientId,
+  SecretServiceUnavailableError,
+  type StoredGitHubOAuth,
   type GitHubTokenStore,
 } from "../auth";
 import { loadConfigFile, pawsPaths } from "../config";
@@ -44,7 +46,14 @@ export async function ensureGitHubSignIn(input: {
   oauthClientId?: string | null;
 }): Promise<{ login: string; id: number; token: string }> {
   const store = tokenStore(input.home, input.io.github);
-  const existing = await store.load();
+  let existing: StoredGitHubOAuth | null;
+  try {
+    existing = await store.load();
+  } catch (error) {
+    if (!(error instanceof SecretServiceUnavailableError) || input.yes) throw error;
+    input.io.stdout(error.message);
+    existing = null;
+  }
   if (existing !== null && !existing.invalid) {
     remember(input.secrets, existing.accessToken);
     return { login: existing.login, id: existing.id, token: existing.accessToken };
