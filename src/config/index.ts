@@ -30,3 +30,12 @@ export { loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";
+
+export {
+  parseAgentProfile,
+  parseAgentSettings,
+  readAgentSettings,
+  resolveAgentProfiles,
+  writeAgentSettings,
+} from "./agents";
+export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
