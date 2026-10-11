@@ -153,6 +153,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           noTunnel: !webhooks || options?.noTunnel === true,
           webhooks,
           followUp,
+          progressReporter: (event) => {
+            if (orchestrator === null) throw new Error("loop is not attached");
+            return orchestrator.sessionProgressReporter(event);
+          },
           submitCommand: submit,
         })
       : null;
