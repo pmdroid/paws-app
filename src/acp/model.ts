@@ -4,7 +4,7 @@ import {
   type NewSessionResponse,
   type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
-import type { ImplementerName } from "../config";
+import type { AgentProfile, ImplementerName } from "../config";
 
 type ModelSelection = { model: string | null; models: Array<{ id: string; name: string }> };
 
@@ -30,24 +30,59 @@ export function sessionModel(session: Pick<NewSessionResponse, "configOptions">)
   };
 }
 
-export async function selectSessionModel(
+function effortOption(options: SessionConfigOption[] | null | undefined) {
+  return options?.find(
+    (option) =>
+      option.type === "select" &&
+      (option.category === "thought_level" ||
+        ["effort", "reasoning_effort", "thought_level"].includes(option.id)),
+  );
+}
+
+export async function selectSessionProfile(
   ctx: ClientContext,
   session: NewSessionResponse,
-  selected: string | null,
-): Promise<ModelSelection> {
-  const initial = sessionModel(session);
-  if (selected === null) return initial;
-  const option = modelOption(session.configOptions);
-  if (!option || !initial.models.some((model) => model.id === selected))
-    throw new Error(`Agent does not advertise model ${selected}`);
-  const response = await ctx.request(methods.agent.session.setConfigOption, {
-    sessionId: session.sessionId,
-    configId: option.id,
-    value: selected,
-  });
-  const result = sessionModel(response);
-  if (result.model !== selected) throw new Error(`Agent did not confirm model ${selected}`);
-  return result;
+  profile: AgentProfile,
+): Promise<
+  ModelSelection & { effort: string | null; efforts: Array<{ id: string; name: string }> }
+> {
+  let configuration = session;
+  if (profile.model !== null) {
+    const option = modelOption(configuration.configOptions);
+    if (!option || !sessionModel(configuration).models.some((model) => model.id === profile.model))
+      throw new Error(`Agent does not advertise model ${profile.model}`);
+    const response = await ctx.request(methods.agent.session.setConfigOption, {
+      sessionId: session.sessionId,
+      configId: option.id,
+      value: profile.model,
+    });
+    configuration = { ...session, ...response };
+    if (sessionModel(configuration).model !== profile.model)
+      throw new Error(`Agent did not confirm model ${profile.model}`);
+  }
+  const model = sessionModel(configuration);
+  let option = effortOption(configuration.configOptions);
+  const efforts =
+    option?.type === "select"
+      ? option.options
+          .flatMap((value) => ("group" in value ? value.options : [value]))
+          .map(({ value, name }) => ({ id: value, name }))
+      : [];
+  if (profile.effort !== undefined) {
+    if (!option || !efforts.some((effort) => effort.id === profile.effort))
+      throw new Error(`Agent does not advertise effort ${profile.effort} for the selected model`);
+    const response = await ctx.request(methods.agent.session.setConfigOption, {
+      sessionId: session.sessionId,
+      configId: option.id,
+      value: profile.effort,
+    });
+    option = effortOption(response.configOptions);
+    if (option?.type !== "select" || option.currentValue !== profile.effort)
+      throw new Error(`Agent did not confirm effort ${profile.effort}`);
+    if (sessionModel(response).model !== model.model)
+      throw new Error("Agent changed model while selecting effort");
+  }
+  return { ...model, effort: option?.type === "select" ? option.currentValue : null, efforts };
 }
 
 export function providerFor(agent: ImplementerName): string {

@@ -15,6 +15,8 @@ export async function probeAgentProfile(input: {
   agent: AgentProfile["agent"];
   model: string | null;
   models: Array<{ id: string; name: string }>;
+  effort: string | null;
+  efforts: Array<{ id: string; name: string }>;
   message: string;
 }> {
   const worktree = await mkdtemp(join(tmpdir(), "paws-connection-"));
@@ -44,6 +46,8 @@ export async function probeAgentProfile(input: {
       agent: input.profile.agent,
       model: result.identity?.model ?? null,
       models: result.models ?? [],
+      effort: result.effort ?? null,
+      efforts: result.efforts ?? [],
       message: ok
         ? "Connection succeeded"
         : (result.errorMessage ?? "Agent did not confirm its model"),
@@ -54,6 +58,8 @@ export async function probeAgentProfile(input: {
       agent: input.profile.agent,
       model: null,
       models: [],
+      effort: null,
+      efforts: [],
       message: error instanceof Error ? error.message : String(error),
     };
   } finally {

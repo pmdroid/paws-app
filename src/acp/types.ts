@@ -107,6 +107,8 @@ export interface RunAgentOptions {
 export interface RunAgentResult {
   identity?: AgentIdentity;
   models?: Array<{ id: string; name: string }>;
+  effort?: string | null;
+  efforts?: Array<{ id: string; name: string }>;
   role: AgentRole;
   sessionId?: string;
   stopReason: RunOutcome;

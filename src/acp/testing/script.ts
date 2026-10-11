@@ -33,6 +33,11 @@ export interface FakeScript {
   models?: string[];
   modelError?: string;
   confirmModel?: string;
+  effort?: string;
+  efforts?: string[];
+  modelEfforts?: Record<string, string[]>;
+  effortError?: string;
+  confirmEffort?: string;
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
@@ -43,6 +48,7 @@ export interface FakeResult {
   methods: string[];
   prompts?: unknown[];
   modelSelection?: unknown;
+  effortSelection?: unknown;
   argv?: string[];
   cwd?: string;
   authenticate?: unknown;

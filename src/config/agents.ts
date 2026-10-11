@@ -12,7 +12,7 @@ import { dirname } from "node:path";
 import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
 
-export type AgentProfile = { agent: ImplementerName; model: string | null };
+export type AgentProfile = { agent: ImplementerName; model: string | null; effort?: string };
 export type AgentProfiles = { implementer: AgentProfile; reviewer: AgentProfile };
 export type ProjectAgentProfiles = {
   repo: string;
@@ -34,6 +34,13 @@ const profileSchema = z.strictObject({
         [...value].every((char) => char.charCodeAt(0) > 31 && char.charCodeAt(0) !== 127),
     )
     .nullable(),
+  effort: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .regex(/^[a-zA-Z0-9_-]+$/)
+    .optional(),
 });
 const projectSchema = z.strictObject({
   repo: z
@@ -161,6 +168,9 @@ export function selectDefaultImplementer(
     defaults: {
       ...settings.defaults,
       implementer: {
+        ...(settings.defaults.implementer.agent === implementer
+          ? settings.defaults.implementer
+          : {}),
         agent: implementer,
         model:
           settings.defaults.implementer.agent === implementer
@@ -189,5 +199,6 @@ export function writeAgentSettings(path: string, input: AgentSettings): void {
 function renderProfile(section: string, profile: AgentProfile): string {
   const lines = [`[${section}]`, `agent = ${JSON.stringify(profile.agent)}`];
   if (profile.model !== null) lines.push(`model = ${JSON.stringify(profile.model)}`);
+  if (profile.effort !== undefined) lines.push(`effort = ${JSON.stringify(profile.effort)}`);
   return lines.join("\n");
 }

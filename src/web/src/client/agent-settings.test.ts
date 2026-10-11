@@ -63,6 +63,39 @@ describe("agent settings", () => {
     expect(renderAgentSettings(view(data))).toContain('type="submit" disabled');
   });
 
+  test("effort dropdown uses advertised choices and preserves saved effort before testing", () => {
+    const state = view();
+    state.data!.defaults.reviewer.effort = "high";
+    const saved = renderAgentSettings(state);
+    expect(saved).toContain('id="defaults-reviewer-effort"');
+    expect(saved).toContain('<option value="high" selected>high</option>');
+    expect(saved).toContain("Test connection to load effort choices");
+    state.connections.set("defaults-reviewer", {
+      ok: true,
+      agent: "codex",
+      model: "gpt-5.4",
+      models: [],
+      effort: "medium",
+      efforts: [
+        { id: "medium", name: "Medium" },
+        { id: "high", name: "High" },
+      ],
+      message: "Connected",
+    });
+    const html = renderAgentSettings(state);
+    expect(html).toContain('<option value="medium" >Medium</option>');
+    expect(html).toContain('<option value="high" selected>High</option>');
+    expect(html).not.toContain('<option value="xhigh"');
+    expect(html).toContain(
+      'name="0-reviewer-effort" aria-describedby="0-reviewer-effort-help" disabled',
+    );
+    state.connections.set("defaults-reviewer", {
+      ...state.connections.get("defaults-reviewer"),
+      efforts: [],
+    });
+    expect(renderAgentSettings(state)).toContain("This model uses its agent's default effort.");
+  });
+
   test("connection results and persisted values escape untrusted text", () => {
     const state = view();
     state.data!.projects[0]!.repo = '<img src=x onerror="alert(1)">';
@@ -71,6 +104,7 @@ describe("agent settings", () => {
       agent: "codex",
       model: null,
       models: [{ id: '<bad"model>', name: "<script>" }],
+      efforts: [{ id: '<bad"effort>', name: "<script>" }],
       message: "<script>bad</script>",
     });
     const html = renderAgentSettings(state);
@@ -78,6 +112,7 @@ describe("agent settings", () => {
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;bad&quot;model&gt;");
+    expect(html).toContain("&lt;bad&quot;effort&gt;");
   });
 
   test("load errors give retry and connection tests cannot pretend success", () => {

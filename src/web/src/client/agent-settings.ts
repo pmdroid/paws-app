@@ -89,6 +89,16 @@ function profileFields(
   const connection = connections.get(key);
   const disabled = inherited ? "disabled" : "";
   const label = role === "implementer" ? "Implementer" : "Reviewer";
+  const efforts = connection?.efforts ?? [];
+  const effortChoices =
+    profile.effort && !efforts.some((effort) => effort.id === profile.effort)
+      ? [{ id: profile.effort, name: profile.effort }, ...efforts]
+      : efforts;
+  const effortHelp = !connection
+    ? "Test connection to load effort choices for this model."
+    : connection.ok && !efforts.length
+      ? "This model uses its agent's default effort."
+      : "";
   return `<div class="settings-profile"><div class="settings-role"><h3>${label}</h3>${inherited !== null ? `<label class="settings-inherit"><input type="checkbox" name="${key}-inherit" ${inherited ? "checked" : ""}>Use global default</label>` : ""}</div>
     <div class="settings-controls"><div class="settings-field"><label for="${key}-agent">Agent</label><select id="${key}-agent" name="${key}-agent" ${disabled}>${Object.entries(
       AGENTS,
@@ -99,7 +109,9 @@ function profileFields(
       )
       .join("")}</select></div>
     <div class="settings-field"><label for="${key}-model">Model</label><input id="${key}-model" name="${key}-model" value="${esc(profile.model ?? "")}" placeholder="Agent default" list="${key}-models" autocapitalize="none" spellcheck="false" ${disabled}><datalist id="${key}-models">${(connection?.models ?? []).map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`).join("")}</datalist></div>
+    <div class="settings-field"><label for="${key}-effort">Effort</label><select id="${key}-effort" name="${key}-effort" aria-describedby="${key}-effort-help" ${inherited || !effortChoices.length ? "disabled" : ""}><option value="" ${profile.effort ? "" : "selected"}>Agent default</option>${effortChoices.map((effort) => `<option value="${esc(effort.id)}" ${effort.id === profile.effort ? "selected" : ""}>${esc(effort.name)}</option>`).join("")}</select></div>
     <button class="btn" type="button" data-settings="test" data-profile="${key}">Test connection</button></div>
+    <p id="${key}-effort-help" class="sub" ${effortHelp ? "" : "hidden"}>${effortHelp}</p>
     ${connection ? `<p data-connection="${key}" class="settings-message ${connection.ok ? "" : "err"}" role="status">${esc(connection.message)}${connection.ok && connection.model ? ` Model: ${esc(connection.model)}.` : ""}</p>` : ""}</div>`;
 }
 
@@ -142,6 +154,9 @@ export function createAgentSettings(invalidate: () => void): {
       agent: (form.querySelector<HTMLSelectElement>(`[name="${key}-agent"]`)?.value ??
         previous.agent) as AgentProfile["agent"],
       model: form.querySelector<HTMLInputElement>(`[name="${key}-model"]`)?.value.trim() || null,
+      ...(form.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`)?.value
+        ? { effort: form.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`)!.value }
+        : {}),
     });
     for (const role of ROLES)
       view.data.defaults[role] = read(`defaults-${role}`, view.data.defaults[role]);
@@ -254,6 +269,22 @@ export function createAgentSettings(invalidate: () => void): {
       const key = name.replace(/-(agent|model)$/, "");
       view.connections.delete(key);
       root?.querySelector(`[data-connection="${key}"]`)?.remove();
+      const [scope, role] = key.split("-") as [string, AgentRole];
+      const profile =
+        scope === "defaults"
+          ? view.data?.defaults[role]
+          : view.data?.projects[Number(scope)]?.[role];
+      if (profile) delete profile.effort;
+      const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
+      if (effort) {
+        effort.innerHTML = '<option value="">Agent default</option>';
+        effort.disabled = true;
+      }
+      const help = root?.querySelector<HTMLElement>(`#${CSS.escape(`${key}-effort-help`)}`);
+      if (help) {
+        help.textContent = "Test connection to load effort choices for this model.";
+        help.hidden = false;
+      }
     }
     if (target instanceof HTMLInputElement && target.type !== "checkbox") {
       const problems = view.data ? settingsProblems(view.data) : [];

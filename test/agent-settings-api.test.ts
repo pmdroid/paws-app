@@ -19,6 +19,7 @@ function fixture() {
         ok: true,
         ...profile,
         models: [{ id: "test-model", name: "Test model" }],
+        efforts: [{ id: "high", name: "High" }],
         message: "Connected",
       };
     },
@@ -28,10 +29,12 @@ function fixture() {
 
 const settings: AgentSettings = {
   defaults: {
-    implementer: { agent: "grok", model: "grok-4" },
+    implementer: { agent: "grok", model: "grok-4", effort: "high" },
     reviewer: { agent: "codex", model: null },
   },
-  projects: [{ repo: "pmdroid/barkvisor", reviewer: { agent: "claude", model: null } }],
+  projects: [
+    { repo: "pmdroid/barkvisor", reviewer: { agent: "claude", model: null, effort: "low" } },
+  ],
 };
 
 function request(
@@ -186,6 +189,7 @@ describe("local agent settings API", () => {
       ok: true,
       ...settings.defaults.implementer,
       models: [{ id: "test-model", name: "Test model" }],
+      efforts: [{ id: "high", name: "High" }],
       message: "Connected",
     });
     expect(calls).toEqual([settings.defaults.implementer]);

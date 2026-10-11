@@ -13,6 +13,8 @@ export type AgentConnectionResult = {
   agent: AgentProfile["agent"];
   model: string | null;
   models: { id: string; name: string }[];
+  effort?: string | null;
+  efforts?: { id: string; name: string }[];
   message: string;
 };
 

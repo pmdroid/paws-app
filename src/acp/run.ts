@@ -28,7 +28,7 @@ import {
 } from "./adapters";
 import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
-import { sessionModel, selectSessionModel, providerFor } from "./model";
+import { sessionModel, selectSessionProfile, providerFor } from "./model";
 import { minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
 import { decidePermission, type GuardContext } from "./permissions";
@@ -350,7 +350,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         }
 
         let sessionId: string;
-        let model: Awaited<ReturnType<typeof selectSessionModel>>;
+        let model: Awaited<ReturnType<typeof selectSessionProfile>>;
         try {
           assertRunning();
           const created = await withTimeout(
@@ -365,7 +365,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           activeSessionId = sessionId;
           assertRunning();
           model = await withTimeout(
-            selectSessionModel(ctx, created, profile.model),
+            selectSessionProfile(ctx, created, profile),
             30_000,
             phaseSignal,
           );
@@ -400,6 +400,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
             sessionId,
             identity,
             models: model.models,
+            effort: model.effort,
+            efforts: model.efforts,
             auth,
           });
         const outcome = await runPrompt({
@@ -438,6 +440,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           sessionId,
           identity,
           models: model.models,
+          effort: model.effort,
+          efforts: model.efforts,
           auth,
         });
       }),
