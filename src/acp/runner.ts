@@ -1,3 +1,4 @@
+import type { AgentProfile } from "../config";
 import type { ItemId } from "../core";
 import type { AgentRole } from "./adapters";
 import type { AskTeamHook } from "./ask-team";
@@ -19,6 +20,7 @@ export type AcpUpdate = {
 };
 
 export type StartAcpRun = {
+  profile?: AgentProfile;
   itemId: ItemId;
   worktree: string;
   prompt: string;

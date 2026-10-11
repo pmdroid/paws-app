@@ -11,6 +11,10 @@ import {
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 
+import { createAgentSettings } from "./agent-settings";
+
+const settings = createAgentSettings(() => paint());
+
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
 
@@ -159,6 +163,8 @@ function paint(): void {
   setHtml("#banner", view.banner);
   setHtml("#content", view.content);
   setHtml("#tabbar", view.tabbar);
+  const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
+  if (settingsRoot) settings.mount(settingsRoot, currentEngine());
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {

@@ -101,10 +101,11 @@ export function resolveAdapter(
   override?: AdapterCommand,
   root?: string,
   agents?: AgentsConfig,
+  selected?: AgentsConfig["implementer"],
 ): AdapterCommand {
   if (override?.command) return { command: override.command, args: override.args ?? [] };
-  if (role === "reviewer") return fromPinnedOrEnv(env, "PAWS_CODEX_ACP", "reviewer", root);
-  const implementer = agents?.implementer ?? "claude";
+  const implementer =
+    selected ?? (role === "reviewer" ? "codex" : (agents?.implementer ?? "claude"));
   if (implementer === "grok") {
     const resolved = resolveGrokCommand(agents, root);
     if (resolved.error) throw new Error(resolved.error);

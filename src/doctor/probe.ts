@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { adapterVersions, resolveAdapter } from "../acp";
+import { resolveAdapter } from "../acp";
 import {
   createGitHubTokenProvider,
   createTokenStore,
@@ -12,6 +12,7 @@ import {
 import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
   loadRuntime,
+  type AgentProfiles,
   type EnvSource,
   type GitHubConfigAuth,
   type LinearConfigMode,
@@ -20,7 +21,8 @@ import {
 } from "../config";
 import { validate } from "../closeout-spec";
 import { checkGhAuthStatus, ghDoctorChecks } from "../github";
-import { checkDeveloperLogin } from "../install";
+import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
+import { doctorAgentProfiles } from "./agents";
 
 /** Core REST calls left after a signed-in doctor check. Below this, doctor reports no headroom. */
 export const GITHUB_RATE_HEADROOM = 100;
@@ -38,6 +40,8 @@ export type GitHubDoctorFacts = {
 
 export type ProbeFacts = {
   configError: string | null;
+  agentProfiles?: AgentProfiles[];
+  grokLogin?: GrokLoginStatus | null;
   configured: boolean;
   linearMode: LinearConfigMode;
   githubAuth: GitHubConfigAuth;
@@ -77,15 +81,25 @@ const LOGIN_TIMEOUT_MS = 2_500;
 export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   const runtime = loadRuntime(env);
   const repo = splitRepo(runtime.repo);
-  const [gh, claudeLogin, codexLogin, linear, githubDoctor] = await Promise.all([
+  const agentProfiles = doctorAgentProfiles(runtime.file);
+  const agents = new Set(
+    agentProfiles.flatMap((profile) => [profile.implementer.agent, profile.reviewer.agent]),
+  );
+  const unused = { ok: true, detail: "not required by configured agent profiles" };
+  const [gh, claudeLogin, codexLogin, grokLogin, linear, githubDoctor] = await Promise.all([
     ghFacts(repo),
-    loginFact("claude", env),
-    loginFact("codex", env),
+    agents.has("claude") ? loginFact("claude", env) : unused,
+    agents.has("codex") ? loginFact("codex", env) : unused,
+    agents.has("grok")
+      ? grokLoginStatus({ env, agents: runtime.file.agents, timeoutMs: LOGIN_TIMEOUT_MS })
+      : null,
     linearFact(runtime),
     githubDoctorFact(runtime, repo),
   ]);
   return {
     configError: runtime.configError,
+    agentProfiles,
+    grokLogin,
     configured: runtime.configured,
     linearMode: runtime.linearMode,
     githubAuth: runtime.githubAuth,
@@ -99,8 +113,8 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     teamId: runtime.linearTeamId,
     ghLogin: gh.login,
     ghPush: gh.push,
-    claudeAdapter: adapterFact("implementer"),
-    codexAdapter: adapterFact("reviewer"),
+    claudeAdapter: agents.has("claude") ? adapterFact("implementer") : unused,
+    codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
     closeout: closeoutPolicyFact(runtime.checkout, runtime.env.home),
@@ -170,13 +184,11 @@ async function loginFact(
 function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: string } {
   const bin = role === "implementer" ? "claude-agent-acp" : "codex-acp";
   try {
-    const versions = adapterVersions();
-    const version = role === "implementer" ? versions.claudeAgentAcp : versions.codexAcp;
     const command = resolveAdapter(role).command;
     if (!existsSync(command)) {
       return { ok: false, detail: `${bin} is not installed at ${command}` };
     }
-    return { ok: true, detail: `${bin} ${version}` };
+    return { ok: true, detail: `${bin} at ${command}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : `${bin} is not installed`;
     return { ok: false, detail: message };

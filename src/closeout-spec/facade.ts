@@ -30,6 +30,7 @@ import {
   type DecisionDocument,
   type DecisionWarning,
   type Gate,
+  type Independence,
   type ResolvedPolicy,
   type ResolvedPolicyAbsent,
   type ResolvedReview,
@@ -173,6 +174,22 @@ export function validate(repo: string, home?: string): ValidateResult {
   const loaded = loadOrigin(repo, home);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
+}
+
+export function reviewRequirements(
+  repo: string,
+  home?: string,
+):
+  | { ok: true; items: Array<{ id: string; gate: Gate; independence: Independence }> }
+  | { ok: false; message: string } {
+  const loaded = loadOrigin(repo, home);
+  if (!loaded.ok) return { ok: false, message: loaded.message };
+  return {
+    ok: true,
+    items: loaded.policy.items
+      .filter((item): item is ResolvedReview => item.kind === "review")
+      .map(({ id, gate, independence }) => ({ id, gate, independence })),
+  };
 }
 
 export function policyFixBudget(repo: string, home?: string): number | null {
