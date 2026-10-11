@@ -47,7 +47,7 @@ export async function connectLinear(input: {
     if (error instanceof Error && error.message === "Linear viewer id was missing") {
       stop(viewerMissing(input.mode));
     }
-    stop(explainLinear(error, input.mode));
+    stop(explainLinear(error, input.mode, "checking the Linear viewer"));
   }
 }
 
@@ -63,7 +63,7 @@ export async function chooseTeam(input: {
     teams = await fetchTeams(input.client);
   } catch (error) {
     if (error instanceof SetupStopped) throw error;
-    stop(explainLinear(error, input.mode));
+    stop(explainLinear(error, input.mode, "listing Linear teams"));
   }
   if (teams.length === 0) stop(noTeams(input.mode));
   if (input.wanted !== null && input.wanted.trim().length > 0) {
@@ -95,7 +95,7 @@ export async function ensurePawsLabel(
     names = await fetchLabelNames(client, teamId);
   } catch (error) {
     if (error instanceof SetupStopped) throw error;
-    stop(explainLinear(error, mode));
+    stop(explainLinear(error, mode, "reading team labels"));
   }
   if (names.some((name) => name.toLowerCase() === PAWS_LABEL)) return;
   try {
@@ -117,7 +117,7 @@ export async function ensurePawsLabel(
     }
   } catch (error) {
     if (error instanceof SetupStopped) throw error;
-    stop(explainLinear(error, mode));
+    stop(explainLinear(error, mode, "creating the paws label"));
   }
 }
 
@@ -206,17 +206,15 @@ function viewerMissing(mode: LinearModeFlag): string {
   return "Linear viewer response did not include an id. Check the access token and try again.";
 }
 
-function explainLinear(error: unknown, mode: LinearModeFlag): string {
+function explainLinear(error: unknown, mode: LinearModeFlag, operation: string): string {
   const message = error instanceof Error ? error.message : "";
-  if (/401|403|unauthorized|authentication/i.test(message)) {
+  if (/401|unauthorized|authentication/i.test(message)) {
     return mode === "comments"
       ? "Linear rejected the API key. Create a personal API key in Linear settings and pass --linear-api-key."
       : "Linear rejected the access token. Pass a valid --linear-access-token.";
   }
   if (message.startsWith("Linear GraphQL")) {
-    return mode === "comments"
-      ? "Linear rejected the request. Check the API key and try again."
-      : "Linear rejected the request. Check the access token and try again.";
+    return `Linear request failed while ${operation}. ${message}`;
   }
   return mode === "comments"
     ? "Could not reach Linear to validate the API key. Check the network and try again."

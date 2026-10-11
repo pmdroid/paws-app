@@ -79,7 +79,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
     ),
   ];
   if (linearTracker) {
-    checks.push(linearCheck(facts), modeCheck(facts), teamCheck(facts), labelCheck(facts));
+    checks.push(linearCheck(facts), modeCheck(facts), teamCheck(facts));
+    if (facts.linearMode === "comments") checks.push(labelCheck(facts));
   }
   if (githubTracker) {
     checks.push(...githubTrackerChecks(facts));
