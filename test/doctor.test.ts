@@ -52,6 +52,21 @@ test("doctor reports the local prerequisites and skips tunnel checks", () => {
   expect(text).not.toContain("\n  fix:");
 });
 
+test("agent mode is ready without a paws label", () => {
+  const ready = probe(true);
+  ready.facts.linearMode = "agent-session";
+  ready.facts.linear.labelFound = false;
+  const checks = doctorChecks(ready);
+  expect(checks.every((item) => item.ok)).toBe(true);
+  expect(checks.map((item) => item.name)).not.toContain("linear-label");
+});
+
+test("comment mode requires the paws label", () => {
+  const ready = probe(true);
+  ready.facts.linear.labelFound = false;
+  expect(doctorChecks(ready).find((item) => item.name === "linear-label")?.ok).toBe(false);
+});
+
 test("doctor names what is missing and does not print secret values", () => {
   const checks = doctorChecks(
     probe(

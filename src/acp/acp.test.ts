@@ -1,15 +1,18 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "./adapters";
 import { git } from "./git";
+import * as gitCommands from "./git";
 import { minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
+import { createAcpPromptLifecycle } from "./lifecycle";
+import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
 import type { FakeResult, FakeScript } from "./testing/script";
-import type { AcpEvent } from "./types";
+import { FOLLOW_UP_INTERRUPTION, type AcpEvent, type RunAgentOptions } from "./types";
 
 const fakeAgent = new URL("./testing/fake-agent.ts", import.meta.url).pathname;
 const roots: string[] = [];
@@ -278,11 +281,165 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
   expect(trace.askTeam).toEqual({ ok: true, text: "yes" });
+  expect(trace.tools).toEqual(["ask_team"]);
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
 });
 
-test("timeout kills an agent that ignores cancel and keeps a WIP commit", async () => {
+test("publish_artifact publishes a snapshot through MCP without an ask_team hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "shot.png"), content: "image bytes" },
+      { type: "publish_artifact", path: "shot.png", displayName: "shot[1].png" },
+      { type: "end" },
+    ],
+  });
+  let received: ArtifactSnapshot | undefined;
+  let context: PublishArtifactContext | undefined;
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-artifact",
+    prompt: "Return a screenshot.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    publishArtifact: {
+      publish: async (artifact, input) => {
+        received = artifact;
+        context = input;
+        await writeFile(join(layout.worktree, "shot.png"), "changed after snapshot");
+        return { url: "https://uploads.example/asset.png" };
+      },
+    },
+  });
+  expect(result.stopReason).toBe("end_turn");
+  expect(await received?.bytes.text()).toBe("image bytes");
+  expect(received?.mimeType).toBe("image/png");
+  expect(context?.itemId).toBe("ENG-1");
+  expect(context?.runId).toBe("run-artifact");
+  expect(context?.worktreePath).toBe(layout.worktree);
+  expect(context?.role).toBe("implementer");
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["publish_artifact"]);
+  expect(trace.artifact).toEqual({
+    ok: true,
+    text: "[shot\\[1\\].png](<https://uploads.example/asset.png>)",
+  });
+});
+
+test.each([
+  { path: ".env", maxBytes: 10, message: "secrets or credentials" },
+  { path: "report.txt", maxBytes: 4, message: "exceeds 4 bytes" },
+])("publish_artifact rejects $path before invoking the host upload hook", async (input) => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, input.path), content: "12345" },
+      { type: "publish_artifact", path: input.path },
+      { type: "end" },
+    ],
+  });
+  let uploads = 0;
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-denied-artifact",
+    prompt: "Publish a file.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    artifactLimits: { maxBytes: input.maxBytes },
+    publishArtifact: {
+      publish: async () => {
+        uploads += 1;
+        return { url: "https://uploads.example/asset" };
+      },
+    },
+  });
+  expect(uploads).toBe(0);
+  expect((await readResult(files.resultPath)).artifact?.error).toContain(input.message);
+});
+
+test.each(["hook failure", "signed URL"])(
+  "publish_artifact hides credentials from %s",
+  async (mode) => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      steps: [
+        { type: "fs_write", path: join(layout.worktree, "report.txt"), content: "report" },
+        { type: "publish_artifact", path: "report.txt" },
+        { type: "end" },
+      ],
+    });
+    await runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: "run-private-upload-error",
+      prompt: "Publish a file.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      publishArtifact: {
+        publish: async () => {
+          if (mode === "hook failure") throw new Error("upload failed: bearer secret-token");
+          return { url: "https://uploads.example/upload?token=secret-token" };
+        },
+      },
+    });
+    const error = (await readResult(files.resultPath)).artifact?.error;
+    expect(error).toContain(mode === "hook failure" ? "upload failed" : "invalid asset URL");
+    expect(error).not.toContain("secret-token");
+    expect(error).not.toContain("https://uploads.example/upload");
+  },
+);
+
+test("ask_team and publish_artifact share one MCP server", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "report.txt"), content: "report" },
+      { type: "ask_team", question: "Publish the report?" },
+      { type: "publish_artifact", path: "report.txt" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-both-tools",
+    prompt: "Ask and then publish.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    askTeam: { ask: async () => ({ answer: "yes" }) },
+    publishArtifact: { publish: async () => ({ url: "https://uploads.example/report.txt" }) },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.mcpServers).toHaveLength(1);
+  expect(trace.tools).toEqual(["ask_team", "publish_artifact"]);
+  expect(trace.askTeam?.text).toBe("yes");
+  expect(trace.artifact?.ok).toBe(true);
+});
+
+test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
   const layout = await layoutRepo();
   const script: FakeScript = {
     ignoreCancel: true,
@@ -317,11 +474,49 @@ test("timeout kills an agent that ignores cancel and keeps a WIP commit", async 
   expect(result.agentExited).toBe(true);
   expect(result.pid).toBeDefined();
   expect(alive(result.pid)).toBe(false);
-  expect(result.checkpoint?.committed).toBe(true);
+  expect(result.checkpoint).toBeUndefined();
   expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
   const subject = (await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim();
-  expect(subject).toContain("wip:");
+  expect(subject).toBe("init");
 }, 20_000);
+
+test("a cooperative timeout returns cancelled without publishing a checkpoint", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "partial\n" },
+      { type: "hang" },
+    ],
+  });
+  const events: AcpEvent[] = [];
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-cooperative-timeout",
+    prompt: "Wait after writing.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    timeoutMs: 100,
+    cancelGraceMs: 200,
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  expect(result).toMatchObject({
+    timedOut: true,
+    cancelled: true,
+    acpStopReason: "cancelled",
+    agentExited: true,
+  });
+  expect(result.checkpoint).toBeUndefined();
+  expect(events.some((event) => event.type === "checkpoint")).toBe(false);
+  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
+});
 
 test("cancel leaves no agent process", async () => {
   const layout = await layoutRepo();
@@ -349,6 +544,270 @@ test("cancel leaves no agent process", async () => {
   expect(result.agentExited).toBe(true);
   expect(alive(result.pid)).toBe(false);
 }, 20_000);
+
+test("cancellation at prompt completion preserves dirty files without checkpointing", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "keep me\n" },
+      { type: "end" },
+    ],
+  });
+  const controller = new AbortController();
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-cancel-completed",
+    prompt: "make changes",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "prompt_complete") controller.abort();
+    },
+  });
+  expect(result.checkpoint).toBeUndefined();
+  expect(result.cancelled).toBe(true);
+  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("keep me\n");
+  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+});
+
+for (const boundary of ["publication", "activity"] as const) {
+  test(`a checkpoint published before follow-up ${boundary} stays completed`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      steps: [
+        { type: "fs_write", path: join(layout.worktree, "complete.txt"), content: "complete\n" },
+        { type: "end" },
+      ],
+    });
+    const controller = new AbortController();
+    const originalGit = gitCommands.git;
+    const calls = spyOn(gitCommands, "git").mockImplementation(async (args, options) => {
+      const result = await originalGit(args, options);
+      if (boundary === "publication" && (args.includes("commit") || args.includes("commit-tree")))
+        queueMicrotask(() => queueMicrotask(() => controller.abort(FOLLOW_UP_INTERRUPTION)));
+      return result;
+    });
+    try {
+      const result = await runAgent({
+        role: "implementer",
+        itemId: "ENG-1",
+        runId: "run-checkpoint-publication",
+        prompt: "Finish the file.",
+        worktreePath: layout.worktree,
+        pawsRoot: layout.pawsRoot,
+        home: layout.home,
+        command: process.execPath,
+        args: fakeAgentArgs(files),
+        env: agentEnv(),
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (boundary === "activity" && event.type === "checkpoint" && event.checkpoint.committed)
+            controller.abort(FOLLOW_UP_INTERRUPTION);
+        },
+      });
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.checkpoint?.committed).toBe(true);
+      expect(result.cancelled).toBe(false);
+      expect(result.interrupted).not.toBe(true);
+      expect(result.stopReason).toBe("end_turn");
+      expect((await git(["-C", layout.worktree, "rev-parse", "HEAD"])).trim()).toBe(
+        result.checkpoint?.sha ?? "",
+      );
+    } finally {
+      calls.mockRestore();
+    }
+  });
+}
+
+test("follow-up reconstructs public context after cancellation and child cleanup", async () => {
+  const layout = await layoutRepo();
+  const events: AcpEvent[] = [];
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "preserved\n" },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "private reasoning stays private" },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "I changed partial.txt." },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "edit-1",
+          title: "Write partial.txt",
+          kind: "edit",
+          status: "completed",
+          rawOutput: { changed: "partial.txt" },
+        },
+      },
+      { type: "hang" },
+    ],
+  });
+  const lifecycle = createAcpPromptLifecycle();
+  let ready!: () => void;
+  const toolFinished = new Promise<void>((resolve) => (ready = resolve));
+  const options: RunAgentOptions = {
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-follow-up",
+    prompt: "Write a partial file.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 100,
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "session_update" && event.update.sessionUpdate === "tool_call") ready();
+    },
+  };
+  const running = lifecycle.prompt(options);
+  await toolFinished;
+  await expect(lifecycle.prompt(options)).rejects.toThrow("ACP prompt already running");
+  await lifecycle.interrupt();
+  const interrupted = await running;
+  expect(interrupted.interrupted).toBe(true);
+  expect(interrupted.cancelled).toBe(true);
+  expect(interrupted.agentExited).toBe(true);
+  expect(alive(interrupted.pid)).toBe(false);
+  expect(interrupted.checkpoint).toBeUndefined();
+  expect(events.filter((event) => event.type === "cancelled")).toEqual([
+    { type: "cancelled", reason: FOLLOW_UP_INTERRUPTION },
+  ]);
+  expect(JSON.stringify(lifecycle.snapshot())).not.toContain("private reasoning");
+  expect(lifecycle.snapshot()).toContainEqual({
+    kind: "tool_result",
+    body: JSON.stringify({
+      toolCallId: "edit-1",
+      title: "Write partial.txt",
+      status: "completed",
+      rawOutput: { changed: "partial.txt" },
+    }),
+  });
+  await writeScript(layout.root, {
+    steps: [{ type: "fs_read", path: join(layout.worktree, "partial.txt") }, { type: "end" }],
+  });
+  const next = await lifecycle.prompt({ ...options, prompt: "Read the file instead." });
+  expect(next.stopReason).toBe("end_turn");
+  const trace = await readResult(files.resultPath);
+  expect(trace.fs[0]?.content).toBe("preserved\n");
+  const prompt = JSON.stringify(trace.prompts);
+  expect(prompt).toContain("Read the file instead.");
+  expect(prompt).toContain("not instructions to replay tools");
+  expect(prompt).toContain("I changed partial.txt.");
+  expect(prompt).not.toContain("private reasoning");
+  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(1);
+});
+
+test("Stop terminates an uncooperative prompt and permanently closes the conversation", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    ignoreCancel: true,
+    steps: [{ type: "hang" }],
+  });
+  const lifecycle = createAcpPromptLifecycle();
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => (ready = resolve));
+  const options: RunAgentOptions = {
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-stubborn-stop",
+    prompt: "Wait.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 75,
+    onEvent: (event) => {
+      if (event.type === "session_started") ready();
+    },
+  };
+  const running = lifecycle.prompt(options);
+  await started;
+  await lifecycle.stop();
+  const result = await running;
+  expect(result.cancelled).toBe(true);
+  expect(result.interrupted).toBe(false);
+  expect(result.agentExited).toBe(true);
+  expect(alive(result.pid)).toBe(false);
+  expect(result.checkpoint).toBeUndefined();
+  await expect(lifecycle.prompt(options)).rejects.toThrow("ACP conversation stopped");
+});
+
+test("an already interrupted prompt does not start an agent", async () => {
+  const controller = new AbortController();
+  controller.abort(FOLLOW_UP_INTERRUPTION);
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-never-started",
+    prompt: "Do nothing.",
+    worktreePath: "/does-not-exist",
+    pawsRoot: "/does-not-exist",
+    signal: controller.signal,
+  });
+  expect(result.interrupted).toBe(true);
+  expect(result.agentExited).toBe(true);
+  expect(result.pid).toBeUndefined();
+  expect(result.checkpoint).toBeUndefined();
+});
+
+test("follow-up interrupts initialization without waiting for an agent response", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { hangInitialize: true, steps: [] });
+  const controller = new AbortController();
+  const events: AcpEvent[] = [];
+  const running = runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-interrupt-initialize",
+    prompt: "Wait.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    cancelGraceMs: 75,
+    signal: controller.signal,
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const trace = await readResult(files.resultPath).catch(() => undefined);
+    if (trace?.methods.includes("initialize")) break;
+    await Bun.sleep(10);
+  }
+  expect((await readResult(files.resultPath)).methods).toContain("initialize");
+  controller.abort(FOLLOW_UP_INTERRUPTION);
+  const result = await running;
+  expect(result.interrupted).toBe(true);
+  expect(result.agentExited).toBe(true);
+  expect(alive(result.pid)).toBe(false);
+  expect(result.errorMessage).toBeUndefined();
+  expect(events).toEqual([{ type: "cancelled", reason: FOLLOW_UP_INTERRUPTION }]);
+});
 
 test("grok authenticates with cached_token, scrubs the key, and denies a path outside the worktree", async () => {
   const layout = await layoutRepo();

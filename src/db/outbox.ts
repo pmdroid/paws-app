@@ -6,6 +6,7 @@ import {
   retryBackoffMs,
 } from "../core";
 import { errorText } from "./jobs";
+import { immediate } from "./tx";
 
 export const OUTBOX_TARGETS = ["linear", "slack", "github", "sandbox"] as const;
 export type OutboxTarget = (typeof OUTBOX_TARGETS)[number];
@@ -15,7 +16,11 @@ export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
 
+export type OutboxDelivery = "ordered" | "progress" | "critical" | "terminal" | "stop" | "status";
+
 export type NewOutbox = {
+  delivery?: OutboxDelivery;
+  generation?: number;
   target: OutboxTarget;
   op: string;
   idempotencyKey: string;
@@ -28,6 +33,8 @@ export type NewOutbox = {
 };
 
 export type OutboxRow = {
+  delivery?: OutboxDelivery;
+  generation?: number;
   id: number;
   target: OutboxTarget;
   op: string;
@@ -47,6 +54,8 @@ export type OutboxRow = {
 };
 
 type OutboxSqlRow = {
+  delivery_kind: OutboxDelivery;
+  delivery_generation: number;
   id: number;
   target: OutboxTarget;
   op: string;
@@ -66,6 +75,7 @@ type OutboxSqlRow = {
 };
 
 export type OutboxClaimOptions = {
+  blockedKeys?: readonly string[];
   workerId?: string;
   leaseMs?: number;
   now?: number;
@@ -123,44 +133,113 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
   const workerId = options.workerId ?? "outbox";
   const limit = options.limit ?? 32;
   const rows = db
-    .query<OutboxSqlRow, [string, number, number, number, number]>(
-      `WITH heads AS (
-         SELECT MIN(id) AS id
-         FROM outbox
-         WHERE status NOT IN ('sent', 'dropped') AND ordering_key IS NOT NULL
-         GROUP BY ordering_key
-         UNION ALL
-         SELECT id FROM outbox
-         WHERE status NOT IN ('sent', 'dropped') AND ordering_key IS NULL
-       )
-       UPDATE outbox
-       SET locked_by = ?,
-           locked_until = ?,
-           attempts = attempts + 1
-       WHERE id IN (
-         SELECT outbox.id
-         FROM outbox
-         JOIN heads ON heads.id = outbox.id
-         WHERE outbox.status = 'pending'
-           AND outbox.not_before <= ?
-           AND (outbox.locked_until IS NULL OR outbox.locked_until <= ?)
-         ORDER BY outbox.priority ASC, outbox.id ASC
-         LIMIT ?
-       )
-       RETURNING *`,
+    .query<OutboxSqlRow, [string, number, string, number, number, number, number]>(
+      `WITH ranked AS (
+       SELECT o.id, ROW_NUMBER() OVER (
+         PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
+         ORDER BY o.priority, o.id
+       ) AS position
+       FROM outbox o
+       LEFT JOIN outbox_session_fence f ON f.target = o.target AND f.ordering_key = o.ordering_key
+       WHERE o.status NOT IN ('sent', 'dropped')
+         AND o.delivery_generation = COALESCE(f.generation, 0)
+         AND (COALESCE(f.stopped, 0) = 0 OR o.delivery_kind = 'stop')
+     )
+     UPDATE outbox SET locked_by = ?, locked_until = ?, attempts = attempts + 1
+     WHERE id IN (
+       SELECT o.id FROM outbox o JOIN ranked r ON r.id = o.id AND r.position = 1
+       WHERE o.status = 'pending' AND o.not_before <= ?4
+         AND (o.locked_until IS NULL OR o.locked_until <= ?5)
+         AND NOT EXISTS (
+           SELECT 1 FROM json_each(?3) WHERE value = o.target || ':' || o.ordering_key
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM outbox busy WHERE busy.target = o.target
+             AND busy.ordering_key = o.ordering_key AND busy.locked_until > ?6
+         )
+       ORDER BY o.priority, o.id LIMIT ?7
+     ) RETURNING *`,
     )
-    .all(workerId, now + leaseMs, now, now, limit);
+    .all(workerId, now + leaseMs, JSON.stringify(options.blockedKeys ?? []), now, now, now, limit);
   return rows.map(mapOutbox);
 }
 
+export function isOutboxCurrent(db: Database, row: OutboxRow): boolean {
+  const current = getOutbox(db, row.id);
+  if (
+    !current ||
+    current.status !== "pending" ||
+    current.attempts !== row.attempts ||
+    current.lockedBy !== row.lockedBy
+  )
+    return false;
+  if (current.orderingKey === null) return true;
+  const fence = getFence(db, current.target, current.orderingKey);
+  return current.generation === fence.generation && (!fence.stopped || current.delivery === "stop");
+}
+
+export function advanceOutboxSession(
+  db: Database,
+  target: OutboxTarget,
+  orderingKey: string,
+  options: { stop?: boolean; now?: number } = {},
+): number {
+  return immediate(db, () => {
+    const now = options.now ?? Date.now();
+    const generation = getFence(db, target, orderingKey).generation + 1;
+    db.run(
+      `INSERT INTO outbox_session_fence (target, ordering_key, generation, stopped, updated_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT (target, ordering_key) DO UPDATE SET
+      generation = excluded.generation, stopped = excluded.stopped, updated_at = excluded.updated_at`,
+      [target, orderingKey, generation, options.stop ? 1 : 0, now],
+    );
+    db.run(
+      `UPDATE outbox SET status = 'dropped', error = ?
+      WHERE target = ? AND ordering_key = ? AND status IN ('pending', 'dead')`,
+      [
+        options.stop
+          ? "Fenced by Stop; payload retained for reconciliation."
+          : "Superseded by an accepted newer session generation.",
+        target,
+        orderingKey,
+      ],
+    );
+    return generation;
+  });
+}
+
+export function stopOutboxSession(
+  db: Database,
+  target: OutboxTarget,
+  orderingKey: string,
+  now = Date.now(),
+): number {
+  return immediate(db, () => {
+    const fence = getFence(db, target, orderingKey);
+    return fence.stopped
+      ? fence.generation
+      : advanceOutboxSession(db, target, orderingKey, { stop: true, now });
+  });
+}
+
 export function completeOutbox(db: Database, row: OutboxRow, now = Date.now()): boolean {
-  const result = db.run(
-    `UPDATE outbox
-     SET status = 'sent', sent_at = ?, locked_by = NULL, locked_until = NULL, error = NULL
-     WHERE id = ? AND status = 'pending' AND locked_by = ?`,
-    [now, row.id, row.lockedBy],
+  const result = db
+    .query<{ status: OutboxStatus }, [number, number, string | null, number]>(
+      `UPDATE outbox SET status = CASE WHEN status = 'pending' THEN 'sent' ELSE status END,
+       sent_at = ?, locked_by = NULL, locked_until = NULL,
+       error = CASE WHEN status = 'dropped' THEN 'Superseded delivery completed; external effect may have occurred.' ELSE NULL END
+     WHERE id = ? AND status IN ('pending', 'dropped') AND locked_by = ? AND attempts = ? RETURNING status`,
+    )
+    .get(now, row.id, row.lockedBy, row.attempts);
+  return result?.status === "sent";
+}
+
+export function releaseOutboxLease(db: Database, row: OutboxRow): void {
+  db.run(
+    `UPDATE outbox SET locked_by = NULL, locked_until = NULL
+    WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
+    [row.id, row.lockedBy, row.attempts],
   );
-  return result.changes > 0;
 }
 
 export function retryOutbox(
@@ -182,8 +261,14 @@ export function retryOutbox(
          locked_by = NULL,
          locked_until = NULL,
          error = ?
-     WHERE id = ? AND status = 'pending' AND locked_by = ?`,
-    [now + delay, errorText(error), row.id, row.lockedBy],
+     WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
+    [now + delay, errorText(error), row.id, row.lockedBy, row.attempts],
+  );
+  db.run(
+    `UPDATE outbox SET locked_by = NULL, locked_until = NULL,
+      error = COALESCE(error, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'
+    WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
+    [row.id, row.lockedBy, row.attempts],
   );
 }
 
@@ -197,6 +282,10 @@ export function dispatchOutbox(db: Database, options: DispatchOptions = {}): Out
   const deliver = options.deliver;
   if (deliver === undefined) return claimed;
   for (const row of claimed) {
+    if (!isOutboxCurrent(db, row)) {
+      releaseOutboxLease(db, row);
+      continue;
+    }
     try {
       deliver(row);
       completeOutbox(db, row, options.now);
@@ -208,34 +297,109 @@ export function dispatchOutbox(db: Database, options: DispatchOptions = {}): Out
 }
 
 function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | null {
-  const now = row.now ?? Date.now();
-  const verb = ignore ? "INSERT OR IGNORE" : "INSERT";
-  const inserted = db
-    .query<
-      { id: number },
-      [string, string, string | null, string, string, number, number, number, number]
-    >(
-      `${verb} INTO outbox (
-         target, op, ordering_key, idempotency_key, payload, priority, not_before, created_at, max_attempts
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       RETURNING id`,
+  return immediate(db, () => {
+    const now = row.now ?? Date.now();
+    const delivery = row.delivery ?? deliveryKind(row);
+    const fence = row.orderingKey
+      ? getFence(db, row.target, row.orderingKey)
+      : { generation: 0, stopped: false };
+    const generation = row.generation ?? fence.generation;
+    const terminal =
+      row.orderingKey &&
+      (delivery === "progress" ||
+        (delivery === "critical" &&
+          (row.op === "elicitation" ||
+            ["thought", "action"].includes((row.payload as { kind?: string })?.kind ?? "")))) &&
+      db
+        .query<{ id: number }, [string, string, number]>(
+          `SELECT id FROM outbox WHERE target = ? AND ordering_key = ? AND delivery_generation = ?
+       AND delivery_kind IN ('terminal', 'stop') AND status != 'dropped' LIMIT 1`,
+        )
+        .get(row.target, row.orderingKey, generation);
+    const blocked =
+      generation !== fence.generation ||
+      (fence.stopped && delivery !== "stop") ||
+      Boolean(terminal);
+    const verb = ignore ? "INSERT OR IGNORE" : "INSERT";
+    const inserted = db
+      .query<{ id: number }, (string | number | null)[]>(
+        `${verb} INTO outbox (target, op, ordering_key, idempotency_key, payload, priority,
+        not_before, created_at, max_attempts, delivery_kind, delivery_generation, status, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      )
+      .get(
+        row.target,
+        row.op,
+        row.orderingKey ?? null,
+        row.idempotencyKey,
+        JSON.stringify(row.payload ?? {}),
+        row.priority ?? deliveryPriority(delivery),
+        row.notBefore ?? 0,
+        now,
+        row.maxAttempts ?? DEFAULT_OUTBOX_MAX_ATTEMPTS,
+        delivery,
+        generation,
+        blocked ? "dropped" : "pending",
+        blocked ? "Rejected by the persisted session fence." : null,
+      );
+    if (
+      !inserted ||
+      blocked ||
+      !row.orderingKey ||
+      !["critical", "terminal", "stop"].includes(delivery)
     )
-    .get(
-      row.target,
-      row.op,
-      row.orderingKey ?? null,
-      row.idempotencyKey,
-      JSON.stringify(row.payload ?? {}),
-      row.priority ?? 5,
-      row.notBefore ?? 0,
-      now,
-      row.maxAttempts ?? DEFAULT_OUTBOX_MAX_ATTEMPTS,
+      return inserted?.id ?? null;
+    db.run(
+      `UPDATE outbox SET status = 'dropped', error = 'Superseded by a critical session update.'
+      WHERE target = ? AND ordering_key = ? AND id < ? AND status IN ('pending', 'dead')
+        AND (delivery_kind = 'progress' OR (? = 'terminal' AND delivery_kind = 'critical'
+          AND (op = 'elicitation' OR json_extract(payload, '$.kind') IN ('thought', 'action'))))`,
+      [row.target, row.orderingKey, inserted.id, delivery],
     );
-  return inserted?.id ?? null;
+    return inserted.id;
+  });
+}
+
+function deliveryKind(row: NewOutbox): OutboxDelivery {
+  if (row.target !== "linear") return "ordered";
+  const payload = row.payload as { kind?: string; stateType?: string } | undefined;
+  if (row.op === "elicitation") return "critical";
+  if (row.op === "status") return payload?.stateType === "completed" ? "status" : "progress";
+  if (row.op === "activity" || row.op === "linear.activity") {
+    return payload?.kind === "response" || payload?.kind === "error" ? "terminal" : "progress";
+  }
+  return "ordered";
+}
+
+function deliveryPriority(kind: OutboxDelivery): number {
+  return kind === "stop"
+    ? -1
+    : kind === "terminal"
+      ? 0
+      : kind === "critical"
+        ? 1
+        : kind === "status"
+          ? 3
+          : 5;
+}
+
+function getFence(
+  db: Database,
+  target: OutboxTarget,
+  orderingKey: string,
+): { generation: number; stopped: boolean } {
+  const row = db
+    .query<{ generation: number; stopped: number }, [string, string]>(
+      "SELECT generation, stopped FROM outbox_session_fence WHERE target = ? AND ordering_key = ?",
+    )
+    .get(target, orderingKey);
+  return { generation: row?.generation ?? 0, stopped: row?.stopped === 1 };
 }
 
 function mapOutbox(row: OutboxSqlRow): OutboxRow {
   return {
+    delivery: row.delivery_kind,
+    generation: row.delivery_generation,
     id: row.id,
     target: row.target,
     op: row.op,

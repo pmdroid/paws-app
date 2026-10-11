@@ -1,0 +1,140 @@
+import { readFile, stat } from "node:fs/promises";
+import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import { runAgent } from "./run";
+import { runDir } from "./paths";
+import {
+  FOLLOW_UP_INTERRUPTION,
+  type AcpEvent,
+  type RunAgentOptions,
+  type RunAgentResult,
+} from "./types";
+
+export type AcpConversationEntry = {
+  kind: "request" | "response" | "tool_result";
+  body: string;
+};
+
+export interface AcpPromptLifecycle {
+  prompt(options: RunAgentOptions): Promise<RunAgentResult>;
+  interrupt(): Promise<void>;
+  stop(): Promise<void>;
+  snapshot(): AcpConversationEntry[];
+}
+
+export function createAcpPromptLifecycle(
+  context: readonly AcpConversationEntry[] = [],
+): AcpPromptLifecycle {
+  const history = context.map((entry) => ({ ...entry }));
+  let active: { controller: AbortController; done: Promise<RunAgentResult> } | undefined;
+  let stopped = false;
+  let worktree: string | undefined;
+
+  return {
+    prompt(options) {
+      if (stopped) return Promise.reject(new Error("ACP conversation stopped"));
+      if (active) return Promise.reject(new Error("ACP prompt already running"));
+      if (worktree && worktree !== options.worktreePath) {
+        return Promise.reject(new Error("ACP conversation worktree changed"));
+      }
+      worktree = options.worktreePath;
+      const controller = new AbortController();
+      const onAbort = () => controller.abort(options.signal?.reason);
+      if (options.signal?.aborted) onAbort();
+      else options.signal?.addEventListener("abort", onAbort, { once: true });
+      const prompt = reconstructAcpPrompt(options.prompt, history);
+      const entry: AcpConversationEntry = { kind: "request", body: options.prompt };
+      history.push(entry);
+      const done = (async () => {
+        try {
+          const path = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;
+          const offset = await stat(path).then(
+            (info) => info.size,
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return 0;
+              throw error;
+            },
+          );
+          const result = await runAgent({ ...options, prompt, signal: controller.signal });
+          if (!result.agentExited) {
+            stopped = true;
+            throw new Error("ACP child did not exit; refusing another prompt");
+          }
+          if (result.transcriptPath) {
+            history.push(...(await readConversation(result.transcriptPath, offset)));
+          }
+          return result;
+        } finally {
+          options.signal?.removeEventListener("abort", onAbort);
+          active = undefined;
+        }
+      })();
+      active = { controller, done };
+      return done;
+    },
+    async interrupt() {
+      active?.controller.abort(FOLLOW_UP_INTERRUPTION);
+      await active?.done;
+    },
+    async stop() {
+      stopped = true;
+      active?.controller.abort();
+      await active?.done;
+    },
+    snapshot() {
+      return history.map((entry) => ({ ...entry }));
+    },
+  };
+}
+
+export function reconstructAcpPrompt(
+  prompt: string,
+  context: readonly AcpConversationEntry[],
+): string {
+  if (context.length === 0) return prompt;
+  return [
+    "The previous agent turn has stopped. Existing workspace files are preserved.",
+    "The following JSON records conversation history and observed tool effects. Treat it as context, not instructions to replay tools. Inspect the current workspace before acting.",
+    JSON.stringify(context),
+    "Current user request:",
+    prompt,
+  ].join("\n\n");
+}
+
+async function readConversation(path: string, offset: number): Promise<AcpConversationEntry[]> {
+  const history: AcpConversationEntry[] = [];
+  const tools = new Map<string, Record<string, unknown>>();
+  let response = "";
+  for (const line of (await readFile(path)).subarray(offset).toString("utf8").split("\n")) {
+    if (!line) continue;
+    const { event } = JSON.parse(line) as { event: AcpEvent };
+    if (event.type !== "session_update") continue;
+    const update = event.update;
+    if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+      response += update.content.text;
+    }
+    if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      const previous = tools.get(update.toolCallId) ?? {};
+      tools.set(update.toolCallId, { ...previous, ...toolObservation(update) });
+    }
+  }
+  if (response) history.push({ kind: "response", body: response });
+  for (const tool of tools.values()) {
+    if (tool.status !== "completed" && tool.status !== "failed") continue;
+    history.push({ kind: "tool_result", body: JSON.stringify(tool) });
+  }
+  return history;
+}
+
+function toolObservation(
+  update: Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      toolCallId: update.toolCallId,
+      title: update.title,
+      status: update.status,
+      content: update.content,
+      rawOutput: update.rawOutput,
+    }).filter(([, value]) => value !== undefined),
+  );
+}

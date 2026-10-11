@@ -1,9 +1,11 @@
+import * as fs from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
-import { commitCheckpointSync, restartFromFreshMain } from "./checkpoint";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { commitCheckpoint, commitCheckpointSync, restartFromFreshMain } from "./checkpoint";
 import { git } from "./git";
+import * as gitCommands from "./git";
 import { createWorktree, ensureBareMirror } from "./worktree";
 
 const roots: string[] = [];
@@ -30,6 +32,136 @@ test("shutdown commits dirty files onto the item branch", async () => {
   expect(commitCheckpointSync(layout.worktree.path).committed).toBe(false);
   expect(commitCheckpointSync(join(layout.root, "missing")).committed).toBe(false);
 }, 20_000);
+
+for (const phase of ["add", "commit"] as const) {
+  test(`abort during checkpoint ${phase} preserves the branch, staged entries and dirty files`, async () => {
+    const layout = await itemWorktree("ENG-21");
+    const tree = layout.worktree.path;
+    await writeFile(join(tree, "README.md"), "staged\n");
+    await git(["-C", tree, "add", "README.md"]);
+    await writeFile(join(tree, "README.md"), "unstaged\n");
+    await writeFile(join(tree, "partial.txt"), "partial\n");
+    const index = (
+      await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    ).trim();
+    const beforeIndex = await readFile(index);
+    const beforeHead = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+    const controller = new AbortController();
+    const originalGit = gitCommands.git;
+    let reached = false;
+    const calls = spyOn(gitCommands, "git").mockImplementation(async (args, options) => {
+      const result = await originalGit(args, options);
+      if (args.includes(phase) || (phase === "commit" && args.includes("commit-tree"))) {
+        reached = true;
+        controller.abort();
+      }
+      return result;
+    });
+    try {
+      const checkpoint = await commitCheckpoint(tree, "wip: interrupted", controller.signal);
+      expect(reached).toBe(true);
+      expect(checkpoint.committed).toBe(false);
+      expect((await originalGit(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(beforeHead);
+      expect(await readFile(index)).toEqual(beforeIndex);
+      expect(await readFile(join(tree, "README.md"), "utf8")).toBe("unstaged\n");
+      expect(await readFile(join(tree, "partial.txt"), "utf8")).toBe("partial\n");
+    } finally {
+      calls.mockRestore();
+    }
+  });
+}
+
+for (const conflict of ["lock", "index", "head"] as const) {
+  test(`checkpoint publication preserves concurrent ${conflict} changes`, async () => {
+    const layout = await itemWorktree("ENG-21");
+    const tree = layout.worktree.path;
+    await writeFile(join(tree, "partial.txt"), "partial\n");
+    const index = (
+      await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    ).trim();
+    let expectedIndex = await readFile(index);
+    let expectedHead = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+    const originalGit = gitCommands.git;
+    let reached = false;
+    const calls = spyOn(gitCommands, "git").mockImplementation(async (args, options) => {
+      const result = await originalGit(args, options);
+      if (args.includes("commit-tree")) {
+        reached = true;
+        if (conflict === "lock") await writeFile(`${index}.lock`, "operator lock\n");
+        if (conflict === "index") {
+          await originalGit(["-C", tree, "add", "partial.txt"]);
+          expectedIndex = await readFile(index);
+        }
+        if (conflict === "head") {
+          expectedHead = result.trim();
+          await originalGit(["-C", tree, "update-ref", "HEAD", expectedHead]);
+        }
+      }
+      return result;
+    });
+    try {
+      await expect(commitCheckpoint(tree)).rejects.toThrow();
+      expect(reached).toBe(true);
+      expect((await originalGit(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(expectedHead);
+      expect(await readFile(index)).toEqual(expectedIndex);
+      expect(await readFile(join(tree, "partial.txt"), "utf8")).toBe("partial\n");
+      if (conflict === "lock")
+        expect(await readFile(`${index}.lock`, "utf8")).toBe("operator lock\n");
+      else await expect(readFile(`${index}.lock`)).rejects.toThrow();
+    } finally {
+      calls.mockRestore();
+    }
+  });
+}
+
+test("checkpoint rolls back its ref when locked index publication fails", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  await writeFile(join(tree, "partial.txt"), "partial\n");
+  const index = (
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+  ).trim();
+  const originalIndex = await readFile(index);
+  const originalHead = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+  let reached = false;
+  const rename = spyOn(fs, "renameSync").mockImplementation(() => {
+    const currentHead = Bun.spawnSync(["git", "-C", tree, "rev-parse", "HEAD"]);
+    expect(new TextDecoder().decode(currentHead.stdout).trim()).not.toBe(originalHead);
+    reached = true;
+    throw new Error("injected index rename failure");
+  });
+  try {
+    await expect(commitCheckpoint(tree)).rejects.toThrow("injected index rename failure");
+    expect(reached).toBe(true);
+    expect((await git(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(originalHead);
+    expect(await readFile(index)).toEqual(originalIndex);
+    expect(await readFile(join(tree, "partial.txt"), "utf8")).toBe("partial\n");
+    await expect(readFile(`${index}.lock`)).rejects.toThrow();
+  } finally {
+    rename.mockRestore();
+  }
+});
+
+test("async checkpoint publishes a clean index and skips hooks and signing", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  const hooks = join(layout.root, "hooks");
+  await mkdir(hooks);
+  await writeFile(join(hooks, "pre-commit"), "exit 1\n", { mode: 0o700 });
+  await git(["-C", tree, "config", "core.hooksPath", hooks]);
+  await git(["-C", tree, "config", "commit.gpgsign", "true"]);
+  await git(["-C", tree, "config", "gpg.program", "/usr/bin/false"]);
+  await writeFile(join(tree, "partial.txt"), "partial\n");
+  const checkpoint = await commitCheckpoint(tree);
+  expect(checkpoint.committed).toBe(true);
+  expect((await git(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(checkpoint.sha ?? "");
+  expect(await git(["-C", tree, "status", "--porcelain"])).toBe("");
+  expect(await git(["-C", tree, "show", "HEAD:partial.txt"])).toBe("partial\n");
+  expect((await git(["-C", tree, "log", "-1", "--format=%an <%ae>"])).trim()).toBe(
+    "Paws <paws@localhost>",
+  );
+  expect((await commitCheckpoint(tree)).committed).toBe(false);
+});
 
 test("a long sleep checks out fresh main and keeps the WIP branch", async () => {
   const layout = await itemWorktree("ENG-21");

@@ -6,14 +6,18 @@ import { isRecord, readString } from "./read";
  * One GraphQL document per tick: team issues updated after the cursor,
  * plus comments and agent activities updated after the same cursor.
  */
-const INTAKE_QUERY = `query IntakePoll($team: String!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String) {
+const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String, $sessionAfter: String, $includeIssues: Boolean!, $includeComments: Boolean!, $includeActivities: Boolean!, $includeSessions: Boolean!) {
   viewer { id }
+  agentSessions(first: 50, after: $sessionAfter, orderBy: createdAt) @include(if: $includeSessions) {
+    nodes { id createdAt updatedAt endedAt dismissedAt appUser { id } issue { id team { id key } } }
+    pageInfo { hasNextPage endCursor }
+  }
   issues(
     first: 50
     after: $issueAfter
     orderBy: updatedAt
-    filter: { updatedAt: { gt: $since }, team: { or: [{ id: { eq: $team } }, { key: { eq: $team } }] } }
-  ) {
+    filter: { updatedAt: { gt: $since }, team: $team }
+  ) @include(if: $includeIssues) {
     nodes {
       id
       identifier
@@ -27,8 +31,8 @@ const INTAKE_QUERY = `query IntakePoll($team: String!, $since: DateTimeOrDuratio
     first: 50
     after: $commentAfter
     orderBy: updatedAt
-    filter: { updatedAt: { gt: $since }, issue: { team: { or: [{ id: { eq: $team } }, { key: { eq: $team } }] } } }
-  ) {
+    filter: { updatedAt: { gt: $since }, issue: { team: $team } }
+  ) @include(if: $includeComments) {
     nodes {
       id
       body
@@ -42,7 +46,7 @@ const INTAKE_QUERY = `query IntakePoll($team: String!, $since: DateTimeOrDuratio
     after: $activityAfter
     orderBy: updatedAt
     filter: { updatedAt: { gt: $since } }
-  ) {
+  ) @include(if: $includeActivities) {
     nodes {
       id
       updatedAt
@@ -69,6 +73,13 @@ export type PolledComment = {
   updatedAtMs: number;
 };
 
+export type PolledSession = {
+  id: string;
+  issueId: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
 export type PolledActivity = {
   id: string;
   issueId: string | null;
@@ -79,6 +90,7 @@ export type PolledActivity = {
 };
 
 export type IntakeSighting = {
+  sessions: readonly PolledSession[];
   issues: readonly PolledIssue[];
   comments: readonly PolledComment[];
   activities: readonly PolledActivity[];
@@ -94,6 +106,7 @@ export type IntakePollSource = {
 };
 
 const EMPTY: IntakeSighting = {
+  sessions: [],
   issues: [],
   comments: [],
   activities: [],
@@ -110,18 +123,30 @@ export function createIntakePollSource(
   let issueAfter: string | null = null;
   let commentAfter: string | null = null;
   let activityAfter: string | null = null;
+  let sessionAfter: string | null = null;
+  let cycleSince: string | null = null;
+  const finished = new Set<string>();
+  const latestSessions = new Map<string, PolledSession>();
   let viewerId: string | null = options.appUserId ?? null;
 
   return {
     async poll(sinceMs) {
       const teamId = options.teamId;
       if (teamId === null || teamId.length === 0) return EMPTY;
+      cycleSince ??= new Date(sinceMs).toISOString();
       const data = await client.query(INTAKE_QUERY, {
-        team: teamId,
-        since: new Date(sinceMs).toISOString(),
+        team: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(teamId)
+          ? { id: { eq: teamId } }
+          : { key: { eq: teamId } },
+        since: cycleSince,
         issueAfter,
         commentAfter,
         activityAfter,
+        sessionAfter,
+        includeIssues: !finished.has("issues"),
+        includeComments: !finished.has("comments"),
+        includeActivities: !finished.has("activities"),
+        includeSessions: !finished.has("sessions"),
       });
       const root = isRecord(data) ? data : {};
       const seenViewer = readViewerId(root);
@@ -130,43 +155,118 @@ export function createIntakePollSource(
       const issues = readConnection(root, "issues");
       const comments = readConnection(root, "comments");
       const activities = readConnection(root, "agentActivities");
-      const issuesCaughtUp = advance(
-        issues,
-        () => issueAfter,
-        (cursor) => {
-          issueAfter = cursor;
-        },
-      );
-      const commentsCaughtUp = advance(
-        comments,
-        () => commentAfter,
-        (cursor) => {
-          commentAfter = cursor;
-        },
-      );
-      const activitiesCaughtUp = advance(
-        activities,
-        () => activityAfter,
-        (cursor) => {
-          activityAfter = cursor;
-        },
-      );
-      const caughtUp = issuesCaughtUp && commentsCaughtUp && activitiesCaughtUp;
+      const sessions = readConnection(root, "agentSessions");
+      for (const [name, connection, cursor] of [
+        ["issues", issues, issueAfter],
+        ["comments", comments, commentAfter],
+        ["activities", activities, activityAfter],
+        ["sessions", sessions, sessionAfter],
+      ] as const) {
+        if (finished.has(name) || !connection.hasNextPage) continue;
+        if (connection.endCursor === null || connection.endCursor === cursor) {
+          throw new Error(`Linear ${name} pagination did not advance`);
+        }
+      }
+      const pendingIssues = finished.has("issues") ? [] : issues.nodes;
+      const pendingComments = finished.has("comments") ? [] : comments.nodes;
+      const pendingActivities = finished.has("activities") ? [] : activities.nodes;
+      if (!finished.has("sessions")) {
+        for (const session of readSessions(root, appUserId, teamId)) {
+          const prior = latestSessions.get(session.issueId);
+          if (prior === undefined || session.createdAtMs > prior.createdAtMs) {
+            latestSessions.set(session.issueId, session);
+          }
+        }
+      }
+      const issuesCaughtUp =
+        finished.has("issues") ||
+        advance(
+          issues,
+          () => issueAfter,
+          (cursor) => {
+            issueAfter = cursor;
+          },
+        );
+      const commentsCaughtUp =
+        finished.has("comments") ||
+        advance(
+          comments,
+          () => commentAfter,
+          (cursor) => {
+            commentAfter = cursor;
+          },
+        );
+      const activitiesCaughtUp =
+        finished.has("activities") ||
+        advance(
+          activities,
+          () => activityAfter,
+          (cursor) => {
+            activityAfter = cursor;
+          },
+        );
+      const sessionsCaughtUp =
+        finished.has("sessions") ||
+        advance(
+          sessions,
+          () => sessionAfter,
+          (cursor) => {
+            sessionAfter = cursor;
+          },
+        );
+      if (issuesCaughtUp) finished.add("issues");
+      if (commentsCaughtUp) finished.add("comments");
+      if (activitiesCaughtUp) finished.add("activities");
+      if (sessionsCaughtUp) finished.add("sessions");
+      const discoveredSessions = sessionsCaughtUp ? [...latestSessions.values()] : [];
+      const caughtUp = issuesCaughtUp && commentsCaughtUp && activitiesCaughtUp && sessionsCaughtUp;
       if (caughtUp) {
         issueAfter = null;
         commentAfter = null;
         activityAfter = null;
+        sessionAfter = null;
+        cycleSince = null;
+        finished.clear();
+        latestSessions.clear();
       }
       return {
-        issues: dedupeIssues(issues.nodes, appUserId),
-        comments: dedupeComments(comments.nodes),
-        activities: dedupeActivities(activities.nodes),
+        sessions: discoveredSessions,
+        issues: dedupeIssues(pendingIssues, appUserId),
+        comments: dedupeComments(pendingComments),
+        activities: dedupeActivities(pendingActivities),
         budget: linearBudget(client),
         caughtUp,
         queried: true,
       };
     },
   };
+}
+
+function readSessions(
+  root: Record<string, unknown>,
+  appUserId: string | null,
+  teamId: string,
+): PolledSession[] {
+  const latest = new Map<string, PolledSession>();
+  for (const node of readConnection(root, "agentSessions").nodes) {
+    if (readString(node, "endedAt") !== null || readString(node, "dismissedAt") !== null) continue;
+    const user = isRecord(node["appUser"]) ? node["appUser"] : null;
+    const issue = isRecord(node["issue"]) ? node["issue"] : null;
+    const team = issue !== null && isRecord(issue["team"]) ? issue["team"] : null;
+    if (user === null || readString(user, "id") !== appUserId || issue === null || team === null)
+      continue;
+    if (readString(team, "id") !== teamId && readString(team, "key") !== teamId) continue;
+    const id = readString(node, "id");
+    const issueId = readString(issue, "id");
+    const createdAtMs = readTime(node, "createdAt");
+    const updatedAtMs = readTime(node, "updatedAt");
+    if (id === null || issueId === null || createdAtMs === null || updatedAtMs === null) continue;
+    const prior = latest.get(issueId);
+    if (prior === undefined || createdAtMs > prior.createdAtMs) {
+      latest.set(issueId, { id, issueId, createdAtMs, updatedAtMs });
+    }
+  }
+  return [...latest.values()];
 }
 
 function advance(

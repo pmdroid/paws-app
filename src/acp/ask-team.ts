@@ -4,6 +4,12 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
+import {
+  snapshotArtifactFile,
+  type ArtifactLimits,
+  type PublishArtifactHook,
+  type PublishArtifactRequest,
+} from "./artifacts";
 
 export const ASK_TEAM_TOOL_NAME = "ask_team";
 
@@ -49,24 +55,48 @@ export function askTeamMcpEntry(): { command: string; args: string[] } {
  * Local socket the MCP stdio process calls back into.
  * The run timeout is paused around `hook.ask` so a human answer is not cut off.
  */
-export async function startAskTeamBridge(options: {
+interface HostToolBridgeOptions {
   socketPath: string;
-  hook: AskTeamHook;
-  context: { itemId: string; runId: string; role: AgentRole };
+  hook?: AskTeamHook;
+  publishArtifact?: PublishArtifactHook;
+  artifactLimits?: ArtifactLimits;
+  context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
   onHookStart?: () => void;
   onHookEnd?: () => void;
-}): Promise<AskTeamBridge> {
+}
+
+export async function startAskTeamBridge(options: HostToolBridgeOptions): Promise<AskTeamBridge> {
+  options.signal.throwIfAborted();
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await unlink(options.socketPath).catch(() => undefined);
-
+  const lifetime = new AbortController();
+  const sockets = new Set<Socket>();
+  const onAbort = () => {
+    lifetime.abort();
+    for (const socket of sockets) socket.destroy();
+  };
+  options.signal.addEventListener("abort", onAbort, { once: true });
+  if (options.signal.aborted) onAbort();
   const server = createServer((socket) => {
-    void handleConnection(socket, options);
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    socket.on("error", () => undefined);
+    void handleConnection(socket, { ...options, signal: lifetime.signal });
   });
-  await listen(server, options.socketPath);
-  await chmod(options.socketPath, 0o600);
+  try {
+    await listen(server, options.socketPath);
+    await chmod(options.socketPath, 0o600);
+    lifetime.signal.throwIfAborted();
+  } catch (error) {
+    options.signal.removeEventListener("abort", onAbort);
+    onAbort();
+    server.close();
+    await unlink(options.socketPath).catch(() => undefined);
+    throw error;
+  }
 
   const entry = askTeamMcpEntry();
   return {
@@ -74,58 +104,121 @@ export async function startAskTeamBridge(options: {
       name: "paws",
       command: entry.command,
       args: entry.args,
-      env: [{ name: "PAWS_ASK_TEAM_SOCKET", value: options.socketPath }],
+      env: [
+        { name: "PAWS_ASK_TEAM_SOCKET", value: options.socketPath },
+        {
+          name: "PAWS_HOST_TOOLS",
+          value: [options.hook ? "ask_team" : "", options.publishArtifact ? "publish_artifact" : ""]
+            .filter(Boolean)
+            .join(","),
+        },
+      ],
     },
     async close() {
+      options.signal.removeEventListener("abort", onAbort);
+      onAbort();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await unlink(options.socketPath).catch(() => undefined);
     },
   };
 }
 
-async function handleConnection(
-  socket: Socket,
-  options: {
-    hook: AskTeamHook;
-    context: { itemId: string; runId: string; role: AgentRole };
-    signal: AbortSignal;
-    onAsk?: (question: string) => void | Promise<void>;
-    onAnswer?: (question: string, answer: string) => void | Promise<void>;
-    onHookStart?: () => void;
-    onHookEnd?: () => void;
-  },
-): Promise<void> {
+export const startHostToolBridge = startAskTeamBridge;
+
+async function handleConnection(socket: Socket, options: HostToolBridgeOptions): Promise<void> {
   socket.setEncoding("utf8");
   let buffer = "";
-  const line = await new Promise<string>((resolve, reject) => {
-    const onError = (error: Error) => reject(error);
-    socket.on("error", onError);
-    socket.on("data", (chunk: string) => {
-      buffer += chunk;
-      const newline = buffer.indexOf("\n");
-      if (newline >= 0) {
-        const text = buffer.slice(0, newline);
+  const readLine = () =>
+    new Promise<string>((resolve, reject) => {
+      const onError = (error: Error) => reject(error);
+      socket.on("error", onError);
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        if (buffer.length > 16_384) {
+          reject(new Error("host tool request too large"));
+          socket.destroy();
+          return;
+        }
+        const newline = buffer.indexOf("\n");
+        if (newline >= 0) {
+          const text = buffer.slice(0, newline);
+          socket.off("error", onError);
+          resolve(text);
+        }
+      });
+      socket.on("close", () => {
         socket.off("error", onError);
-        resolve(text);
-      }
+        reject(new Error("host tool socket closed"));
+      });
     });
-    socket.on("end", () => {
-      socket.off("error", onError);
-      reject(new Error("ask_team socket closed"));
-    });
-  });
 
   let id = 0;
   try {
+    const line = await readLine();
     const parsed = JSON.parse(line) as {
       id?: number;
+      tool?: string;
+      arguments?: Record<string, unknown>;
       question?: string;
       options?: string[];
       context?: string;
     };
     id = parsed.id ?? 0;
-    const request = parseAsk(parsed);
+    options.signal.throwIfAborted();
+    if (parsed.tool === "publish_artifact") {
+      if (!options.publishArtifact || !options.context.worktreePath) {
+        throw new Error("publish_artifact is unavailable");
+      }
+      const artifact = await snapshotArtifactFile(
+        options.context.worktreePath,
+        (parsed.arguments ?? {}) as unknown as PublishArtifactRequest,
+        options.artifactLimits,
+        options.signal,
+      );
+      options.signal.throwIfAborted();
+      let published;
+      try {
+        published = await abortable(
+          options.publishArtifact.publish(artifact, {
+            ...options.context,
+            worktreePath: options.context.worktreePath,
+            signal: options.signal,
+          }),
+          options.signal,
+        );
+      } catch {
+        throw new Error("artifact upload failed");
+      }
+      options.signal.throwIfAborted();
+      let url: URL;
+      try {
+        url = new URL(published.url);
+      } catch {
+        throw new Error("artifact upload returned an invalid asset URL");
+      }
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+        throw new Error("artifact upload returned an invalid asset URL");
+      }
+      const name = published.displayName ?? artifact.displayName;
+      if (
+        typeof name !== "string" ||
+        !name.trim() ||
+        name.length > 255 ||
+        [...name].some(
+          (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+        )
+      ) {
+        throw new Error("artifact upload returned an invalid display name");
+      }
+      const label = name.replace(/[\\[\]]/g, "\\$&");
+      socket.end(`${JSON.stringify({ id, answer: `[${label}](<${url.href}>)` })}\n`);
+      return;
+    }
+    if (parsed.tool && parsed.tool !== "ask_team") throw new Error("unknown host tool");
+    if (!options.hook) throw new Error("ask_team is unavailable");
+    const request = parseAsk(parsed.arguments ?? parsed);
     await options.onAsk?.(request.question);
+    options.signal.throwIfAborted();
     options.onHookStart?.();
     let response: AskTeamResponse;
     try {
@@ -140,7 +233,7 @@ async function handleConnection(
     socket.end(`${JSON.stringify({ id, answer: response.answer })}\n`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    socket.end(`${JSON.stringify({ id, error: message })}\n`);
+    if (!socket.destroyed) socket.end(`${JSON.stringify({ id, error: message })}\n`);
   }
 }
 
