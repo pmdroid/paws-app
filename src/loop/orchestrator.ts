@@ -55,7 +55,7 @@ import {
   handoffNote,
   openQuestion,
 } from "../questions";
-import { activityFromAcpEvent, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
@@ -64,6 +64,7 @@ import {
   type AgentLaunch,
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
+import { renderWorkBrief } from "./brief";
 
 export type GitHubBinding = {
   appId: string;
@@ -258,10 +259,17 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
+    const activity = createAcpActivityReporter((update) => {
+      if (update.kind === "elicitation") return;
+      posted = true;
+      this.activitySeq += 1;
+      this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`);
+    });
 
     const prompt = implementPrompt({
       identifier: item.linearIdentifier,
       title: item.title,
+      brief: renderWorkBrief(item.brief),
       ...(handoff ? { handoff } : {}),
     });
     const launched = this.launchAgent({
@@ -286,13 +294,7 @@ export class Orchestrator {
         home: this.options.home ?? homedir(),
         signal: controller.signal,
         askTeam,
-        onEvent: (event) => {
-          const activity = activityFromAcpEvent(event);
-          if (activity === null || activity.kind === "elicitation") return;
-          posted = true;
-          this.activitySeq += 1;
-          this.post(item, activity.kind, activity.body, `${run.id}:acp:${this.activitySeq}`);
-        },
+        onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
         ...this.itemDocker("claude"),
@@ -326,6 +328,7 @@ export class Orchestrator {
         this.fail(current, "run_error", message);
       }
     } finally {
+      activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
       this.live.delete(run.id);
@@ -346,7 +349,7 @@ export class Orchestrator {
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const reviewer = createAcpCodexReviewer(deps);
     const fixer = createAcpFixRunner(deps);
     const recorder: VerdictRecorder = {
@@ -425,7 +428,7 @@ export class Orchestrator {
       this.fail(item, "reverify", message);
       return;
     }
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const evaluation = await evaluateCandidate({
       worktree,
       taskId: itemPathId(item),
@@ -499,7 +502,7 @@ export class Orchestrator {
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
-    const deps = this.agentDeps();
+    const deps = this.agentDeps(item);
     const reviewer = createAcpCodexReviewer(deps);
     const merged = await serialMerge({
       worktree,
@@ -791,7 +794,7 @@ export class Orchestrator {
       now: this.now(),
       status: "active",
       kind: "implement",
-      agent: "claude",
+      agent: this.implementerName(),
       freshSession: true,
     });
     setCurrentRun(this.db, item.id, run.id);
@@ -896,8 +899,9 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
-  private agentDeps(): {
+  private agentDeps(item: WorkItemRecord): {
     pawsRoot: string;
+    brief: string;
     home?: string;
     launch: AgentLaunch;
     docker?: { proxyUrl: string; image?: string; bin?: string };
@@ -906,6 +910,7 @@ export class Orchestrator {
       pawsRoot: this.options.pawsRoot,
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
+      brief: renderWorkBrief(item.brief),
       ...(this.options.docker ? { docker: this.options.docker } : {}),
     };
   }

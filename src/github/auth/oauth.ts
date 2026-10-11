@@ -1,7 +1,7 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { agentEnv } from "./gh";
+import { defaultGitExec, withCredential } from "../git";
+import { GitCommandError } from "../types";
 import type { GitHubTokenProvider, TokenPurpose } from "./types";
 
 /** Same text as `GITHUB_REAUTH_MESSAGE` in `src/auth`. GitHub does not import that module. */
@@ -42,36 +42,33 @@ export async function runGitHubGit(input: {
 }): Promise<void> {
   if (/\s/.test(input.token)) throw new Error(OAUTH_REAUTH_MESSAGE);
   assertCleanRemote(input.remoteUrl, input.token);
-  const dir = await mkdtemp(path.join(tmpdir(), "paws-git-"));
-  const tokenFile = path.join(dir, "token");
-  const helperPath = path.join(dir, "cred.sh");
-  await writeFile(tokenFile, input.token, { mode: 0o600 });
-  await chmod(tokenFile, 0o600);
-  await writeFile(helperPath, helperScript(tokenFile), { mode: 0o700 });
-  await chmod(helperPath, 0o700);
-  const args = gitArgs(input, helperPath);
-  const env = operationEnv(input.env);
-  try {
-    const bin = input.gitBin ?? "git";
-    const proc = Bun.spawn([bin, ...args], {
-      cwd: input.cwd,
-      env: defined(env),
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (code !== 0) {
-      const detail = redact(input.token, stderr || stdout).trim();
-      throw new Error(detail.length > 0 ? detail : `git ${input.operation} failed`);
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  const gitExec = defaultGitExec(input.gitBin ?? trustedGitBin(input.env));
+  await withCredential(
+    input.token,
+    gitExec,
+    async (helper) => {
+      let args: string[];
+      let cwd = input.cwd;
+      if (input.operation === "clone") {
+        if (!input.dest) throw new Error("clone needs a destination");
+        args = ["clone", "--bare", input.remoteUrl, path.resolve(input.cwd, input.dest)];
+      } else if (input.operation === "fetch") {
+        if (!input.dest) throw new Error("fetch needs a git dir");
+        cwd = path.resolve(input.cwd, input.dest);
+        args = ["fetch", input.remoteUrl, "+refs/heads/*:refs/heads/*"];
+      } else {
+        if (!input.refspec) throw new Error("push needs a refspec");
+        args = ["push", input.remoteUrl, input.refspec];
+      }
+      try {
+        await helper.exec([...helper.argsPrefix, ...args], { cwd, env: helper.env });
+      } catch (error) {
+        const detail = error instanceof GitCommandError ? error.stderr : String(error);
+        throw new Error(redact(input.token, detail), { cause: error });
+      }
+    },
+    true,
+  );
 }
 
 export async function rejectUnauthorized(
@@ -83,46 +80,13 @@ export async function rejectUnauthorized(
   throw new Error(OAUTH_REAUTH_MESSAGE);
 }
 
-function gitArgs(
-  input: {
-    operation: "clone" | "fetch" | "push";
-    remoteUrl: string;
-    dest?: string;
-    refspec?: string;
-  },
-  helperPath: string,
-): string[] {
-  const prefix = ["-c", "credential.helper=", "-c", `credential.helper=${helperPath}`];
-  if (input.operation === "clone") {
-    if (input.dest === undefined) throw new Error("clone needs a destination");
-    return [...prefix, "clone", "--bare", input.remoteUrl, input.dest];
+function trustedGitBin(env: NodeJS.ProcessEnv | undefined): string {
+  for (const dir of (env?.PATH ?? "/usr/bin:/bin").split(path.delimiter)) {
+    if (!path.isAbsolute(dir)) continue;
+    const bin = path.join(dir, "git");
+    if (existsSync(bin)) return bin;
   }
-  if (input.operation === "fetch") {
-    if (input.dest === undefined) throw new Error("fetch needs a git dir");
-    return [...prefix, "--git-dir", input.dest, "fetch", "--prune", "origin"];
-  }
-  if (input.refspec === undefined) throw new Error("push needs a refspec");
-  return [...prefix, "push", input.remoteUrl, input.refspec];
-}
-
-function helperScript(tokenFile: string): string {
-  const quoted = `'${tokenFile.replaceAll("'", `'\\''`)}'`;
-  return `#!/bin/sh
-if [ "$1" = "get" ]; then
-  printf 'username=x-access-token\\n'
-  printf 'password=%s\\n' "$(cat ${quoted})"
-fi
-`;
-}
-
-function operationEnv(base: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
-  const env = agentEnv(base ?? process.env);
-  delete env.PAWS_GITHUB_TOKEN;
-  delete env.GH_TOKEN;
-  delete env.GITHUB_TOKEN;
-  delete env.GH_ENTERPRISE_TOKEN;
-  env.GIT_TERMINAL_PROMPT = "0";
-  return env;
+  return "/usr/bin/git";
 }
 
 function assertCleanRemote(remoteUrl: string, token: string): void {
@@ -134,12 +98,4 @@ function assertCleanRemote(remoteUrl: string, token: string): void {
 function redact(token: string, text: string): string {
   if (token.length === 0) return text;
   return text.split(token).join("[redacted]");
-}
-
-function defined(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
 }

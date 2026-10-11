@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { EpicState, WorkItemState } from "../core";
+import type { EpicState, WorkBrief, WorkItemState } from "../core";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
 import { ulid } from "./ulid";
@@ -73,6 +73,7 @@ export function insertRunningQueue(
     identifier: string;
     title: string;
     ordered: readonly OrderNode[];
+    briefs: ReadonlyMap<string, WorkBrief>;
     edges: readonly DependencyEdge[];
     now: number;
   },
@@ -99,8 +100,8 @@ export function insertRunningQueue(
     for (const item of items) {
       db.run(
         `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at
-         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?)`,
+           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief
+         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)`,
         [
           item.id,
           item.epicId,
@@ -110,6 +111,7 @@ export function insertRunningQueue(
           item.branchName,
           item.position,
           input.now,
+          JSON.stringify(input.briefs.get(item.linearIssueId)),
         ],
       );
     }

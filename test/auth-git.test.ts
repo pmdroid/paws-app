@@ -12,6 +12,7 @@ describe("oauth git credential helper", () => {
     const bin = path.join(root, "bin");
     const log = path.join(root, "git.log");
     await mkdir(bin);
+    await mkdir(path.join(root, "widgets.git"));
     const gitBin = path.join(bin, "git");
     await writeFile(gitBin, fakeGit(log), { mode: 0o755 });
     await chmod(gitBin, 0o755);

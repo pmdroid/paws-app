@@ -17,7 +17,7 @@ export type SetupCandidate = {
 };
 
 const LOGIN_COMMAND: Record<ImplementerName, string> = {
-  claude: "claude",
+  claude: "claude auth login",
   grok: "grok login",
   codex: "codex login",
 };
@@ -34,9 +34,18 @@ export function detectCandidates(input: {
     candidate(
       "claude",
       input.which(configured(env, "PAWS_CLAUDE_ACP") ?? "claude-agent-acp") !== null,
+      input.which("claude") !== null,
     ),
-    candidate("grok", grokReady(input.which, agents, input.packageRoot)),
-    candidate("codex", input.which(configured(env, "PAWS_CODEX_ACP") ?? "codex-acp") !== null),
+    candidate(
+      "grok",
+      grokReady(input.which, agents, input.packageRoot),
+      input.which("grok") !== null,
+    ),
+    candidate(
+      "codex",
+      input.which(configured(env, "PAWS_CODEX_ACP") ?? "codex-acp") !== null,
+      input.which("codex") !== null,
+    ),
   ];
 }
 
@@ -51,7 +60,7 @@ export async function selectImplementer(options: {
   const offered = options.candidates.filter((item) => item.installed && item.loginable);
   if (offered.length === 0) {
     write(
-      "No implementer is installed.\nInstall Claude Code (claude-agent-acp), Grok (`bun install` provides node_modules/.bin/grok), or Codex (codex-acp).\n",
+      "No implementer is installed with a usable login CLI.\nInstall Claude Code (claude and claude-agent-acp), Grok (grok on PATH; `bun install` provides node_modules/.bin/grok), or Codex (codex and codex-acp).\n",
     );
     return null;
   }
@@ -102,11 +111,11 @@ function readStdin(): Promise<string | null> {
   return readStdinLine(process.stdin);
 }
 
-function candidate(id: ImplementerName, installed: boolean): SetupCandidate {
+function candidate(id: ImplementerName, installed: boolean, loginable: boolean): SetupCandidate {
   return {
     id,
     installed,
-    loginable: installed,
+    loginable,
     loginCommand: LOGIN_COMMAND[id],
   };
 }
