@@ -35,7 +35,10 @@ export function pollIntervalMs(workActive: boolean): number {
 /** True when a non-terminal work item exists or a question is still open. */
 export function githubWorkIsHot(db: Database): boolean {
   if (
-    count(db, "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('merged', 'cancelled')") > 0
+    count(
+      db,
+      "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
+    ) > 0
   ) {
     return true;
   }

@@ -93,6 +93,7 @@ const WORK_ITEM_STATES = [
   "merge_queue",
   "manual",
   "merged",
+  "completed",
   "cancelled",
 ] as const;
 
@@ -195,7 +196,8 @@ function epicsFor(records: readonly WorkItemRecord[], rows: readonly OutboxRow[]
 }
 
 function epicState(group: readonly WorkItemRecord[]): StatusEpic["state"] {
-  if (group.every((item) => item.state === "merged" || item.state === "cancelled")) return "done";
+  if (group.every((item) => ["completed", "merged", "cancelled"].includes(item.state)))
+    return "done";
   if (group.some((item) => item.state === "awaiting_input")) return "awaiting_input";
   if (group.every((item) => item.state === "queued" || item.state === "planning"))
     return "planning";
@@ -797,6 +799,8 @@ function itemState(state: WorkItemRecord["state"]): ItemState {
       return "merge_queue";
     case "merged":
       return "merged";
+    case "completed":
+      return "completed";
     case "exhausted":
       return "exhausted";
     case "paused":
@@ -816,6 +820,7 @@ function runState(record: WorkItemRecord, status: string): RunState {
     return "stopped";
   if (
     status === "ended" ||
+    record.state === "completed" ||
     record.state === "merged" ||
     record.state === "exhausted" ||
     record.state === "merge_queue" ||

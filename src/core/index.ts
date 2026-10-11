@@ -1,5 +1,6 @@
 export { NotImplementedError } from "./errors";
 export type { IssueBrief, WorkBrief } from "./brief";
+export { TASK_MODES, type TaskMode } from "./task";
 export {
   EPIC_EVENTS,
   EPIC_STATES,

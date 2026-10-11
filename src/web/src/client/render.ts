@@ -229,7 +229,9 @@ function viewOverview(snapshot: StatusSnapshot): string {
   const queued = snapshot.mergeQueue.length;
   const head = [...snapshot.mergeQueue].sort((a, b) => a.position - b.position)[0];
   const headItem = head ? findItem(snapshot, head.itemId) : undefined;
-  const inFlight = snapshot.items.filter((item) => item.state !== "merged").length;
+  const inFlight = snapshot.items.filter(
+    (item) => !["merged", "completed"].includes(item.state),
+  ).length;
   return `<h1>${esc(snapshot.project.name)}</h1>
     <div class="sub">Epics, items, runs, open questions, Closeout verdicts, and the merge queue.</div>
     <div class="grid g4">
@@ -471,7 +473,7 @@ function graph(items: StatusItem[]): string {
       const x2 = to.x;
       const y2 = to.y + layout.h / 2;
       const mx = (x1 + x2) / 2;
-      const done = blockerItem.state === "merged";
+      const done = blockerItem.state === "merged" || blockerItem.state === "completed";
       const color = done ? "#2b7a5e" : "#4b4f63";
       const dash = done ? "" : ' stroke-dasharray="4 4"';
       return [
@@ -757,6 +759,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
     item?.state !== "queued" &&
     item?.state !== "planning" &&
     item?.state !== "awaiting_input";
+  if (item?.state === "completed") return statePill("completed", "Complete");
   if (item?.state === "merged") return statePill("merged", "Complete");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");

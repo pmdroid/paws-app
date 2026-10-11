@@ -20,6 +20,7 @@ export const ITEM_STATES = [
   "signoff",
   "merge_queue",
   "merged",
+  "completed",
   "exhausted",
   "stopped",
   "needs_human",

@@ -737,7 +737,7 @@ export function createGitHubCommentIngestor(
           .query<{ id: string }, [string, string]>(
             `SELECT work_item.id FROM work_item
            JOIN epic ON epic.id = work_item.epic_id
-           WHERE work_item.state NOT IN ('merged', 'cancelled')
+           WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
              AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
            ORDER BY work_item.position, work_item.id`,
           )
@@ -758,7 +758,8 @@ async function syncOpenGitHubIssues(
   const issues = new Set<string>();
   for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
     if (!item.linearIssueId.startsWith("github:")) continue;
-    if (item.state === "merged" || item.state === "cancelled") continue;
+    if (item.state === "completed" || item.state === "merged" || item.state === "cancelled")
+      continue;
     issues.add(item.linearIssueId);
   }
   const epics = db.query<{ linear_issue_id: string }, []>("SELECT linear_issue_id FROM epic").all();

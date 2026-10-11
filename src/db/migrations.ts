@@ -458,4 +458,14 @@ SELECT session_key, linear_issue_id, epic_id, id, generation, created_at FROM (
 INSERT INTO linear_session_task (session_id,epic_id) SELECT session_id,current_epic_id FROM linear_session;
 `,
   },
+  {
+    id: "015_work_item_task",
+    sql: `
+CREATE TABLE work_item_task (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  mode TEXT NOT NULL CHECK (mode IN ('code', 'answer', 'artifact')),
+  response TEXT
+) STRICT;
+`,
+  },
 ];

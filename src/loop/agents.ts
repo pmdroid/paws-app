@@ -5,7 +5,14 @@ import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "..
 import type { CodexReviewer } from "../closeout";
 import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
-export type AgentPurpose = "implement" | "fix" | "review" | "prepare";
+export type AgentPurpose =
+  | "implement"
+  | "fix"
+  | "review"
+  | "prepare"
+  | "classify"
+  | "answer"
+  | "artifact";
 
 export type AgentLaunch = (input: {
   role: AgentRole;

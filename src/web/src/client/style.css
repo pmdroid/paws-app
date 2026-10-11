@@ -438,7 +438,8 @@ h3 {
   color: #c79cff;
   background: #2d1f44;
 }
-.st.merged {
+.st.merged,
+.st.completed {
   color: #5dd3a3;
   background: #123528;
 }
@@ -577,7 +578,8 @@ tr.click:hover td {
 .node.s-exhausted {
   border-color: #6e2b30;
 }
-.node.s-merged {
+.node.s-merged,
+.node.s-completed {
   opacity: 0.78;
 }
 .board {
