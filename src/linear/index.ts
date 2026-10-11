@@ -16,6 +16,13 @@ export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
 export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
 export { createFakeTracker } from "./fake";
 export type { FakeTracker } from "./fake";
+export { createLinearFileTransfer } from "./files";
+export type {
+  DownloadedLinearFile,
+  LinearFileMetadata,
+  LinearFileTransfer,
+  UploadedLinearFile,
+} from "./files";
 export { createLinearClient } from "./graphql";
 export type { LinearClient } from "./graphql";
 export { createInboxStore } from "./inbox";
