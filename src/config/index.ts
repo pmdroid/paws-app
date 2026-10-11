@@ -27,3 +27,12 @@ export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
 export { loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
+
+export {
+  parseAgentProfile,
+  parseAgentSettings,
+  readAgentSettings,
+  resolveAgentProfiles,
+  writeAgentSettings,
+} from "./agents";
+export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
