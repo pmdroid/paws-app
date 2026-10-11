@@ -21,6 +21,7 @@ export type {
   DownloadedLinearFile,
   LinearFileMetadata,
   LinearFileTransfer,
+  PreparedLinearUpload,
   UploadedLinearFile,
 } from "./files";
 export { createLinearClient } from "./graphql";
