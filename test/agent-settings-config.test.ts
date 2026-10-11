@@ -8,6 +8,8 @@ import {
   readAgentSettings,
   resolveAgentProfiles,
   writeAgentSettings,
+  writeConfigFile,
+  writeImplementer,
   type AgentSettings,
 } from "../src/config";
 import { tempHome } from "./helpers";
@@ -91,6 +93,50 @@ describe("agent settings config", () => {
         defaults: { ...settings.defaults, implementer: { agent: "claude", model: "bad\nmodel" } },
       }),
     ).toThrow();
+  });
+
+  test("legacy implementer selection updates the profile and resets a changed vendor model", () => {
+    const path = join(tempHome(), "config.toml");
+    writeAgentSettings(path, settings);
+    writeImplementer(path, "claude");
+    expect(readAgentSettings(loadConfigFile(path))).toEqual(settings);
+    writeImplementer(path, "grok");
+    expect(resolveAgentProfiles(loadConfigFile(path)).implementer).toEqual({
+      agent: "grok",
+      model: null,
+    });
+    expect(readAgentSettings(loadConfigFile(path)).projects).toEqual(settings.projects);
+    const before = readFileSync(path, "utf8");
+    expect(() => writeImplementer(path, "codex")).toThrow(/different/);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("rerunning setup preserves explicit profiles and project overrides", () => {
+    const path = join(tempHome(), "config.toml");
+    writeAgentSettings(path, settings);
+    const setup = {
+      linearMode: "comments" as const,
+      linearTeam: "ENG",
+      linearTeamId: "team-eng",
+      linearViewerId: "viewer",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "gh" as const,
+      repo: "pmdroid/barkvisor",
+      checkout: "/tmp/checkout",
+      maxTurns: 40,
+      maxAwakeMs: 1_000,
+      implementer: "claude" as const,
+    };
+    expect(writeConfigFile(path, setup)).toBe(true);
+    expect(readAgentSettings(loadConfigFile(path))).toEqual(settings);
+    expect(writeConfigFile(path, setup)).toBe(false);
+    writeConfigFile(path, { ...setup, implementer: "grok" });
+    expect(resolveAgentProfiles(loadConfigFile(path)).implementer).toEqual({
+      agent: "grok",
+      model: null,
+    });
+    expect(readAgentSettings(loadConfigFile(path)).projects).toEqual(settings.projects);
   });
 
   test("normalizes repo names and allows different explicit models on one provider", () => {
