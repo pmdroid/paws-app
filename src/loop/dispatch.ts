@@ -1,5 +1,5 @@
 import type { ActivityKind, TrackerAdapter } from "../linear";
-import type { OutboxRow } from "../db";
+import type { OutboxRow, OutboxDeliveryContext } from "../db";
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
 
@@ -7,11 +7,15 @@ const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "respon
  * Deliver `linear` outbox rows to the tracker.
  * `activity` / `linear.activity` post progress. `linear.catchup` runs the poller.
  */
-export function deliverLinearOutbox(
+export async function deliverLinearOutbox(
   message: OutboxRow,
   tracker: TrackerAdapter,
   catchUp: () => Promise<void>,
+  context?: OutboxDeliveryContext,
 ): Promise<void> {
+  context?.signal.throwIfAborted();
+  if (context && !context.isCurrent())
+    throw new Error("Linear delivery superseded by a session fence.");
   const payload = isRecord(message.payload) ? message.payload : {};
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker);

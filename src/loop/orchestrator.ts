@@ -207,11 +207,11 @@ export class Orchestrator {
         clearInterval(lease);
       }
     });
-    this.options.outbox.setHandler(async (message) => {
+    this.options.outbox.setHandler(async (message, context) => {
       if (message.target !== "linear") return;
       const tracker = this.tracker;
       if (tracker === null) throw new Error("Linear is not connected");
-      await deliverLinearOutbox(message, tracker, () => this.catchUpFn());
+      await deliverLinearOutbox(message, tracker, () => this.catchUpFn(), context);
     });
   }
 
