@@ -22,7 +22,7 @@ export const CODEX_ACP_BIN = "codex-acp";
  * `--always-approve` / `--yolo` are never included: tool permission goes
  * through Paws `session/request_permission`.
  */
-export const GROK_AGENT_ARGS = ["--no-auto-update", "agent", "stdio", "--no-leader"] as const;
+export const GROK_AGENT_ARGS = ["--no-auto-update", "agent", "stdio"] as const;
 
 export const GROK_LOGIN_MESSAGE = "Run `grok login`";
 
