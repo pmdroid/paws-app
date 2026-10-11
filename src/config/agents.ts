@@ -28,7 +28,11 @@ const profileSchema = z.strictObject({
     .trim()
     .min(1)
     .max(200)
-    .regex(/^[^\s\x00-\x1f\x7f]+$/)
+    .refine(
+      (value) =>
+        !/\s/.test(value) &&
+        [...value].every((char) => char.charCodeAt(0) > 31 && char.charCodeAt(0) !== 127),
+    )
     .nullable(),
 });
 const projectSchema = z.strictObject({
