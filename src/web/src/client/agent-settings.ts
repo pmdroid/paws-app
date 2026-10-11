@@ -116,13 +116,13 @@ export function createAgentSettings(invalidate: () => void): {
     saved: false,
     connections: new Map(),
   };
-  let heldFocus: string | null = null;
   const paint = () => {
     if (!root) return;
+    let heldFocus: string | null = null;
     const active = document.activeElement;
     if (active instanceof HTMLElement && root.contains(active)) {
       heldFocus = active.id
-        ? `#${active.id}`
+        ? `#${CSS.escape(active.id)}`
         : active.getAttribute("name")
           ? `[name="${active.getAttribute("name")}"]`
           : active.dataset.profile
@@ -160,8 +160,8 @@ export function createAgentSettings(invalidate: () => void): {
     const started = generation;
     view.busy = busy;
     view.error = null;
-    paint();
     try {
+      paint();
       await operation();
     } catch (error) {
       if (started === generation)
