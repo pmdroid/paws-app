@@ -765,74 +765,77 @@ describe("paws setup github", () => {
       const github = new FakeGitHubApi();
       const botRequests: string[] = [];
       const errors: string[] = [];
-      const code = await runSetup(
-        [
-          "--tracker",
-          tracker,
-          "--repo",
-          "acme/widgets",
-          "--home",
-          scene.home,
-          "--checkout",
-          scene.checkout,
-          "--implementer",
-          "claude",
-          ...(tracker === "linear" ? ["--linear-api-key", API_KEY, "--linear-team", "ENG"] : []),
-        ],
-        {
-          env: {
-            ...setupEnv(scene),
-            GITHUB_AUTH: "app",
-            GITHUB_APP_ID: "99",
-            GITHUB_APP_PRIVATE_KEY_PATH: keyPath,
-            PAWS_GITHUB_CLIENT_ID: "Iv1.real-client",
-            PAWS_GITHUB_CLIENT_SECRET: "fake-app-client-secret",
-          },
-          cwd: scene.checkout,
-          stdout: () => {},
-          stderr: (line) => errors.push(line),
-          async fetch(url, init) {
-            if (url.includes("api.linear.app")) return scene.linear.fetch(url, init);
-            const path = new URL(url).pathname;
-            const token = new Headers(init?.headers).get("authorization");
-            if (path === "/app")
-              return Response.json({ client_id: "Iv1.real-client", slug: "paws-test" });
-            if (path.endsWith("/installation")) return Response.json({ id: 22 });
-            if (path === "/app/installations/22/access_tokens")
-              return Response.json(
-                {
-                  token: "fake-bot-token",
-                  expires_at: new Date(Date.now() + 3600_000).toISOString(),
-                  repository_selection: "selected",
-                  repositories: [{ name: "widgets", full_name: "acme/widgets" }],
-                  permissions: INSTALLATION_PERMISSIONS,
-                },
-                { status: 201 },
-              );
-            if (path === "/user") expect(token).toBe(`Bearer ${SETUP_TOKEN}`);
-            if (token === "Bearer fake-bot-token") botRequests.push(path);
-            return github.fetch(url, init);
-          },
-          github: {
-            store: createTokenStore({ home: scene.home, which: () => null }),
-            port: 0,
-            timeoutMs: 2_000,
-            async openBrowser(link) {
-              const auth = new URL(link);
-              const callback = new URL(auth.searchParams.get("redirect_uri")!);
-              callback.searchParams.set("state", auth.searchParams.get("state")!);
-              callback.searchParams.set("code", "fake-code");
-              expect((await fetch(callback)).status).toBe(200);
-            },
+      const args = [
+        "--tracker",
+        tracker,
+        "--repo",
+        "acme/widgets",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        ...(tracker === "linear" ? ["--linear-api-key", API_KEY, "--linear-team", "ENG"] : []),
+      ];
+      const options: SetupOptions = {
+        env: {
+          ...setupEnv(scene),
+          GITHUB_AUTH: "app",
+          GITHUB_APP_ID: "99",
+          GITHUB_APP_PRIVATE_KEY_PATH: keyPath,
+          PAWS_GITHUB_CLIENT_ID: "Iv1.real-client",
+          PAWS_GITHUB_CLIENT_SECRET: "fake-app-client-secret",
+        },
+        cwd: scene.checkout,
+        stdout: () => {},
+        stderr: (line) => errors.push(line),
+        async fetch(url, init) {
+          if (url.includes("api.linear.app")) return scene.linear.fetch(url, init);
+          const path = new URL(url).pathname;
+          const token = new Headers(init?.headers).get("authorization");
+          if (path === "/app")
+            return Response.json({ client_id: "Iv1.real-client", slug: "paws-test" });
+          if (path.endsWith("/installation")) return Response.json({ id: 22 });
+          if (path === "/app/installations/22/access_tokens")
+            return Response.json(
+              {
+                token: "fake-bot-token",
+                expires_at: new Date(Date.now() + 3600_000).toISOString(),
+                repository_selection: "selected",
+                repositories: [{ name: "widgets", full_name: "acme/widgets" }],
+                permissions: INSTALLATION_PERMISSIONS,
+              },
+              { status: 201 },
+            );
+          if (path === "/user") expect(token).toBe(`Bearer ${SETUP_TOKEN}`);
+          if (token === "Bearer fake-bot-token") botRequests.push(path);
+          return github.fetch(url, init);
+        },
+        github: {
+          store: createTokenStore({ home: scene.home, which: () => null }),
+          port: 0,
+          timeoutMs: 2_000,
+          async openBrowser(link) {
+            const auth = new URL(link);
+            const callback = new URL(auth.searchParams.get("redirect_uri")!);
+            callback.searchParams.set("state", auth.searchParams.get("state")!);
+            callback.searchParams.set("code", "fake-code");
+            expect((await fetch(callback)).status).toBe(200);
           },
         },
-      );
+      };
+      const code = await runSetup(args, options);
       expect(errors).toEqual([]);
       expect(code).toBe(0);
       expect(loadConfigFile(scene.paths.configFile).githubAuth).toBe("app");
       expect(botRequests).toContain("/repos/acme/widgets");
       expect(github.labels.length).toBe(tracker === "github" ? 4 : 0);
       expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
+      options.env = setupEnv(scene);
+      const restarted = await runSetup(["--yes", ...args], options);
+      expect(errors).toEqual([]);
+      expect(restarted).toBe(0);
     }
   });
 
@@ -1223,7 +1226,7 @@ if [ "$1" = "--version" ]; then
   echo "git version 2.43.0"
   exit 0
 fi
-if [ "$1" = "fetch" ]; then
+if [ "$1" = "fetch" ] || [ "$3" = "fetch" ]; then
   exit 0
 fi
 exec "$real" "$@"

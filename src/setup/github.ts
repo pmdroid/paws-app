@@ -15,7 +15,7 @@ import {
   type GitHubTokenStore,
 } from "../auth";
 import { loadConfigFile, loadRuntime, pawsPaths } from "../config";
-import { readFileSync } from "node:fs";
+import { readSecretFile } from "../credentials";
 import { runGitHubGit } from "../github";
 import type { SetupFetch, SetupGitHubHooks, SetupIO } from "./io";
 import { stop } from "./stop";
@@ -114,7 +114,7 @@ async function appSignIn(
     appId: env.githubAppId,
     installationId: env.githubAppInstallationId,
     privateKeyPem: env.githubAppPrivateKeyPath
-      ? readFileSync(env.githubAppPrivateKeyPath, "utf8")
+      ? readSecretFile(env.githubAppPrivateKeyPath, false)
       : null,
     ...(input.io.fetch ? { fetch: input.io.fetch } : {}),
   }).token();
