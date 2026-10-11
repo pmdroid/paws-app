@@ -395,7 +395,7 @@ async function syncComments(
         body: answer.answer,
         signal: null,
         updatedAtMs: Date.now(),
-        payload: "{}",
+        payload: JSON.stringify({ answeredBy: answer.answeredBy, questionId: answer.questionId }),
       });
     }
     for (const stopped of result.stopped) {
@@ -666,7 +666,7 @@ export async function ingestGitHubComments(
       body: answer.answer,
       signal: null,
       updatedAtMs: Date.now(),
-      payload: "{}",
+      payload: JSON.stringify({ answeredBy: answer.answeredBy, questionId: answer.questionId }),
     });
   }
   for (const stopped of result.stopped) {

@@ -9,13 +9,15 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listCloseoutRecoveries,
+  saveCloseoutRecovery,
   migrate,
   openDatabase,
 } from "../src/db";
 import { createFakeGitHubComments, createGitHubCommentTracker } from "../src/ghcomments";
 import { createGitHubCommentIngestor } from "../src/index";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
-import { getQuestion, openQuestion } from "../src/questions";
+import { findOpenQuestion, getQuestion, openQuestion } from "../src/questions";
 
 const ISSUE = "github:acme/app#787";
 
@@ -80,6 +82,7 @@ for (const timing of ["before restart", "after restart"] as const) {
       }
       await ingest(ISSUE);
       expect(getQuestion(db, question.id)?.answer).toBe(answer);
+      expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
       expect(getWorkItem(db, item.id)?.state).toBe("running");
       const resumes = () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
       expect(resumes()).toHaveLength(1);
@@ -164,3 +167,115 @@ test("persisted question IDs distinguish repeated questions after restart", asyn
     db.close();
   }
 });
+
+for (const answer of [
+  "/paws bypass test -- Approved for this candidate",
+  "Create ok.txt and rerun the check",
+  "/paws bypass test",
+  "/paws bypass unrelated -- Wrong check",
+]) {
+  test(`a trusted Closeout reply survives restart: ${answer}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-closeout-question-"));
+    const dbPath = join(root, "paws.db");
+    let db = openDatabase(dbPath);
+    try {
+      migrate(db);
+      const clock = new FakeClock(1_000_000);
+      const item = insertQueuedItem(db, { sessionKey: ISSUE, now: clock.now() });
+      db.run("UPDATE work_item SET linear_issue_id = ?, state = 'awaiting_input' WHERE id = ?", [
+        ISSUE,
+        item.id,
+      ]);
+      const question = openQuestion(db, {
+        itemId: item.id,
+        sessionId: ISSUE,
+        body: "Closeout needs help",
+        now: clock.now(),
+      });
+      saveCloseoutRecovery(db, {
+        questionId: question.id,
+        itemId: item.id,
+        taskId: "GH-787",
+        base: "a".repeat(40),
+        head: "b".repeat(40),
+        policyDigest: "sha256:policy",
+        failedChecks: ["test"],
+        retryBaseline: ["old-attempt"],
+        summary: "test exhausted",
+      });
+      const github = createFakeGitHubComments({ clock, selfLogin: "pascal" });
+      const options = {
+        request: github.request,
+        owner: "acme",
+        repo: "app",
+        selfLogin: "pascal",
+        clock,
+        labels: false,
+      };
+      await createGitHubCommentTracker(options).askQuestion({
+        sessionId: ISSUE,
+        questionId: question.id,
+        body: question.body,
+      });
+      db.close();
+      db = openDatabase(dbPath);
+      const jobs = new JobLoop(db, clock);
+      const outbox = new OutboxDispatcher(db, clock);
+      const orchestrator = attachOrchestrator({
+        db,
+        jobs,
+        outbox,
+        pawsRoot: root,
+        clock,
+        tracker: createGitHubCommentTracker(options),
+      });
+      const ingest = createGitHubCommentIngestor(
+        db,
+        createGitHubCommentTracker(options),
+        (event) => orchestrator.onLinearEvent(event),
+        () => undefined,
+      );
+      clock.advance(1_000);
+      github.post({ issueNumber: 787, login: "eve", association: "NONE", body: answer });
+      await ingest(ISSUE);
+      expect(getQuestion(db, question.id)?.status).toBe("open");
+      expect(listJobs(db)).toHaveLength(0);
+      clock.advance(1_000);
+      github.post({ issueNumber: 787, login: "pascal", body: answer });
+      await ingest(ISSUE);
+      await ingest(ISSUE);
+      expect(getQuestion(db, question.id)?.answer).toBe(answer);
+      expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+      expect(listCloseoutRecoveries(db, item.id)[0]?.retryBaseline).toEqual(["old-attempt"]);
+      if (answer.endsWith("Wrong check") || answer === "/paws bypass test") {
+        expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+        const next = findOpenQuestion(db, ISSUE)!;
+        expect(next.id).not.toBe(question.id);
+        expect(next.body).toContain("Use /paws bypass check-id -- your reason");
+        await orchestrator.onLinearEvent({
+          dedupeKey: "old-answer",
+          deliveryId: null,
+          source: "webhook",
+          action: "prompted",
+          sessionId: ISSUE,
+          issueId: ISSUE,
+          activityId: "old-comment",
+          body: answer,
+          signal: null,
+          updatedAtMs: clock.now(),
+          payload: JSON.stringify({ answeredBy: "pascal", questionId: question.id }),
+        });
+        expect(getQuestion(db, next.id)?.status).toBe("open");
+        expect(listJobs(db)).toHaveLength(0);
+      } else {
+        const bypass = answer.startsWith("/paws bypass");
+        expect(getWorkItem(db, item.id)?.state).toBe(bypass ? "verifying" : "running");
+        expect(listJobs(db)).toHaveLength(1);
+        expect(listJobs(db)[0]?.queue).toBe(bypass ? JOB_KIND.reverify : JOB_KIND.resume);
+      }
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

@@ -387,6 +387,7 @@ async function scenario(name: string, reviewerText = "[]", implementer = "claude
       const items = listWorkItemsByStates(db, WORK_ITEM_STATES);
       if (
         items.some((item) => ["failed", "exhausted"].includes(item.state)) ||
+        (name !== "happy" && items.some((item) => item.state === "awaiting_input") && answered) ||
         items.every((item) => item.state === "merged")
       )
         break;

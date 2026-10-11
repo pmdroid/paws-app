@@ -16,6 +16,7 @@ import {
   OutboxDispatcher,
   getWorkItem,
   listJobs,
+  listCloseoutRecoveries,
   listRuns,
   migrate,
   openDatabase,
@@ -29,6 +30,7 @@ import {
   type GitHubTokenProvider,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
+import { findOpenQuestion, getQuestion } from "../src/questions";
 import { attachOrchestrator, createAcpCodexReviewer, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
@@ -467,11 +469,12 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-7"));
     const deadline = Date.now() + 40_000;
-    while (Date.now() < deadline && stateOf(db, "ENG-7") !== "failed") {
+    while (Date.now() < deadline && stateOf(db, "ENG-7") !== "awaiting_input") {
       const job = await jobs.tick();
       if (job === null) await Bun.sleep(20);
     }
-    expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("failed");
+    expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("awaiting_input");
+    expect(tracker.questions).toHaveLength(1);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const notes = tracker.progress.map((update) => update.body).join("\n");
     expect(notes).toContain("Closeout: blocked");
@@ -481,6 +484,148 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     await layout.cleanup();
   }
 }, 60_000);
+
+for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
+  test(`Closeout ${recovery} survives restart and resumes the correct work`, async () => {
+    const layout = await repoLayout();
+    const seed = path.join(layout.root, "seed");
+    await writeFile(
+      path.join(seed, ".agents", "closeout.yaml"),
+      JSON.stringify({
+        specVersion: "0.1",
+        retry: { maxFailedAttemptsPerItem: 2, scope: "task" },
+        items: [
+          {
+            id: "test",
+            kind: "command",
+            gate: "beforePR",
+            exec: ["sh", "-c", "test -f ok.txt"],
+            timeoutSeconds: 30,
+          },
+        ],
+      }),
+    );
+    await exec("git", ["-C", seed, "add", "."]);
+    await exec("git", ["-C", seed, "commit", "-m", "bounded recovery policy"]);
+    await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "iss-8",
+        identifier: "ENG-8",
+        title: "Recover Closeout",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const github = createFakeGitHub();
+    const client = githubClient(layout.bare, github);
+    const dbPath = path.join(layout.pawsRoot, "paws.db");
+    let db = openDatabase(dbPath);
+    migrate(db);
+    const launches: string[] = [];
+    const prompts: string[] = [];
+    const launch: AgentLaunch = (input) => {
+      launches.push(input.purpose);
+      prompts.push(input.prompt);
+      const scriptPath = path.join(layout.root, `recovery-${launches.length}.json`);
+      const guided =
+        recovery === "guidance" &&
+        launches.filter((purpose) => purpose === "implement").length === 2;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          steps: [
+            {
+              type: "fs_write",
+              path: path.join(input.worktree, guided ? "ok.txt" : `attempt-${launches.length}.txt`),
+              content: "done\n",
+            },
+            { type: "end", stopReason: "end_turn" },
+          ],
+        }),
+      );
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    };
+    const attach = () => {
+      const jobs = new JobLoop(db, systemClock);
+      const outbox = new OutboxDispatcher(db, systemClock);
+      const orchestrator = attachOrchestrator({
+        db,
+        jobs,
+        outbox,
+        pawsRoot: layout.pawsRoot,
+        home: layout.home,
+        tracker,
+        launch,
+        repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+        github: { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client },
+      });
+      return { jobs, orchestrator };
+    };
+    try {
+      let runtime = attach();
+      await runtime.orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
+      await runtime.jobs.tick();
+      expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+      expect(launches).toEqual(["implement", "fix"]);
+      expect(github.merged).toHaveLength(0);
+      const question = findOpenQuestion(db, "ses_1")!;
+      const context = listCloseoutRecoveries(db, question.itemId)[0]!;
+      expect(context.failedChecks).toEqual(["test"]);
+      expect(context.retryBaseline).toHaveLength(2);
+      expect(question.body).toContain("same Closeout retry limit");
+      db.close();
+      db = openDatabase(dbPath);
+      runtime = attach();
+      expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
+      if (recovery === "stale bypass") {
+        const worktree = worktreePath(layout.pawsRoot, "ENG-8");
+        await exec("git", ["-C", worktree, "commit", "--allow-empty", "-m", "candidate changed"]);
+      }
+      const answer =
+        recovery === "guidance"
+          ? "Create ok.txt to satisfy the command"
+          : "/paws bypass test -- Approved known fixture failure";
+      const event = {
+        ...linearEvent("prompted", answer, null),
+        payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
+      };
+      await runtime.orchestrator.onLinearEvent(event);
+      await runtime.orchestrator.onLinearEvent(event);
+      expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+      expect(
+        listJobs(db).filter(
+          (job) => job.queue === (recovery === "guidance" ? JOB_KIND.resume : JOB_KIND.reverify),
+        ),
+      ).toHaveLength(1);
+      for (let tick = 0; tick < 5; tick += 1) {
+        if ((await runtime.jobs.tick()) === null) break;
+      }
+      if (recovery === "stale bypass") {
+        expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+        expect(github.merged).toHaveLength(0);
+        expect(findOpenQuestion(db, "ses_1")?.id).not.toBe(question.id);
+      } else {
+        expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("merged");
+        expect(github.merged).toHaveLength(1);
+        expect(launches).toEqual(
+          recovery === "guidance" ? ["implement", "fix", "implement"] : ["implement", "fix"],
+        );
+        expect(listCloseoutRecoveries(db, question.itemId)[0]?.retryBaseline).toEqual(
+          context.retryBaseline,
+        );
+        if (recovery === "guidance") expect(prompts.at(-1)).toContain(answer);
+        if (recovery === "bypass") {
+          expect(github.opened[0]?.body).toContain("approved by pascal");
+          expect(github.opened[0]?.body).toContain("Approved known fixture failure");
+        }
+      }
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 60_000);
+}
 
 test("grok implementer runs the demo epic with ask_team and one Closeout fix", async () => {
   const layout = await repoLayout();
