@@ -565,6 +565,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
       if (job === null) await Bun.sleep(20);
     }
     expect(stateOf(db, "ENG-7"), debug(layout, db)).toBe("awaiting_input");
+    expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
     expect(tracker.questions).toHaveLength(1);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const notes = tracker.progress.map((update) => update.body).join("\n");
@@ -1118,6 +1119,7 @@ for (const sameModel of [true, false]) {
       if (sameModel) {
         expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("awaiting_input");
         expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
+        expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
         expect(tracker.questions[0]?.body).toContain("different reviewer model");
         expect(github.opened).toHaveLength(0);
       } else {
