@@ -6,6 +6,7 @@ export {
   readSignedInUser,
 } from "./login";
 export type { LoginIO } from "./login";
+export { authorizeGitHubApp, GITHUB_REDIRECT_URI } from "./authorize";
 export {
   DEVICE_ACCESS_DENIED_MESSAGE,
   DEVICE_CODE_EXPIRED_MESSAGE,
