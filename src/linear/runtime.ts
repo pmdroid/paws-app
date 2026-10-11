@@ -31,7 +31,7 @@ export type LinearRunning = {
   tunnelUp: () => boolean;
   tunnelRequested: boolean;
   tunnelUrl: string | null;
-  stop: () => void;
+  stop: () => Promise<void>;
 };
 
 export type OpenLinear = {
@@ -114,9 +114,11 @@ export function openLinear(options: {
         tunnelUp: () => tunnel.isUp(),
         tunnelRequested: tunnel.requested,
         tunnelUrl: tunnel.url,
-        stop() {
-          poller?.stop();
+        async stop() {
+          const polling = poller?.stop();
+          const events = onEvent?.close();
           tunnel.stop();
+          await Promise.all([polling, events]);
         },
       };
       return running;
@@ -130,9 +132,11 @@ function shareEvents(
   progressReporter:
     | ((event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>)
     | undefined,
-): (event: AcceptedLinearEvent) => Promise<void> {
+): ((event: AcceptedLinearEvent) => Promise<void>) & { close(): Promise<void> } {
   const inflight = new Map<string, Promise<void>>();
-  return (event) => {
+  let closed = false;
+  const deliver = (event: AcceptedLinearEvent) => {
+    if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
     const existing = inflight.get(event.dedupeKey);
     if (existing !== undefined) return existing;
     const reportProgress = progressReporter?.(event);
@@ -147,6 +151,12 @@ function shareEvents(
     inflight.set(event.dedupeKey, work);
     return work;
   };
+  return Object.assign(deliver, {
+    async close() {
+      closed = true;
+      await Promise.allSettled([...inflight.values()]);
+    },
+  });
 }
 
 function openTunnel(options: {
