@@ -65,6 +65,8 @@ const ITEM_ORDER: ItemState[] = [
 const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"]);
 
 const ICONS = {
+  settings:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="5" cy="4" r="1.5" fill="var(--bg2)"/><circle cx="11" cy="8" r="1.5" fill="var(--bg2)"/><circle cx="6" cy="12" r="1.5" fill="var(--bg2)"/></svg>',
   overview:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>',
   epic: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.5 5.5 7 10.5M10.5 5.5 9 10.5"/></svg>',
@@ -84,6 +86,7 @@ const NAV = [
   { view: "questions", label: "Open questions", icon: "inbox" },
   { view: "verdicts", label: "Closeout", icon: "verify" },
   { view: "queue", label: "Merge queue", icon: "queue" },
+  { view: "settings", label: "Settings", icon: "settings" },
 ] as const;
 
 const CRUMB: Record<Route["view"], string> = {
@@ -93,6 +96,7 @@ const CRUMB: Record<Route["view"], string> = {
   questions: "Open questions",
   verdicts: "Closeout",
   queue: "Merge queue",
+  settings: "Settings",
 };
 
 export function render(model: RenderModel): Rendered {
@@ -103,7 +107,11 @@ export function render(model: RenderModel): Rendered {
     top: renderTop(model),
     banner: renderBanner(model),
     content:
-      snapshot && model.phase !== "loading" ? renderView(snapshot, model) : renderPending(model),
+      model.route.view === "settings"
+        ? '<div id="agent-settings" class="agent-settings"></div>'
+        : snapshot && model.phase !== "loading"
+          ? renderView(snapshot, model)
+          : renderPending(model),
     tabbar: renderTabbar(model),
     title,
   };
@@ -126,7 +134,7 @@ function renderSide(model: RenderModel): string {
     <div class="row">${esc(project?.repo ?? "Not connected")}</div></div>
     <div class="nav-label">Status</div>
     ${links}
-    <div class="foot">Read-only. Questions are answered in Linear.</div>`;
+    <div class="foot">Questions are answered in Linear.</div>`;
 }
 
 function renderTop(model: RenderModel): string {
@@ -179,6 +187,7 @@ function renderTabbar(model: RenderModel): string {
     ["runs", "Runs", "run"],
     ["questions", "Questions", "inbox"],
     ["verdicts", "Closeout", "verify"],
+    ["settings", "Settings", "settings"],
   ] as const;
   return tabs
     .map(([view, label, icon]) => {
@@ -207,6 +216,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return viewVerdicts(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "queue":
       return viewQueue(snapshot);
+    case "settings":
+      return '<div id="agent-settings" class="agent-settings"></div>';
   }
 }
 
@@ -820,11 +831,12 @@ function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
     questions: snapshot.questions.length,
     verdicts: snapshot.verdicts.filter((verdict) => verdict.decision !== "accepted").length,
     queue: snapshot.mergeQueue.length,
+    settings: 0,
   };
 }
 
 function routeParam(route: Route): string | null {
-  if (route.view === "overview" || route.view === "queue") return null;
+  if (route.view === "overview" || route.view === "queue" || route.view === "settings") return null;
   return route.id;
 }
 

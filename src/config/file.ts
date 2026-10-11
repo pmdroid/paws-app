@@ -8,6 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import {
+  parseAgentSettingsToml,
+  renderAgentSettingsText,
+  selectDefaultImplementer,
+  writeAgentSettings,
+  type AgentSettings,
+} from "./agents";
 
 export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
@@ -83,6 +90,7 @@ export type PawsConfigFile = {
   maxTurns: number | null;
   maxAwakeMs: number | null;
   agents: AgentsConfig;
+  agentSettings?: AgentSettings;
 };
 
 /**
@@ -148,7 +156,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
   for (let index = 0; index < lines.length; index += 1) {
     const line = stripComment(lines[index] ?? "").trim();
     if (line.length === 0) continue;
-    const heading = /^\[([A-Za-z0-9_.-]+)\]$/.exec(line);
+    const heading = /^\[([^\]]+)\]$/.exec(line);
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       continue;
@@ -162,6 +170,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
     }
     assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
   }
+  const settings = parseAgentSettingsToml(text, config.agents.implementer);
+  if (settings !== null) config.agentSettings = settings;
   return config;
 }
 
@@ -224,7 +234,13 @@ export function renderConfigToml(config: PawsSetupConfig): string {
  * so a second setup does not touch it.
  */
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
-  const next = renderConfigToml(config);
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const profiles = parseAgentSettingsToml(current, config.implementer);
+  const rendered = renderConfigToml(config);
+  const next =
+    profiles === null
+      ? rendered
+      : renderAgentSettingsText(rendered, selectDefaultImplementer(profiles, config.implementer));
   if (existsSync(path) && readFileSync(path, "utf8") === next) {
     if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
     return false;
@@ -425,6 +441,11 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
     throw new Error("agents.implementer must be claude, grok, or codex");
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const profiles = parseAgentSettingsToml(current, implementer);
+  if (profiles !== null) {
+    writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
+    return;
+  }
   const next = setImplementerText(current, implementer);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
@@ -442,7 +463,7 @@ function implementerName(
   return name;
 }
 
-function setImplementerText(current: string, implementer: ImplementerName): string {
+export function setImplementerText(current: string, implementer: ImplementerName): string {
   const lines = current.split(/\r?\n/);
   const assignment = `implementer = "${implementer}"`;
   let section = "";
@@ -459,7 +480,8 @@ function setImplementerText(current: string, implementer: ImplementerName): stri
     if (section === "agents" && /^implementer\s*=/.test(trimmed)) {
       replaced = true;
       const indent = /^(\s*)/.exec(line)?.[1] ?? "";
-      return `${indent}${assignment}`;
+      const comment = line.slice(stripComment(line).length);
+      return `${indent}${assignment}${comment.length > 0 ? ` ${comment}` : ""}`;
     }
     return line;
   });
