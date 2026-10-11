@@ -78,6 +78,19 @@ describe("local agent settings API", () => {
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
+  test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {
+    const { options } = fixture();
+    writeFileSync(
+      options.configPath,
+      '[caps]\nmax_turns = 31\n[agents.defaults.implementer]\nagent = "missing-agent"\n',
+    );
+    expect((await handleAgentSettingsRequest(request(), options))?.status).toBe(503);
+    const saved = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
+    expect(saved?.status).toBe(200);
+    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+    expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
+  });
+
   test("rejects hostile origins, hosts, missing CSRF, and preflight without writing or probing", async () => {
     const { options, calls } = fixture();
     const hostileHeaders: Record<string, string>[] = [

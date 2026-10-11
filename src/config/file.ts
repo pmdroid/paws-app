@@ -8,7 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { parseAgentSettingsToml, type AgentSettings } from "./agents";
+import {
+  parseAgentSettingsToml,
+  renderAgentSettingsText,
+  selectDefaultImplementer,
+  writeAgentSettings,
+  type AgentSettings,
+} from "./agents";
 
 export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
@@ -228,7 +234,13 @@ export function renderConfigToml(config: PawsSetupConfig): string {
  * so a second setup does not touch it.
  */
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
-  const next = renderConfigToml(config);
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const profiles = parseAgentSettingsToml(current, config.implementer);
+  const rendered = renderConfigToml(config);
+  const next =
+    profiles === null
+      ? rendered
+      : renderAgentSettingsText(rendered, selectDefaultImplementer(profiles, config.implementer));
   if (existsSync(path) && readFileSync(path, "utf8") === next) {
     if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
     return false;
@@ -429,6 +441,11 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
     throw new Error("agents.implementer must be claude, grok, or codex");
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const profiles = parseAgentSettingsToml(current, implementer);
+  if (profiles !== null) {
+    writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
+    return;
+  }
   const next = setImplementerText(current, implementer);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
@@ -463,7 +480,8 @@ export function setImplementerText(current: string, implementer: ImplementerName
     if (section === "agents" && /^implementer\s*=/.test(trimmed)) {
       replaced = true;
       const indent = /^(\s*)/.exec(line)?.[1] ?? "";
-      return `${indent}${assignment}`;
+      const comment = line.slice(stripComment(line).length);
+      return `${indent}${assignment}${comment.length > 0 ? ` ${comment}` : ""}`;
     }
     return line;
   });

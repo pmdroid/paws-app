@@ -124,9 +124,8 @@ export function parseAgentSettingsToml(
   });
 }
 
-export function writeAgentSettings(path: string, input: AgentSettings): void {
+export function renderAgentSettingsText(current: string, input: AgentSettings): string {
   const settings = parseAgentSettings(input);
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   let section = "";
   const retained = current
     .split(/\r?\n/)
@@ -149,6 +148,32 @@ export function writeAgentSettings(path: string, input: AgentSettings): void {
     if (project.reviewer) sections.push(renderProfile(`${prefix}.reviewer`, project.reviewer));
   }
   const next = `${base}\n\n${sections.join("\n\n")}\n`;
+  Bun.TOML.parse(next);
+  return next;
+}
+
+export function selectDefaultImplementer(
+  settings: AgentSettings,
+  implementer: ImplementerName,
+): AgentSettings {
+  return parseAgentSettings({
+    ...settings,
+    defaults: {
+      ...settings.defaults,
+      implementer: {
+        agent: implementer,
+        model:
+          settings.defaults.implementer.agent === implementer
+            ? settings.defaults.implementer.model
+            : null,
+      },
+    },
+  });
+}
+
+export function writeAgentSettings(path: string, input: AgentSettings): void {
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const next = renderAgentSettingsText(current, input);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
   const temp = `${path}.${crypto.randomUUID()}.tmp`;

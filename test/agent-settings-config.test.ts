@@ -57,6 +57,13 @@ describe("agent settings config", () => {
     expect(readFileSync(path, "utf8")).toBe(text);
   });
 
+  test("keeps inline comments on the legacy implementer setting", () => {
+    const path = join(tempHome(), "config.toml");
+    writeFileSync(path, '[agents]\nimplementer = "grok" # selected locally\n');
+    writeAgentSettings(path, settings);
+    expect(readFileSync(path, "utf8")).toContain('implementer = "claude" # selected locally');
+  });
+
   test("removes overrides and persists explicit inheritance rows", () => {
     const path = join(tempHome(), "config.toml");
     writeAgentSettings(path, settings);
