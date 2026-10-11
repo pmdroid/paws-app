@@ -1,11 +1,23 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { AskTeamHook } from "../acp";
-import { executeItem, git, removeWorktree, resolveAdapter, worktreePath } from "../acp";
-import { loadConfigFile, type ImplementerName } from "../config";
+import type { AskTeamHook, AgentIdentity } from "../acp";
+import {
+  executeItem,
+  git,
+  removeWorktree,
+  resolveAdapter,
+  worktreePath,
+  runDir,
+  runAgent,
+  createWorktree,
+  ensureBareMirror,
+} from "../acp";
+import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../config";
 import {
   createCloseoutGate,
+  reviewRequirements,
   bypassable,
   snapshotRetryBaseline,
   type GateResult,
@@ -69,6 +81,7 @@ import {
   createAcpFixRunner,
   implementPrompt,
   type AgentLaunch,
+  type AcpAgentDeps,
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
 import { renderWorkBrief } from "./brief";
@@ -251,6 +264,7 @@ export class Orchestrator {
       this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
     }
     const run = this.ensureRun(item);
+    const profiles = this.profileSnapshot(run.id);
     const controller = new AbortController();
     this.live.set(run.id, { itemId: item.id, controller });
     this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`);
@@ -287,18 +301,39 @@ export class Orchestrator {
       brief: renderWorkBrief(item.brief),
       ...(handoff ? { handoff } : {}),
     });
-    const launched = this.launchAgent({
-      role: "implementer",
-      purpose: "implement",
-      itemId: pathId,
-      worktree: worktreePath(this.options.pawsRoot, pathId),
-      prompt,
-    });
     try {
       await this.flush();
       if (this.stopped(item.id)) return;
+      try {
+        await this.preflight(item, run.id, profiles, controller.signal);
+      } catch (error) {
+        if (this.stopped(item.id)) return;
+        markRunEnded(this.db, run.id, this.now());
+        this.post(
+          item,
+          "error",
+          `Closeout: blocked\nreviewer failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${run.id}:profile-preflight`,
+        );
+        await this.askCloseoutHelp(
+          item,
+          undefined,
+          `Closeout: blocked\nreviewer failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+      const launched = this.launchAgent({
+        role: "implementer",
+        profile: profiles.implementer,
+        purpose: "implement",
+        itemId: pathId,
+        worktree: worktreePath(this.options.pawsRoot, pathId),
+        prompt,
+      });
+
       const executed = await executeItem({
         role: "implementer",
+        profile: profiles.implementer,
         itemId: pathId,
         runId: run.id,
         prompt,
@@ -312,7 +347,7 @@ export class Orchestrator {
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
-        ...this.itemDocker("claude"),
+        ...this.itemDocker(profiles.implementer.agent),
       });
       const finished = getWorkItem(this.db, item.id);
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
@@ -329,6 +364,9 @@ export class Orchestrator {
         );
         return;
       }
+      if (!executed.run.identity)
+        throw new Error("Implementer did not report a concrete session model");
+      this.saveCandidate(run.id, executed.run.identity);
       const head = (await git(["-C", executed.worktreePath, "rev-parse", "HEAD"])).trim();
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
@@ -395,6 +433,11 @@ export class Orchestrator {
     candidate: CandidateIdentity,
   ): Promise<CloseoutVerdict> {
     const deps = this.agentDeps(item);
+    const onCandidate = deps.onCandidate;
+    deps.onCandidate = (identity) => {
+      Object.assign(candidate, identity);
+      onCandidate?.(identity);
+    };
     const gate = createCloseoutGate({
       candidate,
       reviewer: createAcpCodexReviewer(deps),
@@ -947,7 +990,12 @@ export class Orchestrator {
       now: this.now(),
       status: "active",
       kind: "implement",
-      agent: this.implementerName(),
+      agent: resolveAgentProfiles(
+        loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+        this.options.repository
+          ? `${this.options.repository.owner}/${this.options.repository.repo}`
+          : undefined,
+      ).implementer.agent,
       freshSession: true,
     });
     setCurrentRun(this.db, item.id, run.id);
@@ -1052,15 +1100,12 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
-  private agentDeps(item: WorkItemRecord): {
-    pawsRoot: string;
-    brief: string;
-    home?: string;
-    launch: AgentLaunch;
-    docker?: { proxyUrl: string; image?: string; bin?: string };
-  } {
+  private agentDeps(item: WorkItemRecord): AcpAgentDeps {
+    const runId = item.currentRunId ?? item.id;
     return {
       pawsRoot: this.options.pawsRoot,
+      profiles: this.profileSnapshot(runId),
+      onCandidate: (identity) => this.saveCandidate(runId, identity),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
       brief: renderWorkBrief(item.brief),
@@ -1068,7 +1113,7 @@ export class Orchestrator {
     };
   }
 
-  private itemDocker(agent: "claude" | "codex"):
+  private itemDocker(agent: "claude" | "codex" | "grok"):
     | {
         docker: {
           agent: "claude" | "codex";
@@ -1080,6 +1125,7 @@ export class Orchestrator {
     | Record<string, never> {
     const docker = this.options.docker;
     if (docker === undefined) return {};
+    if (agent === "grok") throw new Error("Grok does not support the configured Docker sandbox");
     return {
       docker: {
         agent,
@@ -1126,8 +1172,118 @@ export class Orchestrator {
     return null;
   }
 
-  private candidateFor(session: string): CandidateIdentity {
-    return { session, ...implementerIdentity(this.implementerName()) };
+  private candidateFor(runId: string): CandidateIdentity {
+    const saved = this.readProfileSnapshot(runId);
+    if (!saved?.candidate)
+      throw new Error("Candidate has no recorded ACP session model; restart implementation");
+    return saved.candidate;
+  }
+
+  private readProfileSnapshot(runId: string): {
+    profiles: { implementer: AgentProfile; reviewer: AgentProfile };
+    candidate?: AgentIdentity;
+  } | null {
+    try {
+      return JSON.parse(
+        readFileSync(join(runDir(this.options.pawsRoot, runId), "agent-profile.json"), "utf8"),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  private profileSnapshot(runId: string): { implementer: AgentProfile; reviewer: AgentProfile } {
+    const saved = this.readProfileSnapshot(runId);
+    if (saved) return saved.profiles;
+    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const repository = this.options.repository;
+    const profiles = resolveAgentProfiles(
+      config,
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+    );
+    mkdirSync(runDir(this.options.pawsRoot, runId), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
+      JSON.stringify({ profiles }),
+      { mode: 0o600 },
+    );
+    return profiles;
+  }
+
+  private saveCandidate(runId: string, candidate: AgentIdentity): void {
+    const profiles = this.profileSnapshot(runId);
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
+      JSON.stringify({ profiles, candidate }),
+      { mode: 0o600 },
+    );
+  }
+
+  private async preflight(
+    item: WorkItemRecord,
+    runId: string,
+    profiles: { implementer: AgentProfile; reviewer: AgentProfile },
+    signal: AbortSignal,
+  ): Promise<void> {
+    const repository = this.options.repository!;
+    await ensureBareMirror({ ...repository, pawsRoot: this.options.pawsRoot });
+    const worktree = await createWorktree({
+      ...repository,
+      itemId: itemPathId(item),
+      pawsRoot: this.options.pawsRoot,
+    });
+    const required = reviewRequirements(worktree.path, this.options.home);
+    if (!required.ok) throw new Error(required.message);
+    const requirements = required.items.filter((check) => check.gate === "beforePR");
+    if (!requirements.length) return;
+    const identities: AgentIdentity[] = [];
+    for (const role of ["implementer", "reviewer"] as const) {
+      const profile = profiles[role];
+      const launched = this.launchAgent({
+        role,
+        profile,
+        purpose: "prepare",
+        itemId: itemPathId(item),
+        worktree: worktree.path,
+        prompt: "",
+      });
+      const result = await runAgent({
+        ...launched,
+        profile,
+        role,
+        itemId: itemPathId(item),
+        runId: `${runId}-preflight-${role}`,
+        worktreePath: worktree.path,
+        pawsRoot: this.options.pawsRoot,
+        ...(this.options.home ? { home: this.options.home } : {}),
+        ...this.itemDocker(profile.agent),
+        prepareOnly: true,
+        readOnly: true,
+        checkpoint: false,
+        prompt: "",
+        signal,
+      });
+      if (!result.identity || result.errorMessage)
+        throw new Error(result.errorMessage ?? `${role} did not report a concrete session model`);
+      identities.push(result.identity);
+    }
+    for (const check of requirements) {
+      const [implementer, reviewer] = identities;
+      if (check.independence.differentSession && implementer!.session === reviewer!.session)
+        throw new Error(`Closeout ${check.id} requires a different reviewer session`);
+      if (check.independence.differentModel && implementer!.model === reviewer!.model)
+        throw new Error(
+          `Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
+        );
+    }
+    profiles.implementer.model ??= identities[0]!.model;
+    profiles.reviewer.model ??= identities[1]!.model;
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
+      JSON.stringify({ profiles }),
+      { mode: 0o600 },
+    );
   }
 
   private closeoutHome(): { home?: string; pawsHome: string } {
@@ -1137,20 +1293,19 @@ export class Orchestrator {
     };
   }
 
-  private implementerName(): ImplementerName {
-    try {
-      return loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents.implementer;
-    } catch {
-      return "claude";
-    }
-  }
-
   private launchAgent: AgentLaunch = (input) => {
     const launched = this.options.launch?.(input) ?? {};
     if (launched.command) return launched;
     try {
       const agents = loadConfigFile(join(this.options.pawsRoot, "config.toml")).agents;
-      const adapter = resolveAdapter(input.role, process.env, undefined, undefined, agents);
+      const adapter = resolveAdapter(
+        input.role,
+        process.env,
+        undefined,
+        undefined,
+        agents,
+        input.profile?.agent,
+      );
       return { ...launched, command: adapter.command, args: launched.args ?? adapter.args };
     } catch {
       return launched;
@@ -1164,16 +1319,6 @@ export class Orchestrator {
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
-}
-
-const IMPLEMENTER_IDENTITY: Record<ImplementerName, { model: string; provider: string }> = {
-  claude: { model: "claude", provider: "anthropic" },
-  grok: { model: "grok", provider: "xai" },
-  codex: { model: "codex", provider: "openai" },
-};
-
-function implementerIdentity(name: ImplementerName): { model: string; provider: string } {
-  return IMPLEMENTER_IDENTITY[name];
 }
 
 function markRunEnded(db: Database, runId: string, now: number): void {

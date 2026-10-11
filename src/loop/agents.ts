@@ -1,13 +1,15 @@
-import type { AgentRole } from "../acp";
+import type { AgentRole, AgentIdentity } from "../acp";
+import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
 import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
-export type AgentPurpose = "implement" | "fix" | "review";
+export type AgentPurpose = "implement" | "fix" | "review" | "prepare";
 
 export type AgentLaunch = (input: {
   role: AgentRole;
+  profile?: AgentProfile;
   purpose: AgentPurpose;
   itemId: string;
   worktree: string;
@@ -16,6 +18,8 @@ export type AgentLaunch = (input: {
 
 export type AcpAgentDeps = {
   pawsRoot: string;
+  profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
+  onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
   launch: AgentLaunch;
   brief?: string;
@@ -23,9 +27,6 @@ export type AcpAgentDeps = {
   timeoutMs?: number;
   docker?: { proxyUrl: string; image?: string; bin?: string };
 };
-
-const REVIEWER_MODEL = "codex";
-const REVIEWER_PROVIDER = "openai";
 
 export function implementPrompt(input: {
   identifier: string;
@@ -59,6 +60,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       let text = "";
       const launch = deps.launch({
         role: "reviewer",
+        profile: deps.profiles?.reviewer,
         purpose: "review",
         itemId: request.taskId,
         worktree: request.worktree,
@@ -66,17 +68,19 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       });
       const result = await runAgent({
         role: "reviewer",
+        profile: deps.profiles?.reviewer,
         itemId: request.taskId,
         runId: `rev-${request.taskId}-${seq}`,
         prompt,
         worktreePath: request.worktree,
         pawsRoot: deps.pawsRoot,
         checkpoint: false,
+        readOnly: true,
         ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        ...dockerOf(deps, "codex"),
+        ...dockerOf(deps, deps.profiles?.reviewer.agent ?? "codex"),
         onEvent(event) {
           if (event.type !== "session_update") return;
           if (event.update.sessionUpdate !== "agent_message_chunk") return;
@@ -94,10 +98,9 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       ) {
         throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
       }
+      if (!result.identity) throw new Error("Reviewer did not report a concrete session model");
       return {
-        session: result.sessionId ?? `codex-${request.taskId}-${seq}`,
-        model: REVIEWER_MODEL,
-        provider: REVIEWER_PROVIDER,
+        ...result.identity,
         findings: parseFindings(text),
       };
     },
@@ -110,6 +113,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       const prompt = fixPrompt(request, deps.brief);
       const launch = deps.launch({
         role: "implementer",
+        profile: deps.profiles?.implementer,
         purpose: "fix",
         itemId: request.taskId,
         worktree: request.worktree,
@@ -117,6 +121,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       });
       const result = await runAgent({
         role: "implementer",
+        profile: deps.profiles?.implementer,
         itemId: request.taskId,
         runId: `fix-${request.taskId}-${request.fixAttempt}`,
         prompt,
@@ -125,16 +130,19 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        ...dockerOf(deps, "claude"),
+        ...dockerOf(deps, deps.profiles?.implementer.agent ?? "claude"),
       });
       if (result.cancelled) return { ok: false, reason: "fix cancelled" };
       if (result.authRequired || result.stopReason === "error" || result.stopReason === "timeout") {
         return { ok: false, reason: result.errorMessage ?? result.stopReason };
       }
+      if (!result.identity)
+        return { ok: false, reason: "Fix agent did not report a concrete session model" };
       const head = (await git(["-C", request.worktree, "rev-parse", "HEAD"])).trim();
       if (head === "" || head === request.head) {
         return { ok: false, reason: "fix did not move HEAD to a new commit" };
       }
+      deps.onCandidate?.(result.identity);
       return { ok: true, head };
     },
   };
@@ -157,12 +165,13 @@ export function parseFindings(text: string): Finding[] {
 
 function dockerOf(
   deps: AcpAgentDeps,
-  agent: "claude" | "codex",
+  agent: "claude" | "codex" | "grok",
 ):
   | { docker: { agent: "claude" | "codex"; proxyUrl: string; image?: string; bin?: string } }
   | Record<string, never> {
   const docker = deps.docker;
   if (docker === undefined) return {};
+  if (agent === "grok") throw new Error("Grok does not support the configured Docker sandbox");
   return {
     docker: {
       agent,
