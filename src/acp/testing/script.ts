@@ -28,6 +28,7 @@ export type FakeStep =
     };
 
 export interface FakeScript {
+  promptCapabilities?: { image?: boolean; embeddedContext?: boolean };
   sessionId?: string;
   model?: string | null;
   models?: string[];

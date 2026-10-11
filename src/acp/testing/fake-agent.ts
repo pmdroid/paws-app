@@ -126,7 +126,10 @@ async function handle(message: {
       result: {
         protocolVersion: 1,
         agentInfo: { name: "fake-acp", version: "0.0.0" },
-        agentCapabilities: { mcpCapabilities: { http: false, sse: false } },
+        agentCapabilities: {
+          mcpCapabilities: { http: false, sse: false },
+          promptCapabilities: script.promptCapabilities,
+        },
         authMethods: script.authMethods ?? [],
       },
     });

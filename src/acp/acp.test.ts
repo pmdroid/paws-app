@@ -286,6 +286,57 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(trace.methods).not.toContain("authenticate");
 });
 
+for (const capability of ["image", "embeddedContext", "fallback"] as const) {
+  test(`agent input files use negotiated ${capability} prompt content`, async () => {
+    const layout = await layoutRepo();
+    const inputPath = join(layout.worktree, "input.png");
+    await writeFile(inputPath, "image bytes");
+    const files = await writeScript(layout.root, {
+      promptCapabilities:
+        capability === "image"
+          ? { image: true }
+          : capability === "embeddedContext"
+            ? { embeddedContext: true }
+            : {},
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: `input-${capability}`,
+      prompt: "Describe the input.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      inputFiles: [
+        { path: inputPath, mimeType: "image/png", bytes: new TextEncoder().encode("image bytes") },
+      ],
+    });
+    expect(result.stopReason).toBe("end_turn");
+    const trace = await readResult(files.resultPath);
+    const prompt = trace.prompts?.[0] as Array<Record<string, unknown>>;
+    expect(prompt[0]).toEqual({ type: "text", text: "Describe the input." });
+    expect(prompt[1]).toEqual({ type: "text", text: "Input file: ./input.png (image/png)" });
+    expect(prompt).toHaveLength(capability === "fallback" ? 2 : 3);
+    if (capability === "image")
+      expect(prompt[2]).toMatchObject({
+        type: "image",
+        data: Buffer.from("image bytes").toString("base64"),
+        mimeType: "image/png",
+      });
+    if (capability === "embeddedContext")
+      expect(prompt[2]).toMatchObject({
+        type: "resource",
+        resource: { blob: Buffer.from("image bytes").toString("base64"), mimeType: "image/png" },
+      });
+    expect(JSON.stringify(prompt)).not.toContain("uploads.linear.app");
+  });
+}
+
 test("publish_artifact publishes a snapshot through MCP without an ask_team hook", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {
