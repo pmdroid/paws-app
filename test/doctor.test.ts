@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "../src/acp";
 import type { FakeResult } from "../src/acp/testing/script";
 import type { AgentsConfig } from "../src/config";
-import { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/config";
+import { emptyConfigFile, PAWS_GITHUB_OAUTH_CLIENT_ID } from "../src/config";
 import { FILE_TOKEN_STORE_DOCTOR_WARNING, MISSING_GITHUB_CLIENT_ID_MESSAGE } from "../src/auth";
 import {
   doctorChecks,
@@ -184,10 +184,64 @@ test("doctor is green with no claude when the implementer is grok", async () => 
   expect(checks.every((item) => item.ok)).toBe(true);
   const text = formatDoctor(checks);
   expect(text).toContain("ok grok: cached_token");
-  expect(text).toContain("note claude: not required when the implementer is grok");
-  expect(text).toContain("note claude-acp: not required when the implementer is grok");
+  expect(text).toContain("note claude: not required by configured agent profiles");
+  expect(text).toContain("note claude-acp: not required by configured agent profiles");
   expect(text).toContain("ok codex:");
   expect(text).not.toContain("missing");
+});
+
+test("doctor requires providers used by either default role and project overrides", () => {
+  const config = emptyConfigFile();
+  config.agentSettings = {
+    defaults: {
+      implementer: { agent: "claude", model: "model-a" },
+      reviewer: { agent: "claude", model: "model-b" },
+    },
+    projects: [],
+  };
+  const ready = probe(true);
+  ready.facts.codexAdapter = { ok: false, detail: "Codex adapter absent" };
+  ready.facts.codexLogin = { ok: false, detail: "Codex login absent" };
+  const defaults = doctorChecks(ready, { config });
+  expect(defaults.every((item) => item.ok)).toBe(true);
+  expect(defaults.find((item) => item.name === "codex")?.note).toBe(true);
+  config.agentSettings.projects.push({
+    repo: "pmdroid/barkvisor",
+    reviewer: { agent: "grok", model: null },
+  });
+  const missingGrok = doctorChecks(ready, { config });
+  expect(missingGrok.find((item) => item.name === "grok")?.ok).toBe(false);
+  expect(missingGrok.find((item) => item.name === "codex")?.note).toBe(true);
+  config.agentSettings.projects.push({
+    repo: "pmdroid/paws-app",
+    implementer: { agent: "codex", model: null },
+  });
+  const missingBoth = doctorChecks(ready, { config });
+  expect(missingBoth.filter((item) => !item.ok).map((item) => item.name)).toEqual([
+    "codex-acp",
+    "grok",
+    "codex",
+  ]);
+});
+
+test("doctor uses role profiles and Grok status carried by the real probe", () => {
+  const ready = probe(true);
+  ready.facts.agentProfiles = [
+    { implementer: { agent: "grok", model: null }, reviewer: { agent: "claude", model: null } },
+  ];
+  ready.facts.grokLogin = {
+    installed: true,
+    loggedIn: true,
+    authMethods: ["cached_token"],
+    detail: "cached_token",
+    args: [],
+  };
+  ready.facts.codexAdapter = { ok: false, detail: "unused" };
+  ready.facts.codexLogin = { ok: false, detail: "unused" };
+  const checks = doctorChecks(ready);
+  expect(checks.every((item) => item.ok)).toBe(true);
+  expect(checks.find((item) => item.name === "grok")?.detail).toBe("cached_token");
+  expect(checks.find((item) => item.name === "codex")?.note).toBe(true);
 });
 
 test("doctor is green for a GitHub tracker with no Linear config", () => {

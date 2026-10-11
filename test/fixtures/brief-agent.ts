@@ -4,13 +4,25 @@ import { createInterface } from "node:readline";
 
 const purpose = process.argv[2];
 const evidence = process.argv[3];
+const sessionId = `brief-${crypto.randomUUID()}`;
+let model = process.argv[4] === "reviewer" ? "test-codex-model" : "test-claude-model";
+const configOptions = () => [
+  {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: model,
+    options: [{ value: model, name: model }],
+  },
+];
 const send = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line) as {
     id?: number;
     method?: string;
-    params?: { cwd?: string; prompt?: Array<{ type: string; text?: string }> };
+    params?: { cwd?: string; value?: string; prompt?: Array<{ type: string; text?: string }> };
   };
   if (message.method === "initialize") {
     send({
@@ -20,7 +32,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     });
   } else if (message.method === "session/new") {
     if (message.params?.cwd) process.chdir(message.params.cwd);
-    send({ jsonrpc: "2.0", id: message.id, result: { sessionId: `brief-${purpose}` } });
+    send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: configOptions() } });
+  } else if (message.method === "session/set_config_option") {
+    if (message.params?.value) model = message.params.value;
+    send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
   } else if (message.method === "session/prompt") {
     const prompt = message.params?.prompt?.map((block) => block.text ?? "").join("\n") ?? "";
     if (evidence) appendFileSync(evidence, `${JSON.stringify({ purpose, prompt })}\n`);
@@ -55,7 +70,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         jsonrpc: "2.0",
         method: "session/update",
         params: {
-          sessionId: `brief-${purpose}`,
+          sessionId,
           update: {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: JSON.stringify(findings) },

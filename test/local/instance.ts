@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { FakeClock, systemClock, WORK_ITEM_STATES } from "../../src/core";
+import { writeAgentSettings, type AgentSettings } from "../../src/config";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -89,13 +90,19 @@ const provider = {
   user: async () => ({ login: "local-user", id: 1 }),
 };
 
-async function scenario(name: string, reviewerText = "[]", implementer = "claude") {
+async function scenario(
+  name: string,
+  reviewerText = "[]",
+  implementer = "claude",
+  settings?: AgentSettings,
+) {
   const dir = join(evidenceRoot, name);
   const pawsRoot = join(dir, "paws");
   const bare = join(dir, "origin.git");
   const seed = join(dir, "seed");
   mkdirSync(pawsRoot, { recursive: true });
   writeFileSync(join(pawsRoot, "config.toml"), `[agents]\nimplementer = "${implementer}"\n`);
+  if (settings) writeAgentSettings(join(pawsRoot, "config.toml"), settings);
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents/skills/local-review"), { recursive: true });
@@ -263,7 +270,18 @@ async function scenario(name: string, reviewerText = "[]", implementer = "claude
               write(`${input.itemId}.txt`, "done\n"),
               ...["Verified", " locally."].map(chunk),
             ];
-    const script: FakeScript = { steps: [...steps, { type: "end", stopReason: "end_turn" }] };
+    const agent = input.profile?.agent ?? (input.role === "reviewer" ? "codex" : "claude");
+    const defaultModels = {
+      claude: "test-claude-model",
+      codex: "test-codex-model",
+      grok: "test-grok-model",
+    };
+    const selectedModel = input.profile?.model ?? defaultModels[agent];
+    const script: FakeScript = {
+      model: defaultModels[agent],
+      models: [...new Set([defaultModels[agent], selectedModel])],
+      steps: [...steps, { type: "end", stopReason: "end_turn" }],
+    };
     const scriptPath = join(dir, `agent-${sequence}.json`);
     writeFileSync(scriptPath, JSON.stringify(script));
     return {
@@ -462,6 +480,8 @@ try {
       typeof health === "object" && health !== null && "ok" in health && health.ok === true;
     const page = await fetch(`${origin}/status`);
     const pageText = await page.text();
+    const agentSettingsResponse = await fetch(`${origin}/api/settings/agents`);
+    const agentSettings: unknown = await agentSettingsResponse.json();
     const webhook = await fetch(`${origin}/webhooks/linear`, { method: "POST", body: "{}" });
     save("fresh.json", {
       rootStatus: rootResponse.status,
@@ -480,6 +500,19 @@ try {
       { health, source, pageStatus: page.status, webhookStatus: webhook.status },
     );
     observe("documented root URL opens the dashboard", rootResponse.ok, rootResponse.status);
+    observe(
+      "fresh instance exposes local agent settings with vendor defaults",
+      agentSettingsResponse.ok &&
+        JSON.stringify(agentSettings) ===
+          JSON.stringify({
+            defaults: {
+              implementer: { agent: "claude", model: null },
+              reviewer: { agent: "codex", model: null },
+            },
+            projects: [],
+          }),
+      agentSettings,
+    );
   } finally {
     fresh.stop();
   }
@@ -524,11 +557,39 @@ try {
       states: malformed.states,
       merges: malformed.merged.length,
     });
-    const codex = await scenario("codex", "[]", "codex");
+    const codex = await scenario("codex", "[]", "codex", {
+      defaults: {
+        implementer: { agent: "claude", model: null },
+        reviewer: { agent: "codex", model: null },
+      },
+      projects: [
+        {
+          repo: "local/fixture",
+          implementer: { agent: "codex", model: "test-codex-implementer" },
+          reviewer: { agent: "codex", model: "test-codex-reviewer" },
+        },
+      ],
+    });
     observe(
       "advertised Codex implementer completes independent review",
       codex.states.join() === "merged,merged",
-      { states: codex.states, merges: codex.merged.length },
+      {
+        states: codex.states,
+        merges: codex.merged.length,
+        profiles: codex.launches
+          .filter((launch) => launch.purpose !== "prepare")
+          .map((launch) => launch.profile),
+      },
+    );
+    const incompatible = await scenario("same-model", "[]", "codex");
+    observe(
+      "same-model reviewer is rejected before implementation",
+      incompatible.merged.length === 0 &&
+        !incompatible.launches.some((launch) => launch.purpose === "implement"),
+      {
+        states: incompatible.states,
+        launches: incompatible.launches.map((launch) => launch.purpose),
+      },
     );
   }
 } catch (error) {

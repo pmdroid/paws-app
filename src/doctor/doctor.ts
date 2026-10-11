@@ -1,7 +1,8 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
 import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
-import { loadEnv, pawsPaths, type AgentsConfig, type EnvSource } from "../config";
+import { loadEnv, pawsPaths, type EnvSource } from "../config";
+import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
 
@@ -16,7 +17,7 @@ export type DoctorCheck = {
 };
 
 export type DoctorContext = {
-  config?: { agents: AgentsConfig };
+  config?: DoctorAgentConfig;
   /** Login probe for `agents.implementer = grok`. */
   grok?: GrokLoginStatus | null;
 };
@@ -297,30 +298,31 @@ function ghPushFix(facts: ProbeFacts): string {
 }
 
 function agentChecks(facts: ProbeFacts, context: DoctorContext): DoctorCheck[] {
-  const implementer = context.config?.agents.implementer ?? "claude";
-  const claudeAcp = check(
-    "claude-acp",
-    facts.claudeAdapter.ok,
-    facts.claudeAdapter.detail,
-    FIX.adapter,
+  const profiles = context.config
+    ? doctorAgentProfiles(context.config)
+    : (facts.agentProfiles ?? doctorAgentProfiles());
+  const agents = new Set(
+    profiles.flatMap((profile) => [profile.implementer.agent, profile.reviewer.agent]),
   );
-  const codexAcp = check(
-    "codex-acp",
-    facts.codexAdapter.ok,
-    facts.codexAdapter.detail,
-    FIX.adapter,
+  const unused = "not required by configured agent profiles";
+  const checks = [
+    agents.has("claude")
+      ? check("claude-acp", facts.claudeAdapter.ok, facts.claudeAdapter.detail, FIX.adapter)
+      : note("claude-acp", unused),
+    agents.has("codex")
+      ? check("codex-acp", facts.codexAdapter.ok, facts.codexAdapter.detail, FIX.adapter)
+      : note("codex-acp", unused),
+  ];
+  if (agents.has("grok")) checks.push(grokCheck(context.grok ?? facts.grokLogin));
+  checks.push(
+    agents.has("claude")
+      ? check("claude", facts.claudeLogin.ok, facts.claudeLogin.detail, FIX.claude)
+      : note("claude", unused),
+    agents.has("codex")
+      ? check("codex", facts.codexLogin.ok, facts.codexLogin.detail, FIX.codex)
+      : note("codex", unused),
   );
-  const claude = check("claude", facts.claudeLogin.ok, facts.claudeLogin.detail, FIX.claude);
-  const codex = check("codex", facts.codexLogin.ok, facts.codexLogin.detail, FIX.codex);
-  if (implementer === "claude") return [claudeAcp, codexAcp, claude, codex];
-  const claudeNote = note("claude", `not required when the implementer is ${implementer}`);
-  const claudeAcpShown = facts.claudeAdapter.ok
-    ? claudeAcp
-    : note("claude-acp", `not required when the implementer is ${implementer}`);
-  if (implementer === "grok") {
-    return [claudeAcpShown, codexAcp, grokCheck(context.grok), claudeNote, codex];
-  }
-  return [claudeAcpShown, codexAcp, claudeNote, codex];
+  return checks;
 }
 
 function grokCheck(status: GrokLoginStatus | null | undefined): DoctorCheck {

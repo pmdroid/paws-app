@@ -15,6 +15,7 @@ import {
   JobLoop,
   OutboxDispatcher,
   getWorkItem,
+  enqueueJob,
   listJobs,
   listCloseoutRecoveries,
   listRuns,
@@ -70,7 +71,16 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     const scriptPath = path.join(layout.root, `script-${scripts}.json`);
     const resultPath = path.join(layout.root, `result-${scripts}.json`);
     results.set(`${input.purpose}:${input.itemId}`, resultPath);
-    writeFileSync(scriptPath, JSON.stringify(scriptFor(input)));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        ...scriptFor(input),
+        model:
+          input.profile?.agent === "codex" || input.role === "reviewer"
+            ? "test-codex-model"
+            : "test-claude-model",
+      }),
+    );
     return {
       command: process.execPath,
       args: [fakeAgent, resultPath, scriptPath],
@@ -232,7 +242,13 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
   const launch: AgentLaunch = (input) => {
     scripts += 1;
     const scriptPath = path.join(layout.root, `demo-script-${scripts}.json`);
-    writeFileSync(scriptPath, JSON.stringify(demoScript(input)));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        ...demoScript(input),
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+      }),
+    );
     return {
       command: process.execPath,
       args: [fakeAgent, "", scriptPath],
@@ -666,7 +682,13 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     if (input.role === "implementer") {
       script.authMethods = [{ id: "cached_token", name: "Cached login" }];
     }
-    writeFileSync(scriptPath, JSON.stringify(script));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        ...script,
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+      }),
+    );
     writeFileSync(
       wrapper,
       `#!/bin/sh\n` +
@@ -870,7 +892,13 @@ for (const review of invalidReviews) {
               }
             : { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
         if (input.purpose === "review") reviews += 1;
-        writeFileSync(scriptPath, JSON.stringify(script));
+        writeFileSync(
+          scriptPath,
+          JSON.stringify({
+            ...script,
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          }),
+        );
         return {
           command: process.execPath,
           args: [fakeAgent, "", scriptPath],
@@ -938,6 +966,193 @@ type DemoSeed = {
   parent: { title: string; description: string };
   children: Array<{ slug: string; title: string; blockedBy: string[] }>;
 };
+
+for (const sameModel of [true, false]) {
+  test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use project overrides and retain their candidate snapshot"}`, async () => {
+    const layout = await repoLayout();
+    const configPath = path.join(layout.pawsRoot, "config.toml");
+    writeFileSync(
+      configPath,
+      `[agents.defaults.implementer]\nagent = "claude"\nmodel = "unused-default"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "unused-default"\n[agents.projects."pmdroid/paws-demo".implementer]\nagent = "codex"\nmodel = "model-a"\n[agents.projects."pmdroid/paws-demo".reviewer]\nagent = "codex"\nmodel = "${sameModel ? "model-a" : "model-b"}"\n`,
+    );
+    if (sameModel) writeFileSync(configPath, `[agents]\nimplementer = "codex"\n`);
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "profile-item",
+        identifier: "ENG-20",
+        title: "Profile routing",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const github = createFakeGitHub();
+    const launches: Array<{ purpose: string; profile: unknown }> = [];
+    let sequence = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch(input) {
+        launches.push({ purpose: input.purpose, profile: input.profile });
+        const scriptPath = path.join(layout.root, `profile-${++sequence}.json`);
+        const script: FakeScript = {
+          model: "model-a",
+          models: ["model-a", "model-b"],
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : [writeOk(input.worktree), { type: "end" }],
+        };
+        writeFileSync(scriptPath, JSON.stringify(script));
+        if (input.purpose === "implement")
+          writeFileSync(configPath, `[agents]\nimplementer = "grok"\n`);
+        return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "profile-item"));
+      for (let tick = 0; tick < 20; tick += 1) if ((await jobs.tick()) === null) break;
+      if (sameModel) {
+        expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("awaiting_input");
+        expect(launches.every((launch) => launch.purpose === "prepare")).toBe(true);
+        expect(tracker.questions[0]?.body).toContain("different reviewer model");
+        expect(github.opened).toHaveLength(0);
+      } else {
+        expect(stateOf(db, "ENG-20"), debug(layout, db)).toBe("merged");
+        expect(launches.find((launch) => launch.purpose === "implement")?.profile).toEqual({
+          agent: "codex",
+          model: "model-a",
+        });
+        expect(
+          launches
+            .filter((launch) => launch.purpose === "review")
+            .every(
+              (launch) =>
+                JSON.stringify(launch.profile) ===
+                JSON.stringify({ agent: "codex", model: "model-b" }),
+            ),
+        ).toBe(true);
+      }
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
+
+for (const savedState of ["verifying", "merge_queue"] as const) {
+  test(`upgraded ${savedState} candidate without model evidence asks for fresh implementation`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "legacy-item",
+        identifier: "ENG-30",
+        title: "Upgrade candidate",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const github = createFakeGitHub();
+    const launched: string[] = [];
+    const implementerProfiles: unknown[] = [];
+    let sequence = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch(input) {
+        launched.push(input.purpose);
+        if (input.purpose === "implement") implementerProfiles.push(input.profile);
+        const scriptPath = path.join(layout.root, `legacy-${++sequence}.json`);
+        writeFileSync(
+          scriptPath,
+          JSON.stringify({
+            model:
+              input.profile?.model ??
+              (input.role === "reviewer" ? "test-codex-model" : "test-claude-model"),
+            steps:
+              input.purpose === "review"
+                ? emptyReview().steps
+                : [writeOk(input.worktree), { type: "end" }],
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "legacy-item"));
+      await jobs.tick();
+      const item = db
+        .query<{ id: string; current_run_id: string }, []>(
+          "SELECT id, current_run_id FROM work_item",
+        )
+        .get()!;
+      const initialRun = item.current_run_id;
+      await rm(path.join(layout.pawsRoot, "runs", initialRun, "agent-profile.json"));
+      db.run("DELETE FROM job WHERE queue = ?", [JOB_KIND.merge]);
+      db.run("UPDATE work_item SET state = ? WHERE id = ?", [savedState, item.id]);
+      const beforeHandoff = launched.length;
+      enqueueJob(db, {
+        queue: savedState === "verifying" ? JOB_KIND.reverify : JOB_KIND.merge,
+        payload: { itemId: item.id },
+        now: systemClock.now(),
+      });
+      await jobs.tick();
+      expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("awaiting_input");
+      expect(launched).toHaveLength(beforeHandoff);
+      expect(github.opened).toHaveLength(0);
+      expect(github.merged).toHaveLength(0);
+      const question = findOpenQuestion(db, "ses_1")!;
+      expect(question.body).toContain("no recorded ACP session model");
+      expect(question.body).not.toContain("Checks you can bypass");
+      writeFileSync(
+        path.join(layout.pawsRoot, "config.toml"),
+        `[agents.defaults.implementer]\nagent = "codex"\nmodel = "test-new-implementer"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "test-codex-model"\n`,
+      );
+      await orchestrator.onLinearEvent({
+        ...linearEvent("prompted", "Restart implementation using the configured profiles", null),
+        payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
+      });
+      for (let tick = 0; tick < 10; tick += 1) if ((await jobs.tick()) === null) break;
+      expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("merged");
+      expect(getWorkItem(db, item.id)?.currentRunId).not.toBe(initialRun);
+      expect(launched.filter((purpose) => purpose === "implement")).toHaveLength(2);
+      expect(github.merged).toHaveLength(1);
+      expect(implementerProfiles.at(-1)).toEqual({ agent: "codex", model: "test-new-implementer" });
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
 
 function emptyReview(): FakeScript {
   return {
