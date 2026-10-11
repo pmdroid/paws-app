@@ -1197,7 +1197,7 @@ export class Orchestrator {
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
       markRunEnded(this.db, runId, this.now());
-      this.post(item, "error", summary, `${runId}:missing-candidate-identity`);
+      this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
       await this.askCloseoutHelp(item, undefined, summary);
       return null;
     }
