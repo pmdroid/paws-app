@@ -9,6 +9,7 @@ import {
 } from "../contract";
 import { demoStatus } from "../demo";
 import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
+import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
 
 export interface StatusProvider {
@@ -34,6 +35,8 @@ export interface StatusServerOptions {
   /** Loopback GitHub sign-in. Omit it and GET /api/auth/github reports no user. */
   githubAuth?: GitHubSignIn;
   csrfToken?: string;
+  closeoutHome?: string;
+  evidenceRoot?: string;
 }
 
 export function fakeStatusProvider(): StatusProvider {
@@ -64,6 +67,7 @@ export async function handleStatusRequest(
   const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);
   if (auth !== null) return auth;
   if (pathname === STATUS_API_PATH) return apiResponse(request, providerFor(url, options));
+  if (pathname === ARTIFACT_API_PATH) return artifactResponse(request, options);
   if (pathname === STATUS_PAGE_PATH || pathname.startsWith(`${STATUS_PAGE_PATH}/`)) {
     const staticDir = options.staticDir === undefined ? defaultStaticDir() : options.staticDir;
     return pageResponse(request, staticDir, options.csrfToken);
@@ -83,6 +87,8 @@ export function startStatusServer(options?: {
   db?: Database;
   staticDir?: string | null;
   env?: Record<string, string | undefined>;
+  closeoutHome?: string;
+  evidenceRoot?: string;
 }): ReturnType<typeof Bun.serve> {
   const hostname = options?.hostname ?? "127.0.0.1";
   const port = options?.port ?? 8787;
@@ -95,8 +101,11 @@ export function startStatusServer(options?: {
     async fetch(request) {
       const response = await handleStatusRequest(request, {
         provider,
+        ...(options?.db ? { db: options.db } : {}),
         staticDir: staticDir ?? null,
         ...(env ? { env } : {}),
+        ...(options?.closeoutHome ? { closeoutHome: options.closeoutHome } : {}),
+        ...(options?.evidenceRoot ? { evidenceRoot: options.evidenceRoot } : {}),
       });
       if (response) return response;
       return text("Not found", 404);
@@ -113,10 +122,55 @@ export function providerFor(url: URL, options: StatusServerOptions): StatusProvi
   return liveProvider(options);
 }
 
-function liveProvider(options?: { provider?: StatusProvider; db?: Database }): StatusProvider {
+function liveProvider(options?: {
+  provider?: StatusProvider;
+  db?: Database;
+  env?: Record<string, string | undefined>;
+}): StatusProvider {
   if (options?.provider) return options.provider;
-  if (options?.db) return createLiveStatusProvider(options.db);
+  if (options?.db) {
+    return createLiveStatusProvider(options.db, options.env ? { env: options.env } : {});
+  }
   return { snapshot: () => emptyLiveSnapshot() };
+}
+
+function artifactResponse(request: Request, options: StatusServerOptions): Response {
+  if (request.method === "OPTIONS")
+    return new Response(null, { status: 204, headers: { ...CORS } });
+  if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
+  const home = artifactHome(options);
+  if (options.db === undefined || home === null) return text("Not found", 404);
+  const url = new URL(request.url);
+  const read = readCloseoutArtifact({
+    db: options.db,
+    itemId: url.searchParams.get("item") ?? "",
+    checkId: url.searchParams.get("check") ?? "",
+    kind: url.searchParams.get("kind") ?? "",
+    head: url.searchParams.get("head") ?? "",
+    policy: url.searchParams.get("policy") ?? "",
+    evidenceRoot: home,
+    ...(options.env ? { env: options.env } : {}),
+  });
+  return new Response(read.status === 200 ? read.body : "Not found", {
+    status: read.status,
+    headers: {
+      ...CORS,
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function artifactHome(options: StatusServerOptions): string | null {
+  if (options.evidenceRoot !== undefined && options.evidenceRoot.length > 0)
+    return options.evidenceRoot;
+  const home =
+    options.closeoutHome !== undefined && options.closeoutHome.length > 0
+      ? options.closeoutHome
+      : (options.env ?? process.env).PAWS_HOME;
+  if (home !== undefined && home.length > 0) return join(home, "closeout", "evidence");
+  return null;
 }
 
 function demoRequested(url: URL, env: Record<string, string | undefined> | undefined): boolean {

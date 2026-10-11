@@ -45,7 +45,15 @@ export const VERDICT_DECISIONS = [
   "running",
   "blocked",
 ] as const;
-export const CHECK_STATES = ["passed", "failed", "running", "pending", "skipped"] as const;
+export const CHECK_STATES = [
+  "passed",
+  "failed",
+  "running",
+  "pending",
+  "skipped",
+  "blocked",
+  "exhausted",
+] as const;
 export const CHECK_KINDS = ["setup", "command", "review"] as const;
 export const STEP_STATES = ["done", "run", "wait"] as const;
 export const ACTIVITY_KINDS = [
@@ -160,6 +168,19 @@ export interface StatusCheck {
   state: CheckState;
   command: string;
   detail: string | null;
+  attempt?: number | null;
+  timeoutSeconds?: number | null;
+  elapsedMs?: number | null;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  timeoutReason?: string | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  truncated?: boolean;
+  findings?: string | null;
+  logPath?: string | null;
+  evidencePath?: string | null;
+  active?: boolean;
 }
 
 export interface StatusVerdict {
@@ -174,6 +195,8 @@ export interface StatusVerdict {
   sealed: boolean;
   checks: StatusCheck[];
   links: StatusLink[];
+  policyDigest?: string | null;
+  policyPath?: string | null;
 }
 
 export interface StatusMergeStep {
@@ -468,6 +491,8 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
       readCheck(entry, `${path}.checks[${check}]`),
     ),
     links: readLinks(body.links, `${path}.links`),
+    policyDigest: optionalText(body, "policyDigest"),
+    policyPath: optionalText(body, "policyPath"),
   };
 }
 
@@ -483,6 +508,19 @@ function readCheck(input: unknown, path: string): StatusCheck {
     state: oneOf(string(body, "state", path), CHECK_STATES, `${path}.state`),
     command: string(body, "command", path),
     detail,
+    attempt: optionalCount(body, "attempt", path),
+    timeoutSeconds: optionalCount(body, "timeoutSeconds", path),
+    elapsedMs: optionalCount(body, "elapsedMs", path),
+    exitCode: optionalCount(body, "exitCode", path),
+    timedOut: optionalBoolean(body, "timedOut"),
+    timeoutReason: optionalText(body, "timeoutReason"),
+    stdout: optionalText(body, "stdout"),
+    stderr: optionalText(body, "stderr"),
+    truncated: optionalBoolean(body, "truncated"),
+    findings: optionalText(body, "findings"),
+    logPath: optionalText(body, "logPath"),
+    evidencePath: optionalText(body, "evidencePath"),
+    active: optionalBoolean(body, "active"),
   };
 }
 
@@ -603,6 +641,26 @@ function stringArray(body: Record<string, unknown>, key: string, path: string): 
 function boolean(body: Record<string, unknown>, key: string, path: string): boolean {
   const value = body[key];
   if (typeof value !== "boolean") throw new StatusContractError(`${path}.${key} must be a boolean`);
+  return value;
+}
+
+function optionalText(body: Record<string, unknown>, key: string): string | null {
+  const value = body[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return null;
+  return value;
+}
+
+function optionalBoolean(body: Record<string, unknown>, key: string): boolean {
+  return body[key] === true;
+}
+
+function optionalCount(body: Record<string, unknown>, key: string, path: string): number | null {
+  const value = body[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new StatusContractError(`${path}.${key} must be an integer >= 0`);
+  }
   return value;
 }
 

@@ -42,13 +42,17 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  listCloseoutProgress,
   listJobs,
   listOpenQuestions,
   listOutbox,
   listRuns,
   listWorkItemBlocks,
   listWorkItemsByStates,
+  type CloseoutProgressRecord,
+  type CloseoutStepRecord,
 } from "../../../db";
+import { redactCloseoutText } from "../server/artifact";
 import {
   STATUS_API_VERSION,
   type ActivityKind,
@@ -106,6 +110,7 @@ export type LiveStatusOptions = {
     repo?: string;
     workspace?: string | null;
   };
+  env?: NodeJS.ProcessEnv;
 };
 
 export function createLiveStatusProvider(
@@ -151,6 +156,8 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const items = records.map((record) =>
     toItem(record, rows, runs, options.project?.repo, blocks, records),
   );
+  const progress = listCloseoutProgress(db);
+  const env = options.env ?? process.env;
   return {
     version: STATUS_API_VERSION,
     source: "live",
@@ -160,7 +167,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     items,
     runs,
     questions: questionsFor(records, rows, runs, openQuestions),
-    verdicts: records.flatMap((record) => verdictFor(record, rows, jobs)),
+    verdicts: records.flatMap((record) =>
+      verdictFor(record, rows, jobs, progress, now.getTime(), env),
+    ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
   };
@@ -346,14 +355,133 @@ function verdictFor(
   record: WorkItemRecord,
   rows: readonly OutboxRow[],
   jobs: readonly Job[],
+  progress: readonly CloseoutProgressRecord[],
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
 ): StatusVerdict[] {
+  const live = progressFor(record, progress);
   const candidates = verdictCandidates(record, rows, jobs);
   const best = candidates
     .sort((left, right) => left.at - right.at || left.score - right.score)
     .at(-1);
-  if (best) return [toVerdict(record, best)];
-  const implied = impliedVerdict(record);
-  return implied === null ? [] : [implied];
+  const base = best ? toVerdict(record, best) : impliedVerdict(record);
+  if (base === null) return [];
+  return [live ? withProgress(base, live, nowMs, env) : base];
+}
+
+function progressFor(
+  record: WorkItemRecord,
+  progress: readonly CloseoutProgressRecord[],
+): CloseoutProgressRecord | null {
+  const mine = progress.filter((row) => row.itemId === record.id);
+  if (mine.length === 0) return null;
+  const running = mine.filter((row) => row.steps.some((step) => step.state === "running"));
+  if (running.length > 0) return latestProgress(running);
+  const open = mine.filter((row) => row.decision === null || row.finishedAt === null);
+  if (open.length > 0) return latestProgress(open);
+  const restarted = mine.filter(
+    (row) =>
+      row.finishedAt !== null &&
+      row.updatedAt > row.finishedAt &&
+      row.steps.some((step) => step.state === "pending" || step.state === "running"),
+  );
+  if (restarted.length > 0) return latestProgress(restarted);
+  return latestProgress(mine);
+}
+
+function latestProgress(rows: readonly CloseoutProgressRecord[]): CloseoutProgressRecord | null {
+  return (
+    [...rows]
+      .sort((left, right) => left.updatedAt - right.updatedAt || left.id.localeCompare(right.id))
+      .at(-1) ?? null
+  );
+}
+
+function unfinished(row: CloseoutProgressRecord): boolean {
+  if (row.decision === null || row.finishedAt === null) return true;
+  if (row.steps.some((step) => step.state === "running")) return true;
+  return (
+    row.updatedAt > row.finishedAt &&
+    row.steps.some((step) => step.state === "pending" || step.state === "running")
+  );
+}
+
+function sameCandidate(verdict: StatusVerdict, live: CloseoutProgressRecord): boolean {
+  const verdictHead = (verdict.headSha ?? "").trim().toLowerCase();
+  const liveHead = live.head.trim().toLowerCase();
+  if (verdictHead.length === 0 || liveHead.length === 0 || verdictHead !== liveHead) return false;
+  const verdictPolicy = (verdict.policyDigest ?? "").trim();
+  if (verdictPolicy.length === 0) return true;
+  return verdictPolicy === live.policyDigest;
+}
+
+function withProgress(
+  verdict: StatusVerdict,
+  live: CloseoutProgressRecord,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): StatusVerdict {
+  const checks = live.steps.map((step) => toLiveCheck(step, nowMs, env));
+  const failing = checks.find(
+    (check) => check.state === "failed" || check.state === "blocked" || check.state === "exhausted",
+  );
+  const fromProgress = mapDecision(live.decision);
+  const open = unfinished(live);
+  const attached =
+    !open &&
+    sameCandidate(verdict, live) &&
+    (fromProgress === null || fromProgress === verdict.decision);
+  const decision = open ? "running" : (fromProgress ?? (attached ? verdict.decision : "running"));
+  return {
+    ...verdict,
+    decision,
+    sealed: !open && decision !== "running",
+    summary: open ? "Closeout is running." : attached ? verdict.summary : liveSummary(fromProgress),
+    baseSha: blank(live.base) ?? (attached ? verdict.baseSha : null),
+    headSha: blank(live.head) ?? (attached ? verdict.headSha : null),
+    checks: checks.length > 0 ? checks : attached ? verdict.checks : [],
+    failingCheck:
+      decision === "accepted" ? null : (failing?.id ?? (attached ? verdict.failingCheck : null)),
+    policyDigest: blank(live.policyDigest),
+    policyPath: live.policyPath,
+  };
+}
+
+function liveSummary(decision: VerdictDecision | null): string {
+  if (decision === "accepted") return "Closeout accepted.";
+  if (decision === "rejected") return "Closeout rejected.";
+  if (decision === "exhausted") return "Closeout exhausted its retry budget.";
+  if (decision === "blocked") return "Closeout stopped and needs a person.";
+  return "Closeout is running.";
+}
+
+function toLiveCheck(step: CloseoutStepRecord, nowMs: number, env: NodeJS.ProcessEnv): StatusCheck {
+  const end = step.finishedAt ?? nowMs;
+  return {
+    id: step.id,
+    kind: step.kind,
+    state: step.state,
+    command: step.command,
+    detail: step.detail,
+    attempt: step.attempt,
+    timeoutSeconds: step.timeoutSeconds,
+    elapsedMs: step.startedAt === null ? null : Math.max(0, end - step.startedAt),
+    exitCode: step.exitCode,
+    timedOut: step.timedOut,
+    timeoutReason: step.timeoutReason,
+    stdout: redactCloseoutText(step.stdout, env),
+    stderr: redactCloseoutText(step.stderr, env),
+    truncated: step.truncated,
+    findings: step.findings === null ? null : redactCloseoutText(step.findings, env),
+    logPath: step.logPath,
+    evidencePath: step.evidencePath,
+    active: step.state === "running",
+  };
+}
+
+function mapDecision(decision: string | null): VerdictDecision | null {
+  if (decision === null) return null;
+  return decisionOf(decision);
 }
 
 type VerdictCandidate = {
@@ -789,9 +917,17 @@ function checkKind(kind: string): CheckKind {
 
 function checkState(state: string): CheckState {
   const value = state.toLowerCase();
-  if (value === "passed" || value === "failed" || value === "running" || value === "pending")
+  if (
+    value === "passed" ||
+    value === "failed" ||
+    value === "running" ||
+    value === "pending" ||
+    value === "skipped" ||
+    value === "blocked" ||
+    value === "exhausted"
+  ) {
     return value;
-  if (value === "skipped") return "skipped";
+  }
   return "failed";
 }
 
