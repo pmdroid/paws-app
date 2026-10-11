@@ -16,6 +16,30 @@ export type FakeGitHub = GitHubApp &
     merged: MergePullRequest[];
   };
 
+export function fakeMergeReadiness(head: string) {
+  return {
+    data: {
+      repository: {
+        object: {
+          oid: head,
+          statusCheckRollup: {
+            state: "SUCCESS",
+            contexts: { checkRunCount: 1, statusContextCount: 0 },
+          },
+        },
+        pullRequest: {
+          headRefOid: head,
+          state: "OPEN",
+          reviewThreads: {
+            nodes: [] as { isResolved: boolean }[],
+            pageInfo: { hasNextPage: false, endCursor: null as string | null },
+          },
+        },
+      },
+    },
+  };
+}
+
 export function createFakeGitHub(): FakeGitHub {
   const minted: MintTokenInput[] = [];
   const opened: OpenPullRequest[] = [];
