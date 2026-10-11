@@ -337,6 +337,15 @@ test("linear and github issues share one queue and report to their own tracker",
     expect(linear.progress.some((update) => update.body.includes("paws-demo#8"))).toBe(false);
     expect(comments.comments.some((comment) => comment.body.includes("paws-demo#8"))).toBe(true);
     expect(comments.comments.some((comment) => comment.body.includes("ENG-9"))).toBe(false);
+    const responses = comments.comments.filter((comment) =>
+      comment.body.startsWith("Paws: Verified locally."),
+    );
+    expect(responses).toHaveLength(1);
+    expect(
+      comments.comments.some((comment) =>
+        /^Paws: (?:I|Verified| locally\.|Finished \(end_turn\)\.)\n/.test(comment.body),
+      ),
+    ).toBe(false);
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-9",
       "Closes #8",
@@ -557,6 +566,14 @@ function plainScript(input: { purpose: string; itemId: string; worktree: string 
   if (input.purpose === "review") return reviewScript("[]");
   return {
     steps: [
+      ...["I", " will check the issue."].map((text) => ({
+        type: "update" as const,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+      })),
+      {
+        type: "update",
+        update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Check locally" },
+      },
       {
         type: "fs_write",
         path: path.join(input.worktree, "ok.txt"),
@@ -567,6 +584,10 @@ function plainScript(input: { purpose: string; itemId: string; worktree: string 
         path: path.join(input.worktree, `${input.itemId}.txt`),
         content: "done\n",
       },
+      ...["Verified", " locally."].map((text) => ({
+        type: "update" as const,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+      })),
       { type: "end", stopReason: "end_turn" },
     ],
   };
