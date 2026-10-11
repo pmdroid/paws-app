@@ -55,8 +55,8 @@ export function applyLinearCommand(
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: item.sessionKey ?? item.id,
-      idempotencyKey: `command:${command.type}:${item.id}:${command.requestedAt}`,
-      payload: { text },
+      idempotencyKey: `command:${command.type}:${item.sessionKey ?? item.id}:${command.requestedAt}`,
+      payload: { sessionId: item.sessionKey ?? item.id, kind: "response", body: text },
       now,
     });
     return { applied: true };

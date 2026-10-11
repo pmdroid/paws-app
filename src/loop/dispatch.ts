@@ -37,7 +37,8 @@ async function postActivity(
   const body = readString(payload, "body") ?? readString(payload, "text");
   if (sessionId === null || sessionId.length === 0) throw new Error("activity has no session");
   if (body === null) throw new Error("activity has no body");
-  const kind = readKind(payload["kind"]) ?? "thought";
+  const kind = readKind(payload["kind"]);
+  if (kind === null) throw new Error("activity has no valid kind");
   await tracker.postProgress({ sessionId, kind, body });
 }
 

@@ -76,7 +76,11 @@ export function postPauseNote(
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
     idempotencyKey: `wake:${item.id}:${fromWall}`,
-    payload: { text: formatPauseNote(sleptMs, outcome) },
+    payload: {
+      sessionId: item.sessionKey ?? item.id,
+      kind: "thought",
+      body: formatPauseNote(sleptMs, outcome),
+    },
     now,
   });
 }

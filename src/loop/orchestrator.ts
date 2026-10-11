@@ -39,6 +39,7 @@ import {
   type CloseoutRecovery,
   markRun,
   saveCheckpoint,
+  saveRunResult,
   setCurrentRun,
   submitCommand,
   type JobLoop,
@@ -257,12 +258,13 @@ export class Orchestrator {
     this.postStatus(item, "started");
     let posted = true;
     const first = setTimeout(() => {
-      if (posted) return;
+      if (posted || !this.canReportProgress(item.id)) return;
       posted = true;
       this.post(item, "thought", `Working on ${item.linearIdentifier}.`, `${run.id}:first`);
       void this.flush();
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
+      if (!this.canReportProgress(item.id)) return;
       this.post(
         item,
         "thought",
@@ -275,7 +277,7 @@ export class Orchestrator {
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
     const activity = createAcpActivityReporter((update) => {
-      if (update.kind === "elicitation") return;
+      if (controller.signal.aborted || update.kind === "elicitation") return;
       posted = true;
       this.activitySeq += 1;
       this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`);
@@ -329,6 +331,8 @@ export class Orchestrator {
         );
         return;
       }
+      activity.flush();
+      saveRunResult(this.db, run.id, activity.resultBody(), this.now());
       const head = (await git(["-C", executed.worktreePath, "rev-parse", "HEAD"])).trim();
       const base = (
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
@@ -403,7 +407,7 @@ export class Orchestrator {
         record: async (verdict) => {
           this.post(
             item,
-            verdict.outcome === "accepted" ? "response" : "error",
+            "thought",
             verdict.summary,
             `${item.id}:verdict:${listCloseoutRecoveries(this.db, item.id).length}:${verdict.head}:${verdict.outcome}:${verdict.evaluations}:${verdict.fixAttempts}`,
           );
@@ -578,7 +582,7 @@ export class Orchestrator {
     }
     this.post(
       item,
-      "response",
+      "thought",
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
@@ -630,7 +634,7 @@ export class Orchestrator {
       }
       this.post(
         item,
-        "error",
+        "thought",
         merged.message ?? merged.outcome,
         `${item.id}:merge:${merged.outcome}`,
       );
@@ -650,9 +654,9 @@ export class Orchestrator {
       this.fail(item, "merge", merged.message ?? merged.outcome);
       return;
     }
+    this.post(item, "thought", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
     applyWorkItemEvent(this.db, item.id, "merge_accepted");
     this.postStatus(item, "completed");
-    this.post(item, "response", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
     await removeWorktree({
       owner: repository.owner,
       repo: repository.repo,
@@ -823,15 +827,15 @@ export class Orchestrator {
 
   private stopSession(sessionId: string | null, at: number): void {
     if (sessionId === null) return;
+    const requestedAt = at > 0 ? at : this.now();
     for (const item of this.itemsForSession(sessionId)) {
       if (item.state === "merged" || item.state === "cancelled") continue;
       submitCommand(this.db, this.bus, {
         type: "stop",
         itemId: item.id,
         source: "linear",
-        requestedAt: at > 0 ? at : this.now(),
+        requestedAt,
       });
-      this.postStatus(item, "canceled");
     }
     void this.flush();
   }
@@ -879,6 +883,11 @@ export class Orchestrator {
       epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
     if (session === null) return;
     const identifiers = items.map((item) => item.linearIdentifier).join(", ");
+    const results = items.flatMap((item) => {
+      const finalText =
+        item.currentRunId && getRun(this.db, item.currentRunId)?.checkpoint?.resultBody;
+      return finalText ? [`${item.linearIdentifier}: ${finalText}`] : [];
+    });
     enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
@@ -887,7 +896,7 @@ export class Orchestrator {
       payload: {
         sessionId: session,
         kind: "response",
-        body: `Epic complete. Merged ${identifiers}.`,
+        body: [`Epic complete. Merged ${identifiers}.`, ...results].join("\n\n"),
       },
       now: this.now(),
     });
@@ -975,7 +984,10 @@ export class Orchestrator {
     body: string,
     key: string,
   ): void {
-    const sessionId = this.activitySession(item);
+    const current = getWorkItem(this.db, item.id);
+    if (current === null || current.state === "cancelled") return;
+    if ((kind === "thought" || kind === "action") && !this.canReportProgress(item.id)) return;
+    const sessionId = this.activitySession(current);
     if (sessionId === null || body.trim() === "") return;
     enqueueOutboxOnce(this.db, {
       target: "linear",
@@ -985,6 +997,14 @@ export class Orchestrator {
       payload: { sessionId, kind, body },
       now: this.now(),
     });
+  }
+
+  private canReportProgress(itemId: string): boolean {
+    const item = getWorkItem(this.db, itemId);
+    if (item === null || item.cancelRequested) return false;
+    if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
+    const sessionId = this.activitySession(item);
+    return sessionId === null || findOpenQuestion(this.db, sessionId) === null;
   }
 
   private postStatus(item: WorkItemRecord, stateType: "started" | "completed" | "canceled"): void {
