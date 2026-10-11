@@ -464,12 +464,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           ? "error"
           : "prompt_complete";
       try {
-        result.checkpoint = await commitCheckpoint(
+        const checkpoint = await commitCheckpoint(
           options.worktreePath,
           `wip: ${options.itemId} ${reason}`,
           options.signal,
+          () => options.signal?.removeEventListener("abort", onAbort),
         );
-        await emit({ type: "checkpoint", reason, checkpoint: result.checkpoint });
+        if (checkpoint.committed || (!state.cancelling && !options.signal?.aborted)) {
+          result.checkpoint = checkpoint;
+          options.signal?.removeEventListener("abort", onAbort);
+          await emit({ type: "checkpoint", reason, checkpoint });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         result.errorMessage = result.errorMessage ?? message;

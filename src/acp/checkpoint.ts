@@ -1,6 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { git } from "./git";
 import { mirrorPath, worktreePath } from "./paths";
 
@@ -38,17 +48,71 @@ export async function commitCheckpoint(
   tree: string,
   message = "wip: checkpoint",
   signal?: AbortSignal,
+  onPublished?: () => void,
 ): Promise<CheckpointResult> {
-  if (signal?.aborted) return { committed: false, message };
-  const status = (await git(["-C", tree, "status", "--porcelain"])).trim();
-  if (!status || signal?.aborted) return { committed: false, message };
-
-  await git(["-C", tree, "add", "-A"]);
-  if (signal?.aborted) return { committed: false, message };
-  const env = { ...process.env, ...COMMIT_ENV_DEFAULTS };
-  await git(commitArgs(tree, message), { env });
-  const sha = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
-  return { committed: true, sha, message };
+  const unchanged = { committed: false, message };
+  if (signal?.aborted) return unchanged;
+  const index = (
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+  ).trim();
+  const temporary = await mkdtemp(join(dirname(index), "paws-checkpoint-"));
+  try {
+    const head = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+    const ref = (await git(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"])).trim();
+    const originalIndex = existsSync(index) ? readFileSync(index) : undefined;
+    const privateIndex = join(temporary, "index");
+    const env = { ...process.env, ...COMMIT_ENV_DEFAULTS, GIT_INDEX_FILE: privateIndex };
+    if (originalIndex) writeFileSync(privateIndex, originalIndex);
+    else await git(["-C", tree, "read-tree", head], { env });
+    const status = (await git(["-C", tree, "status", "--porcelain"], { env })).trim();
+    if (!status || signal?.aborted) return unchanged;
+    await git(["-C", tree, "add", "-A"], { env });
+    if (signal?.aborted) return unchanged;
+    const snapshot = (await git(["-C", tree, "write-tree"], { env })).trim();
+    if (signal?.aborted) return unchanged;
+    const sha = (
+      await git(
+        [
+          "-C",
+          tree,
+          "-c",
+          "commit.gpgsign=false",
+          "commit-tree",
+          snapshot,
+          "-p",
+          head,
+          "-m",
+          message,
+        ],
+        { env },
+      )
+    ).trim();
+    if (signal?.aborted) return unchanged;
+    const indexLock = `${index}.lock`;
+    const fd = openSync(indexLock, "wx", 0o600);
+    let published = false;
+    try {
+      try {
+        writeFileSync(fd, readFileSync(privateIndex));
+      } finally {
+        closeSync(fd);
+      }
+      const currentIndex = existsSync(index) ? readFileSync(index) : undefined;
+      if (originalIndex ? !currentIndex?.equals(originalIndex) : currentIndex !== undefined)
+        throw new Error("Git index changed while preparing checkpoint");
+      if (gitSync(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"]).trim() !== ref)
+        throw new Error("Git HEAD changed while preparing checkpoint");
+      gitSync(["-C", tree, "update-ref", "-m", message, ref, sha, head], env);
+      renameSync(indexLock, index);
+      published = true;
+      onPublished?.();
+    } finally {
+      if (!published) rmSync(indexLock, { force: true });
+    }
+    return { committed: true, sha, message };
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 }
 
 /**
