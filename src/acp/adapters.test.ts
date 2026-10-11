@@ -30,6 +30,7 @@ test("grok adapter args never auto-approve", () => {
   });
   expect(command.args.join(" ")).not.toContain("always-approve");
   expect(command.args.join(" ")).not.toContain("yolo");
+  expect(command.args).toEqual(["--no-auto-update", "agent", "stdio"]);
 });
 
 test("a PATH grok is used only when agents.grok.path is set", () => {
