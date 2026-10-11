@@ -161,6 +161,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
 
   const terminals = new TerminalRegistry(guard, options.env ?? process.env);
+  runAbort.signal.addEventListener("abort", () => void terminals.close(graceMs), { once: true });
   if (options.askTeam) {
     bridge = await startAskTeamBridge({
       socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
@@ -324,14 +325,13 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   } finally {
     result.agentExited = await stopChild(child, graceMs);
     result.pid = child.pid;
-    if (options.checkpoint !== false) {
+    await terminals.close(graceMs);
+    if (options.checkpoint !== false && !result.cancelled && !options.signal?.aborted) {
       const reason = result.timedOut
         ? "timeout"
-        : result.cancelled
-          ? "cancel"
-          : result.stopReason === "error"
-            ? "error"
-            : "prompt_complete";
+        : result.stopReason === "error"
+          ? "error"
+          : "prompt_complete";
       try {
         result.checkpoint = await commitCheckpoint(
           options.worktreePath,

@@ -281,7 +281,7 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(trace.methods).not.toContain("authenticate");
 });
 
-test("timeout kills an agent that ignores cancel and keeps a WIP commit", async () => {
+test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
   const layout = await layoutRepo();
   const script: FakeScript = {
     ignoreCancel: true,
@@ -316,10 +316,10 @@ test("timeout kills an agent that ignores cancel and keeps a WIP commit", async 
   expect(result.agentExited).toBe(true);
   expect(result.pid).toBeDefined();
   expect(alive(result.pid)).toBe(false);
-  expect(result.checkpoint?.committed).toBe(true);
+  expect(result.checkpoint).toBeUndefined();
   expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
   const subject = (await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim();
-  expect(subject).toContain("wip:");
+  expect(subject).toBe("init");
 }, 20_000);
 
 test("cancel leaves no agent process", async () => {
@@ -348,6 +348,36 @@ test("cancel leaves no agent process", async () => {
   expect(result.agentExited).toBe(true);
   expect(alive(result.pid)).toBe(false);
 }, 20_000);
+
+test("cancellation at prompt completion preserves dirty files without checkpointing", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "partial.txt"), content: "keep me\n" },
+      { type: "end" },
+    ],
+  });
+  const controller = new AbortController();
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-cancel-completed",
+    prompt: "make changes",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "prompt_complete") controller.abort();
+    },
+  });
+  expect(result.checkpoint).toBeUndefined();
+  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("keep me\n");
+  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+});
 
 test("grok authenticates with cached_token, scrubs the key, and denies a path outside the worktree", async () => {
   const layout = await layoutRepo();
