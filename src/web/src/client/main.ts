@@ -20,6 +20,7 @@ const painted = new Map<string, string>();
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
 let epicView: "graph" | "board" = "graph";
+let selectedCheck: { itemId: string; checkId: string } | null = null;
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
 let via: RenderModel["via"] = null;
@@ -149,6 +150,7 @@ function paint(): void {
     error,
     engineUrl: currentEngine(),
     epicView,
+    selectedCheck,
   };
   const view = render(model);
   document.title = view.title;
@@ -162,10 +164,92 @@ function paint(): void {
 function setHtml(selector: (typeof regions)[number], html: string): void {
   const element = document.querySelector(selector);
   if (!element || painted.get(selector) === html) return;
+  const focus = selector === "#content" ? captureFocus(element) : null;
+  const logs = selector === "#content" ? captureLogs(element) : [];
   const scroll = selector === "#content" ? element.scrollTop : 0;
   painted.set(selector, html);
   element.innerHTML = html;
-  if (selector === "#content") element.scrollTop = scroll;
+  if (selector !== "#content") return;
+  element.scrollTop = scroll;
+  restoreLogs(element, logs);
+  restoreFocus(element, focus);
+}
+
+type HeldFocus =
+  | { kind: "action"; action: string; item: string; check: string }
+  | { kind: "log"; key: string }
+  | { kind: "href"; href: string };
+
+type LogScroll = { key: string; top: number; stick: boolean };
+
+function captureFocus(root: Element): HeldFocus | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
+  if (active instanceof HTMLAnchorElement) {
+    const href = active.getAttribute("href");
+    if (href) return { kind: "href", href };
+  }
+  const log = active.closest("pre.out")?.getAttribute("data-log");
+  if (log) return { kind: "log", key: log };
+  const holder = active.closest("[data-action][data-item][data-check]");
+  if (!(holder instanceof HTMLElement)) return null;
+  const action = holder.getAttribute("data-action");
+  const item = holder.getAttribute("data-item");
+  const check = holder.getAttribute("data-check");
+  if (!action || !item || !check) return null;
+  return { kind: "action", action, item, check };
+}
+
+function restoreFocus(root: Element, held: HeldFocus | null): void {
+  const target = held === null ? null : findHeld(root, held);
+  if (!(target instanceof HTMLElement)) return;
+  target.focus({ preventScroll: true });
+}
+
+function findHeld(root: Element, held: HeldFocus): Element | null {
+  if (held.kind === "log") {
+    for (const node of root.querySelectorAll("pre.out")) {
+      if (node.getAttribute("data-log") === held.key) return node;
+    }
+    return null;
+  }
+  if (held.kind === "href") {
+    for (const link of root.querySelectorAll("a[href]")) {
+      if (link.getAttribute("href") === held.href) return link;
+    }
+    return null;
+  }
+  for (const node of root.querySelectorAll("[data-action][data-item][data-check]")) {
+    if (
+      node.getAttribute("data-action") === held.action &&
+      node.getAttribute("data-item") === held.item &&
+      node.getAttribute("data-check") === held.check
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function captureLogs(root: Element): LogScroll[] {
+  const logs: LogScroll[] = [];
+  for (const node of root.querySelectorAll("pre.out")) {
+    if (!(node instanceof HTMLElement)) continue;
+    const key = node.getAttribute("data-log");
+    if (!key) continue;
+    const stick = node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
+    logs.push({ key, top: node.scrollTop, stick });
+  }
+  return logs;
+}
+
+function restoreLogs(root: Element, logs: readonly LogScroll[]): void {
+  for (const saved of logs) {
+    for (const node of root.querySelectorAll("pre.out")) {
+      if (!(node instanceof HTMLElement) || node.getAttribute("data-log") !== saved.key) continue;
+      node.scrollTop = saved.stick ? node.scrollHeight : saved.top;
+    }
+  }
 }
 
 function onClick(event: Event): void {
@@ -184,6 +268,21 @@ function onClick(event: Event): void {
       epicView = mode;
       paint();
     }
+  }
+  if (action === "select-check") {
+    const row = target.closest("[data-item][data-check]");
+    const itemId = row?.getAttribute("data-item");
+    const checkId = row?.getAttribute("data-check");
+    if (itemId && checkId) {
+      selectedCheck = { itemId, checkId };
+      paint();
+    }
+  }
+  if (action === "download-output") {
+    const row = target.closest("[data-item][data-check]");
+    const itemId = row?.getAttribute("data-item");
+    const checkId = row?.getAttribute("data-check");
+    if (itemId && checkId) downloadOutput(itemId, checkId);
   }
 }
 
@@ -314,6 +413,21 @@ async function errorText(response: Response): Promise<string> {
     /* status is enough */
   }
   return `Engine responded ${response.status}`;
+}
+
+function downloadOutput(itemId: string, checkId: string): void {
+  const check = snapshot?.verdicts
+    .find((verdict) => verdict.itemId === itemId)
+    ?.checks.find((entry) => entry.id === checkId);
+  if (!check) return;
+  const body = `STDOUT\n${check.stdout ?? ""}\nSTDERR\n${check.stderr ?? ""}\n`;
+  const blob = new Blob([body], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${checkId}.log`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function storageGet(key: string): string | null {

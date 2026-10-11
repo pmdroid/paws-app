@@ -86,6 +86,82 @@ export function runLabel(state: RunState): string {
   return RUN_LABEL[state];
 }
 
+export function taskPhase(
+  itemState: ItemState | null,
+  runState: RunState,
+  closeoutDecision?: VerdictDecision,
+): { current: number; detail: string } {
+  const recheck =
+    closeoutDecision === "running" &&
+    itemState !== "running" &&
+    itemState !== "queued" &&
+    itemState !== "planning" &&
+    itemState !== "awaiting_input";
+  if (itemState === "merged") return { current: 3, detail: "Merged. This task is complete." };
+  if (recheck) {
+    return {
+      current: 1,
+      detail:
+        "Implementation finished. Closeout is verifying this candidate. The task is not complete.",
+    };
+  }
+  if (closeoutDecision === "blocked") {
+    return {
+      current: 1,
+      detail: "Closeout is blocked and needs a person. The task is not complete.",
+    };
+  }
+  if (closeoutDecision === "exhausted" || itemState === "exhausted") {
+    return {
+      current: 1,
+      detail: "Closeout stopped after its retry budget. The task is not complete.",
+    };
+  }
+  if (closeoutDecision === "rejected") {
+    return { current: 1, detail: "Closeout checks failed. The task is not complete." };
+  }
+  if (itemState === "merge_queue") {
+    return {
+      current: 2,
+      detail: "Closeout accepted. Waiting to merge. The task is not complete.",
+    };
+  }
+  if (itemState === "signoff") {
+    return {
+      current: 1,
+      detail: "Closeout accepted this high-risk change. A person still has to sign off.",
+    };
+  }
+  if (itemState === "needs_human" || itemState === "stopped" || runState === "stopped") {
+    return { current: 1, detail: "Stopped before the task was complete." };
+  }
+  if (itemState === "awaiting_input" || runState === "awaiting_input") {
+    return {
+      current: 0,
+      detail: "The implementing agent is waiting for an answer. The task is not complete.",
+    };
+  }
+  if (itemState === "verifying" || runState === "verifying") {
+    return {
+      current: 1,
+      detail:
+        "Implementation finished. Closeout is verifying this candidate. The task is not complete.",
+    };
+  }
+  return {
+    current: 0,
+    detail: "The implementing agent is still working. The task is not complete.",
+  };
+}
+
+export function durationLabel(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
 export function verdictLabel(decision: VerdictDecision): string {
   return VERDICT_LABEL[decision];
 }

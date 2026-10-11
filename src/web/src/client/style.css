@@ -685,9 +685,13 @@ tr.click:hover td {
 }
 .kv {
   display: grid;
-  grid-template-columns: 110px 1fr;
+  grid-template-columns: 110px minmax(0, 1fr);
   gap: 6px 10px;
   font-size: 12.5px;
+}
+.kv > :nth-child(even) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .kv .k {
   color: var(--muted);
@@ -772,11 +776,40 @@ tr.click:hover td {
 }
 .chk {
   display: grid;
-  grid-template-columns: 22px minmax(120px, 180px) 1fr auto;
+  grid-template-columns: 22px minmax(120px, 180px) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 9px 12px;
   border-bottom: 1px solid var(--border);
+}
+.chk > :nth-child(2),
+.chk > :nth-child(3) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.closeout-head {
+  flex-wrap: wrap;
+}
+.closeout-head > :first-child {
+  flex: 1 1 520px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.closeout-head > :last-child {
+  flex-shrink: 0;
+}
+button.chk {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  color: inherit;
+  cursor: pointer;
+}
+button.chk.on {
+  background: var(--hover);
 }
 .chk:last-child {
   border: 0;
@@ -809,6 +842,74 @@ tr.click:hover td {
 .ico.skipped {
   background: #24262d;
   color: #8b8f99;
+}
+.ico.blocked,
+.ico.exhausted {
+  background: #401b1d;
+  color: #ff8f8f;
+}
+.phase {
+  margin: 12px 0;
+}
+.phs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ph {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.ph.done {
+  color: #5dd3a3;
+  border-color: #1f5a45;
+  background: #0f2a20;
+}
+.ph.now {
+  color: #5fd4e0;
+  border-color: #1d5960;
+  background: #0f2a2e;
+}
+.phase p {
+  margin: 0;
+}
+.check-detail {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
+}
+.stream {
+  margin-top: 8px;
+}
+.stream > span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+pre.out {
+  margin: 0;
+  background: #0a0b0d;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  max-height: 320px;
+  overflow: auto;
+}
+.artifact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
 }
 @keyframes spin {
   to {
@@ -1130,11 +1231,27 @@ input[type="url"] {
   .ln .ts {
     display: none;
   }
+  .crumbs {
+    overflow: hidden;
+  }
+  .crumbs b {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .c-param {
+    display: none;
+  }
   .chk {
-    grid-template-columns: 22px 1fr auto;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+  }
+  .chk > :nth-child(3) {
+    grid-column: 2 / -1;
+    grid-row: 2;
   }
   .chk > :nth-child(4) {
-    display: none;
+    grid-column: 3;
+    grid-row: 1;
   }
   .board {
     grid-auto-flow: row;
