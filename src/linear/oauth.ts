@@ -1,5 +1,6 @@
+import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { readSecretFile, writeSecretFile } from "../credentials";
+import { readSecretFile, writeSecretFile, refreshCredential } from "../credentials";
 
 /** Scopes for an install that can be delegated and mentioned. */
 export const LINEAR_APP_SCOPES = "read,write,app:assignable,app:mentionable";
@@ -59,6 +60,7 @@ export function linearAuthorizeUrl(input: {
   redirectUri: string;
   state: string;
   scopes?: string;
+  codeChallenge?: string;
 }): string {
   const url = new URL(AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
@@ -68,6 +70,10 @@ export function linearAuthorizeUrl(input: {
   url.searchParams.set("actor", LINEAR_ACTOR);
   url.searchParams.set("state", input.state);
   url.searchParams.set("prompt", "consent");
+  if (input.codeChallenge) {
+    url.searchParams.set("code_challenge", input.codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+  }
   return url.toString();
 }
 
@@ -87,6 +93,7 @@ export function readLinearEnv(source: EnvSource): LinearEnv {
 }
 
 export function createLinearAuth(options: {
+  db?: Database;
   tokenPath: string;
   clientId: string | null;
   clientSecret: string | null;
@@ -124,14 +131,32 @@ export function createLinearAuth(options: {
     if (current?.refreshToken == null) {
       throw new Error("Linear access token expired and no refresh token is stored");
     }
-    const saved = await refreshLinearToken({
-      refreshToken: current.refreshToken,
-      clientId: options.clientId,
-      clientSecret: options.clientSecret,
-      fetch: fetchImpl,
-      now: now(),
-    });
-    if (saved.refreshToken === null) saved.refreshToken = current.refreshToken;
+    const rotate = async (
+      token: StoredLinearToken,
+      signal: AbortSignal,
+    ): Promise<StoredLinearToken> => {
+      const saved = await refreshLinearToken({
+        refreshToken: token.refreshToken!,
+        clientId: options.clientId,
+        clientSecret: options.clientSecret,
+        fetch: (url, init) => fetchImpl(url, { ...init, signal }),
+        now: now(),
+      });
+      if (saved.refreshToken === null)
+        throw new Error("Linear refresh response has no refresh token");
+      return saved;
+    };
+    if (options.db) {
+      const saved = await refreshCredential({
+        db: options.db,
+        identity: options.tokenPath,
+        read: () => readToken(options.tokenPath),
+        write: (token) => writeToken(options.tokenPath, token),
+        refresh: rotate,
+      });
+      return saved.accessToken;
+    }
+    const saved = await rotate(current, AbortSignal.timeout(15_000));
     writeToken(options.tokenPath, saved);
     return saved.accessToken;
   }
@@ -161,6 +186,7 @@ export async function exchangeLinearCode(input: {
   clientSecret: string;
   code: string;
   redirectUri: string;
+  codeVerifier?: string;
   fetch?: FetchLike;
   now?: number;
 }): Promise<StoredLinearToken> {
@@ -171,6 +197,7 @@ export async function exchangeLinearCode(input: {
     client_id: input.clientId,
     client_secret: input.clientSecret,
   });
+  if (input.codeVerifier) body.set("code_verifier", input.codeVerifier);
   return requestToken(body, input.fetch ?? fetch, input.now ?? Date.now());
 }
 
