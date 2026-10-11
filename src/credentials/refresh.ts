@@ -25,6 +25,8 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
     if (changed(original, current)) return current;
     const state = getJob(input.db, id);
     if (state?.status === "dead" || state?.status === "done" || state?.status === "cancelled") {
+      const latest = input.read();
+      if (latest !== null && changed(original, latest)) return latest;
       throw new Error("Integration refresh could not complete. Reconnect the integration.");
     }
     const job = claimNextJob(input.db, { workerId, leaseMs, queues: [queue] });

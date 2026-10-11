@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createLinearAuth, readStoredToken, writeStoredToken } from "../src/linear";
-import { listJobs, migrate, openDatabase } from "../src/db";
+import { claimNextJob, completeJob, listJobs, migrate, openDatabase } from "../src/db";
+import { refreshCredential } from "../src/credentials";
 import { tempHome } from "./helpers";
 
 function initial(home: string): string {
@@ -17,6 +18,42 @@ function initial(home: string): string {
   });
   return path;
 }
+
+test("a refresh waiter rereads credentials when another worker completes between its reads", async () => {
+  const home = tempHome();
+  const db = openDatabase(join(home, "paws.db"));
+  migrate(db);
+  let stored = { accessToken: "synthetic-access-old", refreshToken: "synthetic-refresh-old" };
+  const rotated = { accessToken: "synthetic-access-new", refreshToken: "synthetic-refresh-new" };
+  let reads = 0;
+  try {
+    const value = await refreshCredential({
+      db,
+      identity: "synthetic-linear-install",
+      read() {
+        const snapshot = stored;
+        if (++reads === 2) {
+          const job = claimNextJob(db, { workerId: "competing-refresh" });
+          expect(job).not.toBeNull();
+          stored = rotated;
+          expect(completeJob(db, job!)).toBe(true);
+        }
+        return snapshot;
+      },
+      write(credential) {
+        stored = credential;
+      },
+      async refresh() {
+        throw new Error("The competing worker already refreshed the credential.");
+      },
+    });
+    expect(value).toEqual(rotated);
+    expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
+  } finally {
+    db.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test("separate Linear clients share one durable refresh job and rotate the encrypted token", async () => {
   const home = tempHome();
