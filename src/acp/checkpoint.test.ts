@@ -1,9 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
-import { commitCheckpointSync, restartFromFreshMain } from "./checkpoint";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { commitCheckpoint, commitCheckpointSync, restartFromFreshMain } from "./checkpoint";
 import { git } from "./git";
+import * as gitCommands from "./git";
 import { createWorktree, ensureBareMirror } from "./worktree";
 
 const roots: string[] = [];
@@ -30,6 +31,44 @@ test("shutdown commits dirty files onto the item branch", async () => {
   expect(commitCheckpointSync(layout.worktree.path).committed).toBe(false);
   expect(commitCheckpointSync(join(layout.root, "missing")).committed).toBe(false);
 }, 20_000);
+
+for (const phase of ["add", "commit"] as const) {
+  test(`abort during checkpoint ${phase} preserves the branch, staged entries and dirty files`, async () => {
+    const layout = await itemWorktree("ENG-21");
+    const tree = layout.worktree.path;
+    await writeFile(join(tree, "README.md"), "staged\n");
+    await git(["-C", tree, "add", "README.md"]);
+    await writeFile(join(tree, "README.md"), "unstaged\n");
+    await writeFile(join(tree, "partial.txt"), "partial\n");
+    const index = (
+      await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    ).trim();
+    const beforeIndex = await readFile(index);
+    const beforeHead = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
+    const controller = new AbortController();
+    const originalGit = gitCommands.git;
+    let reached = false;
+    const calls = spyOn(gitCommands, "git").mockImplementation(async (args, options) => {
+      const result = await originalGit(args, options);
+      if (args.includes(phase) || (phase === "commit" && args.includes("commit-tree"))) {
+        reached = true;
+        controller.abort();
+      }
+      return result;
+    });
+    try {
+      const checkpoint = await commitCheckpoint(tree, "wip: interrupted", controller.signal);
+      expect(reached).toBe(true);
+      expect(checkpoint.committed).toBe(false);
+      expect((await originalGit(["-C", tree, "rev-parse", "HEAD"])).trim()).toBe(beforeHead);
+      expect(await readFile(index)).toEqual(beforeIndex);
+      expect(await readFile(join(tree, "README.md"), "utf8")).toBe("unstaged\n");
+      expect(await readFile(join(tree, "partial.txt"), "utf8")).toBe("partial\n");
+    } finally {
+      calls.mockRestore();
+    }
+  });
+}
 
 test("a long sleep checks out fresh main and keeps the WIP branch", async () => {
   const layout = await itemWorktree("ENG-21");
