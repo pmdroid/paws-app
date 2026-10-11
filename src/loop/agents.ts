@@ -2,6 +2,7 @@ import type { AgentRole } from "../acp";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
+import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
 export type AgentPurpose = "implement" | "fix" | "review";
 
@@ -17,7 +18,9 @@ export type AcpAgentDeps = {
   pawsRoot: string;
   home?: string;
   launch: AgentLaunch;
+  brief?: string;
   signal?: AbortSignal;
+  timeoutMs?: number;
   docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
@@ -28,9 +31,11 @@ export function implementPrompt(input: {
   identifier: string;
   title: string;
   handoff?: string;
+  brief?: string;
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
+    ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
@@ -45,11 +50,11 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
     async review(request): Promise<ReviewResult> {
       seq += 1;
       const prompt = [
+        ...(deps.brief ? [deps.brief] : []),
         "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
         `Base ${request.base}, head ${request.head}.`,
-        "Reply with a JSON array of findings. An empty array means the change is fine.",
-        "Each finding has severity (P0, P1, P2, or P3), location, explanation, and evidence.",
+        FINDING_FORMAT,
       ].join("\n");
       let text = "";
       const launch = deps.launch({
@@ -67,6 +72,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         worktreePath: request.worktree,
         pawsRoot: deps.pawsRoot,
         checkpoint: false,
+        ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
@@ -80,8 +86,13 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       if (result.authRequired) {
         throw new Error(result.errorMessage ?? "Codex login is missing");
       }
-      if (result.errorMessage && result.stopReason === "error") {
-        throw new Error(result.errorMessage);
+      if (
+        result.cancelled ||
+        result.timedOut ||
+        result.errorMessage !== undefined ||
+        result.stopReason !== "end_turn"
+      ) {
+        throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
       }
       return {
         session: result.sessionId ?? `codex-${request.taskId}-${seq}`,
@@ -96,7 +107,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
 export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   return {
     async applyFix(request): Promise<FixResult> {
-      const prompt = fixPrompt(request);
+      const prompt = fixPrompt(request, deps.brief);
       const launch = deps.launch({
         role: "implementer",
         purpose: "fix",
@@ -129,39 +140,19 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   };
 }
 
-export function fixPrompt(request: FixRequest): string {
+export function fixPrompt(request: FixRequest, brief?: string): string {
   return [
     "Fix Closeout findings.",
+    ...(brief ? [brief] : []),
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
     request.summary,
   ].join("\n\n");
 }
 
 export function parseFindings(text: string): Finding[] {
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end <= start) return [];
-  try {
-    const parsed: unknown = JSON.parse(text.slice(start, end + 1));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isFinding);
-  } catch {
-    return [];
-  }
-}
-
-function isFinding(value: unknown): value is Finding {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    (record["severity"] === "P0" ||
-      record["severity"] === "P1" ||
-      record["severity"] === "P2" ||
-      record["severity"] === "P3") &&
-    typeof record["location"] === "string" &&
-    typeof record["explanation"] === "string" &&
-    typeof record["evidence"] === "string"
-  );
+  const parsed = parseReviewFindings(text);
+  if (!parsed.ok) throw new Error(`Invalid review findings: ${parsed.reason}`);
+  return parsed.findings;
 }
 
 function dockerOf(

@@ -1,3 +1,4 @@
+export { FINDING_FORMAT, parseFindings } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
 export { createCloseoutGate } from "./gate";

@@ -11,7 +11,15 @@ import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  getWorkItem,
+  listJobs,
+  listRuns,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -20,7 +28,7 @@ import {
   type GitHubTokenProvider,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, createAcpCodexReviewer, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -350,60 +358,70 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
   }
 }, 120_000);
 
-test("stop from Linear cancels the live run", async () => {
-  const layout = await repoLayout();
-  const tracker = createFakeTracker([
-    {
-      linearIssueId: "iss-9",
-      identifier: "ENG-9",
-      title: "Hang",
-      description: null,
-      subIssues: [],
-    },
-  ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
-  const launch: AgentLaunch = () => {
-    const scriptPath = path.join(layout.root, "hang.json");
-    writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
-    return {
-      command: process.execPath,
-      args: [fakeAgent, "", scriptPath],
-      env: process.env,
+test.each(["claude", "codex", "grok"])(
+  "stop from Linear cancels the live %s run",
+  async (implementer) => {
+    const layout = await repoLayout();
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      `[agents]\nimplementer = "${implementer}"\n`,
+    );
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "iss-9",
+        identifier: "ENG-9",
+        title: "Hang",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const launch: AgentLaunch = () => {
+      const scriptPath = path.join(layout.root, "hang.json");
+      writeFileSync(scriptPath, JSON.stringify({ steps: [{ type: "hang" }] }));
+      return {
+        command: process.execPath,
+        args: [fakeAgent, "", scriptPath],
+        env: process.env,
+      };
     };
-  };
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    launch,
-  });
-  const running = (async () => {
-    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
-    await jobs.tick();
-  })();
-  const deadline = Date.now() + 15_000;
-  while (
-    Date.now() < deadline &&
-    !tracker.progress.some((update) => update.body.includes("Working on ENG-9"))
-  ) {
-    await Bun.sleep(20);
-  }
-  expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
-  await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
-  await running;
-  expect(stateOf(db, "ENG-9")).toBe("cancelled");
-  expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-  db.close();
-  await layout.cleanup();
-}, 20_000);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      launch,
+    });
+    const running = (async () => {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
+      await jobs.tick();
+    })();
+    const deadline = Date.now() + 15_000;
+    while (
+      Date.now() < deadline &&
+      !tracker.progress.some((update) => update.body.includes("Working on ENG-9"))
+    ) {
+      await Bun.sleep(20);
+    }
+    expect(tracker.progress.some((update) => update.body.includes("Working on ENG-9"))).toBe(true);
+    await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+    await running;
+    expect(stateOf(db, "ENG-9")).toBe("cancelled");
+    expect(tracker.statuses.some((update) => update.stateType === "canceled")).toBe(true);
+    expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    const agents = listRuns(db).map((run) => run.agent);
+    db.close();
+    await layout.cleanup();
+    expect(agents).toEqual([implementer]);
+  },
+  20_000,
+);
 
 test("a missing reviewer blocks the item and needs a person", async () => {
   const layout = await repoLayout();
@@ -611,6 +629,163 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await layout.cleanup();
   }
 }, 90_000);
+
+const invalidReviews: Array<{
+  name: string;
+  text: string;
+  stopReason?: "refusal" | "cancelled" | "max_tokens" | "max_turn_requests";
+}> = [
+  { name: "failure prose", text: "I could not review this change." },
+  { name: "empty reply", text: "" },
+  { name: "malformed JSON", text: "[{]" },
+  { name: "wrong JSON type", text: "{}" },
+  { name: "invalid finding", text: '[{"severity":"P1"}]' },
+  {
+    name: "mixed findings",
+    text: JSON.stringify([
+      { severity: "P2", location: "file.ts", explanation: "Observed", evidence: "Diff" },
+      {},
+    ]),
+  },
+  {
+    name: "empty finding field",
+    text: JSON.stringify([
+      { severity: "P1", location: "", explanation: "Observed", evidence: "Diff" },
+    ]),
+  },
+  {
+    name: "extra finding field",
+    text: JSON.stringify([
+      {
+        severity: "P1",
+        location: "file.ts",
+        explanation: "Observed",
+        evidence: "Diff",
+        extra: true,
+      },
+    ]),
+  },
+  { name: "refusal", text: "[]", stopReason: "refusal" },
+  { name: "cancellation", text: "[]", stopReason: "cancelled" },
+  { name: "token limit", text: "[]", stopReason: "max_tokens" },
+  { name: "turn limit", text: "[]", stopReason: "max_turn_requests" },
+];
+
+for (const review of invalidReviews) {
+  test(`ACP review ${review.name} blocks publication and merge`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "parent",
+        identifier: "ENG-1",
+        title: "Add export",
+        description: null,
+        subIssues: [{ linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" }],
+      },
+    ]);
+    const github = createFakeGitHub();
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    let reviews = 0;
+    let launches = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch(input) {
+        launches += 1;
+        const scriptPath = path.join(layout.root, `review-script-${launches}.json`);
+        const script: FakeScript =
+          input.purpose === "review"
+            ? {
+                steps: [
+                  {
+                    type: "update",
+                    update: {
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: review.text },
+                    },
+                  },
+                  { type: "end", stopReason: review.stopReason ?? "end_turn" },
+                ],
+              }
+            : { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
+        if (input.purpose === "review") reviews += 1;
+        writeFileSync(scriptPath, JSON.stringify(script));
+        return {
+          command: process.execPath,
+          args: [fakeAgent, "", scriptPath],
+          env: process.env,
+        };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+      for (let ticks = 0; ticks < 20; ticks += 1) {
+        if ((await jobs.tick()) === null) break;
+      }
+      expect(reviews, debug(layout, db)).toBeGreaterThan(0);
+      expect(github.opened, debug(layout, db)).toHaveLength(0);
+      expect(github.merged, debug(layout, db)).toHaveLength(0);
+      expect(stateOf(db, "ENG-2"), debug(layout, db)).not.toBe("merged");
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
+
+test("ACP review timeout rejects a partial clean array", async () => {
+  const layout = await repoLayout();
+  const scriptPath = path.join(layout.root, "timeout-review.json");
+  const script: FakeScript = {
+    steps: [
+      {
+        type: "update",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
+      },
+      { type: "hang" },
+    ],
+  };
+  writeFileSync(scriptPath, JSON.stringify(script));
+  const reviewer = createAcpCodexReviewer({
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    timeoutMs: 500,
+    launch: () => ({
+      command: process.execPath,
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
+    }),
+  });
+  try {
+    const head = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    await expect(
+      reviewer.review({
+        worktree: path.join(layout.root, "seed"),
+        taskId: "timeout-review",
+        itemId: "adversarial-review",
+        base: head,
+        head,
+        candidate: { session: "implementer", model: "claude", provider: "anthropic" },
+      }),
+    ).rejects.toThrow("timeout");
+  } finally {
+    await layout.cleanup();
+  }
+}, 15_000);
 
 type DemoSeed = {
   parent: { title: string; description: string };

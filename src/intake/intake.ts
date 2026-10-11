@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { IssueBrief } from "../core";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
@@ -66,6 +67,12 @@ export async function intakeDelegatedIssue(
     identifier: snapshot.identifier,
     title: snapshot.title,
     ordered: ordered.ordered,
+    briefs: new Map(
+      (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+        issue.linearIssueId,
+        { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+      ]),
+    ),
     edges,
     now,
   });
@@ -79,6 +86,23 @@ export async function intakeDelegatedIssue(
     ),
   );
   return { ok: true, epic: saved.epic, items: saved.items, alreadyExisted: false };
+}
+
+function issueBrief(issue: {
+  linearIssueId: string;
+  identifier: string;
+  title: string;
+  description?: string | null;
+  acceptanceCriteria?: string | null;
+}): IssueBrief {
+  return {
+    source: issue.linearIssueId.startsWith("github:") ? "github" : "linear",
+    issueId: issue.linearIssueId,
+    identifier: issue.identifier,
+    title: issue.title,
+    description: issue.description ?? null,
+    acceptanceCriteria: issue.acceptanceCriteria ?? null,
+  };
 }
 
 function replay(db: Database, epic: StoredEpic): IntakeResult {

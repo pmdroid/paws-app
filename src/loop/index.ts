@@ -3,6 +3,7 @@ export {
   FIRST_ACTIVITY_MS,
   LINEAR_STALE_MS,
   activityFromAcpEvent,
+  createAcpActivityReporter,
   shouldKeepAlive,
   shouldPostFirstActivity,
 } from "./activity";
