@@ -30,6 +30,7 @@ export type ProgressUpdate = {
 
 export type Elicitation = {
   sessionId: string;
+  questionId?: string;
   body: string;
   options?: readonly string[];
 };

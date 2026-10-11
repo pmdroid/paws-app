@@ -602,6 +602,7 @@ export class Orchestrator {
             idempotencyKey: `ask:${opened.id}`,
             payload: {
               sessionId,
+              questionId: opened.id,
               body: elicitationBody(request.question, request.context),
               options,
             },

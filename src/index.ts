@@ -81,6 +81,7 @@ import {
 import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
+import { findOpenQuestion, type StoredQuestion } from "./questions";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -380,7 +381,7 @@ async function syncComments(
     const match = items.find((item) => item.linearIssueId === issueId);
     if (match === undefined) continue;
     mode.bind({ itemId: match.id, linearIssueId: issueId, sessionId: issueId });
-    const result = await mode.sync(issueId);
+    const result = await mode.sync(issueId, findOpenQuestion(db, issueId));
     for (const answer of result.resumed) {
       await orchestrator.onLinearEvent({
         dedupeKey: `comment-answer:${answer.questionId}`,
@@ -649,8 +650,9 @@ export async function ingestGitHubComments(
   issueId: string,
   deliver: (event: AcceptedLinearEvent) => Promise<void>,
   stop: (itemId: string, at: number) => void,
+  pending?: StoredQuestion | null,
 ): Promise<void> {
-  const result = await comments.sync(issueId);
+  const result = await comments.sync(issueId, pending);
   for (const answer of result.resumed) {
     await deliver({
       dedupeKey: `github-answer:${answer.questionId}`,
@@ -679,35 +681,41 @@ export function createGitHubCommentIngestor(
 ): (issueId: string) => Promise<void> {
   return (issueId) => {
     comments.bind({ itemId: issueId, issueId, sessionId: issueId });
-    return ingestGitHubComments(comments, issueId, deliver, (_key, requestedAt) => {
-      const epic = db
-        .query<{ id: string; state: EpicState }, [string]>(
-          "SELECT id, state FROM epic WHERE linear_issue_id = ?",
-        )
-        .get(issueId);
-      if (epic !== null) {
-        const cancelled = transitionEpic(epic.state, "cancel");
-        if (cancelled.ok) {
-          db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
-            cancelled.to,
-            epic.id,
-            epic.state,
-          ]);
+    return ingestGitHubComments(
+      comments,
+      issueId,
+      deliver,
+      (_key, requestedAt) => {
+        const epic = db
+          .query<{ id: string; state: EpicState }, [string]>(
+            "SELECT id, state FROM epic WHERE linear_issue_id = ?",
+          )
+          .get(issueId);
+        if (epic !== null) {
+          const cancelled = transitionEpic(epic.state, "cancel");
+          if (cancelled.ok) {
+            db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
+              cancelled.to,
+              epic.id,
+              epic.state,
+            ]);
+          }
         }
-      }
-      const targets = db
-        .query<{ id: string }, [string, string]>(
-          `SELECT work_item.id FROM work_item
+        const targets = db
+          .query<{ id: string }, [string, string]>(
+            `SELECT work_item.id FROM work_item
            JOIN epic ON epic.id = work_item.epic_id
            WHERE work_item.state NOT IN ('merged', 'cancelled')
              AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
            ORDER BY work_item.position, work_item.id`,
-        )
-        .all(issueId, issueId);
-      for (const { id } of targets) {
-        submit({ type: "stop", itemId: id, source: "linear", requestedAt });
-      }
-    });
+          )
+          .all(issueId, issueId);
+        for (const { id } of targets) {
+          submit({ type: "stop", itemId: id, source: "linear", requestedAt });
+        }
+      },
+      findOpenQuestion(db, issueId),
+    );
   };
 }
 

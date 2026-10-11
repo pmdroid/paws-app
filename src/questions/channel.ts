@@ -2,6 +2,7 @@ import type { ItemId } from "../core";
 
 export type AskTeamInput = {
   itemId: ItemId;
+  questionId?: string;
   title: string;
   body: string;
   options?: readonly string[];
