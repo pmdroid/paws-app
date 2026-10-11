@@ -28,22 +28,24 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
       }
       const budget = budgetFromHeaders(response.headers);
       rememberLinearBudget(client, budget);
-      const json: unknown = await response.json();
+      const json: unknown = await response.json().catch(() => null);
       const limited = rateLimitFrom(response, json, budget);
       if (limited !== null) throw limited;
-      if (!response.ok) {
-        throw new Error(`Linear GraphQL HTTP ${response.status}`);
-      }
-      if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
-      const errors = json["errors"];
+      const errors = isRecord(json) ? json["errors"] : undefined;
+      let message: string | null = null;
       if (Array.isArray(errors) && errors.length > 0) {
         const first = errors[0];
-        const message =
+        message =
           isRecord(first) && typeof first["message"] === "string"
             ? first["message"]
             : "request failed";
-        throw new Error(`Linear GraphQL: ${message}`);
       }
+      if (!response.ok) {
+        const detail = message !== null ? `: ${message}` : "";
+        throw new Error(`Linear GraphQL HTTP ${response.status}${detail}`);
+      }
+      if (message !== null) throw new Error(`Linear GraphQL: ${message}`);
+      if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       if (json["data"] === undefined) throw new Error("Linear GraphQL returned no data");
       return json["data"];
     },

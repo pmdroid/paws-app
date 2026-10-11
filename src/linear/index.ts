@@ -10,6 +10,7 @@ export type {
   PolledActivity,
   PolledComment,
   PolledIssue,
+  PolledSession,
 } from "./catchup";
 export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
 export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
