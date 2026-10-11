@@ -26,6 +26,7 @@ import {
   type LinearCommand,
 } from "./core";
 import {
+  assertLinearQueue,
   enqueueCommand,
   listWorkItemsByStates,
   migrate,
@@ -49,7 +50,6 @@ import {
   githubTrackerConfig,
   loadGitHubEpic,
   parseGitHubIssueKey,
-  startGitHubIssuePoller,
   type FetchLike,
   type GitHubIssuesClient,
 } from "./ghissues";
@@ -73,7 +73,6 @@ import {
 import {
   attachOrchestrator,
   itemPathId,
-  routeBySource,
   worktreeBranch,
   type GitHubBinding,
   type Orchestrator,
@@ -110,8 +109,10 @@ const LOOPBACK = "127.0.0.1";
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
   const envSource = source ?? process.env;
   const runtime = loadRuntime(envSource);
+  if (runtime.configError !== null) throw new Error(runtime.configError);
   const env = { ...runtime.env, host: LOOPBACK };
   const paths = pawsPaths(env.home);
+  assertLinearQueue(paths.db);
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
@@ -119,17 +120,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   const repository = repositoryBinding(runtime.repo);
-  const useLinear = runtime.trackerKind !== "github";
-  const useGitHub = runtime.trackerKind !== "linear";
   const auth = repository === null ? null : authProvider(runtime, repository);
   const github = githubBinding(auth);
-  const webhooks = useLinear && runtime.webhooks;
+  const webhooks = runtime.webhooks;
   const channel: "comments" | "agent-session" =
-    useLinear && runtime.linearMode === "agent-session" ? "agent-session" : "comments";
+    runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const docker = sandboxOptions(options);
   const inbox = createInboxStore(db);
-  let githubPoller: { stop(): void; pollNow(): Promise<void> } | null = null;
-  let githubSync: ReturnType<typeof setInterval> | null = null;
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
     if (orchestrator === null) throw new Error("loop is not attached");
@@ -144,7 +141,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 
   const linear =
-    useLinear && channel === "agent-session"
+    channel === "agent-session"
       ? openLinear({
           db,
           secretsDir: paths.secretsDir,
@@ -185,28 +182,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
 
-  const comment = useLinear && channel === "comments" ? openComments(runtime) : null;
-  const githubWork =
-    useGitHub && auth !== null && repository !== null
-      ? openGitHubWork({
-          provider: auth,
-          owner: repository.owner,
-          repo: repository.repo,
-          repos: runtime.trackerGithub.repos,
-          triggerLabel: runtime.trackerGithub.triggerLabel,
-          mention: runtime.trackerGithub.mention,
-          trusted: runtime.trackerGithub.trusted,
-          labels: runtime.trackerGithub.statusLabels,
-        })
-      : null;
-  const linearPort =
+  const comment = channel === "comments" ? openComments(runtime) : null;
+  const tracker =
     comment !== null
       ? commentTracker(db, comment.tracker, comment.mode)
       : (linear?.tracker ?? null);
-  const tracker =
-    linearPort !== null && githubWork !== null
-      ? routeBySource({ linear: linearPort, github: githubWork.tracker })
-      : (githubWork?.tracker ?? linearPort);
   const loops = startLoops({
     db,
     signal: abort.signal,
@@ -219,7 +199,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         tracker,
         catchUp: async () => {
           await running.catchUp();
-          await githubPoller?.pollNow();
         },
         repository,
         github,
@@ -260,27 +239,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     };
   }
 
-  if (githubWork !== null) {
-    const deliver = async (event: AcceptedLinearEvent): Promise<void> => {
-      if (orchestrator === null) throw new Error("loop is not attached");
-      await orchestrator.onLinearEvent(event);
-    };
-    const ingest = createGitHubCommentIngestor(db, githubWork.comments, deliver, submit);
-    githubPoller = startGitHubIssuePoller({
-      db,
-      client: githubWork.client,
-      onTrigger: (event) => deliver(githubCreatedEvent(event.issueId, event.updatedAtMs)),
-      onComment: (event) => ingest(event.issueId),
-    });
-    githubSync = setInterval(() => {
-      void syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : "github comment sync failed";
-        console.error(`github comment sync failed: ${message}`);
-      });
-    }, 5_000);
-    githubSync.unref?.();
-  }
-
   const host = startHost({
     db,
     signal: abort.signal,
@@ -304,7 +262,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     server,
     catchUp: async () => {
       await running.catchUp();
-      await githubPoller?.pollNow();
     },
     tunnelUp: () => running.tunnelUp(),
     get tunnelRequested() {
@@ -320,8 +277,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       prepareShutdown(db, Date.now(), (item) => {
         commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
       });
-      if (githubSync !== null) clearInterval(githubSync);
-      githubPoller?.stop();
       running.stop();
       server.stop(true);
       db.close();
@@ -362,7 +317,11 @@ function openComments(runtime: RuntimeConfig): CommentRuntime | null {
   };
 }
 
-function commentTracker(db: Database, base: TrackerAdapter, mode: CommentMode): TrackerAdapter {
+export function commentTracker(
+  db: Database,
+  base: TrackerAdapter,
+  mode: CommentMode,
+): TrackerAdapter {
   return withCommentActivities(base, {
     async postProgress(update) {
       bindIssue(db, mode, update.sessionId);
@@ -386,10 +345,10 @@ function bindIssue(db: Database, mode: CommentMode, sessionId: string): void {
   });
 }
 
-async function syncComments(
+export async function syncComments(
   db: Database,
   mode: CommentMode,
-  orchestrator: Orchestrator,
+  orchestrator: Pick<Orchestrator, "bus" | "onLinearEvent">,
 ): Promise<void> {
   const items = listWorkItemsByStates(db, WORK_ITEM_STATES);
   const issues = new Set(items.map((item) => item.linearIssueId));
@@ -749,25 +708,6 @@ export function createGitHubCommentIngestor(
       findOpenQuestion(db, issueId),
     );
   };
-}
-
-async function syncOpenGitHubIssues(
-  db: Database,
-  ingest: (issueId: string) => Promise<void>,
-): Promise<void> {
-  const issues = new Set<string>();
-  for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
-    if (!item.linearIssueId.startsWith("github:")) continue;
-    if (item.state === "merged" || item.state === "cancelled") continue;
-    issues.add(item.linearIssueId);
-  }
-  const epics = db.query<{ linear_issue_id: string }, []>("SELECT linear_issue_id FROM epic").all();
-  for (const epic of epics) {
-    if (epic.linear_issue_id.startsWith("github:")) issues.add(epic.linear_issue_id);
-  }
-  for (const issueId of issues) {
-    await ingest(issueId);
-  }
 }
 
 function githubCommentRequest(

@@ -1,6 +1,6 @@
 # GitHub sign-in
 
-Paws supports GitHub App browser sign-in with repository work performed by the App bot, and OAuth App device sign-in with work performed as your account. Issue polling, triggers, and comments are in [GitHub issues](github-issues.md).
+Paws supports GitHub App browser sign-in with repository work performed by the App bot, and OAuth App device sign-in with work performed as your account. Linear intake and questions are described in [Linear modes](linear-modes.md).
 
 ## GitHub App sign-in
 
@@ -19,7 +19,7 @@ Paws opens the App's authorization page. After you approve it, Paws checks your 
 
 The private key and App credentials are envelope-encrypted and saved as `~/.paws/secrets/github-app.pem` and `github-app.json`, both mode `0600`, inside the mode `0700` secrets directory. Subsequent starts load these files. Environment variables override saved credentials. Your sign-in token uses the token store described below. Repository operations mint installation tokens and appear as `<app-slug>[bot]`.
 
-With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. Setup keeps App mode for GitHub, Linear, and combined trackers.
+With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. Setup preserves App mode when connecting Linear.
 
 ## OAuth App device sign-in
 
@@ -38,7 +38,7 @@ The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. T
 The request asks for `repo` and `read:org`.
 
 - `repo` covers issues, contents, pull requests, and merges on the repositories you grant.
-- `read:org` covers organization membership. [GitHub issues](github-issues.md) uses that membership for the `MEMBER` trust rule.
+- `read:org` covers organization membership.
 
 The `workflow` scope stays off the request. GitHub then rejects a push that changes files under `.github/workflows`. An implementer working with this token cannot edit Actions workflows. Scope names are GitHub's: [Scopes for OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps).
 
@@ -88,7 +88,7 @@ Setup writes `auth = "oauth"` after the device flow succeeds and preserves `auth
 
 `github.auth = "gh"` takes a fresh `gh auth token` for each operation. Log in with `gh auth login` first. Paws does not copy that token into `~/.paws/secrets`.
 
-`github.auth = "app"` mints a GitHub App installation token. That is the optional path that can act as its own bot user. The default tracker in [GitHub issues](github-issues.md) does its work with the user token from this page.
+`github.auth = "app"` mints a GitHub App installation token. That is the optional path that can act as its own bot user.
 
 ## Create an OAuth App
 

@@ -19,7 +19,7 @@ const selected = await selectImplementer({
   write: (text) => output.push(text),
 });
 let reads = 0;
-const setupCode = await runSetup(["--tracker", "github"], {
+const setupCode = await runSetup(["--tracker", "linear"], {
   env: process.env,
   stdout: (line) => output.push(line),
   stderr: (line) => output.push(line),

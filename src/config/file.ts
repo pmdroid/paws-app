@@ -196,19 +196,7 @@ export function renderConfigToml(config: PawsSetupConfig): string {
   }
   lines.push(`repo = ${tomlString(config.repo)}`);
   if (config.trackerKind !== undefined) {
-    const github = config.trackerGithub ?? DEFAULT_TRACKER_GITHUB;
-    lines.push(
-      "",
-      "[tracker]",
-      `kind = ${tomlString(config.trackerKind)}`,
-      "",
-      "[tracker.github]",
-      `trigger_label = ${tomlString(github.triggerLabel)}`,
-      `mention = ${tomlString(github.mention)}`,
-      `trusted = ${tomlStringArray(github.trusted)}`,
-      `repos = ${tomlStringArray(github.repos)}`,
-      `status_labels = ${github.statusLabels ? "true" : "false"}`,
-    );
+    lines.push("", "[tracker]", `kind = ${tomlString(config.trackerKind)}`);
   }
   lines.push(
     "",
@@ -251,10 +239,6 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   renameSync(tmp, path);
   chmodSync(path, 0o600);
   return true;
-}
-
-function tomlStringArray(values: readonly string[]): string {
-  return `[${values.map((value) => tomlString(value)).join(", ")}]`;
 }
 
 function tomlString(value: string): string {

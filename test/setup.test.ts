@@ -702,7 +702,12 @@ async function run(
 ): Promise<{ code: number; stdout: string[]; stderr: string[] }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: scene.bin, ...extra?.env };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: scene.bin,
+    GITHUB_AUTH: "gh",
+    ...extra?.env,
+  };
   delete env.PAWS_GITHUB_REPOSITORY;
   delete env.PAWS_HOME;
   const code = await runSetup(args, {
@@ -860,7 +865,7 @@ const SETUP_TOKEN = "gho_setup_secret_token_value";
 
 describe("paws setup github", () => {
   test("GitHub App setup keeps bot auth for GitHub and Linear without gh", async () => {
-    for (const tracker of ["github", "linear"]) {
+    for (const tracker of ["linear"]) {
       const scene = await arrange({ policy: "custom: true\n", gh: null });
       writeBin(scene.bin, "git", recordingGit(join(scene.root, "git.log")));
       const keyPath = join(scene.root, "app.pem");
@@ -940,7 +945,7 @@ describe("paws setup github", () => {
       expect(code).toBe(0);
       expect(loadConfigFile(scene.paths.configFile).githubAuth).toBe("app");
       expect(botRequests).toContain("/repos/acme/widgets");
-      expect(github.labels.length).toBe(tracker === "github" ? 4 : 0);
+      expect(github.labels).toEqual([]);
       expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
       options.env = setupEnv(scene);
       const restarted = await runSetup(["--yes", ...args], options);
@@ -953,7 +958,19 @@ describe("paws setup github", () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const stderr: string[] = [];
     const code = await runSetup(
-      ["--yes", "--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--yes",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: setupEnv(scene),
         cwd: scene.checkout,
@@ -975,11 +992,24 @@ describe("paws setup github", () => {
     const github = new FakeGitHubApi();
     const stderr: string[] = [];
     const code = await runSetup(
-      ["--yes", "--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--yes",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: { ...setupEnv(scene), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: () => undefined,
         stderr: (line) => stderr.push(line),
         github: {
@@ -997,11 +1027,23 @@ describe("paws setup github", () => {
     const github = new FakeGitHubApi();
     const stderr: string[] = [];
     const code = await runSetup(
-      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: setupEnv(scene),
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: () => undefined,
         stderr: (line) => stderr.push(line),
         readLine: async () => {
@@ -1019,7 +1061,7 @@ describe("paws setup github", () => {
     expect(github.deviceCodes).toBe(0);
   });
 
-  test("device flow, repo picker, bare mirror, tracker, and labels", async () => {
+  test("device flow, repo picker, bare mirror, and Linear tracking", async () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const gitLog = join(scene.root, "git.log");
     writeFileSync(join(scene.bin, "git"), recordingGit(gitLog), { mode: 0o755 });
@@ -1034,11 +1076,23 @@ describe("paws setup github", () => {
     const stdout: string[] = [];
     const lines = ["", "1"];
     const result = await runSetup(
-      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: { ...setupEnv(scene, gitLog), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: (line) => stdout.push(line),
         stderr: (line) => {
           throw new Error(line);
@@ -1060,20 +1114,13 @@ describe("paws setup github", () => {
     expect(lines).toEqual([]);
     expect(opened).toEqual(["https://github.com/login/device"]);
     expect(github.repoPages).toBe(2);
-    expect(github.labels).toEqual(["paws", "paws:running", "paws:awaiting-input", "paws:done"]);
+    expect(github.labels).toEqual([]);
     expect(github.bodies.join("\n")).not.toContain("client_secret");
     const parsed = loadConfigFile(scene.paths.configFile);
     expect(parsed.githubAuth).toBe("oauth");
     expect(parsed.oauthClientId).toBe("Iv1.real-client");
     expect(github.deviceAccepts).toEqual(["application/json"]);
-    expect(parsed.trackerKind).toBe("github");
-    expect(parsed.trackerGithub).toMatchObject({
-      triggerLabel: "paws",
-      mention: "@paws",
-      statusLabels: true,
-      trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
-      repos: [],
-    });
+    expect(parsed.trackerKind).toBe("linear");
     expect(parsed.repo).toBe("acme/widgets");
     expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
     const recorded = readFileSync(gitLog, "utf8");
@@ -1114,11 +1161,16 @@ describe("paws setup github", () => {
         scene.checkout,
         "--implementer",
         "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
       ],
       {
         env: setupEnv(scene, gitLog),
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: () => undefined,
         stderr: (line) => {
           throw new Error(line);
@@ -1155,11 +1207,23 @@ describe("paws setup github", () => {
     const github = new FakeGitHubApi();
     const lines = ["", "1"];
     const code = await runSetup(
-      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: setupEnv(scene, gitLog),
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: () => undefined,
         stderr: (line) => {
           throw new Error(line);
@@ -1187,11 +1251,23 @@ describe("paws setup github", () => {
       );
     const stderr: string[] = [];
     const code = await runSetup(
-      ["--home", scene.home, "--checkout", scene.checkout, "--implementer", "claude"],
+      [
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--implementer",
+        "claude",
+        "--linear-api-key",
+        API_KEY,
+        "--linear-team",
+        "ENG",
+      ],
       {
         env: { ...setupEnv(scene), PAWS_GITHUB_CLIENT_ID: "Iv1.real-client" },
         cwd: scene.checkout,
-        fetch: github.fetch,
+        fetch: (url, init) =>
+          url.includes("api.linear.app") ? scene.linear.fetch(url, init) : github.fetch(url, init),
         stdout: () => undefined,
         stderr: (line) => stderr.push(line),
         readLine: async () => {

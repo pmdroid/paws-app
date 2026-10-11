@@ -12,15 +12,10 @@ import {
   openDatabase,
   submitCommand,
 } from "../../src/db";
-import { createFakeGitHubComments, type GitHubCommentMethod } from "../../src/ghcomments";
-import { startFakeGitHubRest, startGitHubIssuePoller, type FetchLike } from "../../src/ghissues";
+import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
+import { createFakeTracker } from "../../src/linear";
 import { createFakeGitHub, fakeMergeReadiness, type GitHubClient } from "../../src/github";
-import {
-  githubCreatedEvent,
-  ingestGitHubComments,
-  openGitHubWork,
-  startPaws,
-} from "../../src/index";
+import { commentTracker, syncComments, startPaws } from "../../src/index";
 import { attachOrchestrator, type AgentLaunch } from "../../src/loop";
 import { handleStatusRequest, parseStatusSnapshot } from "../../src/web";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
@@ -84,12 +79,6 @@ items:
 const reviewInstruction = "LOCAL_REVIEW_SENTINEL: verify the complete issue acceptance criteria.";
 const issueBody = "ACCEPTANCE_SENTINEL: preserve archived rows when the team answers yes.";
 const token = "local-fake-token";
-const provider = {
-  source: "oauth" as const,
-  token: async () => token,
-  user: async () => ({ login: "local-user", id: 1 }),
-};
-
 async function scenario(
   name: string,
   reviewerText = "[]",
@@ -116,83 +105,29 @@ async function scenario(
   await git("-C", seed, "commit", "-m", "Seed local acceptance policy");
   await git("-C", seed, "push", "origin", "HEAD:main");
   const initialHead = await git("--git-dir", bare, "rev-parse", "main");
-  const rest = startFakeGitHubRest();
   const clock = new FakeClock(Date.now());
-  const comments = createFakeGitHubComments({ clock, selfLogin: "local-user" });
+  const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
+  const commentMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });
   const pulls = createFakeGitHub();
-  const closed: number[] = [];
   const requests: unknown[] = [];
-  const author = { login: "local-user", id: 1 };
-  const children = [2, 3].map((number) => ({
-    number,
-    title: `Implement local item ${number}`,
-    body: issueBody,
-    user: author,
-    authorAssociation: "OWNER",
-    labels: [],
-    updatedAt: new Date(clock.now()).toISOString(),
-  }));
-  rest.addIssue("local", "fixture", {
-    number: 1,
-    title: "Local epic",
-    body: issueBody,
-    user: author,
-    authorAssociation: "OWNER",
-    labels: ["paws"],
-    updatedAt: new Date(clock.now()).toISOString(),
-  });
-  for (const child of children) rest.addIssue("local", "fixture", child);
-  rest.setSubIssues("local", "fixture", 1, children);
-  rest.setBlockedBy("local", "fixture", 3, [children[0]!]);
   const json = (body: unknown, status = 200) => Response.json(body, { status });
-  const routeFetch: FetchLike = async (input, init) => {
-    const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
-    );
-    assert.equal(url.origin, rest.origin);
-    const method = init?.method ?? "GET";
-    requests.push({ method, path: url.pathname });
-    if (method === "PATCH" && /\/issues\/\d+$/.test(url.pathname)) {
-      closed.push(Number(url.pathname.split("/").at(-1)));
-      return json({ state: "closed" });
-    }
-    if (method === "GET" && url.pathname.endsWith("/issues/comments")) {
-      return json(
-        comments.comments.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: { login: comment.login, id: 1 },
-          author_association: comment.association,
-          created_at: new Date(comment.createdAtMs).toISOString(),
-          updated_at: new Date(comment.createdAtMs).toISOString(),
-          issue_url: `${rest.origin}/repos/local/fixture/issues/${comment.issueNumber}`,
-        })),
-      );
-    }
-    if (url.pathname.includes("/comments") || url.pathname.includes("/labels")) {
-      const response = await comments.request({
-        method: method as GitHubCommentMethod,
-        path: `${url.pathname}${url.search}`,
-        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
-      });
-      return new Response(JSON.stringify(response.body), {
-        status: response.status,
-        headers: {
-          "content-type": "application/json",
-          ...(response.link ? { link: response.link } : {}),
-        },
-      });
-    }
-    return fetch(url, init);
-  };
-  const work = openGitHubWork({
-    provider,
-    owner: "local",
-    repo: "fixture",
-    fetch: routeFetch,
-    baseUrl: rest.origin,
-    clock,
-  });
+  const linear = createFakeTracker([
+    {
+      linearIssueId: "issue-1",
+      identifier: "LOCAL-1",
+      title: "Local epic",
+      description: issueBody,
+      subIssues: [2, 3].map((number) => ({
+        linearIssueId: `issue-${number}`,
+        identifier: `LOCAL-${number}`,
+        title: `Implement local item ${number}`,
+        description: issueBody,
+      })),
+    },
+  ]);
+  linear.deps.set("issue-3", [
+    { blockerLinearIssueId: "issue-2", blockedLinearIssueId: "issue-3" },
+  ]);
   const client: GitHubClient = {
     async request(request) {
       requests.push(request);
@@ -308,7 +243,7 @@ async function scenario(
     outbox,
     pawsRoot,
     home: process.env.HOME,
-    tracker: work.tracker,
+    tracker: commentTracker(db, linear, commentMode),
     repository: { owner: "local", repo: "fixture", remoteUrl: bare },
     github: {
       appId: "",
@@ -335,20 +270,18 @@ async function scenario(
   };
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", interrupt);
-  const poller = startGitHubIssuePoller({
-    db,
-    client: work.client,
-    onTrigger: (event) =>
-      orchestrator.onLinearEvent(githubCreatedEvent(event.issueId, event.updatedAtMs)),
-    onComment: (event) =>
-      ingestGitHubComments(
-        work.comments,
-        event.issueId,
-        (accepted) => orchestrator.onLinearEvent(accepted),
-        (itemId) => {
-          throw new Error(`Unexpected stop: ${itemId}`);
-        },
-      ),
+  await orchestrator.onLinearEvent({
+    dedupeKey: "local-created",
+    deliveryId: null,
+    source: "poll",
+    action: "created",
+    sessionId: "issue-1",
+    issueId: "issue-1",
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs: clock.now(),
+    payload: "{}",
   });
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -386,12 +319,12 @@ async function scenario(
           );
         clock.advance(6_000);
         comments.post({
-          issueNumber: question.issueNumber,
+          issueId: question.issueId,
+          parentId: question.id,
           body: "yes",
-          login: "local-user",
-          association: "OWNER",
+          userId: "teammate",
         });
-        await poller.pollNow();
+        await syncComments(db, commentMode, orchestrator);
       }
       await Bun.sleep(10);
     }
@@ -414,8 +347,6 @@ async function scenario(
     }
     stopped = true;
     await answerer;
-    poller.stop();
-    await poller.settled;
     const snapshot = await (await fetch(`${origin}/api/status`)).json();
     assert(parseStatusSnapshot(snapshot).ok);
     const states = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
@@ -431,7 +362,6 @@ async function scenario(
       comments: comments.comments,
       pulls: pulls.opened,
       merged: pulls.merged,
-      closed,
       requests,
       jobs: listJobs(db),
       snapshot,
@@ -457,10 +387,7 @@ async function scenario(
   } finally {
     stopped = true;
     await answerer;
-    poller.stop();
-    await poller.settled;
     await server.stop(true);
-    await rest.stop();
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", interrupt);
     db.close();
@@ -533,8 +460,8 @@ try {
   observe(
     "one final completion preserves complete results from both ACP turns",
     completed.length === 1 &&
-      completed[0]!.body.includes("fixture#2: Verified locally.") &&
-      completed[0]!.body.includes("fixture#3: Verified locally.") &&
+      completed[0]!.body.includes("LOCAL-2: Verified locally.") &&
+      completed[0]!.body.includes("LOCAL-3: Verified locally.") &&
       !happy.comments.some((comment) => /^Paws: (I|Verified)\n/.test(comment.body)),
     happy.comments
       .filter((comment) => comment.body.includes("Verified"))
