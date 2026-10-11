@@ -71,7 +71,15 @@ export type {
   CloseoutStepState,
 } from "./run/progress";
 export { scrubText } from "./run/scrub";
-export { addReview, decision, digest, run, validate } from "./facade";
+export {
+  addReview,
+  decision,
+  digest,
+  policyFixBudget,
+  retryBaseline,
+  run,
+  validate,
+} from "./facade";
 export type {
   AddReviewInput,
   AddReviewResult,
@@ -82,6 +90,7 @@ export type {
   ValidateResult,
 } from "./facade";
 
+export { loadReviewMaterial, renderReviewPrompt } from "./review/index";
 export { createReviewer, FINDING_FORMAT, formatFixFeedback, parseFindings } from "./review/index";
 export type {
   FeedbackRecord,

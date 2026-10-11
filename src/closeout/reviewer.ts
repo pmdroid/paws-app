@@ -18,6 +18,7 @@ export type ReviewRequest = {
   base: string;
   head: string;
   candidate: CandidateIdentity;
+  prompt?: string;
 };
 
 export type ReviewResult = {

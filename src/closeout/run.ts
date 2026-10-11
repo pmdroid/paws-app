@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
 import type { FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
 import type { CodexReviewer } from "./reviewer";
@@ -18,6 +20,10 @@ import { isSha, readHead } from "./worktree";
 import {
   addReview,
   credentialSecrets,
+  policyFixBudget,
+  loadReviewMaterial,
+  renderReviewPrompt,
+  retryBaseline as readRetryBaseline,
   decision as decide,
   run,
   scrubText,
@@ -39,6 +45,8 @@ export type EvaluateInput = {
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   progress?: CloseoutProgress;
+  retryBaseline?: readonly string[];
+  bypasses?: readonly CloseoutBypass[];
 };
 
 export type Evaluation = {
@@ -48,6 +56,7 @@ export type Evaluation = {
   error?: string;
   reviewFindings: Array<{ itemId: string; findings: Finding[] }>;
   head: string;
+  bypasses?: readonly CloseoutBypass[];
 };
 
 export type GateInput = {
@@ -65,6 +74,8 @@ export type GateInput = {
   pawsHome?: string;
   maxFixAttempts?: number;
   progress?: CloseoutProgress;
+  retryBaseline?: readonly string[];
+  bypasses?: readonly CloseoutBypass[];
 };
 
 /**
@@ -77,9 +88,10 @@ const liveIdentity = new WeakMap<CloseoutProgress, CloseoutProgressIdentity>();
 
 export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluation> {
   if (input.progress) liveIdentity.delete(input.progress);
-  const evaluation = await evaluateUnsealed(
+  const native = await evaluateUnsealed(
     input.progress === undefined ? input : { ...input, progress: observe(input.progress) },
   );
+  const evaluation = applyBypasses(native, input.bypasses ?? []);
   seal(input.progress, evaluation.outcome);
   return evaluation;
 }
@@ -139,6 +151,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       candidate: input.candidate,
       evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(input.progress !== undefined ? { progress: input.progress } : {}),
     });
@@ -182,6 +195,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       candidate: input.candidate,
       evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -217,8 +231,8 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
  * results do not merge.
  */
 export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
-  const maxFixAttempts = input.maxFixAttempts ?? MAX_FIX_ATTEMPTS;
-  if (!Number.isInteger(maxFixAttempts) || maxFixAttempts < 0) {
+  let maxFixAttempts = input.maxFixAttempts;
+  if (maxFixAttempts !== undefined && (!Number.isInteger(maxFixAttempts) || maxFixAttempts < 0)) {
     return finalResult(
       input,
       "invalid",
@@ -265,6 +279,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
       return finalResult(input, evaluation.outcome, fixAttempts, evaluations, head, evaluation);
     }
 
+    maxFixAttempts ??= policyFixBudget(input.worktree, input.home) ?? MAX_FIX_ATTEMPTS;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
@@ -281,9 +296,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
         head,
         items: evaluation.decision?.items ?? [],
         reviewFindings: evaluation.reviewFindings,
-        summary: evaluation.decision
-          ? formatFixFeedback(evaluation.decision, evaluation.reviewFindings)
-          : (evaluation.error ?? "closeout rejected the candidate"),
+        summary: await repairFeedback(input, evaluation),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -322,6 +335,45 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
   }
 }
 
+export function snapshotRetryBaseline(taskId: string, pawsHome?: string): Promise<string[]> {
+  return readRetryBaseline(evidencePath(taskId, pawsHome));
+}
+
+async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise<string> {
+  const decision = evaluation.decision;
+  if (decision === null) return evaluation.error ?? "closeout rejected the candidate";
+  const waived = new Set(evaluation.bypasses?.flatMap((approval) => [...approval.checkIds]) ?? []);
+  const parts = [
+    formatFixFeedback(
+      { ...decision, items: decision.items.filter((item) => !waived.has(item.id)) },
+      evaluation.reviewFindings,
+    ),
+  ];
+  for (const item of decision.items) {
+    if (
+      waived.has(item.id) ||
+      item.kind !== "command" ||
+      item.state !== "failed" ||
+      item.attempt === undefined
+    )
+      continue;
+    const file = path.join(
+      evidencePath(input.taskId, input.pawsHome),
+      "logs",
+      decision.policy.digest?.replace(/^sha256:/, "") ?? "",
+      decision.head,
+      ...item.id.split("/"),
+      `${item.attempt}.log`,
+    );
+    try {
+      parts.push(`${item.id} output:\n${scrub((await readFile(file, "utf8")).slice(-4000))}`);
+    } catch {
+      parts.push(`${item.id} log is unavailable.`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
 async function addReviewEvidence(
   input: EvaluateInput,
   items: CloseoutItem[],
@@ -344,10 +396,21 @@ async function addReviewEvidence(
         candidate: input.candidate,
         evidenceDir,
         ...(input.home !== undefined ? { home: input.home } : {}),
+        ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
         reviewer: {
           async review(request) {
             const result = await input.reviewer.review({
               worktree: request.worktree,
+              prompt: renderReviewPrompt(
+                await loadReviewMaterial({
+                  repo: request.worktree,
+                  skill: request.item.skill,
+                  base: request.base,
+                  head: request.head,
+                }),
+                request.base,
+                request.head,
+              ),
               taskId: input.taskId,
               itemId: request.item.id,
               base: request.base,
@@ -633,6 +696,7 @@ async function finalResult(
       decision,
     }),
   ];
+  if (evaluation?.bypasses?.length) summaryParts.push(bypassSummary(evaluation.bypasses));
   if (error) summaryParts.push(error);
   if (evaluation?.error && evaluation.error !== error) summaryParts.push(evaluation.error);
   const result: GateResult = {
@@ -645,6 +709,7 @@ async function finalResult(
     exitCode: evaluation?.exitCode ?? null,
     decision,
     summary: summaryParts.join("\n"),
+    ...(evaluation?.bypasses ? { bypasses: evaluation.bypasses } : {}),
   };
   if (input.reportDir) {
     result.reportPath = await writeVerdictReport(input.reportDir, result);

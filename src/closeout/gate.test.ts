@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { createCloseoutGate } from "./gate";
 import type { FixRunner } from "./fixer";
-import { runCloseoutGate } from "./run";
+import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
 import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
 
@@ -154,6 +154,9 @@ describe("closeout gate", () => {
       reviewer: {
         async review(request) {
           reviews.push(request.itemId);
+          expect(request.prompt).toContain(
+            "Report findings. An empty list means the change is fine.",
+          );
           return {
             session: "codex-session",
             model: "codex",
@@ -203,6 +206,188 @@ describe("closeout gate", () => {
     expect(result.summary).toContain("exhausted");
     expect(fixes).toBe(0);
     await repo.cleanup();
+  });
+
+  test("an audited retry baseline gives a fresh bounded round without deleting evidence", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([commandUntilOk("test")], 2),
+    });
+    try {
+      const fixes: number[] = [];
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+        fixer: committingFixer(repo.dir, fixes),
+      };
+      expect((await runCloseoutGate(input)).outcome).toBe("exhausted");
+      expect(fixes).toEqual([1]);
+      const baseline = await snapshotRetryBaseline(TASK, repo.pawsHome);
+      expect(baseline).toHaveLength(2);
+      const second = await runCloseoutGate({
+        ...input,
+        retryBaseline: baseline,
+        fixer: committingFixer(repo.dir, fixes, "second-round.txt"),
+      });
+      expect(second.outcome).toBe("exhausted");
+      expect(second.fixAttempts).toBe(1);
+      const nextBaseline = await snapshotRetryBaseline(TASK, repo.pawsHome);
+      expect(nextBaseline).toHaveLength(4);
+      expect(nextBaseline).toEqual(expect.arrayContaining(baseline));
+      await writeFile(path.join(repo.dir, "ok.txt"), "ok\n");
+      await exec("git", ["-C", repo.dir, "add", "ok.txt"]);
+      await exec("git", ["-C", repo.dir, "commit", "-m", "human-guided fix"]);
+      expect((await runCloseoutGate(input)).outcome).toBe("exhausted");
+      expect((await runCloseoutGate({ ...input, retryBaseline: nextBaseline })).outcome).toBe(
+        "accepted",
+      );
+      expect((await snapshotRetryBaseline(TASK, repo.pawsHome)).length).toBeGreaterThan(4);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a bypass is selected, audited and bound to task, base, head and policy", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("first"), alwaysFail("second")], 1),
+    });
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+      };
+      const failed = await evaluateCandidate(input);
+      const approval = {
+        questionId: "question-1",
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        policyDigest: failed.decision!.policy.digest!,
+        checkIds: ["first"],
+        actor: "pascal",
+        reason: "Approved known failure for this candidate",
+      };
+      const partial = await evaluateCandidate({ ...input, bypasses: [approval] });
+      expect(partial.outcome).toBe("exhausted");
+      expect(partial.bypasses).toHaveLength(1);
+      const complete = { ...approval, checkIds: ["first", "second"] };
+      const accepted = await runCloseoutGate({
+        ...input,
+        bypasses: [complete],
+        fixer: committingFixer(repo.dir, []),
+      });
+      expect(accepted.outcome).toBe("accepted");
+      expect(accepted.decision?.decision).not.toBe("accepted");
+      expect(accepted.decision?.items.every((item) => item.state === "exhausted")).toBe(true);
+      expect(accepted.summary).toContain("approved by pascal");
+      expect(accepted.summary).toContain(complete.reason);
+      expect(accepted.summary).toContain(complete.questionId);
+      for (const mismatch of [
+        { taskId: "ENG-999" },
+        { base: "a".repeat(40) },
+        { head: "b".repeat(40) },
+        { policyDigest: "sha256:wrong" },
+        { actor: " " },
+        { reason: " " },
+        { checkIds: ["missing"] },
+      ]) {
+        const result = await evaluateCandidate({
+          ...input,
+          bypasses: [{ ...complete, ...mismatch }],
+        });
+        expect(result.outcome).toBe("exhausted");
+        expect(result.bypasses).toBeUndefined();
+      }
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("setup repairs and command repairs each receive their configured budget", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": JSON.stringify({
+        specVersion: "0.1",
+        retry: { maxFailedAttemptsPerItem: 2, scope: "task" },
+        setup: [{ id: "install", exec: ["sh", "-c", "test -f installed.txt"], timeoutSeconds: 30 }],
+        items: [commandUntilOk("test")],
+      }),
+    });
+    try {
+      const fixes: number[] = [];
+      const result = await runCloseoutGate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+        fixer: {
+          applyFix(request) {
+            return committingFixer(
+              repo.dir,
+              fixes,
+              request.fixAttempt === 1 ? "installed.txt" : "ok.txt",
+            ).applyFix(request);
+          },
+        },
+      });
+      expect(result.outcome).toBe("accepted");
+      expect(fixes).toEqual([1, 2]);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("bypassing setup cannot approve commands that never ran", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": JSON.stringify({
+        specVersion: "0.1",
+        retry: { maxFailedAttemptsPerItem: 1, scope: "task" },
+        setup: [{ id: "install", exec: ["sh", "-c", "exit 1"], timeoutSeconds: 30 }],
+        items: [alwaysPass("test")],
+      }),
+    });
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+      };
+      const failed = await evaluateCandidate(input);
+      const approval = {
+        questionId: "setup-question",
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        policyDigest: failed.decision!.policy.digest!,
+        checkIds: ["install"],
+        actor: "pascal",
+        reason: "Known setup failure",
+      };
+      const result = await evaluateCandidate({ ...input, bypasses: [approval] });
+      expect(result.outcome).toBe("blocked");
+      expect(result.decision?.items.find((item) => item.id === "test")?.message).toBe(
+        "setup failed",
+      );
+    } finally {
+      await repo.cleanup();
+    }
   });
 
   test("blocks when the worktree HEAD moves during review", async () => {
