@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   DEFAULT_MAX_AWAKE_MS,
   DEFAULT_MAX_TURNS,
@@ -24,6 +24,7 @@ import {
 } from "../db";
 import type { Spawn } from "./keep-awake";
 import { KeepAwake } from "./keep-awake";
+import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
 
@@ -89,6 +90,25 @@ function activities(db: ReturnType<typeof boot>["db"]) {
 }
 
 describe("laptop sleep and wake", () => {
+  test("an active run does not acquire a system sleep inhibitor", () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const clock = new FakeClock(1_000_000);
+    startRun(db, clock);
+    const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
+      throw new Error("The host must not spawn a sleep inhibitor");
+    });
+    const controller = new AbortController();
+    const host = startHost({ db, clock, signal: controller.signal });
+    try {
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      host.stop();
+      controller.abort();
+      spawn.mockRestore();
+      db.close();
+    }
+  });
   test("a short sleep with a live agent posts one resuming note and keeps the run", () => {
     const { clock, db, recorded, host } = boot(() => true);
     const { run } = startRun(db, clock);
