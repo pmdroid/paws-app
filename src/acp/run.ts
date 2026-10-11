@@ -43,7 +43,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "./types";
-import type { ChildProcess } from "node:child_process";
+import type { OwnedProcess } from "./process";
 
 const CLIENT_INFO = { name: "paws", version: "0.0.0" };
 
@@ -487,8 +487,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     result.agentExited = await stopChild(child, graceMs);
     result.pid = child.pid;
     result.transcriptPath = transcript;
-    await terminals.close(graceMs);
-    if (options.checkpoint !== false && !result.cancelled && !options.signal?.aborted) {
+    result.agentExited = (await terminals.close(graceMs)) && result.agentExited;
+    if (!result.agentExited) {
+      result.errorMessage = "ACP process cleanup could not be verified";
+      if (!result.cancelled) result.stopReason = "error";
+    }
+    if (
+      options.checkpoint !== false &&
+      result.agentExited &&
+      !result.cancelled &&
+      !options.signal?.aborted
+    ) {
       const reason = result.timedOut
         ? "timeout"
         : result.stopReason === "error"
@@ -533,7 +542,7 @@ interface PromptState {
 
 async function runPrompt(options: {
   ctx: ClientContext;
-  child: ChildProcess;
+  child: OwnedProcess;
   sessionId: string;
   prompt: ContentBlock[];
   state: PromptState;
@@ -677,7 +686,7 @@ function clientCapabilities() {
 }
 
 async function withConnection<T>(
-  child: ChildProcess,
+  child: OwnedProcess,
   op: (ctx: ClientContext) => Promise<T>,
 ): Promise<T> {
   if (!child.stdin || !child.stdout) throw new Error("agent stdio pipes were not created");
@@ -710,7 +719,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
 
 function baseResult(
   role: AgentRole,
-  child: ChildProcess,
+  child: OwnedProcess,
   fields: Partial<Omit<RunAgentResult, "role" | "pid" | "agentExited">> &
     Pick<RunAgentResult, "stopReason">,
 ): RunAgentResult {
