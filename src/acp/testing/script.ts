@@ -28,6 +28,11 @@ export type FakeStep =
     };
 
 export interface FakeScript {
+  sessionId?: string;
+  model?: string | null;
+  models?: string[];
+  modelError?: string;
+  confirmModel?: string;
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
@@ -37,6 +42,7 @@ export interface FakeScript {
 export interface FakeResult {
   methods: string[];
   prompts?: unknown[];
+  modelSelection?: unknown;
   argv?: string[];
   cwd?: string;
   authenticate?: unknown;

@@ -80,6 +80,7 @@ export {
   type GuardDecision,
   type PermissionSubject,
 } from "./permissions";
+export { probeAgentProfile } from "./probe";
 export { checkOwnLogin, runAgent } from "./run";
 export type { CheckOwnLoginOptions } from "./run";
 export type { AcpRunner, AcpStopReason, AcpUpdate, AcpUpdateKind, StartAcpRun } from "./runner";
@@ -88,6 +89,7 @@ export {
   DEFAULT_RUN_TIMEOUT_MS,
   FOLLOW_UP_INTERRUPTION,
   type AcpEvent,
+  type AgentIdentity,
   type AcpEventListener,
   type ExecuteItemOptions,
   type ExecuteItemResult,

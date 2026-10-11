@@ -1,16 +1,118 @@
 import type { ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { buildDockerRun, readDockerRecords, writeRecordingDocker } from "../sandbox";
-import { spawnAgent } from "./process";
+import { killTree, spawnAgent, stopChild, waitForExit } from "./process";
 
 const roots: string[] = [];
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+test("an exited historical child never signals its former process group", async () => {
+  const child = { pid: 987654, exitCode: 0, signalCode: null } as ChildProcess;
+  const kill = spyOn(process, "kill").mockImplementation(() => true);
+  try {
+    killTree(child, "SIGTERM");
+    expect(await stopChild(child, 10)).toBe(true);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
+});
+
+test.skipIf(process.platform !== "linux")(
+  "shutdown stops a captured stubborn descendant after its leader exits",
+  async () => {
+    const { child, descendant } = await processFamily();
+    const kill = spyOn(process, "kill");
+    try {
+      expect(await stopChild(child, 100)).toBe(true);
+      expect(kill).toHaveBeenCalledWith(-child.pid!, "SIGTERM");
+      expect(kill).toHaveBeenCalledWith(descendant, "SIGKILL");
+      expect(kill).not.toHaveBeenCalledWith(-child.pid!, "SIGKILL");
+      await waitUntilStopped(descendant);
+    } finally {
+      kill.mockRestore();
+      killTree(child, "SIGKILL");
+      await waitForExit(child, 100);
+      if (running(descendant)) process.kill(descendant, "SIGKILL");
+    }
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "post-exit cleanup skips a captured PID whose start-time identity changed",
+  async () => {
+    const { child, descendant } = await processFamily();
+    killTree(child, "SIGCONT");
+    child.kill("SIGTERM");
+    expect(await waitForExit(child, 1000)).toBe(true);
+    const originalRead = fs.readFileSync;
+    const read = spyOn(fs, "readFileSync").mockImplementation(((
+      ...args: Parameters<typeof fs.readFileSync>
+    ) => {
+      const value = originalRead(...args);
+      if (String(args[0]) !== `/proc/${descendant}/stat`) return value;
+      const text = String(value);
+      const end = text.lastIndexOf(")") + 2;
+      const fields = text.slice(end).split(" ");
+      fields[19] = String(BigInt(fields[19]!) + 1n);
+      return text.slice(0, end) + fields.join(" ");
+    }) as typeof fs.readFileSync);
+    const kill = spyOn(process, "kill");
+    try {
+      expect(await stopChild(child, 100)).toBe(true);
+      expect(kill).not.toHaveBeenCalled();
+      expect(running(descendant)).toBe(true);
+    } finally {
+      read.mockRestore();
+      kill.mockRestore();
+      if (running(descendant)) process.kill(descendant, "SIGKILL");
+    }
+  },
+);
+
+async function processFamily(): Promise<{ child: ChildProcess; descendant: number }> {
+  const root = await tempDir();
+  const pidFile = join(root, "descendant.pid");
+  const script = `process.on('SIGTERM', () => {}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
+  const child = spawnAgent(
+    process.execPath,
+    [
+      "-e",
+      `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(script)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
+    ],
+    { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root },
+  );
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      return { child, descendant: Number(fs.readFileSync(pidFile, "utf8")) };
+    } catch {
+      await Bun.sleep(10);
+    }
+  }
+  await stopChild(child, 100);
+  throw new Error("descendant did not start");
+}
+
+function running(pid: number): boolean {
+  try {
+    const text = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !["Z", "X"].includes(text.slice(text.lastIndexOf(")") + 2).split(" ")[0]!);
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntilStopped(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100 && running(pid); attempt += 1) await Bun.sleep(10);
+  expect(running(pid)).toBe(false);
+}
 
 const worktree = "/Users/dev/.paws/worktrees/ENG-1";
 

@@ -1,3 +1,4 @@
+import type { AgentProfile } from "../config";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
@@ -9,6 +10,7 @@ import type { AcpRunner, AcpUpdate, AcpUpdateKind } from "./runner";
 import type { AcpEvent } from "./types";
 
 export type AcpRunnerOptions = {
+  profile?: AgentProfile;
   role?: AgentRole;
   pawsRoot?: string;
   home?: string;
@@ -40,6 +42,7 @@ export function createAcpRunner(defaults: AcpRunnerOptions = {}): AcpRunner {
       try {
         const result = await runAgent({
           role: input.role ?? defaults.role ?? "implementer",
+          profile: input.profile ?? defaults.profile,
           itemId: input.itemId,
           runId: input.runId ?? input.itemId,
           prompt: input.prompt,
