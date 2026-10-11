@@ -74,10 +74,11 @@ export function captureStderr(child: ChildProcess, limit = 64_000): { text(): st
 }
 
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid == null || child.exitCode != null || child.signalCode != null) return;
+  if (child.pid == null) return;
   try {
     process.kill(-child.pid, signal);
   } catch {
+    if (child.exitCode != null || child.signalCode != null) return;
     try {
       child.kill(signal);
     } catch {
@@ -102,9 +103,15 @@ export function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
 }
 
 export async function stopChild(child: ChildProcess, graceMs: number): Promise<boolean> {
-  if (child.exitCode != null || child.signalCode != null) return true;
+  if (child.exitCode != null || child.signalCode != null) {
+    killTree(child, "SIGKILL");
+    return true;
+  }
   killTree(child, "SIGTERM");
-  if (await waitForExit(child, graceMs)) return true;
+  if (await waitForExit(child, graceMs)) {
+    killTree(child, "SIGKILL");
+    return true;
+  }
   killTree(child, "SIGKILL");
   return waitForExit(child, graceMs);
 }

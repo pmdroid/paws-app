@@ -12,7 +12,7 @@ test("closing terminals kills children and rejects later commands", async () => 
   );
   try {
     const pidFile = join(root, "pid");
-    terminals.create({
+    const terminal = terminals.create({
       sessionId: "test",
       command: basename(process.execPath),
       args: [
@@ -30,6 +30,10 @@ test("closing terminals kills children and rejects later commands", async () => 
       }
     }
     expect(pid).toBeDefined();
+    terminals.release({ sessionId: "test", terminalId: terminal.terminalId });
+    expect(() => terminals.output({ sessionId: "test", terminalId: terminal.terminalId })).toThrow(
+      "unknown terminal",
+    );
     await terminals.close(50);
     expect(() => process.kill(pid!, 0)).toThrow();
     expect(() => terminals.create({ sessionId: "test", command: "pwd" })).toThrow("run cancelled");

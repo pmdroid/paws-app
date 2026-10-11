@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
   PROTOCOL_VERSION,
+  RequestError,
   client,
   methods,
   ndJsonStream,
@@ -35,6 +36,7 @@ import { captureStderr, killTree, spawnAgent, stopChild, waitForExit } from "./p
 import {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_RUN_TIMEOUT_MS,
+  FOLLOW_UP_INTERRUPTION,
   type AcpEventListener,
   type RunAgentOptions,
   type RunAgentResult,
@@ -98,6 +100,17 @@ export async function checkOwnLogin(options: CheckOwnLoginOptions): Promise<Auth
  * read `~/.grok/auth.json` or the API key value.
  */
 export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult> {
+  if (options.signal?.aborted) {
+    return {
+      role: options.role,
+      stopReason: "cancelled",
+      cancelled: true,
+      interrupted: options.signal.reason === FOLLOW_UP_INTERRUPTION,
+      timedOut: false,
+      authRequired: false,
+      agentExited: true,
+    };
+  }
   assertSafeSegment(options.itemId, "item id");
   assertSafeSegment(options.runId, "run id");
   if (!isAbsolute(options.worktreePath)) throw new Error("worktreePath must be absolute");
@@ -117,6 +130,9 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents);
   if (grok) rejectAutoApprove(adapter.args);
+  const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
+  const transcript = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;
+  await mkdir(runDir(options.pawsRoot, options.runId), { recursive: true, mode: 0o700 });
   const child = spawnAgent(
     adapter.command,
     adapter.args,
@@ -137,45 +153,52 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     },
   );
   const stderr = captureStderr(child);
-  const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
-  const transcript = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;
-  await mkdir(runDir(options.pawsRoot, options.runId), { recursive: true, mode: 0o700 });
 
   const state = {
     cancelling: false,
-    kind: undefined as "timeout" | "cancel" | undefined,
+    kind: undefined as PromptState["kind"],
   };
   const clock = {
     pause() {},
     resume() {},
   };
   const runAbort = new AbortController();
+  let activeCtx: ClientContext | undefined;
+  let activeSessionId: string | undefined;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const beginStop = (kind: Exclude<PromptState["kind"], undefined>) => {
+    if (state.cancelling) return;
+    state.cancelling = true;
+    state.kind = kind;
+    runAbort.abort();
+    if (activeCtx && activeSessionId) {
+      void activeCtx
+        .notify(methods.agent.session.cancel, { sessionId: activeSessionId })
+        .catch(() => undefined);
+    }
+    killTimer = setTimeout(() => killTree(child, "SIGKILL"), graceMs);
+  };
+  const onAbort = () =>
+    beginStop(
+      options.signal?.reason === FOLLOW_UP_INTERRUPTION ? FOLLOW_UP_INTERRUPTION : "cancel",
+    );
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   let bridge: AskTeamBridge | undefined;
   let emitQueue: Promise<void> = Promise.resolve();
   const emit: AcpEventListener = (event) => {
     emitQueue = emitQueue.then(async () => {
       await appendFile(transcript, `${JSON.stringify({ t: new Date().toISOString(), event })}\n`);
-      await options.onEvent?.(event);
+      if (!state.cancelling || event.type === "cancelled") await options.onEvent?.(event);
     });
     return emitQueue;
   };
 
   const terminals = new TerminalRegistry(guard, options.env ?? process.env);
   runAbort.signal.addEventListener("abort", () => void terminals.close(graceMs), { once: true });
-  if (options.askTeam) {
-    bridge = await startAskTeamBridge({
-      socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
-      hook: options.askTeam,
-      context: { itemId: options.itemId, runId: options.runId, role: options.role },
-      signal: runAbort.signal,
-      onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
-      onAnswer: (question, answer) =>
-        emit({ type: "ask_team", question, phase: "answered", answer }),
-      onHookStart: () => clock.pause(),
-      onHookEnd: () => clock.resume(),
-    });
-  }
-
+  const assertRunning = () => {
+    if (state.cancelling) throw RequestError.invalidParams({}, "run cancelled");
+  };
   const app = client({ name: "paws" })
     .onRequest(methods.client.session.requestPermission, (ctx) =>
       answerPermission(ctx.params, guard, () => state.cancelling, emit),
@@ -183,16 +206,25 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     .onNotification(methods.client.session.update, (ctx) =>
       emit({ type: "session_update", sessionId: ctx.params.sessionId, update: ctx.params.update }),
     )
-    .onRequest(methods.client.fs.readTextFile, (ctx) => readGuarded(ctx.params, guard))
-    .onRequest(methods.client.fs.writeTextFile, (ctx) => writeGuarded(ctx.params, guard))
-    .onRequest(methods.client.terminal.create, (ctx) => terminals.create(ctx.params))
+    .onRequest(methods.client.fs.readTextFile, (ctx) => {
+      assertRunning();
+      return readGuarded(ctx.params, guard);
+    })
+    .onRequest(methods.client.fs.writeTextFile, (ctx) => {
+      assertRunning();
+      return writeGuarded(ctx.params, guard);
+    })
+    .onRequest(methods.client.terminal.create, (ctx) => {
+      assertRunning();
+      return terminals.create(ctx.params);
+    })
     .onRequest(methods.client.terminal.output, (ctx) => terminals.output(ctx.params))
     .onRequest(methods.client.terminal.waitForExit, (ctx) => terminals.wait(ctx.params))
     .onRequest(methods.client.terminal.kill, (ctx) => terminals.kill(ctx.params))
     .onRequest(methods.client.terminal.release, (ctx) => terminals.release(ctx.params));
 
   let cancelNotified = false;
-  const notifyCancelled = (reason: "timeout" | "cancel") => {
+  const notifyCancelled = (reason: Exclude<PromptState["kind"], undefined>) => {
     if (cancelNotified) return;
     cancelNotified = true;
     return emit({ type: "cancelled", reason });
@@ -209,19 +241,39 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
 
   try {
+    if (options.askTeam) {
+      bridge = await startAskTeamBridge({
+        socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
+        hook: options.askTeam,
+        context: { itemId: options.itemId, runId: options.runId, role: options.role },
+        signal: runAbort.signal,
+        onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
+        onAnswer: (question, answer) =>
+          emit({ type: "ask_team", question, phase: "answered", answer }),
+        onHookStart: () => clock.pause(),
+        onHookEnd: () => clock.resume(),
+      });
+    }
+    assertRunning();
     if (!child.stdin || !child.stdout) throw new Error("agent stdio pipes were not created");
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
     );
     result = await app.connectWith(stream, async (ctx) => {
-      const initialized = await ctx.request(methods.agent.initialize, {
-        protocolVersion: PROTOCOL_VERSION,
-        clientInfo: CLIENT_INFO,
-        clientCapabilities: clientCapabilities(),
-      });
+      activeCtx = ctx;
+      const initialized = await withTimeout(
+        ctx.request(methods.agent.initialize, {
+          protocolVersion: PROTOCOL_VERSION,
+          clientInfo: CLIENT_INFO,
+          clientCapabilities: clientCapabilities(),
+        }),
+        options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+        options.signal,
+      );
       const auth = summarizeAuth(initialized as InitializeResponse);
       await emit({ type: "auth_checked", role: options.role, auth });
+      assertRunning();
       if (grok) {
         const methodId = selectGrokAuthMethod(auth.authMethods, {
           apiKeyPresent: xaiApiKeyPresent(sourceEnv),
@@ -237,7 +289,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           });
         }
         try {
-          await ctx.request(methods.agent.authenticate, { methodId });
+          await withTimeout(
+            ctx.request(methods.agent.authenticate, { methodId }),
+            options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+            options.signal,
+          );
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await emit({ type: "error", message });
@@ -252,11 +308,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
       let sessionId: string;
       try {
-        const created = await ctx.request(methods.agent.session.new, {
-          cwd: options.worktreePath,
-          mcpServers: bridge ? [bridge.mcpServer] : [],
-        });
+        assertRunning();
+        const created = await withTimeout(
+          ctx.request(methods.agent.session.new, {
+            cwd: options.worktreePath,
+            mcpServers: bridge ? [bridge.mcpServer] : [],
+          }),
+          options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+          options.signal,
+        );
         sessionId = created.sessionId;
+        activeSessionId = sessionId;
       } catch (error) {
         if (isAuthRequired(error)) {
           await emit({ type: "error", message: AUTH_REQUIRED_MESSAGE });
@@ -275,6 +337,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         sessionId,
         cwd: options.worktreePath,
       });
+      assertRunning();
 
       const outcome = await runPrompt({
         ctx,
@@ -284,8 +347,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         state,
         timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
         graceMs,
-        signal: options.signal,
-        runAbort,
+        beginStop,
         clock,
       });
 
@@ -301,7 +363,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         await emit({ type: "prompt_complete", stopReason: outcome.acpStopReason });
       }
       if (outcome.cancelled || outcome.timedOut) {
-        await notifyCancelled(outcome.timedOut ? "timeout" : "cancel");
+        await notifyCancelled(state.kind ?? "cancel");
       }
 
       return baseResult(options.role, child, { ...outcome, sessionId, auth });
@@ -309,22 +371,23 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const detail = stderr.text().trim();
-    const intentional = state.kind === "timeout" || state.kind === "cancel";
+    const intentional = state.cancelling;
     result = baseResult(options.role, child, {
-      stopReason:
-        state.kind === "timeout" ? "timeout" : state.kind === "cancel" ? "cancelled" : "error",
+      stopReason: state.kind === "timeout" ? "timeout" : state.cancelling ? "cancelled" : "error",
       timedOut: state.kind === "timeout",
       cancelled: state.cancelling,
+      interrupted: state.kind === FOLLOW_UP_INTERRUPTION,
       ...(intentional ? {} : { errorMessage: detail ? `${message}\n${detail}` : message }),
     });
     if (intentional) {
-      await notifyCancelled(state.kind === "timeout" ? "timeout" : "cancel");
+      await notifyCancelled(state.kind ?? "cancel");
     } else {
       await emit({ type: "error", message: result.errorMessage ?? message });
     }
   } finally {
     result.agentExited = await stopChild(child, graceMs);
     result.pid = child.pid;
+    result.transcriptPath = transcript;
     await terminals.close(graceMs);
     if (options.checkpoint !== false && !result.cancelled && !options.signal?.aborted) {
       const reason = result.timedOut
@@ -336,6 +399,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         result.checkpoint = await commitCheckpoint(
           options.worktreePath,
           `wip: ${options.itemId} ${reason}`,
+          options.signal,
         );
         await emit({ type: "checkpoint", reason, checkpoint: result.checkpoint });
       } catch (error) {
@@ -346,13 +410,21 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
     await bridge?.close();
     await emitQueue.catch(() => undefined);
+    options.signal?.removeEventListener("abort", onAbort);
+    if (killTimer) clearTimeout(killTimer);
+    if (state.cancelling) {
+      result.cancelled = true;
+      result.interrupted = state.kind === FOLLOW_UP_INTERRUPTION;
+      result.stopReason = state.kind === "timeout" ? "timeout" : "cancelled";
+      result.authRequired = false;
+    }
   }
   return result;
 }
 
 interface PromptState {
   cancelling: boolean;
-  kind: "timeout" | "cancel" | undefined;
+  kind: "timeout" | "cancel" | typeof FOLLOW_UP_INTERRUPTION | undefined;
 }
 
 async function runPrompt(options: {
@@ -363,29 +435,18 @@ async function runPrompt(options: {
   state: PromptState;
   timeoutMs: number;
   graceMs: number;
-  signal?: AbortSignal;
-  runAbort: AbortController;
+  beginStop(kind: Exclude<PromptState["kind"], undefined>): void;
   clock: { pause(): void; resume(): void };
 }): Promise<Omit<RunAgentResult, "role" | "pid" | "agentExited">> {
   const { ctx, child, sessionId, state } = options;
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
   let remaining = options.timeoutMs;
   let started = Date.now();
   let paused = false;
 
-  const beginStop = (kind: "timeout" | "cancel") => {
-    if (state.cancelling) return;
-    state.cancelling = true;
-    state.kind = kind;
-    options.runAbort.abort();
-    void ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => undefined);
-    killTimer = setTimeout(() => killTree(child, "SIGKILL"), options.graceMs);
-  };
-
   const arm = (ms: number) => {
     if (timeoutTimer) clearTimeout(timeoutTimer);
-    timeoutTimer = setTimeout(() => beginStop("timeout"), ms);
+    timeoutTimer = setTimeout(() => options.beginStop("timeout"), ms);
   };
   arm(remaining);
 
@@ -402,10 +463,6 @@ async function runPrompt(options: {
     started = Date.now();
     arm(remaining);
   };
-
-  const onAbort = () => beginStop("cancel");
-  if (options.signal?.aborted) onAbort();
-  else options.signal?.addEventListener("abort", onAbort, { once: true });
 
   let acpStopReason: StopReason | undefined;
   let errorMessage: string | undefined;
@@ -430,10 +487,8 @@ async function runPrompt(options: {
     }
   } finally {
     if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (killTimer) clearTimeout(killTimer);
     options.clock.pause = () => undefined;
     options.clock.resume = () => undefined;
-    options.signal?.removeEventListener("abort", onAbort);
   }
 
   const timedOut = state.kind === "timeout";
@@ -449,6 +504,7 @@ async function runPrompt(options: {
     ...(acpStopReason ? { acpStopReason } : {}),
     timedOut,
     cancelled,
+    interrupted: state.kind === FOLLOW_UP_INTERRUPTION,
     authRequired,
     ...(errorMessage ? { errorMessage } : {}),
   };
@@ -544,6 +600,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
       reject(new Error("cancelled"));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     promise.then(resolve, reject).finally(() => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);

@@ -29,11 +29,13 @@ export type FakeStep =
 export interface FakeScript {
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
+  hangInitialize?: boolean;
   steps: FakeStep[];
 }
 
 export interface FakeResult {
   methods: string[];
+  prompts?: unknown[];
   argv?: string[];
   cwd?: string;
   authenticate?: unknown;

@@ -36,6 +36,7 @@ interface LiveTerminal {
 
 export class TerminalRegistry {
   private readonly terminals = new Map<string, LiveTerminal>();
+  private readonly children = new Set<ChildProcess>();
   private seq = 0;
   private closing: Promise<void> | undefined;
 
@@ -104,6 +105,7 @@ export class TerminalRegistry {
       });
     });
     this.terminals.set(id, terminal);
+    this.children.add(child);
     return { terminalId: id };
   }
 
@@ -132,15 +134,17 @@ export class TerminalRegistry {
   release(params: ReleaseTerminalRequest): ReleaseTerminalResponse {
     const terminal = this.get(params.terminalId);
     killTree(terminal.child, "SIGTERM");
+    this.terminals.delete(params.terminalId);
     return {};
   }
 
   close(graceMs: number): Promise<void> {
-    this.closing ??= Promise.all(
-      [...this.terminals.values()].map((terminal) => stopChild(terminal.child, graceMs)),
-    ).then(() => {
-      this.terminals.clear();
-    });
+    this.closing ??= Promise.all([...this.children].map((child) => stopChild(child, graceMs))).then(
+      () => {
+        this.terminals.clear();
+        this.children.clear();
+      },
+    );
     return this.closing;
   }
 

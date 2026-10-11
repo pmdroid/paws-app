@@ -37,11 +37,14 @@ const START_REFS = ["origin/main", "main", "origin/master", "HEAD"] as const;
 export async function commitCheckpoint(
   tree: string,
   message = "wip: checkpoint",
+  signal?: AbortSignal,
 ): Promise<CheckpointResult> {
+  if (signal?.aborted) return { committed: false, message };
   const status = (await git(["-C", tree, "status", "--porcelain"])).trim();
-  if (!status) return { committed: false, message };
+  if (!status || signal?.aborted) return { committed: false, message };
 
   await git(["-C", tree, "add", "-A"]);
+  if (signal?.aborted) return { committed: false, message };
   const env = { ...process.env, ...COMMIT_ENV_DEFAULTS };
   await git(commitArgs(tree, message), { env });
   const sha = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();

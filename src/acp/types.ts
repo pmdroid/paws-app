@@ -6,6 +6,7 @@ import type { AskTeamHook } from "./ask-team";
 
 export const DEFAULT_RUN_TIMEOUT_MS = 45 * 60 * 1000;
 export const DEFAULT_CANCEL_GRACE_MS = 2_000;
+export const FOLLOW_UP_INTERRUPTION = "follow_up";
 
 export type RunOutcome = StopReason | "timeout" | "error";
 
@@ -49,7 +50,7 @@ export type AcpEvent =
     }
   | {
       type: "cancelled";
-      reason: "timeout" | "cancel";
+      reason: "timeout" | "cancel" | typeof FOLLOW_UP_INTERRUPTION;
     }
   | {
       type: "checkpoint";
@@ -102,6 +103,8 @@ export interface RunAgentResult {
   checkpoint?: CheckpointResult;
   timedOut: boolean;
   cancelled: boolean;
+  interrupted?: boolean;
+  transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;
   pid?: number;

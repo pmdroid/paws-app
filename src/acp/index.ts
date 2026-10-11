@@ -43,6 +43,12 @@ export {
   type FreshMainCheckout,
 } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
+export {
+  createAcpPromptLifecycle,
+  reconstructAcpPrompt,
+  type AcpConversationEntry,
+  type AcpPromptLifecycle,
+} from "./lifecycle";
 export { isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
@@ -68,6 +74,7 @@ export type { AcpRunner, AcpStopReason, AcpUpdate, AcpUpdateKind, StartAcpRun } 
 export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_RUN_TIMEOUT_MS,
+  FOLLOW_UP_INTERRUPTION,
   type AcpEvent,
   type AcpEventListener,
   type ExecuteItemOptions,

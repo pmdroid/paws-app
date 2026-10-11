@@ -86,6 +86,7 @@ async function handle(message: {
   record(message.method);
 
   if (message.method === "initialize") {
+    if (script.hangInitialize) return;
     send({
       jsonrpc: "2.0",
       id: message.id,
@@ -133,6 +134,9 @@ async function handle(message: {
   }
 
   if (message.method === "session/prompt") {
+    state.prompts ??= [];
+    state.prompts.push(message.params?.prompt);
+    persist();
     try {
       const finished = await runSteps(script.steps, message.id ?? null);
       if (!finished) {
