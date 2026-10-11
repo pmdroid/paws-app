@@ -43,6 +43,9 @@ describe("linear tracker", () => {
           expect(variables?.["input"]).toEqual({ stateId: "st_progress" });
           return { issueUpdate: { success: true } };
         }
+        if (query.includes("agentActivityCreate")) {
+          return { agentActivityCreate: { success: true, agentActivity: { id: "activity" } } };
+        }
         return {
           issue: {
             relations: {
@@ -76,7 +79,7 @@ describe("linear tracker", () => {
     const client: LinearClient = {
       async query(_query, variables) {
         inputs.push(variables?.["input"]);
-        return {};
+        return { agentActivityCreate: { success: true, agentActivity: { id: "activity" } } };
       },
     };
     const tracker = createLinearTracker(client);

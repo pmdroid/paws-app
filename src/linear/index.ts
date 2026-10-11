@@ -48,15 +48,27 @@ export type { CatchUpPoller, Sleeper } from "./poller";
 export { linearTokenPath, openLinear } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
+export type { LinearSessionAdapter } from "./sessions";
 export { downTunnel, startNgrokTunnel } from "./tunnel";
 export type { SpawnFn, Tunnel } from "./tunnel";
 export type {
+  ActionDetails,
   ActivityKind,
+  ActivityReceipt,
+  AuthSignal,
   DependencyEdge,
   Elicitation,
   EpicSnapshot,
   LinearSubIssue,
   ProgressUpdate,
+  SelectOption,
+  SessionElicitation,
+  SessionOnComment,
+  SessionOnIssue,
+  SessionPlanStep,
+  SessionReceipt,
+  SessionUpdate,
+  SessionUrl,
   StatusUpdate,
 } from "./types";
 export {
