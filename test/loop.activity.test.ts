@@ -150,6 +150,15 @@ describe("streamed activity", () => {
       }),
     ).toBeNull();
   });
+
+  test("a follow-up interruption does not report cancellation or completion", () => {
+    const posted: { kind: string; body: string }[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent({ type: "cancelled", reason: "follow_up" });
+    reporter.flush();
+    expect(posted).toEqual([]);
+    expect(activityFromAcpEvent({ type: "cancelled", reason: "cancel" })?.kind).toBe("error");
+  });
 });
 
 describe("linear outbox dispatch", () => {
