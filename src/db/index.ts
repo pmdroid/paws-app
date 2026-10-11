@@ -83,3 +83,8 @@ export {
   saveCloseoutRecovery,
   type CloseoutRecovery,
 } from "./closeout-recovery";
+export {
+  recordGitHubDelivery,
+  listGitHubDeliveries,
+  type IntegrationEvent,
+} from "./integration-events";

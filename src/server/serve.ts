@@ -2,7 +2,7 @@ import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
-import { handleGitHubWebhook } from "../github";
+import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
 import { fakeStatusProvider, handleStatusRequest } from "../web";
 
@@ -11,6 +11,7 @@ export type ServerOptions = {
   port?: number;
   linearWebhookSecret?: string | null;
   githubWebhookSecret?: string | null;
+  githubWebhook?: GitHubWebhook;
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
   /**
@@ -30,6 +31,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const port = options.port ?? DEFAULT_PORT;
   const linearWebhookSecret = options.linearWebhookSecret ?? null;
   const slackSigningSecret = options.slackSigningSecret ?? null;
+  const githubWebhook = options.githubWebhook;
   const githubWebhookSecret = options.githubWebhookSecret ?? null;
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
@@ -45,6 +47,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
       return route(request, {
         slackSigningSecret,
         linearWebhookSecret,
+        githubWebhook,
         githubWebhookSecret,
         linearWebhook,
         webhooks,
@@ -62,6 +65,7 @@ type Secrets = {
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
+  githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
   webhooks: boolean;
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
@@ -98,7 +102,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       return handleLinearWebhook(request, secrets.linearWebhookSecret, secrets.linearWebhook);
     }
     if (request.method === "POST" && path === "/webhooks/github") {
-      return handleGitHubWebhook(request, secrets.githubWebhookSecret);
+      return handleGitHubWebhook(request, secrets.githubWebhookSecret, secrets.githubWebhook);
     }
     return new Response("not found", { status: 404 });
   }

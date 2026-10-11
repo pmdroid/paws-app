@@ -289,4 +289,15 @@ CREATE TABLE closeout_recovery (
 CREATE INDEX closeout_recovery_item ON closeout_recovery (item_id);
 `,
   },
+  {
+    id: "009_github_deliveries",
+    sql: `
+CREATE TABLE github_delivery (
+  delivery_id TEXT PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

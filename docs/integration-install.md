@@ -1,12 +1,12 @@
 # Install the workspace integrations
 
-Allow 15 minutes with a sandbox Linear workspace, a GitHub organization and a repository already created. Use a workspace admin account and a GitHub account that can install Apps on that repository. Have Bun 1.4.2+, Git, an HTTPS tunnel and your coding agent installed. Keep a local checkout of the sandbox repository available for setup.
+Allow 15 minutes with a sandbox Linear workspace, a GitHub organization and a repository already created. Use a workspace admin account and a GitHub account that can install Apps on that repository. Have Bun 1.4.2+, Git, ngrok for the HTTPS tunnel, and your coding agent installed and signed in. Keep a local checkout of the sandbox repository available for setup.
 
 ## 1. Register the apps, about five minutes
 
 In [Linear's application settings](https://linear.app/settings/api/applications), create an OAuth application. Register `http://localhost:3000/oauth/callback`. Enable agent delegation and mentions. Select **Agent session events**, **Issues**, **Inbox notifications**, and **Permission changes** for its webhooks. Set the webhook URL to `https://YOUR-TUNNEL/webhooks/linear` and retain its signing secret. Paws requests `actor=app`, `read,write,app:assignable,app:mentionable`, state and PKCE S256.
 
-Create a [GitHub App](https://github.com/settings/apps/new) with callback `http://127.0.0.1:3000/oauth/github/callback`. Grant **Contents**, **Pull requests**, **Checks**, and **Issues** read and write. Metadata read access is automatic. Generate a private key and client secret. Install the App on **Only select repositories**, choosing the sandbox repository. Details are in [GitHub sign-in](github-login.md).
+Create a [GitHub App](https://github.com/settings/apps/new) with callback `http://127.0.0.1:3000/oauth/github/callback`. Grant **Contents**, **Pull requests**, **Checks**, and **Issues** read and write. Metadata read access is automatic. Enable its webhook at `https://YOUR-TUNNEL/webhooks/github`, with content type `application/json`. Subscribe to **Pull requests**, **Check runs**, **Check suites**, **Pushes**, **Installations** and **Installation repositories**. Generate a private key and client secret. Install the App on **Only select repositories**, choosing the sandbox repository. Details are in [GitHub sign-in](github-login.md).
 
 Set these environment variables in your terminal using the app settings. Keep the private key outside the checkout.
 
@@ -34,7 +34,7 @@ Approve GitHub in the browser. During setup, approve Linear as a workspace admin
 
 Both authorization callbacks listen temporarily on port `3000`, one flow at a time. The running Paws server uses port `8787`.
 
-Start an HTTPS tunnel forwarding to `http://127.0.0.1:8787`. Set `PAWS_PUBLIC_URL` to its HTTPS address and `LINEAR_WEBHOOKS=true`. Keep the tunnel running in another terminal.
+Start ngrok in another terminal with `ngrok http 8787`, forwarding to `http://127.0.0.1:8787`. Set `PAWS_PUBLIC_URL` to its HTTPS address and `LINEAR_WEBHOOKS=true`. Keep the tunnel running in another terminal.
 
 ## 3. Connect Slack, about three minutes
 
@@ -55,7 +55,7 @@ bun run paws doctor
 bun run paws
 ```
 
-Open `http://127.0.0.1:8787/status`. Confirm the configured repository and connected GitHub account. In Linear, mention or delegate a sandbox issue to Paws and confirm its first activity appears. Check the Linear application's webhook delivery status.
+Open `http://127.0.0.1:8787/status`. Confirm the configured repository and connected GitHub account. In Linear, mention or delegate a sandbox issue to Paws and confirm its first activity appears. Check the Linear application's webhook delivery status. In the GitHub App settings, use **Advanced > Redeliver** on its ping and confirm HTTP 200.
 
 In Slack's **Event Subscriptions**, set the Request URL to `https://YOUR-TUNNEL/webhooks/slack`. Confirm Slack reports **Verified**, which checks the signed challenge through the running server.
 

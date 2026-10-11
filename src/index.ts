@@ -32,6 +32,7 @@ import {
   openDatabase,
   prepareShutdown,
   recoverOnStartup,
+  recordGitHubDelivery,
   startLoops,
   submitCommand,
 } from "./db";
@@ -162,10 +163,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     port: env.port,
     linearWebhookSecret: env.linearWebhookSecret,
     githubWebhookSecret: env.githubWebhookSecret,
+    githubWebhook: { accept: (delivery) => recordGitHubDelivery(db, delivery) },
     slackSigningSecret:
       envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
     linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
-    webhooks,
+    webhooks: webhooks || env.githubWebhookSecret !== null,
     db,
     statusEnv: envSource,
     closeoutHome: paths.home,
