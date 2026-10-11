@@ -14,7 +14,7 @@ import {
 } from "../src/db";
 import { createFakeGitHubComments, createGitHubCommentTracker } from "../src/ghcomments";
 import { createGitHubCommentIngestor } from "../src/index";
-import { attachOrchestrator } from "../src/loop";
+import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
 import { getQuestion, openQuestion } from "../src/questions";
 
 const ISSUE = "github:acme/app#787";
@@ -104,3 +104,63 @@ for (const timing of ["before restart", "after restart"] as const) {
     }
   });
 }
+
+test("persisted question IDs distinguish repeated questions after restart", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const clock = new FakeClock(1_000_000);
+    const github = createFakeGitHubComments({ clock, selfLogin: "pascal" });
+    const options = {
+      request: github.request,
+      owner: "acme",
+      repo: "app",
+      selfLogin: "pascal",
+      clock,
+      labels: false,
+    };
+    const tracker = createGitHubCommentTracker(options);
+    await tracker.askQuestion({ sessionId: ISSUE, body: "Which screen?" });
+    clock.advance(1);
+    github.post({ issueNumber: 787, login: "pascal", body: "2" });
+    const question = openQuestion(db, {
+      itemId: "item",
+      sessionId: ISSUE,
+      body: "Which screen?",
+      now: clock.now(),
+    });
+    await deliverLinearOutbox(
+      {
+        id: 1,
+        target: "linear",
+        op: "elicitation",
+        payload: { sessionId: ISSUE, questionId: question.id, body: question.body },
+        orderingKey: ISSUE,
+        idempotencyKey: question.id,
+        status: "pending",
+        attempts: 0,
+        priority: 5,
+        notBefore: clock.now(),
+        maxAttempts: 5,
+        lockedBy: null,
+        lockedUntil: null,
+        error: null,
+        createdAt: clock.now(),
+        sentAt: null,
+      },
+      tracker,
+      async () => undefined,
+    );
+    expect(github.comments.at(-1)?.body).toContain(`<!-- paws:q:${question.id} -->`);
+    const restarted = createGitHubCommentTracker(options);
+    restarted.bind({ itemId: "item", issueId: ISSUE });
+    expect((await restarted.sync(ISSUE, question)).resumed).toEqual([]);
+    clock.advance(1);
+    github.post({ issueNumber: 787, login: "pascal", body: "1" });
+    expect((await restarted.sync(ISSUE, question)).resumed).toEqual([
+      { questionId: question.id, answeredBy: "pascal", answer: "1" },
+    ]);
+  } finally {
+    db.close();
+  }
+});

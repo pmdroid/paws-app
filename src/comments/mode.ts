@@ -1,13 +1,15 @@
 import { systemClock, type Clock, type CommandBus, type ItemId, type LinearCommand } from "../core";
 import type { Elicitation, ProgressUpdate, TrackerAdapter } from "../linear";
-import type { AskTeamInput, QuestionChannel, TeamAnswer } from "../questions";
+import type { AskTeamInput, QuestionChannel, StoredQuestion, TeamAnswer } from "../questions";
 import type { CommentBoard, IssueComment } from "./board";
 import {
   STATUS_EDIT_INTERVAL_MS,
+  PAWS_PREFIX,
   formatPawsText,
   formatQuestion,
   isPawsText,
   isStopCommand,
+  readQuestionMarker,
 } from "./format";
 
 export type CommentBinding = {
@@ -47,7 +49,7 @@ export type CommentMode = Pick<TrackerAdapter, "postProgress" | "askQuestion"> &
   QuestionChannel & {
     bind(binding: CommentBinding): void;
     /** Read issue comments. Applies a pending status edit once the window allows. */
-    sync(linearIssueId: string): Promise<CommentSync>;
+    sync(linearIssueId: string, pending?: StoredQuestion | null): Promise<CommentSync>;
     phase(itemId: string): CommentRunPhase;
     /** Resolves when a human reply resumes this question. Rejects if the item stops. */
     wait(questionId: string): Promise<TeamAnswer>;
@@ -227,7 +229,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
   async function ask(input: AskTeamInput): Promise<{ questionId: string }> {
     const binding = resolveKey(input.itemId);
     if (binding.stopped) throw new Error(`item ${binding.itemId} is stopped`);
-    const questionId = `q-${nextQuestion}`;
+    const questionId = input.questionId ?? `q-${nextQuestion}`;
     nextQuestion += 1;
     const created = await options.board.create({
       issueId: binding.linearIssueId,
@@ -259,6 +261,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
       itemId: binding.itemId,
       title: "Question",
       body: question.body,
+      ...(question.questionId === undefined ? {} : { questionId: question.questionId }),
       ...(question.options === undefined ? {} : { options: question.options }),
     });
   }
@@ -346,7 +349,10 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
     return isPawsText(comment.body);
   }
 
-  async function sync(linearIssueId: string): Promise<CommentSync> {
+  async function sync(
+    linearIssueId: string,
+    pending?: StoredQuestion | null,
+  ): Promise<CommentSync> {
     const resumed: TeamAnswer[] = [];
     const stopped: { itemId: string; requestedAt: number }[] = [];
     const now = clock.now();
@@ -354,6 +360,35 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
       if (slot.linearIssueId === linearIssueId) await flushSlot(slot, now);
     }
     const comments = await options.board.list(linearIssueId);
+    if (pending != null) {
+      const roots = comments.filter((comment) => comment.body.trim().startsWith(PAWS_PREFIX));
+      const root =
+        roots.find((comment) => readQuestionMarker(comment.body) === pending.id) ??
+        roots.find((comment) => {
+          const marker = readQuestionMarker(comment.body);
+          return (
+            marker !== null &&
+            /^q-\d+$/.test(marker) &&
+            comment.createdAtMs >= Math.floor(pending.createdAt / 1_000) * 1_000 &&
+            comment.body.includes(pending.body)
+          );
+        });
+      if (root !== undefined) {
+        for (const [id, question] of questions) {
+          if (question.commentId === root.id) questions.delete(id);
+        }
+        questions.set(pending.id, {
+          questionId: pending.id,
+          itemId: resolveKey(linearIssueId).itemId,
+          linearIssueId,
+          commentId: root.id,
+          createdAtMs: root.createdAtMs,
+          seq: root.seq,
+          state: "parked",
+          answer: null,
+        });
+      }
+    }
     for (const item of items.values()) {
       if (item.linearIssueId !== linearIssueId || item.stopped) continue;
       const stop = earliestStop(comments, item, isPaws);

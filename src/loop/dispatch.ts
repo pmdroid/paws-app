@@ -50,9 +50,11 @@ async function postElicitation(
   if (sessionId === null || body === null)
     throw new Error("elicitation is missing session or body");
   const options = readOptions(payload["options"]);
+  const questionId = readString(payload, "questionId");
   await tracker.askQuestion({
     sessionId,
     body,
+    ...(questionId === null ? {} : { questionId }),
     ...(options.length > 0 ? { options } : {}),
   });
 }

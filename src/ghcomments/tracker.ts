@@ -1,8 +1,8 @@
 import type {
   CommentBoard,
+  CommentMode,
   CommentModeOptions,
   CommentRunPhase,
-  CommentSync,
   IssueComment,
 } from "../comments";
 import { createCommentMode } from "../comments";
@@ -51,7 +51,7 @@ export type GitHubCommentTrackerOptions = {
 
 export type GitHubCommentTracker = TrackerAdapter & {
   bind(binding: { itemId: string; issueId: string; sessionId?: string }): void;
-  sync(issueId: string): Promise<CommentSync>;
+  sync: CommentMode["sync"];
   phase(itemId: string): CommentRunPhase;
 };
 
@@ -228,7 +228,7 @@ export function createGitHubCommentTracker(
     postProgress,
     askQuestion,
     setStatus,
-    sync: (issueId) => mode.sync(issueIdFor(issueId)),
+    sync: (issueId, pending) => mode.sync(issueIdFor(issueId), pending),
     phase: (itemId) => mode.phase(itemId),
   };
 }
