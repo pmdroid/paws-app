@@ -289,4 +289,28 @@ CREATE TABLE closeout_recovery (
 CREATE INDEX closeout_recovery_item ON closeout_recovery (item_id);
 `,
   },
+  {
+    id: "009_outbox_fences",
+    sql: `
+ALTER TABLE outbox ADD COLUMN delivery_kind TEXT NOT NULL DEFAULT 'ordered'
+  CHECK (delivery_kind IN ('ordered', 'progress', 'critical', 'terminal', 'stop', 'status'));
+ALTER TABLE outbox ADD COLUMN delivery_generation INTEGER NOT NULL DEFAULT 0;
+UPDATE outbox SET delivery_kind = CASE
+  WHEN op = 'elicitation' THEN 'critical'
+  WHEN op = 'status' AND json_extract(payload, '$.stateType') = 'completed' THEN 'status'
+  WHEN op = 'status' THEN 'progress'
+  WHEN op IN ('activity', 'linear.activity') AND json_extract(payload, '$.kind') IN ('response', 'error') THEN 'terminal'
+  WHEN op IN ('activity', 'linear.activity') THEN 'progress'
+  ELSE 'ordered' END;
+CREATE TABLE outbox_session_fence (
+  target TEXT NOT NULL,
+  ordering_key TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0,
+  stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (target, ordering_key)
+) STRICT;
+CREATE INDEX outbox_session_delivery ON outbox (target, ordering_key, delivery_generation, status);
+`,
+  },
 ];

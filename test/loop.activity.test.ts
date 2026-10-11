@@ -188,6 +188,28 @@ describe("linear outbox dispatch", () => {
     });
     expect(caughtUp).toBe(1);
   });
+  test("a superseded claimed row cannot call the tracker", async () => {
+    let calls = 0;
+    const tracker = createLinearTracker({
+      async query() {
+        calls += 1;
+        return {};
+      },
+    });
+    await expect(
+      deliverLinearOutbox(
+        row("activity", { kind: "thought", body: "stale" }),
+        tracker,
+        async () => {},
+        {
+          signal: new AbortController().signal,
+          isCurrent: () => false,
+        },
+      ),
+    ).rejects.toThrow("superseded");
+    expect(calls).toBe(0);
+  });
+
   test.each([undefined, "unknown", "prompt"])("rejects invalid activity kind %s", async (kind) => {
     const tracker = createLinearTracker({
       async query() {

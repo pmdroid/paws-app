@@ -41,9 +41,9 @@ export function routeBySource(input: {
   return {
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
-    postProgress: (update) => pick(update.sessionId).postProgress(update),
-    askQuestion: (question) => pick(question.sessionId).askQuestion(question),
-    setStatus: (update) => pick(update.linearIssueId).setStatus(update),
+    postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),
+    askQuestion: (question, options) => pick(question.sessionId).askQuestion(question, options),
+    setStatus: (update, options) => pick(update.linearIssueId).setStatus(update, options),
   };
 }
 
