@@ -1,3 +1,4 @@
+import { readSecretFile } from "../src/credentials";
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -51,7 +52,7 @@ test("GitHub App sign-in persists private credentials and repository work uses o
   ])
     expect(statSync(path).mode & 0o777).toBe(0o600);
   expect(statSync(join(scene.home, "secrets")).mode & 0o777).toBe(0o700);
-  expect(readFileSync(runtime.env.githubAppPrivateKeyPath!, "utf8")).toBe(key);
+  expect(readSecretFile(runtime.env.githubAppPrivateKeyPath!)).toBe(key);
   const provider = createGitHubTokenProvider({
     auth: runtime.githubAuth,
     repo: runtime.repo,

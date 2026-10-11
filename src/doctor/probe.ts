@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readSecretFile } from "../credentials";
+import { existsSync } from "node:fs";
 import { resolveAdapter } from "../acp";
 import {
   createGitHubTokenProvider,
@@ -431,7 +432,7 @@ function githubProvider(
   let privateKeyPem: string | null = null;
   if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
     try {
-      privateKeyPem = readFileSync(env.githubAppPrivateKeyPath, "utf8");
+      privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
     } catch {
       privateKeyPem = null;
     }

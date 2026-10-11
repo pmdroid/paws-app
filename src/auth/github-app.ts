@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readSecretFile } from "../credentials";
 import {
   loadGitHubAppCredentials,
   pawsPaths,
@@ -28,7 +28,7 @@ export async function loginGitHubApp(options: LoginIO): Promise<{ login: string;
   if (!repo || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo))
     throw new Error("Set github.repo or pass paws login github --app --repo owner/name.");
   const [owner, name] = repo.split("/") as [string, string];
-  const privateKeyPem = readFileSync(app.privateKeyPath, "utf8");
+  const privateKeyPem = readSecretFile(app.privateKeyPath, false)!;
   const fetchImpl = options.fetch ?? fetch;
   const client = createFetchGitHubClient((url, init) => fetchImpl(String(url), init));
   const jwt = signAppJwt(app.appId, privateKeyPem);

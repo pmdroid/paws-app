@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import { commitCheckpointSync, probeAgentProfile, restartFromFreshMain, worktreePath } from "./acp";
 import {
@@ -473,7 +473,7 @@ function authProvider(
   let privateKeyPem: string | null = null;
   if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
     try {
-      privateKeyPem = readFileSync(env.githubAppPrivateKeyPath, "utf8");
+      privateKeyPem = readSecretFile(env.githubAppPrivateKeyPath, false);
     } catch {
       return null;
     }

@@ -1,14 +1,6 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { readSecretFile, writeSecretFile } from "../credentials";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { pawsPaths } from "../config";
 import { FILE_TOKEN_STORE_DOCTOR_WARNING } from "./messages";
 
@@ -230,23 +222,12 @@ async function deleteToken(home: string, backend: TokenBackend, run: CommandRunn
 function readFileToken(home: string): StoredGitHubOAuth | null {
   const path = githubOAuthPath(home);
   if (!existsSync(path)) return null;
-  return parseStored(readFileSync(path, "utf8"));
+  return parseStored(readSecretFile(path)!);
 }
 
 function writeFileToken(home: string, payload: string): void {
   const path = githubOAuthPath(home);
-  const dir = dirname(path);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
-  const staging = mkdtempSync(join(dir, ".github-oauth-"));
-  try {
-    const temporary = join(staging, OAUTH_FILE_NAME);
-    writeFileSync(temporary, payload, { mode: 0o600, flag: "wx" });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
-  } finally {
-    rmSync(staging, { recursive: true, force: true });
-  }
+  writeSecretFile(path, payload);
 }
 
 function parseStored(text: string): StoredGitHubOAuth | null {
