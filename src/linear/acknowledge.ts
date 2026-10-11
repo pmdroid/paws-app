@@ -24,11 +24,17 @@ export async function acknowledgeNewSession(
   } catch (error) {
     const message = error instanceof Error ? error.message : "follow-up failed";
     console.error(`linear session follow-up failed: ${message}`);
-    if (event.sessionId === null) return;
-    await tracker.postProgress({
-      sessionId: event.sessionId,
-      kind: "error",
-      body: "Could not load the Linear issue.",
-    });
+    if (event.sessionId !== null) {
+      try {
+        await tracker.postProgress({
+          sessionId: event.sessionId,
+          kind: "error",
+          body: "Could not load the Linear issue.",
+        });
+      } catch {
+        console.error("linear follow-up error activity failed");
+      }
+    }
+    throw error;
   }
 }
