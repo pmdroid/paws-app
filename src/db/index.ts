@@ -125,3 +125,5 @@ export {
   artifactPublicationReady,
   type StoredArtifact,
 } from "./artifacts";
+
+export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";

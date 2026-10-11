@@ -488,4 +488,19 @@ CREATE TABLE linear_artifact (
 ) STRICT;
 `,
   },
+  {
+    id: "015_linear_inputs",
+    sql: `
+CREATE TABLE linear_input (
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  asset_url TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  PRIMARY KEY(session_id, turn_id, asset_id)
+) STRICT;
+`,
+  },
 ];

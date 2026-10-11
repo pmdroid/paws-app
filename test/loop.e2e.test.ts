@@ -61,7 +61,8 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       linearIssueId: "parent",
       identifier: "ENG-1",
       title: "Add CSV export",
-      description: null,
+      description:
+        "Design: ![diagram](https://uploads.linear.app/workspace/input.png?signature=expires)",
       subIssues: [
         { linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" },
         { linearIssueId: "iss-3", identifier: "ENG-3", title: "Export the header" },
@@ -106,6 +107,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       env: process.env,
     };
   };
+  let inputDownloads = 0;
   const artifactFiles = createLinearFileTransfer({
     client: {
       async query() {
@@ -126,7 +128,11 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
         return "host-only";
       },
     },
-    fetch: async () => new Response(null, { status: 200 }),
+    fetch: async (_url, request) => {
+      if (request?.method === "PUT") return new Response(null, { status: 200 });
+      inputDownloads++;
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+    },
   });
   const orchestrator = attachOrchestrator({
     db,
@@ -252,6 +258,12 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
         activity.body.includes("https://uploads.linear.app/workspace/result"),
       ),
     ).toBe(true);
+    expect(inputDownloads).toBe(1);
+    const inputTrace = JSON.parse(await readFile(results.get("implement:ENG-2")!, "utf8")) as {
+      prompts: unknown[];
+    };
+    expect(JSON.stringify(inputTrace.prompts)).toContain(".paws-linear-inputs");
+    expect(JSON.stringify(inputTrace.prompts)).not.toContain("signature=expires");
   } finally {
     intervalSpy.mockRestore();
     stop = true;

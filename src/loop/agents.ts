@@ -1,4 +1,4 @@
-import type { AgentRole, AgentIdentity, PublishArtifactHook } from "../acp";
+import type { AgentRole, AgentIdentity, PublishArtifactHook, RunAgentOptions } from "../acp";
 import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
@@ -26,6 +26,7 @@ export type AgentLaunch = (input: {
 export type AcpAgentDeps = {
   pawsRoot: string;
   publishArtifact?: PublishArtifactHook;
+  prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -75,6 +76,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         prompt,
       });
       const result = await runAgent({
+        prepareInputFiles: deps.prepareInputFiles,
         role: "reviewer",
         profile: deps.profiles?.reviewer,
         itemId: request.taskId,
@@ -128,6 +130,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         prompt,
       });
       const result = await runAgent({
+        prepareInputFiles: deps.prepareInputFiles,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,
