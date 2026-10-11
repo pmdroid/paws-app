@@ -14,6 +14,7 @@ import {
   checkGhAuthStatus,
   checkGhPushPermission,
   createTokenProvider,
+  fakeMergeReadiness,
   ghDoctorChecks,
   githubAuthMode,
   inferGitHubRepository,
@@ -482,7 +483,7 @@ describe("gh auth token provider", () => {
     expect(body).not.toContain(PAWS_EVIDENCE_MARKER);
   });
 
-  test("merge asks gh for a push token and a separate merge token", async () => {
+  test("merge asks gh for separate push, readiness, and merge tokens", async () => {
     const fake = await fakeGh();
     const provider = createTokenProvider(
       { auth: "gh" },
@@ -501,8 +502,12 @@ describe("gh auth token provider", () => {
     const client: GitHubClient = {
       async request(req) {
         if (req.path.endsWith("/access_tokens")) throw new Error("app path");
-        if (req.path.endsWith("/merge")) {
+        if (req.path === "/graphql") {
           expect(req.token).toBe("gho_fake_2");
+          return { status: 200, body: fakeMergeReadiness(head) };
+        }
+        if (req.path.endsWith("/merge")) {
+          expect(req.token).toBe("gho_fake_3");
           return { status: 200, body: { merged: true, sha: "c".repeat(40) } };
         }
         return { status: 404, body: {} };
@@ -534,9 +539,9 @@ describe("gh auth token provider", () => {
       reverify: async () => ({ accepted: true, outcome: "merged", summary: "Closeout: accepted" }),
     });
     expect(result.merged).toBe(true);
-    expect(tokens).toEqual(["gho_fake_1", "gho_fake_2"]);
+    expect(tokens).toEqual(["gho_fake_1", "gho_fake_3"]);
     const log = await readFile(fake.log, "utf8");
-    expect(log.split("\n").filter((line) => line === "auth token")).toHaveLength(2);
+    expect(log.split("\n").filter((line) => line === "auth token")).toHaveLength(3);
     await fake.cleanup();
 
     const dirty = await fakeGh();

@@ -8,6 +8,7 @@ import { runGitHubGit } from "./auth/oauth";
 import { serialMerge } from "./merge";
 import { publishAccepted, pushBranch } from "./pulls";
 import { defaultGitExec } from "./git";
+import { fakeMergeReadiness } from "./fake";
 import type { GitExec, GitHubClient } from "./types";
 
 const exec = promisify(execFile);
@@ -135,6 +136,10 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
   const client: GitHubClient = {
     async request(input) {
       expect(input.token).toBe(token);
+      if (input.path === "/graphql") {
+        const { head } = (input.body as { variables: { head: string } }).variables;
+        return { status: 200, body: fakeMergeReadiness(head) };
+      }
       if (input.method === "POST") return { status: 201, body: { number: 38 } };
       if (input.method === "PUT") return { status: 200, body: { merged: true, sha: "merged" } };
       throw new Error("unexpected request");

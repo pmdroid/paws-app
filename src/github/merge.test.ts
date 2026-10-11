@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { branchForIssue, fixesLine } from "./branch";
+import { fakeMergeReadiness } from "./fake";
 import { serialMerge } from "./merge";
 import { openPullRequest, publishAccepted, pushBranch } from "./pulls";
 import {
@@ -24,6 +25,46 @@ const { privateKey } = generateKeyPairSync("rsa", {
 const PRIVATE_KEY = privateKey as string;
 
 describe("pull requests and serial merge", () => {
+  for (const scenario of ["failed CI", "unreadable gates", "closed PR", "moved PR head"]) {
+    test(`does not merge with ${scenario} after Closeout accepts`, async () => {
+      const repo = await oneClone();
+      try {
+        await commitFile(repo.work, "file.txt", "candidate\n");
+        const client = mergingClient(repo.bare, []);
+        let merges = 0;
+        const guarded: GitHubClient = {
+          async request(req) {
+            if (req.path === "/graphql") {
+              if (scenario === "unreadable gates") return { status: 403, body: {} };
+              const { head } = (req.body as { variables: { head: string } }).variables;
+              const body = fakeMergeReadiness(head);
+              const repository = body.data.repository;
+              if (scenario === "failed CI") repository.object.statusCheckRollup.state = "FAILURE";
+              if (scenario === "closed PR") repository.pullRequest.state = "CLOSED";
+              if (scenario === "moved PR head") repository.pullRequest.headRefOid = "b".repeat(40);
+              return { status: 200, body };
+            }
+            if (req.path.endsWith("/merge")) merges += 1;
+            return client.request(req);
+          },
+        };
+        const result = await serialMerge({
+          ...creds(guarded),
+          worktree: repo.work,
+          issue: "ENG-8",
+          prNumber: 8,
+          remoteUrl: repo.bare,
+          reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+        });
+        expect(result.merged).toBe(false);
+        expect(merges).toBe(0);
+        expect(result.outcome).toBe(scenario === "moved PR head" ? "sha_moved" : "blocked");
+      } finally {
+        await repo.cleanup();
+      }
+    });
+  }
+
   test("branch names and the Fixes line keep the issue key", () => {
     expect(branchForIssue("ENG-123")).toBe("paws/ENG-123");
     expect(fixesLine("ENG-123")).toBe("Fixes ENG-123");
@@ -230,6 +271,49 @@ describe("pull requests and serial merge", () => {
     await repo.cleanup();
   });
 
+  test("re-verifies a moved main after waiting for CI before merging", async () => {
+    const repo = await twoClones();
+    try {
+      await commitFile(repo.wtA, "file.txt", "candidate\n");
+      const client = mergingClient(repo.bare, []);
+      let pending = true;
+      const heads: string[] = [];
+      const result = await serialMerge({
+        ...creds({
+          async request(req) {
+            if (req.path === "/graphql" && pending) {
+              const { head } = (req.body as { variables: { head: string } }).variables;
+              const body = fakeMergeReadiness(head);
+              body.data.repository.object.statusCheckRollup.state = "PENDING";
+              return { status: 200, body };
+            }
+            return client.request(req);
+          },
+        }),
+        worktree: repo.wtA,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async () => {
+          await commitFile(repo.wtB, "other.txt", "new main\n");
+          await exec("git", ["-C", repo.wtB, "push", "origin", "HEAD:main"]);
+          pending = false;
+        },
+        reverify: async ({ head }) => {
+          heads.push(head);
+          return { accepted: true, outcome: "merged", summary: "accepted" };
+        },
+      });
+      expect(result.merged).toBe(true);
+      expect(result.cycle).toBe(2);
+      expect(heads.length).toBe(2);
+      expect(heads[1]).not.toBe(heads[0]);
+      expect(await showMain(repo.bare, "other.txt")).toBe("new main\n");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("a merge 409 re-verifies and is not treated as success", async () => {
     const repo = await oneClone();
     await commitFile(repo.work, "file.txt", "one\n");
@@ -369,6 +453,10 @@ function mergingClient(
   let n = 0;
   return {
     async request(req) {
+      if (req.path === "/graphql") {
+        const { head } = (req.body as { variables: { head: string } }).variables;
+        return { status: 200, body: fakeMergeReadiness(head) };
+      }
       if (req.path.endsWith("/access_tokens")) {
         n += 1;
         const token = `ghs_merge_${n}`;

@@ -8,7 +8,7 @@ export type {
   PullRequestRef,
   PullRequests,
 } from "./app";
-export { createFakeGitHub } from "./fake";
+export { createFakeGitHub, fakeMergeReadiness } from "./fake";
 export type { FakeGitHub } from "./fake";
 export { checkGitHubSignature, handleGitHubWebhook } from "./webhook";
 export type { SignatureCheck } from "./webhook";
