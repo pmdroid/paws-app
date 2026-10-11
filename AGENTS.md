@@ -19,6 +19,16 @@ Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
+## Required autoreview
+
+Always run autoreview through the native `grok` CLI before committing, pushing, opening or updating a PR, merging, or reporting a change complete. This includes documentation and repository instructions.
+
+- Use read-only plan mode. Ask for concrete bugs, regressions, security problems, and violations of the task or repository instructions.
+- Review the complete final change, including untracked files. For branch work, compare against the intended target branch; for an existing PR, resolve its actual base. A stacked PR uses its parent branch. Confirm the base and fetch it successfully before reviewing. Use uncommitted-only review only when that is the entire change being delivered.
+- Instruct the reviewer to report findings without editing files, invoking review helpers, or starting other reviewers.
+- Verify findings against the code, fix actionable findings within the task, rerun affected checks, and rerun autoreview after any edit.
+- Report the command, reviewed scope, result, and disposition of findings in the final response or PR description. A failed, unavailable, or incomplete review is not a pass. Report the blocker and do not commit, push, merge, or claim completion until the review finishes.
+
 ## Layout
 
 | Path            | Owns                                                      | Depends on                          |
