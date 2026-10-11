@@ -284,21 +284,29 @@ export class Orchestrator {
       items.some((item) => item.id === live.itemId),
     );
     for (const live of owned) live.controller.abort();
-    await this.stopTaskPlanning(sessionId);
-    await Promise.all(owned.map((live) => live.done));
+    const joined = await Promise.allSettled([
+      this.stopTaskPlanning(sessionId),
+      ...owned.map((live) => live.done),
+    ]);
     if (items.some((item) => getConversation(this.db, item.id).blocked))
       throw new Error("ACP process cleanup could not be verified");
+    const failure = joined.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    await this.stopTaskPlanning();
     const owned = [...this.live.values()];
     for (const live of owned) live.controller.abort();
-    await Promise.all(owned.map((live) => live.done));
+    const joined = await Promise.allSettled([
+      this.stopTaskPlanning(),
+      ...owned.map((live) => live.done),
+    ]);
     await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
     if (this.allItems().some((item) => getConversation(this.db, item.id).blocked))
       throw new Error("ACP process cleanup could not be verified");
+    const failure = joined.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
 
   private recordTurn(event: AcceptedLinearEvent) {
@@ -642,6 +650,8 @@ export class Orchestrator {
   }
 
   private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
+    if (getConversation(this.db, item.id).blocked)
+      throw new Error("ACP process cleanup could not be verified");
     const saved = getTaskMode(this.db, item.id);
     const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
     const taskKey = this.db
@@ -678,6 +688,17 @@ export class Orchestrator {
         profile: this.profileSnapshot(run.id).implementer,
         signal: controller.signal,
         launch: (input) => this.launchAgent(input),
+        onCleanupFailure: () => {
+          const stored = getConversation(this.db, item.id);
+          saveConversation(
+            this.db,
+            item.id,
+            stored.entries,
+            stored.transcript,
+            true,
+            stored.transcriptOffset,
+          );
+        },
       });
       controller.signal.throwIfAborted();
       if (

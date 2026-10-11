@@ -540,4 +540,10 @@ CREATE TABLE task_request (
       PRIMARY KEY(session_id,event_key)
     ) STRICT;`,
   },
+  {
+    id: "021_linear_session_cleanup_block",
+    sql: `CREATE TABLE linear_session_cleanup_block (
+      session_id TEXT PRIMARY KEY REFERENCES linear_session(session_id)
+    ) STRICT;`,
+  },
 ];
