@@ -1,4 +1,4 @@
-import type { AgentRole, AgentIdentity } from "../acp";
+import type { AgentRole, AgentIdentity, PublishArtifactHook } from "../acp";
 import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
@@ -25,6 +25,7 @@ export type AgentLaunch = (input: {
 
 export type AcpAgentDeps = {
   pawsRoot: string;
+  publishArtifact?: PublishArtifactHook;
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -128,6 +129,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       });
       const result = await runAgent({
         role: "implementer",
+        publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,
         itemId: request.taskId,
         runId: `fix-${request.taskId}-${request.fixAttempt}`,

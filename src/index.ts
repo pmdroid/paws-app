@@ -217,6 +217,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         outbox: created.outbox,
         pawsRoot: paths.home,
         tracker,
+        files: linear?.files,
+        secretsDir: paths.secretsDir,
         catchUp: async () => {
           await running.catchUp();
           await githubPoller?.pollNow();

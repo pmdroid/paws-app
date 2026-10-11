@@ -19,6 +19,7 @@ import {
   listJobs,
   listCloseoutRecoveries,
   listRuns,
+  listArtifacts,
   migrate,
   openDatabase,
 } from "../src/db";
@@ -30,7 +31,11 @@ import {
   type GitHubResponse,
   type GitHubTokenProvider,
 } from "../src/github";
-import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
+import {
+  createFakeTracker,
+  createLinearFileTransfer,
+  type AcceptedLinearEvent,
+} from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import {
   attachOrchestrator,
@@ -80,7 +85,15 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     writeFileSync(
       scriptPath,
       JSON.stringify({
-        ...scriptFor(input),
+        ...(() => {
+          const script = scriptFor(input);
+          if (input.purpose === "implement")
+            script.steps.splice(script.steps.length - 1, 0, {
+              type: "publish_artifact",
+              path: "ok.txt",
+            });
+          return script;
+        })(),
         model:
           input.profile?.agent === "codex" || input.role === "reviewer"
             ? "test-codex-model"
@@ -93,6 +106,28 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       env: process.env,
     };
   };
+  const artifactFiles = createLinearFileTransfer({
+    client: {
+      async query() {
+        return {
+          fileUpload: {
+            success: true,
+            uploadFile: {
+              uploadUrl: "https://storage.example/upload?signature=host-only",
+              assetUrl: "https://uploads.linear.app/workspace/result",
+              headers: [],
+            },
+          },
+        };
+      },
+    },
+    auth: {
+      async ensureFresh() {
+        return "host-only";
+      },
+    },
+    fetch: async () => new Response(null, { status: 200 }),
+  });
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -100,6 +135,8 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
+    files: artifactFiles,
+    secretsDir: path.join(layout.pawsRoot, "secrets"),
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "1",
@@ -204,6 +241,17 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     await outbox.idle();
     expect(tracker.progress).toHaveLength(completedUpdates);
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    const artifactItem = db
+      .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
+      .get("iss-2")!;
+    const publishedArtifacts = listArtifacts(db, artifactItem.id);
+    expect(publishedArtifacts).toHaveLength(1);
+    expect(publishedArtifacts[0]?.state).toBe("uploaded");
+    expect(
+      tracker.progress.some((activity) =>
+        activity.body.includes("https://uploads.linear.app/workspace/result"),
+      ),
+    ).toBe(true);
   } finally {
     intervalSpy.mockRestore();
     stop = true;

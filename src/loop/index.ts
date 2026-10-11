@@ -31,3 +31,5 @@ export {
   routeBySource,
   worktreeBranch,
 } from "./sources";
+
+export { createLinearArtifactPublisher } from "./artifacts";

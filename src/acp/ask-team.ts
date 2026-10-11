@@ -211,7 +211,9 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
         throw new Error("artifact upload returned an invalid display name");
       }
       const label = name.replace(/[\\[\]]/g, "\\$&");
-      socket.end(`${JSON.stringify({ id, answer: `[${label}](<${url.href}>)` })}\n`);
+      socket.end(
+        `${JSON.stringify({ id, answer: `${artifact.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
+      );
       return;
     }
     if (parsed.tool && parsed.tool !== "ask_team") throw new Error("unknown host tool");

@@ -468,4 +468,24 @@ CREATE TABLE work_item_task (
 ) STRICT;
 `,
   },
+  {
+    id: "014_linear_artifacts",
+    sql: `
+CREATE TABLE linear_artifact (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  run_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  request_version INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'uploaded', 'failed')),
+  asset_url TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE(item_id, path, display_name, mime_type, sha256)
+) STRICT;
+`,
+  },
 ];
