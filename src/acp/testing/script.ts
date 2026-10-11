@@ -20,6 +20,7 @@ export type FakeStep =
   | { type: "fs_write"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
   | { type: "ask_team"; question: string; options?: string[]; context?: string }
+  | { type: "publish_artifact"; path: string; displayName?: string; mimeType?: string }
   | { type: "hang" }
   | {
       type: "end";
@@ -61,4 +62,6 @@ export interface FakeResult {
     exitCode?: number | null;
   }>;
   askTeam?: { ok: boolean; text?: string; error?: string };
+  artifact?: { ok: boolean; text?: string; error?: string };
+  tools?: string[];
 }

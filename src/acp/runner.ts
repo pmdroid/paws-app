@@ -1,6 +1,7 @@
 import type { ItemId } from "../core";
 import type { AgentRole } from "./adapters";
 import type { AskTeamHook } from "./ask-team";
+import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
 import type { AcpEventListener } from "./types";
 
 export type AcpStopReason =
@@ -32,6 +33,8 @@ export type StartAcpRun = {
   timeoutMs?: number;
   signal?: AbortSignal;
   askTeam?: AskTeamHook;
+  publishArtifact?: PublishArtifactHook;
+  artifactLimits?: ArtifactLimits;
   command?: string;
   args?: string[];
   env?: NodeJS.ProcessEnv;

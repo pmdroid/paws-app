@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
 import type { AskTeamHook } from "./ask-team";
+import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
 import { runAgent } from "./run";
 import type { AcpRunner, AcpUpdate, AcpUpdateKind } from "./runner";
 import type { AcpEvent } from "./types";
@@ -16,6 +17,8 @@ export type AcpRunnerOptions = {
   args?: string[];
   env?: NodeJS.ProcessEnv;
   askTeam?: AskTeamHook;
+  publishArtifact?: PublishArtifactHook;
+  artifactLimits?: ArtifactLimits;
 };
 
 /**
@@ -53,6 +56,8 @@ export function createAcpRunner(defaults: AcpRunnerOptions = {}): AcpRunner {
           timeoutMs: input.timeoutMs ?? defaults.timeoutMs,
           signal: controller.signal,
           askTeam: input.askTeam ?? defaults.askTeam,
+          publishArtifact: input.publishArtifact ?? defaults.publishArtifact,
+          artifactLimits: input.artifactLimits ?? defaults.artifactLimits,
           onEvent: async (event) => {
             if (event.type === "session_started") {
               sessionId = event.sessionId;

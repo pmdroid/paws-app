@@ -27,7 +27,7 @@ import {
   xaiApiKeyPresent,
   type AgentRole,
 } from "./adapters";
-import { startAskTeamBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
+import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
@@ -241,11 +241,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
 
   try {
-    if (options.askTeam) {
-      bridge = await startAskTeamBridge({
+    if (options.askTeam || options.publishArtifact) {
+      bridge = await startHostToolBridge({
         socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
         hook: options.askTeam,
-        context: { itemId: options.itemId, runId: options.runId, role: options.role },
+        publishArtifact: options.publishArtifact,
+        artifactLimits: options.artifactLimits,
+        context: {
+          itemId: options.itemId,
+          runId: options.runId,
+          role: options.role,
+          worktreePath: options.worktreePath,
+        },
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
         onAnswer: (question, answer) =>
