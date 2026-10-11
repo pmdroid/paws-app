@@ -1219,6 +1219,9 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       await jobs.tick();
       expect(stateOf(db, "ENG-30"), debug(layout, db)).toBe("awaiting_input");
       expect(launched).toHaveLength(beforeHandoff);
+      expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
+      expect(tracker.questions).toHaveLength(1);
+      expect(tracker.questions[0]?.body).toContain("no recorded ACP session model");
       expect(github.opened).toHaveLength(0);
       expect(github.merged).toHaveLength(0);
       const question = findOpenQuestion(db, "ses_1")!;
