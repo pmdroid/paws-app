@@ -103,7 +103,23 @@ export async function commitCheckpoint(
       if (gitSync(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"]).trim() !== ref)
         throw new Error("Git HEAD changed while preparing checkpoint");
       gitSync(["-C", tree, "update-ref", "-m", message, ref, sha, head], env);
-      renameSync(indexLock, index);
+      try {
+        renameSync(indexLock, index);
+      } catch (error) {
+        try {
+          gitSync(
+            ["-C", tree, "update-ref", "-m", "checkpoint index publication failed", ref, head, sha],
+            env,
+          );
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "Checkpoint index publication and branch rollback failed",
+            { cause: rollbackError },
+          );
+        }
+        throw error;
+      }
       published = true;
       onPublished?.();
     } finally {
