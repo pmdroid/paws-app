@@ -272,4 +272,21 @@ CREATE TABLE closeout_step (
 ) STRICT;
 `,
   },
+  {
+    id: "008_closeout_recovery",
+    sql: `
+CREATE TABLE closeout_recovery (
+  question_id TEXT PRIMARY KEY REFERENCES question(id),
+  task_id TEXT NOT NULL,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  base TEXT NOT NULL,
+  head TEXT NOT NULL,
+  policy_digest TEXT NOT NULL,
+  failed_checks TEXT NOT NULL CHECK (json_valid(failed_checks)),
+  retry_baseline TEXT NOT NULL CHECK (json_valid(retry_baseline)),
+  summary TEXT NOT NULL
+) STRICT;
+CREATE INDEX closeout_recovery_item ON closeout_recovery (item_id);
+`,
+  },
 ];

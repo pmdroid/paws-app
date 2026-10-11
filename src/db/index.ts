@@ -77,3 +77,9 @@ export {
   type CloseoutStepRecord,
   type CloseoutStepWrite,
 } from "./closeout-progress";
+
+export {
+  listCloseoutRecoveries,
+  saveCloseoutRecovery,
+  type CloseoutRecovery,
+} from "./closeout-recovery";

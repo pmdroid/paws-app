@@ -6,9 +6,11 @@ import { executeItem, git, removeWorktree, resolveAdapter, worktreePath } from "
 import { loadConfigFile, type ImplementerName } from "../config";
 import {
   createCloseoutGate,
-  evaluateCandidate,
+  bypassable,
+  snapshotRetryBaseline,
+  type GateResult,
+  type CloseoutVerdict,
   type CandidateIdentity,
-  type VerdictRecorder,
 } from "../closeout";
 import {
   CommandBus,
@@ -32,6 +34,9 @@ import {
   immediate,
   insertRun,
   listInFlightItems,
+  listCloseoutRecoveries,
+  saveCloseoutRecovery,
+  type CloseoutRecovery,
   markRun,
   saveCheckpoint,
   setCurrentRun,
@@ -56,6 +61,7 @@ import {
   openQuestion,
 } from "../questions";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
 import {
@@ -140,7 +146,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted") {
-      this.deliverPrompt(event);
+      await this.deliverPrompt(event);
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
@@ -358,35 +364,7 @@ export class Orchestrator {
     const verifying = getWorkItem(this.db, item.id);
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
-    const deps = this.agentDeps(item);
-    const reviewer = createAcpCodexReviewer(deps);
-    const fixer = createAcpFixRunner(deps);
-    const recorder: VerdictRecorder = {
-      record: async (verdict) => {
-        this.post(
-          verifying,
-          verdict.outcome === "accepted" ? "response" : "error",
-          verdict.summary,
-          `${item.id}:verdict:${verdict.head}:${verdict.outcome}`,
-        );
-      },
-    };
-    const gate = createCloseoutGate({
-      candidate,
-      reviewer,
-      fixer,
-      recorder,
-      reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
-      ...this.closeoutHome(),
-      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
-    });
-    const verdict = await gate.run({
-      taskId: itemPathId(item),
-      worktree,
-      baseSha: base,
-      headSha: head,
-      attempt: 1,
-    });
+    const verdict = await this.runVerification(item, worktree, base, head, candidate);
     const after = getWorkItem(this.db, item.id);
     if (after === null || after.state === "cancelled") return;
     if (verdict.decision === "accepted" && !verdict.exhausted) {
@@ -406,13 +384,113 @@ export class Orchestrator {
       });
       return;
     }
-    if (verdict.exhausted || verdict.decision === "rejected") {
-      if (after.state === "verifying") applyWorkItemEvent(this.db, item.id, "closeout_exhausted");
-      this.post(after, "error", verdict.summary, `${item.id}:exhausted`);
-      this.pump();
-      return;
-    }
-    this.fail(after, "closeout", verdict.summary);
+    await this.askCloseoutHelp(after, verdict.result, verdict.summary);
+  }
+
+  private async runVerification(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+    candidate: CandidateIdentity,
+  ): Promise<CloseoutVerdict> {
+    const deps = this.agentDeps(item);
+    const gate = createCloseoutGate({
+      candidate,
+      reviewer: createAcpCodexReviewer(deps),
+      fixer: createAcpFixRunner(deps),
+      recorder: {
+        record: async (verdict) => {
+          this.post(
+            item,
+            verdict.outcome === "accepted" ? "response" : "error",
+            verdict.summary,
+            `${item.id}:verdict:${listCloseoutRecoveries(this.db, item.id).length}:${verdict.head}:${verdict.outcome}:${verdict.evaluations}:${verdict.fixAttempts}`,
+          );
+        },
+      },
+      reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
+      ...this.closeoutHome(),
+      ...recoveryOptions(this.db, item.id),
+      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
+    });
+    return gate.run({
+      taskId: itemPathId(item),
+      worktree,
+      baseSha: base,
+      headSha: head,
+      attempt: 1,
+    });
+  }
+
+  private async askCloseoutHelp(
+    item: WorkItemRecord,
+    result: GateResult | undefined,
+    summary: string,
+  ): Promise<void> {
+    if (this.stopped(item.id)) return;
+    const sessionId = this.activitySession(item);
+    if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
+    let retryBaseline: string[] = [];
+    try {
+      retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+    } catch {}
+    const context = {
+      itemId: item.id,
+      taskId: itemPathId(item),
+      base: result?.base ?? item.checkpoint?.baseSha ?? "",
+      head: result?.head ?? item.checkpoint?.wipCommit ?? "",
+      policyDigest: result?.decision?.policy.digest ?? "",
+      failedChecks:
+        result?.decision?.items
+          .filter(
+            (check) =>
+              bypassable(check.state) &&
+              !result.bypasses?.some((approval) => approval.checkIds.includes(check.id)),
+          )
+          .map((check) => check.id) ?? [],
+      retryBaseline,
+      summary,
+    };
+    this.openCloseoutQuestion(item, sessionId, context);
+    await this.flush();
+  }
+
+  private openCloseoutQuestion(
+    item: WorkItemRecord,
+    sessionId: string,
+    context: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
+    error?: string,
+  ): void {
+    immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (!current || current.state === "cancelled") return;
+      if (findOpenQuestion(this.db, sessionId) !== null) return;
+      const body = recoveryQuestion(context, error);
+      const question = openQuestion(this.db, {
+        itemId: item.id,
+        runId: item.currentRunId,
+        sessionId,
+        body,
+        now: this.now(),
+      });
+      saveCloseoutRecovery(this.db, { ...context, questionId: question.id });
+      if (current.state !== "awaiting_input")
+        applyWorkItemEvent(this.db, item.id, "blocking_question");
+      saveCheckpoint(this.db, item.id, {
+        phase: "awaiting_input",
+        baseSha: context.base,
+        wipCommit: context.head,
+      });
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: sessionId,
+        idempotencyKey: `closeout-help:${question.id}`,
+        payload: { sessionId, questionId: question.id, body },
+        now: this.now(),
+      });
+    });
   }
 
   private async reverify(payload: unknown): Promise<void> {
@@ -438,36 +516,27 @@ export class Orchestrator {
       this.fail(item, "reverify", message);
       return;
     }
-    const deps = this.agentDeps(item);
-    const evaluation = await evaluateCandidate({
+    if (item.state !== "verifying" && item.state !== "merge_queue") return;
+    const verdict = await this.runVerification(
+      item,
       worktree,
-      taskId: itemPathId(item),
       base,
       head,
-      candidate: this.candidateFor(item.currentRunId ?? item.id),
-      reviewer: createAcpCodexReviewer(deps),
-      ...this.closeoutHome(),
-      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
-    });
-    if (evaluation.outcome !== "accepted") {
-      this.post(
-        item,
-        "error",
-        evaluation.error ?? `Re-verify ${evaluation.outcome}.`,
-        `${item.id}:reverify:${head}`,
-      );
-      if (item.state === "verifying")
-        this.fail(item, "reverify", evaluation.error ?? evaluation.outcome);
+      this.candidateFor(item.currentRunId ?? item.id),
+    );
+    if (this.stopped(item.id)) return;
+    if (verdict.decision !== "accepted") {
+      await this.askCloseoutHelp(item, verdict.result, verdict.summary);
       return;
     }
-    if (item.state === "verifying") {
-      applyWorkItemEvent(this.db, item.id, "closeout_accepted");
-    }
+    if (item.state === "verifying") applyWorkItemEvent(this.db, item.id, "closeout_accepted");
+    head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+    saveCheckpoint(this.db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
     enqueueJobOnce(this.db, {
       queue: JOB_KIND.merge,
       lane: MERGE_LANE,
       jobKey: `merge:${item.id}:${head}`,
-      payload: { itemId: item.id, summary: evaluation.decision?.message ?? "Re-verified.", head },
+      payload: { itemId: item.id, summary: verdict.summary, head },
       now: this.now(),
     });
   }
@@ -513,8 +582,7 @@ export class Orchestrator {
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
-    const deps = this.agentDeps(item);
-    const reviewer = createAcpCodexReviewer(deps);
+    let closeoutFailure: CloseoutVerdict | null = null;
     const merged = await serialMerge({
       worktree,
       issue: itemPathId(item),
@@ -533,25 +601,33 @@ export class Orchestrator {
         await this.flush();
       },
       reverify: async (input) => {
-        const evaluation = await evaluateCandidate({
-          worktree: input.worktree,
-          taskId: itemPathId(item),
-          base: input.base,
-          head: input.head,
-          candidate: this.candidateFor(item.currentRunId ?? item.id),
-          reviewer,
-          ...this.closeoutHome(),
-          progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
-        });
+        const verdict = await this.runVerification(
+          item,
+          input.worktree,
+          input.base,
+          input.head,
+          this.candidateFor(item.currentRunId ?? item.id),
+        );
+        if (verdict.decision !== "accepted") closeoutFailure = verdict;
         return {
-          accepted: evaluation.outcome === "accepted",
-          outcome: evaluation.outcome === "accepted" ? "merged" : evaluation.outcome,
-          summary: evaluation.error ?? evaluation.decision?.message ?? evaluation.outcome,
+          accepted: verdict.decision === "accepted",
+          outcome:
+            verdict.decision === "accepted"
+              ? "merged"
+              : verdict.exhausted
+                ? "exhausted"
+                : verdict.decision,
+          summary: verdict.summary,
         };
       },
     });
     if (this.stopped(item.id)) return;
     if (!merged.merged) {
+      if (closeoutFailure !== null) {
+        const failure = closeoutFailure as CloseoutVerdict;
+        await this.askCloseoutHelp(item, failure.result, failure.summary);
+        return;
+      }
       this.post(
         item,
         "error",
@@ -652,15 +728,73 @@ export class Orchestrator {
     };
   }
 
-  private deliverPrompt(event: AcceptedLinearEvent): void {
+  private async deliverPrompt(event: AcceptedLinearEvent): Promise<void> {
     const sessionId = event.sessionId;
     const answer = event.body?.trim() ?? "";
     if (sessionId === null || answer === "") return;
     const open = findOpenQuestion(this.db, sessionId);
     if (open === null) return;
+    const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
+      (entry) => entry.questionId === open.id,
+    );
+    let answeredBy = event.activityId ? `linear-activity:${event.activityId}` : "linear";
+    try {
+      const payload = JSON.parse(event.payload) as { answeredBy?: unknown; questionId?: unknown };
+      if (typeof payload.questionId === "string" && payload.questionId !== open.id) return;
+      if (typeof payload.answeredBy === "string" && payload.answeredBy.trim())
+        answeredBy = payload.answeredBy;
+    } catch {}
+    if (recovery) {
+      const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
+      const identifiable = answeredBy !== "linear" && answeredBy !== "unknown";
+      const item = getWorkItem(this.db, open.itemId);
+      if (item === null || item.state !== "awaiting_input") return;
+      immediate(this.db, () => {
+        if (answerQuestion(this.db, open.id, { answer, answeredBy, now: this.now() }) === null)
+          return;
+        if (parsed === null || (parsed.kind === "bypass" && !identifiable)) {
+          this.openCloseoutQuestion(
+            item,
+            sessionId,
+            recovery,
+            "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.",
+          );
+          return;
+        }
+        applyWorkItemEvent(this.db, item.id, "answer_received");
+        if (parsed.kind === "bypass") {
+          applyWorkItemEvent(this.db, item.id, "turn_ended");
+          saveCheckpoint(this.db, item.id, {
+            phase: "verifying",
+            baseSha: recovery.base,
+            wipCommit: recovery.head,
+          });
+          enqueueJobOnce(this.db, {
+            queue: JOB_KIND.reverify,
+            jobKey: `closeout-bypass:${open.id}`,
+            payload: { itemId: item.id },
+            now: this.now(),
+          });
+        } else {
+          enqueueJobOnce(this.db, {
+            queue: JOB_KIND.resume,
+            jobKey: `closeout-guidance:${open.id}`,
+            payload: {
+              itemId: item.id,
+              freshSession: true,
+              handoff: handoffNote({ question: recovery.summary, answer: parsed.body }),
+              reason: "closeout-guidance",
+            },
+            now: this.now(),
+          });
+        }
+      });
+      await this.flush();
+      return;
+    }
     const stored = answerQuestion(this.db, open.id, {
       answer,
-      answeredBy: "linear",
+      answeredBy,
       now: this.now(),
     });
     if (stored === null) return;
