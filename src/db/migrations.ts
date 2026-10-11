@@ -507,4 +507,13 @@ CREATE TABLE linear_input (
     id: "017_task_mode_generation",
     sql: `ALTER TABLE work_item_task ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    id: "016_task_request",
+    sql: `
+CREATE TABLE task_request (
+  task_key TEXT PRIMARY KEY,
+  classification TEXT NOT NULL CHECK (json_valid(classification))
+) STRICT;
+`,
+  },
 ];

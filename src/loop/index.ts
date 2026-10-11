@@ -34,3 +34,5 @@ export {
 
 export { createLinearArtifactPublisher } from "./artifacts";
 export { createLinearInputLoader, inputSources } from "./input-files";
+
+export { createTaskPlanner } from "./task-planner";

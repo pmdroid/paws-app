@@ -126,6 +126,13 @@ export {
 } from "./linear-sessions";
 
 export {
+  getTaskClassification,
+  saveTaskClassification,
+  resolveTaskClassification,
+  type StoredTaskClassification,
+} from "./task-requests";
+
+export {
   saveArtifact,
   markArtifact,
   listArtifacts,
