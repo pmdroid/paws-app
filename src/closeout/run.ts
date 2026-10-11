@@ -17,8 +17,13 @@ import {
 import { isSha, readHead } from "./worktree";
 import {
   addReview,
+  credentialSecrets,
   decision as decide,
   run,
+  scrubText,
+  type CloseoutProgress,
+  type CloseoutProgressIdentity,
+  type CloseoutStepState,
   type DecisionDocument as SpecDecision,
 } from "../closeout-spec";
 
@@ -33,6 +38,7 @@ export type EvaluateInput = {
   home?: string;
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
+  progress?: CloseoutProgress;
 };
 
 export type Evaluation = {
@@ -58,6 +64,7 @@ export type GateInput = {
   home?: string;
   pawsHome?: string;
   maxFixAttempts?: number;
+  progress?: CloseoutProgress;
 };
 
 /**
@@ -66,7 +73,54 @@ export type GateInput = {
  * Does not ask the implementer to fix anything.
  * Task id is the work item id.
  */
+const liveIdentity = new WeakMap<CloseoutProgress, CloseoutProgressIdentity>();
+
 export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluation> {
+  if (input.progress) liveIdentity.delete(input.progress);
+  const evaluation = await evaluateUnsealed(
+    input.progress === undefined ? input : { ...input, progress: observe(input.progress) },
+  );
+  seal(input.progress, evaluation.outcome);
+  return evaluation;
+}
+
+function observe(progress: CloseoutProgress): CloseoutProgress {
+  const secrets = credentialSecrets();
+  const text = (value: string): string => scrubText(value, secrets);
+  const optional = (value: string | null): string | null => (value === null ? null : text(value));
+  return {
+    begin(identity) {
+      liveIdentity.set(progress, identity);
+      progress.begin(identity);
+    },
+    step(identity, step) {
+      liveIdentity.set(progress, identity);
+      progress.step(identity, {
+        ...step,
+        command: text(step.command),
+        detail: optional(step.detail),
+        timeoutReason: optional(step.timeoutReason),
+        findings: optional(step.findings),
+      });
+    },
+    output(identity, stepId, stream, chunk, truncated) {
+      progress.output(identity, stepId, stream, text(chunk), truncated);
+    },
+    finish(identity, decision) {
+      liveIdentity.set(progress, identity);
+      progress.finish(identity, decision);
+    },
+  };
+}
+
+function seal(progress: CloseoutProgress | undefined, decision: string): void {
+  if (progress === undefined) return;
+  const identity = liveIdentity.get(progress);
+  if (identity === undefined) return;
+  progress.finish(identity, decision);
+}
+
+async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   const taskError = assertTaskId(input.taskId);
   if (taskError) return failure("invalid", null, taskError, input.head);
   if (!isSha(input.base) || !isSha(input.head)) {
@@ -86,6 +140,7 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
       evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
+      ...(input.progress !== undefined ? { progress: input.progress } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -99,10 +154,21 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
 
   const first = toGateDecision(ran);
   const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
+  const reviewAttempts = new Map<string, number>();
   const gaps = reviewGaps(first);
-  if (gaps.length === 0) return finish(first, input.base, input.head, reviewFindings);
+  if (gaps.length === 0) {
+    publishReviews(input, first, reviewFindings, reviewAttempts);
+    return finish(first, input.base, input.head, reviewFindings);
+  }
 
-  const filled = await addReviewEvidence(input, gaps, reviewFindings, evidenceDir);
+  const filled = await addReviewEvidence(
+    input,
+    gaps,
+    reviewFindings,
+    reviewAttempts,
+    evidenceDir,
+    progressIdentity(input.taskId, first),
+  );
   if (filled) return filled;
 
   let judged: SpecDecision;
@@ -119,14 +185,29 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return failure("blocked", null, message, input.head);
+    const detail = scrub(message);
+    for (const item of gaps) {
+      const found = reviewFindings.find((entry) => entry.itemId === item.id);
+      noteReview(
+        input,
+        progressIdentity(input.taskId, first),
+        item.id,
+        "blocked",
+        detail,
+        found ? findingText(found.findings) : null,
+        item.attempt ?? reviewAttempts.get(item.id) ?? null,
+      );
+    }
+    return failure("blocked", null, detail, input.head);
   }
   const movedAfter = await headUnmoved(input.worktree, input.head);
   if (movedAfter) return failure("blocked", exitOf(judged.decision), movedAfter, input.head);
   if (judged.gate !== CLOSEOUT_GATE) {
     return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
   }
-  return finish(toGateDecision(judged), input.base, input.head, reviewFindings);
+  const judgedDecision = toGateDecision(judged);
+  publishReviews(input, judgedDecision, reviewFindings, reviewAttempts);
+  return finish(judgedDecision, input.base, input.head, reviewFindings);
 }
 
 /**
@@ -245,9 +326,12 @@ async function addReviewEvidence(
   input: EvaluateInput,
   items: CloseoutItem[],
   reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewAttempts: Map<string, number>,
   evidenceDir: string,
+  identity: CloseoutProgressIdentity,
 ): Promise<Evaluation | null> {
   for (const item of items) {
+    noteReview(input, identity, item.id, "running", item.message, null, item.attempt ?? null);
     let added;
     try {
       added = await addReview({
@@ -288,14 +372,122 @@ async function addReviewEvidence(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return failure("blocked", null, `reviewer failed for ${item.id}: ${message}`, input.head);
+      const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
+      noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null);
+      return failure("blocked", null, detail, input.head);
     }
     if (!added.ok) {
-      return failure("blocked", null, `${item.id}: ${added.message}`, input.head);
+      const detail = scrub(`${item.id}: ${added.message}`);
+      const state: CloseoutStepState = added.message.includes("allowed failed attempts")
+        ? "exhausted"
+        : "blocked";
+      noteReview(input, identity, item.id, state, detail, null, item.attempt ?? null);
+      return failure("blocked", null, detail, input.head);
     }
     reviewFindings.push({ itemId: item.id, findings: added.record.findings });
+    reviewAttempts.set(item.id, added.record.attempt);
   }
   return null;
+}
+
+function progressIdentity(
+  taskId: string,
+  decision: { base: string; head: string; policy: { digest: string | null; path: string | null } },
+): CloseoutProgressIdentity {
+  return {
+    taskId,
+    base: decision.base,
+    head: decision.head,
+    policyDigest: decision.policy.digest ?? "",
+    policyPath: decision.policy.path,
+  };
+}
+
+function noteReview(
+  input: EvaluateInput,
+  identity: CloseoutProgressIdentity,
+  id: string,
+  state: CloseoutStepState,
+  detail: string,
+  findings: string | null,
+  attempt: number | null,
+  reviewEvidencePath: string | null = null,
+): void {
+  const running = state === "running" || state === "pending";
+  input.progress?.step(identity, {
+    id,
+    kind: "review",
+    state,
+    command: "",
+    detail: scrub(detail),
+    attempt: attempt ?? 0,
+    timeoutSeconds: null,
+    startedAt: state === "running" ? Date.now() : null,
+    finishedAt: running ? null : Date.now(),
+    exitCode: null,
+    timedOut: false,
+    timeoutReason: null,
+    truncated: false,
+    logPath: null,
+    evidencePath: reviewEvidencePath,
+    findings: findings === null ? null : scrub(findings),
+    ordinal: -1,
+  });
+}
+
+function publishReviews(
+  input: EvaluateInput,
+  decision: DecisionDocument,
+  reviewFindings: Array<{ itemId: string; findings: Finding[] }>,
+  reviewAttempts: Map<string, number>,
+): void {
+  const identity = progressIdentity(input.taskId, decision);
+  for (const item of decision.items) {
+    if (item.kind !== "review") continue;
+    const found = reviewFindings.find((entry) => entry.itemId === item.id);
+    const attempt = item.attempt ?? reviewAttempts.get(item.id);
+    const reviewEvidencePath =
+      attempt !== undefined && attempt > 0
+        ? [
+            "evidence",
+            identity.policyDigest.replace(/^sha256:/, ""),
+            identity.head,
+            ...item.id.split("/"),
+            `${attempt}.json`,
+          ].join("/")
+        : null;
+    noteReview(
+      input,
+      identity,
+      item.id,
+      reviewStepState(item.state),
+      item.message,
+      found ? findingText(found.findings) : null,
+      attempt ?? null,
+      reviewEvidencePath,
+    );
+  }
+}
+
+function reviewStepState(state: string): CloseoutStepState {
+  if (state === "passed" || state === "failed" || state === "skipped" || state === "exhausted") {
+    return state;
+  }
+  if (state === "missing" || state === "stale") return "pending";
+  return "blocked";
+}
+
+function findingText(findings: readonly Finding[]): string | null {
+  if (findings.length === 0) return null;
+  return scrub(
+    findings
+      .map((finding) => `${finding.severity} ${finding.location}: ${finding.explanation}`)
+      .join("\n"),
+  );
+}
+
+function scrub(text: string): string {
+  return scrubText(text, credentialSecrets());
 }
 
 function finish(
@@ -458,5 +650,6 @@ async function finalResult(
     result.reportPath = await writeVerdictReport(input.reportDir, result);
   }
   if (input.recorder) await input.recorder.record(result);
+  seal(input.progress, outcome);
   return result;
 }

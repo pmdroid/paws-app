@@ -39,6 +39,7 @@ export type CloseoutGateOptions = {
   reportDir?: string;
   recorder?: GateInput["recorder"];
   maxFixAttempts?: number;
+  progress?: GateInput["progress"];
 };
 
 /**
@@ -68,6 +69,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.reportDir ? { reportDir: options.reportDir } : {}),
         ...(options.recorder ? { recorder: options.recorder } : {}),
         ...(options.maxFixAttempts !== undefined ? { maxFixAttempts: options.maxFixAttempts } : {}),
+        ...(options.progress ? { progress: options.progress } : {}),
       });
       return toVerdict(result, input.attempt);
     },

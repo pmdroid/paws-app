@@ -9,6 +9,7 @@ import type {
   Gate,
   ResolvedCommand,
   ResolvedPolicy,
+  ResolvedReview,
   ResolvedSetup,
 } from "../types";
 import { SPEC_VERSION } from "../types";
@@ -21,9 +22,11 @@ import {
   resolveCommit,
   type PawsCommandRunner,
 } from "./exec";
-import { scrubCommandEnv } from "./env";
+import { credentialSecrets, scrubCommandEnv } from "./env";
 import { withRetryLock } from "./lock";
 import { matchPaths } from "./paths";
+import type { CloseoutProgress, CloseoutProgressIdentity, CloseoutProgressStep } from "./progress";
+import { scrubText } from "./scrub";
 
 /** Identity written on every command record this runner stores. */
 export const PAWS_CLOSEOUT_PRODUCER = {
@@ -62,6 +65,7 @@ export type CloseoutRunInput = {
   gate?: Gate;
   /** Parent environment for setup steps and commands. Credentials are removed. */
   env?: NodeJS.ProcessEnv;
+  progress?: CloseoutProgress;
 };
 
 type Runnable = ResolvedSetup | ResolvedCommand;
@@ -72,7 +76,11 @@ let worktreeSequence = 0;
  * Run in-scope setup steps, then in-scope commands, in a detached worktree
  * of the candidate head. Command records are handed to `evidence`.
  */
-export async function runCloseoutCommands(input: CloseoutRunInput): Promise<CloseoutRunResult> {
+export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<CloseoutRunResult> {
+  const input: CloseoutRunInput = {
+    ...raw,
+    progress: scrubProgress(raw.progress, raw.env),
+  };
   if (input.policy.source === "none") return { dispositions: [] };
   const taskError = taskRetryError(input.policy, input.candidate);
   if (taskError !== null) return { blocked: taskError, dispositions: [] };
@@ -101,7 +109,10 @@ export async function runCloseoutCommands(input: CloseoutRunInput): Promise<Clos
 
     const steps = input.policy.setup.filter((step) => step.gate === gate);
     const commands = input.policy.items.filter(isCommand).filter((item) => item.gate === gate);
+    const reviews = input.policy.items.filter(isReview).filter((item) => item.gate === gate);
     const actions = classifyAll(steps, commands, changed, input, base, head, records);
+    const identity = progressIdentity(input, base, head);
+    publishPlan(input.progress, identity, actions, reviews);
     if (!actions.some((action) => action.kind === "run")) {
       return { dispositions: skips(actions) };
     }
@@ -110,6 +121,12 @@ export async function runCloseoutCommands(input: CloseoutRunInput): Promise<Clos
     const added = await git(input.repo, ["worktree", "add", "--detach", tree, head], env);
     if (!added.ok) {
       rmSync(tree, { recursive: true, force: true });
+      blockPending(
+        input.progress,
+        identity,
+        actions,
+        "could not create a worktree at the candidate commit",
+      );
       return { blocked: "could not create a worktree at the candidate commit", dispositions: [] };
     }
     const runner = createCommandRunner({ env: input.env });
@@ -122,15 +139,30 @@ export async function runCloseoutCommands(input: CloseoutRunInput): Promise<Clos
           continue;
         }
         if (stop) {
-          dispositions.push({
+          const skipped = {
             id: action.item.id,
             kind: action.item.kind,
-            state: "skipped",
+            state: "skipped" as const,
             message: "setup failed",
-          });
+          };
+          dispositions.push(skipped);
+          input.progress?.step(
+            identity,
+            stepUpdate(action.item, skipped, ordinalOf(actions, action.item.id), null),
+          );
           continue;
         }
-        const exec = await runOne(runner, input, action.item, tree, base, head, records);
+        const exec = await runOne(
+          runner,
+          input,
+          action.item,
+          tree,
+          base,
+          head,
+          records,
+          identity,
+          ordinalOf(actions, action.item.id),
+        );
         dispositions.push({
           id: action.item.id,
           kind: action.item.kind,
@@ -147,7 +179,9 @@ export async function runCloseoutCommands(input: CloseoutRunInput): Promise<Clos
   });
 }
 
-type Action = { kind: "run"; item: Runnable } | { kind: "skip"; disposition: CommandDisposition };
+type Action =
+  | { kind: "run"; item: Runnable }
+  | { kind: "skip"; item: Runnable; disposition: CommandDisposition };
 
 function classifyAll(
   steps: readonly ResolvedSetup[],
@@ -163,7 +197,7 @@ function classifyAll(
   for (const item of [...steps, ...commands]) {
     const decision = classify(item, changed, stop, input, base, head, records);
     if (decision.kind === "run") actions.push({ kind: "run", item });
-    else actions.push({ kind: "skip", disposition: decision.disposition });
+    else actions.push({ kind: "skip", item, disposition: decision.disposition });
     if (decision.stop) stop = true;
   }
   return actions;
@@ -233,10 +267,21 @@ async function runOne(
   base: string,
   head: string,
   records: EvidenceRecord[],
+  identity: CloseoutProgressIdentity,
+  ordinal: number,
 ): Promise<CommandExec> {
   const digest = input.policy.digest ?? "";
   const attempt = nextAttempt(records, item.id, head, digest);
   const relative = artifactRelative(digest, head, item.id, attempt);
+  const startedAt = Date.now();
+  input.progress?.step(identity, {
+    ...blankStep(item, ordinal),
+    state: "running",
+    attempt,
+    startedAt,
+    logPath: relative,
+    evidencePath: evidenceRelative(digest, head, item.id, attempt),
+  });
   const exec = await runner.runLogged({
     cwd,
     argv: item.exec,
@@ -244,6 +289,9 @@ async function runOne(
     logFile: join(input.evidenceDir, ...relative.split("/")),
     artifactPath: relative,
     expectedHead: head,
+    onOutput: (stream, text, truncated) => {
+      input.progress?.output(identity, item.id, stream, text, truncated);
+    },
   });
   const task = input.candidate.task;
   const record: CommandRecord = {
@@ -270,6 +318,21 @@ async function runOne(
   };
   await input.evidence.add(record);
   records.push(record);
+  const failed = executionFailed(record.exec, item.kind === "setup");
+  input.progress?.step(identity, {
+    ...blankStep(item, ordinal),
+    state: failed ? "failed" : "passed",
+    detail: execMessage(record.exec, item.kind === "setup"),
+    attempt,
+    startedAt,
+    finishedAt: Date.now(),
+    exitCode: record.exec.exitCode,
+    timedOut: record.exec.timedOut,
+    timeoutReason: record.exec.timedOut ? "command timed out" : null,
+    truncated: record.exec.truncated,
+    logPath: relative,
+    evidencePath: evidenceRelative(digest, head, item.id, attempt),
+  });
   return record.exec;
 }
 
@@ -291,6 +354,153 @@ function hasPaths(item: { paths?: string[] }): boolean {
 
 function isCommand(item: ResolvedPolicy["items"][number]): item is ResolvedCommand {
   return item.kind === "command" && !("supported" in item);
+}
+
+function isReview(item: ResolvedPolicy["items"][number]): item is ResolvedReview {
+  return item.kind === "review" && !("supported" in item);
+}
+
+function scrubProgress(
+  progress: CloseoutProgress | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+): CloseoutProgress | undefined {
+  if (progress === undefined) return undefined;
+  const secrets = credentialSecrets(env);
+  const text = (value: string): string => scrubText(value, secrets);
+  const optional = (value: string | null): string | null => (value === null ? null : text(value));
+  return {
+    begin(identity) {
+      progress.begin(identity);
+    },
+    step(identity, step) {
+      progress.step(identity, {
+        ...step,
+        command: text(step.command),
+        detail: optional(step.detail),
+        timeoutReason: optional(step.timeoutReason),
+        findings: optional(step.findings),
+      });
+    },
+    output(identity, stepId, stream, chunk, truncated) {
+      progress.output(identity, stepId, stream, text(chunk), truncated);
+    },
+    finish(identity, decision) {
+      progress.finish(identity, decision);
+    },
+  };
+}
+
+function progressIdentity(
+  input: CloseoutRunInput,
+  base: string,
+  head: string,
+): CloseoutProgressIdentity {
+  return {
+    taskId: input.candidate.task ?? "",
+    base,
+    head,
+    policyDigest: input.policy.digest ?? "",
+    policyPath: input.policy.source === "none" ? null : input.policy.entryPath,
+  };
+}
+
+function publishPlan(
+  progress: CloseoutProgress | undefined,
+  identity: CloseoutProgressIdentity,
+  actions: readonly Action[],
+  reviews: readonly ResolvedReview[],
+): void {
+  if (progress === undefined) return;
+  progress.begin(identity);
+  actions.forEach((action, ordinal) => {
+    if (action.kind === "skip") {
+      progress.step(identity, stepUpdate(action.item, action.disposition, ordinal, null));
+      return;
+    }
+    progress.step(identity, { ...blankStep(action.item, ordinal), state: "pending" });
+  });
+  reviews.forEach((item, index) => {
+    progress.step(identity, {
+      ...blankStep(
+        {
+          id: item.id,
+          kind: "review",
+          exec: [],
+          timeoutSeconds: 0,
+        },
+        actions.length + index,
+      ),
+      kind: "review",
+      command: item.skill,
+      timeoutSeconds: null,
+      state: "pending",
+    });
+  });
+}
+
+function blockPending(
+  progress: CloseoutProgress | undefined,
+  identity: CloseoutProgressIdentity,
+  actions: readonly Action[],
+  detail: string,
+): void {
+  if (progress === undefined) return;
+  for (const action of actions) {
+    if (action.kind !== "run") continue;
+    progress.step(identity, {
+      ...blankStep(action.item, ordinalOf(actions, action.item.id)),
+      state: "blocked",
+      detail,
+      finishedAt: Date.now(),
+    });
+  }
+}
+
+function ordinalOf(actions: readonly Action[], id: string): number {
+  const index = actions.findIndex((action) => action.item.id === id);
+  return index < 0 ? 0 : index;
+}
+
+function stepUpdate(
+  item: Runnable,
+  disposition: CommandDisposition,
+  ordinal: number,
+  attempt: number | null,
+): CloseoutProgressStep {
+  const state = disposition.state === "exhausted" ? "exhausted" : "skipped";
+  return {
+    ...blankStep(item, ordinal),
+    state,
+    detail: disposition.message,
+    attempt: attempt ?? 0,
+    finishedAt: Date.now(),
+  };
+}
+
+function blankStep(
+  item: { id: string; kind: string; exec?: readonly string[]; timeoutSeconds?: number },
+  ordinal: number,
+): CloseoutProgressStep {
+  const kind = item.kind === "setup" || item.kind === "review" ? item.kind : "command";
+  return {
+    id: item.id,
+    kind,
+    state: "pending",
+    command: item.exec && item.exec.length > 0 ? item.exec.join(" ") : item.id,
+    detail: null,
+    attempt: 0,
+    timeoutSeconds: item.timeoutSeconds && item.timeoutSeconds > 0 ? item.timeoutSeconds : null,
+    startedAt: null,
+    finishedAt: null,
+    exitCode: null,
+    timedOut: false,
+    timeoutReason: null,
+    truncated: false,
+    logPath: null,
+    evidencePath: null,
+    findings: null,
+    ordinal,
+  };
 }
 
 function taskRetryError(policy: ResolvedPolicy, candidate: CandidateIdentity): string | null {
@@ -397,6 +607,11 @@ function nextAttempt(
 function artifactRelative(digest: string, head: string, itemId: string, attempt: number): string {
   const hex = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
   return ["logs", hex, head, ...itemId.split("/"), `${attempt}.log`].join("/");
+}
+
+function evidenceRelative(digest: string, head: string, itemId: string, attempt: number): string {
+  const hex = digest.startsWith("sha256:") ? digest.slice("sha256:".length) : digest;
+  return ["evidence", hex, head, ...itemId.split("/"), `${attempt}.json`].join("/");
 }
 
 async function resolveRev(

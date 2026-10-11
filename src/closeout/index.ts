@@ -10,6 +10,14 @@ export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export { evaluateCandidate, runCloseoutGate } from "./run";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
+export type {
+  CloseoutOutputStream,
+  CloseoutProgress,
+  CloseoutProgressIdentity,
+  CloseoutProgressStep,
+  CloseoutStepKind,
+  CloseoutStepState,
+} from "../closeout-spec";
 export { formatEvidenceSummary, formatFixFeedback } from "./summary";
 export { MAX_FIX_ATTEMPTS } from "./types";
 export type {

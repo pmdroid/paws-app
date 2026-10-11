@@ -61,6 +61,16 @@ export type {
   SpecVersion,
 } from "./types";
 
+export { credentialSecrets } from "./run/env";
+export type {
+  CloseoutOutputStream,
+  CloseoutProgress,
+  CloseoutProgressIdentity,
+  CloseoutProgressStep,
+  CloseoutStepKind,
+  CloseoutStepState,
+} from "./run/progress";
+export { scrubText } from "./run/scrub";
 export { addReview, decision, digest, run, validate } from "./facade";
 export type {
   AddReviewInput,

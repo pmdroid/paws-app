@@ -21,6 +21,7 @@ import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
 import { scrubCommandEnv } from "./run/env";
 import { changedPaths as diffPaths, resolveCommit } from "./run/exec";
 import { withRetryLock } from "./run/lock";
+import type { CloseoutProgress } from "./run/progress";
 import { runCloseoutCommands } from "./run/run";
 import {
   SPEC_VERSION,
@@ -92,6 +93,7 @@ export type RunRequest = {
   pawsHome?: string;
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
+  progress?: CloseoutProgress;
 };
 
 export type ReviewIntake =
@@ -236,6 +238,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     gate: input.gate,
     ...(input.pawsHome !== undefined ? { home: input.pawsHome } : {}),
     ...(input.env !== undefined ? { env: input.env } : {}),
+    ...(input.progress !== undefined ? { progress: input.progress } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(
