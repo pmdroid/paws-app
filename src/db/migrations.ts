@@ -227,4 +227,49 @@ CREATE TABLE github_label_state (
 ALTER TABLE work_item ADD COLUMN brief TEXT CHECK (brief IS NULL OR json_valid(brief));
 `,
   },
+  {
+    id: "007_closeout_progress",
+    sql: `
+CREATE TABLE closeout_progress (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  base TEXT NOT NULL,
+  head TEXT NOT NULL,
+  policy_digest TEXT NOT NULL,
+  policy_path TEXT,
+  decision TEXT,
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  finished_at INTEGER
+) STRICT;
+CREATE INDEX closeout_progress_item ON closeout_progress (item_id, updated_at);
+
+CREATE TABLE closeout_step (
+  progress_id TEXT NOT NULL REFERENCES closeout_progress (id),
+  step_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('setup', 'command', 'review')),
+  state TEXT NOT NULL CHECK (state IN (
+    'pending', 'running', 'passed', 'failed', 'blocked', 'skipped', 'exhausted'
+  )),
+  command TEXT NOT NULL,
+  detail TEXT,
+  attempt INTEGER NOT NULL,
+  timeout_seconds INTEGER,
+  started_at INTEGER,
+  finished_at INTEGER,
+  exit_code INTEGER,
+  timed_out INTEGER NOT NULL DEFAULT 0 CHECK (timed_out IN (0, 1)),
+  timeout_reason TEXT,
+  stdout TEXT NOT NULL DEFAULT '',
+  stderr TEXT NOT NULL DEFAULT '',
+  truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+  log_path TEXT,
+  evidence_path TEXT,
+  findings TEXT,
+  ordinal INTEGER NOT NULL,
+  PRIMARY KEY (progress_id, step_id)
+) STRICT;
+`,
+  },
 ];
