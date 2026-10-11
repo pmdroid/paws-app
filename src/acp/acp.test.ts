@@ -6,6 +6,7 @@ import { GROK_AGENT_ARGS, GROK_LOGIN_MESSAGE } from "./adapters";
 import { git } from "./git";
 import { minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
+import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
 import { createAcpPromptLifecycle } from "./lifecycle";
 import type { FakeResult, FakeScript } from "./testing/script";
@@ -809,6 +810,206 @@ async function layoutRepo(): Promise<{
   const worktree = await createWorktree({ owner: "acme", repo: "demo", itemId: "ENG-1", pawsRoot });
   return { root, source, home, pawsRoot, worktree: worktree.path };
 }
+
+test("ACP selects the advertised model and returns real session identity", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    sessionId: "observed-session",
+    model: "gpt-model-a",
+    models: ["gpt-model-a", "gpt-model-b"],
+    steps: [{ type: "end" }],
+  });
+  const result = await runAgent({
+    role: "reviewer",
+    profile: { agent: "codex", model: "gpt-model-b" },
+    itemId: "ENG-1",
+    runId: "model-selection",
+    prompt: "review",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    checkpoint: false,
+  });
+  expect(result.identity).toEqual({
+    session: "observed-session",
+    model: "gpt-model-b",
+    provider: "openai",
+  });
+  expect((await readResult(files.resultPath)).modelSelection).toEqual({
+    sessionId: "observed-session",
+    configId: "model",
+    value: "gpt-model-b",
+  });
+});
+
+for (const failure of ["unadvertised", "rejected", "unconfirmed"] as const) {
+  test(`ACP refuses ${failure} model selection before prompting`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      model: "gpt-model-a",
+      models: failure === "unadvertised" ? ["gpt-model-a"] : ["gpt-model-a", "gpt-model-b"],
+      ...(failure === "rejected" ? { modelError: "model unavailable" } : {}),
+      ...(failure === "unconfirmed" ? { confirmModel: "gpt-model-a" } : {}),
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "codex", model: "gpt-model-b" },
+      itemId: "ENG-1",
+      runId: "bad-model",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+    });
+    expect(result.stopReason).toBe("error");
+    expect(result.identity).toBeUndefined();
+    expect((await readResult(files.resultPath)).methods).not.toContain("session/prompt");
+  });
+}
+
+test("ACP initialization-only preflight does not run tools or prompt", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "gpt-model-a",
+    steps: [{ type: "fs_write", path: join(layout.worktree, "should-not-exist"), content: "bad" }],
+  });
+  const result = await runAgent({
+    role: "reviewer",
+    profile: { agent: "codex", model: null },
+    itemId: "ENG-1",
+    runId: "prepare",
+    prompt: "",
+    prepareOnly: true,
+    checkpoint: false,
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+  });
+  expect(result.identity?.model).toBe("gpt-model-a");
+  expect((await readResult(files.resultPath)).methods).toEqual(["initialize", "session/new"]);
+});
+
+test("ACP refuses a model change during a candidate turn", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "model-a",
+    steps: [
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: "model-b",
+              options: [{ value: "model-b", name: "B" }],
+            },
+          ],
+        },
+      },
+      { type: "end" },
+    ],
+  });
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "changed-model",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    checkpoint: false,
+  });
+  expect(result.stopReason).toBe("error");
+  expect(result.errorMessage).toContain("changed model");
+  expect(result.identity).toBeUndefined();
+});
+
+test("ACP reviewer denies writes and commands", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "unsafe"), content: "bad" },
+      { type: "terminal", command: "touch", args: ["unsafe"] },
+      { type: "end" },
+    ],
+  });
+  const result = await runAgent({
+    role: "reviewer",
+    itemId: "ENG-1",
+    runId: "readonly",
+    prompt: "review",
+    readOnly: true,
+    checkpoint: false,
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+  });
+  expect(result.stopReason).toBe("end_turn");
+  const trace = await readResult(files.resultPath);
+  expect(trace.fs[0]?.ok).toBe(false);
+  expect(trace.terminals[0]?.ok).toBe(false);
+});
+
+test("connection probe verifies the model in a disposable session", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "gpt-model-a",
+    models: ["gpt-model-a", "gpt-model-b"],
+    steps: [{ type: "end" }],
+  });
+  const prior = process.env.PAWS_CODEX_ACP;
+  process.env.PAWS_CODEX_ACP = `${process.execPath} ${fakeAgent} ${files.resultPath} ${files.scriptPath}`;
+  try {
+    const result = await probeAgentProfile({
+      profile: { agent: "codex", model: "gpt-model-b" },
+      pawsRoot: layout.pawsRoot,
+      worktree: layout.worktree,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.model).toBe("gpt-model-b");
+    expect(result.models.map((model) => model.id)).toEqual(["gpt-model-a", "gpt-model-b"]);
+    expect((await readResult(files.resultPath)).methods).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+      "session/prompt",
+    ]);
+  } finally {
+    if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
+    else process.env.PAWS_CODEX_ACP = prior;
+  }
+});
+
+test("connection probe fails when the agent cannot identify its default model", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { model: null, steps: [{ type: "end" }] });
+  const prior = process.env.PAWS_CODEX_ACP;
+  process.env.PAWS_CODEX_ACP = `${process.execPath} ${fakeAgent} ${files.resultPath} ${files.scriptPath}`;
+  try {
+    const result = await probeAgentProfile({
+      profile: { agent: "codex", model: null },
+      pawsRoot: layout.pawsRoot,
+      worktree: layout.worktree,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.model).toBeNull();
+    expect(result.message).toContain("model");
+  } finally {
+    if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
+    else process.env.PAWS_CODEX_ACP = prior;
+  }
+});
 
 async function writeGrokConfig(pawsRoot: string, allowApiKey: boolean): Promise<void> {
   await writeFile(

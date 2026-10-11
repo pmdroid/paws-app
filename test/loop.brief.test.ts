@@ -72,9 +72,9 @@ for (const source of ["linear", "github"] as const) {
     const dbPath = join(root, "paws.db");
     let db = openDatabase(dbPath);
     migrate(db);
-    const launch = (input: { purpose: string }) => ({
+    const launch = (input: { purpose: string; role: string }) => ({
       command: process.execPath,
-      args: [agent, input.purpose, evidence],
+      args: [agent, input.purpose, evidence, input.role],
       env: process.env,
     });
     const repository = { owner: "acme", repo: "widgets", remoteUrl: bare };

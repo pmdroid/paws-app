@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
 import { buildDockerRun, type DockerAgent } from "../sandbox";
 
 export interface DockerSpawnOption {
@@ -75,6 +76,11 @@ export function captureStderr(child: ChildProcess, limit = 64_000): { text(): st
 
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid == null) return;
+  if (child.exitCode != null || child.signalCode != null) {
+    killCapturedDescendants(child, signal);
+    return;
+  }
+  captureDescendants(child);
   try {
     process.kill(-child.pid, signal);
   } catch {
@@ -83,6 +89,71 @@ export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
       child.kill(signal);
     } catch {
       // The process is already gone.
+    }
+  }
+}
+
+interface ProcessIdentity {
+  pid: number;
+  group: number;
+  session: number;
+  started: string;
+}
+
+const capturedDescendants = new WeakMap<ChildProcess, Map<number, ProcessIdentity>>();
+
+function processIdentity(pid: number): ProcessIdentity | undefined {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    const started = fields[19];
+    if (!started) return undefined;
+    return { pid, group: Number(fields[2]), session: Number(fields[3]), started };
+  } catch {
+    return undefined;
+  }
+}
+
+function captureDescendants(child: ChildProcess): void {
+  if (process.platform !== "linux" || child.pid == null) return;
+  const leader = processIdentity(child.pid);
+  if (!leader || leader.group !== child.pid) return;
+  const members = capturedDescendants.get(child) ?? new Map<number, ProcessIdentity>();
+  capturedDescendants.set(child, members);
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const member = processIdentity(Number(entry));
+    if (
+      member &&
+      member.pid !== leader.pid &&
+      member.group === leader.group &&
+      member.session === leader.session &&
+      BigInt(member.started) >= BigInt(leader.started)
+    ) {
+      members.set(member.pid, member);
+    }
+  }
+}
+
+function killCapturedDescendants(child: ChildProcess, signal: NodeJS.Signals): void {
+  const members = capturedDescendants.get(child);
+  if (!members) return;
+  for (const member of members.values()) {
+    const current = processIdentity(member.pid);
+    if (!current || current.started !== member.started) {
+      members.delete(member.pid);
+      continue;
+    }
+    try {
+      process.kill(member.pid, signal);
+    } catch {
+      members.delete(member.pid);
     }
   }
 }
