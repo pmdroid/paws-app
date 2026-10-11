@@ -1,3 +1,4 @@
+import { readSecretFile } from "../src/credentials";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -77,7 +78,7 @@ describe("paws setup", () => {
     });
 
     const secretPath = join(scene.paths.secretsDir, "linear-api-key");
-    expect(readFileSync(secretPath, "utf8")).toBe(`${API_KEY}\n`);
+    expect(readSecretFile(secretPath)).toBe(`${API_KEY}\n`);
     expect(statSync(secretPath).mode & 0o777).toBe(0o600);
     expect(statSync(scene.paths.secretsDir).mode & 0o777).toBe(0o700);
     expect(readFileSync(join(scene.checkout, ".agents", "closeout.yaml"), "utf8")).toContain(
@@ -144,7 +145,7 @@ describe("paws setup", () => {
     const clientPath = join(scene.paths.secretsDir, "linear-client.json");
     expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
     expect(statSync(clientPath).mode & 0o777).toBe(0o600);
-    expect(readFileSync(clientPath, "utf8")).toBe(
+    expect(readSecretFile(clientPath)).toBe(
       `${JSON.stringify({ clientId: "client-id", clientSecret: CLIENT_SECRET })}\n`,
     );
     const config = readFileSync(scene.paths.configFile, "utf8");

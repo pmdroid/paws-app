@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readSecretFile } from "../credentials";
 import { isAbsolute, join } from "node:path";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../core";
 import { loadEnv, type EnvSource, type PawsEnv } from "./env";
@@ -213,7 +214,7 @@ function readLinearSecrets(
 function readText(home: string, relative: string | null): string | null {
   const path = secretPath(home, relative);
   if (path === null || !existsSync(path)) return null;
-  const text = readFileSync(path, "utf8").trim();
+  const text = readSecretFile(path)!.trim();
   return text.length > 0 ? text : null;
 }
 

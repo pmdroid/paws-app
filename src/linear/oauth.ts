@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readSecretFile, writeSecretFile } from "../credentials";
 
 /** Scopes for an install that can be delegated and mentioned. */
 export const LINEAR_APP_SCOPES = "read,write,app:assignable,app:mentionable";
@@ -235,7 +236,7 @@ function readToken(path: string): StoredLinearToken | null {
   if (!existsSync(path)) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(readSecretFile(path)!);
   } catch {
     throw new Error("Linear token file is unreadable");
   }
@@ -257,11 +258,7 @@ function readToken(path: string): StoredLinearToken | null {
 }
 
 function writeToken(path: string, token: StoredLinearToken): void {
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(token), { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, path);
-  chmodSync(path, 0o600);
+  writeSecretFile(path, JSON.stringify(token));
 }
 
 function readScope(value: unknown): string | null {
