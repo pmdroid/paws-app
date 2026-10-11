@@ -63,6 +63,7 @@ export function openLinear(options: {
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(options.db);
   const auth = createLinearAuth({
+    db: options.db,
     tokenPath: linearTokenPath(options.secretsDir),
     clientId: settings.clientId,
     clientSecret: settings.clientSecret,

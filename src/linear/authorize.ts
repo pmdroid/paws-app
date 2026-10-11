@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   exchangeLinearCode,
   linearAuthorizeUrl,
@@ -17,6 +17,8 @@ export async function authorizeLinear(input: {
   timeoutMs?: number;
 }): Promise<StoredLinearToken> {
   const state = randomBytes(32).toString("hex");
+  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   const result = Promise.withResolvers<StoredLinearToken>();
   const abort = new AbortController();
   const fetchToken = input.fetch ?? fetch;
@@ -47,6 +49,7 @@ export async function authorizeLinear(input: {
           clientId: input.clientId,
           clientSecret: input.clientSecret,
           code,
+          codeVerifier,
           redirectUri,
           fetch: (tokenUrl, init) => fetchToken(tokenUrl, { ...init, signal: abort.signal }),
         });
@@ -71,7 +74,9 @@ export async function authorizeLinear(input: {
     const [token] = await Promise.all([
       result.promise,
       Promise.resolve().then(() =>
-        input.onAuthorize(linearAuthorizeUrl({ clientId: input.clientId, redirectUri, state })),
+        input.onAuthorize(
+          linearAuthorizeUrl({ clientId: input.clientId, redirectUri, state, codeChallenge }),
+        ),
       ),
     ]);
     return token;

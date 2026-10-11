@@ -37,7 +37,7 @@ type ModuleName = (typeof MODULES)[number];
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
   config: ["core", "credentials"],
-  credentials: [],
+  credentials: ["db"],
   core: [],
   db: ["core"],
   linear: ["core", "credentials"],

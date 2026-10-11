@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import { authorizeLinear, LINEAR_APP_SCOPES, type FetchLike } from "../src/linear";
 
 test("Linear callback rejects unrelated requests and exchanges a valid code once", async () => {
   let exchanges = 0;
   let redirectUri = "";
+  let challenge = "";
   const started = Date.now();
   const token = await authorizeLinear({
     clientId: "client-1",
@@ -14,7 +16,11 @@ test("Linear callback rejects unrelated requests and exchanges a valid code once
       exchanges += 1;
       expect(String(input)).toBe("https://api.linear.app/oauth/token");
       const body = new URLSearchParams(String(init?.body));
+      const verifier = body.get("code_verifier")!;
+      expect(verifier.length).toBeGreaterThanOrEqual(43);
+      expect(createHash("sha256").update(verifier).digest("base64url")).toBe(challenge);
       expect(Object.fromEntries(body)).toEqual({
+        code_verifier: verifier,
         grant_type: "authorization_code",
         code: "fake-code",
         redirect_uri: redirectUri,
@@ -33,6 +39,8 @@ test("Linear callback rejects unrelated requests and exchanges a valid code once
       expect(auth.origin).toBe("https://linear.app");
       expect(auth.searchParams.get("actor")).toBe("app");
       expect(auth.searchParams.get("scope")).toBe(LINEAR_APP_SCOPES);
+      challenge = auth.searchParams.get("code_challenge")!;
+      expect(auth.searchParams.get("code_challenge_method")).toBe("S256");
       const state = auth.searchParams.get("state")!;
       expect(state.length).toBeGreaterThanOrEqual(32);
       redirectUri = auth.searchParams.get("redirect_uri")!;
