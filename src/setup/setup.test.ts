@@ -20,7 +20,8 @@ test("setup offers only installed agents and writes grok", async () => {
   writeFileSync(join(bin, "grok"), "");
   writeFileSync(join(platform, "package.json"), "{}");
   const candidates = detectCandidates({
-    which: (name) => (name === "codex-acp" ? "/usr/bin/codex-acp" : null),
+    which: (name) =>
+      name === "codex-acp" || name === "codex" || name === "grok" ? `/usr/bin/${name}` : null,
     packageRoot,
     agents: { implementer: "claude", grok: { path: null, allowApiKey: false } },
   });

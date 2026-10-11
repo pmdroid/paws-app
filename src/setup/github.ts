@@ -88,13 +88,9 @@ export async function chooseGitHubRepo(input: {
   if (input.yes) stop("Pass --repo owner/name.");
   const fetchImpl = input.io.fetch ?? fetch;
   const repos = await listPushRepos(input.token, fetchImpl, input.store);
-  const newest = repos.slice(0, 30);
   input.io.stdout("Filter repositories (empty keeps the newest 30):");
-  const filter = (await input.io.readLine())?.trim() ?? "";
-  const shown =
-    filter.length === 0
-      ? newest
-      : newest.filter((repo) => repo.fullName.toLowerCase().includes(filter.toLowerCase()));
+  const filter = (await input.io.readLine())?.trim().toLowerCase() ?? "";
+  const shown = repos.filter((repo) => repo.fullName.toLowerCase().includes(filter)).slice(0, 30);
   if (shown.length === 0) {
     stop("No GitHub repository with push access matched. Pass --repo owner/name.");
   }
