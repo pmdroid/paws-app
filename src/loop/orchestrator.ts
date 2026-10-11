@@ -13,6 +13,9 @@ import {
   runAgent,
   createWorktree,
   ensureBareMirror,
+  FOLLOW_UP_INTERRUPTION,
+  type RunAgentOptions,
+  type RunAgentResult,
 } from "../acp";
 import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../config";
 import {
@@ -56,6 +59,12 @@ import {
   enqueueOutboxOnce,
   failWorkItem,
   getRun,
+  getConversation,
+  saveConversation,
+  listLinearTurnsForItem,
+  announceLinearTurn,
+  getLinearTurnGeneration,
+  discardLinearTurns,
   getWorkItem,
   immediate,
   insertRun,
@@ -118,6 +127,7 @@ import {
   type AcpAgentDeps,
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
+import { durableConversation } from "./conversation";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
@@ -173,7 +183,16 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly waiters = new Map<string, AnswerWaiter>();
-  private readonly live = new Map<string, { itemId: string; controller: AbortController }>();
+  private readonly live = new Map<
+    string,
+    { itemId: string; controller: AbortController; done: Promise<void>; finish(): void }
+  >();
+  private readonly sessionEvents = new Map<string, Promise<void>>();
+  private readonly conversations = new Map<
+    string,
+    (options: RunAgentOptions) => Promise<RunAgentResult>
+  >();
+  private shuttingDown = false;
   private activitySeq = 0;
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
@@ -213,6 +232,7 @@ export class Orchestrator {
   agentAlive = (runId: string): boolean => this.live.has(runId);
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void> {
+    if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.signal === "stop") {
       if (event.sessionId) {
         advanceLinearSessionGeneration(this.db, event.sessionId, { stop: true, now: this.now() });
@@ -221,6 +241,76 @@ export class Orchestrator {
       this.stopSession(event.sessionId, event.updatedAtMs);
       return;
     }
+    if (
+      event.action === "prompted" &&
+      event.sessionId &&
+      event.body !== null &&
+      !findOpenQuestion(this.db, event.sessionId) &&
+      this.options.channel !== "comments" &&
+      !isGitHubIssue(event.issueId ?? event.sessionId)
+    ) {
+      const turn = this.recordTurn(event);
+      if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
+        for (const live of this.live.values())
+          if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
+            live.controller.abort(FOLLOW_UP_INTERRUPTION);
+        await this.stopTaskPlanning(event.sessionId);
+      }
+    }
+    const key = event.sessionId ?? event.issueId ?? event.dedupeKey;
+    const previous = this.sessionEvents.get(key) ?? Promise.resolve();
+    const done = previous.catch(() => undefined).then(() => this.handleLinearEvent(event));
+    this.sessionEvents.set(key, done);
+    try {
+      await done;
+    } finally {
+      if (this.sessionEvents.get(key) === done) this.sessionEvents.delete(key);
+    }
+  }
+
+  async interruptLinearSession(sessionId: string): Promise<void> {
+    const items = this.itemsForSession(sessionId);
+    const owned = [...this.live.values()].filter((live) =>
+      items.some((item) => item.id === live.itemId),
+    );
+    for (const live of owned) live.controller.abort();
+    await this.stopTaskPlanning(sessionId);
+    await Promise.all(owned.map((live) => live.done));
+    if (items.some((item) => getConversation(this.db, item.id).blocked))
+      throw new Error("ACP process cleanup could not be verified");
+  }
+
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    await this.stopTaskPlanning();
+    const owned = [...this.live.values()];
+    for (const live of owned) live.controller.abort();
+    await Promise.all(owned.map((live) => live.done));
+    await Promise.allSettled([...this.sessionEvents.values()]);
+    if (this.allItems().some((item) => getConversation(this.db, item.id).blocked))
+      throw new Error("ACP process cleanup could not be verified");
+  }
+
+  private recordTurn(event: AcceptedLinearEvent) {
+    if (!event.sessionId || event.body === null) return null;
+    recordLinearSessionEvent(this.db, event, this.now());
+    return recordLinearTurn(this.db, {
+      eventKey: event.dedupeKey,
+      activityId: event.activityId,
+      sessionId: event.sessionId,
+      actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
+      body: event.body,
+      payload: event.payload,
+      createdAtMs:
+        "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
+          ? event.activityCreatedAtMs
+          : event.updatedAtMs,
+      now: this.now(),
+    });
+  }
+
+  private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
+    if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
       const question = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
       const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
@@ -235,28 +325,18 @@ export class Orchestrator {
           bindLinearSessionTask(this.db, event.sessionId, questionItem.epicId);
           activateLinearItem(this.db, event.sessionId, questionItem.id);
         }
-        recordLinearTurn(this.db, {
-          eventKey: event.dedupeKey,
-          activityId: event.activityId,
-          sessionId: event.sessionId,
-          actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
-          body: event.body,
-          payload: event.payload,
-          createdAtMs:
-            "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
-              ? event.activityCreatedAtMs
-              : event.updatedAtMs,
-          now: this.now(),
-        });
+        const turn = this.recordTurn(event);
+        if (turn?.state !== "pending") return;
+        event = { ...event, dedupeKey: turn.eventKey, body: turn.body, payload: turn.payload };
       }
-      await this.deliverPrompt(event);
-      if (
-        linearPrompt &&
-        question &&
-        findOpenQuestion(this.db, question.sessionId)?.id !== question.id &&
-        event.sessionId
-      )
-        applyLinearTurns(this.db, event.sessionId, [event.dedupeKey], question.itemId);
+      if (linearPrompt && !question && event.sessionId) {
+        await this.resumeLinearSession(event.sessionId);
+        return;
+      }
+      const outcome = await this.deliverPrompt(event);
+      if (linearPrompt && event.sessionId) {
+        if (outcome === "rejected") discardLinearTurns(this.db, event.sessionId, [event.dedupeKey]);
+      }
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
@@ -306,7 +386,13 @@ export class Orchestrator {
       ? getLinearSessionGeneration(this.db, event.sessionId)
       : undefined;
     return (update) =>
-      this.enqueueSessionProgress(update, `ack:${event.dedupeKey}:${update.kind}`, generation);
+      this.enqueueSessionProgress(
+        update,
+        `ack:${event.dedupeKey}:${update.kind}`,
+        (event.sessionId
+          ? getLinearTurnGeneration(this.db, event.sessionId, event.dedupeKey, event.activityId)
+          : null) ?? generation,
+      );
   }
 
   private async enqueueSessionProgress(
@@ -336,6 +422,7 @@ export class Orchestrator {
     if (!tracker) throw new Error("Linear is not connected");
     const initialSession = sessionId ? getLinearSession(this.db, sessionId) : null;
     const isCurrent = () => {
+      if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
       const current = getLinearSession(this.db, sessionId);
       return current?.generation === initialSession.generation && current.stoppedAt === null;
@@ -468,12 +555,14 @@ export class Orchestrator {
     jobs.register(JOB_KIND.resume, (job, context) =>
       this.executeQueued(job.payload, context.extendLease),
     );
-    jobs.register(JOB_KIND.reverify, (job) => this.reverify(job.payload));
+    jobs.register(JOB_KIND.reverify, (job) =>
+      this.runOwnedJob(job.payload, () => this.reverify(job.payload)),
+    );
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const lease = setInterval(() => context.extendLease(60_000), 10_000);
       lease.unref?.();
       try {
-        await this.merge(job.payload);
+        await this.runOwnedJob(job.payload, () => this.merge(job.payload));
       } finally {
         clearInterval(lease);
       }
@@ -490,6 +579,7 @@ export class Orchestrator {
     payload: unknown,
     extendLease: (leaseMs?: number) => boolean,
   ): Promise<void> {
+    if (this.shuttingDown) throw new Error("Paws is shutting down");
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const loaded = getWorkItem(this.db, itemId);
@@ -549,8 +639,8 @@ export class Orchestrator {
       if (classification?.mode !== "clarify") throw new Error("Task clarification is missing");
       return this.requestTaskClarification(item, run.id, classification.question);
     }
-    const controller = new AbortController();
-    this.live.set(run.id, { itemId: item.id, controller });
+    const live = this.beginLive(item.id, run.id);
+    const controller = live.controller;
     try {
       const resolved = await classifyTask({
         itemId: itemPathId(item),
@@ -595,6 +685,7 @@ export class Orchestrator {
       return true;
     } finally {
       this.live.delete(run.id);
+      live.finish();
     }
   }
 
@@ -639,8 +730,8 @@ export class Orchestrator {
   ): Promise<void> {
     const run = this.ensureRun(item);
     const profile = this.profileSnapshot(run.id).implementer;
-    const controller = new AbortController();
-    this.live.set(run.id, { itemId: item.id, controller });
+    const live = this.beginLive(item.id, run.id);
+    const controller = live.controller;
     const workspace = join(this.options.pawsRoot, "tasks", item.id, mode);
     mkdirSync(workspace, { recursive: true, mode: 0o700 });
     const activity = createAcpActivityReporter((update) => {
@@ -660,6 +751,7 @@ export class Orchestrator {
     }, KEEPALIVE_MS);
     keepAlive.unref?.();
     try {
+      const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = [
         mode === "answer"
@@ -679,7 +771,7 @@ export class Orchestrator {
         worktree: workspace,
         prompt,
       });
-      const result = await runAgent({
+      const result = await promptRunner({
         ...launched,
         role: "implementer",
         profile,
@@ -728,6 +820,7 @@ export class Orchestrator {
     } finally {
       clearInterval(keepAlive);
       this.live.delete(run.id);
+      live.finish();
       await this.flush();
     }
   }
@@ -746,8 +839,8 @@ export class Orchestrator {
     }
     const run = this.ensureRun(item);
     const profiles = this.profileSnapshot(run.id);
-    const controller = new AbortController();
-    this.live.set(run.id, { itemId: item.id, controller });
+    const live = this.beginLive(item.id, run.id);
+    const controller = live.controller;
     this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`);
     this.postStatus(item, "started");
     let posted = true;
@@ -778,6 +871,7 @@ export class Orchestrator {
     });
 
     try {
+      const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
@@ -826,6 +920,7 @@ export class Orchestrator {
         pawsRoot: this.options.pawsRoot,
         home: this.options.home ?? homedir(),
         signal: controller.signal,
+        promptRunner,
         askTeam,
         publishArtifact: this.artifactPublisher(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
@@ -834,6 +929,7 @@ export class Orchestrator {
         ...(launched.env ? { env: launched.env } : {}),
         ...this.itemDocker(profiles.implementer.agent),
       });
+      controller.signal.throwIfAborted();
       const finished = getWorkItem(this.db, item.id);
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
@@ -865,7 +961,12 @@ export class Orchestrator {
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
-      if (current && current.state !== "cancelled" && !current.cancelRequested) {
+      if (
+        !controller.signal.aborted &&
+        current &&
+        current.state !== "cancelled" &&
+        !current.cancelRequested
+      ) {
         const message = error instanceof Error ? error.message : String(error);
         this.fail(current, "run_error", message);
       }
@@ -873,8 +974,13 @@ export class Orchestrator {
       activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
-      this.live.delete(run.id);
-      await this.flush();
+      this.conversations.delete(item.id);
+      try {
+        await this.flush();
+      } finally {
+        this.live.delete(run.id);
+        live.finish();
+      }
     }
   }
 
@@ -892,6 +998,7 @@ export class Orchestrator {
     if (verifying === null) return;
     saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
     const verdict = await this.runVerification(item, worktree, base, head, candidate);
+    if (this.signalForItem(item.id)?.aborted) return;
     const after = getWorkItem(this.db, item.id);
     if (after === null || after.state === "cancelled") return;
     if (verdict.decision === "accepted" && !verdict.exhausted) {
@@ -924,6 +1031,7 @@ export class Orchestrator {
     const deps = this.agentDeps(item);
     const onCandidate = deps.onCandidate;
     deps.onCandidate = (identity) => {
+      if (deps.signal?.aborted) return;
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
@@ -933,6 +1041,7 @@ export class Orchestrator {
       fixer: createAcpFixRunner(deps),
       recorder: {
         record: async (verdict) => {
+          if (deps.signal?.aborted) return;
           this.post(
             item,
             "thought",
@@ -1096,6 +1205,7 @@ export class Orchestrator {
     if (!candidate) return;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
+    if (this.stopped(item.id)) return;
     if (!artifactPublicationReady(this.db, item.id)) {
       this.fail(
         item,
@@ -1117,6 +1227,7 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
+    if (this.stopped(item.id)) return;
     if (!published.published) {
       this.fail(item, "publish", published.reason);
       return;
@@ -1170,7 +1281,11 @@ export class Orchestrator {
         };
       },
     });
-    if (this.stopped(item.id)) return;
+    if (this.stopped(item.id)) {
+      if (merged.merged && getWorkItem(this.db, item.id)?.state === "merge_queue")
+        applyWorkItemEvent(this.db, item.id, "merge_accepted");
+      return;
+    }
     if (!merged.merged) {
       if (closeoutFailure !== null) {
         const failure = closeoutFailure as CloseoutVerdict;
@@ -1277,19 +1392,20 @@ export class Orchestrator {
     };
   }
 
-  private async deliverPrompt(event: AcceptedLinearEvent): Promise<void> {
+  private async deliverPrompt(event: AcceptedLinearEvent): Promise<"answered" | "rejected"> {
     const sessionId = event.sessionId;
     const answer = event.body?.trim() ?? "";
-    if (sessionId === null || answer === "") return;
+    if (sessionId === null || answer === "") return "rejected";
     const open = findOpenQuestion(this.db, sessionId);
-    if (open === null) return;
+    if (open === null) return "rejected";
     const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
       (entry) => entry.questionId === open.id,
     );
     let answeredBy = event.activityId ? `linear-activity:${event.activityId}` : "linear";
     try {
       const payload = JSON.parse(event.payload) as { answeredBy?: unknown; questionId?: unknown };
-      if (typeof payload.questionId === "string" && payload.questionId !== open.id) return;
+      if (typeof payload.questionId === "string" && payload.questionId !== open.id)
+        return "rejected";
       if (typeof payload.answeredBy === "string" && payload.answeredBy.trim())
         answeredBy = payload.answeredBy;
     } catch {}
@@ -1297,10 +1413,10 @@ export class Orchestrator {
       const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
       const identifiable = answeredBy !== "linear" && answeredBy !== "unknown";
       const item = getWorkItem(this.db, open.itemId);
-      if (item === null || item.state !== "awaiting_input") return;
-      immediate(this.db, () => {
+      if (item === null || item.state !== "awaiting_input") return "rejected";
+      const outcome = immediate(this.db, () => {
         if (answerQuestion(this.db, open.id, { answer, answeredBy, now: this.now() }) === null)
-          return;
+          return "rejected";
         if (parsed === null || (parsed.kind === "bypass" && !identifiable)) {
           this.openCloseoutQuestion(
             item,
@@ -1308,8 +1424,10 @@ export class Orchestrator {
             recovery,
             "Use /paws bypass check-id -- your reason from an identifiable trusted account, or reply with guidance.",
           );
-          return;
+          return "rejected";
         }
+        if (getLinearSession(this.db, sessionId)?.activeItemId === item.id)
+          applyLinearTurns(this.db, sessionId, [event.dedupeKey], item.id);
         applyWorkItemEvent(this.db, item.id, "answer_received");
         if (parsed.kind === "bypass") {
           applyWorkItemEvent(this.db, item.id, "turn_ended");
@@ -1337,24 +1455,19 @@ export class Orchestrator {
             now: this.now(),
           });
         }
+        return "answered" as const;
       });
       await this.flush();
-      return;
+      return outcome;
     }
-    const stored = answerQuestion(this.db, open.id, {
-      answer,
-      answeredBy,
-      now: this.now(),
-    });
-    if (stored === null) return;
-    const waiter = this.waiters.get(open.id);
-    this.waiters.delete(open.id);
-    immediate(this.db, () => {
+    const outcome = immediate(this.db, () => {
+      if (answerQuestion(this.db, open.id, { answer, answeredBy, now: this.now() }) === null)
+        return "rejected" as const;
       const item = getWorkItem(this.db, open.itemId);
-      if (item?.state === "awaiting_input") {
-        applyWorkItemEvent(this.db, item.id, "answer_received");
-      }
-      if (waiter !== undefined || item === null) return;
+      if (item?.state === "awaiting_input") applyWorkItemEvent(this.db, item.id, "answer_received");
+      if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
+        applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
+      if (this.waiters.has(open.id) || item === null) return "answered" as const;
       enqueueJob(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `resume:answer:${open.id}`,
@@ -1366,8 +1479,14 @@ export class Orchestrator {
         },
         now: this.now(),
       });
+      return "answered" as const;
     });
-    waiter?.(answer);
+    if (outcome === "answered") {
+      const waiter = this.waiters.get(open.id);
+      this.waiters.delete(open.id);
+      waiter?.(answer);
+    }
+    return outcome;
   }
 
   private stopSession(sessionId: string | null, at: number): void {
@@ -1587,11 +1706,113 @@ export class Orchestrator {
     if (item) activateLinearItem(this.db, sessionId, item.id);
   }
 
+  private async runOwnedJob(payload: unknown, operation: () => Promise<void>): Promise<void> {
+    const itemId = readString(payload, "itemId");
+    if (!itemId) return;
+    if (this.shuttingDown) throw new Error("Paws is shutting down");
+    const key = `operation:${itemId}`;
+    const live = this.beginLive(itemId, key);
+    try {
+      this.conversations.set(itemId, await durableConversation(this.db, itemId));
+      await operation();
+    } catch (error) {
+      if (!live.controller.signal.aborted) throw error;
+    } finally {
+      this.conversations.delete(itemId);
+      this.live.delete(key);
+      live.finish();
+    }
+  }
+
+  private beginLive(itemId: string, key: string) {
+    let finish!: () => void;
+    const live = {
+      itemId,
+      controller: new AbortController(),
+      done: new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+      finish: () => finish(),
+    };
+    this.live.set(key, live);
+    return live;
+  }
+
+  private signalForItem(itemId: string): AbortSignal | undefined {
+    return [...this.live.values()].find((live) => live.itemId === itemId)?.controller.signal;
+  }
+
+  private async resumeLinearSession(sessionId: string): Promise<void> {
+    const active = [...this.live.values()].filter((live) =>
+      this.itemsForSession(sessionId).some((item) => item.id === live.itemId),
+    );
+    await this.stopTaskPlanning(sessionId);
+    await Promise.all(active.map((live) => live.done));
+    if (this.shuttingDown) throw new Error("Paws is shutting down; user update remains pending");
+    const turns = listPendingLinearTurns(this.db, sessionId);
+    if (!turns.length) return;
+    if (this.tracker === null)
+      throw new Error("Linear is disconnected; user update remains pending");
+    let session = getLinearSession(this.db, sessionId);
+    if (!session?.issueId && this.tracker.getSession) {
+      const recovered = await this.tracker.getSession(sessionId);
+      session = ensureLinearSession(this.db, {
+        sessionId,
+        issueId: recovered.issue?.id,
+        appUserId: recovered.appUserId,
+        creatorId: recovered.creatorId,
+        now: this.now(),
+      });
+    }
+    if (!session?.issueId)
+      throw new Error("Linear session has no issue; user update remains pending");
+    let item = session.activeItemId ? getWorkItem(this.db, session.activeItemId) : null;
+    if (
+      !item ||
+      item.state === "completed" ||
+      item.state === "merged" ||
+      item.state === "cancelled"
+    ) {
+      const result = await this.intakeLinearTask(
+        session.issueId,
+        sessionId,
+        `turn:${turns[0]!.eventKey}`,
+        { followupBodies: turns.map((turn) => turn.body) },
+      );
+      if (!result.ok) throw new Error("Follow-up task intake failed");
+      bindLinearSessionTask(this.db, sessionId, result.epic.id, { actorId: turns[0]!.actorId });
+      item = getWorkItem(this.db, result.items[0]!.id);
+      if (item) activateLinearItem(this.db, sessionId, item.id);
+    }
+    if (!item) throw new Error("Linear user update has no routed task");
+    if (getConversation(this.db, item.id).blocked)
+      throw new Error(
+        "Prior ACP process cleanup could not be verified; user update remains pending",
+      );
+    const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
+    immediate(this.db, () => {
+      if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
+      if (item!.state === "failed" || item!.state === "exhausted")
+        applyWorkItemEvent(this.db, item!.id, "requeue");
+      else if (item!.state !== "queued") applyWorkItemEvent(this.db, item!.id, "restart");
+      this.db.run(
+        "UPDATE job SET status = 'cancelled', finished_at = ?, last_error = 'Superseded by Linear user update' WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ? AND (job_key IS NULL OR job_key != ?)",
+        [this.now(), item!.id, jobKey],
+      );
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey,
+        payload: { itemId: item!.id, handoff: turns.map((turn) => turn.body).join("\n\n") },
+        now: this.now(),
+      });
+    });
+    await this.flush();
+  }
+
   private abortItem(itemId: string): void {
-    for (const [runId, live] of this.live) {
+    for (const live of this.live.values()) {
       if (live.itemId !== itemId) continue;
       live.controller.abort();
-      this.live.delete(runId);
     }
   }
 
@@ -1634,7 +1855,13 @@ export class Orchestrator {
 
   private stopped(itemId: string): boolean {
     const current = getWorkItem(this.db, itemId);
-    return current === null || current.state === "cancelled" || current.cancelRequested;
+    return (
+      this.shuttingDown ||
+      this.signalForItem(itemId)?.aborted === true ||
+      current === null ||
+      current.state === "cancelled" ||
+      current.cancelRequested
+    );
   }
 
   private async hydrateLinearContext(sessionId: string | null, signal: AbortSignal): Promise<void> {
@@ -1688,6 +1915,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
+      ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
       classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
       activities.length
@@ -1725,6 +1953,19 @@ export class Orchestrator {
       loader({ ...input, sessionId, turnId });
   }
 
+  private async prepareConversation(item: WorkItemRecord) {
+    const runner = await durableConversation(this.db, item.id);
+    this.conversations.set(item.id, runner);
+    if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
+      applyLinearTurns(
+        this.db,
+        item.sessionKey,
+        listPendingLinearTurns(this.db, item.sessionKey).map((turn) => turn.eventKey),
+        item.id,
+      );
+    return runner;
+  }
+
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
     return {
@@ -1732,7 +1973,15 @@ export class Orchestrator {
       profiles: this.profileSnapshot(runId),
       publishArtifact: this.artifactPublisher(item),
       prepareInputFiles: this.prepareInputFiles(item, runId),
-      onCandidate: (identity) => this.saveCandidate(runId, identity),
+      onCandidate: (identity) => {
+        if (!this.signalForItem(item.id)?.aborted) this.saveCandidate(runId, identity);
+      },
+      onCleanupFailure: () => {
+        const stored = getConversation(this.db, item.id);
+        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
+      },
+      signal: this.signalForItem(item.id),
+      promptRunner: this.conversations.get(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
       brief: this.workContext(item),
