@@ -77,6 +77,7 @@ export {
   digest,
   policyFixBudget,
   retryBaseline,
+  reviewRequirements,
   run,
   validate,
 } from "./facade";

@@ -8,8 +8,7 @@ import {
   postPauseNote,
 } from "../db";
 import type { WorkItemRecord } from "../db";
-import { decideWake, isAwakeItemState, JOB_KIND, pauseOutcome, sleep, type Clock } from "../core";
-import type { KeepAwake } from "./keep-awake";
+import { decideWake, JOB_KIND, pauseOutcome, sleep, type Clock } from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
 export type AgentAlive = (runId: string) => boolean;
@@ -21,7 +20,6 @@ export class HostSupervisor {
   constructor(
     readonly db: Database,
     readonly clock: Clock,
-    readonly keepAwake: KeepAwake,
     readonly detector: WakeDetector,
     /** ACP reports whether the agent child survived wake. The default keeps the current session. */
     readonly agentAlive: AgentAlive = () => true,
@@ -39,13 +37,10 @@ export class HostSupervisor {
     }
     if (sample) this.detector.commit(sample);
     this.accrue();
-    const active = listInFlightItems(this.db).filter((item) => isAwakeItemState(item.state));
-    this.keepAwake.setRunActive(active.length > 0);
   }
 
   stop(): void {
     this.stopped = true;
-    this.keepAwake.release();
   }
 
   async run(
@@ -57,7 +52,6 @@ export class HostSupervisor {
       if (signal.aborted || this.stopped) break;
       await sleeper(this.pollMs, signal);
     }
-    this.keepAwake.release();
   }
 
   private accrue(): void {

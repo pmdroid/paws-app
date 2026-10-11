@@ -5,6 +5,7 @@ import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
 import { fakeStatusProvider, handleStatusRequest } from "../web";
+import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 
 export type ServerOptions = {
   hostname?: string;
@@ -24,6 +25,7 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -40,6 +42,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
   const githubAuth = createDashboardGitHubAuth({ env: process.env });
+  const csrfToken = crypto.randomUUID();
   return Bun.serve({
     hostname,
     port,
@@ -52,6 +55,10 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         linearWebhook,
         webhooks,
         githubAuth,
+        csrfToken,
+        ...(options.agentSettings
+          ? { agentSettings: { ...options.agentSettings, csrfToken } }
+          : {}),
         ...(db ? { db } : {}),
         ...(statusEnv ? { statusEnv } : {}),
         ...(closeoutHome ? { closeoutHome } : {}),
@@ -69,6 +76,8 @@ type Secrets = {
   linearWebhook: LinearWebhookDeps | undefined;
   webhooks: boolean;
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
+  csrfToken: string;
+  agentSettings?: AgentSettingsOptions;
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
@@ -80,7 +89,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (request.method === "GET" && path === "/health") {
     return Response.json({ ok: true, service: "paws" });
   }
+  if (secrets.agentSettings) {
+    const settings = await handleAgentSettingsRequest(request, secrets.agentSettings);
+    if (settings !== null) return settings;
+  }
   const status = await handleStatusRequest(request, {
+    csrfToken: secrets.csrfToken,
     githubAuth: secrets.githubAuth,
     ...(secrets.db
       ? {

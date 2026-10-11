@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   DEFAULT_MAX_AWAKE_MS,
   DEFAULT_MAX_TURNS,
@@ -22,50 +22,28 @@ import {
   openDatabase,
   prepareShutdown,
 } from "../db";
-import type { Spawn } from "./keep-awake";
-import { KeepAwake } from "./keep-awake";
+import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
 
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 3, baseSha: "main" };
 
-function recorder(): {
-  spawn: Spawn;
-  calls: { command: string; args: string[] }[];
-  kills: () => number;
-} {
-  const calls: { command: string; args: string[] }[] = [];
-  let killed = 0;
-  const spawn: Spawn = (command, args) => {
-    calls.push({ command, args });
-    return {
-      kill() {
-        killed += 1;
-      },
-    };
-  };
-  return { spawn, calls, kills: () => killed };
-}
-
 function boot(
   agentAlive: (runId: string) => boolean = () => true,
-  platform = "linux",
   restartFromMain?: (item: { id: string; branchName: string }) => void,
 ) {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
-  const recorded = recorder();
   const host = new HostSupervisor(
     db,
     clock,
-    new KeepAwake(platform, 99, recorded.spawn),
     new WakeDetector(clock),
     agentAlive,
     250,
     restartFromMain,
   );
-  return { clock, db, recorded, host };
+  return { clock, db, host };
 }
 
 function startRun(
@@ -89,12 +67,29 @@ function activities(db: ReturnType<typeof boot>["db"]) {
 }
 
 describe("laptop sleep and wake", () => {
+  test("an active run does not acquire a system sleep inhibitor", () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const clock = new FakeClock(1_000_000);
+    startRun(db, clock);
+    const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
+      throw new Error("The host must not spawn a sleep inhibitor");
+    });
+    const controller = new AbortController();
+    const host = startHost({ db, clock, signal: controller.signal });
+    try {
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      host.stop();
+      controller.abort();
+      spawn.mockRestore();
+      db.close();
+    }
+  });
   test("a short sleep with a live agent posts one resuming note and keeps the run", () => {
-    const { clock, db, recorded, host } = boot(() => true);
+    const { clock, db, host } = boot(() => true);
     const { run } = startRun(db, clock);
     host.tick();
-    expect(recorded.calls[0]?.command).toBe("systemd-inhibit");
-    expect(recorded.calls[0]?.args).toContain("--what=idle:sleep");
 
     clock.sleep(5 * 60_000);
     host.tick();
@@ -105,7 +100,6 @@ describe("laptop sleep and wake", () => {
       { text: "Paused for 5 min (laptop asleep), resuming." },
     ]);
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
-    expect(recorded.kills()).toBe(0);
 
     host.tick();
     expect(activities(db)).toHaveLength(1);
@@ -134,7 +128,7 @@ describe("laptop sleep and wake", () => {
   });
 
   test("sleep longer than two hours restarts the item from fresh main and keeps the WIP branch", () => {
-    const { clock, db, recorded, host } = boot(() => true);
+    const { clock, db, host } = boot(() => true);
     const { run } = startRun(db, clock);
     host.tick();
     clock.sleep(LONG_SLEEP_MS + 1);
@@ -153,14 +147,12 @@ describe("laptop sleep and wake", () => {
     expect(activities(db)[0]?.payload).toEqual({
       text: "Paused for 120 min (laptop asleep). Restarting from fresh main.",
     });
-    expect(recorded.kills()).toBe(1);
   });
 
   test("exactly two hours resumes instead of starting over", () => {
     const checkouts: string[] = [];
     const { clock, db, host } = boot(
       () => true,
-      "linux",
       (item) => {
         checkouts.push(item.branchName);
       },
@@ -180,7 +172,6 @@ describe("laptop sleep and wake", () => {
     const checkouts: { id: string; branchName: string }[] = [];
     const { clock, db, host } = boot(
       () => true,
-      "linux",
       (item) => {
         checkouts.push({ id: item.id, branchName: item.branchName });
       },
@@ -257,19 +248,17 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.state).toBe("failed");
   });
 
-  test("parked time is not awake time and drops the keep-awake assertion", () => {
-    const { clock, db, recorded, host } = boot();
+  test("parked time is not awake time", () => {
+    const { clock, db, host } = boot();
     startRun(db, clock);
     host.tick();
     applyWorkItemEvent(db, "eng-9", "blocking_question");
     clock.advance(10_000);
     host.tick();
-    expect(recorded.kills()).toBe(1);
     applyWorkItemEvent(db, "eng-9", "answer_received");
     clock.advance(100);
     host.tick();
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
-    expect(recorded.calls).toHaveLength(2);
   });
 
   test("a parked question stays parked and still gets one pause note", () => {
@@ -294,15 +283,6 @@ describe("laptop sleep and wake", () => {
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
   });
 
-  test("macOS keep-awake uses caffeinate against this process pid", () => {
-    const { db, recorded, host } = boot(() => true, "darwin");
-    const clock = new FakeClock(1_000_000);
-    insertQueuedItem(db, { id: "eng-9", now: clock.now() });
-    beginImplementRun(db, "eng-9", clock.now(), checkpoint);
-    host.tick();
-    expect(recorded.calls).toEqual([{ command: "caffeinate", args: ["-i", "-w", "99"] }]);
-  });
-
   test("SIGTERM commits WIP on the item branch before the run is left recoverable", () => {
     const { db, clock } = boot();
     const { run } = startRun(db, clock);
@@ -316,15 +296,16 @@ describe("laptop sleep and wake", () => {
     expect(getRun(db, run.id)?.status).toBe("lost");
   });
 
-  test("stop releases keep-awake and leaves the item resumable", () => {
-    const { db, clock, recorded, host } = boot();
+  test("stop leaves the item resumable", () => {
+    const { db, clock, host } = boot();
     startRun(db, clock);
     host.tick();
     host.stop();
+    clock.advance(100);
+    host.tick();
+    expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(0);
     prepareShutdown(db, clock.now());
-    expect(recorded.kills()).toEqual(1);
     expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
     host.tick();
-    expect(recorded.kills()).toEqual(1);
   });
 });
