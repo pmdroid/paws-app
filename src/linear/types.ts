@@ -2,6 +2,8 @@ export type LinearSubIssue = {
   linearIssueId: string;
   identifier: string;
   title: string;
+  description?: string | null;
+  acceptanceCriteria?: string | null;
 };
 
 export type EpicSnapshot = {
@@ -9,6 +11,7 @@ export type EpicSnapshot = {
   identifier: string;
   title: string;
   description: string | null;
+  acceptanceCriteria?: string | null;
   subIssues: readonly LinearSubIssue[];
 };
 

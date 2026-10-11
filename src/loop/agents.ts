@@ -18,6 +18,7 @@ export type AcpAgentDeps = {
   pawsRoot: string;
   home?: string;
   launch: AgentLaunch;
+  brief?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
   docker?: { proxyUrl: string; image?: string; bin?: string };
@@ -30,9 +31,11 @@ export function implementPrompt(input: {
   identifier: string;
   title: string;
   handoff?: string;
+  brief?: string;
 }): string {
   const brief = [
     `Implement ${input.identifier}: ${input.title}.`,
+    ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
@@ -47,6 +50,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
     async review(request): Promise<ReviewResult> {
       seq += 1;
       const prompt = [
+        ...(deps.brief ? [deps.brief] : []),
         "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
         `Base ${request.base}, head ${request.head}.`,
@@ -103,7 +107,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
 export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   return {
     async applyFix(request): Promise<FixResult> {
-      const prompt = fixPrompt(request);
+      const prompt = fixPrompt(request, deps.brief);
       const launch = deps.launch({
         role: "implementer",
         purpose: "fix",
@@ -136,9 +140,10 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
   };
 }
 
-export function fixPrompt(request: FixRequest): string {
+export function fixPrompt(request: FixRequest, brief?: string): string {
   return [
     "Fix Closeout findings.",
+    ...(brief ? [brief] : []),
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
     request.summary,
   ].join("\n\n");

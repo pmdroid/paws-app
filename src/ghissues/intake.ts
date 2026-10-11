@@ -46,6 +46,11 @@ export async function loadGitHubEpic(
             linearIssueId: node.linearIssueId,
             identifier: node.identifier,
             title: node.title,
+            description:
+              children.find(
+                (child) =>
+                  githubIssueKey(child.owner, child.repo, child.number) === node.linearIssueId,
+              )?.body ?? null,
           })),
   };
 }
