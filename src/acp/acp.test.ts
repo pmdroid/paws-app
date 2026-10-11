@@ -655,6 +655,62 @@ for (const failure of ["unadvertised", "rejected", "unconfirmed"] as const) {
   });
 }
 
+test("ACP selects effort from the chosen model before prompting", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    model: "model-a",
+    models: ["model-a", "model-b"],
+    modelEfforts: { "model-a": ["low", "medium"], "model-b": ["medium", "high"] },
+    steps: [{ type: "end" }],
+  });
+  const result = await runAgent({
+    role: "implementer",
+    profile: { agent: "codex", model: "model-b", effort: "high" },
+    itemId: "ENG-1",
+    runId: "effort",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    checkpoint: false,
+  });
+  expect(result.stopReason).toBe("end_turn");
+  expect(result.identity?.model).toBe("model-b");
+  expect(result.effort).toBe("high");
+  expect(result.efforts).toEqual([{ id: "medium", name: "medium" }, { id: "high", name: "high" }]);
+  const trace = await readResult(files.resultPath);
+  expect(trace.effortSelection).toEqual({ sessionId: result.sessionId, configId: "reasoning_effort", value: "high" });
+  expect(trace.methods.slice(-3)).toEqual(["session/set_config_option", "session/set_config_option", "session/prompt"]);
+});
+
+for (const failure of ["unsupported", "unadvertised", "rejected", "unconfirmed"] as const) {
+  test(`ACP refuses ${failure} effort selection before prompting`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      ...(failure === "unsupported" ? {} : { efforts: failure === "unadvertised" ? ["medium"] : ["medium", "high"] }),
+      ...(failure === "rejected" ? { effortError: "effort unavailable" } : {}),
+      ...(failure === "unconfirmed" ? { confirmEffort: "medium" } : {}),
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "codex", model: null, effort: "high" },
+      itemId: "ENG-1",
+      runId: "bad-effort",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+    });
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain("effort");
+    expect((await readResult(files.resultPath)).methods).not.toContain("session/prompt");
+  });
+}
+
 test("ACP initialization-only preflight does not run tools or prompt", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {
@@ -750,6 +806,7 @@ test("connection probe verifies the model in a disposable session", async () => 
   const files = await writeScript(layout.root, {
     model: "gpt-model-a",
     models: ["gpt-model-a", "gpt-model-b"],
+    efforts: ["low", "medium", "high"],
     steps: [{ type: "end" }],
   });
   const prior = process.env.PAWS_CODEX_ACP;
@@ -763,6 +820,8 @@ test("connection probe verifies the model in a disposable session", async () => 
     expect(result.ok).toBe(true);
     expect(result.model).toBe("gpt-model-b");
     expect(result.models.map((model) => model.id)).toEqual(["gpt-model-a", "gpt-model-b"]);
+    expect(result.effort).toBe("medium");
+    expect(result.efforts.map((effort) => effort.id)).toEqual(["low", "medium", "high"]);
     expect((await readResult(files.resultPath)).methods).toEqual([
       "initialize",
       "session/new",

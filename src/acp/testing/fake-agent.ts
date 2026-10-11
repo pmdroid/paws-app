@@ -67,8 +67,9 @@ function record(method: string): void {
 
 const sessionId = script.sessionId ?? crypto.randomUUID();
 let currentModel = script.model === undefined ? "test-claude-model" : script.model;
-const configOptions = () =>
-  currentModel === null
+let currentEffort = script.effort ?? "medium";
+const configOptions = () => {
+  const models = currentModel === null
     ? []
     : [
         {
@@ -80,6 +81,21 @@ const configOptions = () =>
           options: (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
         },
       ];
+  const efforts = (currentModel && script.modelEfforts?.[currentModel]) ?? script.efforts;
+  return [
+    ...models,
+    ...(efforts
+      ? [{
+          id: "reasoning_effort",
+          type: "select",
+          name: "Effort",
+          category: "thought_level",
+          currentValue: currentEffort,
+          options: efforts.map((value) => ({ value, name: value })),
+        }]
+      : []),
+  ];
+};
 
 async function handle(message: {
   id?: number | string | null;
@@ -142,6 +158,17 @@ async function handle(message: {
   }
 
   if (message.method === "session/set_config_option") {
+    if (message.params?.configId === "reasoning_effort") {
+      state.effortSelection = message.params;
+      persist();
+      if (script.effortError)
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: script.effortError } });
+      else {
+        currentEffort = script.confirmEffort ?? String(message.params?.value);
+        send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
+      }
+      return;
+    }
     state.modelSelection = message.params;
     persist();
     if (script.modelError)
