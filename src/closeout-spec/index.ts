@@ -72,7 +72,7 @@ export type {
   ValidateResult,
 } from "./facade";
 
-export { createReviewer, formatFixFeedback } from "./review/index";
+export { createReviewer, FINDING_FORMAT, formatFixFeedback, parseFindings } from "./review/index";
 export type {
   FeedbackRecord,
   InvalidReview,

@@ -2,6 +2,7 @@ import type { AgentRole } from "../acp";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
+import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
 export type AgentPurpose = "implement" | "fix" | "review";
 
@@ -18,6 +19,7 @@ export type AcpAgentDeps = {
   home?: string;
   launch: AgentLaunch;
   signal?: AbortSignal;
+  timeoutMs?: number;
   docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
@@ -48,8 +50,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         "Review the change.",
         `Task ${request.taskId}, item ${request.itemId}.`,
         `Base ${request.base}, head ${request.head}.`,
-        "Reply with a JSON array of findings. An empty array means the change is fine.",
-        "Each finding has severity (P0, P1, P2, or P3), location, explanation, and evidence.",
+        FINDING_FORMAT,
       ].join("\n");
       let text = "";
       const launch = deps.launch({
@@ -67,6 +68,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         worktreePath: request.worktree,
         pawsRoot: deps.pawsRoot,
         checkpoint: false,
+        ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
@@ -80,8 +82,13 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       if (result.authRequired) {
         throw new Error(result.errorMessage ?? "Codex login is missing");
       }
-      if (result.errorMessage && result.stopReason === "error") {
-        throw new Error(result.errorMessage);
+      if (
+        result.cancelled ||
+        result.timedOut ||
+        result.errorMessage !== undefined ||
+        result.stopReason !== "end_turn"
+      ) {
+        throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
       }
       return {
         session: result.sessionId ?? `codex-${request.taskId}-${seq}`,
@@ -138,30 +145,9 @@ export function fixPrompt(request: FixRequest): string {
 }
 
 export function parseFindings(text: string): Finding[] {
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end <= start) return [];
-  try {
-    const parsed: unknown = JSON.parse(text.slice(start, end + 1));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isFinding);
-  } catch {
-    return [];
-  }
-}
-
-function isFinding(value: unknown): value is Finding {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    (record["severity"] === "P0" ||
-      record["severity"] === "P1" ||
-      record["severity"] === "P2" ||
-      record["severity"] === "P3") &&
-    typeof record["location"] === "string" &&
-    typeof record["explanation"] === "string" &&
-    typeof record["evidence"] === "string"
-  );
+  const parsed = parseReviewFindings(text);
+  if (!parsed.ok) throw new Error(`Invalid review findings: ${parsed.reason}`);
+  return parsed.findings;
 }
 
 function dockerOf(

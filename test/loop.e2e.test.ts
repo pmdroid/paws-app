@@ -28,7 +28,7 @@ import {
   type GitHubTokenProvider,
 } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, createAcpCodexReviewer, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -641,6 +641,163 @@ exec "$PAWS_TEST_BUN" "$PAWS_TEST_FAKE_AGENT" "$@"
     await layout.cleanup();
   }
 }, 90_000);
+
+const invalidReviews: Array<{
+  name: string;
+  text: string;
+  stopReason?: "refusal" | "cancelled" | "max_tokens" | "max_turn_requests";
+}> = [
+  { name: "failure prose", text: "I could not review this change." },
+  { name: "empty reply", text: "" },
+  { name: "malformed JSON", text: "[{]" },
+  { name: "wrong JSON type", text: "{}" },
+  { name: "invalid finding", text: '[{"severity":"P1"}]' },
+  {
+    name: "mixed findings",
+    text: JSON.stringify([
+      { severity: "P2", location: "file.ts", explanation: "Observed", evidence: "Diff" },
+      {},
+    ]),
+  },
+  {
+    name: "empty finding field",
+    text: JSON.stringify([
+      { severity: "P1", location: "", explanation: "Observed", evidence: "Diff" },
+    ]),
+  },
+  {
+    name: "extra finding field",
+    text: JSON.stringify([
+      {
+        severity: "P1",
+        location: "file.ts",
+        explanation: "Observed",
+        evidence: "Diff",
+        extra: true,
+      },
+    ]),
+  },
+  { name: "refusal", text: "[]", stopReason: "refusal" },
+  { name: "cancellation", text: "[]", stopReason: "cancelled" },
+  { name: "token limit", text: "[]", stopReason: "max_tokens" },
+  { name: "turn limit", text: "[]", stopReason: "max_turn_requests" },
+];
+
+for (const review of invalidReviews) {
+  test(`ACP review ${review.name} blocks publication and merge`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "parent",
+        identifier: "ENG-1",
+        title: "Add export",
+        description: null,
+        subIssues: [{ linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" }],
+      },
+    ]);
+    const github = createFakeGitHub();
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    let reviews = 0;
+    let launches = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch(input) {
+        launches += 1;
+        const scriptPath = path.join(layout.root, `review-script-${launches}.json`);
+        const script: FakeScript =
+          input.purpose === "review"
+            ? {
+                steps: [
+                  {
+                    type: "update",
+                    update: {
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: review.text },
+                    },
+                  },
+                  { type: "end", stopReason: review.stopReason ?? "end_turn" },
+                ],
+              }
+            : { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
+        if (input.purpose === "review") reviews += 1;
+        writeFileSync(scriptPath, JSON.stringify(script));
+        return {
+          command: process.execPath,
+          args: [fakeAgent, "", scriptPath],
+          env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+        };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+      for (let ticks = 0; ticks < 20; ticks += 1) {
+        if ((await jobs.tick()) === null) break;
+      }
+      expect(reviews, debug(layout, db)).toBeGreaterThan(0);
+      expect(github.opened, debug(layout, db)).toHaveLength(0);
+      expect(github.merged, debug(layout, db)).toHaveLength(0);
+      expect(stateOf(db, "ENG-2"), debug(layout, db)).not.toBe("merged");
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
+
+test("ACP review timeout rejects a partial clean array", async () => {
+  const layout = await repoLayout();
+  const scriptPath = path.join(layout.root, "timeout-review.json");
+  const script: FakeScript = {
+    steps: [
+      {
+        type: "update",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
+      },
+      { type: "hang" },
+    ],
+  };
+  writeFileSync(scriptPath, JSON.stringify(script));
+  const reviewer = createAcpCodexReviewer({
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    timeoutMs: 500,
+    launch: () => ({
+      command: process.execPath,
+      args: [fakeAgent, "", scriptPath],
+      env: { ...process.env, FAKE_ACP_SCRIPT: scriptPath },
+    }),
+  });
+  try {
+    const head = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    await expect(
+      reviewer.review({
+        worktree: path.join(layout.root, "seed"),
+        taskId: "timeout-review",
+        itemId: "adversarial-review",
+        base: head,
+        head,
+        candidate: { session: "implementer", model: "claude", provider: "anthropic" },
+      }),
+    ).rejects.toThrow("timeout");
+  } finally {
+    await layout.cleanup();
+  }
+}, 15_000);
 
 type DemoSeed = {
   parent: { title: string; description: string };
