@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +12,13 @@ import {
 } from "../src/auth";
 import { pawsPaths, loadConfigFile, renderConfigToml } from "../src/config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
-import { linearTokenPath } from "../src/linear";
-import { runSetup, type SetupFetch } from "../src/setup";
+import {
+  LINEAR_APP_SCOPES,
+  LINEAR_REDIRECT_URI,
+  linearTokenPath,
+  readStoredToken,
+} from "../src/linear";
+import { runSetup, type SetupFetch, type SetupOptions } from "../src/setup";
 
 const REAL_GIT = "/usr/bin/git";
 const API_KEY = "lin_api_test_key_123";
@@ -152,6 +157,102 @@ describe("paws setup", () => {
     expect(second.code).toBe(0);
     expect(stamp(scene, ["linear-oauth.json", "linear-client.json"])).toEqual(before);
     expect(scene.linear.creates).toHaveLength(1);
+  });
+
+  test("interactive agent setup authorizes through a real callback and saves the returned expiry", async () => {
+    const scene = await arrange({ bearer: true, policy: "custom: true\n" });
+    const started = Date.now();
+    let redirectUri = "";
+    let exchanges = 0;
+    const result = await run(scene, browserAgentArgs(scene), {
+      fetch: async (url, init) => {
+        if (url !== "https://api.linear.app/oauth/token") return scene.linear.fetch(url, init);
+        exchanges += 1;
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("client_id")).toBe("client-id");
+        expect(body.get("client_secret")).toBe(CLIENT_SECRET);
+        expect(body.get("code")).toBe("fake-browser-code");
+        expect(body.get("redirect_uri")).toBe(redirectUri);
+        return Response.json({
+          access_token: ACCESS_TOKEN,
+          refresh_token: "fake-browser-refresh-token",
+          expires_in: 3600,
+          scope: LINEAR_APP_SCOPES,
+        });
+      },
+      linear: {
+        port: 0,
+        timeoutMs: 2_000,
+        async onAuthorize(link) {
+          const auth = new URL(link);
+          expect(auth.searchParams.get("actor")).toBe("app");
+          redirectUri = auth.searchParams.get("redirect_uri")!;
+          const callback = new URL(redirectUri);
+          callback.searchParams.set("state", auth.searchParams.get("state")!);
+          callback.searchParams.set("code", "fake-browser-code");
+          const response = await fetch(callback);
+          expect(response.status).toBe(200);
+          expect(await response.text()).toContain("Return to Paws setup");
+        },
+      },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toEqual([]);
+    expect(exchanges).toBe(1);
+    expect(LINEAR_REDIRECT_URI).toBe("http://localhost:3000/oauth/callback");
+    const tokenPath = linearTokenPath(scene.paths.secretsDir);
+    const token = readStoredToken(tokenPath);
+    expect(token).toMatchObject({
+      accessToken: ACCESS_TOKEN,
+      refreshToken: "fake-browser-refresh-token",
+      actor: "app",
+      scope: LINEAR_APP_SCOPES,
+    });
+    expect(token!.expiresAtMs).toBeGreaterThanOrEqual(started + 3_600_000);
+    expect(token!.expiresAtMs).toBeLessThanOrEqual(Date.now() + 3_600_000);
+    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    expect(statSync(join(scene.paths.secretsDir, "linear-client.json")).mode & 0o777).toBe(0o600);
+    expect(statSync(scene.paths.secretsDir).mode & 0o777).toBe(0o700);
+    expect(loadConfigFile(scene.paths.configFile).linearMode).toBe("agent-session");
+    expect(scene.linear.auths.every((header) => header === `Bearer ${ACCESS_TOKEN}`)).toBe(true);
+    const output = [
+      ...result.stdout,
+      ...result.stderr,
+      readFileSync(scene.paths.configFile, "utf8"),
+    ].join("\n");
+    for (const secret of [
+      ACCESS_TOKEN,
+      CLIENT_SECRET,
+      "fake-browser-refresh-token",
+      "fake-browser-code",
+    ]) {
+      expect(output).not.toContain(secret);
+    }
+    expect(result.stdout).toContain(`Linear redirect URI: ${redirectUri}`);
+    await expect(fetch(redirectUri)).rejects.toThrow();
+  });
+
+  test("denied browser authorization leaves setup credentials and config unwritten", async () => {
+    const scene = await arrange({ bearer: true, policy: "custom: true\n" });
+    const result = await run(scene, browserAgentArgs(scene), {
+      linear: {
+        port: 0,
+        timeoutMs: 2_000,
+        async onAuthorize(link) {
+          const auth = new URL(link);
+          const callback = new URL(auth.searchParams.get("redirect_uri")!);
+          callback.searchParams.set("state", auth.searchParams.get("state")!);
+          callback.searchParams.set("error", "access_denied");
+          await fetch(callback);
+        },
+      },
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toEqual(["Linear authorization was denied. Run paws setup again."]);
+    expect(existsSync(linearTokenPath(scene.paths.secretsDir))).toBe(false);
+    expect(existsSync(join(scene.paths.secretsDir, "linear-client.json"))).toBe(false);
+    expect(existsSync(scene.paths.configFile)).toBe(false);
+    expect(scene.linear.auths).toEqual([]);
   });
 
   test("a logged-out claude waits for Enter and does not run the login command", async () => {
@@ -484,7 +585,7 @@ function happyArgs(scene: Scene): string[] {
 async function run(
   scene: Scene,
   args: string[],
-  extra?: { readLine?: () => Promise<string | null> },
+  extra?: Pick<SetupOptions, "readLine" | "linear" | "fetch">,
 ): Promise<{ code: number; stdout: string[]; stderr: string[] }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -494,7 +595,8 @@ async function run(
   const code = await runSetup(args, {
     env,
     cwd: scene.checkout,
-    fetch: scene.linear.fetch,
+    fetch: extra?.fetch ?? scene.linear.fetch,
+    ...(extra?.linear ? { linear: extra.linear } : {}),
     stdout: (line) => stdout.push(line),
     stderr: (line) => stderr.push(line),
     readLine:
@@ -504,6 +606,25 @@ async function run(
       }),
   });
   return { code, stdout, stderr };
+}
+
+function browserAgentArgs(scene: Scene): string[] {
+  return [
+    "--tracker",
+    "linear",
+    "--home",
+    scene.home,
+    "--checkout",
+    scene.checkout,
+    "--implementer",
+    "claude",
+    "--linear-mode",
+    "agent-session",
+    "--linear-client-id",
+    "client-id",
+    "--linear-client-secret",
+    CLIENT_SECRET,
+  ];
 }
 
 function originUrl(scene: Scene): string {
