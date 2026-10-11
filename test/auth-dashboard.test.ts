@@ -14,6 +14,15 @@ describe("dashboard github sign-in", () => {
     expect(signedOut).toContain("Sign in with GitHub");
     expect(signedOut).toContain("PAWS-1234");
     expect(signedOut).toContain("https://github.com/login/device");
+    const appSignIn = renderGitHubSignIn({
+      user: null,
+      device: {
+        userCode: "",
+        verificationUri: "https://github.com/login/oauth/authorize?state=fake",
+      },
+    });
+    expect(appSignIn).toContain("Continue with GitHub");
+    expect(appSignIn).not.toContain("Enter <code>");
   });
 
   test("GET reports the user and POST starts the device flow on loopback", async () => {

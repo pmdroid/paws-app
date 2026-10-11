@@ -431,6 +431,39 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
   chmodSync(path, 0o600);
 }
 
+export function writeGitHubAuth(
+  path: string,
+  auth: GitHubConfigAuth,
+  clientId: string,
+  repo: string,
+): void {
+  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const lines = current.split(/\r?\n/);
+  let section = "";
+  let header = -1;
+  const kept = lines.filter((line, index) => {
+    const text = stripComment(line).trim();
+    const match = /^\[([A-Za-z0-9_.-]+)]$/.exec(text);
+    if (match) {
+      section = match[1] ?? "";
+      if (section === "github") header = index;
+    }
+    return section !== "github" || !/^(auth|oauth_client_id|repo)\s*=/.test(text);
+  });
+  const values = [
+    `auth = ${tomlString(auth)}`,
+    `oauth_client_id = ${tomlString(clientId)}`,
+    `repo = ${tomlString(repo)}`,
+  ];
+  if (header < 0) kept.push("[github]", ...values);
+  else kept.splice(header + 1, 0, ...values);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${kept.join("\n").trimEnd()}\n`, { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
+}
+
 function implementerName(
   value: string | number | boolean | string[],
   line: number,

@@ -18,6 +18,7 @@ export const OAUTH_FILE_NAME = "github-oauth.json";
 export type TokenBackend = "keychain" | "secret-tool" | "file";
 
 export type StoredGitHubOAuth = {
+  appId?: string;
   accessToken: string;
   refreshToken: string | null;
   expiresAtMs: number | null;
@@ -261,6 +262,7 @@ function parseStored(text: string): StoredGitHubOAuth | null {
     const refresh = parsed.refreshToken;
     const expires = parsed.expiresAtMs;
     return {
+      ...(typeof parsed.appId === "string" ? { appId: parsed.appId } : {}),
       accessToken,
       refreshToken: typeof refresh === "string" && refresh.length > 0 ? refresh : null,
       expiresAtMs: typeof expires === "number" && Number.isFinite(expires) ? expires : null,

@@ -8,7 +8,9 @@ export function renderGitHubSignIn(state: GitHubSignInView): string {
     return `<span class="github-user">Signed in as @${escapeHtml(state.user.login)}</span>`;
   }
   const code = state.device
-    ? `<p class="github-code">Enter <code>${escapeHtml(state.device.userCode)}</code> at <a href="${escapeHtml(state.device.verificationUri)}">${escapeHtml(state.device.verificationUri)}</a></p>`
+    ? state.device.userCode
+      ? `<p class="github-code">Enter <code>${escapeHtml(state.device.userCode)}</code> at <a href="${escapeHtml(state.device.verificationUri)}">${escapeHtml(state.device.verificationUri)}</a></p>`
+      : `<p class="github-code"><a href="${escapeHtml(state.device.verificationUri)}" target="_blank" rel="noopener noreferrer">Continue with GitHub</a></p>`
     : "";
   return `<button type="button" class="btn primary" data-action="github-signin">Sign in with GitHub</button>${code}`;
 }

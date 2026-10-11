@@ -13,6 +13,7 @@ import {
   type TrackerKind,
 } from "./file";
 import { pawsPaths } from "./paths";
+import { loadGitHubAppCredentials } from "./github-app";
 
 /**
  * What the process runs with. `config.toml` and the secret files it names
@@ -49,6 +50,12 @@ export type RuntimeConfig = {
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
   const env = loadEnv(source);
+  const app = loadGitHubAppCredentials(env.home, source);
+  if (app !== null) {
+    env.githubAppId = app.appId;
+    env.githubAppInstallationId = app.installationId;
+    env.githubAppPrivateKeyPath = app.privateKeyPath;
+  }
   const configPath = pawsPaths(env.home).configFile;
   const configured = existsSync(configPath);
   let file = emptyConfigFile();
@@ -89,7 +96,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     githubAuth,
-    oauthClientId: resolveOAuthClientId(file, source, githubAuth),
+    oauthClientId: resolveOAuthClientId(file, source, githubAuth) ?? app?.clientId ?? null,
     trackerKind: resolveTrackerKind(file),
     trackerGithub: file.trackerGithub,
     repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,

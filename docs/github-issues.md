@@ -1,6 +1,6 @@
 # GitHub issues
 
-GitHub issues are the default tracker. Paws polls the repositories in `tracker.github.repos` with your OAuth user token from [GitHub sign-in](github-login.md). The run stays on your machine: there is no webhook, no public URL, and no GitHub App on this path.
+GitHub issues are the default tracker. Paws polls the repositories in `tracker.github.repos` with the credentials configured in [GitHub sign-in](github-login.md). GitHub App mode uses installation tokens and posts as the App bot. OAuth mode uses your user token. The run stays on your machine.
 
 Sign-in, scopes, and `github.auth` are in [GitHub sign-in](github-login.md). The real-machine run is in [the smoke test](smoke-test.md).
 
@@ -46,7 +46,7 @@ Add the label after the epic's sub-issues and blocked-by links exist, so the fir
 
 ## Why `@paws` is plain text
 
-Comments and issue edits are made with the OAuth user token, so they appear as your GitHub account. `@paws` is plain text Paws searches for. A separate bot user, one GitHub can mention as its own account, is the optional GitHub App: `github.auth = "app"` in [GitHub sign-in](github-login.md).
+Comments and issue edits appear as the App bot when `github.auth = "app"`, and as your GitHub account when `github.auth = "oauth"`. `@paws` is the text trigger Paws searches for. Configure the App in [GitHub sign-in](github-login.md).
 
 ## Epics and order
 
