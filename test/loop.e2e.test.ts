@@ -580,6 +580,7 @@ for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
       expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
       if (recovery === "stale bypass") {
         const worktree = worktreePath(layout.pawsRoot, "ENG-8");
+        await gitIdentity(worktree);
         await exec("git", ["-C", worktree, "commit", "--allow-empty", "-m", "candidate changed"]);
       }
       const answer =
