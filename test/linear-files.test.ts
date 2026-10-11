@@ -112,9 +112,12 @@ describe("Linear private uploads", () => {
   });
 
   test("rejects insecure upload and foreign asset destinations", async () => {
+    const credentialUrl = new URL("https://storage.example.com/file");
+    credentialUrl.username = "user";
+    credentialUrl.password = "password";
     for (const uploadUrl of [
       "http://storage.example.com/file",
-      "https://user:password@storage.example.com/file",
+      credentialUrl.toString(),
       "https://storage.example.com/file#fragment",
     ]) {
       const payload = prepared();
@@ -204,12 +207,15 @@ describe("Linear authorized downloads", () => {
 
   test("rejects all foreign origins before acquiring credentials", async () => {
     const { transfer, transfers, authCalls } = setup();
+    const credentialUrl = new URL("https://uploads.linear.app/file");
+    credentialUrl.username = "user";
+    credentialUrl.password = "secret";
     for (const url of [
       "http://uploads.linear.app/file",
       "https://uploads.linear.app.evil.test/file",
       "https://uploads.linear.app:8443/file",
       "https://uploads.linear.app@evil.test/file",
-      "https://user:secret@uploads.linear.app/file",
+      credentialUrl.toString(),
       "file:///tmp/secret",
       "https://uploads.linear.app/file#fragment",
     ]) {
