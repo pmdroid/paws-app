@@ -560,13 +560,9 @@ export class Orchestrator {
       return;
     }
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
-    const verdict = await this.runVerification(
-      item,
-      worktree,
-      base,
-      head,
-      this.candidateFor(item.currentRunId ?? item.id),
-    );
+    const candidate = await this.candidateForItem(item);
+    if (!candidate) return;
+    const verdict = await this.runVerification(item, worktree, base, head, candidate);
     if (this.stopped(item.id)) return;
     if (verdict.decision !== "accepted") {
       await this.askCloseoutHelp(item, verdict.result, verdict.summary);
@@ -601,6 +597,8 @@ export class Orchestrator {
       return;
     }
     if (item.state !== "merge_queue") return;
+    const candidate = await this.candidateForItem(item);
+    if (!candidate) return;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
     const published = await publishAccepted({
@@ -649,7 +647,7 @@ export class Orchestrator {
           input.worktree,
           input.base,
           input.head,
-          this.candidateFor(item.currentRunId ?? item.id),
+          candidate,
         );
         if (verdict.decision !== "accepted") closeoutFailure = verdict;
         return {
@@ -1170,6 +1168,19 @@ export class Orchestrator {
       if (session !== null) return session;
     }
     return null;
+  }
+
+  private async candidateForItem(item: WorkItemRecord): Promise<CandidateIdentity | null> {
+    const runId = item.currentRunId ?? item.id;
+    try {
+      return this.candidateFor(runId);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      markRunEnded(this.db, runId, this.now());
+      this.post(item, "error", summary, `${runId}:missing-candidate-identity`);
+      await this.askCloseoutHelp(item, undefined, summary);
+      return null;
+    }
   }
 
   private candidateFor(runId: string): CandidateIdentity {
