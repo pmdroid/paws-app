@@ -97,7 +97,11 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "running", branchName: "paws/eng-9" });
     expect(getRun(db, run.id)?.status).toBe("active");
     expect(activities(db).map((message) => message.payload)).toEqual([
-      { text: "Paused for 5 min (laptop asleep), resuming." },
+      {
+        sessionId: "linear-session",
+        kind: "thought",
+        body: "Paused for 5 min (laptop asleep), resuming.",
+      },
     ]);
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
 
@@ -123,7 +127,9 @@ describe("laptop sleep and wake", () => {
     const resume = listJobs(db).find((job) => job.queue === "run.resume");
     expect(resume?.payload).toMatchObject({ freshSession: true, checkpoint });
     expect(activities(db)[0]?.payload).toEqual({
-      text: "Paused for 5 min (laptop asleep), resuming.",
+      sessionId: "linear-session",
+      kind: "thought",
+      body: "Paused for 5 min (laptop asleep), resuming.",
     });
   });
 
@@ -145,7 +151,9 @@ describe("laptop sleep and wake", () => {
     const start = listJobs(db).find((job) => job.queue === "item.start");
     expect(start?.payload).toMatchObject({ from: "fresh_main", wipBranch: "paws/eng-9" });
     expect(activities(db)[0]?.payload).toEqual({
-      text: "Paused for 120 min (laptop asleep). Restarting from fresh main.",
+      sessionId: "linear-session",
+      kind: "thought",
+      body: "Paused for 120 min (laptop asleep). Restarting from fresh main.",
     });
   });
 
@@ -164,7 +172,9 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.state).toBe("running");
     expect(checkouts).toEqual([]);
     expect(activities(db)[0]?.payload).toEqual({
-      text: "Paused for 120 min (laptop asleep), resuming.",
+      sessionId: "linear-session",
+      kind: "thought",
+      body: "Paused for 120 min (laptop asleep), resuming.",
     });
   });
 
@@ -219,7 +229,9 @@ describe("laptop sleep and wake", () => {
       listJobs(db).some((job) => job.queue === "run.reverify" && job.status === "pending"),
     ).toBe(true);
     expect(activities(db)[0]?.payload).toEqual({
-      text: "Paused for 5 min (laptop asleep), resuming.",
+      sessionId: "linear-session",
+      kind: "thought",
+      body: "Paused for 5 min (laptop asleep), resuming.",
     });
   });
 
@@ -261,18 +273,19 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
   });
 
-  test("a parked question stays parked and still gets one pause note", () => {
-    const { clock, db, host } = boot(() => false);
-    startRun(db, clock);
-    applyWorkItemEvent(db, "eng-9", "blocking_question");
-    host.tick();
-    clock.sleep(5 * 60_000);
-    host.tick();
-    expect(getWorkItem(db, "eng-9")?.state).toBe("awaiting_input");
-    expect(activities(db).map((message) => message.payload)).toEqual([
-      { text: "Paused for 5 min (laptop asleep), resuming." },
-    ]);
-  });
+  test.each(["blocking_question", "pause"] as const)(
+    "a %s wait stays parked without reactivating Linear",
+    (event) => {
+      const { clock, db, host } = boot(() => false);
+      startRun(db, clock);
+      applyWorkItemEvent(db, "eng-9", event);
+      host.tick();
+      clock.sleep(5 * 60_000);
+      host.tick();
+      expect(getWorkItem(db, "eng-9")?.state).toBe(event === "pause" ? "paused" : "awaiting_input");
+      expect(activities(db)).toEqual([]);
+    },
+  );
 
   test("a wake with nothing in flight still enqueues catch-up and no pause note", () => {
     const { clock, db, host } = boot();

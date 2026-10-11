@@ -23,6 +23,7 @@ import {
   recordTurn,
   recoverOnStartup,
   saveCheckpoint,
+  saveRunResult,
   submitCommand,
   syncClock,
   TransitionRejectedError,
@@ -150,6 +151,7 @@ describe("restart recovery", () => {
     migrate(first);
     insertQueuedItem(first, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(first, "eng-1", clock.now(), checkpoint);
+    saveRunResult(first, run.id, "Implemented and checked locally.", clock.now());
     first.close();
 
     const second = openDatabase(path);
@@ -160,6 +162,7 @@ describe("restart recovery", () => {
       recoveryAttempts: 1,
     });
     expect(getRun(second, run.id)?.status).toBe("active");
+    expect(getRun(second, run.id)?.checkpoint?.resultBody).toBe("Implemented and checked locally.");
     expect(recovery).toEqual([{ type: "resume", freshSession: true, checkpoint }]);
     expect(listOutbox(second)).toHaveLength(0);
     expect(listJobs(second).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
@@ -181,7 +184,11 @@ describe("hard caps", () => {
     });
     expect(recordTurn(db, item.id, clock.now()).item.turnCount).toBe(2);
     expect(listOutbox(db)).toHaveLength(1);
-    expect(listOutbox(db)[0]?.payload).toEqual({ text: "Run hit the turn cap (2)." });
+    expect(listOutbox(db)[0]?.payload).toEqual({
+      sessionId: "ses",
+      kind: "error",
+      body: "Run hit the turn cap (2).",
+    });
   });
 
   test("awake time counts monotonic time and ignores a wall-clock sleep", () => {
@@ -196,7 +203,11 @@ describe("hard caps", () => {
     clock.advance(600);
     expect(accrueAwake(db, item.id, clock.mono(), clock.now()).capped).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
-    expect(listOutbox(db)[0]?.payload).toEqual({ text: "Run hit the awake time cap (1 min)." });
+    expect(listOutbox(db)[0]?.payload).toEqual({
+      sessionId: item.sessionKey ?? item.id,
+      kind: "error",
+      body: "Run hit the awake time cap (1 min).",
+    });
   });
 
   test("time parked for a Linear answer is not awake time", () => {
@@ -246,7 +257,11 @@ describe("linear commands", () => {
     expect(seen).toEqual(["stop"]);
     expect(getWorkItem(db, "eng-2")).toMatchObject({ state: "cancelled", cancelRequested: true });
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(listOutbox(db)[0]?.payload).toEqual({ text: "Stopped from Linear." });
+    expect(listOutbox(db)[0]?.payload).toEqual({
+      sessionId: "ses",
+      kind: "response",
+      body: "Stopped from Linear.",
+    });
     expect(merge).not.toBeNull();
     expect(merge !== null && completeJob(db, merge, clock.now())).toBe(false);
 
@@ -258,6 +273,23 @@ describe("linear commands", () => {
     });
     expect(seen).toEqual(["stop"]);
     expect(listOutbox(db)).toHaveLength(1);
+  });
+
+  test("a shared session receives one final stop acknowledgement", () => {
+    const { db, clock } = harness();
+    const bus = new CommandBus();
+    for (const id of ["first", "second"]) {
+      insertQueuedItem(db, { id, sessionKey: "ses", now: clock.now() });
+      submitCommand(db, bus, {
+        type: "stop",
+        source: "linear",
+        itemId: id,
+        requestedAt: clock.now(),
+      });
+    }
+    expect(listOutbox(db)).toHaveLength(1);
+    expect(listOutbox(db)[0]?.payload).toMatchObject({ kind: "response", sessionId: "ses" });
+    db.close();
   });
 
   test("a listener error stays on the command and the item stays cancelled", () => {
