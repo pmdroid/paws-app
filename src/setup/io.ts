@@ -8,6 +8,12 @@ export type SetupGitHubHooks = {
   now?: () => number;
 };
 
+export type SetupLinearHooks = {
+  port?: number;
+  timeoutMs?: number;
+  onAuthorize?: (url: string) => void | Promise<void>;
+};
+
 /** Enough of `fetch` for Linear. */
 export type SetupFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -19,6 +25,7 @@ export type SetupIO = {
   stderr: (line: string) => void;
   readLine: () => Promise<string | null>;
   github?: SetupGitHubHooks;
+  linear?: SetupLinearHooks;
 };
 
 export type SetupOptions = {
@@ -29,6 +36,7 @@ export type SetupOptions = {
   stderr?: (line: string) => void;
   readLine?: () => Promise<string | null>;
   github?: SetupGitHubHooks;
+  linear?: SetupLinearHooks;
 };
 
 export function createIO(options?: SetupOptions): SetupIO {
@@ -40,6 +48,7 @@ export function createIO(options?: SetupOptions): SetupIO {
     stderr: options?.stderr ?? ((line) => console.error(line)),
     readLine: options?.readLine ?? readStdinLine,
     ...(options?.github ? { github: options.github } : {}),
+    ...(options?.linear ? { linear: options.linear } : {}),
   };
 }
 

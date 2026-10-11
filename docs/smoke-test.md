@@ -281,7 +281,28 @@ Watch the issue comments (each one starts with `Paws:`):
 
 When the tracker is Linear and the implementer is Claude, doctor includes `git`, `bun`, `home`, `linear`, `linear-mode`, `linear-team`, `linear-label`, `gh-login`, `gh-push`, `claude-acp`, `codex-acp`, `claude`, `codex`, `closeout`, and `repository`. `linear-webhook`, `public-url`, `ngrok`, and `github-app` appear only when webhooks or GitHub App auth are turned on.
 
-Optional later: `bun run paws setup` again with `--linear-mode agent-session` when a Linear OAuth app is configured. That is the path that uses webhooks, a public URL, and ngrok.
+### Linear agent sessions
+
+Create a Linear OAuth application named Paws. Register `http://localhost:3000/oauth/callback` as its redirect URI. Enable webhooks, select **Agent session events**, and set the webhook URL to `https://YOUR-NGROK-DOMAIN/webhooks/linear`.
+
+Run:
+
+```sh
+bun run paws setup --tracker linear --linear-mode agent-session
+```
+
+Enter the application's client ID and client secret. Open the authorization link printed by setup and approve the installation as a workspace admin. Setup listens on loopback port 3000, verifies the returned state, exchanges the code, and stores the access token, refresh token, and expiry under `~/.paws/secrets/`. The callback listener closes when authorization completes.
+
+Configure ngrok authentication, set `LINEAR_WEBHOOK_SECRET` to the application's webhook signing secret, and run these commands in the same shell:
+
+```sh
+export LINEAR_WEBHOOKS=true
+export PAWS_PUBLIC_URL=https://YOUR-NGROK-DOMAIN
+bun run paws doctor
+bun run paws
+```
+
+Paws starts the ngrok tunnel for that domain. Delegate the parent issue to Paws in Linear to start an agent session.
 
 ## Docker
 
