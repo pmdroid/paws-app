@@ -165,6 +165,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     webhooks,
     db,
     statusEnv: envSource,
+    closeoutHome: paths.home,
   });
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();

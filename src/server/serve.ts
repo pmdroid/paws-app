@@ -19,6 +19,8 @@ export type ServerOptions = {
   /** Engine database. `/api/status` reads it. Omit it and the route stays on the demo snapshot. */
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
+  closeoutHome?: string;
+  evidenceRoot?: string;
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -30,6 +32,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const webhooks = options.webhooks ?? webhookChecksNeeded();
   const db = options.db;
   const statusEnv = options.statusEnv;
+  const closeoutHome = options.closeoutHome;
+  const evidenceRoot = options.evidenceRoot;
   const githubAuth = createDashboardGitHubAuth({ env: process.env });
   return Bun.serve({
     hostname,
@@ -43,6 +47,8 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         githubAuth,
         ...(db ? { db } : {}),
         ...(statusEnv ? { statusEnv } : {}),
+        ...(closeoutHome ? { closeoutHome } : {}),
+        ...(evidenceRoot ? { evidenceRoot } : {}),
       });
     },
   });
@@ -56,6 +62,8 @@ type Secrets = {
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
+  closeoutHome?: string;
+  evidenceRoot?: string;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -66,7 +74,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const status = await handleStatusRequest(request, {
     githubAuth: secrets.githubAuth,
     ...(secrets.db
-      ? { db: secrets.db, ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}) }
+      ? {
+          db: secrets.db,
+          ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
+          ...(secrets.closeoutHome ? { closeoutHome: secrets.closeoutHome } : {}),
+          ...(secrets.evidenceRoot ? { evidenceRoot: secrets.evidenceRoot } : {}),
+        }
       : {
           provider: fakeStatusProvider(),
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
