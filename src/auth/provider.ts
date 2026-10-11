@@ -4,6 +4,7 @@ import { fetchGitHubAccount, type DeviceFetch } from "./github-device";
 import { refreshStoredToken, type LoginIO } from "./login";
 import { GITHUB_REAUTH_MESSAGE } from "./messages";
 import { createTokenStore, type GitHubTokenStore, type StoredGitHubOAuth } from "./store";
+import { gitHubAppBot } from "./github-app";
 
 export type GitHubAuthSource = "oauth" | "gh" | "app";
 
@@ -152,13 +153,20 @@ function appProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
     repo: names.repo,
     ...(config.now ? { now: () => new Date(config.now?.() ?? Date.now()) } : {}),
   });
+  let bot: { login: string; id: number } | null = null;
   return {
     source: "app",
     token: () => app.tokenFor("push"),
     user: async () => {
+      if (bot !== null) return bot;
       const token = await app.tokenFor("pr");
-      const account = await fetchGitHubAccount({ token, fetch: fetchOf(config) });
-      return { login: account.login, id: account.id };
+      bot = await gitHubAppBot({
+        client,
+        appId: config.appId!,
+        privateKeyPem: config.privateKeyPem!,
+        token,
+      });
+      return bot;
     },
   };
 }

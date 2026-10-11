@@ -2,6 +2,8 @@ import { createInterface } from "node:readline";
 import type { GitHubTokenStore } from "../auth";
 
 export type SetupGitHubHooks = {
+  port?: number;
+  timeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   openBrowser?: (url: string) => Promise<void>;
   store?: GitHubTokenStore;

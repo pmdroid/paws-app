@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
   readStoredToken,
 } from "../src/linear";
 import { runSetup, type SetupFetch, type SetupOptions } from "../src/setup";
+import { INSTALLATION_PERMISSIONS } from "../src/github";
 
 const REAL_GIT = "/usr/bin/git";
 const API_KEY = "lin_api_test_key_123";
@@ -841,6 +843,93 @@ exit 1
 const SETUP_TOKEN = "gho_setup_secret_token_value";
 
 describe("paws setup github", () => {
+  test("GitHub App setup keeps bot auth for GitHub and Linear without gh", async () => {
+    for (const tracker of ["github", "linear"]) {
+      const scene = await arrange({ policy: "custom: true\n", gh: null });
+      writeBin(scene.bin, "git", recordingGit(join(scene.root, "git.log")));
+      const keyPath = join(scene.root, "app.pem");
+      writeFileSync(
+        keyPath,
+        generateKeyPairSync("rsa", {
+          modulusLength: 2048,
+          privateKeyEncoding: { type: "pkcs8", format: "pem" },
+          publicKeyEncoding: { type: "spki", format: "pem" },
+        }).privateKey,
+      );
+      const github = new FakeGitHubApi();
+      const botRequests: string[] = [];
+      const errors: string[] = [];
+      const code = await runSetup(
+        [
+          "--tracker",
+          tracker,
+          "--repo",
+          "acme/widgets",
+          "--home",
+          scene.home,
+          "--checkout",
+          scene.checkout,
+          "--implementer",
+          "claude",
+          ...(tracker === "linear" ? ["--linear-api-key", API_KEY, "--linear-team", "ENG"] : []),
+        ],
+        {
+          env: {
+            ...setupEnv(scene),
+            GITHUB_AUTH: "app",
+            GITHUB_APP_ID: "99",
+            GITHUB_APP_PRIVATE_KEY_PATH: keyPath,
+            PAWS_GITHUB_CLIENT_ID: "Iv1.real-client",
+            PAWS_GITHUB_CLIENT_SECRET: "fake-app-client-secret",
+          },
+          cwd: scene.checkout,
+          stdout: () => {},
+          stderr: (line) => errors.push(line),
+          async fetch(url, init) {
+            if (url.includes("api.linear.app")) return scene.linear.fetch(url, init);
+            const path = new URL(url).pathname;
+            const token = new Headers(init?.headers).get("authorization");
+            if (path === "/app")
+              return Response.json({ client_id: "Iv1.real-client", slug: "paws-test" });
+            if (path.endsWith("/installation")) return Response.json({ id: 22 });
+            if (path === "/app/installations/22/access_tokens")
+              return Response.json(
+                {
+                  token: "fake-bot-token",
+                  expires_at: new Date(Date.now() + 3600_000).toISOString(),
+                  repository_selection: "selected",
+                  repositories: [{ name: "widgets", full_name: "acme/widgets" }],
+                  permissions: INSTALLATION_PERMISSIONS,
+                },
+                { status: 201 },
+              );
+            if (path === "/user") expect(token).toBe(`Bearer ${SETUP_TOKEN}`);
+            if (token === "Bearer fake-bot-token") botRequests.push(path);
+            return github.fetch(url, init);
+          },
+          github: {
+            store: createTokenStore({ home: scene.home, which: () => null }),
+            port: 0,
+            timeoutMs: 2_000,
+            async openBrowser(link) {
+              const auth = new URL(link);
+              const callback = new URL(auth.searchParams.get("redirect_uri")!);
+              callback.searchParams.set("state", auth.searchParams.get("state")!);
+              callback.searchParams.set("code", "fake-code");
+              expect((await fetch(callback)).status).toBe(200);
+            },
+          },
+        },
+      );
+      expect(errors).toEqual([]);
+      expect(code).toBe(0);
+      expect(loadConfigFile(scene.paths.configFile).githubAuth).toBe("app");
+      expect(botRequests).toContain("/repos/acme/widgets");
+      expect(github.labels.length).toBe(tracker === "github" ? 4 : 0);
+      expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
+    }
+  });
+
   test("--yes while signed out without a client id names the OAuth App", async () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const stderr: string[] = [];

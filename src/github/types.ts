@@ -7,6 +7,7 @@ export const INSTALLATION_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
   checks: "write",
+  issues: "write",
 } as const;
 
 export const UPSTREAM_MAIN_REF = "refs/paws/upstream-main";

@@ -7,6 +7,7 @@ import {
   ensureLayout,
   isImplementer,
   pawsPaths,
+  loadRuntime,
   writeConfigFile,
   type ImplementerName,
   type PawsSetupConfig,
@@ -93,8 +94,9 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   const paths = pawsPaths(home);
   ensureLayout(paths);
   const oauthClientId = resolveSetupGitHubClientId(home, io.env);
+  const useGitHubApp = loadRuntime({ ...io.env, PAWS_HOME: home }).githubAuth === "app";
   let githubToken: string | null = null;
-  if (tracker === "github" || tracker === "both") {
+  if (tracker === "github" || tracker === "both" || useGitHubApp) {
     const signedIn = await ensureGitHubSignIn({
       yes: flags.yes,
       home,
@@ -102,10 +104,12 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       io,
       secrets,
       oauthClientId,
+      app: useGitHubApp,
+      repo: flags.repo,
     });
     githubToken = signedIn.token;
   }
-  if (tracker === "linear") await ensureGhLogin(io, flags.yes);
+  if (tracker === "linear" && !useGitHubApp) await ensureGhLogin(io, flags.yes);
   const implementer = await chooseImplementer(flags, io);
   if (implementer === "claude") await ensureDeveloperLogin("claude", io, flags.yes);
   if (implementer === "grok") await ensureGrokLogin(io, flags.yes);
@@ -136,7 +140,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   }
 
   let repository: { owner: string; repo: string };
-  if (tracker === "github" || tracker === "both") {
+  if (tracker === "github" || tracker === "both" || useGitHubApp) {
     if (githubToken === null) stop(GITHUB_REAUTH_MESSAGE);
     const store = tokenStore(home, io.github);
     repository = await chooseGitHubRepo({
@@ -153,13 +157,14 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       token: githubToken,
       env: io.env,
     });
-    await ensureGitHubLabels({
-      token: githubToken,
-      owner: repository.owner,
-      repo: repository.repo,
-      ...(io.fetch ? { fetch: io.fetch } : {}),
-      store,
-    });
+    if (tracker !== "linear")
+      await ensureGitHubLabels({
+        token: githubToken,
+        owner: repository.owner,
+        repo: repository.repo,
+        ...(io.fetch ? { fetch: io.fetch } : {}),
+        store,
+      });
   } else {
     repository = await withProcessPath(io.env.PATH, () => resolveRepository(flags, io, checkout));
     const remoteUrl = githubHttpsUrl(repository.owner, repository.repo);
@@ -191,7 +196,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
 
   if (linear !== null) writeLinearSecrets(paths.secretsDir, mode, linear);
-  const githubAuth = tracker === "linear" ? "gh" : "oauth";
+  const githubAuth = useGitHubApp ? "app" : tracker === "linear" ? "gh" : "oauth";
   const config: PawsSetupConfig = {
     linearMode: mode,
     linearTeam: team?.key ?? "",
@@ -200,7 +205,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     linearSecret: mode === "comments" ? API_KEY_FILE : OAUTH_FILE,
     linearClientFile: mode === "agent-session" ? CLIENT_FILE : null,
     githubAuth,
-    ...(githubAuth === "oauth" ? { oauthClientId } : {}),
+    ...(githubAuth !== "gh" ? { oauthClientId } : {}),
     trackerKind: tracker,
     repo: `${repository.owner}/${repository.repo}`,
     checkout,

@@ -8,7 +8,7 @@ import {
   type GitHubClient,
 } from "./types";
 
-const ALLOWED_PERMISSIONS = new Set(["contents", "pull_requests", "checks", "metadata"]);
+const ALLOWED_PERMISSIONS = new Set(["contents", "pull_requests", "checks", "issues", "metadata"]);
 
 export type MintedToken = {
   token: string;
@@ -94,6 +94,8 @@ export function assertScopedToken(
   }
   if (body.permissions.checks !== "write")
     throw new GitHubTokenError("checks permission must be write");
+  if (body.permissions.issues !== "write")
+    throw new GitHubTokenError("issues permission must be write");
   return { token: body.token, expiresAt };
 }
 

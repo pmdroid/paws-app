@@ -9,6 +9,7 @@ export {
   renderConfigToml,
   writeConfigFile,
   writeImplementer,
+  writeGitHubAuth,
   IMPLEMENTERS,
 } from "./file";
 export type {
@@ -27,6 +28,8 @@ export { ensureLayout, pawsPaths } from "./paths";
 export type { PawsPaths } from "./paths";
 export { loadRuntime } from "./runtime";
 export type { RuntimeConfig } from "./runtime";
+export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
+export type { GitHubAppCredentials } from "./github-app";
 
 export {
   parseAgentProfile,

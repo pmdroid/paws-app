@@ -170,6 +170,7 @@ export async function refreshDeviceToken(input: {
 export async function fetchGitHubAccount(input: {
   token: string;
   fetch: DeviceFetch;
+  app?: boolean;
 }): Promise<GitHubAccount> {
   const response = await input.fetch(GITHUB_USER_URL, {
     method: "GET",
@@ -182,7 +183,7 @@ export async function fetchGitHubAccount(input: {
     );
   }
   const scopes = response.headers.get("x-oauth-scopes") ?? "";
-  if (!scopesGrantRepoAndOrg(scopes)) throw new DeviceFlowError(DEVICE_SCOPE_MESSAGE);
+  if (!input.app && !scopesGrantRepoAndOrg(scopes)) throw new DeviceFlowError(DEVICE_SCOPE_MESSAGE);
   const body = await readJson(response);
   const login = readString(body, "login");
   const id = readPositive(body, "id");

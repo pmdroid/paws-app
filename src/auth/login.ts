@@ -11,8 +11,14 @@ import {
 } from "./github-device";
 import { DEVICE_CODE_EXPIRED_MESSAGE, GITHUB_REAUTH_MESSAGE } from "./messages";
 import { createTokenStore, type GitHubTokenStore, type StoredGitHubOAuth } from "./store";
+import { loginGitHubApp } from "./github-app";
+import { loadRuntime } from "../config";
 
 export type LoginIO = {
+  auth?: "oauth" | "gh" | "app";
+  repo?: string | null;
+  port?: number;
+  timeoutMs?: number;
   home?: string;
   env?: Record<string, string | undefined>;
   oauthClientId?: string | null;
@@ -29,7 +35,10 @@ const RESTARTS = 1;
 export async function loginGitHub(options: LoginIO = {}): Promise<{ login: string; id: number }> {
   const store = storeFor(options);
   const stdout = options.stdout ?? ((line: string) => console.log(line));
-  const user = await completeLogin({ ...options, store, stdout });
+  const user =
+    options.auth === "app"
+      ? await loginGitHubApp({ ...options, store, stdout })
+      : await completeLogin({ ...options, store, stdout });
   stdout(`Signed in as ${user.login}`);
   const warning = store.warning;
   if (warning !== null) stdout(warning);
@@ -70,7 +79,24 @@ export function createDashboardGitHubAuth(options: LoginIO = {}): {
 } {
   return {
     user: () => readSignedInUser(options),
-    beginDevice: () => beginGitHubDevice(options),
+    async beginDevice() {
+      const runtime = loadRuntime({
+        ...(options.env ?? process.env),
+        ...(options.home ? { PAWS_HOME: options.home } : {}),
+      });
+      if ((options.auth ?? runtime.githubAuth) !== "app") return beginGitHubDevice(options);
+      const started = Promise.withResolvers<string>();
+      const completed = loginGitHubApp({
+        ...options,
+        home: runtime.env.home,
+        repo: options.repo ?? runtime.repo,
+        openBrowser: async (url) => {
+          started.resolve(url);
+        },
+      });
+      void completed.catch((error) => started.reject(error));
+      return { userCode: "", verificationUri: await started.promise, completed };
+    },
   };
 }
 

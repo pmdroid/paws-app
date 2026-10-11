@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { mirrorPath } from "../acp";
 import {
   createTokenStore,
+  createGitHubTokenProvider,
   GITHUB_REAUTH_MESSAGE,
   loginGitHub,
   MISSING_GITHUB_CLIENT_ID_MESSAGE,
@@ -13,7 +14,8 @@ import {
   type StoredGitHubOAuth,
   type GitHubTokenStore,
 } from "../auth";
-import { loadConfigFile, pawsPaths } from "../config";
+import { loadConfigFile, loadRuntime, pawsPaths } from "../config";
+import { readFileSync } from "node:fs";
 import { runGitHubGit } from "../github";
 import type { SetupFetch, SetupGitHubHooks, SetupIO } from "./io";
 import { stop } from "./stop";
@@ -44,6 +46,8 @@ export async function ensureGitHubSignIn(input: {
   io: SetupIO;
   secrets: string[];
   oauthClientId?: string | null;
+  app?: boolean;
+  repo?: string | null;
 }): Promise<{ login: string; id: number; token: string }> {
   const store = tokenStore(input.home, input.io.github);
   let existing: StoredGitHubOAuth | null;
@@ -54,8 +58,14 @@ export async function ensureGitHubSignIn(input: {
     input.io.stdout(error.message);
     existing = null;
   }
-  if (existing !== null && !existing.invalid) {
+  const runtime = input.app ? loadRuntime({ ...input.env, PAWS_HOME: input.home }) : null;
+  if (
+    existing !== null &&
+    !existing.invalid &&
+    (!input.app || existing.appId === runtime?.env.githubAppId)
+  ) {
     remember(input.secrets, existing.accessToken);
+    if (input.app) return appSignIn(input, existing);
     return { login: existing.login, id: existing.id, token: existing.accessToken };
   }
   const clientId = resolveGitHubOAuthClientId({
@@ -66,6 +76,7 @@ export async function ensureGitHubSignIn(input: {
   if (input.yes) stop(GITHUB_REAUTH_MESSAGE);
   const fetchImpl = input.io.fetch;
   const user = await loginGitHub({
+    ...(input.app ? { auth: "app", repo: input.repo ?? runtime?.repo } : {}),
     home: input.home,
     env: input.env,
     oauthClientId: clientId,
@@ -75,11 +86,40 @@ export async function ensureGitHubSignIn(input: {
     ...(input.io.github?.sleep ? { sleep: input.io.github.sleep } : {}),
     ...(input.io.github?.openBrowser ? { openBrowser: input.io.github.openBrowser } : {}),
     ...(input.io.github?.now ? { now: input.io.github.now } : {}),
+    ...(input.io.github?.port !== undefined ? { port: input.io.github.port } : {}),
+    ...(input.io.github?.timeoutMs !== undefined ? { timeoutMs: input.io.github.timeoutMs } : {}),
   });
   const saved = await store.load();
   if (saved === null || saved.invalid) stop(GITHUB_REAUTH_MESSAGE);
   remember(input.secrets, saved.accessToken);
+  if (input.app) return appSignIn(input, saved);
   return { login: user.login, id: user.id, token: saved.accessToken };
+}
+
+async function appSignIn(
+  input: {
+    home: string;
+    env: NodeJS.ProcessEnv;
+    repo?: string | null;
+    io: SetupIO;
+    secrets: string[];
+  },
+  signedIn: StoredGitHubOAuth,
+): Promise<{ login: string; id: number; token: string }> {
+  const runtime = loadRuntime({ ...input.env, PAWS_HOME: input.home });
+  const env = runtime.env;
+  const token = await createGitHubTokenProvider({
+    auth: "app",
+    repo: input.repo ?? runtime.repo,
+    appId: env.githubAppId,
+    installationId: env.githubAppInstallationId,
+    privateKeyPem: env.githubAppPrivateKeyPath
+      ? readFileSync(env.githubAppPrivateKeyPath, "utf8")
+      : null,
+    ...(input.io.fetch ? { fetch: input.io.fetch } : {}),
+  }).token();
+  remember(input.secrets, token);
+  return { login: signedIn.login, id: signedIn.id, token };
 }
 
 export async function chooseGitHubRepo(input: {

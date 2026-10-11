@@ -354,21 +354,26 @@ async function githubDoctorFact(
   try {
     const provider = githubProvider(runtime, repo);
     const token = await provider.token();
-    if (runtime.githubAuth !== "gh") {
+    if (runtime.githubAuth === "app") {
+      const bot = await provider.user();
+      facts.signedIn = { ok: true, detail: `connected as ${bot.login}` };
+      const repository = await githubGet(token, `/repos/${repo.owner}/${repo.repo}`);
+      facts.push = {
+        ok: repository.ok,
+        detail: repository.ok
+          ? `app access to ${repo.owner}/${repo.repo}`
+          : `no app access to ${repo.owner}/${repo.repo}`,
+      };
+    }
+    if (runtime.githubAuth === "oauth") {
       const user = await githubGet(token, "/user");
       const login = readString(user.body, "login");
-      if (runtime.githubAuth === "oauth") {
-        const scopes = user.header("x-oauth-scopes") ?? "";
-        if (!user.ok || !scopesGrantRepoAndOrg(scopes)) {
-          facts.signedIn = {
-            ok: false,
-            detail: user.ok ? DEVICE_SCOPE_MESSAGE : GITHUB_REAUTH_MESSAGE,
-          };
-        } else {
-          facts.signedIn = { ok: true, detail: `signed in as ${login ?? "github"}` };
-        }
-      } else if (!user.ok) {
-        facts.signedIn = { ok: false, detail: GITHUB_REAUTH_MESSAGE };
+      const scopes = user.header("x-oauth-scopes") ?? "";
+      if (!user.ok || !scopesGrantRepoAndOrg(scopes)) {
+        facts.signedIn = {
+          ok: false,
+          detail: user.ok ? DEVICE_SCOPE_MESSAGE : GITHUB_REAUTH_MESSAGE,
+        };
       } else {
         facts.signedIn = { ok: true, detail: `signed in as ${login ?? "github"}` };
       }

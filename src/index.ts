@@ -525,7 +525,7 @@ if (import.meta.main) {
     process.exit(await runSetup(argv));
   }
   if (command === "login" && argv[1] === "github") {
-    process.exit(await loginGitHubCommand());
+    process.exit(await loginGitHubCommand(argv.slice(2)));
   }
   if (command === "logout") {
     process.exit(await logoutGitHubCommand());
@@ -796,10 +796,23 @@ function requireGitHubIssue(id: string): { owner: string; repo: string; number: 
   return ref;
 }
 
-async function loginGitHubCommand(): Promise<number> {
+async function loginGitHubCommand(args: readonly string[]): Promise<number> {
   try {
     const runtime = loadRuntime(process.env);
+    let auth = runtime.githubAuth;
+    let repo = runtime.repo;
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === "--app") auth = "app";
+      else if (arg === "--repo") {
+        const value = args[++index];
+        if (!value || value.startsWith("--")) throw new Error("--repo needs owner/name.");
+        repo = value;
+      } else throw new Error(`Unknown GitHub login flag ${arg}.`);
+    }
     await loginGitHub({
+      auth,
+      repo,
       env: process.env,
       home: runtime.env.home,
       oauthClientId: runtime.oauthClientId,
