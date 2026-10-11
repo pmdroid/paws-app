@@ -1,14 +1,8 @@
-import type { TrackerAdapter } from "./adapter";
+import type { LinearSessionAdapter } from "./sessions";
+import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
 import { isRecord, readNumber, readString } from "./read";
-import type {
-  DependencyEdge,
-  Elicitation,
-  EpicSnapshot,
-  LinearSubIssue,
-  ProgressUpdate,
-  StatusUpdate,
-} from "./types";
+import type { DependencyEdge, EpicSnapshot, LinearSubIssue, StatusUpdate } from "./types";
 
 const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
   issue(id: $id) {
@@ -44,10 +38,6 @@ const STATES_QUERY = `query IssueStates($id: String!) {
   }
 }`;
 
-const ACTIVITY_MUTATION = `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
-  agentActivityCreate(input: $input) { success }
-}`;
-
 const STATUS_MUTATION = `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success }
 }`;
@@ -58,8 +48,10 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-export function createLinearTracker(client: LinearClient): TrackerAdapter {
+export function createLinearTracker(client: LinearClient): LinearSessionAdapter {
+  const sessions = createLinearSessionMethods(client);
   return {
+    ...sessions,
     async loadEpic(linearIssueId) {
       const children: Array<LinearSubIssue & { sort: number | null }> = [];
       let after: string | null = null;
@@ -139,10 +131,10 @@ export function createLinearTracker(client: LinearClient): TrackerAdapter {
       return edges;
     },
     async postProgress(update) {
-      await client.query(ACTIVITY_MUTATION, { input: activityInput(update) });
+      await sessions.createActivity(update);
     },
     async askQuestion(question) {
-      await client.query(ACTIVITY_MUTATION, { input: elicitationInput(question) });
+      await sessions.createElicitation(question);
     },
     async setStatus(update) {
       const data = await client.query(STATES_QUERY, { id: update.linearIssueId });
@@ -156,28 +148,6 @@ export function createLinearTracker(client: LinearClient): TrackerAdapter {
       });
     },
   };
-}
-
-function activityInput(update: ProgressUpdate): Record<string, unknown> {
-  const content =
-    update.kind === "action"
-      ? { type: "action", action: "update", parameter: update.body }
-      : { type: update.kind, body: update.body };
-  return { agentSessionId: update.sessionId, content };
-}
-
-function elicitationInput(question: Elicitation): Record<string, unknown> {
-  const options = question.options ?? [];
-  const input: Record<string, unknown> = {
-    agentSessionId: question.sessionId,
-    content: { type: "elicitation", body: question.body },
-  };
-  if (options.length === 0) return input;
-  input["signal"] = "select";
-  input["signalMetadata"] = {
-    options: options.map((option) => ({ label: option, value: option })),
-  };
-  return input;
 }
 
 function pickStateId(data: unknown, stateType: StatusUpdate["stateType"]): string | null {
