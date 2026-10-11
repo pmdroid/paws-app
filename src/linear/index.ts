@@ -1,5 +1,6 @@
 export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
 export type { TrackerAdapter } from "./adapter";
+export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export { linearBudget, LinearRateLimitError } from "./budget";
 export type { LinearRateBudget } from "./budget";
 export { createIntakePollSource } from "./catchup";
