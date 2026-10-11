@@ -1,3 +1,4 @@
+import type { AgentProfile } from "../config";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
 import type { AgentRole } from "./adapters";
@@ -21,6 +22,7 @@ export type AcpEvent =
       role: AgentRole;
       sessionId: string;
       cwd: string;
+      identity?: AgentIdentity;
     }
   | {
       type: "session_update";
@@ -63,7 +65,12 @@ export type AcpEvent =
 
 export type AcpEventListener = (event: AcpEvent) => void | Promise<void>;
 
+export type AgentIdentity = { session: string; model: string; provider: string };
+
 export interface RunAgentOptions {
+  profile?: AgentProfile;
+  readOnly?: boolean;
+  prepareOnly?: boolean;
   role: AgentRole;
   itemId: string;
   runId: string;
@@ -94,6 +101,8 @@ export interface RunAgentOptions {
 }
 
 export interface RunAgentResult {
+  identity?: AgentIdentity;
+  models?: Array<{ id: string; name: string }>;
   role: AgentRole;
   sessionId?: string;
   stopReason: RunOutcome;
