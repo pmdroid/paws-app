@@ -94,7 +94,7 @@ export const HELP = [
   "  --linear-team KEY            Linear team key or id",
   "  --linear-client-id ID        OAuth client id for agent mode",
   "  --linear-client-secret SECRET",
-  "  --linear-access-token TOKEN",
+  "  --linear-access-token TOKEN  omit in interactive agent mode to authorize in a browser",
   "  --linear-refresh-token TOKEN",
   "  --implementer claude|grok|codex",
   "                               who implements; omit it to choose from installed agents",
