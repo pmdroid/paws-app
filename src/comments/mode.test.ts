@@ -227,3 +227,18 @@ function statusComments(
     (comment) => comment.parentId === null && !comment.body.includes("<!-- paws:q:"),
   );
 }
+
+test("structured question choices use their readable labels in comment fallback", async () => {
+  const { formatQuestion } = await import("./format");
+  const body = formatQuestion({
+    questionId: "choice",
+    body: "Which?",
+    options: [
+      "Other",
+      { label: "Paws", value: "https://github.com/pmdroid/paws-app" },
+      { value: "Fallback" },
+    ],
+  });
+  expect(body).toContain("1. Other\n2. Paws\n3. Fallback");
+  expect(body).not.toContain("[object Object]");
+});

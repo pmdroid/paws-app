@@ -83,7 +83,12 @@ function stringList(value: string): string[] {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string");
+    return parsed.flatMap((item) => {
+      if (typeof item === "string") return [item];
+      if (typeof item !== "object" || item === null) return [];
+      const label = item.label ?? item.value;
+      return typeof label === "string" ? [label] : [];
+    });
   } catch {
     return [];
   }

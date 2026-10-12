@@ -952,13 +952,17 @@ export class Orchestrator {
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
-    this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`);
+    this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
+      ephemeral: true,
+    });
     this.postStatus(item, "started");
     let posted = true;
     const first = setTimeout(() => {
       if (posted || !this.canReportProgress(item.id)) return;
       posted = true;
-      this.post(item, "thought", `Working on ${item.linearIdentifier}.`, `${run.id}:first`);
+      this.post(item, "thought", `Working on ${item.linearIdentifier}.`, `${run.id}:first`, {
+        ephemeral: true,
+      });
       void this.flush();
     }, FIRST_ACTIVITY_MS);
     const keepAlive = setInterval(() => {
@@ -968,6 +972,7 @@ export class Orchestrator {
         "thought",
         `Still working on ${item.linearIdentifier}.`,
         `${run.id}:keep:${this.now()}`,
+        { ephemeral: true },
       );
       void this.flush();
     }, KEEPALIVE_MS);
@@ -978,7 +983,7 @@ export class Orchestrator {
       if (controller.signal.aborted || update.kind === "elicitation") return;
       posted = true;
       this.activitySeq += 1;
-      this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`);
+      this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
     });
 
     try {
@@ -1806,6 +1811,7 @@ export class Orchestrator {
     kind: "thought" | "action" | "response" | "error",
     body: string,
     key: string,
+    details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
   ): void {
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
@@ -1817,7 +1823,7 @@ export class Orchestrator {
       op: "activity",
       orderingKey: sessionId,
       idempotencyKey: key,
-      payload: { sessionId, kind, body },
+      payload: { ...details, sessionId, kind, body },
       now: this.now(),
     });
   }

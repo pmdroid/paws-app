@@ -252,10 +252,18 @@ test("fake agent streams events, guards permissions, and checkpoints", async () 
   expect(transcript).toContain("hello from agent");
 }, 20_000);
 
-test("ask_team hook is invoked through the injected MCP tool", async () => {
+test.each([
+  { options: ["yes", "no"] },
+  {
+    options: [
+      { label: "Include archived", value: "yes" },
+      { label: "Exclude archived", value: "no" },
+    ],
+  },
+])("ask_team preserves choices through the injected MCP tool: %j", async ({ options }) => {
   const layout = await layoutRepo();
   const script: FakeScript = {
-    steps: [{ type: "ask_team", question: "Include archived rows?", options: ["yes", "no"] }],
+    steps: [{ type: "ask_team", question: "Include archived rows?", options }],
   };
   const files = await writeScript(layout.root, script);
   const result = await runAgent({
@@ -272,7 +280,7 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
     askTeam: {
       async ask(request) {
         expect(request.question).toBe("Include archived rows?");
-        expect(request.options).toEqual(["yes", "no"]);
+        expect(request.options).toEqual(options);
         return { answer: "yes" };
       },
     },

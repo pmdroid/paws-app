@@ -8,10 +8,11 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
+  listOpenQuestions,
 } from "../src/db";
 import type { AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
-import { elicitationBody, handoffNote } from "../src/questions";
+import { elicitationBody, handoffNote, getQuestion, openQuestion } from "../src/questions";
 import { tempDb } from "./helpers";
 
 test("elicitation keeps select options and a free-text reply", () => {
@@ -77,3 +78,22 @@ function prompted(body: string): AcceptedLinearEvent {
     payload: "{}",
   };
 }
+
+test("structured choices persist their values and display their labels", () => {
+  const db = tempDb();
+  const item = insertQueuedItem(db, {
+    id: "ENG-choices",
+    sessionKey: "ses-choices",
+    title: "Choose",
+  });
+  const options = ["Other", { label: "Paws", value: "https://github.com/pmdroid/paws-app" }];
+  const question = openQuestion(db, {
+    itemId: item.id,
+    sessionId: "ses-choices",
+    body: "Which?",
+    options,
+  });
+  expect(getQuestion(db, question.id)?.options).toEqual(options);
+  expect(listOpenQuestions(db)[0]?.options).toEqual(["Other", "Paws"]);
+  db.close();
+});

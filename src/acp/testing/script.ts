@@ -1,3 +1,4 @@
+import type { AskTeamOption } from "../ask-team";
 export interface FakeToolCall {
   toolCallId: string;
   title?: string;
@@ -19,7 +20,7 @@ export type FakeStep =
   | { type: "fs_read"; path: string }
   | { type: "fs_write"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
-  | { type: "ask_team"; question: string; options?: string[]; context?: string }
+  | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
   | { type: "publish_artifact"; path: string; displayName?: string; mimeType?: string }
   | { type: "hang" }
   | {

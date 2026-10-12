@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FakeClock } from "../core";
 import {
   advanceOutboxSession,
+  claimOutboxHeads,
   enqueueOutbox,
   enqueueOutboxOnce,
   getOutbox,
@@ -200,6 +201,79 @@ describe("critical Linear delivery", () => {
     expect(delivered).toEqual(["progress", "final"]);
     expect(getOutbox(db, progress)).toMatchObject({ status: "dropped", sentAt: clock.now() });
     expect(getOutbox(db, progress)?.error).toContain("external effect may have occurred");
+    db.close();
+  });
+});
+
+describe("ephemeral progress coalescing", () => {
+  test("reconnect sends only the latest unsent transient update and keeps durable milestones", async () => {
+    const { db, dispatcher, enqueue } = setup();
+    const first = enqueue("first", {
+      payload: { kind: "thought", body: "Starting", ephemeral: true },
+    });
+    const milestone = enqueue("milestone", {
+      payload: { kind: "thought", body: "Implemented export" },
+    });
+    const other = enqueue("other", {
+      orderingKey: "B",
+      payload: { kind: "thought", body: "Other", ephemeral: true },
+    });
+    const latest = enqueue("latest", {
+      payload: { kind: "action", body: "Testing", ephemeral: true },
+    });
+    const delivered: string[] = [];
+    dispatcher.setHandler((row) => {
+      delivered.push(row.idempotencyKey);
+    });
+    await flush(dispatcher);
+    expect(getOutbox(db, first)?.status).toBe("dropped");
+    expect(getOutbox(db, milestone)?.status).toBe("sent");
+    expect(getOutbox(db, other)?.status).toBe("sent");
+    expect(getOutbox(db, latest)?.status).toBe("sent");
+    expect(delivered).toEqual(["milestone", "other", "latest"]);
+    db.close();
+  });
+
+  test("a claimed update remains serialized and questions and results retain their fences", async () => {
+    const { db, dispatcher, enqueue } = setup();
+    const first = enqueue("first", {
+      payload: { kind: "thought", body: "Starting", ephemeral: true },
+    });
+    const claimed = claimOutboxHeads(db, { now: 5000 });
+    expect(claimed[0]?.id).toBe(first);
+    const later = enqueue("later", {
+      payload: { kind: "action", body: "Testing", ephemeral: true },
+    });
+    expect(getOutbox(db, first)?.status).toBe("pending");
+    const question = enqueue("question", {
+      op: "elicitation",
+      payload: { sessionId: "A", body: "Which?" },
+    });
+    expect(getOutbox(db, later)?.status).toBe("dropped");
+    expect(getOutbox(db, question)?.status).toBe("pending");
+    const final = enqueue("final", { payload: { kind: "response", body: "Done" } });
+    expect(getOutbox(db, question)?.status).toBe("dropped");
+    const stale = enqueue("stale", { payload: { kind: "thought", body: "Late", ephemeral: true } });
+    expect(getOutbox(db, stale)?.status).toBe("dropped");
+    dispatcher.setHandler(() => {});
+    expect(getOutbox(db, final)?.status).toBe("pending");
+    db.close();
+  });
+
+  test("duplicate insertion cannot supersede a newer transient update", () => {
+    const { db, enqueue } = setup();
+    enqueue("first", { payload: { kind: "thought", body: "Starting", ephemeral: true } });
+    const latest = enqueue("latest", {
+      payload: { kind: "thought", body: "Latest", ephemeral: true },
+    });
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "A",
+      idempotencyKey: "first",
+      payload: { kind: "thought", body: "Starting", ephemeral: true },
+    });
+    expect(getOutbox(db, latest)?.status).toBe("pending");
     db.close();
   });
 });

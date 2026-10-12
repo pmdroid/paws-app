@@ -1042,7 +1042,12 @@ function stringList(payload: unknown, key: string): string[] {
   if (!isRecord(payload)) return [];
   const value = payload[key];
   if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => (typeof entry === "string" && entry.trim() ? [entry] : []));
+  return value.flatMap((entry) => {
+    if (typeof entry === "string" && entry.trim()) return [entry];
+    if (!isRecord(entry)) return [];
+    const label = readString(entry, "label") ?? readString(entry, "value");
+    return label?.trim() ? [label] : [];
+  });
 }
 
 function readString(payload: unknown, key: string): string | null {
