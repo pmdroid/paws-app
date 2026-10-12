@@ -57,7 +57,11 @@ test("a prompted answer with no waiting session resumes as a fresh session", asy
   const payload = resume?.payload as { freshSession?: boolean; handoff?: string };
   expect(payload.freshSession).toBe(true);
   expect(payload.handoff).toBe(
-    handoffNote({ question: "Include archived rows?", answer: "parquet, please" }),
+    handoffNote({
+      question: "Include archived rows?",
+      answer: "parquet, please",
+      options: ["yes", "no"],
+    }),
   );
   expect(payload.handoff).toContain("Handoff from the previous session.");
   expect(payload.handoff).toContain("Do not ask again.");
@@ -72,6 +76,7 @@ function prompted(body: string): AcceptedLinearEvent {
     sessionId: "ses_1",
     issueId: "iss",
     activityId: "ans",
+    actorId: "human-1",
     body,
     signal: null,
     updatedAtMs: 2,

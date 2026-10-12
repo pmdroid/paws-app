@@ -8,5 +8,6 @@ export {
   findOpenQuestion,
   getQuestion,
   openQuestion,
+  questionReplyConsumed,
   type StoredQuestion,
 } from "./store";

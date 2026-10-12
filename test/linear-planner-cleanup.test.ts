@@ -190,6 +190,7 @@ test.skipIf(process.platform !== "linux")(
         action: "prompted",
         dedupeKey: "answer",
         activityId: "answer",
+        actorId: "human",
         body: "Explain it.",
         updatedAtMs: Date.now(),
       });

@@ -59,6 +59,7 @@ if (stage === "ask") {
     jobs: new JobLoop(db, clock),
     outbox: new OutboxDispatcher(db, clock),
     tracker: null,
+    channel: "comments",
     pawsRoot: root,
     clock,
   });

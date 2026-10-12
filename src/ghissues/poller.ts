@@ -42,7 +42,10 @@ export function githubWorkIsHot(db: Database): boolean {
   ) {
     return true;
   }
-  return count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open'") > 0;
+  return (
+    count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open' AND cancelled_at IS NULL") >
+    0
+  );
 }
 
 export type Sleeper = {
