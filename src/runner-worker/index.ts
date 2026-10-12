@@ -6,8 +6,11 @@ import {
   fstatSync,
   fsyncSync,
   mkdirSync,
+  lstatSync,
   openSync,
   writeFileSync,
+  renameSync,
+  rmSync,
 } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -93,15 +96,51 @@ export async function executeRunnerCommand(
   )
     throw new Error("Invalid runner worker configuration");
   options.signal?.throwIfAborted();
-  const journal = outputFile(options.outputDirectory, "events.jsonl", options.resultsGid);
+  for (const [name, kind] of [
+    ["events.jsonl", "journal"],
+    ["result.json", "result"],
+  ] as const) {
+    try {
+      lstatSync(join(options.outputDirectory, name));
+      throw new Error(`Runner ${kind} already exists`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
+  try {
+    fsyncSync(claim);
+  } finally {
+    closeSync(claim);
+  }
+  const journalName = `.events-${randomUUID()}.tmp`;
+  const journalPath = join(options.outputDirectory, journalName);
+  let journal: number | undefined;
+  try {
+    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
+    fsyncSync(journal);
+    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
+    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+  } catch (error) {
+    if (journal !== undefined) closeSync(journal);
+    throw error;
+  } finally {
+    rmSync(journalPath, { force: true });
+  }
+  const eventJournal = journal;
   let journalSize = 0;
   function emit(event: RunnerWorkerEvent): void {
     const line = `${JSON.stringify(event)}\n`;
     const length = Buffer.byteLength(line);
     if (length > 262_144 || journalSize + length > 16_777_216)
       throw new Error("Runner event journal exceeds size limit");
-    writeFileSync(journal, line);
-    fsyncSync(journal);
+    writeFileSync(eventJournal, line);
+    fsyncSync(eventJournal);
     journalSize += length;
   }
   try {
@@ -284,15 +323,22 @@ export async function executeRunnerCommand(
         }
       } else result.reviewText = reviewText;
     }
-    const final = outputFile(options.outputDirectory, "result.json", options.resultsGid);
+    const serialized = JSON.stringify(result);
+    if (Buffer.byteLength(serialized) > 1_048_576)
+      throw new Error("Runner result exceeds size limit");
+    const stagingName = `.result-${randomUUID()}.tmp`;
+    const stagingPath = join(options.outputDirectory, stagingName);
     try {
-      const serialized = JSON.stringify(result);
-      if (Buffer.byteLength(serialized) > 1_048_576)
-        throw new Error("Runner result exceeds size limit");
-      writeFileSync(final, serialized);
-      fsyncSync(final);
+      const final = outputFile(options.outputDirectory, stagingName, options.resultsGid);
+      try {
+        writeFileSync(final, serialized);
+        fsyncSync(final);
+      } finally {
+        closeSync(final);
+      }
+      renameSync(stagingPath, join(options.outputDirectory, "result.json"));
     } finally {
-      closeSync(final);
+      rmSync(stagingPath, { force: true });
     }
     const directory = openSync(
       options.outputDirectory,
