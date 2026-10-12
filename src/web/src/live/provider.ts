@@ -34,6 +34,8 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Job,
   OpenQuestionRecord,
@@ -98,13 +100,13 @@ const WORK_ITEM_STATES = [
 ] as const;
 
 const MERGE_QUEUE = "github.merge";
-const REVIEWER = "Codex";
 const MAX_CLOSEOUT_ATTEMPTS = 3;
 
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
 
 export type LiveStatusOptions = {
   now?: () => Date;
+  pawsHome?: string;
   project?: {
     name?: string;
     team?: string;
@@ -153,12 +155,12 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const jobs = listJobs(db);
   const blocks = listWorkItemBlocks(db);
   const openQuestions = listOpenQuestions(db);
-  const runs = runsFor(records, rows, generatedAt, db);
+  const env = options.env ?? process.env;
+  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const items = records.map((record) =>
     toItem(record, rows, runs, options.project?.repo, blocks, records),
   );
   const progress = listCloseoutProgress(db);
-  const env = options.env ?? process.env;
   return {
     version: STATUS_API_VERSION,
     source: "live",
@@ -236,6 +238,7 @@ function runsFor(
   rows: readonly OutboxRow[],
   generatedAt: string,
   db: Database,
+  pawsHome: string | undefined,
 ): StatusRun[] {
   const byItem = new Map(records.map((record) => [record.id, record]));
   const runs: StatusRun[] = [];
@@ -250,7 +253,7 @@ function runsFor(
       itemId: publicId(record),
       state: current ? runState(record, stored.status) : "done",
       agent: agentName(stored.agent),
-      reviewer: REVIEWER,
+      reviewer: runReviewer(pawsHome, stored.id),
       startedAt: iso(stored.createdAt, generatedAt),
       attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
       summary: recent?.text ?? textOr(record.title, publicId(record)),
@@ -259,6 +262,19 @@ function runsFor(
     });
   }
   return runs;
+}
+
+function runReviewer(pawsHome: string | undefined, runId: string): string {
+  if (!pawsHome || !/^[A-Za-z0-9_-]+$/.test(runId)) return "Unknown";
+  try {
+    const snapshot = JSON.parse(
+      readFileSync(join(pawsHome, "runs", runId, "agent-profile.json"), "utf8"),
+    );
+    const reviewer = snapshot?.profiles?.reviewer?.agent;
+    return ["claude", "codex", "grok"].includes(reviewer) ? agentName(reviewer) : "Unknown";
+  } catch {
+    return "Unknown";
+  }
 }
 
 function blockersFor(
@@ -845,6 +861,7 @@ function agentName(agent: string): string {
   const known: Record<string, string> = {
     claude: "Claude",
     codex: "Codex",
+    grok: "Grok",
     cursor: "Cursor",
     gemini: "Gemini",
     paws: "Paws",
