@@ -26,7 +26,6 @@ const MODULES = [
   "comments",
   "install",
   "setup",
-  "sandbox",
   "auth",
   "ghissues",
   "ghcomments",
@@ -44,7 +43,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   db: ["core"],
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
-  acp: ["core", "config", "sandbox"],
+  acp: ["core", "config"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core"],
   github: [],
@@ -82,7 +81,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   auth: ["config", "github", "credentials"],
   ghissues: ["core", "linear", "intake", "auth"],
   ghcomments: ["comments", "core", "linear"],
-  sandbox: [],
 };
 
 describe("module boundaries", () => {

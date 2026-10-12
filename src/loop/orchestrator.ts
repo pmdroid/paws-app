@@ -205,8 +205,6 @@ export type OrchestratorOptions = {
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
-  /** Sandbox for ACP spawns. The host path is unchanged when this is omitted. */
-  docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
 type AnswerWaiter = (answer: string) => void;
@@ -1193,7 +1191,6 @@ export class Orchestrator {
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
-        ...this.itemDocker(profiles.implementer.agent),
       });
       controller.signal.throwIfAborted();
       const finished = getWorkItem(this.db, item.id);
@@ -2573,30 +2570,6 @@ export class Orchestrator {
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
       brief: this.workContext(item),
-      ...(this.options.docker ? { docker: this.options.docker } : {}),
-    };
-  }
-
-  private itemDocker(agent: "claude" | "codex" | "grok"):
-    | {
-        docker: {
-          agent: "claude" | "codex";
-          proxyUrl: string;
-          image?: string;
-          bin?: string;
-        };
-      }
-    | Record<string, never> {
-    const docker = this.options.docker;
-    if (docker === undefined) return {};
-    if (agent === "grok") throw new Error("Grok does not support the configured Docker sandbox");
-    return {
-      docker: {
-        agent,
-        proxyUrl: docker.proxyUrl,
-        ...(docker.image ? { image: docker.image } : {}),
-        ...(docker.bin ? { bin: docker.bin } : {}),
-      },
     };
   }
 
@@ -2741,7 +2714,6 @@ export class Orchestrator {
         worktreePath: worktree.path,
         pawsRoot: this.options.pawsRoot,
         ...(this.options.home ? { home: this.options.home } : {}),
-        ...this.itemDocker(profile.agent),
         prepareOnly: true,
         readOnly: true,
         checkpoint: false,

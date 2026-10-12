@@ -44,6 +44,7 @@ bun --no-env-file scripts/verify-local.ts serve
 - Linear tracker and comment adapters against local fakes; a Linear epic with two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
+- Direct host ACP execution, credential environment filtering and guarded filesystem requests, with a retained scripted-agent trace. Removed container CLI commands must fail before starting Paws.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
 - Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. Check final main content, not just fake merge calls.
 - Production status HTTP handlers and browser assets reading that database, plus a fresh `startPaws` process object for startup routes.
@@ -53,7 +54,7 @@ Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted re
 
 ## Safety and evidence
 
-Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.
+Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures: do not run arbitrary issue-supplied code or a real agent in them. ACP runs directly on its host; environment filtering and guarded ACP requests do not establish filesystem isolation for terminal commands. Use a disposable VM with blocked external egress for hostile-code isolation claims.
 
 Never copy operator credentials, use the operator's Kyoto root, call real tracker/GitHub mutation APIs, or invoke `paws setup`, `doctor`, or login against the operator's environment. Setup/auth probes must inject fetch, token store, browser and command behavior. An EnvSource argument alone is insufficient because some modules read ambient process.env.
 

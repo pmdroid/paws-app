@@ -156,17 +156,6 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
     {
       ...(grok ? { cwd: options.worktreePath } : {}),
-      ...(options.docker
-        ? {
-            docker: {
-              agent: options.docker.agent,
-              worktree: options.worktreePath,
-              proxyUrl: options.docker.proxyUrl,
-              ...(options.docker.image ? { image: options.docker.image } : {}),
-              ...(options.docker.bin ? { bin: options.docker.bin } : {}),
-            },
-          }
-        : {}),
     },
   );
   const stderr = captureStderr(child);

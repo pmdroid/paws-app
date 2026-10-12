@@ -104,7 +104,6 @@ import {
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
-import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
@@ -124,10 +123,6 @@ export type PawsProcess = {
 
 export type StartOptions = {
   noTunnel?: boolean;
-  /** Run ACP adapters in the sandbox. `proxyUrl` is the allow-list proxy. */
-  docker?: boolean;
-  proxyUrl?: string | null;
-  sandboxImage?: string;
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -155,7 +150,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const webhooks = runtime.webhooks;
   const channel: "comments" | "agent-session" =
     runtime.linearMode === "agent-session" ? "agent-session" : "comments";
-  const docker = sandboxOptions(options);
   const inbox = createInboxStore(db);
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
@@ -365,7 +359,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
-        ...(docker ? { docker } : {}),
       });
       orchestrator = attached;
       if (channel === "agent-session") {
@@ -562,18 +555,6 @@ function down(): LinearRunning {
   };
 }
 
-function sandboxOptions(
-  options: StartOptions | undefined,
-): { proxyUrl: string; image?: string } | undefined {
-  if (options?.docker !== true || options.proxyUrl === null || options.proxyUrl === undefined) {
-    return undefined;
-  }
-  return {
-    proxyUrl: options.proxyUrl,
-    ...(options.sandboxImage ? { image: options.sandboxImage } : {}),
-  };
-}
-
 function repositoryBinding(value: string | null): RepositoryBinding | null {
   if (value === null) return null;
   const slash = value.indexOf("/");
@@ -730,28 +711,16 @@ if (import.meta.main) {
     process.exit(await logoutGitHubCommand());
   }
   if (command === "login") {
-    const agent = argv[1];
-    if ((agent !== "claude" && agent !== "codex") || !argv.includes("--docker")) {
-      console.error(
-        "usage: paws login github | paws login slack | paws login <claude|codex> --docker",
-      );
-      process.exit(1);
-    }
-    try {
-      await loginDocker(agent);
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : "docker login failed");
-      process.exit(1);
-    }
-    process.exit(0);
+    console.error("usage: paws login github | paws login slack");
+    process.exit(1);
   }
-  const docker = argv.includes("--docker");
-  let proxy: AllowProxy | null = null;
-  if (docker) proxy = await startAllowProxy({ host: "0.0.0.0" });
+  const unknown = argv.find((arg) => arg !== "--no-tunnel");
+  if (unknown) {
+    console.error(`Unknown option ${unknown}.`);
+    process.exit(1);
+  }
   const paws = startPaws(process.env, {
     noTunnel: argv.includes("--no-tunnel"),
-    docker,
-    proxyUrl: proxy === null ? null : `http://host.docker.internal:${proxy.port}`,
   });
   let exiting = false;
   const shutdown = () => {
@@ -759,7 +728,6 @@ if (import.meta.main) {
     exiting = true;
     void (async () => {
       await paws.stop();
-      await proxy?.close();
       process.exit(0);
     })().catch(() => process.exit(1));
   };
