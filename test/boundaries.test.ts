@@ -28,6 +28,7 @@ const MODULES = [
   "deployment",
   "setup",
   "auth",
+  "runner-protocol",
   "workspace",
   "runner-identity",
 ] as const;
@@ -94,6 +95,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   auth: ["config", "github", "credentials"],
   workspace: ["db", "linear", "slack"],
   "runner-identity": ["credentials"],
+  "runner-protocol": [],
 };
 
 describe("module boundaries", () => {
