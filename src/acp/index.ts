@@ -56,6 +56,8 @@ export {
 } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
 export {
+  AcpCleanupError,
+  recoverAcpConversation,
   createAcpPromptLifecycle,
   reconstructAcpPrompt,
   type AcpConversationEntry,
