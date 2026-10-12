@@ -4,6 +4,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchGitHubClient, type GitExec } from "../github";
+import {
+  bindLinearSessionTask,
+  getWorkItem,
+  migrate,
+  openDatabase,
+  recordLinearInstallation,
+} from "../db";
+import { intakeDelegatedIssue } from "../intake";
+import {
+  createFakeLinearAccessReads,
+  createFakeLinearIssueLifecycle,
+  createFakeTracker,
+} from "../linear";
+import { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 
 function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
@@ -46,6 +60,90 @@ function fixture(gitExec?: GitExec, onCleanupFailure = () => {}) {
   });
   return { controller, state, requests, guarded };
 }
+
+test.each(["push", "pr", "merge"] as const)(
+  "human issue cancellation during the access read fences pending %s publication",
+  async (purpose) => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    let pushes = 0;
+    const f = fixture(async () => {
+      pushes++;
+      return { stdout: "", stderr: "" };
+    });
+    const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "issue",
+        identifier: "ENG-1",
+        title: "Request",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    try {
+      const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
+      if (!task.ok) throw new Error("Unexpected dependency cycle");
+      recordLinearInstallation(db, {
+        ...scope,
+        sessionId: "session",
+        teamId: "team",
+        observedAtMs: 1,
+      });
+      bindLinearSessionTask(db, "session", task.epic.id, { actorId: "human" });
+      const access = createFakeLinearAccessReads({
+        installation: scope,
+        sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],
+        teams: ["team"],
+      });
+      const lifecycle = createFakeLinearIssueLifecycle({
+        id: "issue",
+        teamId: "team",
+        assigneeId: "human",
+        delegateId: "app",
+        stateType: "started",
+      });
+      const stopped: string[] = [];
+      const gate = new LinearTaskAccess(db, {
+        access: access.adapter,
+        lifecycle,
+        oauthClientId: "client",
+        appUserId: "app",
+        stopSession: (id) => {
+          stopped.push(id);
+        },
+      });
+      const item = getWorkItem(db, task.items[0]!.id)!;
+      f.state.verify = () => gate.assert(item, f.controller.signal);
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const read = access.adapter.session;
+      access.adapter.session = async (...args) => {
+        started.resolve();
+        await release.promise;
+        return read(...args);
+      };
+      const work =
+        purpose === "push"
+          ? f.guarded.gitExec(["push", "origin", "HEAD"], { cwd: "/unused", env: {} })
+          : f.guarded.client.request({
+              method: purpose === "pr" ? "POST" : "PUT",
+              path: purpose === "pr" ? "/pulls" : "/pulls/1/merge",
+              token: "synthetic-token",
+            });
+      await started.promise;
+      lifecycle.issue.stateType = "canceled";
+      release.resolve();
+      await expect(work).rejects.toThrow("workflow");
+      expect(stopped).toEqual(["session"]);
+      expect(pushes).toBe(0);
+      expect(f.requests).toEqual([]);
+    } finally {
+      f.controller.abort();
+      db.close();
+    }
+  },
+);
 
 test.each(["push", "pr", "merge"] as const)(
   "a new generation fences %s token acquisition",

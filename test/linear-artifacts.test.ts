@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
+import type { Database } from "bun:sqlite";
 import {
   artifactPublicationReady,
   claimOutboxHeads,
@@ -12,6 +13,8 @@ import {
   listOutbox,
   saveArtifact,
   markArtifact,
+  migrate,
+  openDatabase,
   stopOutboxSession,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
@@ -37,8 +40,10 @@ const context: PublishArtifactContext = {
   signal: new AbortController().signal,
 };
 
-function setup(options: { failAfterUpload?: boolean; fail?: boolean; expired?: boolean } = {}) {
-  const db = tempDb();
+function setup(
+  options: { failAfterUpload?: boolean; fail?: boolean; expired?: boolean } = {},
+  db: Database = tempDb(),
+) {
   insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const secretsDir = join(tempHome(), "secrets");
   let prepares = 0;
@@ -81,8 +86,14 @@ function setup(options: { failAfterUpload?: boolean; fail?: boolean; expired?: b
       return stored === null ? new Response(null, { status: 404 }) : new Response(stored);
     },
   });
-  const publisher = () =>
-    createLinearArtifactPublisher({ db, files, secretsDir, itemId: "item", sessionId: "session" });
+  const publisher = (database = db) =>
+    createLinearArtifactPublisher({
+      db: database,
+      files,
+      secretsDir,
+      itemId: "item",
+      sessionId: "session",
+    });
   return { db, publisher, secretsDir, prepares: () => prepares, uploads: () => uploads };
 }
 
@@ -147,16 +158,25 @@ test("dashboard can read a prepared artifact while publication retries without e
 });
 
 test("restart reconciles an uploaded asset after losing the PUT response", async () => {
-  const env = setup({ failAfterUpload: true });
+  const databasePath = join(tempHome(), "paws.db");
+  const db = openDatabase(databasePath);
+  migrate(db);
+  const env = setup({ failAfterUpload: true }, db);
   await expect(env.publisher().publish(artifact, context)).rejects.toThrow("upload request failed");
   expect(listArtifacts(env.db, "item")[0]?.state).toBe("failed");
   expect(artifactPublicationReady(env.db, "item")).toBe(false);
   expect(listOutbox(env.db, "session")).toHaveLength(0);
-  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
-  expect(env.prepares()).toBe(1);
-  expect(env.uploads()).toBe(1);
-  expect(listArtifacts(env.db, "item")[0]?.state).toBe("uploaded");
   env.db.close();
+  const reopened = openDatabase(databasePath);
+  migrate(reopened);
+  try {
+    expect(await env.publisher(reopened).publish(artifact, context)).toMatchObject({ url: URL });
+    expect(env.prepares()).toBe(1);
+    expect(env.uploads()).toBe(1);
+    expect(listArtifacts(reopened, "item")[0]?.state).toBe("uploaded");
+  } finally {
+    reopened.close();
+  }
 });
 
 test("concurrent identical publications share one upload and durable result", async () => {
