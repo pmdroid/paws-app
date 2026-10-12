@@ -126,3 +126,11 @@ The runner work probe uses real SQLite, signed commands and a fresh child proces
 Runner work verification covers production HTTP request handlers with valid and denied grants, stale generations, heartbeat JSON, and a chunked oversized body that must be cancelled before the third chunk is read. It also replaces a revoked runner immediately with a fresh generation and polls a later health command beyond 64 invalid run commands.
 
 An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
+
+Runner result verification drives production HTTP handlers with real migrated SQLite and signed assignments. It checks immutable run/review results, grant and generation denial, paged question answers, rejected answer mutation, bounded streamed bodies and persistence after reopening SQLite. Answer later questions first and confirm delivery waits for earlier replies before advancing the question cursor. Submit a 900 KB Unicode review successfully and check that schema validation rejects Unicode and JSON-escaped results exceeding the HTTP byte limit.
+
+Run `bun test test/runner-health.test.ts` for signed health delivery over actual mTLS. The reusable audit probe verifies current workspace administration, command/result binding, bounded credential-free responses, maximum Unicode and JSON-escaped metadata within the shared 1 MiB result body limit, immutable duplicate receipts, heartbeat timestamps, expiry and revocation, and fresh-process result recovery.
+
+## Runner coordinator
+
+Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.
