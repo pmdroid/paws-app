@@ -111,3 +111,5 @@ export {
 } from "./worktree";
 
 export { snapshotAgentInputs, buildAgentPrompt, type AgentInputFile } from "./input-files";
+
+export { assertNonSecretArtifactPath } from "./artifacts";

@@ -17,3 +17,10 @@ export {
 } from "./signature";
 
 export { RunnerEventSchema, type RunnerEvent } from "./events";
+
+export {
+  RunnerArtifactSchema,
+  RunnerArtifactChunkSchema,
+  type RunnerArtifact,
+  type RunnerArtifactChunk,
+} from "./artifacts";
