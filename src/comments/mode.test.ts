@@ -96,6 +96,7 @@ describe("comment mode", () => {
       parentId: question?.id,
       userId: "paws",
       body: "ship it",
+      botId: "paws",
     });
     clock.advance(1);
     board.post({
@@ -165,7 +166,13 @@ describe("comment mode", () => {
     )?.id;
 
     clock.advance(1);
-    board.post({ issueId: "iss-1", parentId: questionId, userId: "paws", body: "/paws stop" });
+    board.post({
+      issueId: "iss-1",
+      parentId: questionId,
+      userId: null,
+      botId: "paws",
+      body: "/paws stop",
+    });
     expect((await mode.sync("iss-1")).stopped).toEqual([]);
     expect(mode.phase("item-1")).toBe("parked");
 
