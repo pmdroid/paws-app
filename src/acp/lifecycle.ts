@@ -131,7 +131,20 @@ async function readConversation(path: string, offset: number): Promise<AcpConver
     }
     if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
       const previous = tools.get(update.toolCallId) ?? {};
-      tools.set(update.toolCallId, { ...previous, ...toolObservation(update) });
+      const tool = { ...previous, ...toolObservation(update) };
+      for (const key of ["terminal_output_delta", "terminal_output"]) {
+        const output = update["_meta"]?.[key];
+        if (
+          output !== null &&
+          typeof output === "object" &&
+          "data" in output &&
+          typeof output.data === "string"
+        ) {
+          tool.terminalOutput = `${tool.terminalOutput ?? ""}${output.data}`.slice(-64 * 1024);
+          break;
+        }
+      }
+      tools.set(update.toolCallId, tool);
     }
   }
   if (response) history.push({ kind: "response", body: response });
