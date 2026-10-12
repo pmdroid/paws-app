@@ -526,4 +526,18 @@ CREATE TABLE task_request (
       blocked INTEGER NOT NULL DEFAULT 0 CHECK(blocked IN (0,1))
     ) STRICT;`,
   },
+  {
+    id: "019_linear_turn_announcements",
+    sql: "ALTER TABLE linear_turn ADD COLUMN announced_generation INTEGER;",
+  },
+  {
+    id: "020_linear_stop_receipts",
+    sql: `CREATE TABLE linear_stop_receipt (
+      session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+      event_key TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY(session_id,event_key)
+    ) STRICT;`,
+  },
 ];

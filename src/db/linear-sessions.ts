@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { listInFlightItems } from "./items";
-import { advanceOutboxSession } from "./outbox";
+import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
 import { immediate } from "./tx";
 
 export type StoredLinearSession = {
@@ -292,4 +292,117 @@ export function getTaskLinearActor(db: Database, itemId: string): string | null 
       )
       .get(itemId)?.owner_actor_id ?? null
   );
+}
+
+export function listLinearTurnsForItem(db: Database, itemId: string): StoredLinearTurn[] {
+  return db
+    .query<TurnRow, [string]>(
+      "SELECT * FROM linear_turn WHERE item_id = ? AND state = 'applied' ORDER BY created_at_ms,ordinal",
+    )
+    .all(itemId)
+    .map(mapTurn);
+}
+
+export function getLinearTurnGeneration(
+  db: Database,
+  sessionId: string,
+  eventKey: string,
+  activityId: string | null,
+): number | null {
+  return (
+    db
+      .query<{ announced_generation: number | null }, [string, string, string | null]>(
+        "SELECT announced_generation FROM linear_turn WHERE session_id = ? AND (event_key = ? OR activity_id = ?)",
+      )
+      .get(sessionId, eventKey, activityId)?.announced_generation ?? null
+  );
+}
+
+export function announceLinearTurn(
+  db: Database,
+  sessionId: string,
+  eventKey: string,
+  now = Date.now(),
+): boolean {
+  return immediate(db, () => {
+    const turn = db
+      .query<
+        { announced_generation: number | null; state: string; created_at_ms: number },
+        [string, string]
+      >(
+        "SELECT announced_generation,state,created_at_ms FROM linear_turn WHERE event_key = ? AND session_id = ?",
+      )
+      .get(eventKey, sessionId);
+    if (!turn || turn.state !== "pending" || turn.announced_generation !== null) return false;
+    const session = getLinearSession(db, sessionId);
+    if (
+      session?.stoppedAt !== null &&
+      session?.stoppedAt !== undefined &&
+      turn.created_at_ms <= session.stoppedAt
+    ) {
+      db.run("UPDATE linear_turn SET state = 'cancelled' WHERE event_key = ?", [eventKey]);
+      return false;
+    }
+    const generation = advanceLinearSessionGeneration(db, sessionId, { now });
+    db.run("UPDATE linear_turn SET announced_generation = ? WHERE event_key = ?", [
+      generation,
+      eventKey,
+    ]);
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      generation,
+      delivery: "critical",
+      idempotencyKey: `turn:ack:${eventKey}`,
+      payload: {
+        sessionId,
+        kind: "thought",
+        body: "Received your update.",
+        id: crypto.randomUUID(),
+      },
+      now,
+    });
+    return true;
+  });
+}
+
+export function discardLinearTurns(
+  db: Database,
+  sessionId: string,
+  eventKeys: readonly string[],
+): void {
+  immediate(db, () => {
+    for (const eventKey of eventKeys)
+      db.run(
+        "UPDATE linear_turn SET state = 'cancelled' WHERE session_id = ? AND event_key = ? AND state = 'pending'",
+        [sessionId, eventKey],
+      );
+  });
+}
+
+export function acceptLinearStop(
+  db: Database,
+  sessionId: string,
+  eventKey: string,
+  now: number,
+): number | null {
+  return immediate(db, () => {
+    if (
+      db
+        .query("SELECT 1 FROM linear_stop_receipt WHERE session_id = ? AND event_key = ?")
+        .get(sessionId, eventKey)
+    )
+      return null;
+    const session = ensureLinearSession(db, { sessionId, now });
+    const generation =
+      session.stoppedAt === null
+        ? advanceLinearSessionGeneration(db, sessionId, { stop: true, now })
+        : session.generation;
+    db.run(
+      "INSERT INTO linear_stop_receipt (session_id,event_key,generation,created_at) VALUES (?, ?, ?, ?)",
+      [sessionId, eventKey, generation, now],
+    );
+    return generation;
+  });
 }
