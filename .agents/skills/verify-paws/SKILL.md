@@ -169,6 +169,8 @@ Runner artifact verification drives production HTTP handlers with real SQLite gr
 
 For worker publication, run `bun test test/worker-publication.test.ts test/runner-worker.test.ts`. The publication probe observes the canonical event and result filenames at the ownership-assignment boundary while the real worker executes Git and scripted ACP. Both filenames stay absent until their metadata is ready, and completed results parse normally. The worker probe also repeats a consumed execution and supplies preexisting legacy journals and final results, verifying that neither path appends to or replaces retained output or creates a new claim.
 
+For the fixed Linux check-command launcher and PID1 status writer, run `PAWS_CHECK_VM_BASE=<standalone-qcow2> PAWS_CHECK_VM_SHA512=<trusted-sha512> bun --no-env-file test/local/runner-check-status.ts`. A disposable VM with no network boots real systemd and runs the shipped helpers under a fixture service. It verifies normal and nonzero exits, signals, timeouts, denial of child-written status, removal of inherited environment values and termination of detached descendants. The root status writer must publish the exact execution identity with zero capabilities. Evidence includes helper, probe and VM image hashes.
+
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
