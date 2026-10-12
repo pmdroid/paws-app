@@ -3,6 +3,9 @@ import type {
   ActivityKind,
   AuthSignal,
   SelectOption,
+  SessionPlanStep,
+  SessionUpdate,
+  SessionUrl,
   TrackerAdapter,
   TrackerRequestOptions,
 } from "../linear";
@@ -34,6 +37,9 @@ export async function deliverLinearOutbox(
   };
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker, options);
+  }
+  if (message.op.startsWith("linear.session.")) {
+    return postSession(payload, tracker, options);
   }
   if (message.op === "elicitation") {
     return postElicitation(payload, tracker, options);
@@ -102,6 +108,57 @@ async function postElicitation(
     },
     requestOptions,
   );
+}
+
+async function postSession(
+  payload: Record<string, unknown>,
+  tracker: TrackerAdapter,
+  options?: TrackerRequestOptions,
+): Promise<void> {
+  if (!tracker.updateSession) throw new Error("Tracker does not support session updates");
+  const sessionId = readString(payload, "sessionId");
+  if (sessionId === null) throw new Error("session update requires a session");
+  const update: SessionUpdate = { sessionId };
+  if (payload.plan !== undefined) {
+    if (!Array.isArray(payload.plan)) throw new Error("session plan must be an array");
+    update.plan = payload.plan.map((step): SessionPlanStep => {
+      if (
+        !isRecord(step) ||
+        typeof step.content !== "string" ||
+        !["pending", "inProgress", "completed", "canceled"].includes(String(step.status))
+      ) {
+        throw new Error("session plan requires content and status");
+      }
+      return { content: step.content, status: step.status as SessionPlanStep["status"] };
+    });
+  }
+  if (payload.summary !== undefined) {
+    if (payload.summary !== null && typeof payload.summary !== "string")
+      throw new Error("session summary must be text or null");
+    update.summary = payload.summary;
+  }
+  for (const field of ["externalUrls", "addedExternalUrls"] as const) {
+    if (payload[field] === undefined) continue;
+    if (!Array.isArray(payload[field])) throw new Error("session links must be an array");
+    update[field] = payload[field].map((entry): SessionUrl => {
+      if (!isRecord(entry) || typeof entry.label !== "string" || typeof entry.url !== "string")
+        throw new Error("session links require label and URL");
+      return { label: entry.label, url: entry.url };
+    });
+  }
+  if (payload.removedExternalUrls !== undefined) {
+    if (
+      !Array.isArray(payload.removedExternalUrls) ||
+      payload.removedExternalUrls.some((url) => typeof url !== "string")
+    )
+      throw new Error("removed session links must be an array of URLs");
+    update.removedExternalUrls = [...payload.removedExternalUrls];
+  }
+  const signal = AbortSignal.any([
+    ...(options?.signal ? [options.signal] : []),
+    AbortSignal.timeout(5000),
+  ]);
+  await tracker.updateSession(update, { ...options, signal });
 }
 
 async function postStatus(

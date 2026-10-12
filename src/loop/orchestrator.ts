@@ -137,6 +137,7 @@ import {
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
+import { createLinearSessionProgress } from "./session-progress";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
@@ -831,10 +832,22 @@ export class Orchestrator {
     const controller = live.controller;
     const workspace = join(this.options.pawsRoot, "tasks", item.id, mode);
     mkdirSync(workspace, { recursive: true, mode: 0o700 });
-    const activity = createAcpActivityReporter((update) => {
-      if (!controller.signal.aborted && update.kind !== "elicitation")
-        this.post(item, update.kind, update.body, `${run.id}:answer:${++this.activitySeq}`);
-    });
+    const sessionProgress = this.sessionProgress(item, mode);
+    sessionProgress?.phase("working");
+    const activity = createAcpActivityReporter(
+      (update) => {
+        if (
+          !controller.signal.aborted &&
+          this.canReportProgress(item.id) &&
+          update.kind !== "elicitation"
+        )
+          this.post(item, update.kind, update.body, `${run.id}:answer:${++this.activitySeq}`);
+      },
+      (steps) => {
+        if (!controller.signal.aborted && this.canReportProgress(item.id))
+          sessionProgress?.plan(steps);
+      },
+    );
     const keepAlive = setInterval(() => {
       if (this.canReportProgress(item.id)) {
         this.post(
@@ -924,6 +937,7 @@ export class Orchestrator {
           this.now(),
         );
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now());
+      sessionProgress?.phase("completed");
       this.pump();
     } catch (error) {
       if (!this.stopped(item.id) && !controller.signal.aborted)
@@ -955,6 +969,8 @@ export class Orchestrator {
     this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
       ephemeral: true,
     });
+    const sessionProgress = this.sessionProgress(item);
+    sessionProgress?.phase("implementing");
     this.postStatus(item, "started");
     let posted = true;
     const first = setTimeout(() => {
@@ -979,12 +995,23 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
-    const activity = createAcpActivityReporter((update) => {
-      if (controller.signal.aborted || update.kind === "elicitation") return;
-      posted = true;
-      this.activitySeq += 1;
-      this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
-    });
+    const activity = createAcpActivityReporter(
+      (update) => {
+        if (
+          controller.signal.aborted ||
+          !this.canReportProgress(item.id) ||
+          update.kind === "elicitation"
+        )
+          return;
+        posted = true;
+        this.activitySeq += 1;
+        this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`, update);
+      },
+      (steps) => {
+        if (!controller.signal.aborted && this.canReportProgress(item.id))
+          sessionProgress?.plan(steps);
+      },
+    );
 
     try {
       const promptRunner = await this.prepareConversation(item);
@@ -1144,6 +1171,7 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
   ): Promise<CloseoutVerdict> {
+    this.sessionProgress(item)?.phase("verifying");
     const deps = this.agentDeps(item);
     const onCandidate = deps.onCandidate;
     deps.onCandidate = (identity) => {
@@ -1330,6 +1358,7 @@ export class Orchestrator {
       );
       return;
     }
+    this.sessionProgress(item)?.phase("publishing");
     const published = await publishAccepted({
       accepted: true,
       evidence: summary,
@@ -1354,6 +1383,9 @@ export class Orchestrator {
       `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
       `${item.id}:pr:${published.pull.number}`,
     );
+    const sessionProgress = this.sessionProgress(item);
+    if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
+    sessionProgress?.phase("merging");
     let closeoutFailure: CloseoutVerdict | null = null;
     const merged = await serialMerge({
       worktree,
@@ -1432,6 +1464,7 @@ export class Orchestrator {
     }
     this.post(item, "thought", `Merged ${item.linearIdentifier}.`, `${item.id}:merged`);
     applyWorkItemEvent(this.db, item.id, "merge_accepted");
+    sessionProgress?.phase("completed");
     this.postStatus(item, "completed");
     await removeWorktree({
       owner: repository.owner,
@@ -1804,6 +1837,25 @@ export class Orchestrator {
       this.post(current, "error", text, `fail:${current.id}:${reason}`);
     }
     this.pump();
+  }
+
+  private sessionProgress(item: WorkItemRecord, mode: "code" | "answer" | "artifact" = "code") {
+    if (
+      this.options.channel === "comments" ||
+      isGitHubIssue(item.linearIssueId) ||
+      !this.tracker?.updateSession
+    )
+      return null;
+    const sessionId = this.activitySession(item);
+    return sessionId === null
+      ? null
+      : createLinearSessionProgress(
+          this.db,
+          sessionId,
+          item.linearIdentifier,
+          () => this.now(),
+          mode,
+        );
   }
 
   private post(

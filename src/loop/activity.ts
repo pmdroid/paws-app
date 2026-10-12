@@ -1,6 +1,6 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AcpEvent } from "../acp";
-import type { ActivityKind, ProgressUpdate } from "../linear";
+import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
 
 /** Backup post when a run has produced no Linear activity yet. */
 export const FIRST_ACTIVITY_MS = 10_000;
@@ -45,11 +45,10 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
   }
 }
 
-export function createAcpActivityReporter(post: (activity: AcpActivity) => void): {
-  onEvent(event: AcpEvent): void;
-  flush(): void;
-  resultBody(): string;
-} {
+export function createAcpActivityReporter(
+  post: (activity: AcpActivity) => void,
+  onPlan?: (steps: readonly SessionPlanStep[]) => void,
+): { onEvent(event: AcpEvent): void; flush(): void; resultBody(): string } {
   let pending = "";
   let resultBody = "";
   const toolTitles = new Map<string, string>();
@@ -83,6 +82,14 @@ export function createAcpActivityReporter(post: (activity: AcpActivity) => void)
               return;
             }
           }
+        }
+        if (update.sessionUpdate === "plan") {
+          onPlan?.(
+            update.entries.map((entry) => ({
+              content: entry.content,
+              status: entry.status === "in_progress" ? "inProgress" : entry.status,
+            })),
+          );
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
