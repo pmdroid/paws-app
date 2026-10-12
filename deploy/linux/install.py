@@ -173,7 +173,12 @@ def extract_verified(artifact, destination):
                     outgoing.write(chunk)
                     remaining -= len(chunk)
                 outgoing.flush()
-                os.fchmod(outgoing.fileno(), member.mode)
+                mode = member.mode
+                if member.name == "bin/bun":
+                    mode = 0o755
+                elif member.name.startswith("deploy/linux/"):
+                    mode = 0o644
+                os.fchmod(outgoing.fileno(), mode)
                 os.fsync(outgoing.fileno())
     for current, _, _ in os.walk(destination, topdown=False):
         os.chmod(current, 0o755)

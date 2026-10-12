@@ -7,6 +7,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import tarfile
 
 
 ROOT = pathlib.Path("/proof")
@@ -33,7 +34,17 @@ def main():
             manifest.write_text(json.dumps({**source, "version": version}))
             fixture.run(["/usr/bin/openssl", "pkeyutl", "-sign", "-rawin", "-inkey", str(private), "-in", str(manifest), "-out", str(signature)])
 
-        arguments = ["--artifact", str(ROOT / "package/artifact.tar"), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(key)]
+        modified = root / "modified.tar"
+        with tarfile.open(ROOT / "package/artifact.tar", "r:") as incoming, tarfile.open(modified, "w:", format=tarfile.USTAR_FORMAT) as outgoing:
+            for member in incoming:
+                if member.name == "bin/bun":
+                    member.mode = 0o644
+                elif member.name == "deploy/linux/paws-runner.service":
+                    member.mode = 0o755
+                outgoing.addfile(member, incoming.extractfile(member))
+        with modified.open("rb") as stream:
+            source["artifactSha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+        arguments = ["--artifact", str(modified), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(key)]
         sign("0.1.1")
         wrapper = ROOT / "selected-interrupt.py"
         wrapper.write_text('''import importlib.util,os,pathlib,signal,sys
@@ -100,6 +111,8 @@ module.main()
         first = json.loads(retried.stdout)
         if not (base / "current/bin/bun").is_file():
             raise RuntimeError("Published release is missing its runtime")
+        if (base / "current/bin/bun").stat().st_mode & 0o777 != 0o755 or (base / "current/deploy/linux/paws-runner.service").stat().st_mode & 0o777 != 0o644:
+            raise RuntimeError("Installed runtime or service mode differs from its fixed mode")
         sign("0.1.2")
         stopped, _ = interrupt("current")
         if not stopped:
