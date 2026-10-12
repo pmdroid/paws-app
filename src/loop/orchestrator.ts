@@ -1928,44 +1928,46 @@ export class Orchestrator {
       }
       return;
     }
-    const row = this.epicRow(epicId);
-    if (row === null || row.state !== "running") return;
-    const result = transitionEpic(row.state, "completed");
-    if (!result.ok) return;
-    this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
-      result.to,
-      epicId,
-      row.state,
-    ]);
-    if (items.every((item) => item.state === "completed")) return;
-    const epicIssueId = this.epicIssueId(epicId);
-    if (
-      epicIssueId &&
-      items.every((item) => item.state === "merged") &&
-      this.taskAccess(items[0]!) &&
-      items.every((item) => getLinearTaskDelegation(this.db, item.id, epicIssueId)?.humanActorId)
-    )
-      this.postStatus(items.at(-1)!, "completed", epicIssueId);
-    const session =
-      epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
-    if (session === null) return;
-    const identifiers = items.map((item) => item.linearIdentifier).join(", ");
-    const results = items.flatMap((item) => {
-      const finalText =
-        item.currentRunId && getRun(this.db, item.currentRunId)?.checkpoint?.resultBody;
-      return finalText ? [`${item.linearIdentifier}: ${finalText}`] : [];
-    });
-    enqueueOutboxOnce(this.db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: session,
-      idempotencyKey: `epic-done:${epicId}`,
-      payload: {
-        sessionId: session,
-        kind: "response",
-        body: [`Epic complete. Merged ${identifiers}.`, ...results].join("\n\n"),
-      },
-      now: this.now(),
+    immediate(this.db, () => {
+      const row = this.epicRow(epicId);
+      if (row === null || row.state !== "running") return;
+      const result = transitionEpic(row.state, "completed");
+      if (!result.ok) return;
+      this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
+        result.to,
+        epicId,
+        row.state,
+      ]);
+      if (items.every((item) => item.state === "completed")) return;
+      const epicIssueId = this.epicIssueId(epicId);
+      if (
+        epicIssueId &&
+        items.every((item) => item.state === "merged") &&
+        this.taskAccess(items[0]!) &&
+        items.every((item) => getLinearTaskDelegation(this.db, item.id, epicIssueId)?.humanActorId)
+      )
+        this.postStatus(items.at(-1)!, "completed", epicIssueId);
+      const session =
+        epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
+      if (session === null) return;
+      const identifiers = items.map((item) => item.linearIdentifier).join(", ");
+      const results = items.flatMap((item) => {
+        const finalText =
+          item.currentRunId && getRun(this.db, item.currentRunId)?.checkpoint?.resultBody;
+        return finalText ? [`${item.linearIdentifier}: ${finalText}`] : [];
+      });
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: session,
+        idempotencyKey: `epic-done:${epicId}`,
+        payload: {
+          sessionId: session,
+          kind: "response",
+          body: [`Epic complete. Merged ${identifiers}.`, ...results].join("\n\n"),
+        },
+        now: this.now(),
+      });
     });
   }
 
