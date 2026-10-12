@@ -28,12 +28,14 @@ function created(): AcceptedLinearEvent {
   };
 }
 
-for (const body of ["Picked up this issue.", "Picked up ENG-1."]) {
-  test(`Stop fences a deferred ${body} before the final activity`, async () => {
+for (const [body, existing] of [
+  ["Picked up this issue.", true],
+  ["Picked up ENG-1.", false],
+] as const) {
+  test(`Stop fences a deferred ${body} before the final activity, existing task: ${existing}`, async () => {
     const db = tempDb();
     const home = tempHome();
-    if (body === "Picked up this issue.")
-      insertQueuedItem(db, { id: "existing", sessionKey: "session" });
+    if (existing) insertQueuedItem(db, { id: "existing", sessionKey: "session" });
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -208,3 +210,89 @@ test("an old prompted intake failure cannot terminate a newer session generation
     db.close();
   }
 });
+
+test.each([false, true])(
+  "prompted intake failure uses its own accepted generation, superseded: %s",
+  async (superseded) => {
+    const db = tempDb();
+    const home = tempHome();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "issue",
+        identifier: "ENG-1",
+        title: "Task",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const orchestrator = attachOrchestrator({
+      db,
+      pawsRoot: home,
+      tracker,
+      outbox,
+      jobs: new JobLoop(db, systemClock),
+    });
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const load = tracker.loadEpic.bind(tracker);
+    let reads = 0;
+    tracker.loadEpic = async (issueId) => {
+      if (++reads === 1) {
+        ready.resolve();
+        await release.promise;
+        throw new Error("failed prompted intake");
+      }
+      return load(issueId);
+    };
+    const linear = openLinear({
+      db,
+      secretsDir: join(home, "secrets"),
+      env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
+      publicUrl: null,
+      progressReporter: (event) => orchestrator.sessionProgressReporter(event),
+      followUp: (event) => orchestrator.onLinearEvent(event),
+    });
+    const prompt = {
+      ...created(),
+      action: "prompted" as const,
+      dedupeKey: "failed-prompt",
+      activityId: "failed-prompt",
+      body: "First request",
+    };
+    const old = Promise.resolve(linear.webhook.onEvent!(prompt)).catch((error: unknown) => error);
+    let next: Promise<unknown> | undefined;
+    try {
+      await ready.promise;
+      if (superseded)
+        next = Promise.resolve(
+          linear.webhook.onEvent!({
+            ...prompt,
+            dedupeKey: "newer-prompt",
+            activityId: "newer-prompt",
+            body: "Newer request",
+            updatedAtMs: 2,
+          }),
+        );
+      release.resolve();
+      await old;
+      await next;
+      const error = listOutbox(db).find(
+        (row) => (row.payload as { kind?: string }).kind === "error",
+      );
+      expect(error?.generation).toBe(1);
+      expect(error?.status).toBe(superseded ? "dropped" : "sent");
+      expect(tracker.progress.filter((update) => update.kind === "error")).toHaveLength(
+        superseded ? 0 : 1,
+      );
+      if (superseded)
+        expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
+    } finally {
+      release.resolve();
+      await old;
+      await next;
+      await orchestrator.shutdown();
+      db.close();
+    }
+  },
+);
