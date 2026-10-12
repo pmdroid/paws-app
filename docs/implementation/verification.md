@@ -20,7 +20,7 @@ bun run paws doctor
 bun run paws
 ```
 
-The [local smoke test](https://github.com/pmdroid/paws-app/blob/07d8458de8f9e1579eaee626396d4573baf1a4da/docs/smoke-test.md) provides the setup and expected issue conversation. Use the [project verification skill](https://github.com/pmdroid/paws-app/tree/07d8458de8f9e1579eaee626396d4573baf1a4da/.agents/skills/verify-paws) for disposable instances, scripted agents, fake trackers, real SQLite, worktrees, and local merge proof.
+The [local smoke test](https://github.com/pmdroid/paws-app/blob/727ebfed11d9883a6143b11d38e38ea87298133f/docs/smoke-test.md) provides the setup and expected issue conversation. Use the [project verification skill](https://github.com/pmdroid/paws-app/tree/07d8458de8f9e1579eaee626396d4573baf1a4da/.agents/skills/verify-paws) for disposable instances, scripted agents, fake trackers, real SQLite, worktrees, and local merge proof.
 
 ## Prove the feature where it runs
 

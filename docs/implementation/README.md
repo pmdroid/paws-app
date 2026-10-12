@@ -10,12 +10,12 @@ This implementation reference follows the source changes linked on each page. Th
 
 ## Start here
 
-| Question                                                 | Read                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------ |
-| What happens after I delegate an issue?                  | [The execution loop](execution.md)                     |
-| Who can sign in, administer a workspace, or pair a host? | [The control plane](control-plane.md)                  |
-| How does the VM connect, fetch code, and run an agent?   | [Remote Linux hosts](remote-hosts.md)                  |
-| How do we prove a change works?                          | [Verification and implementation map](verification.md) |
+| Question                                                 | Read                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------- |
+| What happens after I delegate an issue?                  | [The execution loop](execution.html)                     |
+| Who can sign in, administer a workspace, or pair a host? | [The control plane](control-plane.html)                  |
+| How does the VM connect, fetch code, and run an agent?   | [Remote Linux hosts](remote-hosts.html)                  |
+| How do we prove a change works?                          | [Verification and implementation map](verification.html) |
 
 ## Linear is the working interface
 
@@ -39,6 +39,6 @@ The control plane owns the decision to accept and publish a candidate. A runner'
 
 ## Reading the implementation
 
-The local workflow is documented in the repository's [smoke test](https://github.com/pmdroid/paws-app/blob/07d8458de8f9e1579eaee626396d4573baf1a4da/docs/smoke-test.md). Workspace access is described by [PR 238](https://github.com/pmdroid/paws-app/pull/238). Remote host contracts are documented by the [runner protocol](https://github.com/pmdroid/paws-app/pull/207), [repository handling](https://github.com/pmdroid/paws-app/pull/227), [installer](https://github.com/pmdroid/paws-app/pull/244), [agent login bootstrap](https://github.com/pmdroid/paws-app/pull/245), [results and questions](https://github.com/pmdroid/paws-app/pull/247), and [health ledger](https://github.com/pmdroid/paws-app/pull/249).
+The local workflow is documented in the repository's [smoke test](https://github.com/pmdroid/paws-app/blob/727ebfed11d9883a6143b11d38e38ea87298133f/docs/smoke-test.md). Workspace access is described by [PR 238](https://github.com/pmdroid/paws-app/pull/238). Remote host contracts are documented by the [runner protocol](https://github.com/pmdroid/paws-app/pull/207), [repository handling](https://github.com/pmdroid/paws-app/pull/227), [installer](https://github.com/pmdroid/paws-app/pull/244), [agent login bootstrap](https://github.com/pmdroid/paws-app/pull/245), [results and questions](https://github.com/pmdroid/paws-app/pull/247), and [health ledger](https://github.com/pmdroid/paws-app/pull/249).
 
-The [implementation map](verification.md#implementation-map) connects those contracts to their owning modules. Milestone progress and acceptance decisions are recorded in the [project tracker](https://github.com/pmdroid/paws-planning/issues).
+The [implementation map](verification.html#implementation-map) connects those contracts to their owning modules. Milestone progress and acceptance decisions are recorded in the [project tracker](https://github.com/pmdroid/paws-planning/issues).

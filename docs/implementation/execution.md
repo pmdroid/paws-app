@@ -40,4 +40,4 @@ Trusted check inputs and the evaluator are separate responsibilities. The truste
 
 The publication path checks the candidate's identity and repository binding before pushing the Paws branch. The control plane opens the GitHub pull request and applies its verification and merge guards. A serial merge path prevents concurrent merge attempts from racing the target branch.
 
-Paws reports the outcome to Linear. Merging an item can unblock the next dependent item. The [smoke test](https://github.com/pmdroid/paws-app/blob/07d8458de8f9e1579eaee626396d4573baf1a4da/docs/smoke-test.md) exercises a three-issue dependency chain, one question, a failed verification followed by repair, and pull request merges.
+Paws reports the outcome to Linear. Merging an item can unblock the next dependent item. The [smoke test](https://github.com/pmdroid/paws-app/blob/727ebfed11d9883a6143b11d38e38ea87298133f/docs/smoke-test.md) exercises a three-issue dependency chain, one question, a failed verification followed by repair, and pull request merges.
