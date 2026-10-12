@@ -1,0 +1,350 @@
+import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  watch,
+  existsSync,
+  rmSync,
+} from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { git } from "../../src/acp";
+import { runGitHubGit } from "../../src/github";
+import { createRunnerRepositories } from "../../src/runner-repositories";
+import type { RunnerCommand } from "../../src/runner-protocol";
+
+export async function probeRunnerRepositories(
+  root: string,
+  observe: (name: string, passed: boolean, observed: unknown) => void,
+) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const home = join(root, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const env = {
+    PATH: "/usr/bin:/bin",
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  };
+  const invoke = (args: string[]) => git(args, { env });
+  const source = join(root, "source");
+  const origin = join(root, "origin.git");
+  await invoke(["init", "-b", "main", source]);
+  writeFileSync(join(source, "base.txt"), "base\n");
+  await invoke(["-C", source, "add", "."]);
+  await invoke(["-C", source, "commit", "-m", "base"]);
+  const baseSha = (await invoke(["-C", source, "rev-parse", "HEAD"])).trim();
+  await invoke(["clone", "--bare", source, origin]);
+  const now = Date.now();
+  const command: Extract<RunnerCommand, { type: "run" }> = {
+    id: randomUUID(),
+    runnerId: "runner",
+    workspaceId: "workspace",
+    issuedAt: now,
+    expiresAt: now + 60_000,
+    type: "run",
+    runId: randomUUID(),
+    itemId: randomUUID(),
+    generation: 1,
+    repository: {
+      owner: "fixture",
+      repo: "repository",
+      remoteUrl: "https://github.com/fixture/repository.git",
+      baseSha,
+    },
+    profile: { agent: "claude", model: null },
+    prompt: "Implement the task.",
+  };
+  const gitBin = join(root, "recording-git");
+  const compiler = Bun.spawn(
+    [
+      process.execPath,
+      "build",
+      "--compile",
+      fileURLToPath(new URL("../fixtures/runner-git-recorder.ts", import.meta.url)),
+      "--outfile",
+      gitBin,
+    ],
+    { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+  );
+  const [compiled, compilationError] = await Promise.all([
+    compiler.exited,
+    new Response(compiler.stderr).text(),
+  ]);
+  assert.equal(compiled, 0, compilationError);
+  const calls: { operation: string; token: string; args: string[]; signal?: AbortSignal }[] = [];
+  const options = {
+    root: join(root, "cache"),
+    home,
+    async credential(job: RunnerCommand, access: "read" | "write") {
+      assert.equal("runId" in job ? job.runId : null, command.runId);
+      return `fixture-${access}`;
+    },
+    async networkGit(input: {
+      operation: "clone" | "fetch" | "push";
+      remoteUrl: string;
+      token: string;
+      cwd: string;
+      dest?: string;
+      refspec?: string;
+      env: NodeJS.ProcessEnv;
+      signal?: AbortSignal;
+    }) {
+      assert.equal(input.remoteUrl, command.repository.remoteUrl);
+      assert.equal(input.env.HOME, home);
+      assert(!Object.values(input.env).includes(input.token));
+      const args =
+        input.operation === "clone"
+          ? ["clone", "--bare", origin, input.dest!]
+          : input.operation === "fetch"
+            ? ["--git-dir", input.dest!, "fetch", origin, "+refs/heads/*:refs/heads/*"]
+            : ["--git-dir", input.cwd, "push", origin, input.refspec!];
+      assert(!args.some((value) => value.includes(input.token)));
+      calls.push({ operation: input.operation, token: input.token, args, signal: input.signal });
+      await runGitHubGit({ ...input, remoteUrl: origin, gitBin });
+    },
+  };
+  const retryRoot = join(root, "clone-retry");
+  let firstClone = true;
+  const retryOptions = {
+    ...options,
+    root: retryRoot,
+    async networkGit(input: Parameters<NonNullable<typeof options.networkGit>>[0]) {
+      assert.equal(input.operation, "clone");
+      if (firstClone) {
+        firstClone = false;
+        mkdirSync(input.dest!, { mode: 0o700 });
+        writeFileSync(join(input.dest!, "partial"), "interrupted clone");
+        throw new DOMException("Interrupted clone", "AbortError");
+      }
+      await options.networkGit(input);
+    },
+  };
+  const retryMirror = join(
+    retryRoot,
+    `${createHash("sha256").update("fixture/repository").digest("hex")}.git`,
+  );
+  await assert.rejects(
+    createRunnerRepositories(retryOptions).prepare(command),
+    /Interrupted clone/,
+  );
+  assert.equal(existsSync(retryMirror), false);
+  const recoveredClone = await createRunnerRepositories(retryOptions).prepare(command);
+  assert.equal(
+    (
+      await invoke(["--git-dir", recoveredClone.mirror, "rev-parse", "--is-bare-repository"])
+    ).trim(),
+    "true",
+  );
+  rmSync(retryMirror, { recursive: true });
+  mkdirSync(retryMirror, { mode: 0o700 });
+  writeFileSync(join(retryMirror, "legacy-partial"), "interrupted clone");
+  const recoveredLegacy = await createRunnerRepositories(retryOptions).prepare(command);
+  assert.equal(
+    (
+      await invoke(["--git-dir", recoveredLegacy.mirror, "rev-parse", "--is-bare-repository"])
+    ).trim(),
+    "true",
+  );
+  calls.length = 0;
+  observe(
+    "interrupted and legacy partial clones recover with a fresh adapter and real Git clone",
+    true,
+    { failedCloneUnpublished: true, legacyPartialRecloned: true },
+  );
+  const repositories = createRunnerRepositories(options);
+  const prepared = await repositories.prepare(command);
+  assert.equal(statSync(prepared.bundle).mode & 0o777, 0o600);
+  assert.equal(calls[0]?.token, "fixture-read");
+  const tree = join(root, "worker-checkout");
+  await invoke(["clone", "--no-checkout", prepared.bundle, tree]);
+  await invoke(["-C", tree, "checkout", "-b", "candidate", baseSha]);
+  assert.equal(readFileSync(join(tree, "base.txt"), "utf8"), "base\n");
+  observe(
+    "daemon fetches an assigned repository and prepares a private exact-base Git bundle",
+    true,
+    { baseSha, bundleMode: "0600", operation: calls[0]?.operation },
+  );
+  writeFileSync(join(tree, "candidate.txt"), "change\n");
+  await invoke(["-C", tree, "add", "."]);
+  await invoke(["-C", tree, "commit", "-m", "candidate"]);
+  const sha = (await invoke(["-C", tree, "rev-parse", "HEAD"])).trim();
+  const bundle = join(root, "candidate.bundle");
+  await invoke(["-C", tree, "bundle", "create", bundle, "HEAD", `^${baseSha}`]);
+  const candidate = { bundle: readFileSync(bundle), sha, branch: "paws/fixture-task" };
+  await repositories.publish(command, candidate);
+  assert.equal(
+    (await invoke(["--git-dir", origin, "rev-parse", `refs/heads/${candidate.branch}`])).trim(),
+    sha,
+  );
+  assert.equal(calls.at(-1)?.token, "fixture-write");
+  observe(
+    "daemon validates candidate ancestry and pushes the exact candidate with a separate write credential",
+    true,
+    { sha, branch: candidate.branch },
+  );
+  await createRunnerRepositories(options).publish(command, candidate);
+  assert.equal(
+    (await invoke(["--git-dir", origin, "rev-parse", `refs/heads/${candidate.branch}`])).trim(),
+    sha,
+  );
+  observe(
+    "a rebuilt repository adapter retries the same candidate against its unchanged durable cache",
+    true,
+    {
+      replayedSha: sha,
+    },
+  );
+  const pushes = calls.filter((call) => call.operation === "push").length;
+  await assert.rejects(
+    repositories.publish(command, { ...candidate, sha: "f".repeat(40) }),
+    /does not match/,
+  );
+  await assert.rejects(repositories.publish(command, { ...candidate, branch: "main" }), /Invalid/);
+  await assert.rejects(repositories.publish({ ...command, type: "review" }, candidate), /Review/);
+  assert.equal(calls.filter((call) => call.operation === "push").length, pushes);
+  observe(
+    "mismatched candidate identity, protected branches and reviewer publication fail before push",
+    true,
+    { rejected: 3, pushes },
+  );
+  const headerEnd = candidate.bundle.indexOf("\n\n");
+  assert(headerEnd > 0);
+  const extraRefs = Array.from(
+    { length: 12_000 },
+    (_, index) => `${sha} refs/heads/fixture-${index}-${"x".repeat(900)}\n`,
+  ).join("");
+  const verboseBundle = Buffer.concat([
+    candidate.bundle.subarray(0, headerEnd + 1),
+    Buffer.from(extraRefs),
+    candidate.bundle.subarray(headerEnd + 1),
+  ]);
+  const beforeVerbose = calls.length;
+  await assert.rejects(
+    repositories.publish(
+      command,
+      { ...candidate, bundle: verboseBundle },
+      AbortSignal.timeout(10_000),
+    ),
+    /Git output exceeds limit/,
+  );
+  assert.equal(calls.length, beforeVerbose);
+  observe("oversized candidate Git output is bounded before requesting a write credential", true, {
+    bundleBytes: verboseBundle.length,
+    refCount: 12_000,
+    networkCallsUnchanged: true,
+  });
+  writeFileSync(join(source, "new.txt"), "updated remote\n");
+  await invoke(["-C", source, "add", "."]);
+  await invoke(["-C", source, "commit", "-m", "remote update"]);
+  const updatedSha = (await invoke(["-C", source, "rev-parse", "HEAD"])).trim();
+  await invoke(["-C", source, "push", origin, "main"]);
+  const updated = await repositories.prepare({
+    ...command,
+    repository: { ...command.repository, baseSha: updatedSha },
+  });
+  assert.equal(updated.mirror, prepared.mirror);
+  assert(calls.some((call) => call.operation === "fetch"));
+  await invoke(["--git-dir", updated.mirror, "cat-file", "-e", `${updatedSha}^{commit}`]);
+  observe("subsequent assignments fetch repository updates into the existing daemon mirror", true, {
+    updatedSha,
+    sameMirror: true,
+  });
+  await assert.rejects(
+    repositories.prepare({
+      ...command,
+      repository: { ...command.repository, baseSha: "f".repeat(40) },
+    }),
+  );
+  const interrupted = { ...command, id: randomUUID() };
+  const abort = new AbortController();
+  let interruptedSnapshot = "";
+  const watcher = watch(options.root, (_event, filename) => {
+    if (
+      filename?.startsWith("snapshot-") &&
+      filename.endsWith(".bundle") &&
+      existsSync(join(options.root, filename))
+    ) {
+      interruptedSnapshot = join(options.root, filename);
+      abort.abort();
+    }
+  });
+  try {
+    await assert.rejects(repositories.prepare(interrupted, abort.signal));
+    assert.equal(calls.at(-1)?.signal, abort.signal);
+    assert(interruptedSnapshot);
+    assert.equal(existsSync(interruptedSnapshot), false);
+  } finally {
+    watcher.close();
+  }
+
+  const blocked = { ...command, id: randomUUID() };
+  const blockedHash = createHash("sha256").update(blocked.id).digest("hex");
+  const blockedRef = `paws-snapshot-${blockedHash}`;
+  const lock = join(prepared.mirror, "refs", "heads", `${blockedRef}.lock`);
+  const blockedSnapshot = join(options.root, `snapshot-${blockedHash}.bundle`);
+  const lockWatcher = watch(options.root, (_event, filename) => {
+    if (filename === `snapshot-${blockedHash}.bundle` && !existsSync(lock))
+      writeFileSync(lock, "fixture lock", { flag: "wx", mode: 0o600 });
+  });
+  try {
+    await assert.rejects(repositories.prepare(blocked));
+    assert(existsSync(lock));
+    assert.equal(existsSync(blockedSnapshot), false);
+  } finally {
+    lockWatcher.close();
+    rmSync(lock, { force: true });
+    await invoke(["--git-dir", prepared.mirror, "update-ref", "-d", `refs/heads/${blockedRef}`]);
+  }
+  const refAbortCommand = { ...command, id: randomUUID() };
+  const refAbortHash = createHash("sha256").update(refAbortCommand.id).digest("hex");
+  const refAbortName = `paws-snapshot-${refAbortHash}`;
+  const refAbort = new AbortController();
+  let refObserved = false;
+  const refWatcher = watch(join(prepared.mirror, "refs", "heads"), (_event, filename) => {
+    if (filename === refAbortName && existsSync(join(prepared.mirror, "refs", "heads", filename))) {
+      refObserved = true;
+      refAbort.abort();
+    }
+  });
+  try {
+    await assert.rejects(repositories.prepare(refAbortCommand, refAbort.signal));
+    assert.equal(calls.at(-1)?.signal, refAbort.signal);
+    assert(refObserved);
+    assert.equal(existsSync(join(prepared.mirror, "refs", "heads", refAbortName)), false);
+    assert.equal(existsSync(join(options.root, `snapshot-${refAbortHash}.bundle`)), false);
+  } finally {
+    refWatcher.close();
+  }
+  observe(
+    "snapshot cleanup failures and aborts during ref creation leave no disposable bundle",
+    true,
+    {
+      failedCleanupSnapshotRemoved: true,
+      refCreationAbortRemovedRef: true,
+    },
+  );
+  assert(!JSON.stringify(command).includes("fixture-read"));
+  assert(!JSON.stringify(command).includes("fixture-write"));
+  assert(!JSON.stringify(calls.map((call) => call.args)).includes("fixture-read"));
+  const actualArgv = readFileSync(`${gitBin}.jsonl`, "utf8");
+  assert(actualArgv.includes('"push"'));
+  assert(!actualArgv.includes("fixture-read") && !actualArgv.includes("fixture-write"));
+  observe(
+    "missing bases and interrupted snapshots fail closed without credentials in jobs or recorded production Git argv",
+    true,
+    {
+      missingBaseDenied: true,
+      interruptedSnapshotRemoved: true,
+      credentialFreeJob: true,
+      productionArgvCaptured: true,
+    },
+  );
+}
