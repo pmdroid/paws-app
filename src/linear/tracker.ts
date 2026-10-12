@@ -1,6 +1,9 @@
+import { createLinearAttachmentMethods } from "./attachments";
+import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
+import { createLinearRepositoryMethods, type LinearRepositoryAdapter } from "./repositories";
 import { isRecord, readNumber, readString } from "./read";
 import type { DependencyEdge, EpicSnapshot, LinearSubIssue, StatusUpdate } from "./types";
 
@@ -48,10 +51,15 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
   canceled: ["Canceled", "Cancelled"],
 };
 
-export function createLinearTracker(client: LinearClient): LinearSessionAdapter {
+export function createLinearTracker(
+  client: LinearClient,
+): LinearSessionAdapter & ReturnType<typeof createLinearSessionReads> & LinearRepositoryAdapter {
   const sessions = createLinearSessionMethods(client);
   return {
+    supportsActivityReconciliation: true,
     ...sessions,
+    ...createLinearRepositoryMethods(client),
+    ...createLinearAttachmentMethods(client),
     async loadEpic(linearIssueId) {
       const children: Array<LinearSubIssue & { sort: number | null }> = [];
       let after: string | null = null;

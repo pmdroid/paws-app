@@ -27,7 +27,7 @@ const NOW = 1_700_000_000_000;
 const TEAM = "team_1";
 
 describe("linear intake poll", () => {
-  test("binds the latest own session without any agent activities", async () => {
+  test("preserves every own active session without any agent activities", async () => {
     const db = tempDb();
     const seen: AcceptedLinearEvent[] = [];
     const { client } = scripted(() => ({
@@ -65,10 +65,10 @@ describe("linear intake poll", () => {
       now: () => NOW,
     });
     await waitFor(() => seen.length > 0);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
-    expect(seen.map((event) => event.sessionId)).toEqual(["session-new"]);
+    expect(seen.map((event) => event.sessionId)).toEqual(["session-old", "session-new"]);
   });
 
   test.each([true, false])(
@@ -99,7 +99,7 @@ describe("linear intake poll", () => {
       await waitFor(() => seen.length > 0);
       await poller.pollNow();
       await poller.pollNow();
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       db.close();
       expect(seen.map((event) => event.sessionId)).toEqual([null, "session-late"]);
@@ -153,7 +153,7 @@ describe("linear intake poll", () => {
     gate.release?.();
     await waitFor(() => waits.length > 1);
     expect(waits[1]).toBe(POLL_INTERVAL_ACTIVE_MS);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
   });
@@ -186,7 +186,7 @@ describe("linear intake poll", () => {
     expect(polls).toBe(1);
     expect(seen.sort()).toEqual(["iss_delegate", "iss_label"]);
     expect(store.getCursor("linear")).toBe(NOW);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
   });
@@ -221,7 +221,7 @@ describe("linear intake poll", () => {
     });
     await waitFor(() => identifiers.length === 3);
     expect(identifiers).toEqual(["ENG-2", "ENG-3", "ENG-4"]);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
   });
@@ -248,7 +248,7 @@ describe("linear intake poll", () => {
       now: () => NOW,
     });
     await waitFor(() => seen.length === 1 && store.getCursor("linear") === NOW);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
 
     const cursor = store.getCursor("linear");
@@ -271,7 +271,7 @@ describe("linear intake poll", () => {
     expect(seen).toEqual(["issue:iss_dup:intake"]);
     const rows = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
     expect(rows?.n).toBe(1);
-    again.stop();
+    await again.stop();
     await again.settled;
     db.close();
   });
@@ -341,7 +341,7 @@ describe("linear intake poll", () => {
     expect(seen).toEqual(["iss_later"]);
     expect(poller.budget()).toMatchObject({ complexity: 12, requestsRemaining: 1490 });
     expect(store.getCursor("linear")).toBe(NOW);
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
   });
@@ -408,7 +408,7 @@ describe("linear intake poll", () => {
     if (item === null) throw new Error("missing work item");
     expect(commands.some((command) => command.itemId === item.id)).toBe(true);
     expect(new Set(commands.map((command) => command.itemId))).toEqual(new Set([item.id]));
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
   });
@@ -452,7 +452,7 @@ describe("linear intake poll", () => {
     expect(running.tunnelRequested).toBe(false);
     expect(running.tunnelUp()).toBe(false);
     expect(spawned).toEqual([]);
-    running.stop();
+    await running.stop();
     db.close();
   });
 
@@ -483,7 +483,7 @@ describe("linear intake poll", () => {
     const running = linear.start(8787);
     expect(running.tunnelRequested).toBe(true);
     expect(spawned).toEqual([["ngrok", "http", "--url=https://demo.ngrok-free.app", "8787"]]);
-    running.stop();
+    await running.stop();
     db.close();
   });
 });
@@ -668,3 +668,166 @@ async function waitFor(ready: () => boolean): Promise<void> {
     await Bun.sleep(10);
   }
 }
+
+test("stopping joins a manual Linear poll before its final SQLite write", async () => {
+  const db = tempDb();
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let polls = 0;
+  const store = createInboxStore(db);
+  const poller = startCatchUpPoller({
+    db,
+    store,
+    onEvent() {},
+    sleeper: blockedSleeper(),
+    source: {
+      async poll() {
+        if (++polls === 2) {
+          ready.resolve();
+          await release.promise;
+        }
+        return {
+          sessions: [],
+          issues: [],
+          comments: [],
+          activities: [],
+          budget: null,
+          caughtUp: true,
+          queried: true,
+        };
+      },
+    },
+  });
+  try {
+    await waitFor(() => polls === 1 && store.getCursor("linear") !== null);
+    const manual = poller.pollNow();
+    await ready.promise;
+    let stopped = false;
+    const stopping = poller.stop().then(() => {
+      stopped = true;
+    });
+    await Bun.sleep(5);
+    expect(stopped).toBe(false);
+    expect(store.getCursor("linear")).toBeNumber();
+    release.resolve();
+    await stopping;
+    await manual;
+    expect(stopped).toBe(true);
+    await poller.pollNow();
+    expect(polls).toBe(2);
+  } finally {
+    release.resolve();
+    await poller.stop();
+    db.close();
+  }
+});
+
+test("Linear runtime stop joins accepted events and rejects new handlers before SQLite closes", async () => {
+  const db = tempDb();
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const linear = openLinear({
+    db,
+    secretsDir: join(tempHome(), "secrets"),
+    env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
+    publicUrl: null,
+    fetch: async () => json(emptyData()),
+    followUp: async () => {
+      ready.resolve();
+      await release.promise;
+      db.run("UPDATE inbox_event SET handled = 1 WHERE dedupe_key = 'accepted'");
+    },
+  });
+  const running = linear.start(0);
+  const event: AcceptedLinearEvent = {
+    dedupeKey: "accepted",
+    deliveryId: null,
+    source: "webhook",
+    action: "prompted",
+    sessionId: "session",
+    issueId: "issue",
+    activityId: "activity",
+    body: "Request",
+    signal: null,
+    updatedAtMs: 1,
+    payload: "{}",
+  };
+  linear.webhook.store.commit(event);
+  const accepted = Promise.resolve(linear.webhook.onEvent!(event));
+  try {
+    await ready.promise;
+    let stopped = false;
+    const stopping = running.stop().then(() => {
+      stopped = true;
+    });
+    await Bun.sleep(5);
+    expect(stopped).toBe(false);
+    await expect(
+      Promise.resolve(linear.webhook.onEvent!({ ...event, dedupeKey: "new" })),
+    ).rejects.toThrow("shutting down");
+    release.resolve();
+    await accepted;
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(linear.webhook.store.listUnhandled()).toEqual([]);
+  } finally {
+    release.resolve();
+    await accepted;
+    await running.stop();
+    db.close();
+  }
+});
+
+test("a synchronous Linear adapter Stop joins the poll before SQLite can close", async () => {
+  const db = tempDb();
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const store = createInboxStore(db);
+  let polls = 0;
+  let stopped = false;
+  let stopping: Promise<void> | undefined;
+  const poller = startCatchUpPoller({
+    db,
+    store,
+    onEvent() {},
+    sleeper: blockedSleeper(),
+    source: {
+      async poll() {
+        if (++polls === 2) {
+          stopping = poller.stop().then(() => {
+            stopped = true;
+          });
+          ready.resolve();
+          await release.promise;
+        }
+        return {
+          sessions: [],
+          issues: [],
+          comments: [],
+          activities: [],
+          budget: null,
+          caughtUp: true,
+          queried: true,
+        };
+      },
+    },
+  });
+  let manual: Promise<void> | undefined;
+  try {
+    await waitFor(() => polls === 1 && store.getCursor("linear") !== null);
+    manual = poller.pollNow();
+    await ready.promise;
+    await Bun.sleep(5);
+    expect(stopped).toBe(false);
+    release.resolve();
+    await stopping;
+    await manual;
+    expect(stopped).toBe(true);
+    expect(store.getCursor("linear")).toBeNumber();
+  } finally {
+    release.resolve();
+    await manual;
+    await poller.stop();
+    db.close();
+  }
+});

@@ -65,6 +65,7 @@ export async function loginGitHubApp(options: LoginIO): Promise<{ login: string;
     clientId: app.clientId,
     clientSecret: app.clientSecret,
     fetch: fetchImpl,
+    ...(options.signal ? { signal: options.signal } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     async onAuthorize(url) {

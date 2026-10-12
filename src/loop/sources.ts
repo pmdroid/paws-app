@@ -13,8 +13,16 @@ export function isGitHubIssue(id: string): boolean {
  * GitHub ids use the same `gh-<owner>-<repo>-<n>` key the pull request push uses.
  * Linear identifiers are already a single path segment.
  */
-export function itemPathId(item: { linearIssueId: string; linearIdentifier: string }): string {
-  return githubBranchKey(item.linearIssueId) ?? item.linearIdentifier;
+export function itemPathId(item: {
+  id?: string;
+  taskKey?: string | null;
+  linearIssueId: string;
+  linearIdentifier: string;
+}): string {
+  const name = githubBranchKey(item.linearIssueId) ?? item.linearIdentifier;
+  return item.id && item.taskKey && !item.taskKey.startsWith("initial:")
+    ? `${name.slice(0, 54)}-${item.id}`
+    : name;
 }
 
 /** Issue argument for `publishAccepted`. GitHub keeps the `github:` id so the body is `Closes #n`. */
@@ -38,17 +46,30 @@ export function routeBySource(input: {
     }
     return chosen;
   }
+  const linear = input.linear;
+  const updateSession = input.linear?.updateSession?.bind(input.linear);
   return {
+    ...(linear?.getSession ? { getSession: linear.getSession.bind(linear) } : {}),
+    ...(linear?.listSessionActivities
+      ? { listSessionActivities: linear.listSessionActivities.bind(linear) }
+      : {}),
+    ...(input.linear?.issueRepositorySuggestions
+      ? { issueRepositorySuggestions: input.linear.issueRepositorySuggestions.bind(input.linear) }
+      : {}),
+    ...(input.linear?.supportsActivityReconciliation
+      ? { supportsActivityReconciliation: true as const }
+      : {}),
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),
     askQuestion: (question, options) => pick(question.sessionId).askQuestion(question, options),
+    ...(updateSession ? { updateSession } : {}),
     setStatus: (update, options) => pick(update.linearIssueId).setStatus(update, options),
   };
 }
 
 export function worktreeBranch(
-  item: Pick<WorkItemRecord, "linearIssueId" | "linearIdentifier">,
+  item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
 ): string {
   return `paws/${itemPathId(item).toLowerCase()}`;
 }

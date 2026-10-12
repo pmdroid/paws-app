@@ -124,6 +124,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
 
   const mode = flags.linearMode ?? DEFAULT_LINEAR_MODE;
   const useLinear = tracker === "linear" || tracker === "both";
+  const reconnect = useLinear && mode === "agent-session" ? io.linearReconnect?.(home) : undefined;
   let linear: LinearSecrets | null = null;
   let team: { key: string; id: string } | null = null;
   let viewerId = "";
@@ -197,7 +198,13 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
 
   await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
 
-  if (linear !== null) writeLinearSecrets(paths.secretsDir, mode, linear);
+  if (linear !== null) {
+    const token = linearToken(linear);
+    const stored =
+      reconnect !== undefined &&
+      (await reconnect.complete({ clientId: linear.clientId ?? "", token }));
+    writeLinearSecrets(paths.secretsDir, mode, linear, token, stored);
+  }
   const webhookSecret = io.env.LINEAR_WEBHOOK_SECRET;
   if (webhookSecret) writeSecretFile(join(paths.secretsDir, "linear-webhook"), webhookSecret);
   const githubAuth = useGitHubApp ? "app" : tracker === "linear" ? "gh" : "oauth";
@@ -403,7 +410,13 @@ function inferenceEnv(env: NodeJS.ProcessEnv, repo: string | null): NodeJS.Proce
   return next;
 }
 
-function writeLinearSecrets(secretsDir: string, mode: LinearModeFlag, linear: LinearSecrets): void {
+function writeLinearSecrets(
+  secretsDir: string,
+  mode: LinearModeFlag,
+  linear: LinearSecrets,
+  token: StoredLinearToken,
+  stored: boolean,
+): void {
   if (mode === "comments") {
     writeSecretFile(join(secretsDir, "linear-api-key"), `${linear.apiSecret}\n`);
     return;
@@ -414,8 +427,13 @@ function writeLinearSecrets(secretsDir: string, mode: LinearModeFlag, linear: Li
     join(secretsDir, "linear-client.json"),
     `${JSON.stringify({ clientId, clientSecret })}\n`,
   );
+  if (!stored) writeLinearOAuth(linearTokenPath(secretsDir), token);
+}
+
+function linearToken(linear: LinearSecrets): StoredLinearToken {
+  if (linear.oauthToken !== undefined) return linear.oauthToken;
   const now = Date.now();
-  const token: StoredLinearToken = {
+  return {
     accessToken: linear.apiSecret,
     refreshToken: linear.refreshToken,
     expiresAtMs:
@@ -423,7 +441,6 @@ function writeLinearSecrets(secretsDir: string, mode: LinearModeFlag, linear: Li
     scope: LINEAR_APP_SCOPES,
     actor: LINEAR_ACTOR,
   };
-  writeLinearOAuth(linearTokenPath(secretsDir), linear.oauthToken ?? token);
 }
 
 function assertSecretMode(path: string): void {

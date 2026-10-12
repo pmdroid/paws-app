@@ -29,12 +29,13 @@ export interface GitHubClient {
     path: string;
     token: string;
     body?: unknown;
+    signal?: AbortSignal;
   }): Promise<GitHubResponse>;
 }
 
 export type GitExec = (
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv },
+  options: { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type AppCredentials = {

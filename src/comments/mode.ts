@@ -343,8 +343,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
 
   function isPaws(comment: IssueComment): boolean {
     if (written.has(comment.id)) return true;
-    if (selfDetection === "marker") return isPawsText(comment.body) || hasPawsMarker(comment.body);
-    if (comment.userId !== null && comment.userId === selfUserId) return true;
+    if (hasPawsMarker(comment.body)) return true;
     if (comment.botId !== null && comment.botId === selfUserId) return true;
     return isPawsText(comment.body);
   }
@@ -429,6 +428,13 @@ export function withCommentActivities(
   mode: Pick<TrackerAdapter, "postProgress" | "askQuestion">,
 ): TrackerAdapter {
   return {
+    ...(tracker.getSession ? { getSession: tracker.getSession.bind(tracker) } : {}),
+    ...(tracker.listSessionActivities
+      ? { listSessionActivities: tracker.listSessionActivities.bind(tracker) }
+      : {}),
+    ...(tracker.issueRepositorySuggestions
+      ? { issueRepositorySuggestions: tracker.issueRepositorySuggestions.bind(tracker) }
+      : {}),
     loadEpic: (linearIssueId) => tracker.loadEpic(linearIssueId),
     listDeps: (linearIssueId) => tracker.listDeps(linearIssueId),
     setStatus: (update) => tracker.setStatus(update),

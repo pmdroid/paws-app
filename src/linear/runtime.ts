@@ -2,9 +2,10 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
-import type { TrackerAdapter } from "./adapter";
+import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
+import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { createLinearClient } from "./graphql";
 import { createInboxStore } from "./inbox";
 import {
@@ -24,19 +25,24 @@ import { createLinearTracker } from "./tracker";
 import { createSessionStarter } from "./start-session";
 import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunnel";
 import type { LinearWebhookDeps } from "./webhook";
+import { createLinearAccessReads, type LinearAccessReads } from "./access";
+import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
   tunnelUp: () => boolean;
   tunnelRequested: boolean;
   tunnelUrl: string | null;
-  stop: () => void;
+  stop: () => Promise<void>;
 };
 
 export type OpenLinear = {
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
   startSession: ReturnType<typeof createSessionStarter> | null;
+  files: LinearFileTransfer | null;
+  access: LinearAccessReads | null;
+  issueLifecycle: LinearIssueLifecycle | null;
   start(port: number): LinearRunning;
 };
 
@@ -54,9 +60,12 @@ export function openLinear(options: {
   env: EnvSource;
   publicUrl: string | null;
   noTunnel?: boolean;
+  isAuthorized?: () => boolean;
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
-  followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>;
+  followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>;
+  beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
+  progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
   fetch?: FetchLike;
@@ -64,6 +73,7 @@ export function openLinear(options: {
 }): OpenLinear {
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(options.db);
+  const accessAllowed = options.isAuthorized ?? (() => true);
   const auth = createLinearAuth({
     db: options.db,
     tokenPath: linearTokenPath(options.secretsDir),
@@ -71,11 +81,17 @@ export function openLinear(options: {
     clientSecret: settings.clientSecret,
     bootstrapAccessToken: settings.accessToken,
     bootstrapRefreshToken: settings.refreshToken,
+    isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
   const tracker = client === null ? null : createLinearTracker(client);
-  const onEvent = tracker === null ? undefined : shareEvents(tracker, options.followUp);
+  const files =
+    client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
+  const onEvent =
+    tracker === null && options.beforeEvent === undefined
+      ? undefined
+      : shareEvents(tracker, options.followUp, options.beforeEvent, options.progressReporter);
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
@@ -84,6 +100,9 @@ export function openLinear(options: {
       client === null || onEvent === undefined
         ? null
         : createSessionStarter({ client, store, appUserId: settings.appUserId, onEvent }),
+    files,
+    access: client === null ? null : createLinearAccessReads(client, settings.clientId),
+    issueLifecycle: client === null ? null : createLinearIssueLifecycle(client),
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
@@ -95,26 +114,30 @@ export function openLinear(options: {
         authtoken: settings.ngrokAuthtoken,
         spawn: options.spawn,
       });
-      const poller = startPoller({
-        auth,
-        onEvent,
-        store,
-        tunnel,
-        fetchImpl: options.fetch,
-        db: options.db,
-        teamId: settings.teamId,
-        appUserId: settings.appUserId,
-        submitCommand:
-          options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
-      });
+      const poller = accessAllowed()
+        ? startPoller({
+            auth,
+            onEvent,
+            store,
+            tunnel,
+            fetchImpl: options.fetch,
+            db: options.db,
+            teamId: settings.teamId,
+            appUserId: settings.appUserId,
+            submitCommand:
+              options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
+          })
+        : null;
       running = {
         catchUp: () => poller?.pollNow() ?? Promise.resolve(),
         tunnelUp: () => tunnel.isUp(),
         tunnelRequested: tunnel.requested,
         tunnelUrl: tunnel.url,
-        stop() {
-          poller?.stop();
+        async stop() {
+          const polling = poller?.stop();
+          const events = onEvent?.close();
           tunnel.stop();
+          await Promise.all([polling, events]);
         },
       };
       return running;
@@ -122,25 +145,59 @@ export function openLinear(options: {
   };
 }
 
+function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptions | undefined {
+  return event.action === "created" && event.sessionId !== null && event.signal !== "stop"
+    ? { signal: AbortSignal.timeout(10_000) }
+    : undefined;
+}
+
 function shareEvents(
-  tracker: TrackerAdapter,
-  followUp: ((event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>) | undefined,
-): (event: AcceptedLinearEvent) => Promise<void> {
+  tracker: TrackerAdapter | null,
+  followUp:
+    | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>)
+    | undefined,
+  beforeEvent:
+    | ((event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>)
+    | undefined,
+  progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
+): ((event: AcceptedLinearEvent) => Promise<void>) & { close(): Promise<void> } {
   const inflight = new Map<string, Promise<void>>();
-  return (event) => {
+  let closed = false;
+  const deliver = (event: AcceptedLinearEvent) => {
+    if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
     const existing = inflight.get(event.dedupeKey);
     if (existing !== undefined) return existing;
-    const work = acknowledgeNewSession(
-      tracker,
-      event,
-      (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
-      { propagateFailure: true },
-    ).finally(() => {
+    const request = initialActivityRequest(event);
+    const reportProgress = progressReporter?.(event);
+    const work = (async () => {
+      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return;
+      request?.signal?.throwIfAborted();
+      if (tracker === null) {
+        if (event.signal === "stop") {
+          await followUp?.(event, null);
+          return;
+        }
+        throw new Error("Linear is not connected.");
+      }
+      const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
+      await acknowledgeNewSession(
+        acknowledger,
+        event,
+        (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
+        request,
+      );
+    })().finally(() => {
       inflight.delete(event.dedupeKey);
     });
     inflight.set(event.dedupeKey, work);
     return work;
   };
+  return Object.assign(deliver, {
+    async close() {
+      closed = true;
+      await Promise.allSettled([...inflight.values()]);
+    },
+  });
 }
 
 function openTunnel(options: {

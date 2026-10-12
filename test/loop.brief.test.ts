@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import { withCommentActivities } from "../src/comments";
 import { worktreePath } from "../src/acp";
 import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
 import { systemClock } from "../src/core";
@@ -20,7 +21,7 @@ import {
   type EpicSnapshot,
   type LinearClient,
 } from "../src/linear";
-import { attachOrchestrator } from "../src/loop";
+import { attachOrchestrator, routeBySource, itemPathId } from "../src/loop";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -42,7 +43,7 @@ items:
     failOn: P1
 `;
 
-for (const source of ["linear", "github"] as const) {
+for (const source of ["linear", "github", "linear-comments"] as const) {
   test(`${source} intake delivers a persisted body-only requirement to real implementation, fix and review prompts`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-brief-"));
     const seed = join(root, "seed");
@@ -69,6 +70,60 @@ for (const source of ["linear", "github"] as const) {
     const fake = startFakeGitHubRest();
     const snapshot = source === "github" ? await githubSnapshot(fake) : await linearSnapshot();
     const tracker = createFakeTracker([snapshot]);
+    if (source === "linear")
+      tracker.listSessionActivities = async () => [
+        {
+          id: "immutable-request",
+          sessionId: "brief-session",
+          createdAt: "2026-10-11T00:00:00Z",
+          updatedAt: "2026-10-11T00:00:00Z",
+          userId: "human",
+          content: { type: "prompt", body: "Immutable user followup" },
+          signal: null,
+          signalMetadata: null,
+          sourceCommentId: "mention",
+          ephemeral: false,
+        },
+      ];
+    if (source === "linear")
+      tracker.getSession = async () => ({
+        id: "brief-session",
+        status: "active",
+        createdAt: "2026-10-11T00:00:00Z",
+        updatedAt: "2026-10-11T00:00:00Z",
+        endedAt: null,
+        dismissedAt: null,
+        appUserId: "app",
+        creatorId: "human",
+        issue: {
+          id: "parent",
+          identifier: "ENG-1",
+          title: "Export epic",
+          description: "API issue snapshot",
+        },
+        comment: null,
+        sourceComment: {
+          id: "source",
+          body: "API source thread request",
+          createdAt: "2026-10-11T00:00:00Z",
+        },
+        summary: null,
+        plan: null,
+        context: null,
+        externalLinks: [],
+        pullRequest: null,
+      });
+    let sessionReadCalls = 0;
+    if (source === "linear-comments") {
+      tracker.getSession = async () => {
+        sessionReadCalls += 1;
+        throw new Error("Issue IDs cannot be queried as agent session IDs");
+      };
+      tracker.listSessionActivities = async () => {
+        sessionReadCalls += 1;
+        throw new Error("Comment tasks have no agent session activity history");
+      };
+    }
     const dbPath = join(root, "paws.db");
     let db = openDatabase(dbPath);
     migrate(db);
@@ -84,7 +139,8 @@ for (const source of ["linear", "github"] as const) {
       db,
       jobs,
       outbox,
-      tracker,
+      ...(source === "linear-comments" ? { channel: "comments" as const } : {}),
+      tracker: routeBySource({ linear: withCommentActivities(tracker, tracker), github: tracker }),
       repository,
       pawsRoot,
       home: process.env.HOME,
@@ -102,7 +158,15 @@ for (const source of ["linear", "github"] as const) {
         body: null,
         signal: null,
         updatedAtMs: 1,
-        payload: "{}",
+        payload:
+          source === "linear"
+            ? JSON.stringify({
+                promptContext: "Initial mention request",
+                agentSession: { comment: { id: "mention", body: "Comment instruction" } },
+                previousComments: [{ body: "Earlier discussion" }],
+                guidance: [{ body: "Team instruction", origin: { type: "team", id: "team" } }],
+              })
+            : "{}",
       });
       const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()?.id;
       expect(itemId).toBeDefined();
@@ -116,7 +180,11 @@ for (const source of ["linear", "github"] as const) {
         db,
         jobs,
         outbox,
-        tracker,
+        ...(source === "linear-comments" ? { channel: "comments" as const } : {}),
+        tracker: routeBySource({
+          linear: withCommentActivities(tracker, tracker),
+          github: tracker,
+        }),
         repository,
         pawsRoot,
         home: process.env.HOME,
@@ -134,25 +202,50 @@ for (const source of ["linear", "github"] as const) {
           `${JSON.stringify({ source, state: item?.state, prompts })}\n`,
         );
       for (const { prompt } of prompts.filter((entry) => entry.purpose !== "review")) {
+        if (source === "linear") {
+          for (const requirement of [
+            "Initial mention request",
+            "Comment instruction",
+            "Earlier discussion",
+            "Team instruction",
+            "Immutable user followup",
+            "API source thread request",
+            "API issue snapshot",
+          ])
+            expect(prompt).toContain(requirement);
+        }
         expect(prompt).toContain(childDescription);
         expect(prompt).toContain(parentDescription);
         expect(prompt).toContain(snapshot.linearIssueId);
         expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
       }
       for (const { prompt } of prompts.filter((entry) => entry.purpose === "review")) {
+        if (source === "linear") {
+          for (const requirement of [
+            "Initial mention request",
+            "Comment instruction",
+            "Earlier discussion",
+            "Team instruction",
+            "Immutable user followup",
+            "API source thread request",
+            "API issue snapshot",
+          ])
+            expect(prompt).toContain(requirement);
+        }
         expect(prompt).toContain(childDescription);
         expect(prompt).toContain(parentDescription);
         expect(prompt).toContain(snapshot.linearIssueId);
         expect(prompt).toContain(snapshot.subIssues[0]!.linearIssueId);
       }
       expect(item?.state, JSON.stringify(prompts)).toBe("merge_queue");
+      if (source === "linear-comments") expect(sessionReadCalls).toBe(0);
       expect(prompts.map((entry) => entry.purpose)).toEqual([
         "implement",
         "review",
         "fix",
         "review",
       ]);
-      const pathId = source === "github" ? "gh-acme-widgets-2" : "ENG-2";
+      const pathId = itemPathId(item!);
       expect(readFileSync(join(worktreePath(pawsRoot, pathId), "result.txt"), "utf8")).toBe(
         "BODY_ONLY_37_雪-fixed",
       );

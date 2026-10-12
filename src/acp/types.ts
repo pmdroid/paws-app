@@ -1,3 +1,4 @@
+import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
@@ -77,6 +78,12 @@ export interface RunAgentOptions {
   itemId: string;
   runId: string;
   prompt: string;
+  inputFiles?: readonly AgentInputFile[];
+  prepareInputFiles?: (input: {
+    workspace: string;
+    prompt: string;
+    signal: AbortSignal;
+  }) => Promise<{ prompt: string; inputFiles: readonly AgentInputFile[] }>;
   worktreePath: string;
   pawsRoot: string;
   home?: string;
@@ -129,8 +136,10 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
   owner: string;
   repo: string;
   remoteUrl: string;
+  networkGit?: (args: string[]) => Promise<string>;
   role?: AgentRole;
   startRef?: string;
+  promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
 }
 
 export interface ExecuteItemResult {

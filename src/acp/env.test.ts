@@ -245,7 +245,7 @@ test("host terminal child cannot inherit or reintroduce rejected environment", a
       [`HOME=${root}`, `PATH=${benign.PATH}`, "LANG=C.UTF-8"].sort(),
     );
   } finally {
-    terminals.release({ sessionId: "synthetic-session", terminalId });
+    await terminals.release({ sessionId: "synthetic-session", terminalId });
   }
 });
 

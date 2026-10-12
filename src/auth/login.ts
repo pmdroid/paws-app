@@ -15,6 +15,7 @@ import { loginGitHubApp } from "./github-app";
 import { loadRuntime } from "../config";
 
 export type LoginIO = {
+  signal?: AbortSignal;
   auth?: "oauth" | "gh" | "app";
   repo?: string | null;
   port?: number;
@@ -84,7 +85,14 @@ export function createDashboardGitHubAuth(options: LoginIO = {}): {
         ...(options.env ?? process.env),
         ...(options.home ? { PAWS_HOME: options.home } : {}),
       });
-      if ((options.auth ?? runtime.githubAuth) !== "app") return beginGitHubDevice(options);
+      if ((options.auth ?? runtime.githubAuth) !== "app")
+        return beginGitHubDevice({
+          ...options,
+          home: runtime.env.home,
+          env: options.env ?? process.env,
+          oauthClientId:
+            options.oauthClientId ?? runtime.file.oauthClientId ?? runtime.oauthClientId,
+        });
       const started = Promise.withResolvers<string>();
       const completed = loginGitHubApp({
         ...options,

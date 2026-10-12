@@ -44,7 +44,6 @@ describe("Linear session pagination", () => {
         if (event.sessionId !== null) seen.push(event.sessionId);
       },
       now: () => NOW,
-      sleeper: { wait: () => new Promise(() => {}), wake() {} },
     });
     try {
       await until(() => calls === 1);
@@ -54,12 +53,12 @@ describe("Linear session pagination", () => {
       expect(seen).toEqual(["ours"]);
       expect(store.getCursor("linear")).toBe(NOW);
     } finally {
-      poller.stop();
+      await poller.stop();
       db.close();
     }
   });
 
-  test("keeps the newest eligible session across pages with different connection lengths", async () => {
+  test("keeps every eligible session across pages with different connection lengths", async () => {
     let calls = 0;
     const client: LinearClient = {
       async query(_query, variables = {}) {
@@ -88,7 +87,7 @@ describe("Linear session pagination", () => {
     expect((await source.poll(NOW)).caughtUp).toBe(false);
     const second = await source.poll(NOW + 1_000);
     expect(second.caughtUp).toBe(false);
-    expect(second.sessions.map(({ id }) => id)).toEqual(["new"]);
+    expect(second.sessions.map(({ id }) => id)).toEqual(["new", "old"]);
     expect((await source.poll(NOW + 2_000)).caughtUp).toBe(true);
   });
 

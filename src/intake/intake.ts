@@ -41,28 +41,59 @@ export function cycleMessage(identifiers: readonly string[]): string {
 export async function intakeDelegatedIssue(
   db: Database,
   tracker: TrackerAdapter,
-  input: { linearIssueId: string; sessionId?: string | null; now?: number },
+  input: {
+    linearIssueId: string;
+    sessionId?: string | null;
+    now?: number;
+    taskKey?: string;
+    singleIssue?: boolean;
+    isCurrent?: () => boolean;
+    onAccepted?: (result: IntakeResult) => void;
+  },
 ): Promise<IntakeResult> {
   const now = input.now ?? Date.now();
-  const existing = readEpicByLinearId(db, input.linearIssueId);
-  if (existing !== null) return replay(db, existing);
-  const snapshot = await tracker.loadEpic(input.linearIssueId);
+  const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
+  const existing = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  if (existing !== null) {
+    const result = replay(db, existing);
+    input.onAccepted?.(result);
+    return result;
+  }
+  const loaded = await tracker.loadEpic(input.linearIssueId);
+  const snapshot = input.singleIssue ? { ...loaded, subIssues: [] } : loaded;
   const delegatedAlone = snapshot.subIssues.length === 0;
   const nodes = workNodes(snapshot);
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
+  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  const accepted = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  if (accepted !== null) {
+    const result = replay(db, accepted);
+    input.onAccepted?.(result);
+    return result;
+  }
   if (!ordered.ok) {
     const epic = insertStalledEpic(db, {
+      taskKey,
       linearIssueId: snapshot.linearIssueId,
       identifier: snapshot.identifier,
       title: snapshot.title,
       now,
     });
     const identifiers = ordered.remaining.map((node) => node.identifier);
+    const result = {
+      ok: false,
+      reason: "cycle",
+      epic,
+      identifiers,
+      alreadyExisted: false,
+    } as const;
+    input.onAccepted?.(result);
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
-    return { ok: false, reason: "cycle", epic, identifiers, alreadyExisted: false };
+    return result;
   }
   const saved = insertRunningQueue(db, {
+    taskKey,
     linearIssueId: snapshot.linearIssueId,
     identifier: snapshot.identifier,
     title: snapshot.title,
@@ -76,6 +107,8 @@ export async function intakeDelegatedIssue(
     edges,
     now,
   });
+  const result = { ok: true, epic: saved.epic, items: saved.items, alreadyExisted: false } as const;
+  input.onAccepted?.(result);
   await announce(
     tracker,
     input.sessionId,
@@ -85,7 +118,7 @@ export async function intakeDelegatedIssue(
       delegatedAlone,
     ),
   );
-  return { ok: true, epic: saved.epic, items: saved.items, alreadyExisted: false };
+  return result;
 }
 
 function issueBrief(issue: {

@@ -115,3 +115,40 @@ test("GitHub callback timeout aborts an exchange and releases the port", async (
   expect(signal?.aborted).toBe(true);
   await expect(fetch(callback)).rejects.toThrow();
 });
+
+test("revoking host authorization aborts the exchange and closes its callback", async () => {
+  const controller = new AbortController();
+  let callback = "";
+  const exchangeSignals: AbortSignal[] = [];
+  await expect(
+    authorizeGitHubApp({
+      clientId: "Iv1.fake-app",
+      clientSecret: "fake-secret",
+      port: 0,
+      signal: controller.signal,
+      fetch: async (_url, init) => {
+        const exchangeSignal = init!.signal!;
+        exchangeSignals.push(exchangeSignal);
+        controller.abort();
+        await new Promise((_, reject) => {
+          if (exchangeSignal.aborted) reject(exchangeSignal.reason);
+          else
+            exchangeSignal.addEventListener("abort", () => reject(exchangeSignal.reason), {
+              once: true,
+            });
+        });
+        throw new Error("unreachable");
+      },
+      async onAuthorize(link) {
+        const auth = new URL(link);
+        callback = auth.searchParams.get("redirect_uri")!;
+        const url = new URL(callback);
+        url.searchParams.set("state", auth.searchParams.get("state")!);
+        url.searchParams.set("code", "fake-code");
+        await fetch(url).catch(() => undefined);
+      },
+    }),
+  ).rejects.toThrow("cancelled");
+  expect(exchangeSignals[0]?.aborted).toBe(true);
+  await expect(fetch(callback)).rejects.toThrow();
+});

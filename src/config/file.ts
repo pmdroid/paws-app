@@ -85,6 +85,7 @@ export type PawsConfigFile = {
   trackerKind: TrackerKind | null;
   trackerGithub: TrackerGithubConfig;
   repo: string | null;
+  githubRepos: string[];
   publicUrl: string | null;
   checkout: string | null;
   maxTurns: number | null;
@@ -109,6 +110,7 @@ export type PawsSetupConfig = {
   trackerKind?: TrackerKind;
   trackerGithub?: TrackerGithubConfig;
   repo: string;
+  githubRepos?: readonly string[];
   checkout: string;
   maxTurns: number;
   maxAwakeMs: number;
@@ -134,6 +136,7 @@ export function emptyConfigFile(): PawsConfigFile {
       repos: [...DEFAULT_TRACKER_GITHUB.repos],
     },
     repo: null,
+    githubRepos: [],
     publicUrl: null,
     checkout: null,
     maxTurns: null,
@@ -195,6 +198,7 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     lines.push(`oauth_client_id = ${tomlString(config.oauthClientId)}`);
   }
   lines.push(`repo = ${tomlString(config.repo)}`);
+  if (config.githubRepos?.length) lines.push(`repos = ${tomlStringArray(config.githubRepos)}`);
   if (config.trackerKind !== undefined) {
     const github = config.trackerGithub ?? DEFAULT_TRACKER_GITHUB;
     lines.push(
@@ -236,7 +240,10 @@ export function renderConfigToml(config: PawsSetupConfig): string {
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, config.implementer);
-  const rendered = renderConfigToml(config);
+  const rendered = renderConfigToml({
+    ...config,
+    githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
+  });
   const next =
     profiles === null
       ? rendered
@@ -391,6 +398,7 @@ function assignConfig(
     if (key === "auth") config.githubAuth = githubAuth(value, line);
     else if (key === "oauth_client_id") config.oauthClientId = asString(value, line);
     else if (key === "repo") config.repo = asString(value, line);
+    else if (key === "repos") config.githubRepos = asStringArray(value, line);
     return;
   }
   if (section === "tracker") {

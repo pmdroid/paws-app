@@ -91,7 +91,7 @@ describe("github issue poll", () => {
       expect(waits[1]).toBe(GITHUB_POLL_ACTIVE_MS);
       expect(waits[1]).toBe(5_000);
     } finally {
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       db.close();
     }
@@ -159,7 +159,7 @@ describe("github issue poll", () => {
       expect(list?.authorization?.startsWith("Bearer ")).toBe(true);
       expect(fake.requests.some((request) => request.path.endsWith("/pulls"))).toBe(false);
     } finally {
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       await fake.stop();
       db.close();
@@ -264,7 +264,7 @@ describe("github issue poll", () => {
       expect(triggers.some((item) => item.includes("pawsome"))).toBe(false);
     } finally {
       console.warn = original;
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       await fake.stop();
       db.close();
@@ -310,7 +310,7 @@ describe("github issue poll", () => {
       expect(commentLists[1]?.status).toBe(304);
       expect(triggers).toEqual([7]);
     } finally {
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       await fake.stop();
       db.close();
@@ -342,7 +342,7 @@ describe("github issue poll", () => {
     try {
       await waitFor(() => triggers.length === 1);
     } finally {
-      first.stop();
+      await first.stop();
       await first.settled;
     }
     const saved = db
@@ -385,7 +385,7 @@ describe("github issue poll", () => {
       expect(Date.parse(since ?? "")).toBe(NOW - 5_000);
       expect(triggers).toEqual([7, 9]);
     } finally {
-      second.stop();
+      await second.stop();
       await second.settled;
       await fake.stop();
       db.close();
@@ -418,13 +418,13 @@ describe("github issue poll", () => {
     });
     try {
       await waitFor(() => triggers.length === 1);
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       expect(waits[0]).toBe(30_000);
       expect(fake.requests.some((request) => request.status === 403)).toBe(true);
       expect(triggers).toEqual([7]);
     } finally {
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       await fake.stop();
       db.close();
@@ -449,7 +449,7 @@ describe("github issue poll", () => {
       await waitFor(() => waits.length > 0);
       expect(waits[0]).toBe(40_000);
     } finally {
-      poller.stop();
+      await poller.stop();
       await poller.settled;
       await fake.stop();
       db.close();
@@ -595,3 +595,99 @@ async function waitFor(ready: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test("stopping joins a manual GitHub poll before its final SQLite writes", async () => {
+  const fake = startFakeGitHubRest();
+  const db = tempDb();
+  const waits: number[] = [];
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let users = 0;
+  const client = clientFor(fake);
+  const user = client.user.bind(client);
+  client.user = async () => {
+    if (++users === 2) {
+      ready.resolve();
+      await release.promise;
+    }
+    return user();
+  };
+  const poller = startGitHubIssuePoller({
+    db,
+    client,
+    onTrigger() {},
+    onComment() {},
+    sleeper: blockingSleeper(waits),
+  });
+  try {
+    await waitFor(() => waits.length > 0);
+    const manual = poller.pollNow();
+    await ready.promise;
+    let stopped = false;
+    const stopping = poller.stop().then(() => {
+      stopped = true;
+    });
+    await Bun.sleep(5);
+    expect(stopped).toBe(false);
+    release.resolve();
+    await stopping;
+    await manual;
+    expect(stopped).toBe(true);
+    await poller.pollNow();
+    expect(users).toBe(2);
+  } finally {
+    release.resolve();
+    await poller.stop();
+    db.close();
+    await fake.stop();
+  }
+});
+
+test("a synchronous GitHub adapter Stop joins the poll before SQLite can close", async () => {
+  const fake = startFakeGitHubRest();
+  const db = tempDb();
+  const waits: number[] = [];
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const client = clientFor(fake);
+  const user = client.user.bind(client);
+  let users = 0;
+  let stopped = false;
+  let stopping: Promise<void> | undefined;
+  client.user = async () => {
+    if (++users === 2) {
+      stopping = poller.stop().then(() => {
+        stopped = true;
+      });
+      ready.resolve();
+      await release.promise;
+    }
+    return user();
+  };
+  const poller = startGitHubIssuePoller({
+    db,
+    client,
+    onTrigger() {},
+    onComment() {},
+    sleeper: blockingSleeper(waits),
+  });
+  let manual: Promise<void> | undefined;
+  try {
+    await waitFor(() => waits.length > 0);
+    manual = poller.pollNow();
+    await ready.promise;
+    await Bun.sleep(5);
+    expect(stopped).toBe(false);
+    release.resolve();
+    await stopping;
+    await manual;
+    expect(stopped).toBe(true);
+    expect(db.query("SELECT 1 FROM github_poll_state LIMIT 1").get()).not.toBeNull();
+  } finally {
+    release.resolve();
+    await manual;
+    await poller.stop();
+    db.close();
+    await fake.stop();
+  }
+});

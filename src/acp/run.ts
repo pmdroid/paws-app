@@ -10,12 +10,14 @@ import {
   ndJsonStream,
   type ClientContext,
   type InitializeResponse,
+  type ContentBlock,
   type PermissionOption,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type StopReason,
 } from "@agentclientprotocol/sdk";
 import { loadConfigFile, resolveAgentProfiles } from "../config";
+import { buildAgentPrompt, snapshotAgentInputs } from "./input-files";
 import { commitCheckpoint } from "./checkpoint";
 import { assertSafeSegment, runDir } from "./paths";
 import {
@@ -41,7 +43,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "./types";
-import type { ChildProcess } from "node:child_process";
+import type { OwnedProcess } from "./process";
 
 const CLIENT_INFO = { name: "paws", version: "0.0.0" };
 
@@ -114,8 +116,21 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   assertSafeSegment(options.itemId, "item id");
   assertSafeSegment(options.runId, "run id");
   if (!isAbsolute(options.worktreePath)) throw new Error("worktreePath must be absolute");
+  const suppliedInputs = snapshotAgentInputs(options.worktreePath, options.inputFiles);
   const info = await lstat(options.worktreePath);
   if (!info.isDirectory()) throw new Error("worktreePath is not a directory");
+  const preparedInput = options.prepareInputFiles
+    ? await options.prepareInputFiles({
+        workspace: options.worktreePath,
+        prompt: options.prompt,
+        signal: options.signal ?? new AbortController().signal,
+      })
+    : { prompt: options.prompt, inputFiles: [] };
+  options.signal?.throwIfAborted();
+  const inputFiles = snapshotAgentInputs(options.worktreePath, [
+    ...suppliedInputs,
+    ...preparedInput.inputFiles,
+  ]);
 
   const home = options.home ?? homedir();
   const guard: GuardContext = {
@@ -408,7 +423,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           ctx,
           child,
           sessionId,
-          prompt: options.prompt,
+          prompt: buildAgentPrompt(
+            preparedInput.prompt,
+            options.worktreePath,
+            inputFiles,
+            (initialized as InitializeResponse).agentCapabilities?.promptCapabilities,
+          ),
           state,
           timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
           graceMs,
@@ -467,8 +487,17 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     result.agentExited = await stopChild(child, graceMs);
     result.pid = child.pid;
     result.transcriptPath = transcript;
-    await terminals.close(graceMs);
-    if (options.checkpoint !== false && !result.cancelled && !options.signal?.aborted) {
+    result.agentExited = (await terminals.close(graceMs)) && result.agentExited;
+    if (!result.agentExited) {
+      result.errorMessage = "ACP process cleanup could not be verified";
+      if (!result.cancelled) result.stopReason = "error";
+    }
+    if (
+      options.checkpoint !== false &&
+      result.agentExited &&
+      !result.cancelled &&
+      !options.signal?.aborted
+    ) {
       const reason = result.timedOut
         ? "timeout"
         : result.stopReason === "error"
@@ -513,9 +542,9 @@ interface PromptState {
 
 async function runPrompt(options: {
   ctx: ClientContext;
-  child: ChildProcess;
+  child: OwnedProcess;
   sessionId: string;
-  prompt: string;
+  prompt: ContentBlock[];
   state: PromptState;
   timeoutMs: number;
   graceMs: number;
@@ -554,7 +583,7 @@ async function runPrompt(options: {
   try {
     const response = await ctx.request(methods.agent.session.prompt, {
       sessionId,
-      prompt: [{ type: "text", text: options.prompt }],
+      prompt: options.prompt,
     });
     acpStopReason = response.stopReason;
   } catch (error) {
@@ -657,7 +686,7 @@ function clientCapabilities() {
 }
 
 async function withConnection<T>(
-  child: ChildProcess,
+  child: OwnedProcess,
   op: (ctx: ClientContext) => Promise<T>,
 ): Promise<T> {
   if (!child.stdin || !child.stdout) throw new Error("agent stdio pipes were not created");
@@ -690,7 +719,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): 
 
 function baseResult(
   role: AgentRole,
-  child: ChildProcess,
+  child: OwnedProcess,
   fields: Partial<Omit<RunAgentResult, "role" | "pid" | "agentExited">> &
     Pick<RunAgentResult, "stopReason">,
 ): RunAgentResult {

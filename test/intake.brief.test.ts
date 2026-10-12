@@ -90,7 +90,7 @@ test("the append-only brief migration upgrades existing items without inventing 
     db.run(
       "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
     );
-    for (const migration of migrations.filter((entry) => entry.id !== "006_work_brief")) {
+    for (const migration of migrations.filter((entry) => entry.id < "006_work_brief")) {
       db.run(migration.sql);
       db.run("INSERT INTO schema_migration VALUES (?, 1)", [migration.id]);
     }

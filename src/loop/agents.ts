@@ -1,11 +1,25 @@
-import type { AgentRole, AgentIdentity } from "../acp";
+import type {
+  AgentRole,
+  AgentIdentity,
+  PublishArtifactHook,
+  RunAgentOptions,
+  RunAgentResult,
+} from "../acp";
 import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
 import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
-export type AgentPurpose = "implement" | "fix" | "review" | "prepare";
+export type AgentPurpose =
+  | "implement"
+  | "fix"
+  | "review"
+  | "prepare"
+  | "classify"
+  | "answer"
+  | "artifact"
+  | "select_repository";
 
 export type AgentLaunch = (input: {
   role: AgentRole;
@@ -18,12 +32,16 @@ export type AgentLaunch = (input: {
 
 export type AcpAgentDeps = {
   pawsRoot: string;
+  publishArtifact?: PublishArtifactHook;
+  prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
   launch: AgentLaunch;
   brief?: string;
   signal?: AbortSignal;
+  onCleanupFailure?: () => void;
+  promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   timeoutMs?: number;
   docker?: { proxyUrl: string; image?: string; bin?: string };
 };
@@ -67,6 +85,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         prompt,
       });
       const result = await runAgent({
+        prepareInputFiles: deps.prepareInputFiles,
         role: "reviewer",
         profile: deps.profiles?.reviewer,
         itemId: request.taskId,
@@ -87,6 +106,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           if (event.update.content.type === "text") text += event.update.content.text ?? "";
         },
       });
+      if (!result.agentExited) deps.onCleanupFailure?.();
       if (result.authRequired) {
         throw new Error(result.errorMessage ?? "Codex login is missing");
       }
@@ -119,8 +139,10 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         worktree: request.worktree,
         prompt,
       });
-      const result = await runAgent({
+      const result = await (deps.promptRunner ?? runAgent)({
+        prepareInputFiles: deps.prepareInputFiles,
         role: "implementer",
+        publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,
         itemId: request.taskId,
         runId: `fix-${request.taskId}-${request.fixAttempt}`,
@@ -132,6 +154,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ...spawnOf(launch),
         ...dockerOf(deps, deps.profiles?.implementer.agent ?? "claude"),
       });
+      if (!result.agentExited) deps.onCleanupFailure?.();
       if (result.cancelled) return { ok: false, reason: "fix cancelled" };
       if (result.authRequired || result.stopReason === "error" || result.stopReason === "timeout") {
         return { ok: false, reason: result.errorMessage ?? result.stopReason };

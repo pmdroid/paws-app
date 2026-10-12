@@ -49,6 +49,8 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
   ) @include(if: $includeActivities) {
     nodes {
       id
+      createdAt
+      user { id }
       updatedAt
       signal
       agentSession { id issue { id } }
@@ -82,6 +84,8 @@ export type PolledSession = {
 
 export type PolledActivity = {
   id: string;
+  actorId?: string | null;
+  activityCreatedAtMs?: number | null;
   issueId: string | null;
   sessionId: string | null;
   body: string | null;
@@ -172,9 +176,9 @@ export function createIntakePollSource(
       const pendingActivities = finished.has("activities") ? [] : activities.nodes;
       if (!finished.has("sessions")) {
         for (const session of readSessions(root, appUserId, teamId)) {
-          const prior = latestSessions.get(session.issueId);
+          const prior = latestSessions.get(session.id);
           if (prior === undefined || session.createdAtMs > prior.createdAtMs) {
-            latestSessions.set(session.issueId, session);
+            latestSessions.set(session.id, session);
           }
         }
       }
@@ -261,9 +265,9 @@ function readSessions(
     const createdAtMs = readTime(node, "createdAt");
     const updatedAtMs = readTime(node, "updatedAt");
     if (id === null || issueId === null || createdAtMs === null || updatedAtMs === null) continue;
-    const prior = latest.get(issueId);
+    const prior = latest.get(id);
     if (prior === undefined || createdAtMs > prior.createdAtMs) {
-      latest.set(issueId, { id, issueId, createdAtMs, updatedAtMs });
+      latest.set(id, { id, issueId, createdAtMs, updatedAtMs });
     }
   }
   return [...latest.values()];
@@ -341,8 +345,11 @@ function dedupeActivities(nodes: readonly Record<string, unknown>[]): PolledActi
     const content = isRecord(node["content"]) ? node["content"] : null;
     const session = isRecord(node["agentSession"]) ? node["agentSession"] : null;
     const issue = session !== null && isRecord(session["issue"]) ? session["issue"] : null;
+    const user = isRecord(node["user"]) ? node["user"] : null;
     activities.push({
       id,
+      actorId: user === null ? null : readString(user, "id"),
+      activityCreatedAtMs: readTime(node, "createdAt"),
       issueId: issue === null ? null : readString(issue, "id"),
       sessionId: session === null ? null : readString(session, "id"),
       body: content === null ? null : readString(content, "body"),

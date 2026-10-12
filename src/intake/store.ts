@@ -46,13 +46,17 @@ type ItemRow = {
   version: number;
 };
 
-export function readEpicByLinearId(db: Database, linearIssueId: string): StoredEpic | null {
+export function readEpicByLinearId(
+  db: Database,
+  linearIssueId: string,
+  taskKey = `initial:${linearIssueId}`,
+): StoredEpic | null {
   const row = db
-    .query<EpicRow, [string]>(
+    .query<EpicRow, [string, string, string]>(
       `SELECT id, linear_issue_id, linear_identifier, title, state, version
-       FROM epic WHERE linear_issue_id = ?`,
+       FROM epic WHERE linear_issue_id = ? AND (task_key = ? OR (task_key IS NULL AND ? = 'initial:' || linear_issue_id)) ORDER BY created_at, id LIMIT 1`,
     )
-    .get(linearIssueId);
+    .get(linearIssueId, taskKey, taskKey);
   return row === null ? null : mapEpic(row);
 }
 
@@ -69,6 +73,7 @@ export function listWorkItems(db: Database, epicId: string): StoredWorkItem[] {
 export function insertRunningQueue(
   db: Database,
   input: {
+    taskKey?: string;
     linearIssueId: string;
     identifier: string;
     title: string;
@@ -93,15 +98,22 @@ export function insertRunningQueue(
   const inQueue = new Set(items.map((item) => item.linearIssueId));
   const write = db.transaction(() => {
     db.run(
-      `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at)
-       VALUES (?, ?, ?, ?, 'running', 0, ?)`,
-      [epicId, input.linearIssueId, input.identifier, input.title, input.now],
+      `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
+       VALUES (?, ?, ?, ?, 'running', 0, ?, ?)`,
+      [
+        epicId,
+        input.linearIssueId,
+        input.identifier,
+        input.title,
+        input.now,
+        input.taskKey ?? `initial:${input.linearIssueId}`,
+      ],
     );
     for (const item of items) {
       db.run(
         `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief
-         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?)`,
+           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key
+         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?)`,
         [
           item.id,
           item.epicId,
@@ -112,6 +124,7 @@ export function insertRunningQueue(
           item.position,
           input.now,
           JSON.stringify(input.briefs.get(item.linearIssueId)),
+          `${input.taskKey ?? `initial:${input.linearIssueId}`}:item:${item.linearIssueId}`,
         ],
       );
     }
@@ -141,13 +154,26 @@ export function insertRunningQueue(
 
 export function insertStalledEpic(
   db: Database,
-  input: { linearIssueId: string; identifier: string; title: string; now: number },
+  input: {
+    linearIssueId: string;
+    identifier: string;
+    title: string;
+    now: number;
+    taskKey?: string;
+  },
 ): StoredEpic {
   const id = ulid(input.now);
   db.run(
-    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at)
-     VALUES (?, ?, ?, ?, 'stalled', 0, ?)`,
-    [id, input.linearIssueId, input.identifier, input.title, input.now],
+    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
+     VALUES (?, ?, ?, ?, 'stalled', 0, ?, ?)`,
+    [
+      id,
+      input.linearIssueId,
+      input.identifier,
+      input.title,
+      input.now,
+      input.taskKey ?? `initial:${input.linearIssueId}`,
+    ],
   );
   return {
     id,
