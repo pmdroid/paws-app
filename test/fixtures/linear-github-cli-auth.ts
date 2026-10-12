@@ -2,24 +2,32 @@ import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadRuntime } from "../../src/config";
 import { createLinearGitHubAuth } from "../../src/index";
+import { checkGitHubCliRepositoryAccess, createGitHubTokenProvider } from "../../src/auth";
+import { FakeClock } from "../../src/core";
+import { createFakeTracker, type AcceptedLinearEvent } from "../../src/linear";
 import {
   applyWorkItemEvent,
   beginImplementRun,
   getWorkItem,
+  getWorkItemRepository,
+  getWorkItemRepositoryChoice,
   insertQueuedItem,
   listJobs,
   listOutbox,
   migrate,
   openDatabase,
+  JobLoop,
+  OutboxDispatcher,
 } from "../../src/db";
-import { GitHubAuthQuestions } from "../../src/loop";
+import { attachOrchestrator, GitHubAuthQuestions } from "../../src/loop";
 import { findOpenQuestion, getQuestion } from "../../src/questions";
 
 const home = process.argv[2]!;
+const denied = process.argv[3] === "denied";
 const bin = join(home, "bin");
 const state = join(home, "gh.json");
 mkdirSync(bin);
-writeFileSync(state, JSON.stringify({ id: 7, active: true }));
+writeFileSync(state, JSON.stringify({ id: 7, active: true, denied }));
 writeFileSync(
   join(bin, "gh"),
   `#!/usr/bin/env bun
@@ -31,7 +39,7 @@ if(args[0]==="auth"&&args[1]==="login"){state.active=true;state.id=Number(args[2
 if(!state.active)process.exit(1);
 if(args[0]==="auth"&&args[1]==="status")process.exit(0);
 if(args[0]==="auth"&&args[1]==="token"){console.log("synthetic-gh-user-"+state.id);process.exit(0);}
-if(args[0]==="api"&&args[1]==="repos/selected/repository"){console.log(JSON.stringify({permissions:{push:true,pull:true}}));process.exit(0);}
+if(args[0]==="api"&&args[1]==="repos/selected/repository"){console.log(JSON.stringify({permissions:{push:!state.denied,pull:!state.denied}}));process.exit(0);}
 process.exit(2);
 `,
   { mode: 0o700 },
@@ -42,6 +50,8 @@ const requests: string[] = [];
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = String(input);
   requests.push(url);
+  if (url === "https://api.github.com/repos/selected/repository")
+    return Response.json({ permissions: { push: false } });
   if (url !== "https://api.github.com/user") throw new Error(`Unexpected offline request ${url}`);
   const token = new Headers(init?.headers).get("authorization")!;
   const id = Number(token.split("-").at(-1));
@@ -54,7 +64,7 @@ const path = join(home, "paws.db");
 let db = openDatabase(path);
 migrate(db);
 const item = insertQueuedItem(db, { id: "task", sessionKey: "session" });
-beginImplementRun(db, item.id, 1);
+if (!denied) beginImplementRun(db, item.id, 1);
 const host = createLinearGitHubAuth({
   runtime: loadRuntime(env),
   env,
@@ -65,6 +75,140 @@ const host = createLinearGitHubAuth({
   }),
   actorForItem: () => "linear-owner",
 });
+if (denied) {
+  const auth = new GitHubAuthQuestions(db, host, () => 10);
+  const verified = await auth.ensure(
+    getWorkItem(db, item.id)!,
+    "initial",
+    new AbortController().signal,
+  );
+  let tokenDenied = false;
+  try {
+    await createGitHubTokenProvider({ auth: "gh", repo: "selected/repository" }).token();
+  } catch {
+    tokenDenied = true;
+  }
+  const outcomes: Record<string, boolean | string> = {};
+  for (const status of [200, 404, 401, 403, 429, 500]) {
+    try {
+      outcomes[String(status)] = await checkGitHubCliRepositoryAccess(
+        {
+          repo: "selected/repository",
+          fetch: async () => Response.json({ permissions: { push: false } }, { status }),
+        },
+        new AbortController().signal,
+      );
+    } catch (error) {
+      outcomes[String(status)] = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const clock = new FakeClock(1_000);
+  const jobs = new JobLoop(db, clock);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "issue",
+      identifier: "ENG-1",
+      title: "Implement export",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const repositories = ["repository", "other"].map((repo) => ({
+    owner: "selected",
+    repo,
+    remoteUrl: `https://github.com/selected/${repo}.git`,
+  }));
+  const selectedAuth = createLinearGitHubAuth({
+    runtime: loadRuntime(env),
+    env,
+    repositoryForItem: (candidate) =>
+      getWorkItemRepository(db, candidate.id) ?? getWorkItemRepositoryChoice(db, candidate.id),
+    actorForItem: () => "linear-owner",
+  });
+  let launches = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    clock,
+    outbox: new OutboxDispatcher(db, clock),
+    tracker,
+    pawsRoot: home,
+    githubAuth: selectedAuth,
+    repositories,
+    repositoryAccess: (candidate, signal, access) =>
+      checkGitHubCliRepositoryAccess(
+        { repo: `${candidate.owner}/${candidate.repo}`, access },
+        signal,
+      ),
+    launch: () => {
+      launches++;
+      throw new Error("Denied repository cannot launch ACP");
+    },
+  });
+  const event = (body: string | null): AcceptedLinearEvent => ({
+    dedupeKey: body ?? "created",
+    deliveryId: null,
+    source: "webhook",
+    action: body === null ? "created" : "prompted",
+    sessionId: "chosen",
+    issueId: "issue",
+    activityId: body,
+    body,
+    signal: null,
+    updatedAtMs: 2_000,
+    actorId: "linear-owner",
+    activityCreatedAtMs: 2_000,
+    payload: JSON.stringify({ answeredBy: "linear-owner" }),
+  });
+  await orchestrator.onLinearEvent(event(null));
+  await jobs.tick();
+  const original = findOpenQuestion(db, "chosen")!;
+  await orchestrator.onLinearEvent(event("selected/repository"));
+  await jobs.tick();
+  const replacement = findOpenQuestion(db, "chosen");
+  const bound = getWorkItemRepository(db, original.itemId);
+  const questionBodies = db.query<{ body: string }, []>("SELECT body FROM question").all();
+  await orchestrator.shutdown();
+  beginImplementRun(db, item.id, 1);
+  applyWorkItemEvent(db, item.id, "turn_ended");
+  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  writeFileSync(state, JSON.stringify({ id: 8, active: true, denied: true }));
+  const switched = await auth.ensure(
+    getWorkItem(db, item.id)!,
+    "publication",
+    new AbortController().signal,
+  );
+  writeFileSync(state, JSON.stringify({ id: 7, active: false, denied: true }));
+  const fresh = insertQueuedItem(db, { id: "fresh", sessionKey: "fresh" });
+  beginImplementRun(db, fresh.id, 1);
+  let missing = "";
+  try {
+    await auth.ensure(getWorkItem(db, fresh.id)!, "initial", new AbortController().signal);
+  } catch (error) {
+    missing = error instanceof Error ? error.message : String(error);
+  }
+  console.log(
+    JSON.stringify({
+      verified,
+      tokenDenied,
+      outcomes,
+      bound,
+      original: original.id,
+      replacement: replacement?.id,
+      choices: replacement?.options,
+      launches,
+      statuses: tracker.statuses,
+      questionBodies,
+      switched,
+      missing,
+      missingQuestion: findOpenQuestion(db, "fresh"),
+      requests,
+    }),
+  );
+  auth.close();
+  db.close();
+  process.exit(0);
+}
 let auth = new GitHubAuthQuestions(db, host, () => 10);
 const initial = await auth.ensure(
   getWorkItem(db, item.id)!,
