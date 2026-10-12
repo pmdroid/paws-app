@@ -23,6 +23,7 @@ import {
   type LinearIssueLifecycle,
   type LinearIssueOwnership,
   type LinearSessionInstallation,
+  type TrackerRequestOptions,
 } from "../linear";
 
 class LinearAccessRemovedError extends Error {}
@@ -41,7 +42,7 @@ export class LinearTaskAccess {
     },
   ) {}
 
-  async accept(event: AcceptedLinearEvent): Promise<boolean> {
+  async accept(event: AcceptedLinearEvent, options?: TrackerRequestOptions): Promise<boolean> {
     if (event.sessionId === null || !["created", "prompted"].includes(event.action)) return false;
     const generation = getLinearSessionGeneration(this.db, event.sessionId);
     if (getLinearSessionAccess(this.db, event.sessionId) === "revoked") return false;
@@ -63,16 +64,17 @@ export class LinearTaskAccess {
         getLinearSessionAccess(this.db, event.sessionId) !== "revoked"
       );
     if (this.options.access === null) throw new Error("Linear is not connected.");
-    const access = await this.options.access.session(event.sessionId, {
-      signal: AbortSignal.timeout(10_000),
-    });
+    const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
+    request.signal.throwIfAborted();
+    const access = await this.options.access.session(event.sessionId, request);
+    request.signal.throwIfAborted();
     this.record(access);
     if (getLinearSessionGeneration(this.db, event.sessionId) !== generation) return false;
     if (event.action === "created" && getLinearSession(this.db, event.sessionId)?.stoppedAt != null)
       return false;
     if (access.issueId !== event.issueId)
       throw new Error("Linear session issue ownership changed.");
-    if (!(await this.teamAccess(access, generation))) return false;
+    if (!(await this.teamAccess(access, generation, request))) return false;
     return this.allowed(event.sessionId);
   }
 
@@ -111,11 +113,13 @@ export class LinearTaskAccess {
   private async teamAccess(
     access: LinearSessionInstallation,
     generation: number,
+    options?: TrackerRequestOptions,
   ): Promise<boolean> {
     if (this.options.access === null) throw new Error("Linear is not connected.");
-    const allowed = await this.options.access.team(access.teamId, {
-      signal: AbortSignal.timeout(10_000),
-    });
+    const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
+    request.signal.throwIfAborted();
+    const allowed = await this.options.access.team(access.teamId, request);
+    request.signal.throwIfAborted();
     if (getLinearSessionGeneration(this.db, access.sessionId) !== generation) return false;
     if (!this.allowed(access.sessionId)) return false;
     if (allowed) return true;

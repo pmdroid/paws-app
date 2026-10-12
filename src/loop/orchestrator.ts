@@ -118,6 +118,7 @@ import type {
   AcceptedLinearEvent,
   ProgressUpdate,
   TrackerAdapter,
+  TrackerRequestOptions,
   LinearActivitySnapshot,
   LinearFileTransfer,
 } from "../linear";
@@ -238,6 +239,7 @@ export class Orchestrator {
   >();
   private shuttingDown = false;
   private activitySeq = 0;
+  private readonly activityRequests = new Map<number, AbortSignal>();
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
   private readonly githubAuth: GitHubAuthQuestions | null;
@@ -480,17 +482,19 @@ export class Orchestrator {
     await this.flush();
   }
 
-  sessionProgressReporter(event: AcceptedLinearEvent): (update: ProgressUpdate) => Promise<void> {
+  sessionProgressReporter(event: AcceptedLinearEvent): TrackerAdapter["postProgress"] {
     const generation = event.sessionId
       ? getLinearSessionGeneration(this.db, event.sessionId)
       : undefined;
-    return (update) =>
+    return (update, request) =>
       this.enqueueSessionProgress(
         update,
         `ack:${event.dedupeKey}:${update.kind}`,
         (event.sessionId
           ? getLinearTurnGeneration(this.db, event.sessionId, event.dedupeKey, event.activityId)
           : null) ?? generation,
+        request,
+        event.action === "created" && update.kind === "thought",
       );
   }
 
@@ -498,17 +502,27 @@ export class Orchestrator {
     update: ProgressUpdate,
     idempotencyKey: string,
     generation?: number,
+    request?: TrackerRequestOptions,
+    initialActivity = false,
   ): Promise<void> {
-    enqueueOutboxOnce(this.db, {
+    request?.signal?.throwIfAborted();
+    const id = enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "activity",
       orderingKey: update.sessionId,
       idempotencyKey,
       payload: { ...update, id: update.id ?? crypto.randomUUID() },
+      ...(initialActivity ? { delivery: "critical" } : {}),
       ...(generation === undefined ? {} : { generation }),
       now: this.now(),
     });
-    await this.flush();
+    if (request?.signal) this.activityRequests.set(id, request.signal);
+    try {
+      await this.flush(request?.signal);
+      request?.signal?.throwIfAborted();
+    } finally {
+      if (this.activityRequests.get(id) === request?.signal) this.activityRequests.delete(id);
+    }
   }
 
   async intakeLinearTask(
@@ -676,6 +690,10 @@ export class Orchestrator {
     });
     this.options.outbox.setHandler(async (message, context) => {
       if (message.target !== "linear") return;
+      const requestSignal = this.activityRequests.get(message.id);
+      if (requestSignal)
+        context = { ...context, signal: AbortSignal.any([context.signal, requestSignal]) };
+      context.signal.throwIfAborted();
       const tracker = this.tracker;
       if (tracker === null) throw new Error("Linear is not connected");
       if (
@@ -2310,10 +2328,27 @@ export class Orchestrator {
       .get(epicId);
   }
 
-  private async flush(): Promise<void> {
+  private async flush(signal?: AbortSignal): Promise<void> {
     for (let attempt = 0; attempt < 50; attempt += 1) {
+      signal?.throwIfAborted();
       const claimed = this.options.outbox.tick();
-      await this.options.outbox.idle();
+      const idle = this.options.outbox.idle();
+      if (signal) {
+        signal.throwIfAborted();
+        let onAbort: () => void = () => {};
+        try {
+          await Promise.race([
+            idle,
+            new Promise<never>((_resolve, reject) => {
+              onAbort = () => reject(signal.reason);
+              signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ]);
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+      } else await idle;
+      signal?.throwIfAborted();
       if (claimed.length === 0) return;
     }
   }

@@ -2,8 +2,7 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
-import type { TrackerAdapter } from "./adapter";
-import type { ProgressUpdate } from "./types";
+import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
@@ -63,8 +62,8 @@ export function openLinear(options: {
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
   followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>;
-  beforeEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
-  progressReporter?: (event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>;
+  beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
+  progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
   fetch?: FetchLike;
@@ -140,15 +139,21 @@ export function openLinear(options: {
   };
 }
 
+function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptions | undefined {
+  return event.action === "created" && event.sessionId !== null && event.signal !== "stop"
+    ? { signal: AbortSignal.timeout(10_000) }
+    : undefined;
+}
+
 function shareEvents(
   tracker: TrackerAdapter | null,
   followUp:
     | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>)
     | undefined,
-  beforeEvent: ((event: AcceptedLinearEvent) => Promise<boolean>) | undefined,
-  progressReporter:
-    | ((event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>)
+  beforeEvent:
+    | ((event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>)
     | undefined,
+  progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
 ): ((event: AcceptedLinearEvent) => Promise<void>) & { close(): Promise<void> } {
   const inflight = new Map<string, Promise<void>>();
   let closed = false;
@@ -156,8 +161,11 @@ function shareEvents(
     if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
     const existing = inflight.get(event.dedupeKey);
     if (existing !== undefined) return existing;
+    const request = initialActivityRequest(event);
+    const reportProgress = progressReporter?.(event);
     const work = (async () => {
-      if (beforeEvent !== undefined && !(await beforeEvent(event))) return;
+      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return;
+      request?.signal?.throwIfAborted();
       if (tracker === null) {
         if (event.signal === "stop") {
           await followUp?.(event, null);
@@ -165,12 +173,12 @@ function shareEvents(
         }
         throw new Error("Linear is not connected.");
       }
-      const reportProgress = progressReporter?.(event);
       const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
       await acknowledgeNewSession(
         acknowledger,
         event,
         (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
+        request,
       );
     })().finally(() => {
       inflight.delete(event.dedupeKey);
