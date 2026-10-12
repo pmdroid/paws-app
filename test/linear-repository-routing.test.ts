@@ -178,6 +178,25 @@ test("an incomplete access scan retries without binding the surviving repository
   }
 });
 
+test.each(["https://github.com/acme/two.git", "https://github.com/ACME/TWO.git"])(
+  "a pasted clone URL %s selects the offered repository without interpretation",
+  async (answer) => {
+    const f = fixture();
+    try {
+      const orchestrator = f.attach();
+      await orchestrator.onLinearEvent(event());
+      await f.jobs.tick();
+      const question = findOpenQuestion(f.db, "session")!;
+      await orchestrator.onLinearEvent(event(answer));
+      await f.jobs.tick();
+      expect(getWorkItemRepository(f.db, question.itemId)).toEqual(repositories[1]!);
+      expect(f.interpretationTraces).toEqual([]);
+    } finally {
+      f.db.close();
+    }
+  },
+);
+
 test("an obsolete merge job cannot bind the default while a repository answer is pending", async () => {
   const f = fixture({ defaultRepository: true });
   try {
