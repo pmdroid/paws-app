@@ -170,3 +170,5 @@ For worker publication, run `bun test test/worker-publication.test.ts test/runne
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
+
+Run `bun test/local/runner-health-runtime.ts` to verify signed health commands, agent initialization without prompts, immutable mTLS receipts, and interrupted-worker recovery with real separate UIDs and the production Unix broker in a disposable container. The fixture writes its source hashes and native observations to its printed evidence directory.
