@@ -29,6 +29,7 @@ const MODULES = [
   "sandbox",
   "auth",
   "runner-protocol",
+  "runner-execution",
   "ghissues",
   "ghcomments",
   "workspace",
@@ -89,6 +90,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear"],
   "runner-identity": ["credentials"],
   "runner-protocol": [],
+  "runner-execution": ["runner-protocol"],
 };
 
 describe("module boundaries", () => {
