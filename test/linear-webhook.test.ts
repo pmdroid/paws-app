@@ -112,7 +112,7 @@ describe("linear webhooks", () => {
       expect(count?.n).toBe(0);
       expect(paws.tunnelRequested).toBe(false);
     } finally {
-      paws.stop();
+      await paws.stop();
     }
   });
 
@@ -139,7 +139,7 @@ describe("linear webhooks", () => {
       const count = paws.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
       expect(count?.n).toBe(1);
     } finally {
-      paws.stop();
+      await paws.stop();
     }
   });
 });

@@ -10,7 +10,7 @@ export function startLoops(input: {
   clock?: Clock;
   prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void;
 }): {
-  stop: () => void;
+  stop: () => Promise<void>;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
 } {
@@ -23,8 +23,10 @@ export function startLoops(input: {
   return {
     jobs,
     outbox,
-    stop() {
+    async stop() {
       // The caller aborts `signal`. This exists so shutdown has a named hook.
+      await task;
+      await outbox.idle();
     },
   };
 }

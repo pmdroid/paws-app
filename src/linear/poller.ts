@@ -57,7 +57,7 @@ export type Sleeper = {
 };
 
 export type CatchUpPoller = {
-  stop(): void;
+  stop(): Promise<void>;
   noteWake(): void;
   pollNow(): Promise<void>;
   budget(): LinearRateBudget | null;
@@ -113,25 +113,28 @@ export function startCatchUpPoller(options: {
     options.hot ?? (() => (options.db === undefined ? false : linearWorkIsHot(options.db)));
   const control = { stopped: false };
   let wakeRequested = false;
-  let running = false;
+  let active: Promise<void> | null = null;
   let pending = false;
   let rateAttempts = 0;
   let latestBudget: LinearRateBudget | null = null;
 
-  async function pollOnce(): Promise<void> {
-    if (running) {
+  function pollOnce(): Promise<void> {
+    if (control.stopped) return Promise.resolve();
+    if (active) {
       pending = true;
-      return;
+      return active;
     }
-    running = true;
-    try {
-      do {
-        pending = false;
-        await pollBody();
-      } while (pending && !control.stopped);
-    } finally {
-      running = false;
-    }
+    active = Promise.resolve()
+      .then(async () => {
+        do {
+          pending = false;
+          await pollBody();
+        } while (pending && !control.stopped);
+      })
+      .finally(() => {
+        active = null;
+      });
+    return active;
   }
 
   async function pollBody(): Promise<void> {
@@ -231,9 +234,10 @@ export function startCatchUpPoller(options: {
   })();
 
   return {
-    stop() {
+    async stop() {
       control.stopped = true;
       sleeper.wake();
+      await Promise.allSettled([settled, active]);
     },
     noteWake() {
       wakeRequested = true;

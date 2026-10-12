@@ -78,7 +78,7 @@ export type GitHubCommentEvent = {
 };
 
 export type GitHubIssuePoller = {
-  stop(): void;
+  stop(): Promise<void>;
   pollNow(): Promise<void>;
   settled: Promise<void>;
 };
@@ -101,26 +101,29 @@ export function startGitHubIssuePoller(options: {
   const now = options.now ?? Date.now;
   const hot = options.hot ?? (() => githubWorkIsHot(options.db));
   const control = { stopped: false };
-  let running = false;
+  let active: Promise<number> | null = null;
   let pending = false;
   let rateAttempts = 0;
 
-  async function pollOnce(): Promise<number> {
-    if (running) {
+  function pollOnce(): Promise<number> {
+    if (control.stopped) return Promise.resolve(0);
+    if (active) {
       pending = true;
-      return 0;
+      return active;
     }
-    running = true;
-    try {
-      let hold = 0;
-      do {
-        pending = false;
-        hold = Math.max(hold, await pollBody());
-      } while (pending && !control.stopped);
-      return hold;
-    } finally {
-      running = false;
-    }
+    active = Promise.resolve()
+      .then(async () => {
+        let hold = 0;
+        do {
+          pending = false;
+          hold = Math.max(hold, await pollBody());
+        } while (pending && !control.stopped);
+        return hold;
+      })
+      .finally(() => {
+        active = null;
+      });
+    return active;
   }
 
   async function pollBody(): Promise<number> {
@@ -286,9 +289,10 @@ export function startGitHubIssuePoller(options: {
   })();
 
   return {
-    stop() {
+    async stop() {
       control.stopped = true;
       sleeper.wake();
+      await Promise.allSettled([settled, active]);
     },
     async pollNow() {
       await pollOnce();

@@ -215,7 +215,7 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
     expect(github.minted).toHaveLength(0);
   } finally {
     stop = true;
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
     await rest.stop();
@@ -369,7 +369,7 @@ test("linear and github issues share one queue and report to their own tracker",
       false,
     );
   } finally {
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     db.close();
     await rest.stop();

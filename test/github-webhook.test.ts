@@ -87,7 +87,7 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
     };
     expect((await send()).status).toBe(200);
     expect(listGitHubDeliveries(paws.db)).toHaveLength(1);
-    paws.stop();
+    await paws.stop();
     paws = startPaws(env);
     expect((await send()).status).toBe(200);
     expect(listGitHubDeliveries(paws.db)).toMatchObject([
@@ -95,7 +95,7 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
     ]);
     expect(readFileSync(join(home, "paws.db")).toString()).not.toContain(secret);
   } finally {
-    paws.stop();
+    await paws.stop();
     rmSync(home, { recursive: true, force: true });
   }
 });

@@ -93,7 +93,7 @@ export type PawsProcess = {
   tunnelUp: () => boolean;
   tunnelRequested: boolean;
   tunnelUrl: string | null;
-  stop: () => void;
+  stop: () => Promise<void>;
 };
 
 export type StartOptions = {
@@ -128,7 +128,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     useLinear && runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const docker = sandboxOptions(options);
   const inbox = createInboxStore(db);
-  let githubPoller: { stop(): void; pollNow(): Promise<void> } | null = null;
+  let githubPoller: { stop(): Promise<void>; pollNow(): Promise<void> } | null = null;
+  const githubSyncTasks = new Set<Promise<void>>();
   let githubSync: ReturnType<typeof setInterval> | null = null;
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
@@ -261,9 +262,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       tunnelUp: () => false,
       tunnelRequested: false,
       tunnelUrl: null,
-      stop() {
-        poller.stop();
-      },
+      stop: () => poller.stop(),
     };
   }
 
@@ -280,10 +279,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       onComment: (event) => ingest(event.issueId),
     });
     githubSync = setInterval(() => {
-      void syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
+      const task = syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "github comment sync failed";
         console.error(`github comment sync failed: ${message}`);
       });
+      githubSyncTasks.add(task);
+      void task.then(() => githubSyncTasks.delete(task));
     }, 5_000);
     githubSync.unref?.();
   }
@@ -304,6 +305,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
   });
 
+  let stopping: Promise<void> | undefined;
   return {
     env,
     paths,
@@ -321,17 +323,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return running.tunnelUrl;
     },
     stop() {
-      abort.abort();
-      host.stop();
-      loops.stop();
-      prepareShutdown(db, Date.now(), (item) => {
-        commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
-      });
-      if (githubSync !== null) clearInterval(githubSync);
-      githubPoller?.stop();
-      running.stop();
-      server.stop(true);
-      db.close();
+      stopping ??= (async () => {
+        abort.abort();
+        host.stop();
+        if (githubSync !== null) clearInterval(githubSync);
+        const githubStopped = githubPoller?.stop();
+        const linearStopped = running.stop();
+        server.stop(true);
+        await orchestrator?.shutdown();
+        await Promise.all([loops.stop(), githubStopped, linearStopped, ...githubSyncTasks]);
+        prepareShutdown(db, Date.now(), (item) => {
+          commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
+        });
+        db.close();
+      })();
+      return stopping;
     },
   };
 }
@@ -437,7 +443,7 @@ function down(): LinearRunning {
     tunnelUp: () => false,
     tunnelRequested: false,
     tunnelUrl: null,
-    stop() {},
+    stop: async () => undefined,
   };
 }
 
@@ -584,10 +590,15 @@ if (import.meta.main) {
     docker,
     proxyUrl: proxy === null ? null : `http://host.docker.internal:${proxy.port}`,
   });
+  let exiting = false;
   const shutdown = () => {
-    paws.stop();
-    void proxy?.close();
-    process.exit(0);
+    if (exiting) return;
+    exiting = true;
+    void (async () => {
+      await paws.stop();
+      await proxy?.close();
+      process.exit(0);
+    })().catch(() => process.exit(1));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
