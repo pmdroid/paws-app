@@ -94,6 +94,7 @@ import { intakeDelegatedIssue, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
   TrackerAdapter,
+  ProgressUpdate,
   LinearActivitySnapshot,
   LinearFileTransfer,
 } from "../linear";
@@ -300,6 +301,31 @@ export class Orchestrator {
     await this.flush();
   }
 
+  sessionProgressReporter(event: AcceptedLinearEvent): (update: ProgressUpdate) => Promise<void> {
+    const generation = event.sessionId
+      ? getLinearSessionGeneration(this.db, event.sessionId)
+      : undefined;
+    return (update) =>
+      this.enqueueSessionProgress(update, `ack:${event.dedupeKey}:${update.kind}`, generation);
+  }
+
+  private async enqueueSessionProgress(
+    update: ProgressUpdate,
+    idempotencyKey: string,
+    generation?: number,
+  ): Promise<void> {
+    enqueueOutboxOnce(this.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: update.sessionId,
+      idempotencyKey,
+      payload: { ...update, id: update.id ?? crypto.randomUUID() },
+      ...(generation === undefined ? {} : { generation }),
+      now: this.now(),
+    });
+    await this.flush();
+  }
+
   async intakeLinearTask(
     issueId: string,
     sessionId: string | null,
@@ -318,7 +344,19 @@ export class Orchestrator {
     const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
-    let intakeTracker = tracker;
+    const progressTracker =
+      sessionId && this.options.channel !== "comments" && !isGitHubIssue(issueId)
+        ? {
+            ...tracker,
+            postProgress: (update: ProgressUpdate) =>
+              this.enqueueSessionProgress(
+                update,
+                `intake:${taskKey ?? issueId}:${update.kind}`,
+                initialSession?.generation,
+              ),
+          }
+        : tracker;
+    let intakeTracker = progressTracker;
     const classification =
       this.options.linearTaskModes &&
       sessionId &&
@@ -331,7 +369,7 @@ export class Orchestrator {
             request: async (signal) => {
               const snapshot = await tracker.loadEpic(issueId);
               signal.throwIfAborted();
-              intakeTracker = { ...tracker, loadEpic: async () => snapshot };
+              intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
               await this.hydrateLinearContext(sessionId, signal);
               const history = listLinearActivitySnapshots(this.db, sessionId)
                 .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)

@@ -9,7 +9,10 @@ export async function acknowledgeNewSession(
   event: AcceptedLinearEvent,
   followUp?: (event: AcceptedLinearEvent) => Promise<void>,
 ): Promise<void> {
-  if (event.signal === "stop") return;
+  if (event.signal === "stop") {
+    await followUp?.(event);
+    return;
+  }
   if (event.action !== "created" && event.action !== "prompted") return;
   if (event.action === "created" && event.sessionId !== null) {
     await tracker.postProgress({

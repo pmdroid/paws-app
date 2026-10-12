@@ -45,7 +45,8 @@ async function postActivity(
   if (body === null) throw new Error("activity has no body");
   const kind = readKind(payload["kind"]);
   if (kind === null) throw new Error("activity has no valid kind");
-  await tracker.postProgress({ sessionId, kind, body }, options);
+  const id = readString(payload, "id");
+  await tracker.postProgress({ sessionId, kind, body, ...(id ? { id } : {}) }, options);
 }
 
 async function postElicitation(

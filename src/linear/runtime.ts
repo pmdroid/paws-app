@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter } from "./adapter";
+import type { ProgressUpdate } from "./types";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
@@ -57,6 +58,7 @@ export function openLinear(options: {
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
   followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>;
+  progressReporter?: (event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>;
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
   fetch?: FetchLike;
@@ -77,7 +79,8 @@ export function openLinear(options: {
   const tracker = client === null ? null : createLinearTracker(client);
   const files =
     client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
-  const onEvent = tracker === null ? undefined : shareEvents(tracker, options.followUp);
+  const onEvent =
+    tracker === null ? undefined : shareEvents(tracker, options.followUp, options.progressReporter);
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
@@ -124,13 +127,18 @@ export function openLinear(options: {
 function shareEvents(
   tracker: TrackerAdapter,
   followUp: ((event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>) | undefined,
+  progressReporter:
+    | ((event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>)
+    | undefined,
 ): (event: AcceptedLinearEvent) => Promise<void> {
   const inflight = new Map<string, Promise<void>>();
   return (event) => {
     const existing = inflight.get(event.dedupeKey);
     if (existing !== undefined) return existing;
+    const reportProgress = progressReporter?.(event);
+    const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
     const work = acknowledgeNewSession(
-      tracker,
+      acknowledger,
       event,
       (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
     ).finally(() => {
