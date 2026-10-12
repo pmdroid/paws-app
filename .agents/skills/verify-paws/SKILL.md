@@ -148,3 +148,11 @@ Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initializ
 ## Normal runner monitoring startup
 
 Run `bun test test/runner-control-startup.test.ts` for production `startPaws` monitoring enabled by `PAWS_RUNNER_HOST`, with the existing execution path preserved. Five owned processes prove default-disabled behavior, explicit protected authority initialization, invalid hostname and missing identity rejection, actual HTTPS session/Origin/CSRF checks, administrator pairing and health requests, mTLS heartbeat/renewal/revocation, and joined readiness and listener shutdown. Linear membership responses and agent health results are scripted; TLS, subprocesses, SQLite and production routes are real. The same probe runs through `check` and `audit`.
+
+Run the daemon, work and result probes together to verify their published modules coexist in one checkout:
+
+```sh
+bun test test/runner-daemon.test.ts test/runner-work.test.ts test/runner-results.test.ts test/boundaries.test.ts
+```
+
+The daemon probe uses real HTTPS/mTLS and fresh subprocesses. The work and result probes use real SQLite, signed assignments and production request handlers. Inspect each probe's observations alongside the full credential-free check.
