@@ -116,7 +116,7 @@ test("recovery bounds terminal output and ignores invalid metadata and unfinishe
     {
       sessionUpdate: "tool_call_update",
       toolCallId: "large",
-      _meta: { terminal_output: { data: "ignored tail" } },
+      _meta: { terminal_output: { data: "Final failure" } },
     },
     { sessionUpdate: "tool_call_update", toolCallId: "large", status: "completed" },
     {
@@ -139,8 +139,36 @@ test("recovery bounds terminal output and ignores invalid metadata and unfinishe
       toolCallId: "large",
       title: "Large output",
       status: "completed",
-      terminalOutput: "x".repeat(64 * 1024),
+      terminalOutput: "x".repeat(64 * 1024 - "Final failure".length) + "Final failure",
     },
     { toolCallId: "plain", status: "completed", rawOutput: "ordinary result" },
   ]);
+});
+
+test("recovery chooses one channel per update without removing repeated real chunks", async () => {
+  const { path } = await transcript([
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: "mirrored",
+      status: "in_progress",
+      _meta: {
+        terminal_output: { data: "same\n" },
+        terminal_output_delta: { data: "same\n" },
+      },
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "mirrored",
+      _meta: { terminal_output_delta: { data: "same\n" } },
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "mirrored",
+      status: "completed",
+      _meta: { terminal_output_delta: { data: false }, terminal_output: { data: "done" } },
+    },
+  ]);
+  const recovered = await recoverAcpConversation(path);
+  expect(recovered).toHaveLength(1);
+  expect(JSON.parse(recovered[0]!.body).terminalOutput).toBe("same\nsame\ndone");
 });
