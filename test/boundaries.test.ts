@@ -28,7 +28,6 @@ const MODULES = [
   "setup",
   "sandbox",
   "auth",
-  "ghissues",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -79,7 +78,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials"],
-  ghissues: ["core", "linear", "intake", "auth"],
   sandbox: [],
 };
 
