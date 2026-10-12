@@ -6,5 +6,10 @@ export {
   runnerJobDirectory,
   type RunnerSpool,
 } from "./spool";
-export { createRunnerBrokerClient, type RunnerBrokerClient } from "./broker";
+export {
+  createRunnerBrokerClient,
+  createRunnerCheckBrokerClient,
+  type RunnerBrokerClient,
+  type RunnerCheckBrokerClient,
+} from "./broker";
 export { runnerResultDirectory, readRunnerResultFile, type RunnerResults } from "./results";
