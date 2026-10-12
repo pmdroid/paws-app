@@ -822,4 +822,52 @@ CREATE TABLE workspace_identity_link (
 ) STRICT;
 `,
   },
+  {
+    id: "024_runner_identity",
+    sql: `
+CREATE TABLE runner (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('active','paused','draining','revoked')),
+  fence INTEGER NOT NULL DEFAULT 0 CHECK(fence >= 0),
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  FOREIGN KEY(workspace_id,owner_user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+CREATE TABLE runner_certificate (
+  fingerprint TEXT PRIMARY KEY,
+  serial TEXT NOT NULL UNIQUE,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  pem TEXT NOT NULL,
+  not_before INTEGER NOT NULL,
+  not_after INTEGER NOT NULL,
+  accepted_until INTEGER NOT NULL,
+  revoked_at INTEGER
+) STRICT;
+CREATE INDEX runner_certificate_identity ON runner_certificate(runner_id);
+CREATE TABLE runner_pairing (
+  id TEXT PRIMARY KEY,
+  claim_hash TEXT NOT NULL UNIQUE,
+  code_hash TEXT NOT NULL UNIQUE,
+  csr TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  name TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  approved_by TEXT REFERENCES workspace_user(id),
+  claimed_at INTEGER,
+  runner_id TEXT REFERENCES runner(id),
+  certificate_fingerprint TEXT REFERENCES runner_certificate(fingerprint)
+) STRICT;
+CREATE TRIGGER revoke_member_runners AFTER UPDATE OF active ON workspace_member
+WHEN NEW.active=0
+BEGIN
+  UPDATE runner SET status='revoked',revoked_at=NEW.checked_at,fence=fence+1
+  WHERE workspace_id=NEW.workspace_id AND owner_user_id=NEW.user_id AND revoked_at IS NULL;
+  UPDATE runner_certificate SET revoked_at=NEW.checked_at WHERE revoked_at IS NULL
+  AND runner_id IN (SELECT id FROM runner WHERE workspace_id=NEW.workspace_id AND owner_user_id=NEW.user_id);
+END;
+`,
+  },
 ];

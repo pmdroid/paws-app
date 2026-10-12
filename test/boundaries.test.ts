@@ -31,6 +31,7 @@ const MODULES = [
   "runner-protocol",
   "workspace",
   "runner-identity",
+  "runner-control",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -96,6 +97,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear", "slack"],
   "runner-identity": ["credentials"],
   "runner-protocol": [],
+  "runner-control": ["db", "workspace", "runner-identity"],
 };
 
 describe("module boundaries", () => {
