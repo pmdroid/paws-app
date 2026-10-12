@@ -2685,6 +2685,7 @@ export class Orchestrator {
         prompt: "",
         signal,
       });
+      if (!result.agentExited) this.blockConversation(item.id);
       if (!result.identity || result.errorMessage)
         throw new Error(result.errorMessage ?? `${role} did not report a concrete session model`);
       identities.push(result.identity);
