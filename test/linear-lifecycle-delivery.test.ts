@@ -356,3 +356,63 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     db.close();
   }
 });
+
+test("epic completion rolls back with its required response and retries after reopen", async () => {
+  const path = join(tempHome(), "completion.db");
+  let db = openDatabase(path);
+  migrate(db);
+  const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+  db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [item.id]);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "lin-ENG-1",
+      identifier: "ENG-1",
+      title: "Task",
+      description: null,
+      subIssues: [{ linearIssueId: item.linearIssueId, identifier: "ENG-1", title: "Task" }],
+    },
+  ]);
+  const options = () => ({
+    db,
+    pawsRoot: tempHome(),
+    tracker,
+    channel: "comments" as const,
+    jobs: new JobLoop(db, systemClock),
+    outbox: new OutboxDispatcher(db, systemClock),
+  });
+  let orchestrator = attachOrchestrator(options());
+  const event = { ...created(), issueId: "lin-ENG-1" };
+  try {
+    db.run(
+      "CREATE TEMP TRIGGER fail_completion BEFORE INSERT ON outbox WHEN NEW.idempotency_key LIKE 'epic-done:%' BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END",
+    );
+    await expect(orchestrator.onLinearEvent(event)).rejects.toThrow("injected completion failure");
+    expect(
+      db.query<{ state: string }, [string]>("SELECT state FROM epic WHERE id = ?").get(item.epicId)
+        ?.state,
+    ).toBe("running");
+    expect(listOutbox(db).some((row) => row.idempotencyKey === `epic-done:${item.epicId}`)).toBe(
+      false,
+    );
+    await orchestrator.shutdown();
+    db.close();
+    db = openDatabase(path);
+    migrate(db);
+    orchestrator = attachOrchestrator(options());
+    await orchestrator.onLinearEvent(event);
+    await orchestrator.onLinearEvent(event);
+    expect(
+      db.query<{ state: string }, [string]>("SELECT state FROM epic WHERE id = ?").get(item.epicId)
+        ?.state,
+    ).toBe("done");
+    expect(
+      listOutbox(db).filter((row) => row.idempotencyKey === `epic-done:${item.epicId}`),
+    ).toHaveLength(1);
+    expect(
+      tracker.progress.filter((update) => update.body.startsWith("Epic complete.")),
+    ).toHaveLength(1);
+  } finally {
+    await orchestrator.shutdown();
+    db.close();
+  }
+});
