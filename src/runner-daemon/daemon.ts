@@ -4,6 +4,7 @@ import { chmodSync } from "node:fs";
 import { z } from "zod";
 import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
+import { runnerVerifierFingerprint } from "../runner-verifier";
 import {
   RunnerCommandSchema,
   RunnerArtifactChunkSchema,
@@ -63,6 +64,7 @@ export type RunnerDaemonOptions = {
   serverCa?: string;
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
+  verifierPublicKeyPem?: string;
   now?: () => number;
 };
 
@@ -72,6 +74,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
   };
   const now = options.now ?? Date.now;
+  const verifierFingerprint =
+    options.verifierPublicKeyPem === undefined
+      ? undefined
+      : runnerVerifierFingerprint(options.verifierPublicKeyPem);
   const pins = options.trustedKeys ? new Map(options.trustedKeys) : undefined;
   if (pins)
     for (const key of pins.values())
@@ -79,6 +85,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner job signing pins must be Ed25519 public keys.");
   let state = readState(options.root);
   let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
+  for (const identity of [state && state.phase !== "prepared" ? state : null, recovery])
+    if (identity && identity.verifierFingerprint !== verifierFingerprint)
+      throw new Error("Runner verifier identity differs from its paired or pending identity.");
   let closed = false;
   if (
     state &&
@@ -117,7 +126,16 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   function pendingStatus(challenge: PairingChallenge) {
     const { id, code, requestFingerprint: fingerprint, expiresAt } = challenge;
-    return { phase: "pending" as const, id, code, requestFingerprint: fingerprint, expiresAt };
+    return {
+      phase: "pending" as const,
+      id,
+      code,
+      requestFingerprint: fingerprint,
+      expiresAt,
+      ...(challenge.verifierFingerprint
+        ? { verifierFingerprint: challenge.verifierFingerprint }
+        : {}),
+    };
   }
   function status() {
     ensureOpen();
@@ -132,6 +150,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       workspaceId: state.workspaceId,
       fingerprint: certificate.fingerprint,
       expiresAt: certificate.notAfter,
+      ...(state.verifierFingerprint ? { verifierFingerprint: state.verifierFingerprint } : {}),
     };
   }
   async function authenticated(
@@ -201,7 +220,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         origin: origins.controlPlaneUrl,
         path: "/api/runner-pairings",
         method: "POST",
-        body: { name: parsedName, csr: state.csr },
+        body: {
+          name: parsedName,
+          csr: state.csr,
+          ...(options.verifierPublicKeyPem
+            ? { verifierPublicKeyPem: options.verifierPublicKeyPem }
+            : {}),
+        },
         serverCa: options.serverCa,
       });
       ensureOpen();
@@ -210,7 +235,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const challenge = PairingChallengeSchema.parse(response);
       if (
         challenge.expiresAt <= now() ||
-        challenge.requestFingerprint !== requestFingerprint(state.csr)
+        challenge.requestFingerprint !== requestFingerprint(state.csr) ||
+        challenge.verifierFingerprint !== verifierFingerprint
       )
         throw new Error("Runner pairing challenge does not match the local request.");
       const pending = { ...common(), phase: "pending" as const, ...challenge };
@@ -250,6 +276,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (currentChallenge !== challenge || challenge.expiresAt <= now())
         throw new Error("Runner pairing changed while awaiting the response.");
       if (result.status === "pending") return status();
+      if (
+        result.verifierFingerprint !== challenge.verifierFingerprint ||
+        result.verifierFingerprint !== verifierFingerprint
+      )
+        throw new Error("Approved verifier identity differs from the pairing challenge.");
       const { status: _status, ...identity } = result;
       const approved = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, approved, now());
@@ -458,7 +489,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       );
       ensureOpen();
       unchangedIdentity(previous);
-      if (identity.runnerId !== previous.runnerId || identity.workspaceId !== previous.workspaceId)
+      if (
+        identity.runnerId !== previous.runnerId ||
+        identity.workspaceId !== previous.workspaceId ||
+        identity.verifierFingerprint !== previous.verifierFingerprint
+      )
         throw new Error("Renewed certificate changes the paired identity.");
       const renewed = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, renewed, now());

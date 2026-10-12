@@ -6,6 +6,7 @@ import {
   expireRunnerPairings,
   findRunnerPairing,
   getRunnerCertificate,
+  getRunnerVerifier,
   immediate,
   listRunners,
   renewRunnerCertificate,
@@ -15,6 +16,7 @@ import {
   workspaceMember,
   type RunnerRecord,
 } from "../db";
+import { runnerVerifierFingerprint } from "../runner-verifier";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
 import {
   workspaceId,
@@ -45,7 +47,11 @@ export function createRunnerControl(options: {
     return runner;
   }
   return {
-    async beginPairing(input: { name: string; csr: string }) {
+    async beginPairing(input: { name: string; csr: string; verifierPublicKeyPem?: string }) {
+      const verifierFingerprint =
+        input.verifierPublicKeyPem === undefined
+          ? undefined
+          : runnerVerifierFingerprint(input.verifierPublicKeyPem);
       if (
         input.name.trim().length < 1 ||
         input.name.length > 80 ||
@@ -80,9 +86,18 @@ export function createRunnerControl(options: {
           expiresAt,
           runnerId: null,
           certificateFingerprint: null,
+          verifierPublicKeyPem: input.verifierPublicKeyPem,
+          verifierFingerprint,
         });
       });
-      return { id, claim, code, requestFingerprint, expiresAt };
+      return {
+        id,
+        claim,
+        code,
+        requestFingerprint,
+        expiresAt,
+        ...(verifierFingerprint ? { verifierFingerprint } : {}),
+      };
     },
     inspectPairing(principal: WorkspacePrincipal, code: string) {
       const at = now();
@@ -94,13 +109,22 @@ export function createRunnerControl(options: {
         name: pairing.name,
         requestFingerprint: pairing.requestFingerprint,
         expiresAt: pairing.expiresAt,
+        ...(pairing.verifierFingerprint
+          ? { verifierFingerprint: pairing.verifierFingerprint }
+          : {}),
       };
     },
-    async approvePairing(principal: WorkspacePrincipal, code: string) {
+    async approvePairing(
+      principal: WorkspacePrincipal,
+      code: string,
+      verifierFingerprint?: string,
+    ) {
       admin(principal, now());
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
+      if ((pairing.verifierFingerprint ?? undefined) !== verifierFingerprint)
+        throw new Error("Verifier fingerprint confirmation does not match.");
       const certificate = await options.authority.issue(pairing.csr, undefined, now());
       const at = now();
       const runnerId = workspaceId(at);
@@ -112,6 +136,7 @@ export function createRunnerControl(options: {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           certificate,
+          verifierFingerprint,
           now: at,
         });
       });
@@ -132,12 +157,14 @@ export function createRunnerControl(options: {
           at,
           pairing.id,
         ]);
+        const verifier = getRunnerVerifier(db, runner.id);
         return {
           status: "approved" as const,
           runnerId: runner.id,
           workspaceId: runner.workspaceId,
           certificate: certificate.pem,
           authority: options.authority.certificate,
+          ...(verifier ? { verifierFingerprint: verifier.fingerprint } : {}),
         };
       });
       if (result === null) throw new Error("Runner pairing is invalid or expired.");
@@ -190,11 +217,13 @@ export function createRunnerControl(options: {
           now: now(),
         });
       });
+      const verifier = getRunnerVerifier(db, runner.id);
       return {
         runnerId: runner.id,
         workspaceId: runner.workspaceId,
         certificate: certificate.pem,
         authority: options.authority.certificate,
+        ...(verifier ? { verifierFingerprint: verifier.fingerprint } : {}),
       };
     },
   };

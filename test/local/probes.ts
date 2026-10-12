@@ -1,3 +1,4 @@
+import { probeRunnerVerifierPairing } from "./runner-verifier-pairing";
 import { probeRunnerCloseout } from "./runner-closeout";
 import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
@@ -55,6 +56,7 @@ export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
+  await probeRunnerOrchestration(join(root, "runner-orchestration"), observe);
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
@@ -63,6 +65,7 @@ export async function probeBoundaries(
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
+  await probeRunnerVerifierPairing(join(root, "runner-verifier-pairing"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
   probeRunnerJournal(join(root, "runner-journal"), observe);
   await probeRunnerDaemonHealth(join(root, "runner-daemon-health"), observe);
@@ -325,3 +328,4 @@ export async function probeBoundaries(
     db.close();
   }
 }
+import { probeRunnerOrchestration } from "./runner-orchestration";

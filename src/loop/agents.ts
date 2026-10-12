@@ -43,6 +43,7 @@ export type AcpAgentDeps = {
   signal?: AbortSignal;
   onCleanupFailure?: () => void;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
+  agentRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   timeoutMs?: number;
 };
 
@@ -84,7 +85,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         worktree: request.worktree,
         prompt,
       });
-      const result = await runAgent({
+      const result = await (deps.agentRunner ?? runAgent)({
         prepareInputFiles: deps.prepareInputFiles,
         role: "reviewer",
         profile: deps.profiles?.reviewer,
@@ -138,7 +139,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         worktree: request.worktree,
         prompt,
       });
-      const result = await (deps.promptRunner ?? runAgent)({
+      const result = await (deps.promptRunner ?? deps.agentRunner ?? runAgent)({
         prepareInputFiles: deps.prepareInputFiles,
         onEvent: deps.onEvent,
         role: "implementer",

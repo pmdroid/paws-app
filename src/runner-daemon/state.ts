@@ -47,6 +47,10 @@ export const SigningKeysSchema = z
   .max(8)
   .refine((keys) => new Set(keys.map((key) => key.keyId)).size === keys.length);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const verifierFingerprint = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/)
+  .optional();
 const common = {
   controlPlaneUrl: z.string(),
   runnerApiUrl: z.string(),
@@ -61,6 +65,7 @@ export const PairingChallengeSchema = z.strictObject({
     .regex(/^[A-Za-z0-9_-]+$/),
   code: z.string().regex(/^[A-F0-9]{16}$/),
   requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  verifierFingerprint,
   expiresAt: timestamp,
 });
 export const ApprovedIdentitySchema = z.strictObject({
@@ -69,6 +74,7 @@ export const ApprovedIdentitySchema = z.strictObject({
   certificate: z.string().min(1).max(32_768),
   authority: z.string().min(1).max(32_768),
   signingKeys: SigningKeysSchema,
+  verifierFingerprint,
 });
 const StateSchema = z.discriminatedUnion("phase", [
   z.strictObject({ ...common, phase: z.literal("prepared") }),
