@@ -1,4 +1,5 @@
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
+import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -43,6 +44,7 @@ export async function probeBoundaries(
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
   await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
+  await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
     [
