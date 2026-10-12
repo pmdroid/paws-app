@@ -98,6 +98,7 @@ import {
   type GitHubBinding,
   LinearTaskAccess,
   handleLinearAdministration,
+  refreshLinearNotificationContext,
   type Orchestrator,
   type RepositoryBinding,
   type HostGitHubAuth,
@@ -205,6 +206,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 reconcile: async (notification) => {
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
                   await linearTaskAccess.reconcile(notification.issueId);
+                  await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
                 },
                 notify: (command) => {
                   if (orchestrator === null) throw new Error("The loop is not attached.");

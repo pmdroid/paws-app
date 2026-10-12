@@ -1,3 +1,4 @@
+import { createLinearIssueContextReads } from "./issue-context";
 import { createLinearSessionReads } from "./history";
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
@@ -98,6 +99,7 @@ export function createLinearSessionMethods(client: LinearClient) {
 
   return {
     ...createLinearSessionReads(client),
+    ...createLinearIssueContextReads(client),
     async createActivity(
       update: ProgressUpdate,
       options?: TrackerRequestOptions,

@@ -160,18 +160,18 @@ export {
 } from "./artifacts";
 
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
-
 export { getConversation, saveConversation } from "./acp-conversations";
-
-export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
-export { prepareLinearActivity } from "./linear-delivery";
+export {
+  getConfirmedRemoteMerge,
+  recordConfirmedRemoteMerge,
+  type ConfirmedRemoteMerge,
+} from "./remote-merges";
 
 export {
   recordLinearInstallation,
-  hasLinearNotification,
   recordLinearNotification,
+  hasLinearNotification,
   dropLinearSessionDeliveries,
-  listLinearInstallationSessions,
   revokeLinearInstallation,
   isLinearAppRevoked,
   changeLinearTeamAccess,
@@ -179,13 +179,13 @@ export {
   getLinearTeamAccess,
   getLinearSessionInstallation,
   getLinearInstallationPermissions,
+  listLinearInstallationSessions,
   listLinearInstallationRevocations,
   restoreLinearInstallation,
   type LinearInstallationRevocation,
   type LinearInstallationScope,
   type LinearSessionAccess,
 } from "./linear-access";
-
 export {
   getLinearTaskDelegation,
   linearSessionsForDelegatedTeams,
@@ -193,8 +193,11 @@ export {
   type LinearTaskDelegation,
 } from "./linear-delegation";
 
+export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
+export { prepareLinearActivity } from "./linear-delivery";
+
 export {
-  getConfirmedRemoteMerge,
-  recordConfirmedRemoteMerge,
-  type ConfirmedRemoteMerge,
-} from "./remote-merges";
+  linearSessionsForIssueContext,
+  saveLinearIssueContext,
+  getLinearIssueContext,
+} from "./linear-issue-context";
