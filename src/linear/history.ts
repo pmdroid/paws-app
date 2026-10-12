@@ -175,7 +175,7 @@ function readContent(value: unknown): LinearActivityContent {
     return {
       type,
       action: required(value, "action"),
-      parameter: required(value, "parameter"),
+      parameter: typeof value["parameter"] === "string" ? value["parameter"] : fail("parameter"),
       ...(typeof value["result"] === "string" ? { result: value["result"] } : {}),
     };
   if (

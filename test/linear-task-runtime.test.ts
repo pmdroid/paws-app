@@ -20,6 +20,7 @@ import {
 import {
   createFakeTracker,
   createLinearFileTransfer,
+  createLinearTracker,
   createInboxStore,
   startCatchUpPoller,
   type AcceptedLinearEvent,
@@ -495,6 +496,67 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
     );
     expect(f.tracker.statuses).toEqual([]);
   } finally {
+    f.db.close();
+  }
+});
+
+test("a question reply resumes through history containing an action with an empty parameter", async () => {
+  const f = setup("clarify", "Which screenshot?", false, "ok", "artifact");
+  try {
+    await f.orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const question = findOpenQuestion(f.db, "session")!;
+    const answeredAt = Math.max(Date.now(), question.createdAt + 1);
+    f.tracker.listSessionActivities = createLinearTracker({
+      async query() {
+        return {
+          agentSession: {
+            id: "session",
+            activities: {
+              nodes: [
+                {
+                  id: "read-action",
+                  createdAt: new Date(question.createdAt).toISOString(),
+                  updatedAt: new Date(question.createdAt).toISOString(),
+                  user: { id: "app" },
+                  content: {
+                    type: "action",
+                    action: "Read",
+                    parameter: "",
+                    result: "Read the reference",
+                  },
+                  ephemeral: false,
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        };
+      },
+    }).listSessionActivities;
+    await f.orchestrator.onLinearEvent({
+      ...event(),
+      action: "prompted",
+      dedupeKey: "screenshot-answer",
+      activityId: "screenshot-answer",
+      activityCreatedAtMs: answeredAt,
+      updatedAtMs: answeredAt,
+      body: "Capture a fresh screenshot of an empty instance.",
+    });
+    expect(getQuestion(f.db, question.id)?.answer).toBe(
+      "Capture a fresh screenshot of an empty instance.",
+    );
+    await f.jobs.tick();
+    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
+    expect(f.launches).toEqual(["classify", "classify", "artifact"]);
+    expect(f.uploads()).toBe(1);
+    expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
+    expect(JSON.stringify(JSON.parse(readFileSync(f.traces.at(-1)!, "utf8")).prompts)).toContain(
+      "Read the reference",
+    );
+  } finally {
+    await f.orchestrator.shutdown();
     f.db.close();
   }
 });
