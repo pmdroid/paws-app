@@ -696,4 +696,10 @@ CREATE TABLE remote_merge_fact (
 ) STRICT;
 `,
   },
+  {
+    id: "019_linear_auth_session_generation",
+    sql: `
+ALTER TABLE linear_github_auth ADD COLUMN session_generation INTEGER NOT NULL DEFAULT 0;
+`,
+  },
 ];

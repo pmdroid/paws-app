@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyWorkItemEvent,
+  advanceLinearSessionGeneration,
   beginImplementRun,
   getWorkItem,
   insertQueuedItem,
@@ -52,6 +53,70 @@ function fixture(phase: "initial" | "publication" = "initial", path = ":memory:"
 const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("verified GitHub authentication questions", () => {
+  test.each(["prompt", "revocation"] as const)(
+    "a %s fence rejects an old native completion without answering",
+    async (reason) => {
+      const f = fixture();
+      let allowed = true;
+      const guarded = new GitHubAuthQuestions(
+        f.db,
+        f.host,
+        () => f.clock.now(),
+        () => allowed,
+      );
+      cleanup.push(() => guarded.close());
+      await guarded.ensure(f.item, "initial", f.signal);
+      const question = findOpenQuestion(f.db, "session")!;
+      if (reason === "prompt") advanceLinearSessionGeneration(f.db, "session");
+      else allowed = false;
+      const deliveries = listOutbox(f.db);
+      f.host.challenges[0]!.complete({ id: 7, login: "owner" });
+      await settled();
+      expect(getQuestion(f.db, question.id)?.status).toBe("open");
+      expect(listJobs(f.db)).toEqual([]);
+      expect(listOutbox(f.db)).toEqual(deliveries);
+      expect(f.host.account).toBeNull();
+    },
+  );
+
+  test("preflight cannot create an auth question after its session generation changes", async () => {
+    const f = fixture();
+    const checked = Promise.withResolvers<null>();
+    f.host.check = () => checked.promise;
+    const ensuring = f.auth.ensure(f.item, "initial", f.signal);
+    advanceLinearSessionGeneration(f.db, "session");
+    checked.resolve(null);
+    expect(await ensuring).toBe(false);
+    expect(findOpenQuestion(f.db, "session")).toBeNull();
+    expect(f.host.challenges).toHaveLength(0);
+  });
+
+  test("retry consumption and auth generation commit or roll back together", async () => {
+    const f = fixture();
+    f.host.begin = async () => {
+      throw new Error("Unavailable");
+    };
+    await f.auth.ensure(f.item, "initial", f.signal);
+    const question = findOpenQuestion(f.db, "session")!;
+    const generation = () =>
+      f.db.query<{ generation: number }, []>("SELECT generation FROM linear_github_auth").get()!
+        .generation;
+    const before = generation();
+    await expect(
+      f.auth.retry(question.id, "linear-owner", () => {
+        throw new Error("Consumption failed");
+      }),
+    ).rejects.toThrow("Consumption failed");
+    expect(generation()).toBe(before);
+    let consumed = false;
+    expect(await f.auth.retry(question.id, "someone-else", () => (consumed = true))).toBe(false);
+    expect(consumed).toBe(false);
+    expect(await f.auth.retry(question.id, "linear-owner", () => (consumed = true))).toBe(true);
+    expect(consumed).toBe(true);
+    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    expect(listJobs(f.db)).toEqual([]);
+  });
+
   test.each(["begin", "completion"] as const)(
     "failed %s publishes a durable retry question without resuming",
     async (phase) => {
@@ -263,7 +328,7 @@ describe("verified GitHub authentication questions", () => {
     f.auth.close();
     f.db.close();
     checked.resolve(7);
-    await expect(pending).resolves.toBeUndefined();
+    await expect(pending).resolves.toBe(false);
   });
 
   test("cancelled SQL-open authentication cannot answer or renew a replacement question", async () => {

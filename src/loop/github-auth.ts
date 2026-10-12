@@ -5,6 +5,7 @@ import {
   enqueueJobOnce,
   enqueueOutboxOnce,
   getWorkItem,
+  getLinearSessionGeneration,
   immediate,
   type WorkItemRecord,
 } from "../db";
@@ -29,6 +30,7 @@ type AuthRequest = {
   github_account_id: number | null;
   phase: GitHubAuthPhase;
   generation: number;
+  session_generation: number;
   status: "pending" | "verified" | "expired" | "revoked";
   expires_at: number;
 };
@@ -43,6 +45,7 @@ export class GitHubAuthQuestions {
     private readonly db: Database,
     private readonly host: HostGitHubAuth,
     private readonly now: () => number,
+    private readonly allowed: (item: WorkItemRecord) => boolean = () => true,
   ) {}
 
   owns(questionId: string): boolean {
@@ -55,12 +58,22 @@ export class GitHubAuthQuestions {
     signal: AbortSignal,
   ): Promise<boolean> {
     if (this.closed) return false;
+    const sessionGeneration = item.sessionKey
+      ? getLinearSessionGeneration(this.db, item.sessionKey)
+      : 0;
+    const isCurrent = () =>
+      !this.closed &&
+      !signal.aborted &&
+      this.allowed(item) &&
+      (item.sessionKey === null ||
+        getLinearSessionGeneration(this.db, item.sessionKey) === sessionGeneration);
+    if (!isCurrent()) return false;
     const account = await this.host.check(item, signal);
-    if (this.closed) return false;
+    if (!isCurrent()) return false;
     signal.throwIfAborted();
     const expected = await this.host.linkedAccount(item);
     signal.throwIfAborted();
-    if (this.closed) return false;
+    if (!isCurrent()) return false;
     if (account !== null && (expected === null || account.id === expected)) return true;
     const actorId = this.host.owner(item);
     if (actorId === null)
@@ -83,8 +96,16 @@ export class GitHubAuthQuestions {
       });
       applyWorkItemEvent(this.db, item.id, "blocking_question");
       this.db.run(
-        "INSERT INTO linear_github_auth (question_id,item_id,actor_id,github_account_id,phase,expires_at) VALUES (?,?,?,?,?,?)",
-        [question.id, item.id, actorId, expected, phase, this.now() + AUTH_LIFETIME_MS],
+        "INSERT INTO linear_github_auth (question_id,item_id,actor_id,github_account_id,phase,expires_at,session_generation) VALUES (?,?,?,?,?,?,?)",
+        [
+          question.id,
+          item.id,
+          actorId,
+          expected,
+          phase,
+          this.now() + AUTH_LIFETIME_MS,
+          sessionGeneration,
+        ],
       );
       return this.read(question.id);
     });
@@ -143,8 +164,12 @@ export class GitHubAuthQuestions {
     this.active.clear();
   }
 
-  async retry(questionId: string, actorId: string | null): Promise<void> {
-    if (this.closed) return;
+  async retry(
+    questionId: string,
+    actorId: string | null,
+    consume: () => void = () => {},
+  ): Promise<boolean> {
+    if (this.closed) return false;
     const request = this.read(questionId);
     if (
       request === null ||
@@ -152,19 +177,23 @@ export class GitHubAuthQuestions {
       this.active.has(questionId) ||
       !this.current(request)
     )
-      return;
+      return false;
     const item = getWorkItem(this.db, request.item_id)!;
     const expected = await this.host.linkedAccount(item);
-    if (this.active.has(questionId) || !this.current(request)) return;
+    if (this.active.has(questionId) || !this.current(request)) return false;
     if (expected !== request.github_account_id) {
       this.revoke(request.item_id);
-      return;
+      return false;
     }
-    this.db.run(
-      "UPDATE linear_github_auth SET status = 'pending',expires_at = ?,generation = generation + 1 WHERE question_id = ?",
-      [this.now() + AUTH_LIFETIME_MS, questionId],
-    );
+    immediate(this.db, () => {
+      this.db.run(
+        "UPDATE linear_github_auth SET status = 'pending',expires_at = ?,generation = generation + 1 WHERE question_id = ?",
+        [this.now() + AUTH_LIFETIME_MS, questionId],
+      );
+      consume();
+    });
     await this.start(this.read(questionId)!);
+    return true;
   }
 
   private async start(previous: AuthRequest): Promise<void> {
@@ -346,6 +375,9 @@ export class GitHubAuthQuestions {
       persisted.generation === request.generation &&
       item?.state === "awaiting_input" &&
       !item.cancelRequested &&
+      this.allowed(item) &&
+      (item.sessionKey === null ||
+        getLinearSessionGeneration(this.db, item.sessionKey) === request.session_generation) &&
       this.host.owner(item) === request.actor_id &&
       question?.status === "open"
     );

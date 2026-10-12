@@ -41,6 +41,7 @@ import {
 } from "../core";
 import {
   getTaskMode,
+  getLinearSessionAccess,
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
   getTaskModeGeneration,
@@ -148,6 +149,7 @@ import { createLinearArtifactPublisher } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { guardGitHubPublication } from "./publication";
+import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import { classifyTask } from "./task-classifier";
 import {
   interpretRepositoryAnswer,
@@ -175,6 +177,7 @@ export type OrchestratorOptions = {
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
+  githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
   catchUp?: () => Promise<void>;
@@ -228,9 +231,23 @@ export class Orchestrator {
   private activitySeq = 0;
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
+  private readonly githubAuth: GitHubAuthQuestions | null;
+  private readonly authRecoveryController = new AbortController();
+  private authRecovery: Promise<void> | null = null;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
+    this.githubAuth = options.githubAuth
+      ? new GitHubAuthQuestions(
+          options.db,
+          options.githubAuth,
+          () => this.now(),
+          (item) =>
+            !this.taskAccess(item) ||
+            (item.sessionKey !== null &&
+              getLinearSessionAccess(this.db, item.sessionKey) === "allowed"),
+        )
+      : null;
     this.inputLoader = options.files
       ? createLinearInputLoader({
           db: options.db,
@@ -248,6 +265,7 @@ export class Orchestrator {
     });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
+      this.githubAuth?.revoke(command.itemId);
       this.abortItem(command.itemId);
     });
     this.register();
@@ -310,6 +328,7 @@ export class Orchestrator {
 
   async interruptLinearSession(sessionId: string): Promise<void> {
     const items = this.itemsForSession(sessionId);
+    for (const item of items) this.githubAuth?.revoke(item.id);
     const owned = [...this.live.values()].filter((live) =>
       items.some((item) => item.id === live.itemId),
     );
@@ -326,9 +345,12 @@ export class Orchestrator {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.authRecoveryController.abort();
+    this.githubAuth?.close();
     const owned = [...this.live.values()];
     for (const live of owned) live.controller.abort();
     const joined = await Promise.allSettled([
+      this.authRecovery,
       this.stopTaskPlanning(),
       ...owned.map((live) => live.done),
     ]);
@@ -337,6 +359,16 @@ export class Orchestrator {
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
+  }
+
+  recoverGitHubAuth(): Promise<void> {
+    if (this.authRecovery) return this.authRecovery;
+    const pending =
+      this.githubAuth?.recover(this.authRecoveryController.signal) ?? Promise.resolve();
+    this.authRecovery = pending;
+    return pending.finally(() => {
+      if (this.authRecovery === pending) this.authRecovery = null;
+    });
   }
 
   private recordTurn(event: AcceptedLinearEvent) {
@@ -1015,11 +1047,6 @@ export class Orchestrator {
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
-    this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
-      ephemeral: true,
-    });
-    const sessionProgress = this.sessionProgress(item);
-    sessionProgress?.phase("implementing");
     let posted = true;
     const first = setTimeout(() => {
       if (posted || !this.canReportProgress(item.id)) return;
@@ -1043,6 +1070,7 @@ export class Orchestrator {
     first.unref?.();
     keepAlive.unref?.();
     const askTeam = this.askHook(item, run.id);
+    const sessionProgress = this.sessionProgress(item);
     const activity = createAcpActivityReporter(
       (update) => {
         if (
@@ -1062,7 +1090,14 @@ export class Orchestrator {
     );
 
     try {
+      await this.taskAccess(item)?.assert(item, controller.signal);
+      const auth = this.authorization(item);
+      if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
       await this.taskAccess(item)?.prepare(item, controller.signal);
+      this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
+        ephemeral: true,
+      });
+      sessionProgress?.phase("implementing");
       if (!this.taskAccess(item)) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
@@ -1418,6 +1453,9 @@ export class Orchestrator {
           getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
       assert: async () => {
         await this.taskAccess(item)?.assert(item, live.controller.signal);
+        const auth = this.authorization(item);
+        if (auth && !(await auth.ensure(item, "publication", live.controller.signal)))
+          throw new Error("GitHub sign-in is required before publication.");
       },
     });
     const candidate = await this.candidateForItem(item);
@@ -1666,6 +1704,14 @@ export class Orchestrator {
     } catch {}
     if (answeredBy === "unknown" || answeredBy === "linear" || !answeredBy.trim())
       return "rejected";
+    if (this.githubAuth?.owns(open.id)) {
+      const accepted = await this.githubAuth.retry(open.id, answeredBy, () => {
+        if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
+          applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
+      });
+      await this.flush();
+      return accepted ? "answered" : "rejected";
+    }
     if (recovery) {
       const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
       const item = getWorkItem(this.db, open.itemId);
@@ -2083,6 +2129,14 @@ export class Orchestrator {
     };
     this.live.set(key, live);
     return live;
+  }
+
+  private authorization(item: WorkItemRecord): GitHubAuthQuestions | null {
+    return this.options.channel !== "comments" &&
+      !isGitHubIssue(item.linearIssueId) &&
+      item.sessionKey !== null
+      ? this.githubAuth
+      : null;
   }
 
   private signalForItem(itemId: string): AbortSignal | undefined {
