@@ -39,6 +39,6 @@ describe("direct public HTTPS configuration", () => {
   test("real TLS verifies the configured certificate and serves HTTPS", async () => {
     const observations: boolean[] = [];
     await probePublicTls(root, (_name, passed) => observations.push(passed));
-    expect(observations).toEqual([true]);
+    expect(observations).toEqual([true, true]);
   });
 });

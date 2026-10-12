@@ -55,7 +55,7 @@ bun --no-env-file scripts/verify-local.ts serve
 
 - Fresh startup configures Linear issue tracking. Linear tracker and comment adapters use local fakes with an epic and two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
-- Direct HTTPS using production TLS configuration, a fresh local certificate and a client that verifies the certificate.
+- Direct HTTPS using production TLS configuration, a fresh local certificate and a client that verifies the certificate. A fresh child reads the service’s `NODE_ENV` setting and verifies that an uncaught enrollment error returns HTTP 500 without its error details. Run this probe from a checkout path containing spaces or Unicode when checking child-import portability.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
 - Direct host ACP execution, credential environment filtering and guarded filesystem requests, with a retained scripted-agent trace. Removed container CLI commands must fail before starting Paws.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.

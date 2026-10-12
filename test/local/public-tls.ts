@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { get } from "node:https";
 import { join } from "node:path";
 import { loadPublicTls } from "../../src/deployment";
@@ -87,4 +87,45 @@ export async function probePublicTls(
   } finally {
     await server.stop(true);
   }
+  await probePublicTlsErrorPages(root, observe);
+}
+
+export async function probePublicTlsErrorPages(
+  root: string,
+  observe: (name: string, passed: boolean, observed: unknown) => void,
+) {
+  const files = createPublicTlsFixture(join(root, "error-pages"));
+  const service = readFileSync(new URL("../../deploy/linux/paws.service", import.meta.url), "utf8");
+  const nodeEnv = service.match(/^Environment=NODE_ENV=(.*)$/m)?.[1] ?? "";
+  const program = `
+    import { loadPublicTls } from ${JSON.stringify(new URL("../../src/deployment/index.ts", import.meta.url).href)};
+    import { startServer } from ${JSON.stringify(new URL("../../src/server/index.ts", import.meta.url).href)};
+    const tls = loadPublicTls(${JSON.stringify(files)});
+    const server = startServer({hostname:"127.0.0.1",port:0,tls,webhooks:false,
+      runnerEnrollment:async()=>{throw new Error("PAWS_ERROR_PAGE_SENTINEL")}});
+    try {
+      const response = await fetch("https://127.0.0.1:"+server.port+"/api/runner-pairings",{
+        headers:{accept:"text/html"},tls:{ca:tls.cert,rejectUnauthorized:true},signal:AbortSignal.timeout(5000)});
+      console.log(JSON.stringify({status:response.status,body:await response.text()}));
+    } finally { await server.stop(true); }
+    process.exit(0);
+  `;
+  const child = Bun.spawn([process.execPath, "--no-env-file", "--eval", program], {
+    env: { PATH: "/usr/bin:/bin", HOME: root, NODE_ENV: nodeEnv },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exit !== 0) throw new Error(`Public TLS error-page child failed: ${stderr}`);
+  const result = JSON.parse(stdout) as { status: number; body: string };
+  const detailsVisible = result.body.includes("PAWS_ERROR_PAGE_SENTINEL");
+  observe(
+    "production service hides uncaught route details on verified HTTPS",
+    result.status === 500 && !detailsVisible,
+    { status: result.status, nodeEnv, detailsVisible },
+  );
 }
