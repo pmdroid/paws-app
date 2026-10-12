@@ -131,9 +131,19 @@ export async function probeCloseoutCommandRunner(
       for (const call of calls) assert.deepEqual(readFileSync(call.logFile), logBytes);
     } else {
       assert.notEqual(verdict.decision, "accepted", verdict.summary);
-      assert(
-        verdict.result.decision.items.some((item) => item.state === "failed"),
-        verdict.summary,
+      const failed = verdict.result.decision.items.filter((item) => item.state === "failed");
+      assert.equal(failed.length, 1, verdict.summary);
+      assert.equal(failed[0]!.id, variant === "failedSetup" ? "prepare" : "check");
+      assert.equal(failed[0]!.kind, variant === "failedSetup" ? "setup" : "command");
+      assert.equal(
+        failed[0]!.message,
+        {
+          dirty: "command left the worktree dirty",
+          headMoved: "command moved HEAD",
+          timedOut: "command timed out",
+          exit: "command exited 1",
+          failedSetup: "command exited 1",
+        }[variant],
       );
       assert.equal(calls.length, variant === "failedSetup" ? 1 : 2);
     }
