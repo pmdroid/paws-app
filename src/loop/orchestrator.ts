@@ -27,6 +27,7 @@ import {
   type GateResult,
   type CloseoutVerdict,
   type CandidateIdentity,
+  type CloseoutGateOptions,
 } from "../closeout";
 import {
   CommandBus,
@@ -202,6 +203,13 @@ export type OrchestratorOptions = {
   github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
+  remoteExecution?: {
+    agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
+    closeoutForItem(
+      itemId: string,
+      signal?: AbortSignal,
+    ): NonNullable<CloseoutGateOptions["commandRunner"]>;
+  };
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
@@ -1222,7 +1230,7 @@ export class Orchestrator {
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
       saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
-      markRunEnded(this.db, run.id, this.now());
+      if (!this.options.remoteExecution) markRunEnded(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
@@ -1240,6 +1248,7 @@ export class Orchestrator {
       activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
+      if (this.options.remoteExecution) markRunEnded(this.db, run.id, this.now());
       this.conversations.delete(item.id);
       try {
         await this.flush();
@@ -1326,6 +1335,7 @@ export class Orchestrator {
     const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
     const gate = createCloseoutGate({
       candidate,
+      commandRunner: this.options.remoteExecution?.closeoutForItem(item.id, deps.signal),
       reviewer: createAcpCodexReviewer(deps),
       fixer: {
         applyFix: async (request) => {
@@ -2185,7 +2195,14 @@ export class Orchestrator {
     const key = `operation:${itemId}`;
     const live = this.beginLive(itemId, key);
     try {
-      this.conversations.set(itemId, await durableConversation(this.db, itemId));
+      this.conversations.set(
+        itemId,
+        await durableConversation(
+          this.db,
+          itemId,
+          this.options.remoteExecution?.agentForItem(itemId),
+        ),
+      );
       await operation();
     } catch (error) {
       if (!live.controller.signal.aborted) throw error;
@@ -2519,7 +2536,11 @@ export class Orchestrator {
       await durableConversation(this.db, sourceItemId);
       saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
     }
-    const runner = await durableConversation(this.db, item.id);
+    const runner = await durableConversation(
+      this.db,
+      item.id,
+      this.options.remoteExecution?.agentForItem(item.id),
+    );
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
       applyLinearTurns(
@@ -2547,6 +2568,7 @@ export class Orchestrator {
       },
       signal: this.signalForItem(item.id),
       promptRunner: this.conversations.get(item.id),
+      agentRunner: this.options.remoteExecution?.agentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
       brief: this.workContext(item),
@@ -2684,7 +2706,7 @@ export class Orchestrator {
         worktree: worktree.path,
         prompt: "",
       });
-      const result = await runAgent({
+      const result = await (this.options.remoteExecution?.agentForItem(item.id) ?? runAgent)({
         ...launched,
         profile,
         role,

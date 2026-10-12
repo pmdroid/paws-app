@@ -197,6 +197,8 @@ Run `bun run build:status`, then `NODE_PATH=/absolute/path/to/playwright/node_mo
 
 ## Installed runner pairing and worker commands
 
+Run `bun test test/runner-orchestration.test.ts` to drive Linear intake, real SQLite and Git through recorded execution ports with actual scripted ACP. The proof makes local agent and command launches invalid, requires remote preparation, implementation, a failed check, a history-preserving fix and independent review, and verifies that the canonical run stays active through checks and ends afterward. An unavailable transport must block before implementation.
+
 Run `bun --no-env-file test/local/runner-cli.ts` on Linux with the pinned disposable Docker image available. The normal Paws CLI pairs through real verified HTTPS, resumes its pending request after SIGTERM and claims only after administrator approval. Real service UIDs reject wrong-user operations, unsafe configuration files, links, FIFOs, unknown fields, untrusted certificates and wrong hostnames. The actual agent worker uses fixed spool, result and home paths, strips inherited provider credentials, rejects consumed execution IDs and retains an immutable cancelled result after joining ACP shutdown. Preserve its seven observations, source hashes and network-disabled image identity. The coordinator fixture supplies the verified administrator principal; the workspace and startup recipes separately exercise browser session, Origin and CSRF authorization.
 
 Run the same fixture with `--baseline` to compile the published pre-entrypoint Paws command and retain its rejected `runner pair` invocation alongside the treatment.

@@ -25,6 +25,7 @@ export interface AcpPromptLifecycle {
 
 export function createAcpPromptLifecycle(
   context: readonly AcpConversationEntry[] = [],
+  runner: (options: RunAgentOptions) => Promise<RunAgentResult> = runAgent,
 ): AcpPromptLifecycle {
   const history = context.map((entry) => ({ ...entry }));
   let active: { controller: AbortController; done: Promise<RunAgentResult> } | undefined;
@@ -56,7 +57,7 @@ export function createAcpPromptLifecycle(
               throw error;
             },
           );
-          const result = await runAgent({ ...options, prompt, signal: controller.signal });
+          const result = await runner({ ...options, prompt, signal: controller.signal });
           if (!result.agentExited) {
             stopped = true;
             throw new AcpCleanupError("ACP child did not exit; refusing another prompt");
