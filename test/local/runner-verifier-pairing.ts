@@ -95,6 +95,7 @@ export async function probeRunnerVerifierPairing(
   const tls = { key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
   const issuer = join(root, "issuer");
   await initializeRunnerCoordinator(issuer);
+  now = Date.now();
   const errors: unknown[] = [];
   const coordinator = await openRunnerCoordinator({
     db,
