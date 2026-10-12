@@ -24,6 +24,7 @@ import {
 const root = mkdtempSync(join(tmpdir(), "paws-execution-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const id = "01K00000000000000000000000";
+const nonRootLinux = process.platform === "linux" && process.getuid!() > 0 && process.getgid!() > 0;
 const probe: RunnerJob = {
   executionId: id,
   command: {
@@ -45,7 +46,7 @@ function spool(name: string) {
 }
 
 describe("Linux execution spool", () => {
-  test.skipIf(process.platform !== "linux")(
+  test.skipIf(!nonRootLinux)(
     "publishes immutable sanitized jobs and retries the same publication",
     () => {
       const files = spool("happy");
@@ -69,7 +70,7 @@ describe("Linux execution spool", () => {
     },
   );
 
-  test.skipIf(process.platform !== "linux")(
+  test.skipIf(!nonRootLinux)(
     "rejects unsafe roots, directories, symlinks and hardlinked input",
     () => {
       const files = spool("unsafe");
@@ -103,7 +104,7 @@ describe("Linux execution spool", () => {
     },
   );
 
-  test.skipIf(process.platform !== "linux")(
+  test.skipIf(!nonRootLinux)(
     "repository work requires a private bundle and publishes a read-only copy",
     () => {
       const files = spool("repository");
