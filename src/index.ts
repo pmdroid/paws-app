@@ -1,4 +1,4 @@
-import { loginSlack, readSlackApp } from "./slack";
+import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import { commitCheckpointSync, probeAgentProfile, restartFromFreshMain, worktreePath } from "./acp";
@@ -86,6 +86,7 @@ import {
   createLinearTracker,
   openLinear,
   startCatchUpPoller,
+  parseLinearAdministration,
   type AcceptedLinearEvent,
   type LinearRunning,
   type TrackerAdapter,
@@ -109,6 +110,8 @@ import { startServer } from "./server";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion, type StoredQuestion } from "./questions";
+import { loadPublicTls } from "./deployment";
+import { issueVerifiedWorkspaceBootstrap, startWorkspaceAccess } from "./workspace";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -137,7 +140,24 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const envSource = source ?? process.env;
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
-  const env = { ...runtime.env, host: LOOPBACK };
+  const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
+  const tls = loadPublicTls(envSource);
+  if (publicDashboard) {
+    const origin = runtime.publicUrl === null ? null : new URL(runtime.publicUrl);
+    if (
+      origin === null ||
+      origin.protocol !== "https:" ||
+      origin.username !== "" ||
+      origin.password !== "" ||
+      origin.pathname !== "/" ||
+      origin.search !== "" ||
+      origin.hash !== ""
+    )
+      throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
+    if (runtime.linearClientId === null || runtime.linearMode !== "agent-session")
+      throw new Error("Public dashboard requires the Linear app OAuth client.");
+  }
+  const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   assertLinearQueue(paths.db);
   ensureLayout(paths);
@@ -171,6 +191,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
+  let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
@@ -211,8 +232,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   orchestrator.bus.emit(command);
                 },
               })
-            )
+            ) {
+              const administration = parseLinearAdministration(event);
+              if (
+                workspace !== undefined &&
+                administration?.kind === "teams" &&
+                administration.oauthClientId === runtime.linearClientId &&
+                (runtime.linearViewerId === null ||
+                  administration.appUserId === runtime.linearViewerId) &&
+                administration.organizationId === (await workspace.access).organizationId
+              )
+                await workspace.refresh();
               return false;
+            }
             if (
               event.sessionId !== null &&
               getLinearSessionAccess(db, event.sessionId) === "revoked"
@@ -247,33 +279,64 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
     });
 
-  const server = startServer({
-    hostname: LOOPBACK,
-    port: env.port,
-    linearWebhookSecret: env.linearWebhookSecret,
-    githubWebhookSecret: env.githubWebhookSecret,
-    githubWebhook: { accept: (delivery) => recordGitHubDelivery(db, delivery) },
-    slackSigningSecret:
-      envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
-    linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
-    webhooks: webhooks || env.githubWebhookSecret !== null,
-    db,
-    statusEnv: envSource,
-    closeoutHome: paths.home,
-    readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
-    ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
-    agentSettings: {
-      configPath: paths.configFile,
-      repos: repositories.map((value) => `${value.owner}/${value.repo}`),
-      probe: (profile) =>
-        probeAgentProfile({
-          profile,
-          pawsRoot: paths.home,
-          worktree: paths.home,
-          signal: abort.signal,
-        }),
-    },
-  });
+  if (publicDashboard) {
+    if (linear?.memberships === null || linear?.memberships === undefined) {
+      db.close();
+      throw new Error("Public dashboard requires a connected Linear app installation.");
+    }
+    try {
+      workspace = startWorkspaceAccess({
+        slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
+        db,
+        publicUrl: runtime.publicUrl!,
+        clientId: runtime.linearClientId!,
+        memberships: linear.memberships,
+        verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
+        onError: () => console.error("Paws workspace access refresh failed."),
+      });
+    } catch (error) {
+      abort.abort();
+      db.close();
+      throw error;
+    }
+  }
+  let server: Bun.Server<undefined>;
+  try {
+    server = startServer({
+      hostname: env.host,
+      ...(tls ? { tls } : {}),
+      ...(workspace ? { workspaceAccess: workspace.access } : {}),
+      port: env.port,
+      linearWebhookSecret: env.linearWebhookSecret,
+      githubWebhookSecret: env.githubWebhookSecret,
+      githubWebhook: { accept: (delivery) => recordGitHubDelivery(db, delivery) },
+      slackSigningSecret:
+        envSource.SLACK_SIGNING_SECRET ?? readSlackApp(paths.home)?.signingSecret ?? null,
+      linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
+      webhooks: webhooks || env.githubWebhookSecret !== null,
+      db,
+      statusEnv: envSource,
+      closeoutHome: paths.home,
+      readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
+      ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
+      agentSettings: {
+        configPath: paths.configFile,
+        repos: repositories.map((value) => `${value.owner}/${value.repo}`),
+        probe: (profile) =>
+          probeAgentProfile({
+            profile,
+            pawsRoot: paths.home,
+            worktree: paths.home,
+            signal: abort.signal,
+          }),
+      },
+    });
+  } catch (error) {
+    abort.abort();
+    if (workspace === undefined) db.close();
+    else void workspace.stop().then(() => db.close());
+    throw error;
+  }
 
   let running: LinearRunning = linear ? linear.start(server.port ?? env.port) : down();
 
@@ -443,6 +506,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         const serverStopped = server.stop(true);
         await orchestrator?.shutdown();
         await Promise.all([loops.stop(), linearStopped, serverStopped]);
+        await workspace?.stop();
         prepareShutdown(db, Date.now(), (item) => {
           commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
         });
@@ -699,6 +763,45 @@ async function doctorMain(): Promise<number> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "workspace") {
+    try {
+      if (argv.length !== 2 || argv[1] !== "bootstrap")
+        throw new Error("usage: paws workspace bootstrap");
+      const runtime = loadRuntime(process.env);
+      if (runtime.configError !== null) throw new Error(runtime.configError);
+      const paths = pawsPaths(runtime.env.home);
+      assertLinearQueue(paths.db);
+      ensureLayout(paths);
+      const db = openDatabase(paths.db);
+      try {
+        migrate(db);
+        const linear = openLinear({
+          db,
+          secretsDir: paths.secretsDir,
+          env: linearEnv(runtime, process.env),
+          publicUrl: runtime.publicUrl,
+          isAuthorized: () =>
+            !isLinearAppRevoked(db, {
+              oauthClientId: runtime.linearClientId,
+              appUserId: runtime.linearViewerId,
+            }),
+          webhooks: false,
+          noTunnel: true,
+        });
+        if (linear.memberships === null)
+          throw new Error("Connect the Linear app installation before workspace setup.");
+        const grant = await issueVerifiedWorkspaceBootstrap(db, linear.memberships);
+        console.log(`Workspace: ${grant.organization.name} (${grant.organization.id})`);
+        console.log(`Single-use setup code (expires in 10 minutes): ${grant.code}`);
+      } finally {
+        db.close();
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Workspace setup failed.");
+      process.exit(1);
+    }
+  }
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
@@ -765,7 +868,7 @@ if (import.meta.main) {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  const origin = `http://${paws.server.hostname}:${paws.server.port}`;
+  const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
   // One write so a piped reader cannot observe the ready line before the dashboard line exists.
