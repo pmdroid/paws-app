@@ -31,6 +31,7 @@ const PREFIXES = ["AWS_", "AZURE_", "CLOUDSDK_", "GH_", "GITHUB_", "GOOGLE_"];
 
 export function readCloseoutArtifact(input: {
   db: Database;
+  sessionIds?: readonly string[];
   itemId: string;
   checkId: string;
   kind: string;
@@ -47,6 +48,11 @@ export function readCloseoutArtifact(input: {
     (record) => publicId(record) === input.itemId || record.id === input.itemId,
   );
   if (item === undefined) return { status: 404, body: "Not found" };
+  if (
+    input.sessionIds !== undefined &&
+    (item.sessionKey === null || !input.sessionIds.includes(item.sessionKey))
+  )
+    return { status: 404, body: "Not found" };
   const rows = listCloseoutProgress(input.db).filter((row) => {
     if (row.itemId !== item.id) return false;
     if (row.head.toLowerCase() !== input.head.toLowerCase()) return false;

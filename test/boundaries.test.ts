@@ -51,7 +51,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   github: [],
   questions: ["core"],
   web: ["db"],
-  server: ["slack", "config", "linear", "github", "web", "auth", "settings"],
+  server: ["slack", "config", "linear", "github", "web", "auth", "settings", "db", "workspace"],
   settings: ["config"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions", "config"],

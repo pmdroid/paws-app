@@ -13,17 +13,11 @@ const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 export async function handleLinearArtifactRequest(
   request: Request,
   read: ReadLinearArtifact | undefined,
+  trustedOrigin?: string,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(PATH)) return null;
-  if (
-    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-    (request.headers.has("host") &&
-      request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase()) ||
-    (request.headers.has("origin") && request.headers.get("origin") !== url.origin) ||
-    request.headers.get("sec-fetch-site") === "cross-site"
-  )
-    return response("Forbidden", 403);
+  if (!dashboardOrigin(request, trustedOrigin)) return response("Forbidden", 403);
   if (request.method !== "GET" && request.method !== "HEAD")
     return response("Method not allowed", 405);
   const id = url.pathname.slice(PATH.length);
@@ -67,3 +61,4 @@ function response(body: string, status: number): Response {
     headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
   });
 }
+import { dashboardOrigin } from "./request-origin";

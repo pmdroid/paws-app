@@ -19,6 +19,7 @@ export type AgentConnectionResult = {
 };
 
 export type AgentSettingsOptions = {
+  trustedOrigin?: string;
   configPath: string;
   csrfToken: string;
   probe: (profile: AgentProfile) => Promise<AgentConnectionResult>;
@@ -34,7 +35,7 @@ export async function handleAgentSettingsRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== SETTINGS_PATH && url.pathname !== TEST_PATH) return null;
-  if (!localRequest(request))
+  if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Agent settings are only available on the local Paws origin" }, 403);
   if (request.method === "GET" && url.pathname === SETTINGS_PATH) {
     try {
@@ -106,9 +107,14 @@ export async function handleAgentSettingsRequest(
   }
 }
 
-function localRequest(request: Request): boolean {
+function localRequest(request: Request, trustedOrigin?: string): boolean {
   const url = new URL(request.url);
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return false;
+  if (
+    trustedOrigin === undefined
+      ? !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+      : url.origin !== trustedOrigin
+  )
+    return false;
   const host = request.headers.get("host");
   if (host !== null && host.toLowerCase() !== url.host.toLowerCase()) return false;
   const origin = request.headers.get("origin");

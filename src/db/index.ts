@@ -243,3 +243,4 @@ export {
   saveLinearIssueContext,
   getLinearIssueContext,
 } from "./linear-issue-context";
+export { workspaceSessionIds } from "./workspace-scope";
