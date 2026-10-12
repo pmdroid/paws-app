@@ -43,6 +43,8 @@ bun --no-env-file scripts/verify-local.ts serve
 
 ## What the fixture exercises
 
+For Linux execution spool changes, run `bun test test/runner-execution.test.ts test/boundaries.test.ts`. These checks publish and reload the production strict unsigned job schema, verify immutable repository-bundle copies, reject unsafe directory modes, symlinks, hardlinks and extra credential fields, and drive the Unix broker client against a delayed local response. The production subprocess fixture `test/local/runner-execution-process.ts` accepts `publish`, `read`, `result` and `verify` operations against its supplied fixture root.
+
 - Linear tracker and comment adapters against local fakes; a Linear epic with two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
 - Real Ed25519 runner command signatures with strict typed payloads, runner/workspace identity, repository allowlists, expiry and replay protection persisted through SQLite close/reopen. The protocol probe performs no repository fetch.
