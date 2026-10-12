@@ -86,6 +86,7 @@ export async function probeRunnerRepositoryAccess(
   const identity = control.claimPairing(pending.id, pending.claim);
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Pairing was not approved");
+  const certificate = identity.certificate;
   const work = createRunnerWork({
     db,
     keyId: "fixture",
@@ -190,7 +191,7 @@ export async function probeRunnerRepositoryAccess(
         `/v1/runs/${assignment.command.runId}/repository-credential`,
         {
           key: options.certificate === false ? undefined : readFileSync(client.keyPath, "utf8"),
-          cert: options.certificate === false ? undefined : identity.certificate,
+          cert: options.certificate === false ? undefined : certificate,
           body: options.body ?? { generation: 1, access: mode },
           token: options.token ?? assignment.grant.token,
         },

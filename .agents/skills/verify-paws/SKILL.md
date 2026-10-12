@@ -169,6 +169,8 @@ Runner artifact verification drives production HTTP handlers with real SQLite gr
 
 For worker publication, run `bun test test/worker-publication.test.ts test/runner-worker.test.ts`. The publication probe observes the canonical event and result filenames at the ownership-assignment boundary while the real worker executes Git and scripted ACP. Both filenames stay absent until their metadata is ready, and completed results parse normally. The worker probe also repeats a consumed execution and supplies preexisting legacy journals and final results, verifying that neither path appends to or replaces retained output or creates a new claim.
 
+Run `bun --no-env-file test/local/runner-verifier-pairing.ts` to verify canonical verifier keys through real HTTPS enrollment, recent administrator fingerprint confirmation, atomic immutable SQLite binding, changed-key refusals, mTLS certificate renewal and an actual daemon-process restart. The proof retains its observations and source hashes. `check` and `audit` run the same pairing probe.
+
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.

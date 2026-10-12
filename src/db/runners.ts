@@ -18,6 +18,8 @@ export type RunnerPairing = {
   expiresAt: number;
   runnerId: string | null;
   certificateFingerprint: string | null;
+  verifierPublicKeyPem?: string | null;
+  verifierFingerprint?: string | null;
 };
 export type StoredRunnerCertificate = {
   fingerprint: string;
@@ -32,8 +34,8 @@ export function createRunnerPairing(
   input: RunnerPairing & { claimHash: string; codeHash: string },
 ): void {
   db.run(
-    `INSERT INTO runner_pairing(id,claim_hash,code_hash,csr,name,request_fingerprint,expires_at)
-    VALUES(?,?,?,?,?,?,?)`,
+    `INSERT INTO runner_pairing(id,claim_hash,code_hash,csr,name,request_fingerprint,expires_at,verifier_public_key,verifier_fingerprint)
+    VALUES(?,?,?,?,?,?,?,?,?)`,
     [
       input.id,
       input.claimHash,
@@ -42,6 +44,8 @@ export function createRunnerPairing(
       input.name,
       input.requestFingerprint,
       input.expiresAt,
+      input.verifierPublicKeyPem ?? null,
+      input.verifierFingerprint ?? null,
     ],
   );
 }
@@ -51,7 +55,8 @@ export function findRunnerPairing(
   input: { codeHash: string } | { id: string; claimHash: string },
 ): RunnerPairing | null {
   const columns = `SELECT id,csr,name,request_fingerprint AS requestFingerprint,expires_at AS expiresAt,
-    runner_id AS runnerId,certificate_fingerprint AS certificateFingerprint FROM runner_pairing`;
+    runner_id AS runnerId,certificate_fingerprint AS certificateFingerprint,
+    verifier_public_key AS verifierPublicKeyPem,verifier_fingerprint AS verifierFingerprint FROM runner_pairing`;
   return "codeHash" in input
     ? db.query<RunnerPairing, [string]>(`${columns} WHERE code_hash=?`).get(input.codeHash)
     : db
@@ -133,21 +138,43 @@ export function approveRunnerPairing(
     workspaceId: string;
     userId: string;
     certificate: StoredRunnerCertificate;
+    verifierFingerprint?: string;
     now: number;
   },
 ): void {
   immediate(db, () => {
     const pairing = db
-      .query<{ name: string }, [string, number]>(
-        "SELECT name FROM runner_pairing WHERE id=? AND expires_at>? AND runner_id IS NULL",
+      .query<
+        { name: string; verifierPublicKeyPem: string | null; verifierFingerprint: string | null },
+        [string, number]
+      >(
+        "SELECT name,verifier_public_key AS verifierPublicKeyPem,verifier_fingerprint AS verifierFingerprint FROM runner_pairing WHERE id=? AND expires_at>? AND runner_id IS NULL",
       )
       .get(input.pairingId, input.now);
     if (!pairing) throw new Error("Runner pairing is invalid or expired.");
+    if ((pairing.verifierFingerprint ?? undefined) !== input.verifierFingerprint)
+      throw new Error("Verifier fingerprint confirmation does not match.");
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
       [input.runnerId, input.workspaceId, input.userId, pairing.name, input.now],
     );
     insertCertificate(db, input.runnerId, input.certificate);
+    if (pairing.verifierPublicKeyPem) {
+      db.run("INSERT INTO runner_verifier VALUES(?,?,?,?,?)", [
+        input.runnerId,
+        pairing.verifierPublicKeyPem,
+        pairing.verifierFingerprint,
+        input.userId,
+        input.now,
+      ]);
+      auditWorkspaceAccess(db, {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        action: "runner.verifier.approved",
+        subject: `${input.runnerId}:${pairing.verifierFingerprint}`,
+        now: input.now,
+      });
+    }
     db.run(
       "UPDATE runner_pairing SET approved_by=?,runner_id=?,certificate_fingerprint=? WHERE id=?",
       [input.userId, input.runnerId, input.certificate.fingerprint, input.pairingId],
@@ -267,4 +294,12 @@ export function expireRunnerPairings(db: Database, now: number): void {
       });
     }
   });
+}
+
+export function getRunnerVerifier(db: Database, runnerId: string) {
+  return db
+    .query<{ publicKeyPem: string; fingerprint: string }, [string]>(
+      "SELECT public_key AS publicKeyPem,fingerprint FROM runner_verifier WHERE runner_id=?",
+    )
+    .get(runnerId);
 }
