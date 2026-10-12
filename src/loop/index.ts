@@ -32,13 +32,7 @@ export {
   type OrchestratorOptions,
   type RepositoryBinding,
 } from "./orchestrator";
-export {
-  isGitHubIssue,
-  itemPathId,
-  publishIssueKey,
-  routeBySource,
-  worktreeBranch,
-} from "./sources";
+export { itemPathId, worktreeBranch } from "./sources";
 
 export { handleLinearAdministration } from "./linear-administration";
 export { LinearTaskAccess } from "./linear-task-access";

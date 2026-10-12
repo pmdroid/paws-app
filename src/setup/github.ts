@@ -24,13 +24,6 @@ const NAME = /^[A-Za-z0-9._-]+$/;
 const REPOS_PATH =
   "/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&per_page=100";
 
-export const GITHUB_STATUS_LABELS = [
-  { name: "paws", color: "1D76DB", description: "Delegated to Paws" },
-  { name: "paws:running", color: "0E8A16", description: "Paws is running" },
-  { name: "paws:awaiting-input", color: "FBCA04", description: "Paws is waiting for input" },
-  { name: "paws:done", color: "5319E7", description: "Paws finished" },
-] as const;
-
 /** Client id setup will send. Env wins, then `github.oauth_client_id` in config.toml. */
 export function resolveSetupGitHubClientId(home: string, env: NodeJS.ProcessEnv): string {
   return resolveGitHubOAuthClientId({
@@ -182,36 +175,6 @@ export async function cloneGitHubMirror(input: {
     );
   }
   return dest;
-}
-
-export async function ensureGitHubLabels(input: {
-  token: string;
-  owner: string;
-  repo: string;
-  fetch?: SetupFetch;
-  store: GitHubTokenStore;
-}): Promise<string[]> {
-  const fetchImpl = input.fetch ?? fetch;
-  const created: string[] = [];
-  for (const label of GITHUB_STATUS_LABELS) {
-    const response = await fetchImpl(
-      `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/labels`,
-      {
-        method: "POST",
-        headers: githubHeaders(input.token),
-        body: JSON.stringify(label),
-      },
-    );
-    if (response.status === 401) {
-      await input.store.markInvalid();
-      stop(GITHUB_REAUTH_MESSAGE);
-    }
-    if (response.status !== 201 && response.status !== 422) {
-      stop(`Could not create the ${label.name} label (GitHub status ${response.status}).`);
-    }
-    created.push(label.name);
-  }
-  return created;
 }
 
 export function tokenStore(home: string, hooks: SetupGitHubHooks | undefined): GitHubTokenStore {

@@ -41,7 +41,7 @@ export async function handleAgentSettingsRequest(
       const config = loadConfigFile(options.configPath);
       const settings = readAgentSettings(config);
       const projects = new Map(settings.projects.map((project) => [project.repo, project]));
-      for (const repo of [config.repo, ...config.trackerGithub.repos, ...(options.repos ?? [])]) {
+      for (const repo of [config.repo, ...config.githubRepos, ...(options.repos ?? [])]) {
         if (repo === null) continue;
         const key = repo.toLowerCase();
         if (!projects.has(key)) projects.set(key, { repo: key });

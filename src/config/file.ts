@@ -20,22 +20,6 @@ export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
 export type TrackerKind = "github" | "linear" | "both";
 
-export type TrackerGithubConfig = {
-  triggerLabel: string;
-  mention: string;
-  trusted: string[];
-  repos: string[];
-  statusLabels: boolean;
-};
-
-export const DEFAULT_TRACKER_GITHUB: TrackerGithubConfig = {
-  triggerLabel: "paws",
-  mention: "@paws",
-  trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
-  repos: [],
-  statusLabels: true,
-};
-
 /** Public OAuth client id. `PAWS_GITHUB_CLIENT_ID` overrides it. No secret. */
 export const PAWS_GITHUB_OAUTH_CLIENT_ID = "Iv1.paws-oauth-placeholder";
 
@@ -82,8 +66,8 @@ export type PawsConfigFile = {
   oauthClientId: string | null;
   /** True when `[tracker]` or `[tracker.github]` is present. Absent means linear. */
   trackerSpecified: boolean;
+  retiredTrackerConfigured: boolean;
   trackerKind: TrackerKind | null;
-  trackerGithub: TrackerGithubConfig;
   repo: string | null;
   githubRepos: string[];
   publicUrl: string | null;
@@ -107,8 +91,7 @@ export type PawsSetupConfig = {
   linearClientFile: string | null;
   githubAuth: GitHubConfigAuth;
   oauthClientId?: string;
-  trackerKind?: TrackerKind;
-  trackerGithub?: TrackerGithubConfig;
+  trackerKind?: "linear";
   repo: string;
   githubRepos?: readonly string[];
   checkout: string;
@@ -129,12 +112,8 @@ export function emptyConfigFile(): PawsConfigFile {
     githubAuth: null,
     oauthClientId: null,
     trackerSpecified: false,
+    retiredTrackerConfigured: false,
     trackerKind: null,
-    trackerGithub: {
-      ...DEFAULT_TRACKER_GITHUB,
-      trusted: [...DEFAULT_TRACKER_GITHUB.trusted],
-      repos: [...DEFAULT_TRACKER_GITHUB.repos],
-    },
     repo: null,
     githubRepos: [],
     publicUrl: null,
@@ -395,12 +374,7 @@ function assignConfig(
     return;
   }
   if (section === "tracker.github") {
-    config.trackerSpecified = true;
-    if (key === "trigger_label") config.trackerGithub.triggerLabel = asString(value, line);
-    else if (key === "mention") config.trackerGithub.mention = asString(value, line);
-    else if (key === "trusted") config.trackerGithub.trusted = asStringArray(value, line);
-    else if (key === "repos") config.trackerGithub.repos = asStringArray(value, line);
-    else if (key === "status_labels") config.trackerGithub.statusLabels = asBoolean(value, line);
+    config.retiredTrackerConfigured = true;
     return;
   }
   if (section === "closeout") {

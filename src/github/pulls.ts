@@ -31,7 +31,7 @@ export async function pushBranch(
     gitExec?: GitExec;
   } & GitHubCredentialInput,
 ): Promise<{ branch: string; head: string }> {
-  const branch = branchForIssue(input.branchKey ?? branchKey(input.issue));
+  const branch = branchForIssue(input.branchKey ?? input.issue);
   const url = input.remoteUrl ?? githubHttpsUrl(input.owner, input.repo);
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
@@ -67,11 +67,8 @@ export async function openPullRequest(
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
-  const branch = branchForIssue(input.branchKey ?? branchKey(input.issue));
-  const body = developerBody(
-    input.tokenProvider,
-    closingBody(input.issue, input.owner, input.repo, input.evidence),
-  );
+  const branch = branchForIssue(input.branchKey ?? input.issue);
+  const body = developerBody(input.tokenProvider, pullRequestBody(input.issue, input.evidence));
   const token = await acquireOperationToken(input, "pr");
   const created = await input.client.request({
     method: "POST",
@@ -257,55 +254,6 @@ export async function publishAccepted(
   const pushed = await pushBranch(input);
   const pull = await openPullRequest(input);
   return { published: true, branch: pushed.branch, head: pushed.head, pull };
-}
-
-const GITHUB_TRACKER_ID = /^github:([^/\s#]+)\/([^/\s#]+)#([1-9]\d*)$/;
-
-/** `github:owner/repo#n` is a GitHub issue. Anything else stays a Linear issue key. */
-function parseGitHubTrackerId(
-  issue: string,
-): { owner: string; repo: string; number: number } | null {
-  const match = GITHUB_TRACKER_ID.exec(issue);
-  if (match === null) return null;
-  const owner = match[1];
-  const repo = match[2];
-  const raw = match[3];
-  if (owner === undefined || repo === undefined || raw === undefined) return null;
-  const number = Number(raw);
-  if (!Number.isInteger(number) || number < 1) return null;
-  return { owner, repo, number };
-}
-
-/** Branch keys stay inside `branchForIssue`. GitHub tracker ids are not valid keys. */
-function branchKey(issue: string): string {
-  const parsed = parseGitHubTrackerId(issue);
-  if (parsed === null) return issue;
-  const suffix = `-${parsed.number}`;
-  const prefix = "gh-";
-  const budget = 81 - prefix.length - suffix.length;
-  let slug = `${parsed.owner}-${parsed.repo}`;
-  if (slug.length > budget) slug = slug.slice(0, budget).replace(/[._-]+$/g, "");
-  if (slug.length === 0) slug = "issue";
-  const key = `${prefix}${slug}${suffix}`;
-  if (!/^[A-Za-z][A-Za-z0-9._-]{0,80}$/.test(key)) {
-    throw new Error(`invalid issue key: ${issue}`);
-  }
-  return key;
-}
-
-/**
- * Linear issues keep `Fixes KEY`. A GitHub-sourced item closes that issue:
- * `Closes #n` in the same repo, otherwise `Closes owner/repo#n`.
- */
-function closingBody(issue: string, owner: string, repo: string, evidence: string): string {
-  const parsed = parseGitHubTrackerId(issue);
-  if (parsed === null) return pullRequestBody(issue, evidence);
-  const line =
-    parsed.owner === owner && parsed.repo === repo
-      ? `Closes #${parsed.number}`
-      : `Closes ${parsed.owner}/${parsed.repo}#${parsed.number}`;
-  const body = evidence.trim();
-  return body === "" ? `${line}\n` : `${line}\n\n${body}\n`;
 }
 
 function developerBody(provider: GitHubTokenProvider | undefined, body: string): string {

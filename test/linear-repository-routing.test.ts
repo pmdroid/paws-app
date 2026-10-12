@@ -13,12 +13,7 @@ import {
   saveConversation,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import {
-  attachOrchestrator,
-  FakeHostGitHubAuth,
-  repositoryAnswer,
-  routeBySource,
-} from "../src/loop";
+import { attachOrchestrator, FakeHostGitHubAuth, repositoryAnswer } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { withCommentActivities } from "../src/comments";
 import { tempDb, tempHome } from "./helpers";
@@ -361,9 +356,6 @@ test("comment-mode repository suggestions omit synthetic agent-session IDs", asy
     await f.jobs.tick();
     expect(f.tracker.repositorySuggestionRequests[0]?.agentSessionId).toBeUndefined();
     expect(withCommentActivities(f.tracker, f.tracker).issueRepositorySuggestions).toBeDefined();
-    expect(
-      routeBySource({ linear: f.tracker, github: null }).issueRepositorySuggestions,
-    ).toBeDefined();
   } finally {
     f.db.close();
   }
@@ -514,25 +506,6 @@ test("Stop interrupts repository interpretation before any binding or repository
     f.db.close();
   }
 }, 15000);
-
-test("GitHub source issues bind only their configured source repository", async () => {
-  const f = fixture({ issueId: "github:acme/two#1" });
-  try {
-    await f
-      .attach()
-      .onLinearEvent({ ...event(), issueId: "github:acme/two#1", sessionId: "github:acme/two#1" });
-    await f.jobs.tick();
-    const row = f.db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    expect(getWorkItemRepository(f.db, row.id)).toEqual(repositories[1]!);
-    expect(f.checked).toEqual(["two"]);
-    expect(f.tracker.repositorySuggestionRequests).toEqual([]);
-    expect(
-      f.tracker.questions.some((question) => question.body.startsWith("Which repository")),
-    ).toBe(false);
-  } finally {
-    f.db.close();
-  }
-});
 
 test("a persisted cleanup fence prevents another repository interpreter or selection", async () => {
   const f = fixture();

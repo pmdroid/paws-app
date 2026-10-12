@@ -35,6 +35,34 @@ test("tracker.github without an explicit Linear kind fails closed", () => {
   expect(loadRuntime({ PAWS_HOME: dir }).configError).toContain("Linear");
 });
 
+test.each([
+  '[tracker]\nkind = "linear"\n[tracker.github]\nrepos = ["local/fixture"]\n',
+  '[tracker.github]\nrepos = ["local/fixture"]\n[tracker]\nkind = "linear"\n',
+])("retired tracker configuration rejects even with an explicit Linear kind", (config) => {
+  const dir = home();
+  writeFileSync(join(dir, "config.toml"), config);
+  const runtime = loadRuntime({ PAWS_HOME: dir });
+  expect(runtime.configError).toContain("remove [tracker.github]");
+  expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("Linear");
+  expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
+});
+
+test.each(["oauth", "app", "gh"])(
+  "retired tracker rejection preserves independent %s repository authentication",
+  (auth) => {
+    const dir = home();
+    const config = `[github]\nauth = "${auth}"\nrepo = "local/fixture"\nrepos = ["local/fixture", "local/second"]\n[tracker]\nkind = "linear"\n[tracker.github]\nrepos = ["retired/issues"]\n`;
+    writeFileSync(join(dir, "config.toml"), config);
+    const runtime = loadRuntime({ PAWS_HOME: dir });
+    expect(runtime.configError).toContain("remove [tracker.github]");
+    expect(runtime.githubAuth).toBe(auth);
+    expect(runtime.repo).toBe("local/fixture");
+    expect(runtime.file.githubRepos).toEqual(["local/fixture", "local/second"]);
+    expect(() => startPaws({ PAWS_HOME: dir, PAWS_PORT: "0" })).toThrow("Linear");
+    expect(readFileSync(join(dir, "config.toml"), "utf8")).toBe(config);
+  },
+);
+
 test.each(["oauth", "app", "gh"])("Linear config preserves independent %s GitHub auth", (auth) => {
   const dir = home();
   writeFileSync(

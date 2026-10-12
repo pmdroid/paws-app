@@ -22,7 +22,6 @@ import {
   startCatchUpPoller,
   type TrackerAdapter,
 } from "../src/linear";
-import { githubWorkIsHot } from "../src/ghissues";
 import { attachOrchestrator } from "../src/loop";
 import { findOpenQuestion, getQuestion, handoffNote, openQuestion } from "../src/questions";
 import { tempDb } from "./helpers";
@@ -266,7 +265,6 @@ test("Stop cancels a persisted question even when no agent is alive", async () =
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     expect(listOpenQuestions(db)).toHaveLength(0);
     expect(linearWorkIsHot(db)).toBe(false);
-    expect(githubWorkIsHot(db)).toBe(false);
     await orchestrator.onLinearEvent(prompt());
     expect(getQuestion(db, question.id)?.answer).toBeNull();
   } finally {

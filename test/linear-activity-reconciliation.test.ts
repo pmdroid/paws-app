@@ -12,7 +12,7 @@ import {
 } from "../src/db";
 import { FakeClock } from "../src/core";
 import { createLinearClient, createLinearTracker, type LinearClient } from "../src/linear";
-import { deliverLinearOutbox, routeBySource } from "../src/loop";
+import { deliverLinearOutbox } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
 function remote() {
@@ -73,9 +73,8 @@ function dispatcher(
   tracker: ReturnType<typeof remote>["tracker"],
 ) {
   const outbox = new OutboxDispatcher(db, clock);
-  const routed = routeBySource({ linear: tracker, github: null });
   outbox.setHandler((row, context) =>
-    deliverLinearOutbox(row, routed, async () => {}, context, db),
+    deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   return outbox;
 }

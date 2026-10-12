@@ -5,11 +5,12 @@ import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
 
-for (const source of ["linear", "github"] as const) {
+{
+  const source = "linear";
   test(`${source} persists full child and epic briefs and replays the original intake snapshot`, async () => {
     const db = tempDb();
-    const parentId = source === "github" ? "github:acme/widgets#1" : "parent";
-    const childId = source === "github" ? "github:acme/widgets#2" : "child";
+    const parentId = "parent";
+    const childId = "child";
     const snapshot: EpicSnapshot = {
       linearIssueId: parentId,
       identifier: "EPIC-1",

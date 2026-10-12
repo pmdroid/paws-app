@@ -27,7 +27,7 @@ Set these environment variables in your terminal using the app settings. Keep th
 ```sh
 bun install
 bun run paws login github --app --repo "$PAWS_GITHUB_REPOSITORY"
-bun run paws setup --tracker both --linear-mode agent --repo "$PAWS_GITHUB_REPOSITORY" --checkout /path/to/sandbox-checkout
+bun run paws setup --tracker linear --linear-mode agent --repo "$PAWS_GITHUB_REPOSITORY" --checkout /path/to/sandbox-checkout
 ```
 
 Approve GitHub in the browser. During setup, approve Linear as a workspace admin, choose the sandbox team and select your implementer. Confirm the repository's Closeout policy when prompted. Commit a generated policy in the sandbox checkout before running work.
