@@ -54,6 +54,70 @@ input {
 .github-user {
   color: var(--text);
 }
+.workspace-access {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-access select {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.workspace-access > .row {
+  flex-wrap: wrap;
+}
+.workspace-access .btn {
+  white-space: nowrap;
+}
+#workspace-members {
+  max-width: 44rem;
+}
+#workspace-repositories textarea {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+}
+.workspace-member {
+  flex-wrap: wrap;
+  padding: 8px 0;
+}
+.workspace-member > span {
+  min-width: 140px;
+}
+.paws-login .app {
+  display: block;
+}
+.paws-login .side,
+.paws-login .top,
+.paws-login .tabbar,
+.paws-login #github-auth {
+  display: none;
+}
+.login-panel {
+  width: min(100%, 420px);
+  margin: 12vh auto;
+}
+.login-panel details {
+  margin-top: 32px;
+}
+.login-panel .field {
+  margin: 16px 0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 a {
   color: var(--accent2);
   text-decoration: none;

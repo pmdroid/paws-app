@@ -94,8 +94,8 @@ export function syncWorkspaceMember(
     teamIds: readonly string[];
     now: number;
   },
-): void {
-  immediate(db, () => {
+): boolean {
+  return immediate(db, () => {
     const previous = workspaceMember(db, input.workspaceId, input.userId);
     if (
       previous !== null &&
@@ -104,7 +104,7 @@ export function syncWorkspaceMember(
           input.active &&
           (!previous.active || (previous.role === "observer" && input.role !== "observer"))))
     )
-      return;
+      return false;
     db.run(
       `INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at)
       VALUES(?,?,?,'linear',?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET
@@ -143,6 +143,7 @@ export function syncWorkspaceMember(
         subject: input.userId,
         now: input.now,
       });
+    return true;
   });
 }
 

@@ -5,6 +5,7 @@ import {
   deleteWorkspaceSession,
   getWorkspace,
   listUserWorkspaces,
+  listWorkspaceMembers,
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceForOrganization,
@@ -12,6 +13,7 @@ import {
 } from "../db";
 import type { LinearMembershipReads } from "../linear";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
+import { handleWorkspaceAdministration, readWorkspaceJson } from "./administration";
 import {
   clearWorkspaceSessionCookie,
   issueWorkspaceSession,
@@ -29,6 +31,7 @@ export type WorkspaceAccessOptions = {
   memberships: LinearMembershipReads;
   fetch?: typeof fetch;
   now?: () => number;
+  verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
 };
 
 export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
@@ -46,7 +49,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   const origin = configured.origin;
   const now = options.now ?? Date.now;
   const pending = new Map<string, Promise<void>>();
-  async function refresh(workspaceKey: string, userId: string) {
+  async function refresh(workspaceKey: string, userId: string, force = false) {
     const member = workspaceMember(options.db, workspaceKey, userId);
     const workspace = getWorkspace(options.db, workspaceKey);
     if (
@@ -56,7 +59,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     )
       throw new Error("This workspace is not installed.");
     const observedAt = now();
-    if (member.checkedAt <= observedAt && observedAt - member.checkedAt < 5 * 60_000) return;
+    if (!force && member.checkedAt <= observedAt && observedAt - member.checkedAt < 5 * 60_000)
+      return;
     const key = `${workspaceKey}:${userId}`;
     let operation = pending.get(key);
     if (operation === undefined) {
@@ -85,6 +89,12 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (pending.get(key) === operation) pending.delete(key);
     }
   }
+  async function refreshMemberships() {
+    const workspace = workspaceForOrganization(options.db, options.installedOrganization.id);
+    if (workspace === null) return;
+    for (const member of listWorkspaceMembers(options.db, workspace.id))
+      await refresh(workspace.id, member.id, true);
+  }
   async function authenticate(request: Request) {
     if (new URL(request.url).origin !== origin) return null;
     const current = requestWorkspaceSession(options.db, request, now());
@@ -102,6 +112,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/api/auth/session",
         "/api/auth/logout",
         "/api/workspaces",
+        "/api/workspaces/members",
+        "/api/workspaces/repositories",
+        "/api/workspaces/select",
       ].includes(path)
     )
       return null;
@@ -224,6 +237,31 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);
+    if (path === "/api/workspaces/select") {
+      if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+      if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))
+        return json({ error: "CSRF token required." }, 403);
+      const body = await readWorkspaceJson(request).catch(() => null);
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        !("workspaceId" in body) ||
+        body.workspaceId !== access.principal.workspaceId
+      )
+        return json({ error: "This workspace is not installed or authorized." }, 403);
+      return json({ ok: true });
+    }
+    const administration = await handleWorkspaceAdministration(request, {
+      db: options.db,
+      ...access,
+      origin,
+      now: now(),
+      verifyTeam: options.verifyTeam,
+      memberships: options.memberships,
+    });
+    if (administration !== null) return administration;
     if (path === "/api/auth/session" && request.method === "GET")
       return json({
         ...access.principal,
@@ -250,7 +288,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     }
     return json({ error: "Method not allowed" }, 405);
   }
-  return { authenticate, handle, origin, clientId: options.clientId };
+  return { authenticate, handle, origin, clientId: options.clientId, refreshMemberships };
 }
 
 export type WorkspaceAccess = ReturnType<typeof createWorkspaceAccess>;

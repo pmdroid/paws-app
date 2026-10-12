@@ -11,6 +11,7 @@ export type LinearMemberIdentity = {
 };
 
 export interface LinearMembershipReads {
+  installation(signal?: AbortSignal): Promise<{ id: string; name: string }>;
   member(
     organizationId: string,
     userId: string,
@@ -28,6 +29,24 @@ const MEMBER_QUERY = `query PawsBrowserMembership($id: String!, $after: String) 
 
 export function createLinearMembershipReads(client: LinearClient): LinearMembershipReads {
   return {
+    async installation(signal) {
+      const data = await client.query(
+        "query PawsBrowserInstallation { viewer { app organization { id name } } }",
+        undefined,
+        { signal },
+      );
+      const viewer = field(data, "viewer");
+      const organization = field(viewer, "organization");
+      if (
+        viewer?.["app"] !== true ||
+        typeof organization?.["id"] !== "string" ||
+        organization["id"].trim() === "" ||
+        typeof organization["name"] !== "string" ||
+        organization["name"].trim() === ""
+      )
+        throw new Error("A verified Linear app installation is required.");
+      return { id: organization["id"], name: organization["name"] };
+    },
     async member(organizationId, userId, signal) {
       const teamIds = new Set<string>();
       const cursors = new Set<string>();

@@ -27,6 +27,7 @@ import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunne
 import type { LinearWebhookDeps } from "./webhook";
 import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
+import { createLinearMembershipReads, type LinearMembershipReads } from "./membership";
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
@@ -37,6 +38,7 @@ export type LinearRunning = {
 };
 
 export type OpenLinear = {
+  memberships: LinearMembershipReads | null;
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
   startSession: ReturnType<typeof createSessionStarter> | null;
@@ -94,6 +96,7 @@ export function openLinear(options: {
       : shareEvents(tracker, options.followUp, options.beforeEvent, options.progressReporter);
   let running: LinearRunning | null = null;
   return {
+    memberships: client === null ? null : createLinearMembershipReads(client),
     webhook: { store, onEvent },
     tracker,
     startSession:

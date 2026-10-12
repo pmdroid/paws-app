@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const mode = process.argv[2] ?? "check";
-if (!["check", "audit", "serve", "workspace"].includes(mode)) {
-  throw new Error("Usage: bun run verify:local [check|audit|serve|workspace]");
+if (!["check", "audit", "serve", "workspace", "workspace-serve"].includes(mode)) {
+  throw new Error("Usage: bun run verify:local [check|audit|serve|workspace|workspace-serve]");
 }
 const repo = resolve(import.meta.dir, "..");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "paws-verify-")));
@@ -47,7 +47,14 @@ const commands = [
     : mode === "workspace"
       ? []
       : [["run", "build:status"]]),
-  [mode === "workspace" ? "test/local/workspace-instance.ts" : "test/local/instance.ts", mode],
+  [
+    mode === "workspace"
+      ? "test/local/workspace-instance.ts"
+      : mode === "workspace-serve"
+        ? "test/local/workspace-ui.ts"
+        : "test/local/instance.ts",
+    mode,
+  ],
 ];
 const gitHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo, env });
 const gitDiff = Bun.spawnSync(["git", "diff", "HEAD"], { cwd: repo, env });
@@ -86,7 +93,10 @@ for (const [index, args] of commands.entries()) {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  const deadline = setTimeout(stop, mode === "serve" ? 360_000 : 300_000);
+  const deadline = setTimeout(
+    stop,
+    mode === "serve" || mode === "workspace-serve" ? 360_000 : 300_000,
+  );
   async function copy(stream: ReadableStream<Uint8Array>) {
     for await (const chunk of stream) {
       file.write(chunk);
