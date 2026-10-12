@@ -3,6 +3,11 @@ import { join } from "node:path";
 import { chmodSync } from "node:fs";
 import { z } from "zod";
 import { immediate, openDatabase } from "../db";
+import {
+  deriveRunnerCheckInput,
+  runnerCheckInputHash,
+  type RunnerCheckResult,
+} from "../runner-check";
 import { describeRunnerCertificate } from "../runner-identity";
 import { runnerVerifierFingerprint } from "../runner-verifier";
 import {
@@ -42,6 +47,7 @@ import {
 } from "./state";
 import { httpsOrigin, requestJson } from "./transport";
 import {
+  RunnerCheckDeliverySchema,
   RunnerAnswersRequestSchema,
   RunnerAnswersSchema,
   RunnerEventDeliverySchema,
@@ -382,6 +388,49 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         ),
       );
     },
+    async postCheckResult(
+      runId: string,
+      generation: number,
+      result: RunnerCheckResult,
+      verifierSignature: string,
+      grantToken: string,
+    ) {
+      ensureOpen();
+      identifier.parse(runId);
+      const body = RunnerCheckDeliverySchema.parse({ generation, result, verifierSignature });
+      RunnerGrantTokenSchema.parse(grantToken);
+      const row = db
+        .query<{ payload: string }, [string, number]>(
+          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type')='check' ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(runId, generation);
+      if (!row) throw new Error("Runner check command is unknown.");
+      const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+      if (command.type !== "check") throw new Error("Runner check command is invalid.");
+      const input = deriveRunnerCheckInput({
+        executionId: command.executionId,
+        verificationAttemptId: command.verificationAttemptId,
+        candidateSha: command.candidateSha,
+        argv: command.argv,
+        cwd: command.cwd,
+        timeoutMs: command.timeoutMs,
+      });
+      if (
+        result.executionId !== command.executionId ||
+        result.verificationAttemptId !== command.verificationAttemptId ||
+        result.candidateSha !== command.candidateSha ||
+        result.inputSha256 !== runnerCheckInputHash(input)
+      )
+        throw new Error("Runner check result does not match the admitted command.");
+      return RunnerEventReceiptSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/check-result`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+    },
     async answers(runId: string, generation: number, after: number, grantToken: string) {
       identifier.parse(runId);
       const body = RunnerAnswersRequestSchema.parse({ generation, after });
@@ -413,12 +462,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       RunnerGrantTokenSchema.parse(grantToken);
       const stored = db
         .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review') ORDER BY rowid DESC LIMIT 1",
+          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','check') ORDER BY rowid DESC LIMIT 1",
         )
         .get(runId, generation);
       if (!stored) throw new Error("Runner work command is unknown.");
       const command = RunnerCommandSchema.parse(JSON.parse(stored.payload));
-      if (command.type !== "run" && command.type !== "review")
+      if (command.type !== "run" && command.type !== "review" && command.type !== "check")
         throw new Error("Runner work command is invalid.");
       if (access === "write" && command.type !== "run")
         throw new Error("Review commands cannot request repository write access.");

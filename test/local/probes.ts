@@ -48,6 +48,7 @@ import { probeRunnerTls } from "./runner-tls";
 import { probeRunnerVerifier } from "./runner-verifier";
 import { probeRunnerCoordinatorData } from "./runner-coordinator-data";
 import { probeRunnerEvidenceRelays } from "./runner-evidence-relays";
+import { probeRunnerChecks } from "./runner-checks";
 import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
@@ -71,6 +72,7 @@ export async function probeBoundaries(
   probeRunnerVerifier(observe);
   await probeRunnerCoordinatorData(join(root, "runner-coordinator-data"), observe);
   await probeRunnerEvidenceRelays(join(root, "runner-evidence-relays"), observe);
+  await probeRunnerChecks(join(root, "runner-checks"), observe);
   const release = Bun.spawn(
     [
       "/usr/bin/python3",
