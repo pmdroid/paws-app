@@ -1,0 +1,6 @@
+u paws-runner - "Paws runner daemon" /var/lib/paws-runner /usr/sbin/nologin
+u paws-agent - "Paws coding agents" /var/lib/paws-agent /usr/sbin/nologin
+g paws-results -
+m paws-runner paws-agent
+m paws-runner paws-results
+m paws-agent paws-results

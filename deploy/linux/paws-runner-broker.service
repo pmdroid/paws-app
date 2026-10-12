@@ -1,0 +1,25 @@
+[Unit]
+Description=Paws fixed runner execution broker
+Requires=paws-runner-broker.socket
+After=paws-runner-broker.socket
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/paws-runner/current/deploy/linux/runner-broker.py
+User=root
+Group=root
+SupplementaryGroups=paws-agent paws-results
+UMask=0077
+Restart=on-failure
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+InaccessiblePaths=-/var/lib/paws-runner
+ReadWritePaths=/var/lib/paws-runner-broker /var/lib/paws-agent-results
