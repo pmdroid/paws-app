@@ -367,7 +367,17 @@ test("Stop cancels and joins classification before any task can be created", asy
     expect(await started).toBeNull();
     expect(getLinearSession(f.db, "session")?.stoppedAt).not.toBeNull();
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
-    expect(f.tracker.progress.some((update) => update.kind === "response")).toBe(false);
+    expect(f.tracker.progress.filter((update) => update.kind === "response")).toMatchObject([
+      { body: "Stopped from Linear." },
+    ]);
+    await f.orchestrator.onLinearEvent({
+      ...event(),
+      dedupeKey: "activity:stop",
+      action: "prompted",
+      signal: "stop",
+    });
+    expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
+    expect(f.launches).toEqual(["classify"]);
     expect(existsSync(join(f.root, "worktrees"))).toBe(false);
   } finally {
     f.db.close();
@@ -491,14 +501,17 @@ test("Stop during the intake announcement cancels the already associated task", 
     await ready.promise;
     const itemId = getLinearSession(f.db, "session")?.activeItemId;
     expect(itemId).toBeString();
-    await f.orchestrator.onLinearEvent({
+    const stopping = f.orchestrator.onLinearEvent({
       ...event(),
       dedupeKey: "stop-during-announcement",
       action: "prompted",
       signal: "stop",
     });
+    for (let i = 0; i < 100 && getWorkItem(f.db, itemId!)?.state !== "cancelled"; i++)
+      await Bun.sleep(1);
     expect(getWorkItem(f.db, itemId!)?.state).toBe("cancelled");
     release.resolve();
+    await stopping;
     await intake;
     expect(f.launches).toEqual(["classify"]);
     expect(f.tracker.progress.some((update) => update.kind === "error")).toBe(false);

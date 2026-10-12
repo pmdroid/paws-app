@@ -9,6 +9,7 @@ import {
   OutboxDispatcher,
   applyWorkItemEvent,
   getConversation,
+  listOutbox,
   saveConversation,
   getTaskMode,
   getLinearSession,
@@ -18,7 +19,7 @@ import {
   openDatabase,
 } from "../src/db";
 import { worktreePath } from "../src/acp";
-import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
+import { createFakeTracker, createInboxStore, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
@@ -61,7 +62,11 @@ function event(
   };
 }
 
-function fixture(hang: "implement" | "review" | "classify" | null, taskModes = false) {
+function fixture(
+  hang: "implement" | "review" | "classify" | null,
+  taskModes = false,
+  children = false,
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-"));
   const pawsRoot = join(root, "paws");
   const source = join(root, "source");
@@ -95,7 +100,12 @@ function fixture(hang: "implement" | "review" | "classify" | null, taskModes = f
       identifier: "ENG-1",
       title: "Conversation",
       description: "Required output: `INITIAL`",
-      subIssues: [],
+      subIssues: children
+        ? [
+            { linearIssueId: "first", identifier: "ENG-2", title: "First change" },
+            { linearIssueId: "second", identifier: "ENG-3", title: "Second change" },
+          ]
+        : [],
     },
   ]);
   let db = openDatabase(dbPath);
@@ -317,6 +327,32 @@ test("new prompt after completion creates a new task and preserves the terminal 
   }
 }, 15000);
 
+test("Stop wins over an interrupted turn, quiesces descendants and keeps completed work terminal", async () => {
+  const f = fixture("implement");
+  try {
+    await f.orchestrator.onLinearEvent(event("created", null, 1));
+    const tick = f.jobs.tick();
+    await until(() => existsSync(f.evidence + ".descendant"));
+    const update = f.orchestrator.onLinearEvent(event("update", "DO_NOT_RUN", 2));
+    const stop = f.orchestrator.onLinearEvent(event("stop", null, 3, "stop"));
+    let duplicateFinished = false;
+    const duplicate = f.orchestrator.onLinearEvent(event("stop", null, 3, "stop")).then(() => {
+      duplicateFinished = true;
+    });
+    await Bun.sleep(10);
+    expect(duplicateFinished).toBe(false);
+    await Promise.all([tick, update, stop, duplicate]);
+    expect(f.item().state).toBe("cancelled");
+    expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
+    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await f.jobs.tick()).toBeNull();
+    await f.orchestrator.onLinearEvent(event("after-stop", "NEW_REQUEST", 4));
+    expect(f.item().state).toBe("queued");
+  } finally {
+    await f.close();
+  }
+}, 15000);
+
 test("shutdown joins active writers before the database can close", async () => {
   const f = fixture("implement");
   try {
@@ -433,6 +469,72 @@ test("shutdown retains a queued start without allowing a new writer", async () =
         .query<{ status: string }, []>("SELECT status FROM job WHERE job_key LIKE 'start:%'")
         .get()?.status,
     ).toBe("pending");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an unhandled Stop replay after reopen preserves a newer explicit task", async () => {
+  const f = fixture(null);
+  try {
+    await f.orchestrator.onLinearEvent(event("created", null, 1));
+    const stop = { ...event("durable-stop", null, 3, "stop"), activityId: "stop-activity" };
+    createInboxStore(f.db).commit(stop);
+    await f.orchestrator.onLinearEvent(stop);
+    await f.orchestrator.onLinearEvent(event("later-request", "NEW_REQUEST", 4));
+    const current = f.item();
+    const session = getLinearSession(f.db, "session");
+    const outbox = listOutbox(f.db);
+    expect(current.state).toBe("queued");
+    f.reopen();
+    const store = createInboxStore(f.db);
+    store.commit({ ...stop, source: "poll", dedupeKey: "activity:stop-activity:stop" });
+    const pending = store.listUnhandled();
+    expect(pending.map((row) => row.dedupeKey).sort()).toEqual([
+      "activity:stop-activity:stop",
+      "durable-stop",
+    ]);
+    for (const row of pending) {
+      await f.orchestrator.onLinearEvent(row);
+      store.markHandled(row.dedupeKey);
+    }
+    expect(f.item()).toEqual(current);
+    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(listOutbox(f.db)).toEqual(outbox);
+    expect(store.listUnhandled()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a failed Stop transaction leaves no receipt, generation or partial cancellation", async () => {
+  const f = fixture(null, false, true);
+  try {
+    await f.orchestrator.onLinearEvent(event("created", null, 1));
+    const item = f.item();
+    const session = getLinearSession(f.db, "session");
+    const outbox = listOutbox(f.db);
+    const originalItems = f.db.query("SELECT * FROM work_item ORDER BY position").all();
+    let emitted = 0;
+    f.orchestrator.bus.subscribe(() => {
+      emitted += 1;
+    });
+    f.db.exec(`CREATE TRIGGER reject_stop BEFORE UPDATE ON work_item
+      WHEN NEW.state = 'cancelled' AND NEW.position = 1
+      BEGIN SELECT RAISE(ABORT, 'stop rejected'); END`);
+    const stop = event("retry-stop", null, 2, "stop");
+    await expect(f.orchestrator.onLinearEvent(stop)).rejects.toThrow("Could not stop Linear task");
+    expect(f.item()).toEqual(item);
+    expect(f.db.query("SELECT * FROM work_item ORDER BY position").all()).toEqual(originalItems);
+    expect(emitted).toBe(0);
+    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(listOutbox(f.db)).toEqual(outbox);
+    expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
+    f.db.exec("DROP TRIGGER reject_stop");
+    await f.orchestrator.onLinearEvent(stop);
+    expect(f.item().state).toBe("cancelled");
+    expect(emitted).toBe(2);
+    expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toHaveLength(1);
   } finally {
     await f.close();
   }
