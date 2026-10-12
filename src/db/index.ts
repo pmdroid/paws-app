@@ -151,6 +151,8 @@ export {
   listArtifacts,
   artifactPublicationReady,
   beginArtifactAttempt,
+  requestArtifactAttachment,
+  artifactAttachmentRequested,
   completeArtifactAttempt,
   type StoredArtifact,
 } from "./artifacts";

@@ -104,3 +104,25 @@ export function artifactPublicationReady(db: Database, itemId: string): boolean 
       .get(itemId)!.pending === 0
   );
 }
+
+export function requestArtifactAttachment(
+  db: Database,
+  itemId: string,
+  identityHash: string,
+): void {
+  db.query(`UPDATE linear_artifact_attempt SET attachment_requested = 1
+    WHERE item_id = ? AND identity_hash = ?`).run(itemId, identityHash);
+}
+
+export function artifactAttachmentRequested(
+  db: Database,
+  itemId: string,
+  identityHash: string,
+): boolean {
+  return (
+    db
+      .query<{ requested: number }, [string, string]>(`SELECT attachment_requested AS requested
+    FROM linear_artifact_attempt WHERE item_id = ? AND identity_hash = ?`)
+      .get(itemId, identityHash)?.requested === 1
+  );
+}

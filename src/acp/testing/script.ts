@@ -21,7 +21,13 @@ export type FakeStep =
   | { type: "fs_write"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
   | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
-  | { type: "publish_artifact"; path: string; displayName?: string; mimeType?: string }
+  | {
+      type: "publish_artifact";
+      path: string;
+      displayName?: string;
+      mimeType?: string;
+      attachToIssue?: boolean;
+    }
   | { type: "hang" }
   | {
       type: "end";

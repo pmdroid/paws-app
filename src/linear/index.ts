@@ -72,6 +72,7 @@ export type {
   ActivityReceipt,
   AuthSignal,
   DependencyEdge,
+  IssueAttachment,
   Elicitation,
   EpicSnapshot,
   LinearSubIssue,

@@ -1,6 +1,7 @@
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type {
   DependencyEdge,
+  IssueAttachment,
   Elicitation,
   EpicSnapshot,
   ProgressUpdate,
@@ -21,6 +22,7 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
   getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;
   listSessionActivities?(
     id: string,

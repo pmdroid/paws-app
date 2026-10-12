@@ -11,6 +11,8 @@ import type {
 } from "../acp";
 import {
   beginArtifactAttempt,
+  requestArtifactAttachment,
+  artifactAttachmentRequested,
   completeArtifactAttempt,
   enqueueOutboxOnce,
   immediate,
@@ -24,6 +26,7 @@ export function createLinearArtifactPublisher(options: {
   files: LinearFileTransfer;
   secretsDir: string;
   itemId: string;
+  issueId?: string;
   sessionId: string;
   now?: () => number;
 }): PublishArtifactHook {
@@ -39,7 +42,14 @@ export function createLinearArtifactPublisher(options: {
     begin(request, context) {
       context.signal.throwIfAborted();
       const identityHash = publicationIdentity(request);
-      const version = beginArtifactAttempt(options.db, options.itemId, identityHash);
+      if (request.attachToIssue === true && !options.issueId)
+        throw new Error("Issue attachment is unavailable");
+      const version = immediate(options.db, () => {
+        const nextVersion = beginArtifactAttempt(options.db, options.itemId, identityHash);
+        if (request.attachToIssue === true)
+          requestArtifactAttachment(options.db, options.itemId, identityHash);
+        return nextVersion;
+      });
       return {
         complete() {
           completeArtifactAttempt(options.db, options.itemId, identityHash, version);
@@ -189,6 +199,26 @@ export function createLinearArtifactPublisher(options: {
     const body = `${row.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${assetUrl}>)`;
     immediate(options.db, () => {
       markArtifact(options.db, row.id, assetUrl);
+      if (artifactAttachmentRequested(options.db, options.itemId, identityHash)) {
+        if (!options.issueId) throw new Error("Issue attachment is unavailable");
+        enqueueOutboxOnce(options.db, {
+          target: "linear",
+          op: "linear.attachment",
+          delivery: "ordered",
+          priority: 0,
+          orderingKey: options.sessionId,
+          idempotencyKey: `artifact-card:${options.sessionId}:${generation}:${row.id}`,
+          generation,
+          now: now(),
+          payload: {
+            id: row.id,
+            itemId: options.itemId,
+            issueId: options.issueId,
+            title: row.displayName,
+            url: assetUrl,
+          },
+        });
+      }
       enqueueOutboxOnce(options.db, {
         target: "linear",
         op: "activity",

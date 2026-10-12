@@ -2164,6 +2164,7 @@ export class Orchestrator {
       files: this.options.files,
       secretsDir: this.options.secretsDir,
       itemId: item.id,
+      issueId: item.linearIssueId,
       sessionId,
       now: () => this.now(),
     });

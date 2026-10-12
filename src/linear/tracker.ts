@@ -1,3 +1,4 @@
+import { createLinearAttachmentMethods } from "./attachments";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
@@ -58,6 +59,7 @@ export function createLinearTracker(
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearRepositoryMethods(client),
+    ...createLinearAttachmentMethods(client),
     async loadEpic(linearIssueId) {
       const children: Array<LinearSubIssue & { sort: number | null }> = [];
       let after: string | null = null;

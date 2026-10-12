@@ -10,6 +10,7 @@ import {
 } from "./repositories";
 import type {
   DependencyEdge,
+  IssueAttachment,
   SessionElicitation,
   EpicSnapshot,
   ProgressUpdate,
@@ -21,6 +22,7 @@ import type {
 
 export type FakeTracker = LinearSessionAdapter &
   LinearRepositoryAdapter & {
+    attachments: IssueAttachment[];
     repositorySuggestionRequests: RepositorySuggestionsInput[];
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
     epics: Map<string, EpicSnapshot>;
@@ -34,6 +36,7 @@ export type FakeTracker = LinearSessionAdapter &
   };
 
 export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTracker {
+  const attachments: IssueAttachment[] = [];
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
   const deps = new Map<string, readonly DependencyEdge[]>();
   const progress: ProgressUpdate[] = [];
@@ -58,6 +61,15 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   }
   return {
     supportsActivityReconciliation: true,
+    attachments,
+    async createIssueAttachment(input, options) {
+      options?.signal?.throwIfAborted();
+      const existing = attachments.findIndex(
+        (row) => row.id === input.id || (row.issueId === input.issueId && row.url === input.url),
+      );
+      if (existing < 0) attachments.push(input);
+      else attachments[existing] = input;
+    },
     epics: byId,
     deps,
     progress,
