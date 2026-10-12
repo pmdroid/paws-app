@@ -6,12 +6,15 @@ export interface RunnerBrokerClient {
   stop(executionId: string): Promise<void>;
 }
 
-export function createRunnerBrokerClient(
-  options: { socketPath?: string } = {},
-): RunnerBrokerClient {
+export interface RunnerCheckBrokerClient {
+  startCheck(executionId: string): Promise<{ alreadyAdmitted: boolean }>;
+  stopCheck(executionId: string): Promise<void>;
+}
+
+function createBrokerRequest(options: { socketPath?: string } = {}) {
   const socketPath = options.socketPath ?? "/run/paws-runner-broker.sock";
   function request(
-    operation: "start" | "stop",
+    operation: "start" | "stop" | "start-check" | "stop-check",
     executionId: string,
   ): Promise<{ alreadyAdmitted: boolean }> {
     ExecutionIdSchema.parse(executionId);
@@ -20,7 +23,7 @@ export function createRunnerBrokerClient(
       let response = "";
       const timer = setTimeout(
         () => socket.destroy(new Error("Runner broker timed out")),
-        operation === "start" ? 120_000 : 60_000,
+        operation.startsWith("start") ? 120_000 : 60_000,
       );
       socket.on("connect", () => socket.write(`${JSON.stringify({ operation, executionId })}\n`));
       let settled = false;
@@ -50,7 +53,7 @@ export function createRunnerBrokerClient(
           )
             throw new Error("Runner broker rejected request");
           let alreadyAdmitted = false;
-          if (operation === "start") {
+          if (operation.startsWith("start")) {
             if (
               Object.keys(value).sort().join() !== "alreadyAdmitted,ok" ||
               typeof (value as { alreadyAdmitted?: unknown }).alreadyAdmitted !== "boolean"
@@ -74,10 +77,29 @@ export function createRunnerBrokerClient(
       });
     });
   }
+  return request;
+}
+
+export function createRunnerBrokerClient(
+  options: { socketPath?: string } = {},
+): RunnerBrokerClient {
+  const request = createBrokerRequest(options);
   return {
     start: (id) => request("start", id),
     stop: async (id) => {
       await request("stop", id);
+    },
+  };
+}
+
+export function createRunnerCheckBrokerClient(
+  options: { socketPath?: string } = {},
+): RunnerCheckBrokerClient {
+  const request = createBrokerRequest(options);
+  return {
+    startCheck: (id) => request("start-check", id),
+    stopCheck: async (id) => {
+      await request("stop-check", id);
     },
   };
 }
