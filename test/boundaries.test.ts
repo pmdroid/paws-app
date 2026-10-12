@@ -29,6 +29,7 @@ const MODULES = [
   "setup",
   "auth",
   "runner-protocol",
+  "runner-execution",
   "workspace",
   "runner-identity",
   "runner-control",
@@ -97,6 +98,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear", "slack"],
   "runner-identity": ["credentials"],
   "runner-protocol": [],
+  "runner-execution": ["runner-protocol"],
   "runner-control": ["db", "workspace", "runner-identity"],
 };
 
