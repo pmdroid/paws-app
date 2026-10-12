@@ -33,3 +33,4 @@ export {
 } from "./sources";
 
 export { createLinearArtifactPublisher } from "./artifacts";
+export { createLinearInputLoader, inputSources } from "./input-files";

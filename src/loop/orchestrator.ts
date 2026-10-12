@@ -92,6 +92,7 @@ import {
   openQuestion,
 } from "../questions";
 import { createLinearArtifactPublisher } from "./artifacts";
+import { createLinearInputLoader } from "./input-files";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -156,9 +157,17 @@ export class Orchestrator {
   private readonly waiters = new Map<string, AnswerWaiter>();
   private readonly live = new Map<string, { itemId: string; controller: AbortController }>();
   private activitySeq = 0;
+  private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
+    this.inputLoader = options.files
+      ? createLinearInputLoader({
+          db: options.db,
+          files: options.files,
+          cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
+        })
+      : null;
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
       this.abortItem(command.itemId);
@@ -423,6 +432,7 @@ export class Orchestrator {
         signal: controller.signal,
         askTeam,
         publishArtifact: this.artifactPublisher(item),
+        prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
@@ -1293,12 +1303,21 @@ export class Orchestrator {
     });
   }
 
+  private prepareInputFiles(item: WorkItemRecord, turnId: string) {
+    const loader = this.inputLoader;
+    const sessionId = this.activitySession(item);
+    if (!loader || !sessionId || isGitHubIssue(item.linearIssueId)) return undefined;
+    return (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
+      loader({ ...input, sessionId, turnId });
+  }
+
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
     return {
       pawsRoot: this.options.pawsRoot,
       profiles: this.profileSnapshot(runId),
       publishArtifact: this.artifactPublisher(item),
+      prepareInputFiles: this.prepareInputFiles(item, runId),
       onCandidate: (identity) => this.saveCandidate(runId, identity),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),

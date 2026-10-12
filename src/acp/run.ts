@@ -115,10 +115,22 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   }
   assertSafeSegment(options.itemId, "item id");
   assertSafeSegment(options.runId, "run id");
-  const inputFiles = snapshotAgentInputs(options.worktreePath, options.inputFiles);
   if (!isAbsolute(options.worktreePath)) throw new Error("worktreePath must be absolute");
+  const suppliedInputs = snapshotAgentInputs(options.worktreePath, options.inputFiles);
   const info = await lstat(options.worktreePath);
   if (!info.isDirectory()) throw new Error("worktreePath is not a directory");
+  const preparedInput = options.prepareInputFiles
+    ? await options.prepareInputFiles({
+        workspace: options.worktreePath,
+        prompt: options.prompt,
+        signal: options.signal ?? new AbortController().signal,
+      })
+    : { prompt: options.prompt, inputFiles: [] };
+  options.signal?.throwIfAborted();
+  const inputFiles = snapshotAgentInputs(options.worktreePath, [
+    ...suppliedInputs,
+    ...preparedInput.inputFiles,
+  ]);
 
   const home = options.home ?? homedir();
   const guard: GuardContext = {
@@ -412,7 +424,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           child,
           sessionId,
           prompt: buildAgentPrompt(
-            options.prompt,
+            preparedInput.prompt,
             options.worktreePath,
             inputFiles,
             (initialized as InitializeResponse).agentCapabilities?.promptCapabilities,

@@ -79,6 +79,11 @@ export interface RunAgentOptions {
   runId: string;
   prompt: string;
   inputFiles?: readonly AgentInputFile[];
+  prepareInputFiles?: (input: {
+    workspace: string;
+    prompt: string;
+    signal: AbortSignal;
+  }) => Promise<{ prompt: string; inputFiles: readonly AgentInputFile[] }>;
   worktreePath: string;
   pawsRoot: string;
   home?: string;
