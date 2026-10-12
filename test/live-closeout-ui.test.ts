@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  accrueAwake,
   appendCloseoutOutput,
   applyWorkItemEvent,
   beginImplementRun,
@@ -156,6 +157,30 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
 }
 
 describe("live closeout ui", () => {
+  test("a paused task retains its status when its prior session is lost", () => {
+    const db = database();
+    const id = "ENG-302";
+    insertQueuedItem(db, { id });
+    const { run } = beginImplementRun(db, id, 1);
+    applyWorkItemEvent(db, id, "pause");
+    markRun(db, run.id, "lost", 2);
+    expect(snapshotOf(db, 3).runs.find((entry) => entry.itemId === id)?.state).toBe("paused");
+  });
+
+  test("a cap during verification shows the stopped run and its reason", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const id = "ENG-302";
+    insertQueuedItem(db, { id, title: "Capped repair", maxAwakeMs: 1_000, now });
+    seedVerifying(db, id, sha("b"), now);
+    accrueAwake(db, id, 0, now);
+    accrueAwake(db, id, 1_000, now + 1_000);
+    const run = snapshotOf(db, now + 1_000).runs.find((entry) => entry.itemId === id);
+    expect(run?.state).toBe("stopped");
+    expect(run?.summary).toBe("Run hit the awake time cap (1 min).");
+    expect(run?.activity.at(-1)?.kind).toBe("err");
+  });
+
   test("shows streamed checks before closeout finishes", () => {
     const db = database();
     const now = 1_700_000_000_000;
