@@ -1,4 +1,5 @@
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
+import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
@@ -46,6 +47,7 @@ export async function probeBoundaries(
   await probePublicTls(root, observe);
   await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
   await probeRunnerResults(join(root, "runner-results"), observe);
+  await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
