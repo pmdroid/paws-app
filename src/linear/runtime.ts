@@ -65,7 +65,10 @@ export function openLinear(options: {
   isAuthorized?: () => boolean;
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
-  followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>;
+  followUp?: (
+    event: AcceptedLinearEvent,
+    tracker: TrackerAdapter | null,
+  ) => Promise<void | boolean>;
   beforeEvent?: (event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>;
   progressReporter?: (event: AcceptedLinearEvent) => TrackerAdapter["postProgress"];
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
@@ -157,14 +160,14 @@ function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptio
 function shareEvents(
   tracker: TrackerAdapter | null,
   followUp:
-    | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>)
+    | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void | boolean>)
     | undefined,
   beforeEvent:
     | ((event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>)
     | undefined,
   progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
-): ((event: AcceptedLinearEvent) => Promise<void>) & { close(): Promise<void> } {
-  const inflight = new Map<string, Promise<void>>();
+): ((event: AcceptedLinearEvent) => Promise<void | boolean>) & { close(): Promise<void> } {
+  const inflight = new Map<string, Promise<void | boolean>>();
   let closed = false;
   const deliver = (event: AcceptedLinearEvent) => {
     if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
@@ -173,17 +176,16 @@ function shareEvents(
     const request = initialActivityRequest(event);
     const reportProgress = progressReporter?.(event);
     const work = (async () => {
-      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return;
+      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return false;
       request?.signal?.throwIfAborted();
       if (tracker === null) {
         if (event.signal === "stop") {
-          await followUp?.(event, null);
-          return;
+          return followUp?.(event, null);
         }
         throw new Error("Linear is not connected.");
       }
       const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
-      await acknowledgeNewSession(
+      return acknowledgeNewSession(
         acknowledger,
         event,
         (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
@@ -223,7 +225,7 @@ function openTunnel(options: {
 
 function startPoller(options: {
   auth: LinearAuth;
-  onEvent: ((event: AcceptedLinearEvent) => Promise<void>) | undefined;
+  onEvent: ((event: AcceptedLinearEvent) => Promise<void | boolean>) | undefined;
   store: ReturnType<typeof createInboxStore>;
   tunnel: Tunnel;
   fetchImpl: FetchLike | undefined;

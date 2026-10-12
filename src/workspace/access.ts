@@ -14,6 +14,7 @@ import {
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceIdentityLinks } from "./identity-links";
+import { createWorkspaceLinearActions } from "./linear-actions";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 import { handleWorkspaceAdministration, readWorkspaceJson } from "./administration";
 import {
@@ -51,6 +52,13 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
+  const authorizeLinearEvent = createWorkspaceLinearActions({
+    db: options.db,
+    organizationId: options.installedOrganization.id,
+    clientId: options.clientId,
+    memberships: options.memberships,
+    now,
+  });
   const links = createWorkspaceIdentityLinks({
     db: options.db,
     slack: options.slackIdentities,
@@ -314,6 +322,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     return operation.finally(() => operations.delete(operation));
   }
   return {
+    authorizeLinearEvent: (event: Parameters<typeof authorizeLinearEvent>[0]) =>
+      track(() => authorizeLinearEvent(event)),
     authenticate: (request: Request) => track(() => authenticate(request)),
     handle: (request: Request) => track(() => handle(request)),
     origin,
