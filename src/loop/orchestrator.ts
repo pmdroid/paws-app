@@ -52,6 +52,12 @@ import {
   markRun,
   saveCheckpoint,
   saveRunResult,
+  saveLinearSessionContext,
+  getLinearSessionContext,
+  hasLinearSessionSnapshotContext,
+  saveLinearSessionSnapshotContext,
+  saveLinearActivitySnapshot,
+  listLinearActivitySnapshots,
   setCurrentRun,
   submitCommand,
   type JobLoop,
@@ -65,7 +71,8 @@ import {
   type GitHubTokenProvider,
 } from "../github";
 import { intakeDelegatedIssue } from "../intake";
-import type { AcceptedLinearEvent, TrackerAdapter } from "../linear";
+import type { AcceptedLinearEvent, TrackerAdapter, LinearActivitySnapshot } from "../linear";
+import { parseLinearSessionContext, renderLinearSessionContext } from "../linear";
 import {
   answerQuestion,
   elicitationBody,
@@ -164,6 +171,15 @@ export class Orchestrator {
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
+    if (event.sessionId !== null) {
+      const context = parseLinearSessionContext(event.payload);
+      saveLinearSessionContext(
+        this.db,
+        event.sessionId,
+        renderLinearSessionContext(context),
+        context.promptContext ? 2 : 1,
+      );
+    }
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
     const result = await intakeDelegatedIssue(this.db, tracker, {
@@ -297,13 +313,14 @@ export class Orchestrator {
       this.post(item, update.kind, update.body, `${run.id}:acp:${this.activitySeq}`);
     });
 
-    const prompt = implementPrompt({
-      identifier: item.linearIdentifier,
-      title: item.title,
-      brief: renderWorkBrief(item.brief),
-      ...(handoff ? { handoff } : {}),
-    });
     try {
+      await this.hydrateLinearContext(item, controller.signal);
+      const prompt = implementPrompt({
+        identifier: item.linearIdentifier,
+        title: item.title,
+        brief: this.workContext(item),
+        ...(handoff ? { handoff } : {}),
+      });
       await this.flush();
       if (this.stopped(item.id)) return;
       try {
@@ -1118,6 +1135,55 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
+  private async hydrateLinearContext(item: WorkItemRecord, signal: AbortSignal): Promise<void> {
+    const sessionId = item.sessionKey;
+    if (this.options.channel === "comments" || !sessionId || isGitHubIssue(sessionId)) return;
+    if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
+      const session = await this.tracker.getSession(sessionId, { signal });
+      signal.throwIfAborted();
+      saveLinearSessionSnapshotContext(
+        this.db,
+        sessionId,
+        renderLinearSessionContext({
+          promptContext: null,
+          issue: session.issue,
+          comment: session.sourceComment ?? session.comment,
+          previousComments: [],
+          guidance: [],
+        }),
+      );
+    }
+    if (!this.tracker?.listSessionActivities) return;
+    const activities = await this.tracker.listSessionActivities(sessionId, { signal });
+    signal.throwIfAborted();
+    immediate(this.db, () => {
+      for (const activity of activities)
+        saveLinearActivitySnapshot(this.db, {
+          id: activity.id,
+          sessionId,
+          createdAt: activity.createdAt,
+          snapshot: JSON.stringify(activity),
+        });
+    });
+  }
+
+  private workContext(item: WorkItemRecord): string {
+    const activities = item.sessionKey
+      ? listLinearActivitySnapshots(this.db, item.sessionKey)
+          .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
+          .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
+      : [];
+    return [
+      renderWorkBrief(item.brief),
+      item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
+      activities.length
+        ? `Immutable Linear conversation history:\n${JSON.stringify(activities)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
     return {
@@ -1126,7 +1192,7 @@ export class Orchestrator {
       onCandidate: (identity) => this.saveCandidate(runId, identity),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
-      brief: renderWorkBrief(item.brief),
+      brief: this.workContext(item),
       ...(this.options.docker ? { docker: this.options.docker } : {}),
     };
   }

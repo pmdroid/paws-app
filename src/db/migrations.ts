@@ -324,4 +324,22 @@ CREATE TABLE github_delivery (
 ) STRICT;
 `,
   },
+  {
+    id: "011_linear_session_context",
+    sql: `
+CREATE TABLE linear_session_context (
+  session_id TEXT PRIMARY KEY,
+  context TEXT NOT NULL,
+  richness INTEGER NOT NULL,
+  snapshot_context TEXT
+) STRICT;
+CREATE TABLE linear_activity_snapshot (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  snapshot TEXT NOT NULL CHECK (json_valid(snapshot))
+) STRICT;
+CREATE INDEX linear_activity_session ON linear_activity_snapshot (session_id, created_at, id);
+`,
+  },
 ];

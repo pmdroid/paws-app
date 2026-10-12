@@ -38,7 +38,12 @@ export function routeBySource(input: {
     }
     return chosen;
   }
+  const linear = input.linear;
   return {
+    ...(linear?.getSession ? { getSession: linear.getSession.bind(linear) } : {}),
+    ...(linear?.listSessionActivities
+      ? { listSessionActivities: linear.listSessionActivities.bind(linear) }
+      : {}),
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),
