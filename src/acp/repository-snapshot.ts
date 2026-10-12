@@ -12,6 +12,7 @@ export async function prepareRepositorySnapshot(options: {
   workspace: string;
   signal: AbortSignal;
   onCleanupFailure?: () => void;
+  networkGit?: (args: string[]) => Promise<string>;
 }): Promise<{ path: string; commit: string }> {
   options.signal.throwIfAborted();
   const path = join(options.workspace, "repository");
@@ -36,7 +37,9 @@ export async function prepareRepositorySnapshot(options: {
   try {
     const gitOptions = { signal: options.signal, onCleanupFailure: options.onCleanupFailure };
     const mirror = join(staging, "mirror.git");
-    await git(["clone", "--bare", "--", options.remoteUrl, mirror], gitOptions);
+    const clone = ["clone", "--bare", "--", options.remoteUrl, mirror];
+    if (options.networkGit) await options.networkGit(clone);
+    else await git(clone, gitOptions);
     const ref = await resolveStartRef(mirror);
     if (!ref) throw new Error("The repository has no source commit");
     const commit = (await git(["--git-dir", mirror, "rev-parse", ref], gitOptions)).trim();
