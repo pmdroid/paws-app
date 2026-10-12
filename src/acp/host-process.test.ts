@@ -4,7 +4,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { buildDockerRun, readDockerRecords, writeRecordingDocker } from "../sandbox";
 import { killTree, spawnAgent, stopChild, waitForExit } from "./process";
 
 const roots: string[] = [];
@@ -143,120 +142,47 @@ async function waitUntilStopped(pid: number): Promise<void> {
   expect(running(pid)).toBe(false);
 }
 
-const worktree = "/Users/dev/.paws/worktrees/ENG-1";
-
-function dirtyEnv(): Record<string, string> {
-  return {
-    HOME: "/Users/dev",
-    PATH: "/usr/bin:/bin",
-    LANG: "C.UTF-8",
-    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
-    SSH_AGENT_PID: "99",
-    ANTHROPIC_API_KEY: "sk-ant-secret",
-    OPENAI_API_KEY: "sk-openai-secret",
-    GITHUB_TOKEN: "ghp_secret",
-    GH_TOKEN: "ghp_other",
-  };
-}
-
 describe("spawnAgent", () => {
-  test("without a docker option the host command, args, and env are unchanged", async () => {
+  test("starts the requested host command with its arguments, environment and stdio", async () => {
     const root = await tempDir();
-    const fake = await writeRecordingDocker(root);
-    const env = dirtyEnv();
-    const child = spawnAgent(fake.bin, ["--flag"], env);
-    await waitExit(child);
-    const [record] = await readDockerRecords(fake.record);
-    expect(record?.argv).toEqual(["--flag"]);
-    expect(record?.argv).not.toContain("run");
-    expect(record?.argv).not.toContain("--network");
-    expect(record?.env.HOME).toBe("/Users/dev");
-    expect(record?.env.ANTHROPIC_API_KEY).toBe("sk-ant-secret");
-    expect(record?.env.SSH_AUTH_SOCK).toBe("/tmp/ssh-agent.sock");
-    expect(record?.env.PATH).toBe("/usr/bin:/bin");
-    expect(child.stdin).not.toBeNull();
-    expect(child.stdout).not.toBeNull();
-
-    const again = await writeRecordingDocker(await tempDir());
-    const empty = spawnAgent(again.bin, ["--flag"], env, {});
-    await waitExit(empty);
-    const [second] = await readDockerRecords(again.record);
-    expect(second?.argv).toEqual(["--flag"]);
-    expect(second?.env.HOME).toBe("/Users/dev");
-    expect(second?.env.GITHUB_TOKEN).toBe("ghp_secret");
+    const record = join(root, "command.json");
+    const env = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: root,
+      PAWS_TEST_VALUE: "host-command",
+    };
+    const script = `require("fs").writeFileSync(process.argv[1], JSON.stringify({argv: process.argv.slice(2), home: process.env.HOME, value: process.env.PAWS_TEST_VALUE}));`;
+    for (const options of [undefined, {}]) {
+      const child = spawnAgent(process.execPath, ["-e", script, record, "--flag"], env, options);
+      await waitExit(child);
+      expect(JSON.parse(fs.readFileSync(record, "utf8"))).toEqual({
+        argv: ["--flag"],
+        home: root,
+        value: "host-command",
+      });
+      expect(child.stdin).not.toBeNull();
+      expect(child.stdout).not.toBeNull();
+    }
   });
 
   test("the ownership anchor ignores worktree Bun preloads and preserves the actual command cwd", async () => {
     const root = await tempDir();
     const marker = join(root, "host-preload");
+    const record = join(root, "command-cwd");
     fs.writeFileSync(join(root, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
     fs.writeFileSync(
       join(root, "preload.ts"),
       `require("fs").writeFileSync(${JSON.stringify(marker)}, "host");`,
     );
-    const bin = join(root, "command");
-    fs.writeFileSync(bin, "#!/bin/sh\npwd\n", { mode: 0o755 });
-    for (const sandbox of [false, true]) {
-      const child = spawnAgent(
-        bin,
-        [],
-        { PATH: process.env.PATH! },
-        {
-          cwd: root,
-          ...(sandbox
-            ? { docker: { agent: "claude", worktree: root, proxyUrl: "http://127.0.0.1:9", bin } }
-            : {}),
-        },
-      );
-      let output = "";
-      child.stdout?.on("data", (chunk) => (output += chunk.toString()));
-      await waitExit(child);
-      expect(output.trim()).toBe(root);
-      expect(fs.existsSync(marker)).toBe(false);
-    }
-  });
-
-  test("docker mode spawns the fake docker binary with the sandbox argv", async () => {
-    const root = await tempDir();
-    const fake = await writeRecordingDocker(root);
-    const env = dirtyEnv();
-    const docker = {
-      agent: "claude" as const,
-      worktree,
-      proxyUrl: "http://127.0.0.1:9",
-      bin: fake.bin,
-      uid: 1000,
-      gid: 1000,
-    };
-    const plan = buildDockerRun({
-      ...docker,
-      command: "claude-agent-acp",
-      args: ["--verbose"],
-      hostEnv: env,
-    });
-    const child = spawnAgent("claude-agent-acp", ["--verbose"], env, { docker });
+    const child = spawnAgent(
+      "/bin/sh",
+      ["-c", 'pwd > "$1"', "paws-cwd", record],
+      { PATH: process.env.PATH! },
+      { cwd: root },
+    );
     await waitExit(child);
-    const [record] = await readDockerRecords(fake.record);
-    if (!record) throw new Error("docker did not record an invocation");
-    expect(record.argv).toEqual(plan.args);
-    expect(record.argv[record.argv.indexOf("--network") + 1]).toBe("none");
-    expect(record.argv).toContain("HTTPS_PROXY=http://127.0.0.1:9");
-    expect(record.argv.filter((arg) => arg.startsWith("type=bind,"))).toEqual([
-      `type=bind,src=${worktree},dst=${worktree}`,
-    ]);
-    const flat = record.argv.join("\n");
-    expect(flat).not.toContain("sk-ant-secret");
-    expect(flat).not.toContain("ghp_secret");
-    expect(flat).not.toContain("/tmp/ssh-agent.sock");
-    expect(flat).not.toContain("docker.sock");
-    expect(flat).not.toContain("HOME=/Users/dev");
-    expect(record.env.HOME).toBeUndefined();
-    expect(record.env.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(record.env.OPENAI_API_KEY).toBeUndefined();
-    expect(record.env.GITHUB_TOKEN).toBeUndefined();
-    expect(record.env.GH_TOKEN).toBeUndefined();
-    expect(record.env.SSH_AUTH_SOCK).toBeUndefined();
-    expect(record.env.PATH).toBe(plan.env.PATH);
+    expect(fs.readFileSync(record, "utf8").trim()).toBe(root);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });
 
