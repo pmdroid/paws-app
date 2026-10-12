@@ -105,7 +105,7 @@ describe("streamed activity", () => {
       {
         kind: "action",
         body: "Run checks",
-        action: { action: "Run checks", parameter: "check" },
+        action: { action: "Run checks", parameter: "" },
         ephemeral: true,
       },
     ]);
@@ -159,13 +159,13 @@ describe("streamed activity", () => {
       body: "Run checks",
       action: {
         action: "Run checks",
-        parameter: "check",
+        parameter: "",
         result: "completed",
       },
     });
   });
 
-  test("a known tool completion publishes a durable action without raw tool output", () => {
+  test("a known tool completion publishes a durable action with redacted tool output", () => {
     const posted: unknown[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent({
@@ -191,13 +191,13 @@ describe("streamed activity", () => {
       {
         kind: "action",
         body: "Run checks",
-        action: { action: "Run checks", parameter: "check" },
+        action: { action: "Run checks", parameter: "" },
         ephemeral: true,
       },
       {
         kind: "action",
         body: "Run checks",
-        action: { action: "Run checks", parameter: "check", result: "completed" },
+        action: { action: "Run checks", parameter: "", result: '{"secret":"[redacted]"}' },
       },
     ]);
   });

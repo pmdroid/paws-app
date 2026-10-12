@@ -111,8 +111,8 @@ import {
 import { intakeDelegatedIssue, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
-  TrackerAdapter,
   ProgressUpdate,
+  TrackerAdapter,
   LinearActivitySnapshot,
   LinearFileTransfer,
 } from "../linear";
@@ -841,7 +841,13 @@ export class Orchestrator {
           this.canReportProgress(item.id) &&
           update.kind !== "elicitation"
         )
-          this.post(item, update.kind, update.body, `${run.id}:answer:${++this.activitySeq}`);
+          this.post(
+            item,
+            update.kind,
+            update.body,
+            `${run.id}:answer:${++this.activitySeq}`,
+            update,
+          );
       },
       (steps) => {
         if (!controller.signal.aborted && this.canReportProgress(item.id))
@@ -855,6 +861,7 @@ export class Orchestrator {
           "thought",
           "Preparing the requested answer.",
           `${run.id}:keep:${this.now()}`,
+          { ephemeral: true },
         );
         void this.flush();
       }

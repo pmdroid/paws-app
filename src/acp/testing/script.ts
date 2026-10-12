@@ -15,7 +15,7 @@ export interface FakePermissionOption {
 }
 
 export type FakeStep =
-  | { type: "update"; update: Record<string, unknown> }
+  | { type: "update"; update: Record<string, unknown>; delayMs?: number }
   | { type: "permission"; toolCall: FakeToolCall; options?: FakePermissionOption[] }
   | { type: "fs_read"; path: string }
   | { type: "fs_write"; path: string; content: string }

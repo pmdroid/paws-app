@@ -229,6 +229,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         method: "session/update",
         params: { sessionId, update: step.update },
       });
+      if (step.delayMs) await Bun.sleep(step.delayMs);
       continue;
     }
     if (step.type === "permission") {
