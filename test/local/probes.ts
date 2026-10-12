@@ -2,6 +2,7 @@ import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
+import { probeRunnerTranscripts } from "./runner-transcripts";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { statSync, writeFileSync } from "node:fs";
@@ -50,6 +51,7 @@ export async function probeBoundaries(
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
+  await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(

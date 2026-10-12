@@ -134,3 +134,5 @@ Run `bun test test/runner-health.test.ts` for signed health delivery over actual
 ## Runner coordinator
 
 Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.
+
+Runner transcript verification uploads and retrieves ten megabytes through the production object-store and HTTP adapters with real migrated SQLite and a fake object service. It checks byte/digest binding, exact receipts, empty transcripts, lease and identity fences, revocation during I/O, retryable object faults and actual SQLite busy recovery. Raw transcript markers must be absent from the database and WAL.
