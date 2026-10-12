@@ -86,6 +86,8 @@ For HTTP shutdown, run `bun --no-env-file test test/server-drain.test.ts`. The p
 ## Runner pairing
 
 The audit uses real P-256 CSRs, signed certificates, SQLite and HTTPS client authentication. It verifies administrator approval, recent login, single-use codes, ten-minute expiry, workspace ownership, five-minute renewal overlap, superseded-certificate renewal rejection, three owned coordinator subprocesses, persistent revocation and membership removal. It also approves a runner immediately before the original pairing deadline, leaves its certificate unclaimed, and proves expiry revokes that runner with a system audit record while preserving a claimed runner. A real mTLS connection remains open in a coordinator subprocess while the parent revokes its database identity; the periodic sweep must close that connection within five seconds.
+The audit drives the production runner worker through real Git bundles and scripted ACP subprocesses. It verifies the exact assigned base and candidate commit, separate request-bound answers published by atomic directory rename, credential filtering including a Git filesystem-monitor callback during checkpointing, implementation responses larger than the reviewer text limit, oversized reviewer notifications after the prompt response, read-only review, missing-base rejection, cancellation, connection probes and provider login health without copying vendor credential output. Broker verification checks the actual Linux user boundary separately.
+
 
 ## Safety and evidence
 
