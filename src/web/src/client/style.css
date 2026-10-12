@@ -38,14 +38,11 @@ input {
   color: inherit;
 }
 .github-auth {
-  position: fixed;
-  z-index: 30;
-  left: 12px;
-  bottom: 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  max-width: 280px;
+  padding: 12px 24px;
 }
 .github-auth .github-code {
   margin: 0;
@@ -89,6 +86,94 @@ input {
 }
 .workspace-member > span {
   min-width: 140px;
+}
+body:not([data-area="settings"]) .workspace-access details,
+body:not([data-area="settings"]) .github-auth {
+  display: none;
+}
+.work-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 28px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.work-navigation a {
+  color: var(--muted);
+  padding: 4px 0;
+}
+.work-navigation a:hover,
+.work-navigation a[aria-current="page"] {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 7px;
+}
+.overview-section {
+  min-width: 0;
+  margin-top: 28px;
+}
+.overview-section > .between {
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.overview-section h2 {
+  margin: 0;
+}
+.overview-section h3 {
+  margin-top: 28px;
+}
+.overview-section .it {
+  overflow-wrap: anywhere;
+}
+.overview-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 36px;
+}
+.overview-work {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.overview-epics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.overview-work li {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.overview-work .between {
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.overview-work .between > a {
+  flex: 1 1 240px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.overview-work .between > a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.overview-work .row {
+  margin-top: 8px;
+}
+.overview-events .it {
+  align-items: baseline;
+}
+@media (max-width: 1100px) {
+  .overview-columns {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
 }
 .paws-login .app {
   display: block;
@@ -1221,7 +1306,7 @@ input[type="url"] {
   }
   .tabbar {
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     position: fixed;
     left: 0;
     right: 0;

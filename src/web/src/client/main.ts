@@ -174,6 +174,7 @@ function paint(): void {
       : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
+  document.body.dataset.area = model.route.view === "settings" ? "settings" : "overview";
   document.title = view.title;
   setHtml("#side", view.side);
   setHtml("#top", view.top);

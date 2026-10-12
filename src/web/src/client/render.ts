@@ -83,13 +83,16 @@ const ICONS = {
 
 const NAV = [
   { view: "overview", label: "Overview", icon: "overview" },
-  { view: "epics", label: "Epics", icon: "epic" },
-  { view: "runs", label: "Agent runs", icon: "run" },
-  { view: "sessions", label: "Linear conversations", icon: "inbox" },
-  { view: "questions", label: "Open questions", icon: "inbox" },
-  { view: "verdicts", label: "Closeout", icon: "verify" },
-  { view: "queue", label: "Merge queue", icon: "queue" },
   { view: "settings", label: "Settings", icon: "settings" },
+] as const;
+
+const WORK_VIEWS = [
+  { view: "runs", label: "Runs and logs" },
+  { view: "questions", label: "Questions" },
+  { view: "verdicts", label: "Verification" },
+  { view: "queue", label: "Merge queue" },
+  { view: "sessions", label: "Linear conversations" },
+  { view: "epics", label: "Epics and dependencies" },
 ] as const;
 
 const CRUMB: Record<Route["view"], string> = {
@@ -114,7 +117,7 @@ export function render(model: RenderModel): Rendered {
       model.route.view === "settings"
         ? '<div id="agent-settings" class="agent-settings"></div>'
         : snapshot && model.phase !== "loading"
-          ? renderView(snapshot, model)
+          ? renderWorkNavigation(model) + renderView(snapshot, model)
           : renderPending(model),
     tabbar: renderTabbar(model),
     title,
@@ -127,16 +130,16 @@ function renderSide(model: RenderModel): string {
   const workspace = project?.workspace ? `${esc(project.workspace)} · ` : "";
   const counts = snapshot ? navCounts(snapshot) : null;
   const links = NAV.map((item) => {
-    const on = model.route.view === item.view ? " on" : "";
+    const active = model.route.view === "settings" ? "settings" : "overview";
+    const on = active === item.view ? " on" : "";
     const count = counts ? counts[item.view] : 0;
-    const hot = item.view === "questions" && count > 0 ? " hot" : "";
+    const hot = item.view === "overview" && count > 0 ? " hot" : "";
     const badge = count > 0 ? `<span class="cnt${hot}">${count}</span>` : "";
-    return `<a class="nav${on}" href="${routeHref({ view: item.view } as Route)}">${ICONS[item.icon]}${item.label}${badge}</a>`;
+    return `<a class="nav${on}" href="${routeHref({ view: item.view })}"${on ? ' aria-current="page"' : ""}>${ICONS[item.icon]}${item.label}${badge}</a>`;
   }).join("");
   return `<div class="brand"><div class="logo">P</div><div><b>Paws</b><small>status</small></div></div>
     <div class="ws"><div class="row">${workspace}<b>${esc(project?.team ?? "…")}</b></div>
     <div class="row">${esc(project?.repo ?? "Not connected")}</div></div>
-    <div class="nav-label">Status</div>
     ${links}
     <div class="foot">Questions are answered in Linear.</div>`;
 }
@@ -148,7 +151,7 @@ function renderTop(model: RenderModel): string {
   const pill = sourcePill(model);
   const clockText = model.snapshot ? clock(model.snapshot.generatedAt) : "";
   return `<button class="btn ghost hamb" type="button" data-action="drawer" aria-label="Open menu">☰</button>
-    <div class="crumbs"><span class="c-root">${esc(name)} <span class="dim">/</span></span> <b>${crumb}</b>${param ? ` <span class="c-param"><span class="dim">/</span> <span class="mono">${esc(param)}</span></span>` : ""}</div>
+    <div class="crumbs"><span class="c-root">${esc(name)} <span class="dim">/</span></span>${model.route.view !== "overview" && model.route.view !== "settings" ? '<a href="#/">Overview</a> <span class="dim">/</span> ' : ""}<b>${crumb}</b>${param ? ` <span class="c-param"><span class="dim">/</span> <span class="mono">${esc(param)}</span></span>` : ""}</div>
     ${pill}
     <div class="sp"></div>
     <span class="clock">${clockText}</span>
@@ -186,22 +189,27 @@ function renderPending(model: RenderModel): string {
 function renderTabbar(model: RenderModel): string {
   const counts = model.snapshot ? navCounts(model.snapshot) : null;
   const tabs = [
-    ["overview", "Home", "overview"],
-    ["epics", "Epics", "epic"],
-    ["runs", "Runs", "run"],
-    ["sessions", "Linear", "inbox"],
-    ["questions", "Questions", "inbox"],
-    ["verdicts", "Closeout", "verify"],
+    ["overview", "Overview", "overview"],
     ["settings", "Settings", "settings"],
   ] as const;
   return tabs
     .map(([view, label, icon]) => {
-      const on = model.route.view === view ? " on" : "";
+      const active = model.route.view === "settings" ? "settings" : "overview";
+      const on = active === view ? " on" : "";
       const count = counts ? counts[view] : 0;
-      const badge = view === "questions" && count > 0 ? `<span class="cnt">${count}</span>` : "";
-      return `<a class="${on}" href="${routeHref({ view } as Route)}" aria-label="${label}">${ICONS[icon]}<span>${label}</span>${badge}</a>`;
+      const badge = view === "overview" && count > 0 ? `<span class="cnt">${count}</span>` : "";
+      return `<a class="${on}" href="${routeHref({ view })}" aria-label="${label}"${on ? ' aria-current="page"' : ""}>${ICONS[icon]}<span>${label}</span>${badge}</a>`;
     })
     .join("");
+}
+
+function renderWorkNavigation(model: RenderModel): string {
+  return `<nav class="work-navigation" aria-label="Work details">${WORK_VIEWS.map(
+    ({ view, label }) => {
+      const count = model.snapshot ? navCounts(model.snapshot)[view] : 0;
+      return `<a href="${routeHref({ view, id: null } as Route)}"${model.route.view === view ? ' aria-current="page"' : ""}>${label}${count ? ` <span class="cnt">${count}</span>` : ""}</a>`;
+    },
+  ).join("")}</nav>`;
 }
 
 const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
@@ -230,37 +238,42 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
 
 function viewOverview(snapshot: StatusSnapshot): string {
   const active = snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length;
-  const waiting = snapshot.runs.filter((run) => run.state === "awaiting_input").length;
-  const verifying = snapshot.runs.filter((run) => run.state === "verifying").length;
-  const open = snapshot.questions.length;
-  const queued = snapshot.mergeQueue.length;
-  const head = [...snapshot.mergeQueue].sort((a, b) => a.position - b.position)[0];
-  const headItem = head ? findItem(snapshot, head.itemId) : undefined;
-  const inFlight = snapshot.items.filter(
-    (item) => !["merged", "completed"].includes(item.state),
-  ).length;
-  return `<h1>${esc(snapshot.project.name)}</h1>
-    <div class="sub">Epics, items, runs, open questions, Closeout verdicts, and the merge queue.</div>
-    <div class="grid g4">
-      ${stat("Active runs", String(active), `${waiting} awaiting input · ${verifying} verifying`, active ? Math.min(100, active * 30) : 0, "")}
-      ${stat("Open questions", String(open), open ? "Answer them in Linear" : "Nothing is waiting", Math.min(100, open * 25), open ? "var(--amber)" : "")}
-      ${stat("Merge queue", String(queued), headItem ? `head: ${headItem.id}` : "empty", Math.min(100, queued * 30), "var(--violet)")}
-      ${stat("Items in flight", String(inFlight), `${snapshot.items.length} tracked`, snapshot.items.length ? (inFlight / snapshot.items.length) * 100 : 0, "")}
-    </div>
-    <div class="row state-strip">${stateStrip(snapshot.items)}</div>
-    <div class="card" style="margin-top:14px"><div class="between"><h2>Epics</h2><a href="${routeHref({ view: "epics", id: null })}">All epics</a></div>
-      ${epicTable(snapshot)}
-    </div>
-    <div class="grid g2" style="margin-top:14px">
-      <div class="card"><div class="between"><h2>Open questions</h2><a href="${routeHref({ view: "questions", id: null })}">Inbox</a></div>
-        ${snapshot.questions.length ? snapshot.questions.map((question) => questionRow(snapshot, question)).join("") : '<div class="empty">No open questions.</div>'}
-      </div>
-      <div class="card"><div class="between"><h2>Merge queue</h2><a href="${routeHref({ view: "queue" })}">Queue</a></div>
-        ${snapshot.mergeQueue.length ? snapshot.mergeQueue.map((entry) => queueRow(snapshot, entry)).join("") : '<div class="empty">Queue is empty.</div>'}
-        <h3 style="margin-top:16px">Recent events</h3>
-        <div class="list">${events(snapshot)}</div>
-      </div>
-    </div>`;
+  const attention = snapshot.items.filter((item) =>
+    ["needs_human", "exhausted"].includes(item.state),
+  );
+  const work = snapshot.items.filter(
+    (item) => !["merged", "completed", "stopped"].includes(item.state),
+  );
+  const visible = (work.length ? work : [...snapshot.items].reverse()).slice(0, 12);
+  return `<h1>Overview</h1><p class="sub">Work delegated in Linear, verified and delivered by Paws.</p>
+    <section class="overview-section" aria-labelledby="attention-heading"><div class="between"><h2 id="attention-heading">Needs attention</h2><a href="${routeHref({ view: "questions", id: null })}">Open questions</a></div>
+      ${snapshot.questions.map((question) => questionRow(snapshot, question)).join("")}
+      ${attention.map((item) => `<div class="it"><a href="${routeHref(item.runId ? { view: "runs", id: item.runId } : { view: "epics", id: item.epicId })}"><b>${esc(item.id)}</b> ${esc(item.title)}</a> ${statePill(item.state, itemLabel(item.state))}<div>${linkList(item.links)}</div></div>`).join("")}
+      ${!snapshot.questions.length && !attention.length ? '<p class="muted">No work needs your attention.</p>' : ""}
+    </section>
+    <div class="overview-columns"><section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">${work.length ? "Work in progress" : "Recent work"}</h2><a href="${routeHref({ view: "runs", id: null })}">${active} active runs</a></div>
+      <div class="overview-epics">${snapshot.epics.map((epic) => `<a href="${routeHref({ view: "epics", id: epic.id })}">${esc(epic.title)}</a>`).join("")}</div>
+      <ul class="overview-work">${visible
+        .map((item) => {
+          const run = snapshot.runs.find((entry) => entry.id === item.runId);
+          const blockers = item.blockers.filter(
+            (id) => !["merged", "completed"].includes(findItem(snapshot, id)?.state ?? "queued"),
+          );
+          return `<li><div class="between"><a href="${routeHref(run ? { view: "runs", id: run.id } : { view: "epics", id: item.epicId })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
+        })
+        .join("")}</ul>
+      <a href="${routeHref({ view: "epics", id: null })}">View epics and dependencies</a>
+    </section><section class="overview-section" aria-labelledby="delivery-heading"><div class="between"><h2 id="delivery-heading">Delivery</h2><a href="${routeHref({ view: "queue" })}">Merge queue${snapshot.mergeQueue.length ? ` · ${snapshot.mergeQueue.length}` : ""}</a></div>
+      ${
+        snapshot.mergeQueue.length
+          ? [...snapshot.mergeQueue]
+              .sort((a, b) => a.position - b.position)
+              .map((entry) => queueRow(snapshot, entry))
+              .join("")
+          : '<p class="muted">No pull requests are waiting to merge.</p>'
+      }
+      <h3>Recent events</h3><div class="list overview-events">${events(snapshot)}</div>
+    </section></div>`;
 }
 
 function viewEpics(snapshot: StatusSnapshot, id: string | null, mode: "graph" | "board"): string {
@@ -438,25 +451,6 @@ function viewQueue(snapshot: StatusSnapshot): string {
     ${body}${recent}`;
 }
 
-function epicTable(snapshot: StatusSnapshot): string {
-  if (!snapshot.epics.length) return '<div class="empty">No epics.</div>';
-  const rows = snapshot.epics
-    .map((epic) => {
-      const items = snapshot.items.filter((item) => item.epicId === epic.id);
-      const merged = items.filter((item) => item.state === "merged").length;
-      const width = items.length ? (merged / items.length) * 100 : 0;
-      const state = epic.delegated
-        ? statePill(epic.state === "done" ? "merged" : epic.state, epicLabel(epic.state))
-        : '<span class="tag">Not delegated</span>';
-      return `<tr class="click"><td><a href="${routeHref({ view: "epics", id: epic.id })}"><span class="lin-id">${esc(epic.id)}</span> <b>${esc(epic.title)}</b></a></td>
-        <td class="hide-phone">${avatar(epic.dri, true)} <span class="muted">${esc(epic.dri)}</span></td>
-        <td>${state}</td>
-        <td><div class="row"><div class="meter" style="flex:1;margin:0"><i style="width:${width}%"></i></div><span class="muted mono">${merged}/${items.length}</span></div></td></tr>`;
-    })
-    .join("");
-  return `<div class="tw"><table><tr><th>Epic</th><th class="hide-phone">DRI</th><th>Status</th><th>Progress</th></tr>${rows}</table></div>`;
-}
-
 function board(items: StatusItem[]): string {
   const columns = ITEM_ORDER.filter((state) => items.some((item) => item.state === state));
   return `<div class="board">${columns
@@ -597,7 +591,7 @@ function questionCard(
 }
 
 function questionRow(snapshot: StatusSnapshot, question: StatusQuestion): string {
-  return `<div class="it"><a href="${routeHref({ view: "questions", id: question.id })}"><b>${esc(question.id)}</b> ${esc(question.title)}</a><div class="dim">${esc(question.itemId)} · ${esc(ago(question.askedAt, snapshot.generatedAt))}</div></div>`;
+  return `<div class="it"><a href="${routeHref({ view: "questions", id: question.id })}"><b>${esc(question.title)}</b></a><div class="muted">${esc(question.itemId)} · ${esc(ago(question.askedAt, snapshot.generatedAt))}</div>${question.links.length ? `<div>${linkList(question.links)}</div>` : ""}</div>`;
 }
 
 function queueRow(snapshot: StatusSnapshot, entry: StatusMergeEntry): string {
@@ -808,22 +802,6 @@ function policyLabel(verdict: StatusVerdict): string {
   return verdict.policyDigest || verdict.policyPath || "—";
 }
 
-function stateStrip(items: StatusItem[]): string {
-  const counts = new Map<ItemState, number>();
-  for (const item of items) counts.set(item.state, (counts.get(item.state) ?? 0) + 1);
-  return ITEM_ORDER.filter((state) => counts.has(state))
-    .map(
-      (state) =>
-        `${statePill(state, itemLabel(state))}<span class="mono dim">${counts.get(state)}</span>`,
-    )
-    .join("");
-}
-
-function stat(label: string, value: string, sub: string, width: number, color: string): string {
-  const fill = color ? `background:${color}` : "";
-  return `<div class="card stat"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div><div class="s">${esc(sub)}</div><div class="meter"><i style="width:${Math.max(0, Math.min(100, width))}%;${fill}"></i></div></div>`;
-}
-
 function itemLink(item: StatusItem | undefined): string {
   if (!item) return "";
   return `<a class="lin-id" href="${routeHref({ view: "epics", id: item.epicId })}">${esc(item.id)}</a>`;
@@ -835,7 +813,7 @@ function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined 
 
 function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
   return {
-    overview: 0,
+    overview: snapshot.questions.length,
     epics: snapshot.epics.length,
     runs: snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length,
     sessions: 0,
