@@ -609,4 +609,39 @@ CREATE UNIQUE INDEX question_answer_event ON question (session_id, answer_event_
 WHERE answer_event_key IS NOT NULL;
 `,
   },
+  {
+    id: "013_linear_installation_access",
+    sql: `
+ALTER TABLE linear_session ADD COLUMN oauth_client_id TEXT;
+ALTER TABLE linear_session ADD COLUMN team_id TEXT;
+ALTER TABLE linear_session ADD COLUMN installation_observed_at INTEGER;
+CREATE TABLE linear_app_revocation (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  revoked_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id)
+) STRICT;
+CREATE TABLE linear_team_access (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id, app_user_id, team_id)
+) STRICT;
+CREATE TABLE linear_installation_permission (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  all_public_teams INTEGER NOT NULL CHECK (all_public_teams IN (0, 1)),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id, app_user_id)
+) STRICT;
+CREATE TABLE linear_access_event (
+  event_key TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
