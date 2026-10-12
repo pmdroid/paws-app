@@ -90,6 +90,22 @@ export {
 } from "./reads";
 export { immediate } from "./tx";
 export {
+  createRunnerPairing,
+  expireRunnerPairings,
+  findRunnerPairing,
+  getRunner,
+  listRunners,
+  getRunnerCertificate,
+  runnerForCertificate,
+  approveRunnerPairing,
+  renewRunnerCertificate,
+  isCurrentRunnerCertificate,
+  updateRunnerStatus,
+  type RunnerRecord,
+  type RunnerPairing,
+  type StoredRunnerCertificate,
+} from "./runners";
+export {
   appendCloseoutOutput,
   ensureCloseoutProgress,
   finishCloseoutProgress,

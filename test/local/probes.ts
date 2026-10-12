@@ -27,6 +27,7 @@ import { createFakeTracker } from "../../src/linear";
 import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
+import { probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
 
 export async function probeBoundaries(
@@ -34,6 +35,7 @@ export async function probeBoundaries(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   await probeRunnerTls(join(root, "runner-tls"), observe);
+  await probeRunnerPairing(join(root, "runner-pairing"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,

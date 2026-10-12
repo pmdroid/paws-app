@@ -54,6 +54,10 @@ bun --no-env-file scripts/verify-local.ts serve
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
+## Runner pairing
+
+The audit uses real P-256 CSRs, signed certificates, SQLite and HTTPS client authentication. It verifies administrator approval, recent login, single-use codes, ten-minute expiry, workspace ownership, five-minute renewal overlap, superseded-certificate renewal rejection, three owned coordinator subprocesses, persistent revocation and membership removal. It also approves a runner immediately before the original pairing deadline, leaves its certificate unclaimed, and proves expiry revokes that runner with a system audit record while preserving a claimed runner. A real mTLS connection remains open in a coordinator subprocess while the parent revokes its database identity; the periodic sweep must close that connection within five seconds.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.

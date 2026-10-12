@@ -32,6 +32,7 @@ const MODULES = [
   "ghcomments",
   "workspace",
   "runner-identity",
+  "runner-control",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -87,6 +88,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   sandbox: [],
   workspace: ["db", "linear"],
   "runner-identity": ["credentials"],
+  "runner-control": ["db", "workspace", "runner-identity"],
 };
 
 describe("module boundaries", () => {
