@@ -70,6 +70,7 @@ import {
   discardLinearTurns,
   bindWorkItemRepository,
   getWorkItemRepository,
+  getLinearTaskDelegation,
   getWorkItemRepositoryAnswer,
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
@@ -138,6 +139,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
+import type { LinearTaskAccess } from "./linear-task-access";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
@@ -169,6 +171,7 @@ export type OrchestratorOptions = {
   home?: string;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
+  linearAccess?: LinearTaskAccess;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
   catchUp?: () => Promise<void>;
@@ -868,6 +871,7 @@ export class Orchestrator {
     }, KEEPALIVE_MS);
     keepAlive.unref?.();
     try {
+      await this.taskAccess(item)?.assert(item, controller.signal, { allowTerminalIssue: true });
       const promptRunner = await this.prepareConversation(item);
       let repositoryContext = "";
       if (taskRequiresRepository(this.db, item.id)) {
@@ -978,7 +982,6 @@ export class Orchestrator {
     });
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("implementing");
-    this.postStatus(item, "started");
     let posted = true;
     const first = setTimeout(() => {
       if (posted || !this.canReportProgress(item.id)) return;
@@ -1021,6 +1024,8 @@ export class Orchestrator {
     );
 
     try {
+      await this.taskAccess(item)?.prepare(item, controller.signal);
+      if (!this.taskAccess(item)) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = implementPrompt({
@@ -1774,6 +1779,13 @@ export class Orchestrator {
     ]);
     if (items.every((item) => item.state === "completed")) return;
     const epicIssueId = this.epicIssueId(epicId);
+    if (
+      epicIssueId &&
+      items.every((item) => item.state === "merged") &&
+      this.taskAccess(items[0]!) &&
+      items.every((item) => getLinearTaskDelegation(this.db, item.id, epicIssueId)?.humanActorId)
+    )
+      this.postStatus(items.at(-1)!, "completed", epicIssueId);
     const session =
       epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
     if (session === null) return;
@@ -1926,14 +1938,20 @@ export class Orchestrator {
     return sessionId === null || findOpenQuestion(this.db, sessionId) === null;
   }
 
-  private postStatus(item: WorkItemRecord, stateType: "started" | "completed" | "canceled"): void {
+  private postStatus(
+    item: WorkItemRecord,
+    stateType: "started" | "completed" | "canceled",
+    issueId = item.linearIssueId,
+  ): void {
+    if (this.taskAccess(item) && !getLinearTaskDelegation(this.db, item.id, issueId)?.humanActorId)
+      return;
     const sessionId = this.activitySession(item) ?? item.id;
     enqueueOutboxOnce(this.db, {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
-      idempotencyKey: `status:${item.id}:${stateType}`,
-      payload: { linearIssueId: item.linearIssueId, stateType },
+      idempotencyKey: `status:${item.id}:${issueId}:${stateType}`,
+      payload: { itemId: item.id, linearIssueId: issueId, stateType },
       now: this.now(),
     });
   }
@@ -2106,6 +2124,14 @@ export class Orchestrator {
       await this.options.outbox.idle();
       if (claimed.length === 0) return;
     }
+  }
+
+  private taskAccess(item: WorkItemRecord): LinearTaskAccess | undefined {
+    return this.options.linearTaskModes &&
+      this.options.channel !== "comments" &&
+      !isGitHubIssue(item.linearIssueId)
+      ? this.options.linearAccess
+      : undefined;
   }
 
   private stopped(itemId: string): boolean {
