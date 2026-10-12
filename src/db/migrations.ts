@@ -972,4 +972,28 @@ CREATE TABLE runner_transcript_chunk (
 ) STRICT;
 `,
   },
+  {
+    id: "034_runner_verifier_identity",
+    sql: `
+ALTER TABLE runner_pairing ADD COLUMN verifier_public_key TEXT;
+ALTER TABLE runner_pairing ADD COLUMN verifier_fingerprint TEXT
+CHECK((verifier_public_key IS NULL AND verifier_fingerprint IS NULL)
+OR (verifier_public_key IS NOT NULL AND verifier_fingerprint IS NOT NULL AND length(verifier_fingerprint)=64));
+CREATE TABLE runner_verifier (
+  runner_id TEXT PRIMARY KEY REFERENCES runner(id),
+  public_key TEXT NOT NULL,
+  fingerprint TEXT NOT NULL CHECK(length(fingerprint)=64),
+  approved_by TEXT NOT NULL REFERENCES workspace_user(id),
+  approved_at INTEGER NOT NULL
+) STRICT;
+CREATE TRIGGER immutable_runner_verifier BEFORE UPDATE ON runner_verifier
+BEGIN
+  SELECT RAISE(ABORT,'Verifier identity is immutable');
+END;
+CREATE TRIGGER immutable_pairing_verifier BEFORE UPDATE OF verifier_public_key,verifier_fingerprint ON runner_pairing
+BEGIN
+  SELECT RAISE(ABORT,'Pairing verifier identity is immutable');
+END;
+`,
+  },
 ];
