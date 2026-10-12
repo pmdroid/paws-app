@@ -20,6 +20,7 @@ import {
   getWorkItem,
   getConfirmedRemoteMerge,
   enqueueJob,
+  recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
   listRuns,
@@ -1496,6 +1497,91 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     }
   }, 30_000);
 }
+
+test("a restarted merge re-verifies the same head and merges exactly once", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "recover-merge",
+      identifier: "ENG-31",
+      title: "Recover a verified merge",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const github = createFakeGitHub();
+  let sequence = 0;
+  let reviews = 0;
+  const attach = () => {
+    const jobs = new JobLoop(db, systemClock);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox: new OutboxDispatcher(db, systemClock),
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch(input) {
+        if (input.purpose === "review") reviews++;
+        const script = path.join(layout.root, `merge-restart-${++sequence}.json`);
+        writeFileSync(
+          script,
+          JSON.stringify({
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+            steps:
+              input.purpose === "review"
+                ? emptyReview().steps
+                : [writeOk(input.worktree), { type: "end" }],
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
+      },
+    });
+    return { jobs, orchestrator };
+  };
+  try {
+    const first = attach();
+    await first.orchestrator.onLinearEvent(linearEvent("created", null, null, "recover-merge"));
+    await first.jobs.tick();
+    const item = listWorkItems(db)[0]!;
+    const original = listJobs(db).find((job) => job.queue === JOB_KIND.merge)!;
+    expect(item.state).toBe("merge_queue");
+    expect(reviews).toBe(1);
+    expect(github.merged).toHaveLength(0);
+    db.close();
+    db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    recoverOnStartup(db);
+    const restarted = attach();
+    await restarted.jobs.tick();
+    const retry = listJobs(db).find(
+      (job) => job.queue === JOB_KIND.merge && job.status === "pending",
+    );
+    expect(retry, debug(layout, db)).toBeDefined();
+    expect(retry!.id).not.toBe(original.id);
+    expect(retry!.payload).toMatchObject({ head: item.checkpoint!.wipCommit });
+    expect(listJobs(db).find((job) => job.id === original.id)?.status).toBe("cancelled");
+    await restarted.jobs.tick();
+    expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
+    expect(github.merged).toHaveLength(1);
+    expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
+      "ok\n",
+    );
+    await restarted.jobs.tick();
+    expect(github.merged).toHaveLength(1);
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+}, 30_000);
 
 function emptyReview(): FakeScript {
   return {
