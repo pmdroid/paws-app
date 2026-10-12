@@ -133,6 +133,38 @@ def main():
             raise RuntimeError("Pinned installed runtime failed")
         state_path = pathlib.Path("/var/lib/paws-runner-install/release.json")
         installed = state_path.read_bytes()
+        current_pointer = pathlib.Path("/opt/paws-runner/current")
+        selected_release = current_pointer.resolve(strict=True)
+        current_inode = current_pointer.lstat().st_ino
+        selected_inode = selected_release.stat().st_ino
+        runtime_inode = pathlib.Path("/opt/paws-runner/bin/bun").lstat().st_ino
+        original_artifact, original_source = artifact, source
+        wrong_runtime = root / "wrong-runtime.tar"
+        with tarfile.open(artifact, "r:") as incoming, tarfile.open(wrong_runtime, "w", format=tarfile.USTAR_FORMAT) as outgoing:
+            for member in incoming:
+                content = incoming.extractfile(member)
+                if member.name == "bin/bun":
+                    binary = (ROOT / "node").read_bytes()
+                    member.size = len(binary)
+                    outgoing.addfile(member, io.BytesIO(binary))
+                else:
+                    outgoing.addfile(member, content)
+        with wrong_runtime.open("rb") as stream:
+            wrong_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        artifact = wrong_runtime
+        source = {**source, "artifactSha256": wrong_digest}
+        sign("0.1.2")
+        commands_path = ROOT / "systemctl-commands.jsonl"
+        previous_commands = len(commands_path.read_text().splitlines())
+        rejected = subprocess.run(["/usr/bin/python3", str(ROOT / "install.py"), "--artifact", str(artifact), "--manifest", str(manifest), "--signature", str(signature), "--release-key", str(key)], env=installer.release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
+        if rejected.returncode == 0 or b"Packaged Bun does not match the pinned runtime" not in rejected.stderr:
+            raise RuntimeError("Signed wrong-runtime fixture did not reach pinned Bun validation")
+        new_commands = [json.loads(line) for line in commands_path.read_text().splitlines()[previous_commands:]]
+        wrong_runtime_observations = {"signedWrongRuntimeRejected": True, "installedTrustUnchanged": state_path.read_bytes() == installed, "currentPointerInodePreserved": current_pointer.lstat().st_ino == current_inode, "selectedReleaseInodePreserved": selected_release.stat().st_ino == selected_inode, "runtimePointerInodePreserved": pathlib.Path("/opt/paws-runner/bin/bun").lstat().st_ino == runtime_inode, "installedStatus": json.loads(state_path.read_bytes())["status"], "servicesNotStopped": not any(command[0] == "stop" for command in new_commands), "wrongRuntimeArtifactSha256": wrong_digest}
+        (ROOT / "wrong-runtime-observations.json").write_text(json.dumps(wrong_runtime_observations))
+        if not all(wrong_runtime_observations[name] for name in ("installedTrustUnchanged", "currentPointerInodePreserved", "selectedReleaseInodePreserved", "runtimePointerInodePreserved", "servicesNotStopped")):
+            raise RuntimeError("Signed wrong runtime changed installed trust, release pointers or running services")
+        artifact, source = original_artifact, original_source
         group_path = pathlib.Path("/etc/group")
         original_groups = group_path.read_text()
         input_gid = grp.getgrnam("paws-check-input").gr_gid
@@ -339,7 +371,7 @@ module.main()
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "privatePrerequisiteUnchanged": True, "unsupportedNodeRejected": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "checkUid": check.pw_uid, "verifierFingerprint": first["verifierIdentity"]["fingerprint"], "verifierIdentityPreserved": True, "nonrootPrivateVerifierKeyDenied": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "privatePrerequisiteUnchanged": True, "unsupportedNodeRejected": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "checkUid": check.pw_uid, "verifierFingerprint": first["verifierIdentity"]["fingerprint"], "verifierIdentityPreserved": True, "nonrootPrivateVerifierKeyDenied": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
         print(json.dumps(observations))
 
 

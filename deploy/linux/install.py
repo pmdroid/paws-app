@@ -229,8 +229,6 @@ def install(manifest, artifact, fingerprint):
                 raise ValueError("Unsafe runtime release pointer")
         elif runtime.exists():
             raise ValueError("Unsafe runtime release pointer")
-        stop_for_install()
-        write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
         root_directory(BASE)
         root_directory(BASE / "releases")
         with tempfile.TemporaryDirectory(prefix=".install-", dir=BASE / "releases") as temporary:
@@ -239,6 +237,8 @@ def install(manifest, artifact, fingerprint):
             bun = unpacked / "bin/bun"
             if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
                 raise ValueError("Packaged Bun does not match the pinned runtime")
+            stop_for_install()
+            write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "pending"}).encode(), 0o600)
             destination = BASE / "releases" / manifest["version"]
             current = BASE / "current"
             if current.exists() and not current.is_symlink():
