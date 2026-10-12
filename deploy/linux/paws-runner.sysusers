@@ -4,3 +4,7 @@ g paws-results -
 m paws-runner paws-agent
 m paws-runner paws-results
 m paws-agent paws-results
+u paws-check - "Paws verification commands" /var/lib/paws-check /usr/sbin/nologin
+g paws-check-input -
+m paws-runner paws-check-input
+g paws-check-metadata -

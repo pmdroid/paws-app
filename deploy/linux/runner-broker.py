@@ -1,5 +1,6 @@
 import json
 import fcntl
+import importlib.util
 from contextlib import contextmanager
 import grp
 import os
@@ -85,8 +86,8 @@ def validate_unit():
 
 
 @contextmanager
-def lifecycle(execution_id):
-    directory = open_directory(RECEIPTS)
+def lifecycle(execution_id, receipts=RECEIPTS):
+    directory = open_directory(receipts)
     descriptor = None
     try:
         info = os.fstat(directory)
@@ -185,9 +186,9 @@ def prepare_results(execution_id, agent_uid, results_gid):
         os.close(root)
 
 
-def control_unit(operation, execution_id):
+def control_unit(operation, execution_id, template="paws-agent"):
     return subprocess.run(
-        ["/usr/bin/systemctl", *({"kill": ["kill", "--kill-whom=all", "--signal=SIGKILL"], "show": ["show", "--property=ControlGroup", "--value"]}.get(operation, [operation])), "--", f"paws-agent@{execution_id}.service"],
+        ["/usr/bin/systemctl", *({"kill": ["kill", "--kill-whom=all", "--signal=SIGKILL"], "show": ["show", "--property=ControlGroup", "--value"]}.get(operation, [operation])), "--", f"{template}@{execution_id}.service"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE if operation == "show" else subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -199,13 +200,18 @@ def control_unit(operation, execution_id):
 
 def stop_unit(execution_id):
     fence(execution_id)
-    try:
-        control_unit("kill", execution_id)
-    except subprocess.TimeoutExpired:
-        pass
-    if control_unit("stop", execution_id).returncode != 0:
+    return stop_fixed_unit(execution_id, "paws-agent")
+
+
+def stop_fixed_unit(execution_id, template, kill=True):
+    if kill:
+        try:
+            control_unit("kill", execution_id, template)
+        except subprocess.TimeoutExpired:
+            pass
+    if control_unit("stop", execution_id, template).returncode != 0:
         return False
-    status = control_unit("show", execution_id)
+    status = control_unit("show", execution_id, template)
     if status.returncode != 0 or len(status.stdout) > 4096:
         return False
     group = status.stdout.decode().strip()
@@ -230,7 +236,7 @@ def stop_unit(execution_id):
 def read_request(connection, runner_uid):
     connection.settimeout(2)
     _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-    if uid != runner_uid:
+    if uid not in (runner_uid, 0):
         raise PermissionError("Invalid caller")
     payload = bytearray()
     while b"\n" not in payload:
@@ -243,14 +249,27 @@ def read_request(connection, runner_uid):
     if payload.count(b"\n") != 1 or not payload.endswith(b"\n"):
         raise ValueError("Invalid framing")
     request = json.loads(payload)
-    if not isinstance(request, dict) or set(request) != {"operation", "executionId"} or request["operation"] not in ("start", "stop") or not isinstance(request["executionId"], str) or not EXECUTION_ID.fullmatch(request["executionId"]):
+    if not isinstance(request, dict) or set(request) != {"operation", "executionId"} or request["operation"] not in ("start", "stop", "start-check", "stop-check", "start-check-child", "stop-check-child") or not isinstance(request["executionId"], str) or not EXECUTION_ID.fullmatch(request["executionId"]):
         raise ValueError("Invalid request")
+    if uid != (0 if request["operation"] in ("start-check-child", "stop-check-child") else runner_uid):
+        raise PermissionError("Invalid operation caller")
     return request
+
+
+def check_broker():
+    specification = importlib.util.spec_from_file_location("paws_check_broker", os.path.join(os.path.dirname(__file__), "check-broker.py"))
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
 
 
 def handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request=None):
     try:
         request = request or read_request(connection, runner_uid)
+        if request["operation"] not in ("start", "stop"):
+            response = check_broker().handle(sys.modules[__name__], request, runner_uid)
+            connection.sendall(json.dumps(response).encode() + b"\n")
+            return
         validate_unit()
         if request["operation"] == "start":
             validate_job(request["executionId"], runner_uid, agent_gid)
@@ -296,7 +315,7 @@ def main():
 
 
 def serve(listener, runner_uid, agent_uid, agent_gid, results_gid):
-    slots = {operation: threading.BoundedSemaphore(8) for operation in ("start", "stop")}
+    slots = {operation: threading.BoundedSemaphore(8) for operation in ("start", "stop", "start-check", "stop-check", "start-check-child", "stop-check-child")}
     def dispatch(connection, request, semaphore):
         try:
             handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request)
@@ -319,7 +338,12 @@ def serve(listener, runner_uid, agent_uid, agent_gid, results_gid):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "guard":
+    if len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
+        try:
+            sys.exit(0 if check_broker().guard(sys.modules[__name__], sys.argv[2], sys.argv[1]) else 1)
+        except (OSError, ValueError, StopIteration):
+            sys.exit(1)
+    elif len(sys.argv) == 3 and sys.argv[1] == "guard":
         try:
             sys.exit(0 if guard(sys.argv[2]) else 1)
         except (OSError, ValueError, StopIteration):
