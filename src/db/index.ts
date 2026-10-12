@@ -162,6 +162,20 @@ export {
 } from "./artifacts";
 
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
+export {
+  listLinearSessions,
+  listLinearSessionTurns,
+  listLinearSessionTasks,
+  listLinearSessionQuestions,
+  listLinearSessionArtifacts,
+  listLinearConversationSnapshots,
+  getLinearConversationSource,
+  type LinearConversationSession,
+  type LinearConversationTurn,
+  type LinearConversationTask,
+  type LinearConversationQuestion,
+  type LinearConversationArtifact,
+} from "./conversations";
 export { getConversation, saveConversation } from "./acp-conversations";
 export {
   getConfirmedRemoteMerge,

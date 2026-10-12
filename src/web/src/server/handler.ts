@@ -12,6 +12,7 @@ import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
+import { handleLinearConversationsRequest } from "./conversations";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 
 export interface StatusProvider {
@@ -70,6 +71,8 @@ export async function handleStatusRequest(
   const { pathname } = url;
   const artifact = await handleLinearArtifactRequest(request, options.readLinearArtifact);
   if (artifact !== null) return artifact;
+  const conversations = handleLinearConversationsRequest(request, options.db);
+  if (conversations !== null) return conversations;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);
