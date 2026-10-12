@@ -59,6 +59,7 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  createGitHubApp,
   githubHttpsUrl,
   type GitHubTokenProvider,
 } from "./github";
@@ -102,7 +103,9 @@ import {
   initializeRunnerCoordinator,
   openRunnerCoordinator,
   type RunnerCoordinator,
+  type RunnerRepositoryAccessOptions,
 } from "./runner-coordinator";
+import type { RunnerTranscriptObjects } from "./runner-transcripts";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -119,6 +122,8 @@ export type PawsProcess = {
 
 export type StartOptions = {
   noTunnel?: boolean;
+  runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
+  runnerTranscriptObjects?: RunnerTranscriptObjects;
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -301,6 +306,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
           tls: tls!,
+          repositoryAccess: options?.runnerRepositoryAccess ?? runnerRepositoryAccess(runtime),
+          transcriptObjects: options?.runnerTranscriptObjects,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
           if (runnerStopping) {
@@ -701,6 +708,31 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
     privateKeyPem: "",
     client: createFetchGitHubClient(),
     tokenProvider: gitHostToken(auth),
+  };
+}
+
+function runnerRepositoryAccess(runtime: RuntimeConfig): RunnerRepositoryAccessOptions | undefined {
+  const { githubAppId, githubAppInstallationId, githubAppPrivateKeyPath } = runtime.env;
+  if (
+    runtime.githubAuth !== "app" ||
+    githubAppId === null ||
+    githubAppInstallationId === null ||
+    githubAppPrivateKeyPath === null
+  )
+    return undefined;
+  return {
+    github: {
+      async mintInstallationToken(input) {
+        const privateKeyPem = readSecretFile(githubAppPrivateKeyPath, false);
+        if (privateKeyPem === null) throw new Error("GitHub App credentials are unavailable.");
+        return createGitHubApp({
+          client: createFetchGitHubClient(),
+          appId: githubAppId,
+          privateKeyPem,
+        }).mintInstallationToken(input);
+      },
+    },
+    installationForRepository: () => githubAppInstallationId,
   };
 }
 
