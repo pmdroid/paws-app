@@ -49,7 +49,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   const origin = configured.origin;
   const now = options.now ?? Date.now;
   const pending = new Map<string, Promise<void>>();
-  async function refresh(workspaceKey: string, userId: string, force = false) {
+  async function refresh(workspaceKey: string, userId: string, force = false): Promise<void> {
     const member = workspaceMember(options.db, workspaceKey, userId);
     const workspace = getWorkspace(options.db, workspaceKey);
     if (
@@ -63,6 +63,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       return;
     const key = `${workspaceKey}:${userId}`;
     let operation = pending.get(key);
+    if (force && operation !== undefined) {
+      await operation.catch(() => {});
+      return refresh(workspaceKey, userId, true);
+    }
     if (operation === undefined) {
       operation = options.memberships
         .member(workspace.organizationId, member.linearUserId, AbortSignal.timeout(10_000))
@@ -288,7 +292,26 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     }
     return json({ error: "Method not allowed" }, 405);
   }
-  return { authenticate, handle, origin, clientId: options.clientId, refreshMemberships };
+  const operations = new Set<Promise<unknown>>();
+  let closed = false;
+  function track<T>(run: () => Promise<T>): Promise<T> {
+    if (closed) return Promise.reject(new Error("Workspace access is stopping."));
+    const operation = run();
+    operations.add(operation);
+    return operation.finally(() => operations.delete(operation));
+  }
+  return {
+    authenticate: (request: Request) => track(() => authenticate(request)),
+    handle: (request: Request) => track(() => handle(request)),
+    origin,
+    organizationId: options.installedOrganization.id,
+    clientId: options.clientId,
+    refreshMemberships: () => track(refreshMemberships),
+    async stop() {
+      closed = true;
+      await Promise.allSettled([...operations]);
+    },
+  };
 }
 
 export type WorkspaceAccess = ReturnType<typeof createWorkspaceAccess>;
