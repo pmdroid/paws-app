@@ -69,6 +69,8 @@ import {
   discardLinearTurns,
   bindWorkItemRepository,
   getWorkItemRepository,
+  getWorkItemRepositoryAnswer,
+  saveWorkItemRepositoryQuestion,
   getWorkItem,
   immediate,
   insertRun,
@@ -138,6 +140,7 @@ import { createLinearArtifactPublisher } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
+import { rankRepositories, repositoryAnswer } from "./repository-selection";
 
 export type GitHubBinding = {
   appId: string;
@@ -162,6 +165,8 @@ export type OrchestratorOptions = {
   secretsDir?: string;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
+  repositories?: readonly RepositoryBinding[];
+  repositoryAccess?: (repository: RepositoryBinding, signal: AbortSignal) => Promise<boolean>;
   github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
@@ -643,6 +648,7 @@ export class Orchestrator {
           return;
         }
       }
+      if (!(await this.selectRepository(item))) return;
       await this.runItem(item, handoff);
     } finally {
       clearInterval(lease);
@@ -2296,10 +2302,124 @@ export class Orchestrator {
   }
 
   private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
-    const saved = getWorkItemRepository(this.db, item.id);
-    if (saved !== null) return saved;
-    const repository = this.options.repository;
-    return repository ? bindWorkItemRepository(this.db, item.id, repository) : null;
+    return getWorkItemRepository(this.db, item.id) ?? this.options.repository ?? null;
+  }
+
+  private async selectRepository(item: WorkItemRecord): Promise<boolean> {
+    if (getWorkItemRepository(this.db, item.id) !== null) return true;
+    const liveKey = `repository:${item.id}`;
+    const live = this.beginLive(item.id, liveKey);
+    const controller = live.controller;
+    try {
+      const available =
+        this.options.repositories ?? (this.options.repository ? [this.options.repository] : []);
+      const source = /^github:([^/]+)\/([^#]+)#/.exec(item.linearIssueId);
+      const configured = available.filter(
+        (candidate, index) =>
+          available.findIndex(
+            (other) =>
+              `${other.owner}/${other.repo}`.toLowerCase() ===
+              `${candidate.owner}/${candidate.repo}`.toLowerCase(),
+          ) === index &&
+          (!source ||
+            `${candidate.owner}/${candidate.repo}`.toLowerCase() ===
+              `${source[1]}/${source[2]}`.toLowerCase()),
+      );
+      const candidates: RepositoryBinding[] = [];
+      for (const candidate of configured) {
+        controller.signal.throwIfAborted();
+        if (
+          !this.options.repositoryAccess ||
+          (await this.options.repositoryAccess(candidate, controller.signal))
+        )
+          candidates.push(candidate);
+      }
+      if (this.stopped(item.id)) return false;
+      const savedAnswer = getWorkItemRepositoryAnswer(this.db, item.id);
+      const selected = savedAnswer
+        ? repositoryAnswer(savedAnswer.answer, savedAnswer.candidates)
+        : null;
+      if (
+        selected &&
+        candidates.some(
+          (candidate) =>
+            candidate.owner === selected.owner &&
+            candidate.repo === selected.repo &&
+            candidate.remoteUrl === selected.remoteUrl,
+        )
+      ) {
+        bindWorkItemRepository(this.db, item.id, selected);
+        return true;
+      }
+      if (candidates.length === 0) {
+        this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
+        return false;
+      }
+      if (candidates.length === 1 && savedAnswer === null) {
+        bindWorkItemRepository(this.db, item.id, candidates[0]!);
+        return true;
+      }
+      let ranked = candidates;
+      if (!isGitHubIssue(item.linearIssueId) && this.tracker?.issueRepositorySuggestions) {
+        try {
+          const suggestions = await this.tracker.issueRepositorySuggestions(
+            {
+              issueId: item.linearIssueId,
+              ...(this.options.channel !== "comments" && item.sessionKey
+                ? { agentSessionId: item.sessionKey }
+                : {}),
+              candidateRepositories: candidates.map((candidate) => ({
+                hostname: "github.com",
+                repositoryFullName: `${candidate.owner}/${candidate.repo}`,
+              })),
+            },
+            { signal: controller.signal },
+          );
+          ranked = rankRepositories(candidates, suggestions);
+        } catch {
+          controller.signal.throwIfAborted();
+        }
+      }
+      if (this.stopped(item.id)) return false;
+      const sessionId = this.activitySession(item);
+      if (sessionId === null) throw new Error("Repository selection has no tracker session");
+      immediate(this.db, () => {
+        const question = openQuestion(this.db, {
+          itemId: item.id,
+          sessionId,
+          body: "Which repository should I use? Choose one of the configured repositories or describe your choice.",
+          options: ranked.map(
+            (candidate) => `https://github.com/${candidate.owner}/${candidate.repo}`,
+          ),
+          now: this.now(),
+        });
+        saveWorkItemRepositoryQuestion(this.db, item.id, question.id, ranked);
+        applyWorkItemEvent(this.db, item.id, "blocking_question");
+        enqueueOutboxOnce(this.db, {
+          target: "linear",
+          op: "elicitation",
+          orderingKey: sessionId,
+          idempotencyKey: `repository:${question.id}`,
+          payload: {
+            sessionId,
+            questionId: question.id,
+            id: question.id,
+            body: question.body,
+            options: question.options,
+          },
+          now: this.now(),
+        });
+      });
+      await this.flush();
+      return false;
+    } catch (error) {
+      if (!controller.signal.aborted && getWorkItem(this.db, item.id)?.state === "running")
+        applyWorkItemEvent(this.db, item.id, "restart");
+      throw error;
+    } finally {
+      this.live.delete(liveKey);
+      live.finish();
+    }
   }
 
   private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {

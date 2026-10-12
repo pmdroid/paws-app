@@ -52,6 +52,9 @@ export function routeBySource(input: {
     ...(linear?.listSessionActivities
       ? { listSessionActivities: linear.listSessionActivities.bind(linear) }
       : {}),
+    ...(input.linear?.issueRepositorySuggestions
+      ? { issueRepositorySuggestions: input.linear.issueRepositorySuggestions.bind(input.linear) }
+      : {}),
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),

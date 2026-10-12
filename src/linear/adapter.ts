@@ -6,6 +6,7 @@ import type {
   ProgressUpdate,
   StatusUpdate,
 } from "./types";
+import type { LinearRepositoryAdapter } from "./repositories";
 
 export type TrackerRequestOptions = { signal?: AbortSignal };
 
@@ -19,6 +20,7 @@ export interface TrackerAdapter {
     id: string,
     options?: TrackerRequestOptions,
   ): Promise<readonly LinearActivitySnapshot[]>;
+  issueRepositorySuggestions?: LinearRepositoryAdapter["issueRepositorySuggestions"];
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;

@@ -59,7 +59,12 @@ import {
   type GitHubCommentRequest,
   type GitHubCommentTracker,
 } from "./ghcomments";
-import { createFetchGitHubClient, githubHttpsUrl, type GitHubTokenProvider } from "./github";
+import {
+  checkRepositoryWriteAccess,
+  createFetchGitHubClient,
+  githubHttpsUrl,
+  type GitHubTokenProvider,
+} from "./github";
 import { startHost } from "./host";
 import {
   createInboxStore,
@@ -120,6 +125,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   const repository = repositoryBinding(runtime.repo);
+  const repositories = [runtime.repo, ...runtime.file.githubRepos, ...runtime.trackerGithub.repos]
+    .map(repositoryBinding)
+    .filter((value): value is RepositoryBinding => value !== null);
   const useLinear = runtime.trackerKind !== "github";
   const useGitHub = runtime.trackerKind !== "linear";
   const auth = repository === null ? null : authProvider(runtime, repository);
@@ -178,7 +186,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     closeoutHome: paths.home,
     agentSettings: {
       configPath: paths.configFile,
-      repos: runtime.repo ? [runtime.repo] : [],
+      repos: repositories.map((value) => `${value.owner}/${value.repo}`),
       probe: (profile) =>
         probeAgentProfile({
           profile,
@@ -231,6 +239,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await githubPoller?.pollNow();
         },
         repository,
+        repositories,
+        repositoryAccess: async (candidate, signal) => {
+          const provider = authProvider(runtime, candidate);
+          if (!provider) return false;
+          return checkRepositoryWriteAccess({
+            ...candidate,
+            token: await provider.token(),
+            app: provider.source === "app",
+            signal,
+          });
+        },
         github,
         githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
         channel,

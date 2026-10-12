@@ -433,6 +433,9 @@ export function withCommentActivities(
     ...(tracker.listSessionActivities
       ? { listSessionActivities: tracker.listSessionActivities.bind(tracker) }
       : {}),
+    ...(tracker.issueRepositorySuggestions
+      ? { issueRepositorySuggestions: tracker.issueRepositorySuggestions.bind(tracker) }
+      : {}),
     loadEpic: (linearIssueId) => tracker.loadEpic(linearIssueId),
     listDeps: (linearIssueId) => tracker.listDeps(linearIssueId),
     setStatus: (update) => tracker.setStatus(update),

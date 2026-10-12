@@ -557,4 +557,14 @@ CREATE TABLE work_item_repository (
 ) STRICT;
 `,
   },
+  {
+    id: "012_repository_question",
+    sql: `
+CREATE TABLE work_item_repository_question (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  question_id TEXT NOT NULL REFERENCES question(id),
+  candidates TEXT NOT NULL CHECK (json_valid(candidates))
+) STRICT;
+`,
+  },
 ];
