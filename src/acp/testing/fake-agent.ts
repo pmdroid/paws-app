@@ -369,6 +369,8 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
     }
     if (step.type === "end") {
       send({ jsonrpc: "2.0", id: prompt, result: { stopReason: step.stopReason ?? "end_turn" } });
+      for (const update of step.updatesAfterResponse ?? [])
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
       return true;
     }
   }

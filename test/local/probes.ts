@@ -1,3 +1,4 @@
+import { probeRunnerWorker } from "./runner-worker";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -34,6 +35,7 @@ export async function probeBoundaries(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   await probeRunnerTls(join(root, "runner-tls"), observe);
+  await probeRunnerWorker(join(root, "runner-worker"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,

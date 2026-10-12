@@ -91,6 +91,7 @@ export interface RunAgentOptions {
   command?: string;
   args?: string[];
   env?: NodeJS.ProcessEnv;
+  checkpointEnv?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   cancelGraceMs?: number;
   signal?: AbortSignal;

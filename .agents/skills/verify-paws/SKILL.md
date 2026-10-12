@@ -57,6 +57,8 @@ For Linux execution spool changes, run `bun test test/runner-execution.test.ts t
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
+The audit drives the production runner worker through real Git bundles and scripted ACP subprocesses. It verifies the exact assigned base and candidate commit, separate request-bound answers published by atomic directory rename, credential filtering including a Git filesystem-monitor callback during checkpointing, implementation responses larger than the reviewer text limit, oversized reviewer notifications after the prompt response, read-only review, missing-base rejection, cancellation, connection probes and provider login health without copying vendor credential output. Broker verification checks the actual Linux user boundary separately.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.

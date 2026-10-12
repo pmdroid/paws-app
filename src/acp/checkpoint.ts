@@ -49,19 +49,25 @@ export async function commitCheckpoint(
   message = "wip: checkpoint",
   signal?: AbortSignal,
   onPublished?: () => void,
+  environment?: NodeJS.ProcessEnv,
 ): Promise<CheckpointResult> {
   const unchanged = { committed: false, message };
   if (signal?.aborted) return unchanged;
+  const baseEnv = environment ?? process.env;
   const index = (
-    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"], {
+      env: baseEnv,
+    })
   ).trim();
   const temporary = await mkdtemp(join(dirname(index), "paws-checkpoint-"));
   try {
-    const head = (await git(["-C", tree, "rev-parse", "HEAD"])).trim();
-    const ref = (await git(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"])).trim();
+    const head = (await git(["-C", tree, "rev-parse", "HEAD"], { env: baseEnv })).trim();
+    const ref = (
+      await git(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"], { env: baseEnv })
+    ).trim();
     const originalIndex = existsSync(index) ? readFileSync(index) : undefined;
     const privateIndex = join(temporary, "index");
-    const env = { ...process.env, ...COMMIT_ENV_DEFAULTS, GIT_INDEX_FILE: privateIndex };
+    const env = { ...baseEnv, ...COMMIT_ENV_DEFAULTS, GIT_INDEX_FILE: privateIndex };
     if (originalIndex) writeFileSync(privateIndex, originalIndex);
     else await git(["-C", tree, "read-tree", head], { env });
     const status = (await git(["-C", tree, "status", "--porcelain"], { env })).trim();
@@ -100,7 +106,7 @@ export async function commitCheckpoint(
       const currentIndex = existsSync(index) ? readFileSync(index) : undefined;
       if (originalIndex ? !currentIndex?.equals(originalIndex) : currentIndex !== undefined)
         throw new Error("Git index changed while preparing checkpoint");
-      if (gitSync(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"]).trim() !== ref)
+      if (gitSync(["-C", tree, "rev-parse", "--symbolic-full-name", "HEAD"], env).trim() !== ref)
         throw new Error("Git HEAD changed while preparing checkpoint");
       gitSync(["-C", tree, "update-ref", "-m", message, ref, sha, head], env);
       try {
