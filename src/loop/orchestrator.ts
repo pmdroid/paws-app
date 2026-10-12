@@ -310,6 +310,7 @@ export class Orchestrator {
       }
       return;
     }
+    if (event.action === "prompted" && !event.body?.trim()) return;
     if (
       event.action === "prompted" &&
       event.sessionId &&

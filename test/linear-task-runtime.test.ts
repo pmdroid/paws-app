@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
 import type { Database } from "bun:sqlite";
+import type { FakeStep } from "../src/acp/testing/script";
 import {
   getLinearSession,
   getTaskClassification,
@@ -19,10 +20,13 @@ import {
 import {
   createFakeTracker,
   createLinearFileTransfer,
+  createInboxStore,
+  startCatchUpPoller,
   type AcceptedLinearEvent,
+  type PolledActivity,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
-import { findOpenQuestion } from "../src/questions";
+import { findOpenQuestion, getQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
 
 function event(): AcceptedLinearEvent {
@@ -55,6 +59,7 @@ function setup(
   plan = false,
   hangResponse = false,
   toolUpdates: readonly SessionUpdate[] = [],
+  responseSteps: readonly FakeStep[] = [],
 ) {
   const db = database ?? tempDb();
   const home = tempHome();
@@ -72,6 +77,7 @@ function setup(
       script,
       JSON.stringify({
         steps: [
+          ...(input.purpose === "classify" ? [] : responseSteps),
           ...(hang && input.purpose === "classify" && launches.length === 1
             ? [{ type: "hang" }]
             : []),
@@ -270,6 +276,118 @@ test("ambiguous outcomes ask for clarification before repository access", async 
     f.db.close();
   }
 });
+
+test.each([null, "", " \n "])(
+  "a polled activity with body %j cannot block a later question reply",
+  async (body) => {
+    const steps: FakeStep[] = [{ type: "ask_team", question: "Which screenshot?" }];
+    const f = setup(
+      "answer",
+      undefined,
+      false,
+      "ok",
+      undefined,
+      undefined,
+      false,
+      false,
+      [],
+      steps,
+    );
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const sleeping = Promise.withResolvers<void>();
+    let running: Promise<unknown> | undefined;
+    let poller: ReturnType<typeof startCatchUpPoller> | undefined;
+    const waitFor = async (condition: () => boolean) => {
+      for (let attempt = 0; attempt < 200 && !condition(); attempt++) await Bun.sleep(5);
+      expect(condition()).toBe(true);
+    };
+    try {
+      await f.orchestrator.onLinearEvent(event());
+      const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+      f.tracker.listSessionActivities = async () => {
+        ready.resolve();
+        await release.promise;
+        return [];
+      };
+      running = f.jobs.tick();
+      await ready.promise;
+      expect(f.orchestrator.agentAlive(getWorkItem(f.db, itemId)!.currentRunId!)).toBe(true);
+      expect(findOpenQuestion(f.db, "session")).toBeNull();
+      const store = createInboxStore(f.db);
+      store.commit({
+        ...event(),
+        source: "poll",
+        action: "prompted",
+        dedupeKey: "activity:agent-progress",
+        activityId: "agent-progress",
+        actorId: "app",
+        body,
+        payload: JSON.stringify({ actorId: "app", activityCreatedAtMs: Date.now() }),
+      });
+      let reply: PolledActivity | undefined;
+      poller = startCatchUpPoller({
+        store,
+        source: {
+          async poll() {
+            return {
+              sessions: [],
+              issues: [],
+              comments: [],
+              activities: reply ? [reply] : [],
+              budget: null,
+              queried: true,
+              caughtUp: true,
+            };
+          },
+        },
+        onEvent: (incoming) => f.orchestrator.onLinearEvent(incoming),
+        sleeper: { wait: () => sleeping.promise, wake: () => sleeping.resolve() },
+      });
+      await waitFor(() => store.listUnhandled().length === 0);
+      expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_turn").get()?.n).toBe(
+        0,
+      );
+      release.resolve();
+      await waitFor(() => findOpenQuestion(f.db, "session") !== null);
+      const question = findOpenQuestion(f.db, "session")!;
+      expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
+      steps.length = 0;
+      const answeredAt = Math.max(Date.now(), question.createdAt + 1);
+      reply = {
+        id: "human-answer",
+        sessionId: "session",
+        issueId: "parent",
+        actorId: "human",
+        activityCreatedAtMs: answeredAt,
+        updatedAtMs: answeredAt,
+        signal: null,
+        body: "Capture a fresh demo-dashboard.png",
+      };
+      const answering = poller.pollNow();
+      let answered = false;
+      void answering.then(() => {
+        answered = true;
+      });
+      await waitFor(() => answered);
+      await answering;
+      await running;
+      expect(getQuestion(f.db, question.id)?.answer).toBe(reply.body);
+      expect(store.listUnhandled()).toHaveLength(0);
+      await f.jobs.tick();
+      expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
+      expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
+      expect(f.launches).toEqual(["classify", "answer", "classify", "answer"]);
+    } finally {
+      release.resolve();
+      await f.orchestrator.shutdown();
+      await running;
+      await poller?.stop();
+      f.db.close();
+    }
+  },
+  15_000,
+);
 
 test("clarified parent code requests recover the ordered child queue and every child's guidance", async () => {
   const databasePath = join(tempHome(), "clarification.db");
