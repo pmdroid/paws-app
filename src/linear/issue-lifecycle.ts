@@ -28,6 +28,10 @@ const ISSUE = `query IssueOwnership($id: String!) {
   issue(id: $id) { id team { id } state { type } assignee { id } delegate { id } }
 }`;
 
+const ACTOR = `query CodeTaskActor($id: String!) {
+  user(id: $id) { id app }
+}`;
+
 const STATES = `query StartedWorkflowStates($id: String!, $after: String) {
   team(id: $id) {
     states(first: 50, after: $after, filter: { type: { eq: "started" } }) {
@@ -67,6 +71,10 @@ export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLif
       if (input.appUserId.trim() === "") throw new Error("The Linear app user is not configured.");
       const first = await inspect(input.issueId, options);
       if (!humanCodeOwnership(first, input)) return { issue: first, eligible: false };
+      const actor = child(await client.query(ACTOR, { id: input.actorId }, options), "user");
+      options?.signal?.throwIfAborted();
+      if (actor?.["id"] !== input.actorId || actor["app"] !== false)
+        return { issue: first, eligible: false };
       let stateId: string | null = null;
       if (first.stateType !== "started") stateId = await startedState(first.teamId, options);
       const issue = await inspect(input.issueId, options);
