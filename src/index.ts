@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -12,6 +13,8 @@ import {
 import {
   ensureLayout,
   loadRuntime,
+  loadEnv,
+  loadRunnerControl,
   pawsPaths,
   type EnvSource,
   type PawsEnv,
@@ -90,7 +93,16 @@ import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
-import { issueVerifiedWorkspaceBootstrap, startWorkspaceAccess } from "./workspace";
+import {
+  issueVerifiedWorkspaceBootstrap,
+  startWorkspaceAccess,
+  type WorkspacePrincipal,
+} from "./workspace";
+import {
+  initializeRunnerCoordinator,
+  openRunnerCoordinator,
+  type RunnerCoordinator,
+} from "./runner-coordinator";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -101,6 +113,7 @@ export type PawsProcess = {
   tunnelUp: () => boolean;
   tunnelRequested: boolean;
   tunnelUrl: string | null;
+  ready: Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -117,6 +130,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (runtime.configError !== null) throw new Error(runtime.configError);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
+  const runnerConfig = loadRunnerControl(envSource, runtime.env);
+  if (runnerConfig !== null && (!publicDashboard || tls === undefined))
+    throw new Error("Runner control requires the public HTTPS dashboard.");
   if (publicDashboard) {
     const origin = runtime.publicUrl === null ? null : new URL(runtime.publicUrl);
     if (
@@ -274,12 +290,66 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
+  let runner: RunnerCoordinator | undefined;
+  let runnerStopping = false;
+  const runnerReady =
+    runnerConfig === null
+      ? Promise.resolve(undefined)
+      : openRunnerCoordinator({
+          db,
+          root: runnerConfig.root,
+          hostname: runnerConfig.hostname,
+          port: runnerConfig.port,
+          tls: tls!,
+          onError: () => console.error("Paws runner connection failed."),
+        }).then(async (value) => {
+          if (runnerStopping) {
+            await value.stop();
+            throw new Error("Runner control is stopping.");
+          }
+          runner = value;
+          return value;
+        });
+  if (runnerConfig !== null)
+    void runnerReady.catch(() => console.error("Paws runner startup failed."));
+  async function stopRunner() {
+    runnerStopping = true;
+    await runnerReady.catch(() => {});
+    await runner?.stop();
+  }
+  const ready = Promise.all([workspace?.access, runnerReady]).then(() => {
+    if (runnerStopping) throw new Error("Paws is stopping.");
+  });
+  void ready.catch(() => {});
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
       hostname: env.host,
       ...(tls ? { tls } : {}),
-      ...(workspace ? { workspaceAccess: workspace.access } : {}),
+      ...(workspace
+        ? {
+            workspaceAccess:
+              runnerConfig === null
+                ? workspace.access
+                : Promise.all([workspace.access, runnerReady]).then(([access]) => access),
+          }
+        : {}),
+      ...(runnerConfig === null
+        ? {}
+        : {
+            runnerEnrollment: (request: Request) =>
+              runner
+                ? runner.enrollment(request)
+                : Promise.resolve(
+                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
+                  ),
+            runnerControl: (request: Request, principal: WorkspacePrincipal) =>
+              runner
+                ? runner.browser(request, principal)
+                : Promise.resolve(
+                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
+                  ),
+          }),
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
       githubWebhookSecret: env.githubWebhookSecret,
@@ -307,7 +377,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     });
   } catch (error) {
     abort.abort();
-    if (workspace === undefined) db.close();
+    if (runnerConfig !== null)
+      void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
+    else if (workspace === undefined) db.close();
     else void workspace.stop().then(() => db.close());
     throw error;
   }
@@ -467,6 +539,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     paths,
     db,
     server,
+    ready,
     catchUp: async () => {
       await running.catchUp();
     },
@@ -479,6 +552,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
     stop() {
       stopping ??= (async () => {
+        runnerStopping = true;
         abort.abort();
         host.stop();
         const linearStopped = running.stop();
@@ -486,6 +560,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await orchestrator?.shutdown();
         await Promise.all([loops.stop(), linearStopped, serverStopped]);
         await workspace?.stop();
+        await stopRunner();
         prepareShutdown(db, Date.now(), (item) => {
           commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
         });
@@ -730,6 +805,19 @@ async function doctorMain(): Promise<number> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "runner-authority") {
+    try {
+      if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
+      const paths = pawsPaths(loadEnv(process.env).home);
+      ensureLayout(paths);
+      const keys = await initializeRunnerCoordinator(join(paths.secretsDir, "runner-identity"));
+      console.log(`Runner authority initialized. Command key: ${keys[0].keyId}`);
+      process.exit(0);
+    } catch {
+      console.error("Runner authority initialization failed.");
+      process.exit(1);
+    }
+  }
   if (command === "public-tls") {
     try {
       if (argv.length !== 2 || argv[1] !== "validate") throw new Error("Invalid command");
@@ -844,6 +932,13 @@ if (import.meta.main) {
       }
       shutdown(PUBLIC_TLS_RESTART_EXIT);
     });
+  try {
+    await paws.ready;
+  } catch {
+    console.error("Paws startup failed.");
+    await paws.stop();
+    process.exit(1);
+  }
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
