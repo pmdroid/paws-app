@@ -19,6 +19,7 @@ import { executeRunnerCommand } from "../../src/runner-worker";
 export async function probeRunnerWorker(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
+  execute: typeof executeRunnerCommand = executeRunnerCommand,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const home = join(root, "home");
@@ -133,7 +134,7 @@ export async function probeRunnerWorker(
   process.env.GH_TOKEN = "synthetic-checkpoint-denied";
   const candidate = await (async () => {
     try {
-      return await executeRunnerCommand({
+      return await execute({
         job: first,
         repositoryBundle,
         outputDirectory: firstOutput,
@@ -188,6 +189,79 @@ export async function probeRunnerWorker(
     true,
     fake.env,
   );
+  const retainedJournal = readFileSync(join(firstOutput, "events.jsonl"));
+  const retainedResult = readFileSync(join(firstOutput, "result.json"));
+  await assert.rejects(
+    execute({
+      job: first,
+      repositoryBundle,
+      outputDirectory: firstOutput,
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: firstAgent.launch,
+    }),
+    /EEXIST|already exists/,
+  );
+  assert.deepEqual(readFileSync(join(firstOutput, "events.jsonl")), retainedJournal);
+  assert.deepEqual(readFileSync(join(firstOutput, "result.json")), retainedResult);
+  const resultOnlyOutput = output(31);
+  writeFileSync(join(resultOnlyOutput, "result.json"), "retained result\n");
+  const resultOnlyAgent = launch(30, [{ type: "end" }]);
+  await assert.rejects(
+    execute({
+      job: job(3),
+      repositoryBundle,
+      outputDirectory: resultOnlyOutput,
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: resultOnlyAgent.launch,
+    }),
+    /Runner result already exists/,
+  );
+  assert.equal(readFileSync(join(resultOnlyOutput, "result.json"), "utf8"), "retained result\n");
+  assert.throws(() => readFileSync(join(resultOnlyOutput, ".worker-claim")), { code: "ENOENT" });
+  const claimOnlyOutput = output(32);
+  writeFileSync(join(claimOnlyOutput, ".worker-claim"), "consumed execution\n");
+  await assert.rejects(
+    execute({
+      job: job(3),
+      repositoryBundle,
+      outputDirectory: claimOnlyOutput,
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: resultOnlyAgent.launch,
+    }),
+    /EEXIST/,
+  );
+  assert.equal(
+    readFileSync(join(claimOnlyOutput, ".worker-claim"), "utf8"),
+    "consumed execution\n",
+  );
+  assert.throws(() => readFileSync(join(claimOnlyOutput, "events.jsonl")), { code: "ENOENT" });
+  const legacyOutput = output(30);
+  writeFileSync(join(legacyOutput, "events.jsonl"), "retained journal\n");
+  await assert.rejects(
+    execute({
+      job: job(1),
+      repositoryBundle,
+      outputDirectory: legacyOutput,
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: firstAgent.launch,
+    }),
+    /Runner journal already exists/,
+  );
+  assert.equal(readFileSync(join(legacyOutput, "events.jsonl"), "utf8"), "retained journal\n");
+  assert.throws(() => readFileSync(join(legacyOutput, ".worker-claim")), { code: "ENOENT" });
+  observe(
+    "permanent worker claims reject duplicate execution and preserve existing journals and final results",
+    true,
+    { duplicateDenied: true, legacyJournalPreserved: true, legacyResultPreserved: true },
+  );
   assert.equal(fake.askTeam.ok, true);
   assert.match(fake.askTeam.text, /Yes/);
   const journal = readFileSync(join(firstOutput, "events.jsonl"), "utf8")
@@ -226,7 +300,7 @@ export async function probeRunnerWorker(
     },
     { type: "end" },
   ]);
-  const reviewed = await executeRunnerCommand({
+  const reviewed = await execute({
     job: review,
     repositoryBundle,
     outputDirectory: reviewOutput,
@@ -258,7 +332,7 @@ export async function probeRunnerWorker(
   ]);
   const oversizedOutput = output(8);
   await assert.rejects(
-    executeRunnerCommand({
+    execute({
       job: job(8, "review"),
       repositoryBundle,
       outputDirectory: oversizedOutput,
@@ -279,7 +353,7 @@ export async function probeRunnerWorker(
   ]);
   const journalLimitOutput = output(9);
   await assert.rejects(
-    executeRunnerCommand({
+    execute({
       job: job(9, "review"),
       repositoryBundle,
       outputDirectory: journalLimitOutput,
@@ -296,7 +370,7 @@ export async function probeRunnerWorker(
   missing.command.repository.baseSha = "f".repeat(40);
   const missingAgent = launch(3, [{ type: "end" }]);
   await assert.rejects(
-    executeRunnerCommand({
+    execute({
       job: missing,
       repositoryBundle,
       outputDirectory: output(3),
@@ -317,7 +391,7 @@ export async function probeRunnerWorker(
   const cancelOutput = output(4);
   const timer = setTimeout(() => abort.abort(), 150);
   try {
-    const cancelled = await executeRunnerCommand({
+    const cancelled = await execute({
       job: job(4),
       repositoryBundle,
       outputDirectory: cancelOutput,
@@ -350,7 +424,7 @@ export async function probeRunnerWorker(
     profile: { agent: "claude", model: "fixture-model" },
   };
   const probeAgent = launch(5, [{ type: "hang" }]);
-  const probed = await executeRunnerCommand({
+  const probed = await execute({
     job: probe,
     outputDirectory: output(5),
     workRoot: join(root, "work"),
@@ -387,7 +461,7 @@ export async function probeRunnerWorker(
     const loginAgent = launch(index, [{ type: "hang" }]);
     const loginOutput = output(index);
     const secret = "synthetic-provider-status-token";
-    const checked = await executeRunnerCommand({
+    const checked = await execute({
       job: loginJob,
       outputDirectory: loginOutput,
       workRoot: join(root, "work"),
