@@ -4,6 +4,7 @@ import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
 import { probeRunnerTranscripts } from "./runner-transcripts";
+import { probeRunnerArtifacts } from "./runner-artifacts";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { probeRunnerRepositories } from "./runner-repositories";
@@ -56,6 +57,7 @@ export async function probeBoundaries(
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
   await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
+  await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
