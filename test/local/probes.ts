@@ -54,6 +54,7 @@ export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
+  await probeRunnerOrchestration(join(root, "runner-orchestration"), observe);
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
@@ -323,3 +324,4 @@ export async function probeBoundaries(
     db.close();
   }
 }
+import { probeRunnerOrchestration } from "./runner-orchestration";

@@ -11,7 +11,11 @@ import {
 } from "../acp";
 import { getConversation, saveConversation } from "../db";
 
-export async function durableConversation(db: Database, itemId: string) {
+export async function durableConversation(
+  db: Database,
+  itemId: string,
+  runner?: (options: RunAgentOptions) => Promise<RunAgentResult>,
+) {
   const stored = getConversation(db, itemId);
   if (stored.blocked) throw new AcpCleanupError("Prior ACP process cleanup could not be verified");
   const history = JSON.parse(stored.entries) as AcpConversationEntry[];
@@ -23,7 +27,7 @@ export async function durableConversation(db: Database, itemId: string) {
     }
     saveConversation(db, itemId, JSON.stringify(history), null);
   }
-  const lifecycle = createAcpPromptLifecycle(history);
+  const lifecycle = createAcpPromptLifecycle(history, runner);
   let active = false;
   return async (options: RunAgentOptions): Promise<RunAgentResult> => {
     if (active) throw new Error("ACP prompt already running");
