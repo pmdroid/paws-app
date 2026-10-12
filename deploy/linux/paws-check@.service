@@ -1,0 +1,35 @@
+[Unit]
+Description=Paws untrusted verification command %i
+BindsTo=paws-check-witness@%i.service
+
+[Service]
+Type=exec
+User=paws-check
+Group=paws-check
+Environment=HOME=/var/lib/paws-check
+WorkingDirectory=/var/lib/paws-check
+StandardInput=file:/var/lib/paws-check-control/%i/child.json
+StandardOutput=file:/var/lib/paws-check-control/%i/stdout
+StandardError=file:/var/lib/paws-check-control/%i/stderr
+ExecCondition=!/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard-check-child %i
+ExecStart=/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/check-child.py %i
+ExecStopPost=!/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/check-status.py %i
+KillMode=control-group
+KillSignal=SIGKILL
+TimeoutStartSec=30s
+TimeoutStopSec=5s
+RuntimeMaxSec=900s
+SendSIGKILL=yes
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/paws-check-control /var/lib/paws-check-broker
+InaccessiblePaths=-/var/lib/paws-runner -/var/lib/paws-agent -/var/lib/paws-runner-broker -/var/lib/paws-check-input -/var/lib/paws-check-results -/var/lib/paws-check-metadata -/var/lib/paws-check-verifier -/run/user -/run/dbus
