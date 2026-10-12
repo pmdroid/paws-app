@@ -88,8 +88,11 @@ test.skipIf(process.platform === "win32")(
       await Bun.sleep(30);
       expect((await readFile(writes)).length).toBeGreaterThan(before);
       await terminals.release({ sessionId: "test", terminalId: terminal.terminalId });
-      expect(await stopped(descendant)).toBe(true);
       const after = (await readFile(writes)).length;
+      for (let attempt = 0; attempt < 100 && !(await stopped(descendant)); attempt += 1)
+        await Bun.sleep(5);
+      expect(await stopped(descendant)).toBe(true);
+      expect((await readFile(writes)).length).toBe(after);
       await Bun.sleep(30);
       expect((await readFile(writes)).length).toBe(after);
       expect(await terminals.close(50)).toBe(true);
