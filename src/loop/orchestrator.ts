@@ -34,6 +34,20 @@ import {
   systemClock,
 } from "../core";
 import {
+  getTaskMode,
+  getTaskModeGeneration,
+  getLinearSessionGeneration,
+  getLinearSession,
+  advanceLinearSessionGeneration,
+  listPendingLinearTurns,
+  saveTaskMode,
+  selectTaskModeForTurn,
+  completeAnswerTask,
+  completeArtifactTask,
+  artifactPublicationReady,
+  listArtifacts,
+  getTaskClassification,
+  resolveTaskClassification,
   applyWorkItemEvent,
   configureWorkItem,
   drainCommands,
@@ -76,7 +90,7 @@ import {
   type GitHubClient,
   type GitHubTokenProvider,
 } from "../github";
-import { intakeDelegatedIssue } from "../intake";
+import { intakeDelegatedIssue, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
   TrackerAdapter,
@@ -91,8 +105,6 @@ import {
   handoffNote,
   openQuestion,
 } from "../questions";
-import { createLinearArtifactPublisher } from "./artifacts";
-import { createLinearInputLoader } from "./input-files";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -107,6 +119,10 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
+import { createLinearArtifactPublisher } from "./artifacts";
+import { createLinearInputLoader } from "./input-files";
+import { createTaskPlanner } from "./task-planner";
+import { classifyTask } from "./task-classifier";
 
 export type GitHubBinding = {
   appId: string;
@@ -130,6 +146,7 @@ export type OrchestratorOptions = {
   pawsRoot: string;
   home?: string;
   tracker?: TrackerAdapter | null;
+  linearTaskModes?: boolean;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
   catchUp?: () => Promise<void>;
@@ -158,6 +175,7 @@ export class Orchestrator {
   private readonly live = new Map<string, { itemId: string; controller: AbortController }>();
   private activitySeq = 0;
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
+  private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
 
   constructor(private readonly options: OrchestratorOptions) {
     this.tracker = options.tracker ?? null;
@@ -168,6 +186,14 @@ export class Orchestrator {
           cacheDir: join(options.secretsDir ?? join(options.pawsRoot, "secrets"), "linear-inputs"),
         })
       : null;
+    this.taskPlanner = createTaskPlanner({
+      db: options.db,
+      pawsRoot: options.pawsRoot,
+      home: options.home,
+      launch: (input) => this.launchAgent(input),
+      profile: () =>
+        resolveAgentProfiles(loadConfigFile(join(options.pawsRoot, "config.toml"))).implementer,
+    });
     this.catchUpFn = options.catchUp ?? (() => Promise.resolve());
     this.bus.subscribe((command) => {
       this.abortItem(command.itemId);
@@ -187,6 +213,10 @@ export class Orchestrator {
 
   async onLinearEvent(event: AcceptedLinearEvent): Promise<void> {
     if (event.signal === "stop") {
+      if (event.sessionId) {
+        advanceLinearSessionGeneration(this.db, event.sessionId, { stop: true, now: this.now() });
+        await this.taskPlanner.stop(event.sessionId);
+      }
       this.stopSession(event.sessionId, event.updatedAtMs);
       return;
     }
@@ -244,14 +274,16 @@ export class Orchestrator {
       this.options.channel !== "comments" && !isGitHubIssue(event.issueId)
         ? recordLinearSessionEvent(this.db, event, this.now())
         : null;
-    const result = await intakeDelegatedIssue(this.db, tracker, {
-      linearIssueId: event.issueId,
-      sessionId: event.sessionId,
-      ...(session ? { taskKey: sessionTaskKey(this.db, session) } : {}),
-    });
-    if (event.sessionId !== null) {
-      if (session) bindLinearSessionTask(this.db, event.sessionId, result.epic.id);
-      this.assignSession(result.epic.id, event.sessionId);
+    const taskKey = session ? sessionTaskKey(this.db, session) : null;
+    if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
+    let result: IntakeResult;
+    try {
+      result = await this.intakeLinearTask(event.issueId, event.sessionId, taskKey ?? undefined);
+    } catch (error) {
+      const current = session ? getLinearSession(this.db, session.sessionId) : null;
+      if (session && (current?.stoppedAt !== null || current.generation !== session.generation))
+        return;
+      throw error;
     }
     if (result.ok) {
       const caps = this.options.caps;
@@ -267,6 +299,112 @@ export class Orchestrator {
     }
     await this.flush();
   }
+
+  async intakeLinearTask(
+    issueId: string,
+    sessionId: string | null,
+    taskKey?: string,
+    options: { followupBodies?: readonly string[] } = {},
+  ) {
+    const tracker = this.tracker;
+    if (!tracker) throw new Error("Linear is not connected");
+    const initialSession = sessionId ? getLinearSession(this.db, sessionId) : null;
+    const isCurrent = () => {
+      if (initialSession === null || sessionId === null) return true;
+      const current = getLinearSession(this.db, sessionId);
+      return current?.generation === initialSession.generation && current.stoppedAt === null;
+    };
+    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
+    if (redirect) taskKey = redirect.taskKey;
+    let intakeTracker = tracker;
+    const classification =
+      this.options.linearTaskModes &&
+      sessionId &&
+      taskKey &&
+      this.options.channel !== "comments" &&
+      !isGitHubIssue(issueId)
+        ? await this.taskPlanner.plan({
+            taskKey,
+            sessionId,
+            request: async (signal) => {
+              const snapshot = await tracker.loadEpic(issueId);
+              signal.throwIfAborted();
+              intakeTracker = { ...tracker, loadEpic: async () => snapshot };
+              await this.hydrateLinearContext(sessionId, signal);
+              const history = listLinearActivitySnapshots(this.db, sessionId)
+                .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)
+                .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral);
+              return [
+                JSON.stringify(snapshot),
+                getLinearSessionContext(this.db, sessionId),
+                JSON.stringify(history),
+                ...(options.followupBodies ??
+                  listPendingLinearTurns(this.db, sessionId).map((turn) => turn.body)),
+              ].join("\n\n");
+            },
+          })
+        : null;
+    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    const result = await intakeDelegatedIssue(this.db, intakeTracker, {
+      linearIssueId: issueId,
+      sessionId,
+      isCurrent,
+      onAccepted: (accepted) => {
+        immediate(this.db, () => {
+          if (redirect) {
+            const previous = getWorkItem(this.db, redirect.itemId);
+            if (previous && previous.state !== "cancelled") {
+              applyWorkItemEvent(this.db, previous.id, "cancel");
+              if (previous.currentRunId)
+                markRun(this.db, previous.currentRunId, "ended", this.now());
+              const epic = this.epicRow(previous.epicId);
+              if (epic) {
+                const retired = transitionEpic(epic.state, "cancel");
+                if (retired.ok)
+                  this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ?", [
+                    retired.to,
+                    previous.epicId,
+                  ]);
+              }
+              this.db.run(
+                "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
+                [this.now(), previous.id],
+              );
+            }
+          }
+          if (sessionId !== null) {
+            if (initialSession) bindLinearSessionTask(this.db, sessionId, accepted.epic.id);
+            this.assignSession(accepted.epic.id, sessionId);
+          }
+          if (redirect && accepted.ok && this.options.caps)
+            for (const child of accepted.items)
+              configureWorkItem(this.db, child.id, {
+                maxTurns: this.options.caps.maxTurns,
+                maxAwakeMs: this.options.caps.maxAwakeMs,
+              });
+        });
+      },
+      ...(taskKey ? { taskKey } : {}),
+      ...(classification && classification.mode !== "code" ? { singleIssue: true } : {}),
+    });
+    if (!isCurrent()) throw new Error("The Linear request changed during intake");
+    if (result.ok && classification && classification.mode !== "clarify") {
+      for (const item of result.items) {
+        if (!getTaskMode(this.db, item.id))
+          saveTaskMode(
+            this.db,
+            item.id,
+            classification.mode,
+            sessionId ? getLinearSessionGeneration(this.db, sessionId) : 0,
+          );
+      }
+    }
+    return result;
+  }
+
+  stopTaskPlanning = (sessionId?: string): Promise<void> => this.taskPlanner.stop(sessionId);
 
   private get db(): Database {
     return this.options.db;
@@ -330,9 +468,229 @@ export class Orchestrator {
     const lease = setInterval(() => extendLease(60_000), 10_000);
     lease.unref?.();
     try {
-      await this.runItem(item, readString(payload, "handoff") ?? undefined);
+      const handoff = readString(payload, "handoff") ?? undefined;
+      if (
+        this.options.linearTaskModes &&
+        item.sessionKey &&
+        !isGitHubIssue(item.linearIssueId) &&
+        this.options.channel !== "comments"
+      ) {
+        if (!(await this.resolveTaskMode(item, handoff))) return;
+        const mode = getTaskMode(this.db, item.id);
+        if (mode === "answer" || mode === "artifact") {
+          await this.runResponse(item, mode, handoff);
+          return;
+        }
+      }
+      await this.runItem(item, handoff);
     } finally {
       clearInterval(lease);
+    }
+  }
+
+  private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
+    const saved = getTaskMode(this.db, item.id);
+    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+    const taskKey = this.db
+      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
+      .get(item.epicId)?.task_key;
+    const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    if (classification?.mode === "code" && classification.redirect) {
+      await this.intakeLinearTask(this.epicIssueId(item.epicId)!, item.sessionKey, taskKey);
+      this.pump();
+      return false;
+    }
+    if (saved === "code") return true;
+    if (saved && (!handoff || getTaskModeGeneration(this.db, item.id) >= generation)) return true;
+    if (!saved && (!classification || classification.mode !== "clarify")) {
+      saveTaskMode(this.db, item.id, classification?.mode ?? "code", generation);
+      return true;
+    }
+    const run = this.ensureRun(item);
+    if (!handoff) {
+      if (classification?.mode !== "clarify") throw new Error("Task clarification is missing");
+      return this.requestTaskClarification(item, run.id, classification.question);
+    }
+    const controller = new AbortController();
+    this.live.set(run.id, { itemId: item.id, controller });
+    try {
+      const resolved = await classifyTask({
+        itemId: itemPathId(item),
+        runId: run.id,
+        request: [this.workContext(item), handoff].join("\n\n"),
+        pawsRoot: this.options.pawsRoot,
+        home: this.options.home,
+        profile: this.profileSnapshot(run.id).implementer,
+        signal: controller.signal,
+        launch: (input) => this.launchAgent(input),
+      });
+      controller.signal.throwIfAborted();
+      if (
+        this.stopped(item.id) ||
+        (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+      )
+        return false;
+      if (resolved.mode === "clarify")
+        return this.requestTaskClarification(item, run.id, resolved.question);
+      if (resolved.mode === "code" && classification?.mode === "clarify" && taskKey) {
+        const issueId = this.epicIssueId(item.epicId)!;
+        const snapshot = await this.tracker!.loadEpic(issueId);
+        controller.signal.throwIfAborted();
+        if (
+          this.stopped(item.id) ||
+          (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+        )
+          return false;
+        if (snapshot.subIssues.length) {
+          resolveTaskClassification(this.db, {
+            taskKey,
+            itemId: item.id,
+            context: [this.workContext(item), handoff].join("\n\n"),
+          });
+          await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
+          this.pump();
+          return false;
+        }
+      }
+      if (saved) selectTaskModeForTurn(this.db, item.id, resolved.mode, generation);
+      else saveTaskMode(this.db, item.id, resolved.mode, generation);
+      return true;
+    } finally {
+      this.live.delete(run.id);
+    }
+  }
+
+  private async requestTaskClarification(
+    item: WorkItemRecord,
+    runId: string,
+    body: string,
+  ): Promise<false> {
+    const sessionId = this.activitySession(item);
+    if (!sessionId) throw new Error("Task clarification requires a Linear session");
+    immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (current?.state !== "running" || current.cancelRequested)
+        throw new Error("The task changed before clarification");
+      const question = openQuestion(this.db, {
+        itemId: item.id,
+        runId,
+        sessionId,
+        body,
+        options: [],
+        now: this.now(),
+      });
+      applyWorkItemEvent(this.db, item.id, "blocking_question");
+      markRunEnded(this.db, runId, this.now());
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: sessionId,
+        idempotencyKey: `task-clarification:${question.id}`,
+        payload: { sessionId, questionId: question.id, body: question.body, options: [] },
+        now: this.now(),
+      });
+    });
+    await this.flush();
+    return false;
+  }
+
+  private async runResponse(
+    item: WorkItemRecord,
+    mode: "answer" | "artifact",
+    handoff?: string,
+  ): Promise<void> {
+    const run = this.ensureRun(item);
+    const profile = this.profileSnapshot(run.id).implementer;
+    const controller = new AbortController();
+    this.live.set(run.id, { itemId: item.id, controller });
+    const workspace = join(this.options.pawsRoot, "tasks", item.id, mode);
+    mkdirSync(workspace, { recursive: true, mode: 0o700 });
+    const activity = createAcpActivityReporter((update) => {
+      if (!controller.signal.aborted && update.kind !== "elicitation")
+        this.post(item, update.kind, update.body, `${run.id}:answer:${++this.activitySeq}`);
+    });
+    const keepAlive = setInterval(() => {
+      if (this.canReportProgress(item.id)) {
+        this.post(
+          item,
+          "thought",
+          "Preparing the requested answer.",
+          `${run.id}:keep:${this.now()}`,
+        );
+        void this.flush();
+      }
+    }, KEEPALIVE_MS);
+    keepAlive.unref?.();
+    try {
+      await this.hydrateLinearContext(item.sessionKey, controller.signal);
+      const prompt = [
+        mode === "answer"
+          ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
+          : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
+        "Use ask_team when a product decision is required.",
+        this.workContext(item),
+        handoff ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const launched = this.launchAgent({
+        role: "implementer",
+        profile,
+        purpose: mode,
+        itemId: itemPathId(item),
+        worktree: workspace,
+        prompt,
+      });
+      const result = await runAgent({
+        ...launched,
+        role: "implementer",
+        profile,
+        itemId: itemPathId(item),
+        runId: run.id,
+        worktreePath: workspace,
+        pawsRoot: this.options.pawsRoot,
+        home: this.options.home,
+        prompt,
+        readOnly: mode === "answer",
+        publishArtifact: mode === "artifact" ? this.artifactPublisher(item) : undefined,
+        checkpoint: false,
+        signal: controller.signal,
+        askTeam: this.askHook(item, run.id),
+        prepareInputFiles: this.prepareInputFiles(item, run.id),
+        onEvent: activity.onEvent,
+      });
+      controller.signal.throwIfAborted();
+      if (this.stopped(item.id)) return;
+      if (
+        result.stopReason !== "end_turn" ||
+        result.authRequired ||
+        !result.agentExited ||
+        result.errorMessage
+      )
+        throw new Error(result.errorMessage ?? `Answer stopped (${result.stopReason})`);
+      activity.flush();
+      if (mode === "artifact") {
+        const links = listArtifacts(this.db, item.id)
+          .filter((artifact) => artifact.state === "uploaded")
+          .map(
+            (artifact) =>
+              `[${artifact.displayName.replace(/[\\[\]]/g, "\\$&")}](<${artifact.assetUrl}>)`,
+          );
+        completeArtifactTask(
+          this.db,
+          item.id,
+          [activity.resultBody(), ...links].join("\n\n"),
+          this.now(),
+        );
+      } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now());
+      this.pump();
+    } catch (error) {
+      if (!this.stopped(item.id) && !controller.signal.aborted)
+        this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
+    } finally {
+      clearInterval(keepAlive);
+      this.live.delete(run.id);
+      await this.flush();
     }
   }
 
@@ -382,7 +740,7 @@ export class Orchestrator {
     });
 
     try {
-      await this.hydrateLinearContext(item, controller.signal);
+      await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
         title: item.title,
@@ -454,6 +812,8 @@ export class Orchestrator {
         return;
       }
       activity.flush();
+      if (!artifactPublicationReady(this.db, item.id))
+        throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
@@ -698,6 +1058,14 @@ export class Orchestrator {
     if (!candidate) return;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
+    if (!artifactPublicationReady(this.db, item.id)) {
+      this.fail(
+        item,
+        "artifact_upload",
+        "A requested artifact has not been uploaded successfully.",
+      );
+      return;
+    }
     const published = await publishAccepted({
       accepted: true,
       evidence: summary,
@@ -735,7 +1103,7 @@ export class Orchestrator {
       client: github.client,
       ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
-      isCancelled: () => this.stopped(item.id),
+      isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
@@ -749,15 +1117,18 @@ export class Orchestrator {
           candidate,
         );
         if (verdict.decision !== "accepted") closeoutFailure = verdict;
+        const filesReady = artifactPublicationReady(this.db, item.id);
         return {
-          accepted: verdict.decision === "accepted",
+          accepted: verdict.decision === "accepted" && filesReady,
           outcome:
             verdict.decision === "accepted"
-              ? "merged"
+              ? filesReady
+                ? "merged"
+                : "blocked"
               : verdict.exhausted
                 ? "exhausted"
                 : verdict.decision,
-          summary: verdict.summary,
+          summary: filesReady ? verdict.summary : "A requested artifact has not been uploaded.",
         };
       },
     });
@@ -998,7 +1369,7 @@ export class Orchestrator {
   private finishEpic(epicId: string): void {
     const items = this.epicItems(epicId);
     if (items.length === 0) return;
-    if (items.some((item) => item.state !== "merged")) {
+    if (items.some((item) => item.state !== "merged" && item.state !== "completed")) {
       const inflight = items.some((item) => inFlight(item.state));
       const runnable = items.some((item) => item.state === "queued" && this.blockersClear(item));
       if (!inflight && !runnable && items.some((item) => !terminal(item.state))) {
@@ -1015,6 +1386,7 @@ export class Orchestrator {
       epicId,
       row.state,
     ]);
+    if (items.every((item) => item.state === "completed")) return;
     const epicIssueId = this.epicIssueId(epicId);
     const session =
       epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
@@ -1078,7 +1450,7 @@ export class Orchestrator {
           `SELECT state FROM work_item WHERE epic_id = ? AND linear_issue_id = ?`,
         )
         .get(item.epicId, row.blocker_linear_issue_id);
-      if (blocker?.state !== "merged") return false;
+      if (blocker?.state !== "merged" && blocker?.state !== "completed") return false;
     }
     return true;
   }
@@ -1227,8 +1599,7 @@ export class Orchestrator {
     return current === null || current.state === "cancelled" || current.cancelRequested;
   }
 
-  private async hydrateLinearContext(item: WorkItemRecord, signal: AbortSignal): Promise<void> {
-    const sessionId = item.sessionKey;
+  private async hydrateLinearContext(sessionId: string | null, signal: AbortSignal): Promise<void> {
     if (this.options.channel === "comments" || !sessionId || isGitHubIssue(sessionId)) return;
     if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
       const session = await this.tracker.getSession(sessionId, { signal });
@@ -1268,6 +1639,10 @@ export class Orchestrator {
   }
 
   private workContext(item: WorkItemRecord): string {
+    const taskKey = this.db
+      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
+      .get(item.epicId)?.task_key;
+    const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const activities = item.sessionKey
       ? listLinearActivitySnapshots(this.db, item.sessionKey)
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
@@ -1275,6 +1650,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
+      classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
       activities.length
         ? `Immutable Linear conversation history:\n${JSON.stringify(activities)}`

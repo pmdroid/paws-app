@@ -88,7 +88,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       JSON.stringify({
         ...(() => {
           const script = scriptFor(input);
-          if (input.purpose === "implement")
+          if (input.purpose === "implement" && sourceIdentifier(input.itemId) === "ENG-2")
             script.steps.splice(script.steps.length - 1, 0, {
               type: "publish_artifact",
               path: "ok.txt",
@@ -107,6 +107,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       env: process.env,
     };
   };
+  let uploadedDuringCode = false;
   let inputDownloads = 0;
   const artifactFiles = createLinearFileTransfer({
     client: {
@@ -129,9 +130,17 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       },
     },
     fetch: async (_url, request) => {
-      if (request?.method === "PUT") return new Response(null, { status: 200 });
-      inputDownloads++;
-      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } });
+      if (request?.method !== "PUT") {
+        inputDownloads++;
+        return new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/png" },
+        });
+      }
+      expect(stateOf(db, "ENG-2")).toBe("running");
+      expect(github.opened).toHaveLength(0);
+      expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+      uploadedDuringCode = true;
+      return new Response(null, { status: 200 });
     },
   });
   const orchestrator = attachOrchestrator({
@@ -141,6 +150,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
+    linearTaskModes: true,
     files: artifactFiles,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
@@ -242,28 +252,31 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(github.opened[0]?.body).toContain("Closeout:");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
     expect(github.merged).toHaveLength(2);
-    const completedUpdates = tracker.progress.length;
-    for (const tick of keepAliveTicks) tick();
-    await outbox.idle();
-    expect(tracker.progress).toHaveLength(completedUpdates);
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
-    const artifactItem = db
-      .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
-      .get("iss-2")!;
-    const publishedArtifacts = listArtifacts(db, artifactItem.id);
-    expect(publishedArtifacts).toHaveLength(1);
-    expect(publishedArtifacts[0]?.state).toBe("uploaded");
-    expect(
-      tracker.progress.some((activity) =>
-        activity.body.includes("https://uploads.linear.app/workspace/result"),
-      ),
-    ).toBe(true);
+    expect(uploadedDuringCode).toBe(true);
     expect(inputDownloads).toBe(1);
     const inputTrace = JSON.parse(await readFile(results.get("implement:ENG-2")!, "utf8")) as {
       prompts: unknown[];
     };
     expect(JSON.stringify(inputTrace.prompts)).toContain(".paws-linear-inputs");
     expect(JSON.stringify(inputTrace.prompts)).not.toContain("signature=expires");
+    const artifactItem = db
+      .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
+      .get("iss-2")!;
+    expect(listArtifacts(db, artifactItem.id)).toHaveLength(1);
+    expect(listArtifacts(db, artifactItem.id)[0]?.state).toBe("uploaded");
+    const artifactIndex = tracker.progress.findIndex((update) =>
+      update.body.includes("https://uploads.linear.app/workspace/result"),
+    );
+    expect(artifactIndex).toBeGreaterThanOrEqual(0);
+    expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
+    expect(artifactIndex).toBeLessThan(
+      tracker.progress.findIndex((update) => update.kind === "response"),
+    );
+    const completedUpdates = tracker.progress.length;
+    for (const tick of keepAliveTicks) tick();
+    await outbox.idle();
+    expect(tracker.progress).toHaveLength(completedUpdates);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
   } finally {
     intervalSpy.mockRestore();
     stop = true;
@@ -1366,6 +1379,19 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
 }
 
 function scriptFor(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+  if (input.purpose === "classify")
+    return {
+      steps: [
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: '{"mode":"code"}' },
+          },
+        },
+        { type: "end" },
+      ],
+    };
   if (input.purpose === "review") return emptyReview();
   if (input.purpose === "fix") {
     return {

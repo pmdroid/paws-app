@@ -217,6 +217,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         outbox: created.outbox,
         pawsRoot: paths.home,
         tracker,
+        linearTaskModes: true,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {
