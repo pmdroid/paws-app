@@ -682,4 +682,18 @@ CREATE TABLE linear_task_delegation (
 ) STRICT;
 `,
   },
+  {
+    id: "018_remote_merge_fact",
+    sql: `
+CREATE TABLE remote_merge_fact (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  repository_owner TEXT NOT NULL CHECK (length(repository_owner) > 0),
+  repository_name TEXT NOT NULL CHECK (length(repository_name) > 0),
+  pull_number INTEGER NOT NULL CHECK (pull_number > 0),
+  pull_url TEXT,
+  merge_sha TEXT,
+  confirmed_at INTEGER NOT NULL CHECK (confirmed_at >= 0)
+) STRICT;
+`,
+  },
 ];
