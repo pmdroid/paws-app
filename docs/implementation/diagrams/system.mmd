@@ -1,0 +1,19 @@
+flowchart TB
+    accTitle: Paws architecture
+    accDescr: Linear is the working interface. Paws owns workflow and durable state. A Linux runner connects outward over mTLS and executes an agent with local login. Closeout verifies candidates and GitHub holds code and pull requests.
+    L["Linear<br/>Issues and conversation"]
+    D["Dashboard<br/>Operations and settings"]
+    P["Paws control plane<br/>Access, workflow and publication"]
+    S[("SQLite<br/>State, jobs and ledgers")]
+    R["Linux runner<br/>Identity and outbound daemon"]
+    A["ACP agent<br/>Local login and assigned snapshot"]
+    V["Closeout<br/>Candidate verification"]
+    G["GitHub<br/>Code, pull requests and merge"]
+    L <-->|delegation and progress| P
+    D <-->|session and administration| P
+    P --- S
+    R <-->|mTLS, commands and grants| P
+    R <-->|controlled jobs and results| A
+    R <-->|clone, fetch and push| G
+    P <-->|candidate and decision| V
+    P <-->|pull request and merge| G
