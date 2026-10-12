@@ -190,7 +190,12 @@ export function recordTurn(
   return immediate(db, () => {
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
-    if (current.state === "failed" || current.state === "cancelled" || current.state === "merged") {
+    if (
+      current.state === "failed" ||
+      current.state === "cancelled" ||
+      current.state === "merged" ||
+      current.state === "completed"
+    ) {
       return { capped: current.cancelRequested, item: current };
     }
     db.run("UPDATE work_item SET turn_count = turn_count + 1 WHERE id = ?", [id]);

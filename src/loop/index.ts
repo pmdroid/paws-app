@@ -1,3 +1,4 @@
+export { classifyTask, parseTaskClassification, type TaskClassification } from "./task-classifier";
 export {
   KEEPALIVE_MS,
   FIRST_ACTIVITY_MS,

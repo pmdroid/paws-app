@@ -656,7 +656,13 @@ export class Orchestrator {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
-    if (item === null || item.state === "cancelled" || item.state === "merged") return;
+    if (
+      item === null ||
+      item.state === "cancelled" ||
+      item.state === "merged" ||
+      item.state === "completed"
+    )
+      return;
     const repository = this.options.repository;
     const github = this.options.github;
     if (
@@ -940,7 +946,8 @@ export class Orchestrator {
     if (sessionId === null) return;
     const requestedAt = at > 0 ? at : this.now();
     for (const item of this.itemsForSession(sessionId)) {
-      if (item.state === "merged" || item.state === "cancelled") continue;
+      if (item.state === "completed" || item.state === "merged" || item.state === "cancelled")
+        continue;
       submitCommand(this.db, this.bus, {
         type: "stop",
         itemId: item.id,
@@ -1509,7 +1516,13 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 }
 
 function terminal(state: WorkItemRecord["state"]): boolean {
-  return state === "merged" || state === "cancelled" || state === "failed" || state === "exhausted";
+  return (
+    state === "completed" ||
+    state === "merged" ||
+    state === "cancelled" ||
+    state === "failed" ||
+    state === "exhausted"
+  );
 }
 
 function readString(payload: unknown, key: string): string | null {

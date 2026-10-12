@@ -32,7 +32,10 @@ export function pollIntervalMs(workActive: boolean): number {
 /** True when a non-terminal work item exists or a question is still open. */
 export function linearWorkIsHot(db: Database): boolean {
   if (
-    count(db, "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('merged', 'cancelled')") > 0
+    count(
+      db,
+      "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
+    ) > 0
   ) {
     return true;
   }
@@ -428,7 +431,7 @@ function stopTargets(
           `SELECT work_item.id AS id
            FROM work_item
            LEFT JOIN epic ON epic.id = work_item.epic_id
-           WHERE work_item.state NOT IN ('merged', 'cancelled')
+           WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
              AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
            ORDER BY work_item.position, work_item.id`,
         )
@@ -439,7 +442,7 @@ function stopTargets(
       const rows = db
         .query<{ id: string }, [string]>(
           `SELECT id FROM work_item
-           WHERE session_key = ? AND state NOT IN ('merged', 'cancelled')
+           WHERE session_key = ? AND state NOT IN ('completed', 'merged', 'cancelled')
            ORDER BY position, id`,
         )
         .all(sessionId);

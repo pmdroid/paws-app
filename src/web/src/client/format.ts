@@ -11,6 +11,7 @@ const ITEM_LABEL: Record<ItemState, string> = {
   signoff: "Needs sign-off",
   merge_queue: "In merge queue",
   merged: "Merged",
+  completed: "Completed",
   exhausted: "Exhausted",
   stopped: "Stopped",
   needs_human: "Needs a person",
@@ -97,6 +98,8 @@ export function taskPhase(
     itemState !== "queued" &&
     itemState !== "planning" &&
     itemState !== "awaiting_input";
+  if (itemState === "completed")
+    return { current: 3, detail: "The requested response is complete." };
   if (itemState === "merged") return { current: 3, detail: "Merged. This task is complete." };
   if (recheck) {
     return {
