@@ -14,15 +14,13 @@ See the [signed Linux release](https://github.com/pmdroid/paws-app/pull/237), [v
 
 The host installation contract uses distinct non-root `paws-runner`, `paws-agent`, and `paws-check` accounts. The daemon owns the runner transport and protected state. The agent uses its own home directory and provider login state. The execution broker and spool define the controlled exchange of jobs, events, and results between those roles.
 
-| Path                                  | Owner                     | Mode   | Purpose                                   |
-| ------------------------------------- | ------------------------- | ------ | ----------------------------------------- |
-| `/opt/paws-runner/releases/{version}` | `root`                    | `0755` | Versioned application and runtime assets. |
-| `/var/lib/paws-runner-install`        | `root`                    | `0700` | Installation lock and release state.      |
-| `/var/lib/paws-runner`                | `paws-runner:paws-runner` | `0700` | Runner home and private state.            |
-| `/var/lib/paws-agent`                 | `paws-agent:paws-agent`   | `0700` | Agent home and provider login.            |
-| `/var/lib/paws-check`                 | `paws-check:paws-check`   | `0700` | Check account home.                       |
-| `/var/lib/paws-runner-spool`          | `paws-runner:paws-agent`  | `2750` | Job delivery.                             |
-| `/var/lib/paws-agent-results`         | `root:paws-results`       | `0750` | Agent result root.                        |
+- `/opt/paws-runner/releases/{version}` contains versioned application and runtime assets. Owner `root`, mode `0755`.
+- `/var/lib/paws-runner-install` holds the installation lock and release state. Owner `root`, mode `0700`.
+- `/var/lib/paws-runner` is the runner home and private state directory. Owner `paws-runner:paws-runner`, mode `0700`.
+- `/var/lib/paws-agent` is the agent home and provider login directory. Owner `paws-agent:paws-agent`, mode `0700`.
+- `/var/lib/paws-check` is the check account home. Owner `paws-check:paws-check`, mode `0700`.
+- `/var/lib/paws-runner-spool` delivers jobs. Owner `paws-runner:paws-agent`, mode `2750`.
+- `/var/lib/paws-agent-results` is the agent result root. Owner `root:paws-results`, mode `0750`.
 
 The operator performs provider login in the agent's identity and home. A health or login check reports whether that local agent can authenticate. Provider credentials stay with the agent account on the host.
 
