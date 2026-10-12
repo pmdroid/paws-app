@@ -142,3 +142,7 @@ Run `bun test test/runner-health.test.ts` for signed health delivery over actual
 ## Runner coordinator
 
 Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.
+
+## Normal runner monitoring startup
+
+Run `bun test test/runner-control-startup.test.ts` for production `startPaws` monitoring enabled by `PAWS_RUNNER_HOST`, with the existing execution path preserved. Five owned processes prove default-disabled behavior, explicit protected authority initialization, invalid hostname and missing identity rejection, actual HTTPS session/Origin/CSRF checks, administrator pairing and health requests, mTLS heartbeat/renewal/revocation, and joined readiness and listener shutdown. Linear membership responses and agent health results are scripted; TLS, subprocesses, SQLite and production routes are real. The same probe runs through `check` and `audit`.
