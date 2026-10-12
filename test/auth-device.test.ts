@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import {
+  createDashboardGitHubAuth,
   DEVICE_ACCESS_DENIED_MESSAGE,
   DEVICE_CODE_EXPIRED_MESSAGE,
   DEVICE_SCOPE,
@@ -11,11 +13,61 @@ import {
 } from "../src/auth";
 import type { CommandRunner, GitHubTokenStore } from "../src/auth/store";
 import { createTokenStore } from "../src/auth/store";
+import { pawsPaths } from "../src/config";
 import { tempHome } from "./helpers";
 
 const CLIENT_ID = "Iv1.real-client";
 
 describe("github device flow", () => {
+  test.each([
+    { name: "saved client", envClient: undefined, explicit: undefined, expected: CLIENT_ID },
+    {
+      name: "environment override",
+      envClient: "Iv1.env",
+      explicit: "Iv1.explicit",
+      expected: "Iv1.env",
+    },
+    {
+      name: "explicit override",
+      envClient: undefined,
+      explicit: "Iv1.explicit",
+      expected: "Iv1.explicit",
+    },
+    {
+      name: "placeholder environment",
+      envClient: PAWS_GITHUB_OAUTH_CLIENT_ID,
+      explicit: undefined,
+      expected: CLIENT_ID,
+    },
+  ])(
+    "host sign-in uses $name for device request and token exchange",
+    async ({ envClient, explicit, expected }) => {
+      const home = tempHome();
+      writeFileSync(
+        pawsPaths(home).configFile,
+        `[github]\nauth = "oauth"\noauth_client_id = "${CLIENT_ID}"\n`,
+      );
+      const seen: Captured[] = [];
+      const store = createTokenStore({ home, platform: "linux", which: () => null });
+      const flow = await createDashboardGitHubAuth({
+        env: { PAWS_HOME: home, PAWS_GITHUB_CLIENT_ID: envClient },
+        oauthClientId: explicit,
+        store,
+        sleep: async () => undefined,
+        openBrowser: async () => undefined,
+        fetch: deviceFetch(["success"], [], undefined, undefined, seen),
+      }).beginDevice();
+      expect(flow.userCode).toBe("PAWS-1234");
+      expect(await flow.completed).toEqual({ login: "octocat", id: 7 });
+      expect(
+        seen
+          .filter(({ url }) => url.includes("/login/"))
+          .map(({ body }) => new URLSearchParams(body).get("client_id")),
+      ).toEqual([expected, expected]);
+      expect((await store.load())?.id).toBe(7);
+    },
+  );
+
   test("does not request the workflow scope", () => {
     expect(DEVICE_SCOPE.split(/\s+/)).not.toContain("workflow");
     expect(WORKFLOW_SCOPE_NOTE.toLowerCase()).toContain("workflow");

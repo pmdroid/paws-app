@@ -1,6 +1,7 @@
 export { NotImplementedError } from "./errors";
 export type { IssueBrief, WorkBrief } from "./brief";
 export { TASK_MODES, type TaskMode } from "./task";
+export type { RepositoryBinding } from "./repository";
 export {
   EPIC_EVENTS,
   EPIC_STATES,

@@ -44,7 +44,6 @@ describe("Linear session pagination", () => {
         if (event.sessionId !== null) seen.push(event.sessionId);
       },
       now: () => NOW,
-      sleeper: { wait: () => new Promise(() => {}), wake() {} },
     });
     try {
       await until(() => calls === 1);
@@ -54,7 +53,7 @@ describe("Linear session pagination", () => {
       expect(seen).toEqual(["ours"]);
       expect(store.getCursor("linear")).toBe(NOW);
     } finally {
-      poller.stop();
+      await poller.stop();
       db.close();
     }
   });

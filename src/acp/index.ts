@@ -27,6 +27,7 @@ export {
   type AskTeamBridge,
   type AskTeamContext,
   type AskTeamHook,
+  type AskTeamOption,
   type AskTeamRequest,
   type AskTeamResponse,
 } from "./ask-team";
@@ -56,6 +57,8 @@ export {
 } from "./checkpoint";
 export { createAcpRunner, type AcpRunnerOptions } from "./client";
 export {
+  AcpCleanupError,
+  recoverAcpConversation,
   createAcpPromptLifecycle,
   reconstructAcpPrompt,
   type AcpConversationEntry,
@@ -66,6 +69,7 @@ export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";
 export { GitError, git } from "./git";
+export { prepareRepositorySnapshot } from "./repository-snapshot";
 export {
   assertSafeSegment,
   branchName,

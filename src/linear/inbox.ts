@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AcceptedLinearEvent } from "./events";
+import { promptMetadata, type AcceptedLinearEvent } from "./events";
 
 export type CommitResult = {
   inserted: boolean;
@@ -134,6 +134,7 @@ function mapRow(row: InboxRow): AcceptedLinearEvent {
     sessionId: row.session_id,
     issueId: row.issue_id,
     activityId: row.activity_id,
+    ...promptMetadata(row.payload),
     body: row.body,
     signal: row.signal,
     updatedAtMs: row.updated_at_ms,

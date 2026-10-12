@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   createGitHubTokenProvider,
   createDashboardGitHubAuth,
+  createVerifiedGitHubLogin,
   createTokenStore,
   githubOAuthPath,
   loginGitHub,
@@ -118,6 +119,39 @@ test("dashboard App sign-in provides a browser URL and completes through the cal
     await Bun.sleep(5);
   expect(await githubAuth.user()).toEqual({ login: "octocat", id: 7 });
   expect(scene.opened()).toBe(0);
+});
+
+test("Linear host sign-in verifies the saved human through the configured App callback", async () => {
+  const scene = fixture();
+  await scene.store.save({
+    id: 7,
+    login: "octocat",
+    accessToken: "fake-old-user-token",
+    refreshToken: null,
+    expiresAtMs: null,
+    scope: "",
+    invalid: true,
+  });
+  const host = createVerifiedGitHubLogin(scene.options);
+  const controller = new AbortController();
+  expect(await host.linkedAccount()).toBe(7);
+  expect(await host.check(controller.signal)).toBeNull();
+  const flow = await host.begin({ signal: controller.signal, acceptAccount: (id) => id === 7 });
+  const auth = new URL(flow.url);
+  const callback = new URL(auth.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("code", "fake-code");
+  callback.searchParams.set("state", "wrong-state");
+  expect((await fetch(callback)).status).toBe(400);
+  expect((await scene.store.load())?.accessToken).toBe("fake-old-user-token");
+  callback.searchParams.set("state", auth.searchParams.get("state")!);
+  expect((await fetch(callback)).status).toBe(200);
+  expect(await flow.completed).toEqual({ id: 7, login: "octocat" });
+  expect(await host.check(controller.signal)).toEqual({ id: 7, login: "octocat" });
+  expect(
+    scene.calls
+      .filter((call) => call.path === "/user")
+      .every((call) => call.token === "Bearer fake-user-token"),
+  ).toBe(true);
 });
 
 test("GitHub App login leaves configuration untouched when user access or bot permissions fail", async () => {

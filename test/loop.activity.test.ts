@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GROK_LOGIN_MESSAGE, type AcpEvent } from "../src/acp";
-import { createLinearTracker, type LinearClient } from "../src/linear";
+import { createLinearTracker, type LinearClient, type ProgressUpdate } from "../src/linear";
 import {
   FIRST_ACTIVITY_MS,
   KEEPALIVE_MS,
@@ -88,7 +88,7 @@ describe("streamed activity", () => {
   }
 
   test("joins public fragments and preserves final content without completing the session", () => {
-    const posted: { kind: string; body: string }[] = [];
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent(chunk("I"));
     reporter.onEvent(chunk(" will"));
@@ -102,7 +102,12 @@ describe("streamed activity", () => {
     });
     expect(posted).toEqual([
       { kind: "thought", body: "I will check." },
-      { kind: "action", body: "Run checks" },
+      {
+        kind: "action",
+        body: "Run checks",
+        action: { action: "Run checks", parameter: "" },
+        ephemeral: true,
+      },
     ]);
     reporter.onEvent(chunk("Verified"));
     reporter.onEvent(chunk(" locally."));
@@ -113,7 +118,7 @@ describe("streamed activity", () => {
   });
 
   test("retains the entire final message while clipping public progress", () => {
-    const posted: { kind: string; body: string }[] = [];
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     const body = "a".repeat(4000) + " Required final detail.";
     reporter.onEvent(chunk(body));
@@ -123,7 +128,7 @@ describe("streamed activity", () => {
   });
 
   test("private reasoning is discarded and interruption emits an error", () => {
-    const posted: { kind: string; body: string }[] = [];
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent(chunk("Thinking", true));
     reporter.onEvent(chunk(" through it.", true));
@@ -134,6 +139,66 @@ describe("streamed activity", () => {
     expect(posted).toEqual([
       { kind: "thought", body: "Partially done." },
       { kind: "error", body: "Run timed out." },
+    ]);
+  });
+
+  test("an already completed tool starts as a durable result", () => {
+    expect(
+      activityFromAcpEvent({
+        type: "session_update",
+        sessionId: "s",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "check",
+          title: "Run checks",
+          status: "completed",
+        },
+      }),
+    ).toEqual({
+      kind: "action",
+      body: "Run checks",
+      action: {
+        action: "Run checks",
+        parameter: "",
+        result: "completed",
+      },
+    });
+  });
+
+  test("a known tool completion publishes a durable action with redacted tool output", () => {
+    const posted: unknown[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "check",
+        title: "Run checks",
+      },
+    });
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "check",
+        status: "completed",
+        rawOutput: { secret: "private-tool-output" },
+      },
+    });
+    expect(posted).toEqual([
+      {
+        kind: "action",
+        body: "Run checks",
+        action: { action: "Run checks", parameter: "" },
+        ephemeral: true,
+      },
+      {
+        kind: "action",
+        body: "Run checks",
+        action: { action: "Run checks", parameter: "", result: '{"secret":"[redacted]"}' },
+      },
     ]);
   });
 
@@ -152,7 +217,7 @@ describe("streamed activity", () => {
   });
 
   test("a follow-up interruption does not report cancellation or completion", () => {
-    const posted: { kind: string; body: string }[] = [];
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent({ type: "cancelled", reason: "follow_up" });
     reporter.flush();
@@ -188,6 +253,111 @@ describe("linear outbox dispatch", () => {
     });
     expect(caughtUp).toBe(1);
   });
+  test("delivers rich progress, selection and auth through the actual GraphQL adapter", async () => {
+    const inputs: unknown[] = [];
+    const tracker = createLinearTracker({
+      async query(_query, variables) {
+        inputs.push(variables?.["input"]);
+        return {
+          agentActivityCreate: {
+            success: true,
+            agentActivity: { id: (variables?.["input"] as { id: string } | undefined)?.id },
+          },
+        };
+      },
+    });
+    const id = "22222222-2222-4222-8222-222222222222";
+    await deliverLinearOutbox(
+      row("activity", {
+        sessionId: "ses",
+        kind: "action",
+        body: "Run checks",
+        id,
+        ephemeral: true,
+        action: { action: "Run checks", parameter: "bun test", result: "passed" },
+      }),
+      tracker,
+      async () => {},
+    );
+    await deliverLinearOutbox(
+      row("elicitation", {
+        sessionId: "ses",
+        body: "Which repository?",
+        id,
+        options: ["Other", { label: "Paws", value: "https://github.com/pmdroid/paws-app" }],
+      }),
+      tracker,
+      async () => {},
+    );
+    await deliverLinearOutbox(
+      row("elicitation", {
+        sessionId: "ses",
+        body: "Link your account",
+        id,
+        auth: { url: "https://example.com/link", userId: "human", providerName: "GitHub" },
+      }),
+      tracker,
+      async () => {},
+    );
+    expect(inputs).toEqual([
+      {
+        agentSessionId: "ses",
+        id,
+        ephemeral: true,
+        content: { type: "action", action: "Run checks", parameter: "bun test", result: "passed" },
+      },
+      {
+        agentSessionId: "ses",
+        id,
+        content: { type: "elicitation", body: "Which repository?" },
+        signal: "select",
+        signalMetadata: {
+          options: [
+            { label: "Other", value: "Other" },
+            { label: "Paws", value: "https://github.com/pmdroid/paws-app" },
+          ],
+        },
+      },
+      {
+        agentSessionId: "ses",
+        id,
+        content: { type: "elicitation", body: "Link your account" },
+        signal: "auth",
+        signalMetadata: {
+          url: "https://example.com/link",
+          userId: "human",
+          providerName: "GitHub",
+        },
+      },
+    ]);
+  });
+
+  test.each([
+    { op: "activity", payload: { kind: "action", body: "bad", action: "lost" } },
+    { op: "activity", payload: { kind: "thought", body: "bad", ephemeral: "true" } },
+    { op: "activity", payload: { kind: "error", body: "bad", ephemeral: true } },
+    {
+      op: "elicitation",
+      payload: { sessionId: "ses", body: "bad", options: [{ label: "Missing value" }] },
+    },
+    { op: "elicitation", payload: { sessionId: "ses", body: "bad", auth: {} } },
+  ])(
+    "rejects malformed rich activity rather than silently losing fields",
+    async ({ op, payload }) => {
+      let calls = 0;
+      const tracker = createLinearTracker({
+        async query() {
+          calls += 1;
+          return {};
+        },
+      });
+      await expect(
+        deliverLinearOutbox(row(op, payload), tracker, async () => {}),
+      ).rejects.toThrow();
+      expect(calls).toBe(0);
+    },
+  );
+
   test("a superseded claimed row cannot call the tracker", async () => {
     let calls = 0;
     const tracker = createLinearTracker({

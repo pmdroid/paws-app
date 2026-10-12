@@ -9,6 +9,14 @@ export {
   shouldPostFirstActivity,
 } from "./activity";
 export { deliverLinearOutbox } from "./dispatch";
+export { repositoryAnswer, rankRepositories } from "./repository-selection";
+export {
+  GitHubAuthQuestions,
+  type HostGitHubAuth,
+  type GitHubAuthPhase,
+  type VerifiedGitHubAccount,
+} from "./github-auth";
+export { FakeHostGitHubAuth } from "./fake-auth";
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,
@@ -32,5 +40,14 @@ export {
   worktreeBranch,
 } from "./sources";
 
+export { handleLinearAdministration } from "./linear-administration";
+export { LinearTaskAccess } from "./linear-task-access";
+export { createRepositoryGit } from "./repository-git";
 export { createLinearInputLoader, inputSources } from "./input-files";
+export { createTaskPlanner } from "./task-planner";
+export { createLinearSessionProgress } from "./session-progress";
 export { createLinearArtifactPublisher, createLinearArtifactReader } from "./artifacts";
+
+export { refreshLinearNotificationContext } from "./linear-notification-context";
+
+export { enqueueVerifiedMerge } from "./merge-jobs";

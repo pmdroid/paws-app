@@ -1,7 +1,15 @@
-export { drainCommands, enqueueCommand, submitCommand } from "./commands";
+export { drainCommands, enqueueCommand, submitCommand, applyLinearCommand } from "./commands";
 export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
 export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
-export { completeAnswerTask, getTaskMode, saveTaskMode } from "./tasks";
+export {
+  completeAnswerTask,
+  completeArtifactTask,
+  getTaskMode,
+  getTaskModeGeneration,
+  saveTaskMode,
+  taskRequiresRepository,
+  selectTaskModeForTurn,
+} from "./tasks";
 export {
   TransitionRejectedError,
   accrueAwake,
@@ -39,6 +47,15 @@ export {
 export { JobLoop, type JobContext, type JobHandler } from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
+export {
+  bindWorkItemRepository,
+  getWorkItemRepository,
+  getWorkItemRepositoryAnswer,
+  getWorkItemRepositoryChoice,
+  rememberWorkItemRepositoryChoice,
+  isWorkItemRepositoryQuestion,
+  saveWorkItemRepositoryQuestion,
+} from "./repositories";
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";
@@ -110,6 +127,11 @@ export {
   linearSessionForEpic,
   recordLinearTurn,
   listPendingLinearTurns,
+  listLinearTurnsForItem,
+  announceLinearTurn,
+  acceptLinearStop,
+  getLinearTurnGeneration,
+  discardLinearTurns,
   applyLinearTurns,
   getLinearSessionGeneration,
   getTaskLinearActor,
@@ -119,11 +141,22 @@ export {
 } from "./linear-sessions";
 
 export {
+  getTaskClassification,
+  saveTaskClassification,
+  resolveTaskClassification,
+  type StoredTaskClassification,
+} from "./task-requests";
+
+export {
   saveArtifact,
   markArtifact,
   listArtifacts,
   artifactPublicationReady,
   getArtifact,
+  beginArtifactAttempt,
+  requestArtifactAttachment,
+  artifactAttachmentRequested,
+  completeArtifactAttempt,
   type StoredArtifact,
 } from "./artifacts";
 
@@ -142,3 +175,44 @@ export {
   type LinearConversationQuestion,
   type LinearConversationArtifact,
 } from "./conversations";
+export { getConversation, saveConversation } from "./acp-conversations";
+export {
+  getConfirmedRemoteMerge,
+  recordConfirmedRemoteMerge,
+  type ConfirmedRemoteMerge,
+} from "./remote-merges";
+
+export {
+  recordLinearInstallation,
+  recordLinearNotification,
+  hasLinearNotification,
+  dropLinearSessionDeliveries,
+  revokeLinearInstallation,
+  isLinearAppRevoked,
+  changeLinearTeamAccess,
+  getLinearSessionAccess,
+  getLinearTeamAccess,
+  getLinearSessionInstallation,
+  getLinearInstallationPermissions,
+  listLinearInstallationSessions,
+  listLinearInstallationRevocations,
+  restoreLinearInstallation,
+  type LinearInstallationRevocation,
+  type LinearInstallationScope,
+  type LinearSessionAccess,
+} from "./linear-access";
+export {
+  getLinearTaskDelegation,
+  linearSessionsForDelegatedTeams,
+  requireLinearTaskDelegation,
+  type LinearTaskDelegation,
+} from "./linear-delegation";
+
+export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
+export { prepareLinearActivity } from "./linear-delivery";
+
+export {
+  linearSessionsForIssueContext,
+  saveLinearIssueContext,
+  getLinearIssueContext,
+} from "./linear-issue-context";

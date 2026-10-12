@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const purpose = process.argv[2];
 const evidence = process.argv[3];
+const behavior = process.argv[5];
 const sessionId = `brief-${crypto.randomUUID()}`;
 let model = process.argv[4] === "reviewer" ? "test-codex-model" : "test-claude-model";
 const configOptions = () => [
@@ -39,6 +40,43 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (message.method === "session/prompt") {
     const prompt = message.params?.prompt?.map((block) => block.text ?? "").join("\n") ?? "";
     if (evidence) appendFileSync(evidence, `${JSON.stringify({ purpose, prompt })}\n`);
+    if (behavior === "hang") {
+      for (const [sessionUpdate, text] of [
+        ["agent_message_chunk", "PUBLIC_OBSERVATION"],
+        ["agent_thought_chunk", "PRIVATE_HIDDEN"],
+      ])
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId, update: { sessionUpdate, content: { type: "text", text } } },
+        });
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "observed",
+            title: "Observed tool",
+            status: "completed",
+            rawOutput: { result: "PUBLIC_TOOL_RESULT" },
+          },
+        },
+      });
+      if (purpose === "implement") {
+        const descendant = spawn(
+          process.execPath,
+          [
+            "-e",
+            `const fs = require('fs'); process.on('SIGTERM',()=>{}); fs.writeFileSync(${JSON.stringify(evidence + ".descendant")},String(process.pid)); setInterval(()=>fs.appendFileSync('old-writes.txt','x'),5)`,
+          ],
+          { stdio: "ignore" },
+        );
+        descendant.unref();
+      }
+      continue;
+    }
     const value = /Required output: `([^`]+)`/.exec(prompt)?.[1] ?? "missing-brief";
     if (purpose === "implement" || purpose === "fix") {
       writeFileSync("result.txt", purpose === "fix" ? `${value}-fixed` : value);

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   applyWorkItemEvent,
@@ -11,14 +14,16 @@ import {
   openDatabase,
 } from "../../../db";
 import { parseStatusSnapshot, statusIntegrity } from "../contract";
-import { handleStatusRequest } from "../engine";
+import { handleStatusRequest, startStatusServer } from "../engine";
 import { createLiveStatusProvider } from "./provider";
 
 const open: Database[] = [];
+const homes: string[] = [];
 
 afterEach(() => {
   for (const db of open) db.close();
   open.length = 0;
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
 function database(): Database {
@@ -29,6 +34,89 @@ function database(): Database {
 }
 
 describe("live status provider", () => {
+  test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {
+    const db = database();
+    const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
+    homes.push(home);
+    const profiles = ["grok", "claude", "codex"] as const;
+    const ids = profiles.map((reviewer, index) => {
+      const item = insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
+      const { run } = beginImplementRun(db, item.id, 2);
+      db.run("UPDATE run SET agent = ? WHERE id = ?", ["codex", run.id]);
+      const dir = join(home, "runs", run.id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "agent-profile.json"),
+        JSON.stringify({
+          profiles: {
+            implementer: { agent: "codex", model: "model-a" },
+            reviewer: { agent: reviewer, model: "model-b" },
+          },
+        }),
+      );
+      return run.id;
+    });
+    writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
+    const server = startStatusServer({
+      port: 0,
+      db,
+      closeoutHome: home,
+      env: { PAWS_HOME: join(home, "wrong") },
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/status`);
+      expect(response.status).toBe(200);
+      const parsed = parseStatusSnapshot(await response.json());
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(ids.map((id) => parsed.snapshot.runs.find((run) => run.id === id)?.reviewer)).toEqual([
+        "Grok",
+        "Claude",
+        "Codex",
+      ]);
+      expect(parsed.snapshot.runs.every((run) => run.agent === "Codex")).toBe(true);
+      const responseFromEnv = await handleStatusRequest(
+        new Request("http://127.0.0.1/api/status"),
+        { db, env: { PAWS_HOME: home } },
+      );
+      const fromEnv = parseStatusSnapshot(await responseFromEnv!.json());
+      expect(fromEnv.ok).toBe(true);
+      if (fromEnv.ok)
+        expect(fromEnv.snapshot.runs.find((run) => run.id === ids[0])?.reviewer).toBe("Grok");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("missing or invalid saved reviewers do not invent a Codex reviewer or break status", async () => {
+    const db = database();
+    const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
+    homes.push(home);
+    const item = insertQueuedItem(db, { id: "ENG-1", title: "Review", now: 1 });
+    const { run } = beginImplementRun(db, item.id, 2);
+    const dir = join(home, "runs", run.id);
+    mkdirSync(dir, { recursive: true });
+    for (const snapshot of [
+      undefined,
+      "{",
+      "null",
+      "{}",
+      JSON.stringify({ profiles: { reviewer: { agent: "unexpected-secret" } } }),
+    ]) {
+      if (snapshot !== undefined) writeFileSync(join(dir, "agent-profile.json"), snapshot);
+      const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+        db,
+        closeoutHome: home,
+        env: {},
+      });
+      expect(response?.status).toBe(200);
+      const body = parseStatusSnapshot(await response!.json());
+      expect(body.ok).toBe(true);
+      if (body.ok) expect(body.snapshot.runs[0]?.reviewer).toBe("Unknown");
+      expect(JSON.stringify(body)).not.toContain("unexpected-secret");
+    }
+  });
+
   test("an empty database is a live snapshot with no items", async () => {
     const db = database();
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
