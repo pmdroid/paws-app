@@ -8,6 +8,8 @@ import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
+import { createFakeGitHub } from "../../src/github";
+import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
 import {
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
@@ -80,7 +82,18 @@ if (mode === "enabled" || mode === "pending") {
 }
 const pending = Promise.withResolvers<void>();
 if (mode === "pending") runtimeLinear.installation = pending.promise;
-const paws = startPaws(source, { noTunnel: true });
+const paws = startPaws(source, {
+  noTunnel: true,
+  ...(mode === "enabled"
+    ? {
+        runnerRepositoryAccess: {
+          github: createFakeGitHub(),
+          installationForRepository: () => "fixture-installation",
+        },
+        runnerTranscriptObjects: createFakeRunnerTranscriptObjects(),
+      }
+    : {}),
+});
 let stopped = false;
 async function call<T = Record<string, unknown>>(
   port: number,
@@ -291,6 +304,20 @@ try {
         "x-paws-csrf": memberSession.session.csrfToken,
       };
       const healthPath = `/api/runners/${claimed.body.runnerId}/health`;
+      for (const path of ["repository-credential", "artifacts", "transcript/chunks"]) {
+        assert.equal(
+          (
+            await call(
+              runnerPort,
+              `/v1/runs/unknown/${path}`,
+              {},
+              { authorization: `Bearer ${"A".repeat(43)}` },
+              peer,
+            )
+          ).status,
+          403,
+        );
+      }
       const healthInput = { type: "probe", profile: { agent: "codex", model: null } };
       assert.equal((await call(browserPort, healthPath, healthInput, memberHeaders)).status, 403);
       const health = await call<{ commandId: string }>(
