@@ -592,7 +592,7 @@ function questionCard(
     <div class="qb"><div class="muted">${esc(question.body)}</div>
       ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
       ${options}
-      <div class="row" style="margin-top:8px"><span class="dim">Read-only.</span> ${linkList(question.links)}</div>
+      <div class="row" style="margin-top:8px">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
 }
 

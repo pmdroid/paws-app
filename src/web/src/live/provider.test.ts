@@ -33,7 +33,85 @@ function database(): Database {
   return db;
 }
 
+function seedQuestion(db: Database, itemId: string, sessionId: string): void {
+  db.run(
+    "INSERT INTO question (id, item_id, session_id, body, options, status, created_at) VALUES ('question', ?, ?, 'Which screenshot?', ?, 'open', 1)",
+    [itemId, sessionId, JSON.stringify(["Existing", "Fresh"])],
+  );
+}
+
 describe("live status provider", () => {
+  test("HTTP questions hand off to their own persisted Linear session", async () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "new-session" });
+    seedQuestion(db, item.id, "question-session");
+    const source = "https://linear.app/paws/issue/ENG-1/demo#agent-session-question";
+    for (const [session, url] of [
+      ["question-session", source],
+      ["new-session", "https://linear.app/paws/issue/ENG-2/another"],
+    ] as const) {
+      db.run(
+        "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES (?, 'webhook', 'created', ?, 1, ?, 1)",
+        [session, session, JSON.stringify({ agentSession: { url } })],
+      );
+    }
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response!.json());
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok)
+      expect(parsed.snapshot.questions.find((entry) => entry.id === "question")?.links).toEqual([
+        { label: "Answer in Linear", href: source },
+      ]);
+  });
+
+  test.each([
+    "javascript:alert(1)",
+    "https://linear.app.evil.example/question",
+    "https://private:secret@linear.app/question",
+    "https://uploads.linear.app/question?signature=secret",
+    "https://linear.app:444/question",
+  ])("question handoff falls back safely from an unsafe source %s", (url) => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    seedQuestion(db, item.id, "session");
+    db.run(
+      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
+      [JSON.stringify({ agentSession: { url } })],
+    );
+    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
+      { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
+    ]);
+  });
+
+  test("historical GitHub questions hand off to their source issue", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "GH-1", sessionKey: "github:owner/repo#7" });
+    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
+      "github:owner/repo#7",
+      item.id,
+    ]);
+    seedQuestion(db, item.id, "github:owner/repo#7");
+    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
+      { label: "Answer on GitHub", href: "https://github.com/owner/repo/issues/7" },
+    ]);
+  });
+
+  test("a Linear question without session metadata uses its readable issue key", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });
+    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
+      "9cfb482a-81e3-4154-b5b9-2c805e70a02d",
+      item.id,
+    ]);
+    seedQuestion(db, item.id, "session");
+    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
+      { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
+    ]);
+  });
+
   test("HTTP status reads each run's pinned reviewer independently of current settings", async () => {
     const db = database();
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
@@ -248,6 +326,12 @@ describe("live status provider", () => {
         options: ["yes", "no"],
         kind: "decision",
         urgency: "blocking",
+        links: [
+          {
+            label: "Answer in Linear",
+            href: `https://linear.app/issue/${waiting.linearIdentifier}`,
+          },
+        ],
       }),
     ]);
     const verdict = parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-3");
