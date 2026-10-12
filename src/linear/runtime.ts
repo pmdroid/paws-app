@@ -2,14 +2,12 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
-import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import type { TrackerAdapter } from "./adapter";
 import type { ProgressUpdate } from "./types";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { createLinearClient } from "./graphql";
-import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
 import { createInboxStore } from "./inbox";
 import {
   createLinearAuth,
@@ -27,6 +25,8 @@ import {
 import { createLinearTracker } from "./tracker";
 import { downTunnel, startNgrokTunnel, type SpawnFn, type Tunnel } from "./tunnel";
 import type { LinearWebhookDeps } from "./webhook";
+import { createLinearAccessReads, type LinearAccessReads } from "./access";
+import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
@@ -40,8 +40,8 @@ export type OpenLinear = {
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
   files: LinearFileTransfer | null;
-  issueLifecycle: LinearIssueLifecycle | null;
   access: LinearAccessReads | null;
+  issueLifecycle: LinearIssueLifecycle | null;
   start(port: number): LinearRunning;
 };
 
@@ -62,7 +62,8 @@ export function openLinear(options: {
   isAuthorized?: () => boolean;
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
-  followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>;
+  followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>;
+  beforeEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
   progressReporter?: (event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>;
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
@@ -84,19 +85,19 @@ export function openLinear(options: {
   });
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
   const tracker = client === null ? null : createLinearTracker(client);
-  const access = client === null ? null : createLinearAccessReads(client, settings.clientId);
-  const issueLifecycle = client === null ? null : createLinearIssueLifecycle(client);
   const files =
     client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
   const onEvent =
-    tracker === null ? undefined : shareEvents(tracker, options.followUp, options.progressReporter);
+    tracker === null && options.beforeEvent === undefined
+      ? undefined
+      : shareEvents(tracker, options.followUp, options.beforeEvent, options.progressReporter);
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
     tracker,
     files,
-    issueLifecycle,
-    access,
+    access: client === null ? null : createLinearAccessReads(client, settings.clientId),
+    issueLifecycle: client === null ? null : createLinearIssueLifecycle(client),
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
@@ -140,8 +141,11 @@ export function openLinear(options: {
 }
 
 function shareEvents(
-  tracker: TrackerAdapter,
-  followUp: ((event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>) | undefined,
+  tracker: TrackerAdapter | null,
+  followUp:
+    | ((event: AcceptedLinearEvent, tracker: TrackerAdapter | null) => Promise<void>)
+    | undefined,
+  beforeEvent: ((event: AcceptedLinearEvent) => Promise<boolean>) | undefined,
   progressReporter:
     | ((event: AcceptedLinearEvent) => (update: ProgressUpdate) => Promise<void>)
     | undefined,
@@ -152,13 +156,23 @@ function shareEvents(
     if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
     const existing = inflight.get(event.dedupeKey);
     if (existing !== undefined) return existing;
-    const reportProgress = progressReporter?.(event);
-    const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
-    const work = acknowledgeNewSession(
-      acknowledger,
-      event,
-      (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
-    ).finally(() => {
+    const work = (async () => {
+      if (beforeEvent !== undefined && !(await beforeEvent(event))) return;
+      if (tracker === null) {
+        if (event.signal === "stop") {
+          await followUp?.(event, null);
+          return;
+        }
+        throw new Error("Linear is not connected.");
+      }
+      const reportProgress = progressReporter?.(event);
+      const acknowledger = reportProgress ? { ...tracker, postProgress: reportProgress } : tracker;
+      await acknowledgeNewSession(
+        acknowledger,
+        event,
+        (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
+      );
+    })().finally(() => {
       inflight.delete(event.dedupeKey);
     });
     inflight.set(event.dedupeKey, work);
