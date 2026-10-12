@@ -49,3 +49,5 @@ export { createLinearSessionProgress } from "./session-progress";
 export { createLinearArtifactPublisher } from "./artifacts";
 
 export { refreshLinearNotificationContext } from "./linear-notification-context";
+
+export { enqueueVerifiedMerge } from "./merge-jobs";
