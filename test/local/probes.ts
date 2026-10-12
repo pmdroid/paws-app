@@ -1,5 +1,5 @@
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
-import { statSync } from "node:fs";
+import { statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   createTokenStore,
@@ -40,6 +40,30 @@ export async function probeBoundaries(
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
+  const release = Bun.spawn(
+    [
+      "/usr/bin/python3",
+      "-I",
+      "-B",
+      join(import.meta.dir, "linux-release-test.py"),
+      join(import.meta.dir, "../../deploy/linux/release.py"),
+    ],
+    { stdout: "pipe", stderr: "pipe", timeout: 20_000 },
+  );
+  const [releaseOutput, releaseErrors, releaseExit] = await Promise.all([
+    new Response(release.stdout).text(),
+    new Response(release.stderr).text(),
+    release.exited,
+  ]);
+  writeFileSync(join(root, "linux-release-verification.log"), releaseOutput + releaseErrors);
+  observe(
+    "signed Linux releases reject invalid signatures and unsafe archives",
+    releaseExit === 0,
+    {
+      exit: releaseExit,
+      log: "linux-release-verification.log",
+    },
+  );
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
