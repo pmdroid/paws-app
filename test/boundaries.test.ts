@@ -35,6 +35,7 @@ const MODULES = [
   "runner-identity",
   "runner-control",
   "runner-work",
+  "runner-repository-access",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -92,6 +93,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-identity": ["credentials"],
   "runner-control": ["db", "workspace", "runner-identity"],
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
+  "runner-repository-access": ["github", "runner-work"],
   "runner-protocol": [],
 };
 

@@ -21,6 +21,7 @@ import { handleStatusRequest, parseStatusSnapshot } from "../../src/web";
 import type { FakeScript, FakeStep } from "../../src/acp/testing/script";
 import { probeBoundaries } from "./probes";
 import { probeRunnerProtocol } from "./runner-protocol";
+import { probeRunnerRepositoryAccess } from "./runner-repository-access";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 assert(root && realpathSync(root) === root && basename(root).startsWith("paws-verify-"));
@@ -485,6 +486,7 @@ try {
   if (mode !== "serve") {
     await probeBoundaries(evidenceRoot, observe);
     probeRunnerProtocol(evidenceRoot, observe);
+    await probeRunnerRepositoryAccess(join(evidenceRoot, "runner-repository-access"), observe);
     const malformed = await scenario("malformed-review", "I could not review this change.");
     observe("malformed reviewer output blocks merging", malformed.merged.length === 0, {
       states: malformed.states,
