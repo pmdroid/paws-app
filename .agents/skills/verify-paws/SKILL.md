@@ -136,3 +136,5 @@ Run `bun test test/runner-health.test.ts` for signed health delivery over actual
 ## Runner coordinator
 
 Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.
+
+For worker publication, run `bun test test/worker-publication.test.ts test/runner-worker.test.ts`. The publication probe observes the canonical event and result filenames at the ownership-assignment boundary while the real worker executes Git and scripted ACP. Both filenames stay absent until their metadata is ready, and completed results parse normally. The worker probe also repeats a consumed execution and supplies preexisting legacy journals and final results, verifying that neither path appends to or replaces retained output or creates a new claim.
