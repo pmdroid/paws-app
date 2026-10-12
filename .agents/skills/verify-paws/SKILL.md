@@ -76,3 +76,5 @@ The TLS probe also rejects invalid replacement server key material and proves th
 The TLS probe advances the authorization clock while an actual POST body is still arriving and inside an awaited handler returning an empty response. Both expire with 403 before command delivery or successful response headers.
 
 The TLS probe expires an identity during asynchronous authorization and before a streaming response starts. It verifies that the handler is not called after the failed access check and that a rejected response stream receives cancellation.
+
+For worker publication, run `bun test test/worker-publication.test.ts test/runner-worker.test.ts`. The publication probe observes the canonical event and result filenames at the ownership-assignment boundary while the real worker executes Git and scripted ACP. Both filenames stay absent until their metadata is ready, and completed results parse normally. The worker probe also repeats a consumed execution and supplies preexisting legacy journals and final results, verifying that neither path appends to or replaces retained output or creates a new claim.
