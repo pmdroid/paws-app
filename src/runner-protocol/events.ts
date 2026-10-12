@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { RunnerArtifactSchema } from "./artifacts";
 
 export const RunnerEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("artifact"), artifact: RunnerArtifactSchema }),
   z.strictObject({ type: z.literal("progress"), text: z.string().max(65536) }),
   z.strictObject({
     type: z.literal("question"),

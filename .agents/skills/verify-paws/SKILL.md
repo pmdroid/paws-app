@@ -161,6 +161,10 @@ The daemon probe uses real HTTPS/mTLS and fresh subprocesses. The work and resul
 
 The daemon probe also checks enrollment keyrings, optional public-key pins, authenticated signing-key rotation, validated lease and fence responses, separate bearer grants, ordered events, repository credential binding, result receipts and question-answer cursors. Inspect its malformed-response observations, safe HTTP 409 status, fresh subprocess identities and checks that grant and repository tokens remain absent from stored files and process output.
 
+Runner transcript verification uploads and retrieves ten megabytes through the production object-store and HTTP adapters with real migrated SQLite and a fake object service. It checks byte/digest binding, exact receipts, empty transcripts, lease and identity fences, revocation during I/O, retryable object faults and actual SQLite busy recovery. Raw transcript markers must be absent from the database and WAL.
+
+Runner artifact verification drives production HTTP handlers with real SQLite grants and private disk files. It proves chunked evidence roundtrip, descriptor-bound events, exact retry, rejected metadata mutation, grant/generation fences, secret-path rejection, file permissions, redirected-file denial, twenty-artifact limits and finished-work denial.
+
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.

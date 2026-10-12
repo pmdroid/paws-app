@@ -66,7 +66,7 @@ export async function snapshotArtifactFile(
   const maxBytes = limits.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
     throw new Error("invalid artifact byte limit");
-  assertNonSecretPath(request.path);
+  assertNonSecretArtifactPath(request.path);
   let root: string;
   let path: string;
   try {
@@ -154,10 +154,10 @@ function assertArtifactPath(root: string, path: string): void {
   if (path === root || !path.startsWith(`${root}${sep}`)) {
     throw new Error("artifact path is outside the workspace");
   }
-  assertNonSecretPath(relative(root, path));
+  assertNonSecretArtifactPath(relative(root, path));
 }
 
-function assertNonSecretPath(path: string): void {
+export function assertNonSecretArtifactPath(path: string): void {
   const names = path.toLowerCase().split(/[/\\]/);
   if (
     names.some((name) =>

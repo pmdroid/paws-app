@@ -946,4 +946,30 @@ CREATE TABLE runner_health_result (
 ) STRICT;
 `,
   },
+  {
+    id: "033_runner_transcripts",
+    sql: `
+CREATE TABLE runner_transcript (
+  run_id TEXT NOT NULL REFERENCES run(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  command_id TEXT NOT NULL UNIQUE REFERENCES runner_command(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  execution_id TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes BETWEEN 0 AND 16777216),
+  sealed_size INTEGER CHECK(sealed_size IS NULL OR sealed_size=size_bytes),
+  sha256 TEXT CHECK(sha256 IS NULL OR length(sha256)=64),
+  uri TEXT,
+  PRIMARY KEY(run_id,generation)
+) STRICT;
+CREATE TABLE runner_transcript_chunk (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  offset INTEGER NOT NULL CHECK(offset>=0),
+  size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 1 AND 524288),
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+  PRIMARY KEY(run_id,generation,offset),
+  FOREIGN KEY(run_id,generation) REFERENCES runner_transcript(run_id,generation)
+) STRICT;
+`,
+  },
 ];
