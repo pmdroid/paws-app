@@ -9,6 +9,7 @@ export {
   shouldPostFirstActivity,
 } from "./activity";
 export { deliverLinearOutbox } from "./dispatch";
+export { repositoryAnswer, rankRepositories } from "./repository-selection";
 export {
   createAcpCodexReviewer,
   createAcpFixRunner,

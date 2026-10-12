@@ -46,7 +46,12 @@ export {
 export { JobLoop, type JobContext, type JobHandler } from "./loop";
 export { startLoops } from "./loops";
 export { migrate } from "./migrate";
-export { bindWorkItemRepository, getWorkItemRepository } from "./repositories";
+export {
+  bindWorkItemRepository,
+  getWorkItemRepository,
+  getWorkItemRepositoryAnswer,
+  saveWorkItemRepositoryQuestion,
+} from "./repositories";
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";

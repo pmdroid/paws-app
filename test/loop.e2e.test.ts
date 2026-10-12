@@ -593,7 +593,9 @@ test("an unconfigured repository halts with an error and never completes the ses
     expect(stateOf(db, "ENG-99")).toBe("failed");
     expect(
       tracker.progress.some(
-        (update) => update.kind === "error" && update.body.includes("PAWS_GITHUB_REPOSITORY"),
+        (update) =>
+          update.kind === "error" &&
+          update.body.includes("No configured GitHub repository is accessible"),
       ),
     ).toBe(true);
     expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);

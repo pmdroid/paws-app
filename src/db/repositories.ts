@@ -40,3 +40,30 @@ export function bindWorkItemRepository(
     return saved;
   });
 }
+
+export function saveWorkItemRepositoryQuestion(
+  db: Database,
+  itemId: string,
+  questionId: string,
+  candidates: readonly RepositoryBinding[],
+): void {
+  db.run(
+    `INSERT INTO work_item_repository_question (item_id, question_id, candidates) VALUES (?, ?, ?)
+    ON CONFLICT (item_id) DO UPDATE SET question_id = excluded.question_id, candidates = excluded.candidates`,
+    [itemId, questionId, JSON.stringify(candidates)],
+  );
+}
+
+export function getWorkItemRepositoryAnswer(
+  db: Database,
+  itemId: string,
+): { answer: string; candidates: readonly RepositoryBinding[] } | null {
+  const row = db
+    .query<{ answer: string; candidates: string }, [string]>(
+      `SELECT q.answer, r.candidates FROM work_item_repository_question r
+      JOIN question q ON q.id = r.question_id
+      WHERE r.item_id = ? AND q.status = 'answered' AND q.answer IS NOT NULL`,
+    )
+    .get(itemId);
+  return row === null ? null : { answer: row.answer, candidates: JSON.parse(row.candidates) };
+}

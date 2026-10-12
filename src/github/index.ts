@@ -16,6 +16,7 @@ export { signAppJwt } from "./jwt";
 export { assertScopedToken, createGitHubApp, mintInstallationToken } from "./token";
 export type { GitHubAppOptions, MintedToken } from "./token";
 export { createFetchGitHubClient } from "./client";
+export { checkRepositoryWriteAccess } from "./repository-access";
 export type { FetchLike } from "./client";
 export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./branch";
 export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
