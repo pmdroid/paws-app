@@ -83,7 +83,7 @@ test("child notifications refresh only their installation sessions and retain co
   reopened.close();
 });
 
-test.each(["context", "hybrid"])(
+test.each(["context", "github-auth"])(
   "signed %s notification ingress retries failed context reads before deduplicating",
   async (mode) => {
     const proc = Bun.spawn(
@@ -98,7 +98,7 @@ test.each(["context", "hybrid"])(
     expect(code).toBe(0);
     expect(errors).not.toContain("Unexpected offline request");
     const result = JSON.parse(output.trim().split("\n").at(-1)!);
-    if (mode === "hybrid") expect(result.githubReads).toBeGreaterThan(0);
+    if (mode === "github-auth") expect(result.githubReads).toBe(0);
     expect(result.pending).toBe(0);
     expect(result.contextReads).toBe(3);
     expect(result.workflowMutations).toBe(0);

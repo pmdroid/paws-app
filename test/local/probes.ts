@@ -21,10 +21,9 @@ import {
   migrate,
   openDatabase,
   recoverOnStartup,
-  submitCommand,
 } from "../../src/db";
-import { createFakeGitHubComments, createGitHubCommentTracker } from "../../src/ghcomments";
-import { createGitHubCommentIngestor } from "../../src/index";
+import { commentTracker, syncComments } from "../../src/index";
+import { createFakeTracker } from "../../src/linear";
 import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
@@ -176,7 +175,7 @@ export async function probeBoundaries(
   const db = openDatabase(":memory:");
   migrate(db);
   try {
-    const issue = "github:local/fixture#1";
+    const issue = "issue-1";
     const item = insertQueuedItem(db, {
       id: "durable-item",
       now: clock.now(),
@@ -184,50 +183,33 @@ export async function probeBoundaries(
     });
     db.run("UPDATE epic SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
       issue,
-      "fixture#1",
+      "LOCAL-1",
       item.epicId,
     ]);
     beginImplementRun(db, item.id, clock.now());
-    const comments = createFakeGitHubComments({ clock, selfLogin: "local-user" });
-    const tracker = createGitHubCommentTracker({
-      request: comments.request,
-      owner: "local",
-      repo: "fixture",
-      clock,
-    });
+    const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
+    const stopMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });
     db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
       issue,
-      "fixture#1",
+      "LOCAL-1",
       item.id,
     ]);
+    const tracker = commentTracker(db, createFakeTracker(), stopMode);
     await tracker.postProgress({ sessionId: issue, kind: "thought", body: "Working" });
     clock.advance(1000);
-    comments.post({
-      issueNumber: 1,
-      body: "/paws stop",
-      login: "local-user",
-      association: "OWNER",
-    });
-    let deliveredId = "";
+    comments.post({ issueId: issue, body: "/paws stop", userId: "teammate" });
     const commands = new CommandBus();
-    const ingest = createGitHubCommentIngestor(
-      db,
-      tracker,
-      async () => {},
-      (command) => {
-        deliveredId = command.itemId;
-        submitCommand(db, commands, command);
-      },
-    );
-    await ingest(issue);
+    await syncComments(db, stopMode, {
+      bus: commands,
+      onLinearEvent: async () => {},
+    });
     observe(
-      "GitHub stop targets the durable work item",
-      getWorkItem(db, item.id)?.state === "cancelled" && deliveredId === item.id,
+      "Linear stop targets the durable work item",
+      getWorkItem(db, item.id)?.state === "cancelled",
       {
-        deliveredId,
         durableId: item.id,
         state: getWorkItem(db, item.id)?.state,
-        commentPhase: tracker.phase(issue),
+        commentPhase: stopMode.phase(item.id),
       },
     );
     const checkpoint = {

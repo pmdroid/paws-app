@@ -4,7 +4,12 @@ import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
-import { fakeStatusProvider, handleStatusRequest, type ReadLinearArtifact } from "../web";
+import {
+  fakeStatusProvider,
+  handleStatusRequest,
+  type ReadLinearArtifact,
+  type StartLinearSession,
+} from "../web";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 
 export type ServerOptions = {
@@ -26,6 +31,7 @@ export type ServerOptions = {
   closeoutHome?: string;
   evidenceRoot?: string;
   readLinearArtifact?: ReadLinearArtifact;
+  startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
 };
 
@@ -58,6 +64,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         githubAuth,
         csrfToken,
         ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
+        ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
         ...(options.agentSettings
           ? { agentSettings: { ...options.agentSettings, csrfToken } }
           : {}),
@@ -80,6 +87,7 @@ type Secrets = {
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   csrfToken: string;
   readLinearArtifact?: ReadLinearArtifact;
+  startLinearSession?: StartLinearSession;
   agentSettings?: AgentSettingsOptions;
   db?: Database;
   statusEnv?: Record<string, string | undefined>;
@@ -99,6 +107,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const status = await handleStatusRequest(request, {
     csrfToken: secrets.csrfToken,
     ...(secrets.readLinearArtifact ? { readLinearArtifact: secrets.readLinearArtifact } : {}),
+    ...(secrets.startLinearSession ? { startLinearSession: secrets.startLinearSession } : {}),
     githubAuth: secrets.githubAuth,
     ...(secrets.db
       ? {
