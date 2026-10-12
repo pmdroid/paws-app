@@ -17,6 +17,7 @@ export function repositoryAnswer(
     return (
       value === fullName ||
       value === `https://github.com/${fullName}` ||
+      value === `https://github.com/${fullName}.git` ||
       value === candidate.repo.toLowerCase()
     );
   });
