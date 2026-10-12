@@ -89,6 +89,8 @@ The audit uses real P-256 CSRs, signed certificates, SQLite and HTTPS client aut
 
 ## Safety and evidence
 
+`test/local/runner-repository-access.ts` drives actual P256 pairing, HTTPS/mTLS and SQLite run grants with the public repository-credential handler. The GitHub App fake records repository-scoped read/write token requests. It verifies canonical publication branches, read-only review access, separate bearer grants, strict payloads, token expiry and repository binding, then changes cancellation, assignment, branch, repository, lease and runner revocation during asynchronous minting. It also accepts expiry skew admitted by the public GitHub validator while returning a conservative one-hour expiry to the runner. The `check` audit retains six observations under `runner-repository-access`.
+
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures: do not run arbitrary issue-supplied code or a real agent in them. ACP runs directly on its host; environment filtering and guarded ACP requests do not establish filesystem isolation for terminal commands. Use a disposable VM with blocked external egress for hostile-code isolation claims.
 
 Never copy operator credentials, use the operator's Kyoto root, call real tracker/GitHub mutation APIs, or invoke `paws setup`, `doctor`, or login against the operator's environment. Setup/auth probes must inject fetch, token store, browser and command behavior. An EnvSource argument alone is insufficient because some modules read ambient process.env.
