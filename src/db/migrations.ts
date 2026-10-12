@@ -567,4 +567,8 @@ CREATE TABLE work_item_repository_question (
 ) STRICT;
 `,
   },
+  {
+    id: "021_task_repository_context",
+    sql: "ALTER TABLE work_item_task ADD COLUMN repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1));",
+  },
 ];

@@ -5,7 +5,9 @@ import type { AgentProfile } from "../config";
 import { TASK_MODES, type TaskMode } from "../core";
 import type { AgentLaunch } from "./agents";
 
-export type TaskClassification = { mode: TaskMode } | { mode: "clarify"; question: string };
+export type TaskClassification =
+  | { mode: TaskMode; repository?: boolean }
+  | { mode: "clarify"; question: string };
 
 export function parseTaskClassification(text: string): TaskClassification {
   const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(text.trim());
@@ -13,7 +15,14 @@ export function parseTaskClassification(text: string): TaskClassification {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Task classification requires an object");
   const input = value as Record<string, unknown>;
-  if (TASK_MODES.includes(input.mode as TaskMode)) return { mode: input.mode as TaskMode };
+  if (TASK_MODES.includes(input.mode as TaskMode)) {
+    if (input.repository !== undefined && typeof input.repository !== "boolean")
+      throw new Error("Repository context must be a boolean");
+    return {
+      mode: input.mode as TaskMode,
+      ...(input.repository === true ? { repository: true } : {}),
+    };
+  }
   if (input.mode === "clarify" && typeof input.question === "string" && input.question.trim())
     return { mode: "clarify", question: input.question.trim() };
   throw new Error("Task classification requires a supported mode");
@@ -40,6 +49,7 @@ export async function classifyTask(options: {
     "code: changes to repository code, configuration, tests, or documentation. Any request combining repository changes and files is code.",
     "answer: explanation, research, advice, planning, or discussion with no requested repository changes or deliverable file.",
     "artifact: creating a deliverable file or image without changing repository files.",
+    'For answer or artifact, add "repository":true when the request requires reading or running a configured repository, such as explaining its code or taking a screenshot of its app. Otherwise omit repository. Do not choose code solely because repository context is required.',
     "clarify: the requested outcome is ambiguous and a question is needed before choosing a mode.",
     "Do not perform the task, use tools, edit files, or include reasoning in the output.",
     JSON.stringify({

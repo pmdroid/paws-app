@@ -67,3 +67,17 @@ export function getWorkItemRepositoryAnswer(
     .get(itemId);
   return row === null ? null : { answer: row.answer, candidates: JSON.parse(row.candidates) };
 }
+
+export function isWorkItemRepositoryQuestion(
+  db: Database,
+  itemId: string,
+  questionId: string,
+): boolean {
+  return (
+    db
+      .query<{ id: string }, [string, string]>(
+        "SELECT question_id AS id FROM work_item_repository_question WHERE item_id = ? AND question_id = ?",
+      )
+      .get(itemId, questionId) !== null
+  );
+}

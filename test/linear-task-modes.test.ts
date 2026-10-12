@@ -22,6 +22,14 @@ test("task classification accepts supported modes and explicit clarification", (
   expect(parseTaskClassification('{"mode":"code"}')).toEqual({ mode: "code" });
   expect(parseTaskClassification('```json\n{"mode":"answer"}\n```')).toEqual({ mode: "answer" });
   expect(parseTaskClassification('{"mode":"artifact"}')).toEqual({ mode: "artifact" });
+  expect(parseTaskClassification('{"mode":"answer","repository":true}')).toEqual({
+    mode: "answer",
+    repository: true,
+  });
+  expect(parseTaskClassification('{"mode":"artifact","repository":false}')).toEqual({
+    mode: "artifact",
+  });
+  expect(() => parseTaskClassification('{"mode":"answer","repository":"true"}')).toThrow("boolean");
   expect(
     parseTaskClassification('{"mode":"clarify","question":"Create a file or explain it?"}'),
   ).toEqual({ mode: "clarify", question: "Create a file or explain it?" });

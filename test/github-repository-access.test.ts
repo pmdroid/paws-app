@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { checkRepositoryWriteAccess } from "../src/github";
+import { checkRepositoryReadAccess, checkRepositoryWriteAccess } from "../src/github";
 
-function check(response: Response | Error, app = false) {
-  return checkRepositoryWriteAccess({
+function check(response: Response | Error, app = false, read = false) {
+  return (read ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
     owner: "acme",
     repo: "project",
     token: "host-only-token",
@@ -28,4 +28,13 @@ test("repository probes distinguish definitive missing access from unknown API o
   await expect(check(new DOMException("Timeout", "TimeoutError"))).rejects.toThrow("Timeout");
   await expect(check(new Response("invalid json"))).rejects.toThrow();
   await expect(check(Response.json({}))).rejects.toThrow("incomplete");
+});
+
+test("repository reads allow a token without push permission and fail on unknown outcomes", async () => {
+  expect(await check(Response.json({ permissions: { push: false } }), false, true)).toBe(true);
+  expect(await check(Response.json({}), false, true)).toBe(true);
+  expect(await check(new Response(null, { status: 404 }), false, true)).toBe(false);
+  await expect(check(new Response(null, { status: 403 }), false, true)).rejects.toThrow(
+    "access check failed",
+  );
 });

@@ -68,6 +68,7 @@ export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";
 export { GitError, git } from "./git";
+export { prepareRepositorySnapshot } from "./repository-snapshot";
 export {
   assertSafeSegment,
   branchName,

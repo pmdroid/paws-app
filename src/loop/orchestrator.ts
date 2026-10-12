@@ -16,6 +16,7 @@ import {
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
+  prepareRepositorySnapshot,
 } from "../acp";
 import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../config";
 import {
@@ -46,6 +47,7 @@ import {
   acceptLinearStop,
   listPendingLinearTurns,
   saveTaskMode,
+  taskRequiresRepository,
   selectTaskModeForTurn,
   completeAnswerTask,
   completeArtifactTask,
@@ -70,6 +72,7 @@ import {
   bindWorkItemRepository,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
+  isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
   immediate,
@@ -170,7 +173,11 @@ export type OrchestratorOptions = {
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
-  repositoryAccess?: (repository: RepositoryBinding, signal: AbortSignal) => Promise<boolean>;
+  repositoryAccess?: (
+    repository: RepositoryBinding,
+    signal: AbortSignal,
+    access?: "read" | "write",
+  ) => Promise<boolean>;
   github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
@@ -365,6 +372,8 @@ export class Orchestrator {
         Boolean(
           linearPrompt &&
           questionItem &&
+          question &&
+          !isWorkItemRepositoryQuestion(this.db, questionItem.id, question.id) &&
           ["answer", "artifact"].includes(getTaskMode(this.db, questionItem.id) ?? ""),
         ),
       );
@@ -565,6 +574,7 @@ export class Orchestrator {
             item.id,
             classification.mode,
             sessionId ? getLinearSessionGeneration(this.db, sessionId) : 0,
+            classification.repository === true,
           );
       }
     }
@@ -648,6 +658,11 @@ export class Orchestrator {
         if (!(await this.resolveTaskMode(item, handoff))) return;
         const mode = getTaskMode(this.db, item.id);
         if (mode === "answer" || mode === "artifact") {
+          if (
+            taskRequiresRepository(this.db, item.id) &&
+            !(await this.selectRepository(item, "read"))
+          )
+            return;
           await this.runResponse(item, mode, handoff);
           return;
         }
@@ -674,9 +689,22 @@ export class Orchestrator {
       return false;
     }
     if (saved === "code") return true;
+    if (
+      saved &&
+      taskRequiresRepository(this.db, item.id) &&
+      getWorkItemRepositoryAnswer(this.db, item.id) &&
+      !getWorkItemRepository(this.db, item.id)
+    )
+      return true;
     if (saved && (!handoff || getTaskModeGeneration(this.db, item.id) >= generation)) return true;
     if (!saved && (!classification || classification.mode !== "clarify")) {
-      saveTaskMode(this.db, item.id, classification?.mode ?? "code", generation);
+      saveTaskMode(
+        this.db,
+        item.id,
+        classification?.mode ?? "code",
+        generation,
+        classification?.repository === true,
+      );
       return true;
     }
     const run = this.ensureRun(item);
@@ -742,8 +770,15 @@ export class Orchestrator {
           return false;
         }
       }
-      if (saved) selectTaskModeForTurn(this.db, item.id, resolved.mode, generation);
-      else saveTaskMode(this.db, item.id, resolved.mode, generation);
+      if (saved)
+        selectTaskModeForTurn(
+          this.db,
+          item.id,
+          resolved.mode,
+          generation,
+          resolved.repository === true,
+        );
+      else saveTaskMode(this.db, item.id, resolved.mode, generation, resolved.repository === true);
       return true;
     } finally {
       this.live.delete(run.id);
@@ -814,12 +849,26 @@ export class Orchestrator {
     keepAlive.unref?.();
     try {
       const promptRunner = await this.prepareConversation(item);
+      let repositoryContext = "";
+      if (taskRequiresRepository(this.db, item.id)) {
+        const repository = getWorkItemRepository(this.db, item.id);
+        if (repository === null) throw new Error("The requested repository has not been selected");
+        const source = await prepareRepositorySnapshot({
+          ...repository,
+          workspace,
+          signal: controller.signal,
+          onCleanupFailure: () => this.blockConversation(item.id),
+        });
+        controller.signal.throwIfAborted();
+        repositoryContext = `The selected repository ${repository.owner}/${repository.repo} is available in ./repository at commit ${source.commit}. Use this private source snapshot for the requested explanation or deliverable. Publish deliverable paths relative to this workspace and return the complete answer or file links.`;
+      }
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = [
         mode === "answer"
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
           : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
         "Use ask_team when a product decision is required.",
+        repositoryContext,
         this.workContext(item),
         handoff ?? "",
       ]
@@ -2321,14 +2370,27 @@ export class Orchestrator {
     return getWorkItemRepository(this.db, item.id) ?? this.options.repository ?? null;
   }
 
-  private async selectRepository(item: WorkItemRecord): Promise<boolean> {
+  private async selectRepository(
+    item: WorkItemRecord,
+    access: "read" | "write" = "write",
+  ): Promise<boolean> {
     if (getConversation(this.db, item.id).blocked)
-      throw new Error("ACP process cleanup could not be verified");
-    if (getWorkItemRepository(this.db, item.id) !== null) return true;
+      throw new Error("Prior ACP process cleanup could not be verified");
+    const bound = getWorkItemRepository(this.db, item.id);
+    if (bound !== null && access === "write") return true;
     const liveKey = `repository:${item.id}`;
     const live = this.beginLive(item.id, liveKey);
     const controller = live.controller;
     try {
+      if (bound !== null) {
+        const allowed =
+          !this.options.repositoryAccess ||
+          (await this.options.repositoryAccess(bound, controller.signal, access));
+        controller.signal.throwIfAborted();
+        if (this.stopped(item.id)) return false;
+        if (!allowed) throw new Error("The selected repository is no longer accessible");
+        return true;
+      }
       const available =
         this.options.repositories ?? (this.options.repository ? [this.options.repository] : []);
       const source = /^github:([^/]+)\/([^#]+)#/.exec(item.linearIssueId);
@@ -2348,7 +2410,7 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         if (
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(candidate, controller.signal))
+          (await this.options.repositoryAccess(candidate, controller.signal, access))
         )
           candidates.push(candidate);
       }
@@ -2393,7 +2455,7 @@ export class Orchestrator {
       if (selected && selectedIndex >= 0) {
         const accessible =
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(selected, controller.signal));
+          (await this.options.repositoryAccess(selected, controller.signal, access));
         controller.signal.throwIfAborted();
         if (this.stopped(item.id)) return false;
         if (accessible) {
