@@ -75,3 +75,5 @@ The TLS probe also rejects invalid replacement server key material and proves th
 The TLS probe advances the authorization clock while an actual POST body is still arriving and inside an awaited handler returning an empty response. Both expire with 403 before command delivery or successful response headers.
 
 The TLS probe expires an identity during asynchronous authorization and before a streaming response starts. It verifies that the handler is not called after the failed access check and that a rejected response stream receives cancellation.
+
+Runner HTTP proof uses real HTTPS enrollment and actual mTLS renewal with real SQLite role checks. Its browser route harness supplies a scripted principal; the workspace access probes prove browser authentication, origin and CSRF enforcement. It checks strict bounded JSON, one-use approval, denied member approval, certificate ownership and revocation.
