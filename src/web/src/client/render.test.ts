@@ -18,6 +18,34 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
 }
 
 describe("status views", () => {
+  test("overview follows the current run after recovery and falls back to the item before a new run", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs[0];
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "running";
+    item.runId = "current-run";
+    snapshot.items = [item];
+    snapshot.runs = [
+      { ...run, id: "old-run", state: "done" },
+      { ...run, id: "current-run", state: "running" },
+    ];
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    snapshot.mergeQueue = [];
+    const running = render(model({ snapshot })).content;
+    expect(running).toContain('href="#/runs/current-run"');
+    expect(running).not.toContain('href="#/runs/old-run"');
+    expect(running).toContain('class="st running"');
+    item.state = "queued";
+    item.runId = null;
+    const queued = render(model({ snapshot })).content;
+    expect(queued).toContain(`href="#/epics/${item.epicId}"`);
+    expect(queued).not.toContain('href="#/runs/old-run"');
+    expect(queued).not.toContain('href="#/runs/current-run"');
+    expect(queued).toContain('class="st queued"');
+  });
+
   test("terminal closeout outcomes override a stale verifying run in both views", () => {
     for (const [decision, detail] of [
       ["blocked", "Closeout is blocked and needs a person."],
