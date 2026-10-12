@@ -638,6 +638,13 @@ export function createLinearGitHubAuth(input: {
     });
   };
   return {
+    ...(input.runtime.githubAuth === "gh"
+      ? {
+          externalLogin: true,
+          recoveryMessage:
+            "Run gh auth login on the Paws host using your original GitHub account, then reply here to continue.",
+        }
+      : {}),
     owner: input.actorForItem,
     linkedAccount: (item) =>
       input.runtime.githubAuth === "gh" ? Promise.resolve(null) : loginFor(item).linkedAccount(),
@@ -650,7 +657,11 @@ export function createLinearGitHubAuth(input: {
       signal.throwIfAborted();
       return user ?? null;
     },
-    begin: (item, options) => loginFor(item).begin(options),
+    begin: (item, options) => {
+      if (input.runtime.githubAuth === "gh")
+        return Promise.reject(new Error("Use the existing GitHub CLI host login."));
+      return loginFor(item).begin(options);
+    },
   };
 }
 
