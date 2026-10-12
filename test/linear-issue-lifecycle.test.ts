@@ -21,12 +21,19 @@ function fixture() {
   let reads = 0;
   let beforeRead = (_count: number) => {};
   let accepted = true;
+  let actor: unknown = { id: "requesting-human", app: false };
+  let readActor = async () => actor;
   const client: LinearClient = {
     async query(query, variables, options) {
       options?.signal?.throwIfAborted();
       if (query.includes("IssueOwnership")) {
         beforeRead(++reads);
         return { issue: structuredClone(issue) };
+      }
+      if (query.includes("CodeTaskActor")) {
+        expect(variables?.["id"]).toBe("requesting-human");
+        expect(query).toContain("user(id: $id) { id app }");
+        return { user: await readActor() };
       }
       if (query.includes("StartedWorkflowStates")) {
         expect(query).toContain('filter: { type: { eq: "started" } }');
@@ -61,12 +68,52 @@ function fixture() {
       accepted = false;
     },
     states,
+    actor: (value: unknown) => {
+      actor = value;
+    },
+    readActor: (callback: () => Promise<unknown>) => {
+      readActor = callback;
+    },
   };
 }
 
 const input = { issueId: "issue", appUserId: "paws-app", actorId: "requesting-human" };
 
 describe("Linear code issue delegation", () => {
+  test.each([
+    { id: "requesting-human", app: true },
+    { id: "requesting-human" },
+    { id: "other-human", app: false },
+    { id: "requesting-human", app: "false" },
+    null,
+  ])("only the exact verified human actor may change workflow or delegation", async (actor) => {
+    const f = fixture();
+    f.actor(actor);
+    f.issue.state.type = "triage";
+    expect((await f.lifecycle.startCodeIssue(input)).eligible).toBe(false);
+    expect(f.cursors).toEqual([]);
+    expect(f.mutations).toEqual([]);
+    expect(f.issue.assignee.id).toBe("human-assignee");
+    expect(f.issue.state.type).toBe("triage");
+  });
+
+  test("Stop during actor verification prevents workflow reads and mutation", async () => {
+    const f = fixture();
+    const started = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<unknown>();
+    f.readActor(async () => {
+      started.resolve();
+      return released.promise;
+    });
+    const controller = new AbortController();
+    const pending = f.lifecycle.startCodeIssue(input, { signal: controller.signal });
+    await started.promise;
+    controller.abort();
+    released.resolve({ id: "requesting-human", app: false });
+    await expect(pending).rejects.toThrow();
+    expect(f.cursors).toEqual([]);
+    expect(f.mutations).toEqual([]);
+  });
   test("selects the lowest-position started state across pages and preserves the human assignee", async () => {
     const f = fixture();
     const result = await f.lifecycle.startCodeIssue(input);
