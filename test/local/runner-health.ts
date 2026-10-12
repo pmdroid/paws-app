@@ -20,6 +20,7 @@ import {
 } from "../../src/runner-identity";
 import {
   RunnerHealthResultSchema,
+  RUNNER_RESULT_BODY_LIMIT,
   verifyRunnerCommand,
   type RunnerHealthResult,
 } from "../../src/runner-protocol";
@@ -254,11 +255,64 @@ export async function probeRunnerHealth(
     };
     assert.equal((await send(result)).status, 200);
     assert.deepEqual((await send(result)).value, { duplicate: true });
+    const unicodeCommand = health.request(principal, runnerId, requestInput);
+    const unicodeResult = {
+      ...result,
+      commandId: unicodeCommand.commandId,
+      models: Array(128).fill({ id: "界".repeat(256), name: "界".repeat(256) }),
+    };
+    assert(RunnerHealthResultSchema.safeParse(unicodeResult).success);
+    const unicodeBytes = Buffer.byteLength(JSON.stringify(unicodeResult));
+    assert(unicodeBytes > 131_072 && unicodeBytes < RUNNER_RESULT_BODY_LIMIT);
+    assert.equal((await send(unicodeResult)).status, 200);
+    const escapedCommand = health.request(principal, runnerId, requestInput);
+    const escapedResult = {
+      ...result,
+      commandId: escapedCommand.commandId,
+      stopReason: "error" as const,
+      sessionId: "\u0000".repeat(512),
+      errorMessage: "\u0000".repeat(16384),
+      identity: {
+        session: "\u0000".repeat(512),
+        model: "\u0000".repeat(512),
+        provider: "\u0000".repeat(512),
+      },
+      models: Array(128).fill({ id: "\u0000".repeat(256), name: "\u0000".repeat(256) }),
+      efforts: Array(32).fill({ id: "\u0000".repeat(64), name: "\u0000".repeat(256) }),
+      effort: "\u0000".repeat(64),
+    };
+    assert(RunnerHealthResultSchema.safeParse(escapedResult).success);
+    const escapedBytes = Buffer.byteLength(JSON.stringify(escapedResult));
+    assert(escapedBytes > unicodeBytes && escapedBytes < RUNNER_RESULT_BODY_LIMIT);
+    assert.equal((await send(escapedResult)).status, 200);
+    assert.deepEqual((await send(escapedResult)).value, { duplicate: true });
     assert.equal((await send({ ...result, models: [] })).status, 403);
     assert.equal((await send({ ...result, commandId: workspaceId() })).status, 403);
     assert.throws(() => health.submit(workspaceId(), result));
     await assert.rejects(() => send(result, null));
     assert.equal((await send({ ...result, errorMessage: "x".repeat(131_072) })).status, 403);
+    let pulls = 0;
+    let cancelled = false;
+    const oversized = new Request("https://runner.invalid/v1/health", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream(
+        {
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(new Uint8Array(600_000));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      duplex: "half",
+    });
+    assert.equal((await health.fetch(oversized, runnerId))!.status, 403);
+    assert.equal(pulls, 2);
+    assert(cancelled);
     assert(
       !RunnerHealthResultSchema.safeParse({ ...result, vendorCredential: "unwanted" }).success,
     );
@@ -280,6 +334,9 @@ export async function probeRunnerHealth(
         changedDenied: true,
         missingCertificateDenied: true,
         boundedPayloadDenied: true,
+        unicodeBytes,
+        escapedBytes,
+        resultBodyLimit: RUNNER_RESULT_BODY_LIMIT,
       },
     );
     const restarted = Bun.spawn(

@@ -6,6 +6,7 @@ import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
 import {
   RunnerCommandSchema,
+  RUNNER_RESULT_BODY_LIMIT,
   RunnerHealthResultSchema,
   RunnerProfileSchema,
   type RunnerHealthResult,
@@ -199,7 +200,12 @@ export function createRunnerHealth(options: {
       if (new URL(request.url).pathname !== "/v1/health") return null;
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);
       try {
-        return json(api.submit(runnerId, RunnerHealthResultSchema.parse(await body(request))));
+        return json(
+          api.submit(
+            runnerId,
+            RunnerHealthResultSchema.parse(await body(request, RUNNER_RESULT_BODY_LIMIT)),
+          ),
+        );
       } catch {
         return json({ error: "Runner health result was rejected." }, 403);
       }
@@ -208,7 +214,7 @@ export function createRunnerHealth(options: {
   return api;
 }
 
-async function body(request: Request) {
+async function body(request: Request, limit = 131_072) {
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json")
     throw new Error("JSON is required");
   const reader = request.body?.getReader();
@@ -226,7 +232,7 @@ async function body(request: Request) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > 131_072) throw new Error("Runner health payload exceeds limit");
+      if (bytes > limit) throw new Error("Runner health payload exceeds limit");
       chunks.push(part.value);
     }
     timeout.throwIfAborted();
