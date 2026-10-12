@@ -106,6 +106,7 @@ import {
 } from "./loop";
 import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
+import { validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion, type StoredQuestion } from "./questions";
@@ -699,6 +700,17 @@ async function doctorMain(): Promise<number> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "public-tls") {
+    try {
+      if (argv.length !== 2 || argv[1] !== "validate") throw new Error("Invalid command");
+      validatePublicTls(process.env);
+      console.log("Public HTTPS certificate is valid.");
+      process.exit(0);
+    } catch {
+      console.error("Public HTTPS certificate validation failed.");
+      process.exit(1);
+    }
+  }
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
@@ -754,17 +766,28 @@ if (import.meta.main) {
     proxyUrl: proxy === null ? null : `http://host.docker.internal:${proxy.port}`,
   });
   let exiting = false;
-  const shutdown = () => {
+  const shutdown = (exitCode = 0) => {
     if (exiting) return;
     exiting = true;
     void (async () => {
       await paws.stop();
       await proxy?.close();
-      process.exit(0);
+      process.exit(exitCode);
     })().catch(() => process.exit(1));
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown());
+  process.on("SIGTERM", () => shutdown());
+  if (process.env.PAWS_PUBLIC_DASHBOARD === "1")
+    process.on("SIGHUP", () => {
+      if (exiting) return;
+      try {
+        validatePublicTls(process.env);
+      } catch {
+        console.error("Public HTTPS certificate renewal rejected.");
+        return;
+      }
+      shutdown(PUBLIC_TLS_RESTART_EXIT);
+    });
   const origin = `http://${paws.server.hostname}:${paws.server.port}`;
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";

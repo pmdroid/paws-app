@@ -28,12 +28,14 @@ import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probePublicTls } from "./public-tls";
+import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   await probePublicTls(root, observe);
+  await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
