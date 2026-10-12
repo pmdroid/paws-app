@@ -29,6 +29,8 @@ const MODULES = [
   "setup",
   "auth",
   "runner-protocol",
+  "runner-repositories",
+  "process",
   "workspace",
   "runner-identity",
   "runner-control",
@@ -46,10 +48,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   db: ["core"],
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
-  acp: ["core", "config"],
+  acp: ["core", "config", "process"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core"],
-  github: [],
+  github: ["process"],
   questions: ["core"],
   web: ["db"],
   server: [
@@ -97,6 +99,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear", "slack"],
   "runner-identity": ["credentials"],
   "runner-protocol": [],
+  "runner-repositories": ["github", "runner-protocol"],
+  process: [],
   "runner-control": ["db", "workspace", "runner-identity"],
 };
 

@@ -1,4 +1,6 @@
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
+import { probeRunnerRepositories } from "./runner-repositories";
+import { probeGitCancellation } from "./git-cancellation";
 import { statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -68,6 +70,8 @@ export async function probeBoundaries(
     },
   );
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
+  await probeRunnerRepositories(join(root, "runner-repositories"), observe);
+  await probeGitCancellation(join(root, "git-cancellation"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,

@@ -58,7 +58,7 @@ export function publicationExec(
     const publicationArgs = command === "clone" ? args : ["--git-dir", repository, ...args];
     const env = publicationEnv(options.env);
     env.HOME = dir;
-    const run = (argv: string[], cwd = dir) => gitExec(argv, { cwd, env });
+    const run = (argv: string[], cwd = dir) => gitExec(argv, { cwd, env, signal: options.signal });
     try {
       if (command !== "clone") await run(["init", "--bare", "--template=", repository]);
       if (command === "push") {
@@ -78,6 +78,7 @@ export function publicationExec(
         await writeFile(credential.path, credential.token, { mode: 0o600 });
       const result = await gitExec(publicationArgs, {
         cwd: dir,
+        signal: options.signal,
         env: {
           ...env,
           ...(path.isAbsolute(remote) ? {} : { PAWS_GITHUB_TOKEN: options.env.PAWS_GITHUB_TOKEN }),

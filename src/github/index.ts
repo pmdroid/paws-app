@@ -73,3 +73,4 @@ export type {
   SerialMergeResult,
 } from "./types";
 export type { GitHubWebhook } from "./webhook";
+export { defaultGitExec } from "./git";

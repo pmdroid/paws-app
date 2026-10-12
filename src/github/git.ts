@@ -3,6 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { controlledGit } from "./controlled-git";
 import { publicationExec } from "./publication";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -17,6 +18,7 @@ fi
 
 export function defaultGitExec(bin = "/usr/bin/git"): GitExec {
   return async (args, options) => {
+    if (options.signal) return controlledGit(bin, args, options);
     try {
       const { stdout, stderr } = await exec(bin, args, {
         cwd: options.cwd,
