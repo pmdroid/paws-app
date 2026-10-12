@@ -84,3 +84,5 @@ The runner work probe uses real SQLite, signed commands and a fresh child proces
 Runner work verification covers production HTTP request handlers with valid and denied grants, stale generations, heartbeat JSON, and a chunked oversized body that must be cancelled before the third chunk is read. It also replaces a revoked runner immediately with a fresh generation and polls a later health command beyond 64 invalid run commands.
 
 An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
+
+Runner transcript verification uploads and retrieves ten megabytes through the production object-store and HTTP adapters with real migrated SQLite and a fake object service. It checks byte/digest binding, exact receipts, empty transcripts, lease and identity fences, revocation during I/O, retryable object faults and actual SQLite busy recovery. Raw transcript markers must be absent from the database and WAL.
