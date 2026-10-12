@@ -4,7 +4,14 @@ import { randomUUID } from "node:crypto";
 import { enqueueOutboxOnce, immediate, listOutbox } from "../db";
 import type { SessionPlanStep, SessionUpdate } from "../linear";
 
-type Phase = "working" | "implementing" | "verifying" | "publishing" | "merging" | "completed";
+type Phase =
+  | "working"
+  | "implementing"
+  | "fixing"
+  | "verifying"
+  | "publishing"
+  | "merging"
+  | "completed";
 
 const HOST_STEPS = ["Verify changes", "Open pull request", "Merge verified changes"];
 
@@ -66,11 +73,12 @@ export function createLinearSessionProgress(
   }
 
   function publishPlan() {
-    const phaseIndex = ["implementing", "verifying", "publishing", "merging", "completed"].indexOf(
-      phase,
-    );
+    const phaseIndex =
+      phase === "fixing"
+        ? 1
+        : ["implementing", "verifying", "publishing", "merging", "completed"].indexOf(phase);
     const agentSteps =
-      phase === "implementing" || phase === "working"
+      phase === "implementing" || phase === "working" || phase === "fixing"
         ? steps
         : steps.map((step) => ({
             ...step,
@@ -93,7 +101,13 @@ export function createLinearSessionProgress(
       phase = next;
       publishPlan();
       const status =
-        next === "working" ? (mode === "answer" ? "preparing answer" : "creating files") : next;
+        next === "working"
+          ? mode === "answer"
+            ? "preparing answer"
+            : "creating files"
+          : next === "fixing"
+            ? "fixing Closeout findings"
+            : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
       enqueue("linear.session.summary", { sessionId, summary }, true);
     },

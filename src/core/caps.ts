@@ -4,7 +4,7 @@
  * fix a number.
  */
 export const DEFAULT_MAX_TURNS = 80;
-export const DEFAULT_MAX_AWAKE_MS = 45 * 60 * 1000;
+export const DEFAULT_MAX_AWAKE_MS = 3 * 60 * 60 * 1000;
 
 export type CapReason = "turns" | "time";
 

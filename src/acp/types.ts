@@ -1,5 +1,6 @@
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
+import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
 import type { AgentRole } from "./adapters";
@@ -7,7 +8,7 @@ import type { AuthCheckResult } from "./auth";
 import type { AskTeamHook } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
 
-export const DEFAULT_RUN_TIMEOUT_MS = 45 * 60 * 1000;
+export const DEFAULT_RUN_TIMEOUT_MS = DEFAULT_MAX_AWAKE_MS;
 export const DEFAULT_CANCEL_GRACE_MS = 2_000;
 export const FOLLOW_UP_INTERRUPTION = "follow_up";
 

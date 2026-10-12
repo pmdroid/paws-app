@@ -34,6 +34,7 @@ export type AcpAgentDeps = {
   pawsRoot: string;
   publishArtifact?: PublishArtifactHook;
   prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
+  onEvent?: RunAgentOptions["onEvent"];
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -141,6 +142,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       });
       const result = await (deps.promptRunner ?? runAgent)({
         prepareInputFiles: deps.prepareInputFiles,
+        onEvent: deps.onEvent,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,

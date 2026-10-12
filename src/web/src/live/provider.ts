@@ -770,6 +770,7 @@ function concerns(row: OutboxRow, record: WorkItemRecord, runId: string): boolea
   if (row.op !== "activity" && row.op !== "elicitation") return false;
   const key = row.idempotencyKey;
   if (key.startsWith(`${runId}:`) || key.startsWith(`${record.id}:`)) return true;
+  if (key.startsWith(`cap:${record.id}:`) || key.startsWith(`fail:${record.id}:`)) return true;
   const body = readString(row.payload, "body") ?? "";
   return (
     record.sessionKey !== null &&
@@ -862,10 +863,10 @@ function itemState(state: WorkItemRecord["state"]): ItemState {
 
 function runState(record: WorkItemRecord, status: string): RunState {
   if (record.state === "awaiting_input") return "awaiting_input";
-  if (record.state === "verifying" || record.checkpoint?.phase === "verifying") return "verifying";
   if (record.state === "paused") return "paused";
   if (status === "lost" || record.state === "cancelled" || record.state === "failed")
     return "stopped";
+  if (record.state === "verifying" || record.checkpoint?.phase === "verifying") return "verifying";
   if (
     status === "ended" ||
     record.state === "completed" ||
