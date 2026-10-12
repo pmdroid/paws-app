@@ -88,3 +88,7 @@ An already persisted event can acknowledge an identical retry during the short a
 Runner result verification drives production HTTP handlers with real migrated SQLite and signed assignments. It checks immutable run/review results, grant and generation denial, paged question answers, rejected answer mutation, bounded streamed bodies and persistence after reopening SQLite. Answer later questions first and confirm delivery waits for earlier replies before advancing the question cursor. Submit a 900 KB Unicode review successfully and check that schema validation rejects Unicode and JSON-escaped results exceeding the HTTP byte limit.
 
 Run `bun test test/runner-health.test.ts` for signed health delivery over actual mTLS. The reusable audit probe verifies current workspace administration, command/result binding, bounded credential-free responses, maximum Unicode and JSON-escaped metadata within the shared 1 MiB result body limit, immutable duplicate receipts, heartbeat timestamps, expiry and revocation, and fresh-process result recovery.
+
+## Runner coordinator
+
+Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.

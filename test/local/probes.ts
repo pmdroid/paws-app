@@ -1,3 +1,4 @@
+import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
 import { probeRunnerWork } from "./runner-work";
@@ -40,6 +41,7 @@ export async function probeBoundaries(
 ) {
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
+  await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
