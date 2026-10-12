@@ -35,6 +35,8 @@ For workspace ownership and browser session evidence, run `bun --no-env-file scr
 
 The same command drives browser sign-in through a real loopback HTTP listener and production OAuth handlers. Linear token exchange, identity and paginated membership responses are scripted. Check `workspace-browser/requests.json`, the access audit and observations for actor=user/read scope/PKCE, pending login after handler reconstruction with no stored verifier, first-owner teams after an advancing-clock membership read, separate member identities, outsider rejection, callback replay, delayed sign-in response after membership removal, guest caps with equal-time restrictive precedence and preserved manual-role restoration, CSRF, logout during a Linear outage and membership refresh after five minutes.
 
+The authorization probe uses the production server and real SQLite to verify organization, installation, team and repository scope on status, conversations and artifact reads. It proves owner-only settings, CSRF and the authenticated principal passed to runner control. The authenticated status HTML token is used for an owner host-control action and for logout after a dashboard reload during a Linear outage, while data requests remain closed. Artifact denials are checked before the injected reader sees an ID. Inspect `workspace-authorization/audit.json` with the observation journal.
+
 For browser inspection:
 
 ```sh

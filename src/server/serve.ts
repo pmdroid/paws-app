@@ -11,8 +11,18 @@ import {
   type StartLinearSession,
 } from "../web";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
+import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
+import {
+  requestWorkspaceSession,
+  validWorkspaceCsrf,
+  type WorkspaceAccess,
+  type WorkspacePrincipal,
+} from "../workspace";
 
 export type ServerOptions = {
+  workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
+  runnerEnrollment?: (request: Request) => Promise<Response>;
+  runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   hostname?: string;
   port?: number;
   linearWebhookSecret?: string | null;
@@ -63,6 +73,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         webhooks,
         githubAuth,
         csrfToken,
+        ...(options.workspaceAccess ? { workspaceAccess: options.workspaceAccess } : {}),
+        ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
+        ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
         ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
         ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
         ...(options.agentSettings
@@ -78,6 +91,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
+  workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
+  runnerEnrollment?: ServerOptions["runnerEnrollment"];
+  runnerControl?: ServerOptions["runnerControl"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -100,13 +116,104 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   if (request.method === "GET" && path === "/health") {
     return Response.json({ ok: true, service: "paws" });
   }
+  if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
+    return secrets.runnerEnrollment(request);
+  let workspace: WorkspaceAccess | undefined;
+  try {
+    workspace = await secrets.workspaceAccess;
+  } catch {
+    if (!path.startsWith("/webhooks"))
+      return Response.json(
+        { error: "Paws workspace access is not ready. Check the Linear app installation." },
+        { status: 503 },
+      );
+  }
+  let csrfToken = secrets.csrfToken;
+  let sessionIds: readonly string[] | undefined;
+  if (workspace !== undefined) {
+    const auth = await workspace.handle(request);
+    if (auth !== null) return auth;
+    if ((path === "/status" || path.startsWith("/status/")) && secrets.db !== undefined) {
+      const access = requestWorkspaceSession(secrets.db, request, Date.now());
+      if (access !== null) csrfToken = access.session.csrfToken;
+    }
+    if (path.startsWith("/api/")) {
+      let access;
+      try {
+        access = await workspace.authenticate(request);
+      } catch {
+        return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
+      }
+      if (access === null || secrets.db === undefined)
+        return Response.json({ error: "Sign in to Paws." }, { status: 401 });
+      const selected =
+        new URL(request.url).searchParams.get("workspaceId") ??
+        request.headers.get("x-paws-workspace");
+      if (selected !== null && selected !== access.principal.workspaceId)
+        return Response.json({ error: "Workspace access denied." }, { status: 403 });
+      const privileged =
+        path.startsWith("/api/settings/") ||
+        path.startsWith("/api/auth/github") ||
+        (path === "/api/linear/sessions" && request.method !== "GET");
+      const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+      const recent =
+        Date.now() >= access.principal.authenticatedAt &&
+        Date.now() - access.principal.authenticatedAt <= 15 * 60_000;
+      if (
+        (privileged && (access.principal.role !== "owner" || (unsafe && !recent))) ||
+        (unsafe &&
+          (request.headers.get("origin") !== workspace.origin ||
+            !validWorkspaceCsrf(request, access.session)))
+      ) {
+        auditWorkspaceAccess(secrets.db, {
+          workspaceId: access.principal.workspaceId,
+          userId: access.principal.userId,
+          action: "access.denied",
+          subject: path,
+          now: Date.now(),
+        });
+        return Response.json(
+          { error: "Workspace ownership, recent sign-in and a valid CSRF token are required." },
+          { status: 403 },
+        );
+      }
+      csrfToken = access.session.csrfToken;
+      sessionIds = workspaceSessionIds(
+        secrets.db,
+        access.principal.workspaceId,
+        access.principal.userId,
+        workspace.clientId,
+      );
+      if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
+        const response = await secrets.runnerControl(request, access.principal);
+        if (response !== null) return response;
+      }
+    }
+  }
   if (secrets.agentSettings) {
-    const settings = await handleAgentSettingsRequest(request, secrets.agentSettings);
+    const settings = await handleAgentSettingsRequest(request, {
+      ...secrets.agentSettings,
+      csrfToken,
+      ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    });
     if (settings !== null) return settings;
   }
   const status = await handleStatusRequest(request, {
-    csrfToken: secrets.csrfToken,
-    ...(secrets.readLinearArtifact ? { readLinearArtifact: secrets.readLinearArtifact } : {}),
+    csrfToken,
+    ...(sessionIds === undefined ? {} : { sessionIds }),
+    ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
+    ...(secrets.readLinearArtifact
+      ? {
+          readLinearArtifact: async (id: string, signal?: AbortSignal) => {
+            if (sessionIds !== undefined) {
+              const artifact = getArtifact(secrets.db!, id);
+              const item = artifact === null ? null : getWorkItem(secrets.db!, artifact.itemId);
+              if (item?.sessionKey == null || !sessionIds.includes(item.sessionKey)) return null;
+            }
+            return secrets.readLinearArtifact!(id, signal);
+          },
+        }
+      : {}),
     ...(secrets.startLinearSession ? { startLinearSession: secrets.startLinearSession } : {}),
     githubAuth: secrets.githubAuth,
     ...(secrets.db
@@ -121,7 +228,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           ...(secrets.statusEnv ? { env: secrets.statusEnv } : {}),
         }),
   });
-  if (status !== null) return status;
+  if (status !== null) {
+    if (workspace === undefined) return status;
+    const headers = new Headers(status.headers);
+    for (const name of [...headers.keys()])
+      if (name.toLowerCase().startsWith("access-control-")) headers.delete(name);
+    return new Response(status.body, { status: status.status, headers });
+  }
   if (path === "/webhooks/slack") return handleSlackWebhook(request, secrets.slackSigningSecret);
   if (path === "/webhooks" || path.startsWith("/webhooks/")) {
     if (!secrets.webhooks) return new Response("not found", { status: 404 });

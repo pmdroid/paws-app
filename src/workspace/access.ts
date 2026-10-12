@@ -250,7 +250,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     }
     return json({ error: "Method not allowed" }, 405);
   }
-  return { authenticate, handle, origin };
+  return { authenticate, handle, origin, clientId: options.clientId };
 }
 
 export type WorkspaceAccess = ReturnType<typeof createWorkspaceAccess>;

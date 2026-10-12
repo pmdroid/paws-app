@@ -20,6 +20,8 @@ export interface StatusProvider {
 }
 
 export interface StatusServerOptions {
+  sessionIds?: readonly string[];
+  trustedOrigin?: string;
   /**
    * Live reader. Used for `/api/status` unless the request asks for demo data.
    * Omit it and pass `db` to read the engine database. Omit both for an empty
@@ -77,9 +79,18 @@ export async function handleStatusRequest(
       headers: { Location: `${STATUS_PAGE_PATH}/${url.search}`, "Cache-Control": "no-store" },
     });
   }
-  const artifact = await handleLinearArtifactRequest(request, options.readLinearArtifact);
+  const artifact = await handleLinearArtifactRequest(
+    request,
+    options.readLinearArtifact,
+    options.trustedOrigin,
+  );
   if (artifact !== null) return artifact;
-  const conversations = handleLinearConversationsRequest(request, options.db);
+  const conversations = handleLinearConversationsRequest(
+    request,
+    options.db,
+    options.sessionIds,
+    options.trustedOrigin,
+  );
   if (conversations !== null) return conversations;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
@@ -142,6 +153,7 @@ export function providerFor(url: URL, options: StatusServerOptions): StatusProvi
 }
 
 function liveProvider(options?: {
+  sessionIds?: readonly string[];
   provider?: StatusProvider;
   db?: Database;
   env?: Record<string, string | undefined>;
@@ -150,6 +162,7 @@ function liveProvider(options?: {
   if (options?.provider) return options.provider;
   if (options?.db) {
     return createLiveStatusProvider(options.db, {
+      ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
       ...(options.env ? { env: options.env } : {}),
       ...(options.closeoutHome ? { pawsHome: options.closeoutHome } : {}),
     });
@@ -165,6 +178,7 @@ function artifactResponse(request: Request, options: StatusServerOptions): Respo
   if (options.db === undefined || home === null) return text("Not found", 404);
   const url = new URL(request.url);
   const read = readCloseoutArtifact({
+    ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
     db: options.db,
     itemId: url.searchParams.get("item") ?? "",
     checkId: url.searchParams.get("check") ?? "",

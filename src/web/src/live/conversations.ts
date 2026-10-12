@@ -19,8 +19,10 @@ export type ConversationMessage = {
   state: string;
 };
 
-export function readLinearConversations(db: Database) {
-  return listLinearSessions(db).map((session) => readConversation(db, session));
+export function readLinearConversations(db: Database, sessionIds?: readonly string[]) {
+  return listLinearSessions(db)
+    .filter((session) => sessionIds === undefined || sessionIds.includes(session.id))
+    .map((session) => readConversation(db, session));
 }
 
 function readConversation(db: Database, session: LinearConversationSession) {

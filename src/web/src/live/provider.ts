@@ -106,6 +106,7 @@ const MAX_CLOSEOUT_ATTEMPTS = 3;
 const MERGE_STEPS = ["Rebase onto main", "Re-run Closeout", "Squash merge"] as const;
 
 export type LiveStatusOptions = {
+  sessionIds?: readonly string[];
   now?: () => Date;
   pawsHome?: string;
   project?: {
@@ -150,9 +151,19 @@ export function emptyLiveSnapshot(
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
-  const records = listWorkItemsByStates(db, WORK_ITEM_STATES).sort(byPosition);
+  const records = listWorkItemsByStates(db, WORK_ITEM_STATES)
+    .filter(
+      (record) =>
+        options.sessionIds === undefined ||
+        (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
+    )
+    .sort(byPosition);
   if (records.length === 0) return emptyLiveSnapshot(now, options.project);
-  const rows = listOutbox(db);
+  const rows = listOutbox(db).filter(
+    (row) =>
+      options.sessionIds === undefined ||
+      (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
+  );
   const jobs = listJobs(db);
   const blocks = listWorkItemBlocks(db);
   const openQuestions = listOpenQuestions(db);

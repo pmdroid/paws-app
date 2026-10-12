@@ -6,6 +6,7 @@ import {
   type StartedLinearSession,
 } from "../session-start";
 import { processCsrfToken } from "./github-auth";
+import { dashboardOrigin } from "./request-origin";
 
 export type StartLinearSession = (
   target: LinearSessionTarget,
@@ -18,17 +19,12 @@ export async function handleSessionStartRequest(
   options: {
     startLinearSession?: StartLinearSession;
     csrfToken?: string;
+    trustedOrigin?: string;
   },
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== LINEAR_SESSION_API_PATH) return null;
-  if (
-    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
-    (request.headers.has("host") &&
-      request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase()) ||
-    (request.headers.has("origin") && request.headers.get("origin") !== url.origin) ||
-    request.headers.get("sec-fetch-site") === "cross-site"
-  )
+  if (!dashboardOrigin(request, options.trustedOrigin))
     return json({ error: "Start sessions from the local Paws dashboard." }, 403);
   if (request.method === "GET")
     return json({ available: options.startLinearSession !== undefined });
