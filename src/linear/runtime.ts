@@ -8,6 +8,7 @@ import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { createLinearClient } from "./graphql";
+import { createLinearIssueLifecycle, type LinearIssueLifecycle } from "./issue-lifecycle";
 import { createInboxStore } from "./inbox";
 import {
   createLinearAuth,
@@ -38,6 +39,7 @@ export type OpenLinear = {
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
   files: LinearFileTransfer | null;
+  issueLifecycle: LinearIssueLifecycle | null;
   start(port: number): LinearRunning;
 };
 
@@ -77,6 +79,7 @@ export function openLinear(options: {
   });
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
   const tracker = client === null ? null : createLinearTracker(client);
+  const issueLifecycle = client === null ? null : createLinearIssueLifecycle(client);
   const files =
     client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
   const onEvent =
@@ -86,6 +89,7 @@ export function openLinear(options: {
     webhook: { store, onEvent },
     tracker,
     files,
+    issueLifecycle,
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
