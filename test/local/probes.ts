@@ -30,6 +30,7 @@ import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
+import { probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
 
 export async function probeBoundaries(
@@ -64,6 +65,7 @@ export async function probeBoundaries(
       log: "linux-release-verification.log",
     },
   );
+  await probeRunnerPairing(join(root, "runner-pairing"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
