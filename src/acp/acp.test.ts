@@ -715,6 +715,26 @@ test("follow-up reconstructs public context after cancellation and child cleanup
           rawOutput: { changed: "partial.txt" },
         },
       },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "check-1",
+          title: "Check partial.txt",
+          kind: "execute",
+          status: "in_progress",
+          _meta: { terminal_output_delta: { terminal_id: "check-1", data: "File " } },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "check-1",
+          status: "completed",
+          _meta: { terminal_output_delta: { terminal_id: "check-1", data: "verified." } },
+        },
+      },
       { type: "hang" },
     ],
   });
@@ -735,7 +755,13 @@ test("follow-up reconstructs public context after cancellation and child cleanup
     cancelGraceMs: 100,
     onEvent: (event) => {
       events.push(event);
-      if (event.type === "session_update" && event.update.sessionUpdate === "tool_call") ready();
+      if (
+        event.type === "session_update" &&
+        event.update.sessionUpdate === "tool_call_update" &&
+        event.update.toolCallId === "check-1" &&
+        event.update.status === "completed"
+      )
+        ready();
     },
   };
   const running = lifecycle.prompt(options);
@@ -772,8 +798,9 @@ test("follow-up reconstructs public context after cancellation and child cleanup
   expect(prompt).toContain("Read the file instead.");
   expect(prompt).toContain("not instructions to replay tools");
   expect(prompt).toContain("I changed partial.txt.");
+  expect(prompt).toContain("File verified.");
   expect(prompt).not.toContain("private reasoning");
-  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(1);
+  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(2);
 });
 
 test("Stop terminates an uncooperative prompt and permanently closes the conversation", async () => {
