@@ -120,7 +120,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-verifier": ["runner-check"],
   "runner-repositories": ["github", "runner-protocol"],
   process: [],
-  "runner-worker": ["acp", "runner-execution", "runner-answers", "install"],
+  "runner-worker": ["acp", "runner-execution", "runner-answers", "install", "runner-protocol"],
   "runner-answers": ["runner-execution"],
   "runner-control": ["db", "workspace", "runner-identity"],
   "runner-daemon": [
