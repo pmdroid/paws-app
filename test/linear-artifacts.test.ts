@@ -6,6 +6,7 @@ import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
 import {
   artifactPublicationReady,
   claimOutboxHeads,
+  completeOutbox,
   enqueueOutbox,
   insertQueuedItem,
   listArtifacts,
@@ -243,7 +244,7 @@ test("a pending artifact link survives final response and is delivered first", a
 });
 
 test.each([false, true])(
-  "exhausted artifact delivery cannot trap the final response, final already queued: %s",
+  "exhausted artifact delivery cannot trap completion, final already queued: %s",
   async (finalAlreadyQueued) => {
     const env = setup();
     try {
@@ -265,8 +266,18 @@ test.each([false, true])(
       dispatcher.tick();
       await dispatcher.idle();
       if (!finalAlreadyQueued) final();
+      enqueueOutbox(env.db, {
+        target: "linear",
+        op: "status",
+        orderingKey: "session",
+        idempotencyKey: "completed-status",
+        payload: { sessionId: "session", stateType: "completed" },
+      });
       expect(listOutbox(env.db, "session")[0]?.status).toBe("dead");
-      expect(claimOutboxHeads(env.db)[0]?.idempotencyKey).toBe("final");
+      const response = claimOutboxHeads(env.db)[0]!;
+      expect(response.idempotencyKey).toBe("final");
+      expect(completeOutbox(env.db, response)).toBe(true);
+      expect(claimOutboxHeads(env.db)[0]?.idempotencyKey).toBe("completed-status");
     } finally {
       env.db.close();
     }

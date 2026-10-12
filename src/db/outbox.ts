@@ -149,7 +149,7 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
              AND terminal.ordering_key = o.ordering_key
              AND terminal.delivery_generation = o.delivery_generation
              AND terminal.delivery_kind IN ('terminal', 'stop')
-             AND terminal.status = 'pending' AND terminal.priority <= o.priority
+             AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
          ))
      )
      UPDATE outbox SET locked_by = ?, locked_until = ?, attempts = attempts + 1
