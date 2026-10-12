@@ -14,4 +14,8 @@ export {
 export type { WorkspacePrincipal } from "./session";
 export { createWorkspaceAccess } from "./access";
 export type { WorkspaceAccess, WorkspaceAccessOptions } from "./access";
-export { createWorkspaceAccessFromLinear, issueVerifiedWorkspaceBootstrap } from "./runtime";
+export {
+  createWorkspaceAccessFromLinear,
+  issueVerifiedWorkspaceBootstrap,
+  startWorkspaceAccess,
+} from "./runtime";

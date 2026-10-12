@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { probeWorkspaceAccess } from "./workspace-access";
 import { probeWorkspaceBrowser } from "./workspace-browser";
+import { probeWorkspaceRefresh } from "./workspace-refresh";
 import { probeWorkspaceAuthorization } from "./workspace-authorization";
 
 const root = process.env.PAWS_VERIFY_ROOT;
@@ -13,6 +14,10 @@ try {
     console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
   });
   await probeWorkspaceBrowser(join(root, "workspace-browser"), (name, passed, observed) => {
+    observations.push({ name, passed, observed });
+    console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
+  });
+  await probeWorkspaceRefresh(join(root, "workspace-refresh"), (name, passed, observed) => {
     observations.push({ name, passed, observed });
     console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
   });
