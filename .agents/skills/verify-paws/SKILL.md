@@ -13,7 +13,7 @@ Read `AGENTS.md`, `package.json`, `scripts/verify-local.ts`, `test/local/instanc
 
 ## Run
 
-Use Linux with Bun 1.4.2+, Git and GNU `timeout` available. From the repository root, use a tracked background task:
+Use Linux with Bun 1.4.2+, Git, Python 3, OpenSSL 3 and GNU `timeout` available. From the repository root, use a tracked background task:
 
 ```sh
 bun --no-env-file scripts/verify-local.ts check
@@ -43,6 +43,7 @@ bun --no-env-file scripts/verify-local.ts serve
 
 - Linear tracker and comment adapters against local fakes; a Linear epic with two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
+- Exact Ed25519-signed Linux release manifests and SHA-256 artifact verification. Ephemeral signing fixtures exercise wrong keys, unsigned or modified content, platform/version fields, duplicate paths, archive traversal, links and unsafe modes. Inspect `linux-release-verification.log`.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
 - Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. Check final main content, not just fake merge calls.
