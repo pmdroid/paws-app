@@ -12,13 +12,14 @@ export const WORK_ITEM_STATES = [
   "awaiting_signoff",
   "merge_queue",
   "manual",
+  "completed",
   "merged",
   "cancelled",
 ] as const;
 
 export type WorkItemState = (typeof WORK_ITEM_STATES)[number];
 
-export const TERMINAL_WORK_ITEM_STATES = ["merged", "cancelled"] as const;
+export const TERMINAL_WORK_ITEM_STATES = ["completed", "merged", "cancelled"] as const;
 
 export type TerminalWorkItemState = (typeof TERMINAL_WORK_ITEM_STATES)[number];
 
@@ -53,6 +54,8 @@ export const WORK_ITEM_EVENTS = [
   "requeue",
   "take_over",
   "human_completed",
+  "answer_completed",
+  "artifact_completed",
   "cancel",
 ] as const;
 
@@ -87,7 +90,7 @@ export const EPIC_EVENTS = [
 export type EpicEvent = (typeof EPIC_EVENTS)[number];
 
 export function isTerminalWorkItemState(state: WorkItemState): state is TerminalWorkItemState {
-  return state === "merged" || state === "cancelled";
+  return state === "completed" || state === "merged" || state === "cancelled";
 }
 
 export function isTerminalEpicState(state: EpicState): state is TerminalEpicState {

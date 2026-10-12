@@ -18,12 +18,15 @@ const parent: EpicSnapshot = {
 };
 
 describe("intake", () => {
-  test("migration 002 names every epic and work-item state", () => {
-    const migration = migrations.find((item) => item.id === "002_inbox_intake");
-    expect(migration).toBeDefined();
-    for (const state of EPIC_STATES) expect(migration?.sql).toContain(`'${state}'`);
-    for (const state of WORK_ITEM_STATES) expect(migration?.sql).toContain(`'${state}'`);
+  test("the migrated schema accepts every epic and work-item state", () => {
+    const db = tempDb();
+    const schema = (name: string) =>
+      db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE name = ?").get(name)
+        ?.sql;
+    for (const state of EPIC_STATES) expect(schema("epic")).toContain(`'${state}'`);
+    for (const state of WORK_ITEM_STATES) expect(schema("work_item")).toContain(`'${state}'`);
     expect(migrations[0]?.id).toBe("001_jobs_outbox");
+    db.close();
   });
 
   test("orders a parent by a blocks edge and keeps the original tie break", async () => {

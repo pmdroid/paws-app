@@ -34,11 +34,22 @@ export type GitHubTokenStore = {
   readonly warning: string | null;
   load(): Promise<StoredGitHubOAuth | null>;
   save(token: StoredGitHubOAuth): Promise<void>;
+  update(change: (current: StoredGitHubOAuth | null) => StoredGitHubOAuth | null): Promise<boolean>;
   markInvalid(): Promise<void>;
   delete(): Promise<void>;
 };
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+let tokenWrite: Promise<unknown> = Promise.resolve();
+
+function serializeTokenWrite<T>(write: () => Promise<T>): Promise<T> {
+  const pending = tokenWrite.then(write);
+  tokenWrite = pending.then(
+    () => undefined,
+    () => undefined,
+  );
+  return pending;
+}
 
 export function githubOAuthPath(home: string): string {
   return join(pawsPaths(home).secretsDir, OAUTH_FILE_NAME);
@@ -63,21 +74,28 @@ export function createTokenStore(options: {
       return store.backend === "file" ? FILE_TOKEN_STORE_DOCTOR_WARNING : null;
     },
     load: () => loadToken(options.home, store.backend, run),
-    async save(token) {
-      try {
-        await saveToken(options.home, store.backend, run, token);
-      } catch (error) {
-        if (!(error instanceof SecretServiceUnavailableError)) throw error;
-        await saveToken(options.home, "file", run, token);
-        backend = "file";
-      }
-    },
+    save: (token) => serializeTokenWrite(() => persist(token)),
+    update: (change) =>
+      serializeTokenWrite(async () => {
+        const next = change(await store.load());
+        if (next === null) return false;
+        await persist(next);
+        return true;
+      }),
     async markInvalid() {
-      const current = await store.load();
-      if (current !== null) await store.save({ ...current, invalid: true });
+      await store.update((current) => (current === null ? null : { ...current, invalid: true }));
     },
-    delete: () => deleteToken(options.home, preferred, run),
+    delete: () => serializeTokenWrite(() => deleteToken(options.home, preferred, run)),
   };
+  async function persist(token: StoredGitHubOAuth): Promise<void> {
+    try {
+      await saveToken(options.home, store.backend, run, token);
+    } catch (error) {
+      if (!(error instanceof SecretServiceUnavailableError)) throw error;
+      await saveToken(options.home, "file", run, token);
+      backend = "file";
+    }
+  }
   return store;
 }
 

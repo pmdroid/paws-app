@@ -343,6 +343,26 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         blocked ? "Rejected by the persisted session fence." : null,
       );
     if (
+      inserted &&
+      !blocked &&
+      row.orderingKey &&
+      row.target === "linear" &&
+      delivery === "progress" &&
+      (row.op === "activity" || row.op === "linear.activity") &&
+      (row.payload as { ephemeral?: boolean })?.ephemeral === true &&
+      ["thought", "action"].includes((row.payload as { kind?: string })?.kind ?? "")
+    ) {
+      db.run(
+        `UPDATE outbox SET status = 'dropped', error = 'Superseded by newer ephemeral progress.'
+        WHERE target = ? AND ordering_key = ? AND delivery_generation = ? AND id < ?
+          AND status = 'pending' AND attempts = 0 AND locked_by IS NULL
+          AND delivery_kind = 'progress' AND op IN ('activity', 'linear.activity')
+          AND json_extract(payload, '$.ephemeral') = 1
+          AND json_extract(payload, '$.kind') IN ('thought', 'action')`,
+        [row.target, row.orderingKey, generation, inserted.id],
+      );
+    }
+    if (
       !inserted ||
       blocked ||
       !row.orderingKey ||

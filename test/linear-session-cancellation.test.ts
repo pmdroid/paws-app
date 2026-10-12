@@ -58,8 +58,10 @@ describe("Linear adapter cancellation", () => {
       },
     };
     const pending = invoke(createLinearTracker(client), { signal: controller.signal });
-    expect(requestSignal).toBe(controller.signal);
+    expect(requestSignal).toBeDefined();
     controller.abort(new Error("stopped"));
+    expect(requestSignal?.aborted).toBe(true);
+    expect(requestSignal?.reason).toBe(controller.signal.reason);
     await expect(pending).rejects.toThrow("stopped");
   });
 

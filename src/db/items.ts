@@ -17,6 +17,7 @@ import { immediate } from "./tx";
 
 export type WorkItemRecord = {
   id: string;
+  taskKey?: string | null;
   epicId: string;
   linearIssueId: string;
   linearIdentifier: string;
@@ -40,6 +41,7 @@ export type WorkItemRecord = {
 
 type ItemSql = {
   id: string;
+  task_key: string | null;
   epic_id: string;
   linear_issue_id: string;
   linear_identifier: string;
@@ -188,7 +190,12 @@ export function recordTurn(
   return immediate(db, () => {
     const current = getWorkItem(db, id);
     if (current === null) throw new Error(`work item ${id} not found`);
-    if (current.state === "failed" || current.state === "cancelled" || current.state === "merged") {
+    if (
+      current.state === "failed" ||
+      current.state === "cancelled" ||
+      current.state === "merged" ||
+      current.state === "completed"
+    ) {
       return { capped: current.cancelRequested, item: current };
     }
     db.run("UPDATE work_item SET turn_count = turn_count + 1 WHERE id = ?", [id]);
@@ -313,6 +320,7 @@ function failureEvent(state: WorkItemState): WorkItemEvent | null {
 function mapItem(row: ItemSql): WorkItemRecord {
   return {
     id: row.id,
+    taskKey: row.task_key,
     epicId: row.epic_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,

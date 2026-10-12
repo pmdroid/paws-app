@@ -10,6 +10,7 @@ export async function authorizeGitHubApp(input: {
   fetch?: DeviceFetch;
   port?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<DeviceGrant> {
   if (missingGitHubClientId(input.clientId) || !input.clientSecret)
     throw new Error("GitHub App client ID and client secret are required.");
@@ -108,6 +109,9 @@ export async function authorizeGitHubApp(input: {
       ),
     input.timeoutMs ?? 5 * 60_000,
   );
+  const cancel = () => result.reject(new Error("GitHub authorization was cancelled."));
+  input.signal?.addEventListener("abort", cancel, { once: true });
+  if (input.signal?.aborted) cancel();
   try {
     const [grant] = await Promise.all([
       result.promise,
@@ -115,6 +119,7 @@ export async function authorizeGitHubApp(input: {
     ]);
     return grant;
   } finally {
+    input.signal?.removeEventListener("abort", cancel);
     clearTimeout(timeout);
     abort.abort();
     await server.stop();

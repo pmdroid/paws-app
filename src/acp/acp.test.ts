@@ -252,10 +252,18 @@ test("fake agent streams events, guards permissions, and checkpoints", async () 
   expect(transcript).toContain("hello from agent");
 }, 20_000);
 
-test("ask_team hook is invoked through the injected MCP tool", async () => {
+test.each([
+  { options: ["yes", "no"] },
+  {
+    options: [
+      { label: "Include archived", value: "yes" },
+      { label: "Exclude archived", value: "no" },
+    ],
+  },
+])("ask_team preserves choices through the injected MCP tool: %j", async ({ options }) => {
   const layout = await layoutRepo();
   const script: FakeScript = {
-    steps: [{ type: "ask_team", question: "Include archived rows?", options: ["yes", "no"] }],
+    steps: [{ type: "ask_team", question: "Include archived rows?", options }],
   };
   const files = await writeScript(layout.root, script);
   const result = await runAgent({
@@ -272,7 +280,7 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
     askTeam: {
       async ask(request) {
         expect(request.question).toBe("Include archived rows?");
-        expect(request.options).toEqual(["yes", "no"]);
+        expect(request.options).toEqual(options);
         return { answer: "yes" };
       },
     },
@@ -285,6 +293,57 @@ test("ask_team hook is invoked through the injected MCP tool", async () => {
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
 });
+
+for (const capability of ["image", "embeddedContext", "fallback"] as const) {
+  test(`agent input files use negotiated ${capability} prompt content`, async () => {
+    const layout = await layoutRepo();
+    const inputPath = join(layout.worktree, "input.png");
+    await writeFile(inputPath, "image bytes");
+    const files = await writeScript(layout.root, {
+      promptCapabilities:
+        capability === "image"
+          ? { image: true }
+          : capability === "embeddedContext"
+            ? { embeddedContext: true }
+            : {},
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: `input-${capability}`,
+      prompt: "Describe the input.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+      checkpoint: false,
+      inputFiles: [
+        { path: inputPath, mimeType: "image/png", bytes: new TextEncoder().encode("image bytes") },
+      ],
+    });
+    expect(result.stopReason).toBe("end_turn");
+    const trace = await readResult(files.resultPath);
+    const prompt = trace.prompts?.[0] as Array<Record<string, unknown>>;
+    expect(prompt[0]).toEqual({ type: "text", text: "Describe the input." });
+    expect(prompt[1]).toEqual({ type: "text", text: "Input file: ./input.png (image/png)" });
+    expect(prompt).toHaveLength(capability === "fallback" ? 2 : 3);
+    if (capability === "image")
+      expect(prompt[2]).toMatchObject({
+        type: "image",
+        data: Buffer.from("image bytes").toString("base64"),
+        mimeType: "image/png",
+      });
+    if (capability === "embeddedContext")
+      expect(prompt[2]).toMatchObject({
+        type: "resource",
+        resource: { blob: Buffer.from("image bytes").toString("base64"), mimeType: "image/png" },
+      });
+    expect(JSON.stringify(prompt)).not.toContain("uploads.linear.app");
+  });
+}
 
 test("publish_artifact publishes a snapshot through MCP without an ask_team hook", async () => {
   const layout = await layoutRepo();
@@ -329,7 +388,7 @@ test("publish_artifact publishes a snapshot through MCP without an ask_team hook
   expect(trace.tools).toEqual(["publish_artifact"]);
   expect(trace.artifact).toEqual({
     ok: true,
-    text: "[shot\\[1\\].png](<https://uploads.example/asset.png>)",
+    text: "![shot\\[1\\].png](<https://uploads.example/asset.png>)",
   });
 });
 
@@ -656,6 +715,26 @@ test("follow-up reconstructs public context after cancellation and child cleanup
           rawOutput: { changed: "partial.txt" },
         },
       },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "check-1",
+          title: "Check partial.txt",
+          kind: "execute",
+          status: "in_progress",
+          _meta: { terminal_output_delta: { terminal_id: "check-1", data: "File " } },
+        },
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "check-1",
+          status: "completed",
+          _meta: { terminal_output_delta: { terminal_id: "check-1", data: "verified." } },
+        },
+      },
       { type: "hang" },
     ],
   });
@@ -676,7 +755,13 @@ test("follow-up reconstructs public context after cancellation and child cleanup
     cancelGraceMs: 100,
     onEvent: (event) => {
       events.push(event);
-      if (event.type === "session_update" && event.update.sessionUpdate === "tool_call") ready();
+      if (
+        event.type === "session_update" &&
+        event.update.sessionUpdate === "tool_call_update" &&
+        event.update.toolCallId === "check-1" &&
+        event.update.status === "completed"
+      )
+        ready();
     },
   };
   const running = lifecycle.prompt(options);
@@ -713,8 +798,9 @@ test("follow-up reconstructs public context after cancellation and child cleanup
   expect(prompt).toContain("Read the file instead.");
   expect(prompt).toContain("not instructions to replay tools");
   expect(prompt).toContain("I changed partial.txt.");
+  expect(prompt).toContain("File verified.");
   expect(prompt).not.toContain("private reasoning");
-  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(1);
+  expect(lifecycle.snapshot().filter((entry) => entry.kind === "tool_result")).toHaveLength(2);
 });
 
 test("Stop terminates an uncooperative prompt and permanently closes the conversation", async () => {

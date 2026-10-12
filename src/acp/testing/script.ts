@@ -1,3 +1,4 @@
+import type { AskTeamOption } from "../ask-team";
 export interface FakeToolCall {
   toolCallId: string;
   title?: string;
@@ -14,13 +15,19 @@ export interface FakePermissionOption {
 }
 
 export type FakeStep =
-  | { type: "update"; update: Record<string, unknown> }
+  | { type: "update"; update: Record<string, unknown>; delayMs?: number }
   | { type: "permission"; toolCall: FakeToolCall; options?: FakePermissionOption[] }
   | { type: "fs_read"; path: string }
   | { type: "fs_write"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
-  | { type: "ask_team"; question: string; options?: string[]; context?: string }
-  | { type: "publish_artifact"; path: string; displayName?: string; mimeType?: string }
+  | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
+  | {
+      type: "publish_artifact";
+      path: string;
+      displayName?: string;
+      mimeType?: string;
+      attachToIssue?: boolean;
+    }
   | { type: "hang" }
   | {
       type: "end";
@@ -28,6 +35,7 @@ export type FakeStep =
     };
 
 export interface FakeScript {
+  promptCapabilities?: { image?: boolean; embeddedContext?: boolean };
   sessionId?: string;
   model?: string | null;
   models?: string[];

@@ -1,6 +1,7 @@
 export type Migration = {
   id: string;
   sql: string;
+  foreignKeys?: false;
 };
 
 /**
@@ -321,6 +322,410 @@ CREATE TABLE github_delivery (
   event TEXT NOT NULL,
   payload TEXT NOT NULL,
   received_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
+  {
+    id: "011_linear_session_context",
+    sql: `
+CREATE TABLE linear_session_context (
+  session_id TEXT PRIMARY KEY,
+  context TEXT NOT NULL,
+  richness INTEGER NOT NULL,
+  snapshot_context TEXT
+) STRICT;
+CREATE TABLE linear_activity_snapshot (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  snapshot TEXT NOT NULL CHECK (json_valid(snapshot))
+) STRICT;
+CREATE INDEX linear_activity_session ON linear_activity_snapshot (session_id, created_at, id);
+`,
+  },
+  {
+    id: "012_linear_task_identity",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE epic_task_identity (
+  id TEXT PRIMARY KEY,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'awaiting_plan_approval',
+    'running',
+    'stalled',
+    'done',
+    'cancelled'
+  )),
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO epic_task_identity SELECT id,linear_issue_id,linear_identifier,title,state,version,'initial:' || linear_issue_id,created_at FROM epic;
+DROP TABLE epic;
+ALTER TABLE epic_task_identity RENAME TO epic;
+CREATE TABLE work_item_task_identity (
+  id TEXT PRIMARY KEY,
+  epic_id TEXT NOT NULL REFERENCES epic (id),
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'exhausted',
+    'failed',
+    'awaiting_signoff',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief))
+) STRICT;
+INSERT INTO work_item_task_identity SELECT id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,version,'initial:' || linear_issue_id,created_at,checkpoint,recovery_attempts,awake_ms,last_mono_ms,turn_count,max_turns,max_awake_ms,cancel_requested,session_key,current_run_id,brief FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_task_identity RENAME TO work_item;
+CREATE INDEX work_item_epic_position ON work_item (epic_id, position);
+CREATE TABLE linear_session (
+  session_id TEXT PRIMARY KEY,
+  issue_id TEXT,
+  organization_id TEXT,
+  app_user_id TEXT,
+  creator_id TEXT,
+  current_epic_id TEXT REFERENCES epic(id),
+  active_item_id TEXT REFERENCES work_item(id),
+  generation INTEGER NOT NULL DEFAULT 0,
+  stopped_at INTEGER,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE linear_session_task (
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  epic_id TEXT NOT NULL UNIQUE REFERENCES epic(id),
+  owner_actor_id TEXT,
+  PRIMARY KEY (session_id, epic_id)
+) STRICT;
+CREATE TABLE linear_turn (
+  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_key TEXT NOT NULL UNIQUE,
+  activity_id TEXT UNIQUE,
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  actor_id TEXT,
+  body TEXT NOT NULL,
+  payload TEXT NOT NULL CHECK (json_valid(payload)),
+  created_at_ms INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  item_id TEXT REFERENCES work_item(id),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','applied','cancelled'))
+) STRICT;
+CREATE INDEX linear_turn_pending ON linear_turn(session_id,state,created_at_ms,ordinal);
+INSERT INTO linear_session (session_id, issue_id, current_epic_id, active_item_id, generation, created_at)
+SELECT session_key, linear_issue_id, epic_id, id, generation, created_at FROM (
+  SELECT w.session_key, e.linear_issue_id, w.epic_id, w.id, COALESCE(f.generation,0) AS generation, w.created_at,
+    ROW_NUMBER() OVER (PARTITION BY w.session_key ORDER BY CASE
+      WHEN w.state NOT IN ('queued','merged','cancelled','completed') THEN 0
+      WHEN w.state = 'queued' THEN 1 ELSE 2 END, w.position, w.created_at, w.id) AS route_rank
+  FROM work_item w JOIN epic e ON e.id = w.epic_id
+  LEFT JOIN outbox_session_fence f ON f.target = 'linear' AND f.ordering_key = w.session_key
+  WHERE w.session_key IS NOT NULL AND w.linear_issue_id NOT LIKE 'github:%'
+    AND e.linear_issue_id NOT LIKE 'github:%' AND w.session_key != w.linear_issue_id
+    AND w.session_key != e.linear_issue_id
+) WHERE route_rank = 1;
+INSERT INTO linear_session_task (session_id,epic_id) SELECT session_id,current_epic_id FROM linear_session;
+`,
+  },
+  {
+    id: "015_work_item_task",
+    sql: `
+CREATE TABLE work_item_task (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  mode TEXT NOT NULL CHECK (mode IN ('code', 'answer', 'artifact')),
+  response TEXT
+) STRICT;
+`,
+  },
+  {
+    id: "014_linear_artifacts",
+    sql: `
+CREATE TABLE linear_artifact (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  run_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  request_version INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'uploaded', 'failed')),
+  asset_url TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE(item_id, path, display_name, mime_type, sha256)
+) STRICT;
+`,
+  },
+  {
+    id: "015_linear_inputs",
+    sql: `
+CREATE TABLE linear_input (
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  asset_url TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  PRIMARY KEY(session_id, turn_id, asset_id)
+) STRICT;
+`,
+  },
+  {
+    id: "017_task_mode_generation",
+    sql: `ALTER TABLE work_item_task ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;`,
+  },
+  {
+    id: "016_task_request",
+    sql: `
+CREATE TABLE task_request (
+  task_key TEXT PRIMARY KEY,
+  classification TEXT NOT NULL CHECK (json_valid(classification))
+) STRICT;
+`,
+  },
+  {
+    id: "018_acp_conversation",
+    sql: `CREATE TABLE linear_conversation (
+      item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+      entries TEXT NOT NULL CHECK(json_valid(entries)),
+      transcript TEXT,
+      transcript_offset INTEGER NOT NULL DEFAULT 0,
+      blocked INTEGER NOT NULL DEFAULT 0 CHECK(blocked IN (0,1))
+    ) STRICT;`,
+  },
+  {
+    id: "019_linear_turn_announcements",
+    sql: "ALTER TABLE linear_turn ADD COLUMN announced_generation INTEGER;",
+  },
+  {
+    id: "020_linear_stop_receipts",
+    sql: `CREATE TABLE linear_stop_receipt (
+      session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+      event_key TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY(session_id,event_key)
+    ) STRICT;`,
+  },
+  {
+    id: "021_linear_session_cleanup_block",
+    sql: `CREATE TABLE linear_session_cleanup_block (
+      session_id TEXT PRIMARY KEY REFERENCES linear_session(session_id)
+    ) STRICT;`,
+  },
+  {
+    id: "011_work_item_repository",
+    sql: `
+CREATE TABLE work_item_repository (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  remote_url TEXT NOT NULL
+) STRICT;
+`,
+  },
+  {
+    id: "012_repository_question",
+    sql: `
+CREATE TABLE work_item_repository_question (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  question_id TEXT NOT NULL REFERENCES question(id),
+  candidates TEXT NOT NULL CHECK (json_valid(candidates))
+) STRICT;
+`,
+  },
+  {
+    id: "021_task_repository_context",
+    sql: "ALTER TABLE work_item_task ADD COLUMN repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1));",
+  },
+  {
+    id: "018_linear_artifact_attempts",
+    sql: `
+ALTER TABLE linear_artifact ADD COLUMN identity_hash TEXT;
+CREATE TABLE linear_artifact_attempt (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  identity_hash TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  completed_version INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(item_id, identity_hash)
+) STRICT;
+`,
+  },
+  {
+    id: "019_linear_artifact_cards",
+    sql: `ALTER TABLE linear_artifact_attempt ADD COLUMN attachment_requested INTEGER NOT NULL DEFAULT 0 CHECK (attachment_requested IN (0, 1));`,
+  },
+  {
+    id: "011_linear_question_lifecycle",
+    sql: `
+ALTER TABLE question ADD COLUMN cancelled_at INTEGER;
+ALTER TABLE question ADD COLUMN answer_event_key TEXT;
+UPDATE question SET cancelled_at = created_at
+WHERE status = 'open' AND (
+  item_id IN (SELECT id FROM work_item WHERE state IN ('cancelled', 'merged', 'failed'))
+  OR EXISTS (
+    SELECT 1 FROM question newer
+    WHERE newer.session_id = question.session_id AND newer.status = 'open'
+      AND (newer.created_at > question.created_at
+        OR (newer.created_at = question.created_at AND newer.id > question.id))
+  )
+);
+CREATE UNIQUE INDEX question_one_active_session ON question (session_id)
+WHERE status = 'open' AND cancelled_at IS NULL;
+CREATE UNIQUE INDEX question_answer_event ON question (session_id, answer_event_key)
+WHERE answer_event_key IS NOT NULL;
+`,
+  },
+  {
+    id: "013_linear_installation_access",
+    sql: `
+ALTER TABLE linear_session ADD COLUMN oauth_client_id TEXT;
+ALTER TABLE linear_session ADD COLUMN team_id TEXT;
+ALTER TABLE linear_session ADD COLUMN installation_observed_at INTEGER;
+CREATE TABLE linear_app_revocation (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  revoked_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id)
+) STRICT;
+CREATE TABLE linear_team_access (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id, app_user_id, team_id)
+) STRICT;
+CREATE TABLE linear_installation_permission (
+  organization_id TEXT NOT NULL,
+  oauth_client_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  all_public_teams INTEGER NOT NULL CHECK (all_public_teams IN (0, 1)),
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (organization_id, oauth_client_id, app_user_id)
+) STRICT;
+CREATE TABLE linear_access_event (
+  event_key TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
+  {
+    id: "014_linear_verified_reconnect",
+    sql: `
+ALTER TABLE linear_app_revocation ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE linear_app_revocation ADD COLUMN restored_after INTEGER;
+ALTER TABLE linear_app_revocation ADD COLUMN restored_credential_fingerprint TEXT;
+`,
+  },
+  {
+    id: "012_linear_github_auth",
+    sql: `
+CREATE TABLE linear_github_auth (
+  question_id TEXT PRIMARY KEY REFERENCES question(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  actor_id TEXT NOT NULL,
+  github_account_id INTEGER,
+  phase TEXT NOT NULL CHECK (phase IN ('initial', 'publication')),
+  generation INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'verified', 'expired', 'revoked')),
+  expires_at INTEGER NOT NULL,
+  verified_at INTEGER
+) STRICT;
+CREATE INDEX linear_github_auth_pending ON linear_github_auth (item_id, status);
+`,
+  },
+  {
+    id: "017_linear_task_delegation",
+    sql: `
+CREATE TABLE linear_task_delegation (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  issue_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  human_actor_id TEXT,
+  PRIMARY KEY (item_id, issue_id)
+) STRICT;
+`,
+  },
+  {
+    id: "018_remote_merge_fact",
+    sql: `
+CREATE TABLE remote_merge_fact (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  repository_owner TEXT NOT NULL CHECK (length(repository_owner) > 0),
+  repository_name TEXT NOT NULL CHECK (length(repository_name) > 0),
+  pull_number INTEGER NOT NULL CHECK (pull_number > 0),
+  pull_url TEXT,
+  merge_sha TEXT,
+  confirmed_at INTEGER NOT NULL CHECK (confirmed_at >= 0)
+) STRICT;
+`,
+  },
+  {
+    id: "019_linear_auth_session_generation",
+    sql: `
+ALTER TABLE linear_github_auth ADD COLUMN session_generation INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  {
+    id: "020_linear_github_task_account",
+    sql: `
+CREATE TABLE linear_github_task_account (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  account_id INTEGER NOT NULL CHECK (account_id > 0),
+  login TEXT NOT NULL,
+  verified_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
+  {
+    id: "022_work_item_repository_choice",
+    sql: "ALTER TABLE work_item_repository_question ADD COLUMN chosen_repository TEXT CHECK(chosen_repository IS NULL OR json_valid(chosen_repository));",
+  },
+  {
+    id: "021_linear_issue_context",
+    sql: `
+CREATE TABLE linear_issue_context (
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  issue_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  context TEXT NOT NULL,
+  PRIMARY KEY (session_id,issue_id)
 ) STRICT;
 `,
   },

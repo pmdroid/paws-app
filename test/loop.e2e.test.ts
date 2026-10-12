@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,12 +13,18 @@ import { createCommentMode, createFakeCommentBoard, withCommentActivities } from
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
+  bindWorkItemRepository,
+  getWorkItemRepository,
+  listWorkItems,
   OutboxDispatcher,
   getWorkItem,
+  getConfirmedRemoteMerge,
   enqueueJob,
+  recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
   listRuns,
+  listArtifacts,
   migrate,
   openDatabase,
 } from "../src/db";
@@ -30,12 +36,21 @@ import {
   type GitHubResponse,
   type GitHubTokenProvider,
 } from "../src/github";
-import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
+import {
+  createFakeTracker,
+  createFakeLinearAccessReads,
+  createFakeLinearIssueLifecycle,
+  parseAgentEvent,
+  createLinearFileTransfer,
+  type AcceptedLinearEvent,
+} from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import {
   attachOrchestrator,
+  itemPathId,
   createAcpCodexReviewer,
   KEEPALIVE_MS,
+  LinearTaskAccess,
   type AgentLaunch,
 } from "../src/loop";
 
@@ -48,14 +63,15 @@ const { privateKey } = generateKeyPairSync("rsa", {
 });
 const PRIVATE_KEY = privateKey as string;
 
-test("a two-item epic asks once, fixes one rejection, and merges in blocks order", async () => {
+test("a bound two-item epic asks, verifies and merges in its repository after the default changes", async () => {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
       identifier: "ENG-1",
       title: "Add CSV export",
-      description: null,
+      description:
+        "Design: ![diagram](https://uploads.linear.app/workspace/input.png?signature=expires)",
       subIssues: [
         { linearIssueId: "iss-2", identifier: "ENG-2", title: "Export rows" },
         { linearIssueId: "iss-3", identifier: "ENG-3", title: "Export the header" },
@@ -71,15 +87,27 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
   const outbox = new OutboxDispatcher(db, systemClock);
   const results = new Map<string, string>();
   let scripts = 0;
+  const implementationLaunches: string[] = [];
+  const repository = { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare };
+  const selectedRepositories: unknown[] = [];
   const launch: AgentLaunch = (input) => {
+    if (input.purpose === "implement") implementationLaunches.push(sourceIdentifier(input.itemId));
     scripts += 1;
     const scriptPath = path.join(layout.root, `script-${scripts}.json`);
     const resultPath = path.join(layout.root, `result-${scripts}.json`);
-    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    results.set(`${input.purpose}:${sourceIdentifier(input.itemId)}`, resultPath);
     writeFileSync(
       scriptPath,
       JSON.stringify({
-        ...scriptFor(input),
+        ...(() => {
+          const script = scriptFor(input);
+          if (input.purpose === "implement" && sourceIdentifier(input.itemId) === "ENG-2")
+            script.steps.splice(script.steps.length - 1, 0, {
+              type: "publish_artifact",
+              path: "ok.txt",
+            });
+          return script;
+        })(),
         model:
           input.profile?.agent === "codex" || input.role === "reviewer"
             ? "test-codex-model"
@@ -92,6 +120,42 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
       env: process.env,
     };
   };
+  let uploadedDuringCode = false;
+  let inputDownloads = 0;
+  const artifactFiles = createLinearFileTransfer({
+    client: {
+      async query() {
+        return {
+          fileUpload: {
+            success: true,
+            uploadFile: {
+              uploadUrl: "https://storage.example/upload?signature=host-only",
+              assetUrl: "https://uploads.linear.app/workspace/result",
+              headers: [],
+            },
+          },
+        };
+      },
+    },
+    auth: {
+      async ensureFresh() {
+        return "host-only";
+      },
+    },
+    fetch: async (_url, request) => {
+      if (request?.method !== "PUT") {
+        inputDownloads++;
+        return new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-type": "image/png" },
+        });
+      }
+      expect(stateOf(db, "ENG-2")).toBe("running");
+      expect(github.opened).toHaveLength(0);
+      expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+      uploadedDuringCode = true;
+      return new Response(null, { status: 200 });
+    },
+  });
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -99,12 +163,14 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     pawsRoot: layout.pawsRoot,
     home: layout.home,
     tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: PRIVATE_KEY,
-      client,
+    linearTaskModes: true,
+    files: artifactFiles,
+    secretsDir: path.join(layout.pawsRoot, "secrets"),
+    repository: { owner: "other", repo: "wrong", remoteUrl: path.join(layout.root, "wrong.git") },
+    githubForRepository(selected) {
+      selectedRepositories.push(selected);
+      expect(selected).toEqual(repository);
+      return { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client };
     },
     launch,
   });
@@ -143,6 +209,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+    for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && epicState(db) !== "done") {
@@ -167,6 +234,19 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
     expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
     expect(
+      tracker.sessionUpdates.some((update) =>
+        update.addedExternalUrls?.some((link) => link.label === "Pull request"),
+      ),
+    ).toBe(true);
+    const completedPlan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
+    expect(completedPlan?.slice(-3).map((step) => step.content)).toEqual([
+      "Verify changes",
+      "Open pull request",
+      "Merge verified changes",
+    ]);
+    expect(completedPlan?.every((step) => step.status === "completed")).toBe(true);
+
+    expect(
       tracker.progress.some((update) => update.body.includes("Need a product decision.")),
     ).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Adding the header."))).toBe(
@@ -187,7 +267,10 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(epicState(db), debug(layout, db)).toBe("done");
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
-    expect(github.opened.map((pull) => pull.head)).toEqual(["paws/ENG-2", "paws/ENG-3"]);
+    expect(github.opened.map((pull) => pull.head)).toEqual([
+      `paws/${taskPath(db, "ENG-2")}`,
+      `paws/${taskPath(db, "ENG-3")}`,
+    ]);
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
       "Fixes ENG-3",
@@ -195,6 +278,31 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(github.opened[0]?.body).toContain("Closeout:");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
     expect(github.merged).toHaveLength(2);
+    expect(implementationLaunches).toEqual(["ENG-2", "ENG-3"]);
+    expect(uploadedDuringCode).toBe(true);
+    expect(inputDownloads).toBe(1);
+    const inputTrace = JSON.parse(await readFile(results.get("implement:ENG-2")!, "utf8")) as {
+      prompts: unknown[];
+    };
+    expect(JSON.stringify(inputTrace.prompts)).toContain(".paws-linear-inputs");
+    expect(JSON.stringify(inputTrace.prompts)).not.toContain("signature=expires");
+    const artifactItem = db
+      .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
+      .get("iss-2")!;
+    expect(listArtifacts(db, artifactItem.id)).toHaveLength(1);
+    expect(listArtifacts(db, artifactItem.id)[0]?.state).toBe("uploaded");
+    const artifactIndex = tracker.progress.findIndex((update) =>
+      update.body.includes("https://uploads.linear.app/workspace/result"),
+    );
+    expect(artifactIndex).toBeGreaterThanOrEqual(0);
+    expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
+    expect(artifactIndex).toBeLessThan(
+      tracker.progress.findIndex((update) => update.kind === "response"),
+    );
+    expect(selectedRepositories).toHaveLength(2);
+    for (const item of listWorkItems(db)) {
+      expect(getWorkItemRepository(db, item.id)).toEqual(repository);
+    }
     const completedUpdates = tracker.progress.length;
     for (const tick of keepAliveTicks) tick();
     await outbox.idle();
@@ -343,6 +451,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
             sessionId: question.issueId,
             issueId: question.issueId,
             activityId: null,
+            actorId: answer.answeredBy,
             body: answer.answer,
             signal: null,
             updatedAtMs: Date.now(),
@@ -485,6 +594,145 @@ test.each(["claude", "codex", "grok"])(
   20_000,
 );
 
+test.each([false, true])(
+  "mixed code publication blocks an ignored artifact failure and permits a corrected retry: %s",
+  async (retry) => {
+    const layout = await repoLayout();
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "artifact-gap",
+        identifier: "ENG-98",
+        title: "Change code and return a screenshot",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const github = createFakeGitHub();
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const resultPath = path.join(layout.root, "missing-artifact-result.json");
+    const launch: AgentLaunch = (input) => {
+      const script = path.join(layout.root, `artifact-${input.purpose}.json`);
+      writeFileSync(
+        script,
+        JSON.stringify({
+          model:
+            input.role === "reviewer" || input.profile?.agent === "codex"
+              ? "test-codex-model"
+              : "test-claude-model",
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : [
+                  writeOk(input.worktree),
+                  { type: "publish_artifact", path: "missing.png", displayName: "Screenshot.png" },
+                  ...(retry
+                    ? [
+                        { type: "fs_write", path: "correct.png", content: "PNG bytes" },
+                        {
+                          type: "publish_artifact",
+                          path: "correct.png",
+                          displayName: "Screenshot.png",
+                        },
+                      ]
+                    : []),
+                  { type: "end" },
+                ],
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [
+          fakeAgent,
+          input.purpose === "implement"
+            ? resultPath
+            : path.join(layout.root, `${input.purpose}.result.json`),
+          script,
+        ],
+        env: process.env,
+      };
+    };
+    let uploads = 0;
+    const files = createLinearFileTransfer({
+      client: {
+        async query() {
+          return {
+            fileUpload: {
+              success: true,
+              uploadFile: {
+                uploadUrl: "https://storage.example/upload?signature=host-only",
+                assetUrl: "https://uploads.linear.app/workspace/result",
+                headers: [],
+              },
+            },
+          };
+        },
+      },
+      auth: {
+        async ensureFresh() {
+          return "host-only";
+        },
+      },
+      fetch: async () => {
+        uploads++;
+        return new Response(null, { status: 200 });
+      },
+    });
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      launch,
+      files,
+      secretsDir: path.join(layout.pawsRoot, "secrets"),
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "artifact-gap"));
+      for (
+        let tick = 0;
+        tick < 10 && !["failed", "merged"].includes(stateOf(db, "ENG-98") ?? "");
+        tick++
+      )
+        await jobs.tick();
+      const trace = JSON.parse(await readFile(resultPath, "utf8"));
+      expect(
+        trace.artifact,
+        JSON.stringify({ trace, state: stateOf(db, "ENG-98"), progress: tracker.progress }),
+      ).toBeDefined();
+      expect(trace.artifact.ok).toBe(retry);
+      expect(stateOf(db, "ENG-98"), debug(layout, db)).toBe(retry ? "merged" : "failed");
+      expect(github.opened).toHaveLength(retry ? 1 : 0);
+      expect(github.merged).toHaveLength(retry ? 1 : 0);
+      expect(uploads).toBe(retry ? 1 : 0);
+      if (!retry) {
+        expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+        expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+        expect(
+          tracker.progress.some(
+            (update) => update.kind === "error" && update.body.includes("requested artifact"),
+          ),
+        ).toBe(true);
+      }
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  },
+  20000,
+);
+
 test("an unconfigured repository halts with an error and never completes the session", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
@@ -507,7 +755,9 @@ test("an unconfigured repository halts with an error and never completes the ses
     expect(stateOf(db, "ENG-99")).toBe("failed");
     expect(
       tracker.progress.some(
-        (update) => update.kind === "error" && update.body.includes("PAWS_GITHUB_REPOSITORY"),
+        (update) =>
+          update.kind === "error" &&
+          update.body.includes("No configured GitHub repository is accessible"),
       ),
     ).toBe(true);
     expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
@@ -671,7 +921,7 @@ for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
       runtime = attach();
       expect(findOpenQuestion(db, "ses_1")?.id).toBe(question.id);
       if (recovery === "stale bypass") {
-        const worktree = worktreePath(layout.pawsRoot, "ENG-8");
+        const worktree = worktreePath(layout.pawsRoot, taskPath(db, "ENG-8"));
         await gitIdentity(worktree);
         await exec("git", ["-C", worktree, "commit", "--allow-empty", "-m", "candidate changed"]);
       }
@@ -753,7 +1003,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     scripts += 1;
     const scriptPath = path.join(layout.root, `grok-script-${scripts}.json`);
     const resultPath = path.join(layout.root, `grok-result-${scripts}.json`);
-    results.set(`${input.purpose}:${input.itemId}`, resultPath);
+    results.set(`${input.purpose}:${sourceIdentifier(input.itemId)}`, resultPath);
     const script = scriptFor(input);
     if (input.role === "implementer") {
       script.authMethods = [{ id: "cached_token", name: "Cached login" }];
@@ -855,7 +1105,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     ) as FakeResult;
     expect(asked.askTeam?.text).toBe("yes");
     expect(asked.authenticate).toEqual({ methodId: "cached_token" });
-    expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, "ENG-2"));
+    expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, taskPath(db, "ENG-2")));
     expect(asked.env).toMatchObject({
       xaiApiKey: false,
       ghToken: false,
@@ -1248,6 +1498,107 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
   }, 30_000);
 }
 
+for (const movedHead of [false, true]) {
+  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "recover-merge",
+        identifier: "ENG-31",
+        title: "Recover a verified merge",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const github = createFakeGitHub();
+    let sequence = 0;
+    let reviews = 0;
+    let rejectedHeads = 0;
+    const originalClient = githubClient(layout.bare, github);
+    const attach = () => {
+      const jobs = new JobLoop(db, systemClock);
+      const orchestrator = attachOrchestrator({
+        db,
+        jobs,
+        outbox: new OutboxDispatcher(db, systemClock),
+        pawsRoot: layout.pawsRoot,
+        home: layout.home,
+        tracker,
+        repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+        github: {
+          appId: "1",
+          installationId: "2",
+          privateKeyPem: PRIVATE_KEY,
+          client: {
+            async request(request) {
+              if (movedHead && request.path === "/graphql" && rejectedHeads < 2) {
+                rejectedHeads++;
+                return { status: 200, body: fakeMergeReadiness("c".repeat(40)) };
+              }
+              return originalClient.request(request);
+            },
+          },
+        },
+        launch(input) {
+          if (input.purpose === "review") reviews++;
+          const script = path.join(layout.root, `merge-restart-${++sequence}.json`);
+          writeFileSync(
+            script,
+            JSON.stringify({
+              model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+              steps:
+                input.purpose === "review"
+                  ? emptyReview().steps
+                  : [writeOk(input.worktree), { type: "end" }],
+            }),
+          );
+          return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
+        },
+      });
+      return { jobs, orchestrator };
+    };
+    try {
+      const first = attach();
+      await first.orchestrator.onLinearEvent(linearEvent("created", null, null, "recover-merge"));
+      await first.jobs.tick();
+      const item = listWorkItems(db)[0]!;
+      const original = listJobs(db).find((job) => job.queue === JOB_KIND.merge)!;
+      expect(item.state).toBe("merge_queue");
+      expect(reviews).toBe(1);
+      expect(github.merged).toHaveLength(0);
+      db.close();
+      db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+      recoverOnStartup(db);
+      const restarted = attach();
+      await restarted.jobs.tick();
+      const retry = listJobs(db).find(
+        (job) => job.queue === JOB_KIND.merge && job.status === "pending",
+      );
+      expect(retry, debug(layout, db)).toBeDefined();
+      expect(retry!.id).not.toBe(original.id);
+      expect(retry!.payload).toMatchObject({ head: item.checkpoint!.wipCommit });
+      expect(listJobs(db).find((job) => job.id === original.id)?.status).toBe("cancelled");
+      for (let tick = 0; tick < 5; tick++) await restarted.jobs.tick();
+      expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
+      expect(github.merged).toHaveLength(1);
+      expect(rejectedHeads).toBe(movedHead ? 2 : 0);
+      expect(
+        listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "done"),
+      ).toHaveLength(movedHead ? 3 : 1);
+      expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
+        "ok\n",
+      );
+      await restarted.jobs.tick();
+      expect(github.merged).toHaveLength(1);
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
+
 function emptyReview(): FakeScript {
   return {
     steps: [
@@ -1302,13 +1653,26 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
 }
 
 function scriptFor(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+  if (input.purpose === "classify")
+    return {
+      steps: [
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: '{"mode":"code"}' },
+          },
+        },
+        { type: "end" },
+      ],
+    };
   if (input.purpose === "review") return emptyReview();
   if (input.purpose === "fix") {
     return {
       steps: [writeOk(input.worktree, "header\n"), { type: "end", stopReason: "end_turn" }],
     };
   }
-  if (input.itemId === "ENG-2") {
+  if (sourceIdentifier(input.itemId) === "ENG-2") {
     return {
       steps: [
         {
@@ -1388,6 +1752,7 @@ function linearEvent(
     sessionId: "ses_1",
     issueId,
     activityId: action === "prompted" ? "act-1" : null,
+    actorId: action === "prompted" ? "human-1" : null,
     body,
     signal,
     updatedAtMs: Date.now(),
@@ -1602,3 +1967,496 @@ function debug(layout: { pawsRoot: string }, db: Database): string {
     return "db closed";
   }
 }
+
+function sourceIdentifier(taskId: string): string {
+  return taskId.replace(/-[0-9A-Z]{26}$/, "");
+}
+
+function taskPath(db: Database, identifier: string): string {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  if (!row) throw new Error("Fixture task missing");
+  return itemPathId(getWorkItem(db, row.id)!);
+}
+
+for (const race of ["token", "merge", "followup"] as const) {
+  test(`Stop during GitHub ${race} publication preserves verified external truth`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "publication",
+        identifier: "ENG-50",
+        title: "Guard publication",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const github = createFakeGitHub();
+    const original = githubClient(layout.bare, github);
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let sequence = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        tokenProvider: {
+          mode: "oauth",
+          async tokenFor(purpose) {
+            if (race === "token" && purpose === "push") {
+              reached.resolve();
+              await release.promise;
+            }
+            return "synthetic-token";
+          },
+        },
+        client: {
+          async request(request) {
+            const response = await original.request(request);
+            if (race !== "token" && request.method === "PUT") {
+              reached.resolve();
+              await release.promise;
+            }
+            return response;
+          },
+        },
+      },
+      launch(input) {
+        const script = path.join(layout.root, `publication-${++sequence}.json`);
+        writeFileSync(
+          script,
+          JSON.stringify({
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+            steps:
+              input.purpose === "review"
+                ? emptyReview().steps
+                : [writeOk(input.worktree), { type: "end" }],
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "publication"));
+      await jobs.tick();
+      const item = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
+      expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+      const publication = jobs.tick();
+      await reached.promise;
+      const stopped = orchestrator.onLinearEvent(
+        race === "followup"
+          ? linearEvent("prompted", "Also implement a different follow-up", null, "publication")
+          : linearEvent("prompted", null, "stop"),
+      );
+      if (race !== "followup")
+        for (let i = 0; i < 1_000 && getWorkItem(db, item.id)?.state !== "cancelled"; i++)
+          await Bun.sleep(1);
+      if (race !== "followup") expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+      else await Bun.sleep(10);
+      release.resolve();
+      await publication;
+      await stopped;
+      expect(getWorkItem(db, item.id)?.state).toBe(race === "followup" ? "merged" : "cancelled");
+      if (race === "followup") {
+        const items = db
+          .query<{ id: string; state: string }, []>("SELECT id, state FROM work_item")
+          .all();
+        expect(items).toHaveLength(2);
+        expect(items.find((entry) => entry.id !== item.id)?.state).toBe("queued");
+      }
+      expect(tracker.statuses.some((status) => status.stateType === "completed")).toBe(false);
+      if (race === "token") {
+        expect(github.opened).toEqual([]);
+        expect(github.merged).toEqual([]);
+        expect(getConfirmedRemoteMerge(db, item.id)).toBeNull();
+      } else {
+        expect(github.merged).toHaveLength(1);
+        const sha = (
+          await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
+        ).stdout.trim();
+        expect(getConfirmedRemoteMerge(db, item.id)).toMatchObject({
+          repositoryOwner: "pmdroid",
+          repositoryName: "paws-demo",
+          pullNumber: 1,
+          mergeSha: sha,
+        });
+      }
+    } finally {
+      release.resolve();
+      await orchestrator.shutdown();
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
+}
+
+test("a Linear correction interrupts code, returns a screenshot, and completes after verified merge through Linear", async () => {
+  const layout = await repoLayout();
+  let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "issue",
+      identifier: "ENG-1",
+      title: "Draw the corrected chart",
+      description: "Create the chart and its screenshot.",
+      subIssues: [],
+    },
+  ]);
+  const github = createFakeGitHub();
+  const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
+  const access = createFakeLinearAccessReads({
+    installation: scope,
+    sessions: [{ ...scope, sessionId: "ses_1", issueId: "issue", teamId: "team" }],
+    teams: ["team"],
+  });
+  const lifecycle = createFakeLinearIssueLifecycle({
+    id: "issue",
+    teamId: "team",
+    assigneeId: "pascal",
+    delegateId: null,
+    stateType: "unstarted",
+  });
+  const revoked: string[] = [];
+  let gate: LinearTaskAccess;
+  let jobs = new JobLoop(db, systemClock);
+  let outbox = new OutboxDispatcher(db, systemClock);
+  const traces: string[] = [];
+  let implementations = 0;
+  let uploaded = false;
+  const implementationTraces: string[] = [];
+  const png =
+    "iVBORw0KGgoAAAANSUhEUgAAAUAAAAC0CAIAAABqhmJGAAADJ0lEQVR42u3csbHCMBBFUbfgjA4oQQGRSlBL1EAHbsKVEUMBJDJivFrOzG3g4T2jH/1lvVwlTdriJ5AAlgSwJIAlgCUBLAlgSQBLAEsCWBLAEsCSAJYEsCSAJYAlASwJYEkASwB/7rHt7/yyEsCSAJYABlgCWBLAkgCWAAZYAlgSwBLA3wIutUnqygsseYEBlgCWBLCydbs/IwQwwAIYYAEMMMACGGCABTDAAAtggAUwwAALYIABFsAASwADLIABBlgAAwywAAZYAAMMsAAGGGABDLAEMMACGGCABTDAAAtggAUwwAALYIABFsAAAyyAARbAAAMsgAEGWAADLAEMsAAGGGABDDDAAjgz4FKbegty2WaelRfY0zTB0+QF9ic0wAADDDDAAAMMsMs2E2ABDDDAAAMMMMAAmwmwXDbAAAMMMMAAAwwwwAC7bDMBFsAAAwwwwAADDDDAAAPsss0EGGCAAQYYYIABBhhgMwGWywYYYIABBhhggAEGGGCXbSbAAhhggAEGGGCAAQYYYIBdtpkAAwwwwAADDDDAAANsJsBy2QADDDDAAE8G2GWbCTDALttMgAF22WamB1xqG1iQTz52lJm5Zx7IC+xpMtMLDLDLNhNgn9xMgAF22WYCDLDLNhNggF22mQD75GYCDLDLNhNggF22mQADbKaZALtsMwEG2GWbCTDALttMgH1yMwEG2GWbCTDALttMgAF22WYC7JObCTDALttMgAF22WYCDLCZZgLsss0EGGCXbSbAALtsMwH2yc0EGGCXbSbAALtsMwEG2GWbCbBPbibAALtsMwEG2GWbCTDAZgIMsMs2E2CAXbaZAHcCLrUNLMgnHzvKzNwzD+QF9jSZ6QUG2GWbCbBPbibAALtsMwEG2GWbCTDALttMgH1yMwEG2GWbCTDALttMgAE200yAXbaZAAPsss0EGGCXbSbAPrmZAAPsss0EGGCXbSbAALtsMwH2yc0EGGCXbSbAsf8nlvQPhQAsaeIXWBLAkgCWAJYEsCSAJQEsASwJYEkASwBLAlgSwJIAlgCWBLAkgCUBLAEsCWBJAEsASwJY0g97Ae4LgLPej1NpAAAAAElFTkSuQmCC";
+  const files = createLinearFileTransfer({
+    client: {
+      async query() {
+        return {
+          fileUpload: {
+            success: true,
+            uploadFile: {
+              uploadUrl: "https://storage.example/upload",
+              assetUrl: "https://uploads.linear.app/chart.png",
+              headers: [],
+            },
+          },
+        };
+      },
+    },
+    auth: {
+      async ensureFresh() {
+        return "host-only";
+      },
+    },
+    fetch: async (_url, request) => {
+      expect(request?.method).toBe("PUT");
+      expect(stateOf(db, "ENG-1")).toBe("running");
+      expect(github.opened).toHaveLength(0);
+      expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+      expect(Buffer.from(await new Response(request?.body).arrayBuffer())).toEqual(
+        Buffer.from(png, "base64"),
+      );
+      uploaded = true;
+      return new Response(null, { status: 200 });
+    },
+  });
+  const launch: AgentLaunch = (input) => {
+    const message = (text: string): FakeScript["steps"][number] => ({
+      type: "update",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+    });
+    const steps: FakeScript["steps"] =
+      input.purpose === "classify"
+        ? [message('{"mode":"code"}'), { type: "end" }]
+        : input.purpose === "review"
+          ? emptyReview().steps
+          : [];
+    if (input.purpose === "implement") {
+      implementations++;
+      if (implementations === 1)
+        steps.push(
+          {
+            type: "ask_team",
+            question: "Which color should the chart use?",
+            options: [
+              { label: "Ocean blue", value: "blue" },
+              { label: "Leaf green", value: "green" },
+            ],
+          },
+          { type: "fs_write", path: "before-restart.txt", content: "retained across restart" },
+          {
+            type: "ask_team",
+            question: "How should the chart labels look?",
+            options: [
+              { label: "Original labels", value: "original" },
+              { label: "Compact labels", value: "compact" },
+            ],
+            context: "Freeform label guidance is also welcome.",
+          },
+          { type: "hang" },
+        );
+      else if (implementations === 2)
+        steps.push(
+          message("The chart color was chosen."),
+          { type: "fs_write", path: "before-correction.txt", content: "retained" },
+          { type: "hang" },
+        );
+      else
+        steps.push(
+          { type: "fs_write", path: "ok.txt", content: "corrected chart" },
+          {
+            type: "terminal",
+            command: "bun",
+            cwd: input.worktree,
+            args: ["-e", `await Bun.write('chart.png', Buffer.from('${png}', 'base64'))`],
+          },
+          {
+            type: "publish_artifact",
+            path: "chart.png",
+            displayName: "chart.png",
+            mimeType: "image/png",
+            attachToIssue: true,
+          },
+          message("Created the corrected chart and screenshot."),
+          { type: "end" },
+        );
+    }
+    const script = path.join(layout.root, `acceptance-${traces.length}.json`);
+    const result = path.join(layout.root, `acceptance-${traces.length}-result.json`);
+    traces.push(result);
+    if (input.purpose === "implement") implementationTraces.push(result);
+    writeFileSync(
+      script,
+      JSON.stringify({
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps,
+      }),
+    );
+    return { command: process.execPath, args: [fakeAgent, result, script], env: process.env };
+  };
+  const createOrchestrator = () => {
+    gate = new LinearTaskAccess(db, {
+      access: access.adapter,
+      lifecycle,
+      oauthClientId: scope.oauthClientId,
+      appUserId: scope.appUserId,
+      stopSession: (sessionId) => {
+        revoked.push(sessionId);
+      },
+      interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
+    });
+    return attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      tracker,
+      files,
+      secretsDir: path.join(layout.pawsRoot, "secrets"),
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+      launch,
+      linearTaskModes: true,
+      linearAccess: gate,
+    });
+  };
+  let orchestrator = createOrchestrator();
+  const event = (key: string, body: string | null): AcceptedLinearEvent => {
+    const createdAt = Math.max(Date.now(), (findOpenQuestion(db, "ses_1")?.createdAt ?? 0) + 1);
+    return parseAgentEvent(
+      JSON.stringify({
+        type: "AgentSessionEvent",
+        action: body === null ? "created" : "prompted",
+        ...scope,
+        agentSession: {
+          id: "ses_1",
+          creatorId: "pascal",
+          issue: { id: "issue", team: { id: "team" } },
+        },
+        ...(body === null
+          ? {}
+          : {
+              agentActivity: {
+                id: key,
+                userId: "pascal",
+                createdAt: new Date(createdAt).toISOString(),
+                content: { type: "prompt", body },
+              },
+            }),
+      }),
+      `delivery:${key}`,
+      createdAt,
+    )!;
+  };
+  const sendEvent = async (key: string, body: string | null) => {
+    const incoming = event(key, body);
+    expect(await gate.accept(incoming)).toBe(true);
+    await orchestrator.onLinearEvent(incoming);
+  };
+  let earlyAnswer: Promise<void> | undefined;
+  let earlyQuestionId: string | undefined;
+  let earlyAnswerState: string | undefined;
+  const askQuestion = tracker.askQuestion;
+  tracker.askQuestion = async (question, options) => {
+    await askQuestion(question, options);
+    if (tracker.questions.length === 1) {
+      earlyQuestionId = findOpenQuestion(db, "ses_1")!.id;
+      earlyAnswer = sendEvent("color-answer", "blue");
+      for (
+        let attempt = 0;
+        attempt < 100 && getQuestion(db, earlyQuestionId)?.status !== "answered";
+        attempt++
+      )
+        await Bun.sleep(1);
+      earlyAnswerState = getQuestion(db, earlyQuestionId)?.status;
+    }
+  };
+  const waitFor = async (condition: () => boolean) => {
+    for (let i = 0; i < 500 && !condition(); i++) await Bun.sleep(10);
+    expect(
+      condition(),
+      debug(layout, db) +
+        JSON.stringify({
+          implementations,
+          traces,
+          questions: tracker.questions,
+          progress: tracker.progress,
+        }),
+    ).toBe(true);
+  };
+  let initial: Promise<unknown> | undefined;
+  try {
+    await sendEvent("created", null);
+    initial = jobs.tick();
+    await waitFor(() => tracker.questions.length === 2);
+    await earlyAnswer;
+    expect(earlyAnswerState).toBe("answered");
+    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+      answer: "blue",
+      answeredBy: "pascal",
+    });
+    expect(github.opened).toHaveLength(0);
+    expect(tracker.questions[0]?.options).toEqual([
+      { label: "Ocean blue", value: "blue" },
+      { label: "Leaf green", value: "green" },
+    ]);
+    await orchestrator.shutdown();
+    await initial;
+    await outbox.idle();
+    db.close();
+    db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    jobs = new JobLoop(db, systemClock);
+    outbox = new OutboxDispatcher(db, systemClock);
+    orchestrator = createOrchestrator();
+    expect(findOpenQuestion(db, "ses_1")?.options).toEqual([
+      { label: "Original labels", value: "original" },
+      { label: "Compact labels", value: "compact" },
+    ]);
+    const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
+    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+      answer: "blue",
+      answeredBy: "pascal",
+    });
+    await sendEvent("color-answer", "blue");
+    expect(findOpenQuestion(db, "ses_1")?.id).toBe(recoveredQuestionId);
+    await sendEvent("label-answer", "Use larger labels and keep the blue color.");
+    expect(getQuestion(db, recoveredQuestionId)).toMatchObject({
+      answer: "Use larger labels and keep the blue color.",
+      answeredBy: "pascal",
+      status: "answered",
+    });
+    initial = jobs.tick();
+    const task = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
+    const workspace = worktreePath(layout.pawsRoot, itemPathId(getWorkItem(db, task.id)!));
+    await waitFor(() => existsSync(path.join(workspace, "before-correction.txt")));
+    await sendEvent("correction", "Use the corrected chart layout and include a screenshot.");
+    await initial;
+    for (let tick = 0; tick < 10 && stateOf(db, "ENG-1") !== "merged"; tick++) await jobs.tick();
+    expect(implementations).toBe(3);
+    expect(revoked).toEqual([]);
+    expect(lifecycle.started.length).toBeGreaterThan(0);
+    expect(
+      lifecycle.started.every((start) => start.issueId === "issue" && start.actorId === "pascal"),
+    ).toBe(true);
+    expect(lifecycle.issue.assigneeId).toBe("pascal");
+    expect(lifecycle.issue.delegateId).toBe("app");
+    expect(tracker.statuses.every((update) => update.linearIssueId === "issue")).toBe(true);
+    expect(tracker.questions).toHaveLength(2);
+    expect(
+      (await exec("git", ["--git-dir", layout.bare, "show", "main:before-correction.txt"])).stdout,
+    ).toBe("retained");
+    expect(
+      (await exec("git", ["--git-dir", layout.bare, "show", "main:before-restart.txt"])).stdout,
+    ).toBe("retained across restart");
+    expect(uploaded).toBe(true);
+    expect(tracker.attachments).toEqual([
+      {
+        id: expect.any(String),
+        issueId: "issue",
+        title: "chart.png",
+        url: "https://uploads.linear.app/chart.png",
+      },
+    ]);
+    expect(github.opened).toHaveLength(1);
+    expect(github.merged).toHaveLength(1);
+    expect(stateOf(db, "ENG-1"), debug(layout, db)).toBe("merged");
+    const responses = tracker.progress.filter((update) => update.kind === "response");
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.body).toContain("Created the corrected chart and screenshot.");
+    expect(
+      tracker.progress.findIndex((update) =>
+        update.body.includes("https://uploads.linear.app/chart.png"),
+      ),
+    ).toBeLessThan(tracker.progress.findIndex((update) => update.kind === "response"));
+    expect(listArtifacts(db, task.id)).toHaveLength(1);
+    expect(listArtifacts(db, task.id)[0]).toMatchObject({
+      state: "uploaded",
+      mimeType: "image/png",
+      displayName: "chart.png",
+      sizeBytes: Buffer.from(png, "base64").byteLength,
+      assetUrl: "https://uploads.linear.app/chart.png",
+    });
+    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+      status: "answered",
+      answer: "blue",
+    });
+    expect(findOpenQuestion(db, "ses_1")).toBeNull();
+    const recovered = JSON.parse(await readFile(implementationTraces[1]!, "utf8"));
+    expect(JSON.stringify(recovered.prompts)).toContain(
+      "Use larger labels and keep the blue color.",
+    );
+    for (const choice of ["Original labels", "original", "Compact labels", "compact"])
+      expect(JSON.stringify(recovered.prompts)).toContain(choice);
+    expect(JSON.stringify(recovered.prompts)).toContain("Freeform label guidance is also welcome.");
+    const resumed = JSON.parse(await readFile(implementationTraces[2]!, "utf8"));
+    expect(JSON.stringify(resumed.prompts)).toContain("blue");
+    expect(JSON.stringify(resumed.prompts)).toContain("The chart color was chosen.");
+    expect(JSON.stringify(resumed.prompts)).toContain("corrected chart layout");
+    expect(JSON.stringify(resumed)).not.toContain("host-only");
+  } finally {
+    await orchestrator.shutdown();
+    await initial;
+    await outbox.idle();
+    db.close();
+    await layout.cleanup();
+  }
+}, 30000);

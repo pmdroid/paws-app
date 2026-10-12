@@ -5,6 +5,7 @@ import { createOAuthGitAuth } from "./oauth";
 import type { GitHubAuthMode, GitHubTokenProvider, TokenPurpose } from "./types";
 
 export type AppTokenProviderOptions = {
+  access?: "read" | "write";
   client: GitHubClient;
   appId: string;
   installationId: string;
@@ -47,6 +48,7 @@ export function createAppTokenProvider(options: AppTokenProviderOptions): GitHub
       const minted = await app.mintInstallationToken({
         installationId: options.installationId,
         repository,
+        ...(options.access ? { access: options.access } : {}),
       });
       return minted.token;
     },

@@ -7,14 +7,39 @@ import {
   loadConfigFile,
   loadEnv,
   loadRuntime,
+  parseConfigToml,
   PAWS_GITHUB_OAUTH_CLIENT_ID,
   pawsPaths,
+  renderConfigToml,
   writeConfigFile,
   writeImplementer,
 } from "../src/config";
 import { tempHome } from "./helpers";
 
 describe("config", () => {
+  test("configured repository candidates survive setup rewrites", () => {
+    const paths = pawsPaths(tempHome());
+    ensureLayout(paths);
+    const setup = {
+      linearMode: "comments" as const,
+      linearTeam: "ENG",
+      linearTeamId: "team",
+      linearViewerId: "human",
+      linearSecret: "secrets/linear-api-key",
+      linearClientFile: null,
+      githubAuth: "gh" as const,
+      repo: "acme/one",
+      checkout: paths.home,
+      maxTurns: 40,
+      maxAwakeMs: 1_000,
+      implementer: "claude" as const,
+    };
+    const text = renderConfigToml({ ...setup, githubRepos: ["acme/one", "acme/two"] });
+    expect(parseConfigToml(text).githubRepos).toEqual(["acme/one", "acme/two"]);
+    writeFileSync(paths.configFile, text, { mode: 0o600 });
+    writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
+    expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
+  });
   test("defaults to localhost and ~/.paws", () => {
     const env = loadEnv({});
     expect(env.host).toBe("127.0.0.1");

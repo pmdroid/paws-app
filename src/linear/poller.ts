@@ -8,7 +8,7 @@ import type {
   PolledIssue,
   PolledSession,
 } from "./catchup";
-import { activityKey, type AcceptedLinearEvent } from "./events";
+import { activityKey, promptMetadata, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 
 /** Poll while a work item is open or a question is unanswered. */
@@ -32,11 +32,17 @@ export function pollIntervalMs(workActive: boolean): number {
 /** True when a non-terminal work item exists or a question is still open. */
 export function linearWorkIsHot(db: Database): boolean {
   if (
-    count(db, "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('merged', 'cancelled')") > 0
+    count(
+      db,
+      "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
+    ) > 0
   ) {
     return true;
   }
-  return count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open'") > 0;
+  return (
+    count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open' AND cancelled_at IS NULL") >
+    0
+  );
 }
 
 export function sleepGapMs(input: {
@@ -54,7 +60,7 @@ export type Sleeper = {
 };
 
 export type CatchUpPoller = {
-  stop(): void;
+  stop(): Promise<void>;
   noteWake(): void;
   pollNow(): Promise<void>;
   budget(): LinearRateBudget | null;
@@ -110,25 +116,28 @@ export function startCatchUpPoller(options: {
     options.hot ?? (() => (options.db === undefined ? false : linearWorkIsHot(options.db)));
   const control = { stopped: false };
   let wakeRequested = false;
-  let running = false;
+  let active: Promise<void> | null = null;
   let pending = false;
   let rateAttempts = 0;
   let latestBudget: LinearRateBudget | null = null;
 
-  async function pollOnce(): Promise<void> {
-    if (running) {
+  function pollOnce(): Promise<void> {
+    if (control.stopped) return Promise.resolve();
+    if (active) {
       pending = true;
-      return;
+      return active;
     }
-    running = true;
-    try {
-      do {
-        pending = false;
-        await pollBody();
-      } while (pending && !control.stopped);
-    } finally {
-      running = false;
-    }
+    active = Promise.resolve()
+      .then(async () => {
+        do {
+          pending = false;
+          await pollBody();
+        } while (pending && !control.stopped);
+      })
+      .finally(() => {
+        active = null;
+      });
+    return active;
   }
 
   async function pollBody(): Promise<void> {
@@ -153,7 +162,7 @@ export function startCatchUpPoller(options: {
     const events = [
       ...issueEvents,
       ...sighting.sessions
-        .filter((session) => !issueEvents.some((event) => event.issueId === session.issueId))
+        .filter((session) => !issueEvents.some((event) => event.sessionId === session.id))
         .map((session) => sessionEvent(session, since, options.store)),
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),
@@ -228,9 +237,10 @@ export function startCatchUpPoller(options: {
   })();
 
   return {
-    stop() {
+    async stop() {
       control.stopped = true;
       sleeper.wake();
+      await Promise.allSettled([settled, active]);
     },
     noteWake() {
       wakeRequested = true;
@@ -359,6 +369,8 @@ function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
     updatedAtMs: activity.updatedAtMs,
     payload: {
       activityId: activity.id,
+      actorId: activity.actorId ?? null,
+      activityCreatedAtMs: activity.activityCreatedAtMs ?? null,
       sessionId: activity.sessionId,
       body: activity.body,
       signal: activity.signal,
@@ -389,6 +401,7 @@ function inboxEvent(input: {
     signal: input.signal,
     updatedAtMs: input.updatedAtMs,
     payload: JSON.stringify(input.payload),
+    ...promptMetadata(JSON.stringify(input.payload)),
   };
 }
 
@@ -428,7 +441,7 @@ function stopTargets(
           `SELECT work_item.id AS id
            FROM work_item
            LEFT JOIN epic ON epic.id = work_item.epic_id
-           WHERE work_item.state NOT IN ('merged', 'cancelled')
+           WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
              AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
            ORDER BY work_item.position, work_item.id`,
         )
@@ -439,7 +452,7 @@ function stopTargets(
       const rows = db
         .query<{ id: string }, [string]>(
           `SELECT id FROM work_item
-           WHERE session_key = ? AND state NOT IN ('merged', 'cancelled')
+           WHERE session_key = ? AND state NOT IN ('completed', 'merged', 'cancelled')
            ORDER BY position, id`,
         )
         .all(sessionId);

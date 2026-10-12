@@ -19,6 +19,7 @@ const NAME = /^[A-Za-z0-9._-]+$/;
 export type GhCliOptions = {
   owner: string;
   repo: string;
+  access?: "read" | "write";
   /** Prepended to PATH so tests can place a fake `gh` ahead of any real binary. */
   pathPrefix?: string;
   /** Absolute path or name of the gh binary. Defaults to `gh`. */
@@ -57,11 +58,20 @@ export function createGhCliAuth(options: GhCliOptions): GitHubTokenProvider {
       assertRepo(options.owner, options.repo);
       const status = await checkGhAuthStatus(options);
       if (!status.ok) throw new GhAuthError(status.message);
-      const permission = await checkGhPushPermission(options);
+      const permission = await checkGhPermission(
+        options,
+        options.access === "read" ? "pull" : "push",
+      );
       if (!permission.ok) throw new GhAuthError(permission.message);
       return readGhAuthToken(options, purpose);
     },
   };
+}
+
+export async function readGhUserToken(options: GhCliOptions): Promise<string> {
+  const status = await checkGhAuthStatus(options);
+  if (!status.ok) throw new GhAuthError(status.message);
+  return readGhAuthToken(options, "pr");
 }
 
 /** Doctor check: `gh auth status` shows a login. Does not print or keep a token. */
@@ -87,45 +97,53 @@ export async function checkGhAuthStatus(options: GhCliOptions): Promise<DoctorCh
 
 /** Doctor check: the gh login can push to the configured repository. */
 export async function checkGhPushPermission(options: GhCliOptions): Promise<DoctorCheck> {
+  return checkGhPermission(options, "push");
+}
+
+async function checkGhPermission(
+  options: GhCliOptions,
+  access: "pull" | "push",
+): Promise<DoctorCheck> {
+  const name = access === "push" ? GH_PUSH_PERMISSION_CHECK : "gh-read-permission";
   assertRepo(options.owner, options.repo);
   const result = await runGh(["api", `repos/${options.owner}/${options.repo}`], options);
   if (result.code === 127) {
     return {
-      name: GH_PUSH_PERMISSION_CHECK,
+      name,
       ok: false,
-      message: "gh push permission check failed: gh is not on PATH",
+      message: `gh ${access} permission check failed: gh is not on PATH`,
     };
   }
   if (result.code !== 0) {
     const detail = safeLine(result.stderr);
     return {
-      name: GH_PUSH_PERMISSION_CHECK,
+      name,
       ok: false,
       message:
         detail.length > 0
-          ? `gh push permission check failed for ${options.owner}/${options.repo}: ${detail}`
-          : `gh push permission check failed for ${options.owner}/${options.repo}`,
+          ? `gh ${access} permission check failed for ${options.owner}/${options.repo}: ${detail}`
+          : `gh ${access} permission check failed for ${options.owner}/${options.repo}`,
     };
   }
-  const allowed = pushAllowed(result.stdout);
+  const allowed = permissionAllowed(result.stdout, access);
   if (allowed === null) {
     return {
-      name: GH_PUSH_PERMISSION_CHECK,
+      name,
       ok: false,
-      message: `gh push permission check failed for ${options.owner}/${options.repo}: response did not include permissions.push`,
+      message: `gh ${access} permission check failed for ${options.owner}/${options.repo}: response did not include permissions.${access}`,
     };
   }
   if (!allowed) {
     return {
-      name: GH_PUSH_PERMISSION_CHECK,
+      name,
       ok: false,
-      message: `gh login does not have push permission on ${options.owner}/${options.repo}`,
+      message: `gh login does not have ${access} permission on ${options.owner}/${options.repo}`,
     };
   }
   return {
-    name: GH_PUSH_PERMISSION_CHECK,
+    name,
     ok: true,
-    message: `gh login can push to ${options.owner}/${options.repo}`,
+    message: `gh login has ${access} permission on ${options.owner}/${options.repo}`,
   };
 }
 
@@ -182,16 +200,16 @@ function isSecretEnv(key: string): boolean {
   return key.startsWith("GH_") || key.startsWith("GITHUB_");
 }
 
-function pushAllowed(stdout: string): boolean | null {
+function permissionAllowed(stdout: string, access: "pull" | "push"): boolean | null {
   const text = stdout.trim();
-  if (text === "true") return true;
-  if (text === "false") return false;
+  if (access === "push" && text === "true") return true;
+  if (access === "push" && text === "false") return false;
   try {
     const parsed: unknown = JSON.parse(text);
     if (!isRecord(parsed)) return null;
     const permissions = parsed.permissions;
-    if (!isRecord(permissions) || typeof permissions.push !== "boolean") return null;
-    return permissions.push;
+    if (!isRecord(permissions) || typeof permissions[access] !== "boolean") return null;
+    return permissions[access];
   } catch {
     return null;
   }

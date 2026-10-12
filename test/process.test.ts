@@ -12,7 +12,7 @@ describe("process", () => {
       expect(health.status).toBe(200);
       expect(paws.paths.db.startsWith(home)).toBe(true);
     } finally {
-      paws.stop();
+      await paws.stop();
     }
   });
 
@@ -86,7 +86,7 @@ describe("process", () => {
       const hidden = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(hidden.status).toBe(404);
     } finally {
-      paws.stop();
+      await paws.stop();
     }
   });
 });

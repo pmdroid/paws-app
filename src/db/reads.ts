@@ -64,7 +64,7 @@ export function listOpenQuestions(db: Database): OpenQuestionRecord[] {
     .query<QuestionSql, []>(
       `SELECT id, item_id, run_id, session_id, body, options, created_at
        FROM question
-       WHERE status = 'open'
+       WHERE status = 'open' AND cancelled_at IS NULL
        ORDER BY created_at, id`,
     )
     .all()
@@ -83,7 +83,12 @@ function stringList(value: string): string[] {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string");
+    return parsed.flatMap((item) => {
+      if (typeof item === "string") return [item];
+      if (typeof item !== "object" || item === null) return [];
+      const label = item.label ?? item.value;
+      return typeof label === "string" ? [label] : [];
+    });
   } catch {
     return [];
   }

@@ -94,6 +94,7 @@ test("fresh setup honors environment-inferred App authentication", async () => {
           appId: "different-app",
         }),
         save: async () => {},
+        update: async (change) => change(null) !== null,
         markInvalid: async () => {},
         delete: async () => {},
       },

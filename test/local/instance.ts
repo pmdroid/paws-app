@@ -441,7 +441,7 @@ try {
       agentSettings,
     );
   } finally {
-    fresh.stop();
+    await fresh.stop();
   }
   const happy = await scenario("happy");
   observe(

@@ -56,6 +56,8 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "recovering", event: "recovered", to: "running" },
   { from: "recovering", event: "crash_budget_used", to: "failed" },
   { from: "running", event: "turn_ended", to: "verifying" },
+  { from: "running", event: "answer_completed", to: "completed" },
+  { from: "running", event: "artifact_completed", to: "completed" },
   { from: "running", event: "run_failed", to: "failed" },
   { from: "verifying", event: "closeout_rejected", to: "running" },
   { from: "verifying", event: "commit_while_verifying", to: "verifying" },

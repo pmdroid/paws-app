@@ -21,10 +21,18 @@ export type {
   DownloadedLinearFile,
   LinearFileMetadata,
   LinearFileTransfer,
+  PreparedLinearUpload,
   UploadedLinearFile,
 } from "./files";
 export { createLinearClient } from "./graphql";
 export type { LinearClient } from "./graphql";
+export { createLinearRepositoryMethods } from "./repositories";
+export type {
+  CandidateRepository,
+  LinearRepositoryAdapter,
+  RepositorySuggestion,
+  RepositorySuggestionsInput,
+} from "./repositories";
 export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxStore } from "./inbox";
 export {
@@ -64,6 +72,7 @@ export type {
   ActivityReceipt,
   AuthSignal,
   DependencyEdge,
+  IssueAttachment,
   Elicitation,
   EpicSnapshot,
   LinearSubIssue,
@@ -85,3 +94,32 @@ export {
   parseAgentEvent,
 } from "./webhook";
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
+
+export { parseLinearSessionContext, renderLinearSessionContext } from "./context";
+export type { LinearSessionContext } from "./context";
+
+export type {
+  LinearSessionSnapshot,
+  LinearActivitySnapshot,
+  LinearActivityContent,
+  LinearSessionStatus,
+} from "./history";
+export {
+  parseLinearAdministration,
+  parseLinearSessionInstallation,
+  matchesLinearInstallation,
+} from "./administration";
+export type { LinearAdministration, LinearInstallation } from "./administration";
+export { createLinearIssueLifecycle } from "./issue-lifecycle";
+export { createFakeLinearIssueLifecycle } from "./fake-issue-lifecycle";
+export type {
+  LinearIssueLifecycle,
+  LinearIssueOwnership,
+  StartLinearCodeIssue,
+  StartLinearCodeIssueOptions,
+} from "./issue-lifecycle";
+export { createLinearAccessReads } from "./access";
+export { createFakeLinearAccessReads } from "./fake-access";
+export type { LinearAccessReads, LinearSessionInstallation } from "./access";
+
+export { createLinearIssueContextReads, type LinearIssueContext } from "./issue-context";

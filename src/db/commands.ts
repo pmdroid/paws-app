@@ -16,6 +16,7 @@ import {
   noteJobError,
 } from "./jobs";
 import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
+import { linearSessionForEpic } from "./linear-sessions";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -48,9 +49,17 @@ export function applyLinearCommand(
       return { applied: false };
     }
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
+    db.run(
+      "UPDATE linear_github_auth SET status = 'revoked',generation = generation + 1 WHERE item_id = ? AND status IN ('pending','expired')",
+      [item.id],
+    );
+    db.run(
+      "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status = 'open' AND cancelled_at IS NULL",
+      [now, item.id],
+    );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     cancelOpenJobs(db, { itemId: item.id, reason: command.type, now });
-    const sessionId = item.sessionKey ?? item.id;
+    const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId) ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const text = command.type === "stop" ? "Stopped from Linear." : "Cancelled from Linear.";
     enqueueOutboxOnce(db, {
@@ -60,7 +69,7 @@ export function applyLinearCommand(
       delivery: "stop",
       generation,
       idempotencyKey: `command:stop:${sessionId}:${generation}`,
-      payload: { sessionId: item.sessionKey ?? item.id, kind: "response", body: text },
+      payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });
     return { applied: true };
