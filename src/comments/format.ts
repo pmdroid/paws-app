@@ -50,7 +50,7 @@ export function formatQuestion(input: {
   questionId: string;
   title?: string;
   body: string;
-  options?: readonly string[];
+  options?: readonly (string | { label?: string; value: string })[];
 }): string {
   const lines: string[] = [];
   const title = input.title?.trim() ?? "";
@@ -63,7 +63,9 @@ export function formatQuestion(input: {
   if (options.length > 0) {
     lines.push("");
     for (let index = 0; index < options.length; index++) {
-      lines.push(`${index + 1}. ${options[index] ?? ""}`);
+      const option = options[index];
+      const label = typeof option === "string" ? option : (option?.label ?? option?.value ?? "");
+      lines.push(`${index + 1}. ${label}`);
     }
     lines.push("", "Reply with a number, or answer in your own words.");
   }

@@ -47,15 +47,23 @@ export function routeBySource(input: {
     return chosen;
   }
   const linear = input.linear;
+  const updateSession = input.linear?.updateSession?.bind(input.linear);
   return {
     ...(linear?.getSession ? { getSession: linear.getSession.bind(linear) } : {}),
     ...(linear?.listSessionActivities
       ? { listSessionActivities: linear.listSessionActivities.bind(linear) }
       : {}),
+    ...(input.linear?.issueRepositorySuggestions
+      ? { issueRepositorySuggestions: input.linear.issueRepositorySuggestions.bind(input.linear) }
+      : {}),
+    ...(input.linear?.supportsActivityReconciliation
+      ? { supportsActivityReconciliation: true as const }
+      : {}),
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),
     askQuestion: (question, options) => pick(question.sessionId).askQuestion(question, options),
+    ...(updateSession ? { updateSession } : {}),
     setStatus: (update, options) => pick(update.linearIssueId).setStatus(update, options),
   };
 }

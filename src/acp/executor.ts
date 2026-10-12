@@ -13,6 +13,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
     owner: options.owner,
     repo: options.repo,
     pawsRoot: options.pawsRoot,
+    ...(options.networkGit ? { networkGit: options.networkGit } : {}),
   });
   const worktree = await createWorktree({
     owner: options.owner,
@@ -21,7 +22,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
     pawsRoot: options.pawsRoot,
     ...(options.startRef ? { startRef: options.startRef } : {}),
   });
-  const run = await runAgent({
+  const run = await (options.promptRunner ?? runAgent)({
     ...options,
     role: options.role ?? "implementer",
     worktreePath: worktree.path,

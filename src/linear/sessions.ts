@@ -1,3 +1,4 @@
+import { createLinearIssueContextReads } from "./issue-context";
 import { createLinearSessionReads } from "./history";
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
@@ -40,6 +41,22 @@ const ACTIVITY_MUTATION = `mutation AgentActivityCreate($input: AgentActivityCre
   agentActivityCreate(input: $input) { success agentActivity { id } }
 }`;
 
+const ACTIVITY_LOOKUP = `query AgentActivityByCallerId($id: ID!, $sessionId: String!) {
+  agentActivities(first: 2, includeArchived: true, filter: { id: { eq: $id }, agentSessionId: { eq: $sessionId } }) {
+    nodes {
+      id agentSession { id } ephemeral signal signalMetadata
+      content {
+        ... on AgentActivityThoughtContent { type body }
+        ... on AgentActivityActionContent { type action parameter result }
+        ... on AgentActivityElicitationContent { type body }
+        ... on AgentActivityResponseContent { type body }
+        ... on AgentActivityErrorContent { type body }
+      }
+    }
+    pageInfo { hasNextPage }
+  }
+}`;
+
 const SESSION_UPDATE_MUTATION = `mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
   agentSessionUpdate(id: $id, input: $input) { success agentSession { id } }
 }`;
@@ -58,8 +75,21 @@ export function createLinearSessionMethods(client: LinearClient) {
     options?: TrackerRequestOptions,
   ): Promise<ActivityReceipt> {
     options?.signal?.throwIfAborted();
-    const data = await client.query(ACTIVITY_MUTATION, { input }, options);
-    options?.signal?.throwIfAborted();
+    const request = {
+      ...options,
+      signal: options?.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)])
+        : AbortSignal.timeout(10_000),
+    };
+    if (options?.reconcile && input["id"] !== undefined) {
+      const existing = await findActivity(client, input, request);
+      if (existing !== null) return existing;
+    }
+    request.signal.throwIfAborted();
+    if (options?.isCurrent && !options.isCurrent())
+      throw new Error("The Linear activity was superseded before publication");
+    const data = await client.query(ACTIVITY_MUTATION, { input }, request);
+    request.signal.throwIfAborted();
     const receipt = mutationReceipt(data, "agentActivityCreate", "agentActivity");
     if (input["id"] !== undefined && receipt.id !== input["id"]) {
       throw new Error("Linear agentActivityCreate returned a different activity ID");
@@ -69,6 +99,7 @@ export function createLinearSessionMethods(client: LinearClient) {
 
   return {
     ...createLinearSessionReads(client),
+    ...createLinearIssueContextReads(client),
     async createActivity(
       update: ProgressUpdate,
       options?: TrackerRequestOptions,
@@ -117,6 +148,69 @@ export function createLinearSessionMethods(client: LinearClient) {
       return mutationReceipt(data, "agentSessionCreateOnComment", "agentSession");
     },
   };
+}
+
+async function findActivity(
+  client: LinearClient,
+  input: Record<string, unknown>,
+  options: { signal: AbortSignal },
+): Promise<ActivityReceipt | null> {
+  const data = await client.query(
+    ACTIVITY_LOOKUP,
+    { id: input["id"], sessionId: input["agentSessionId"] },
+    options,
+  );
+  options.signal.throwIfAborted();
+  const connection = isRecord(data) ? data["agentActivities"] : null;
+  if (
+    !isRecord(connection) ||
+    !Array.isArray(connection["nodes"]) ||
+    !isRecord(connection["pageInfo"]) ||
+    connection["pageInfo"]["hasNextPage"] !== false ||
+    connection["nodes"].length > 1
+  )
+    throw new Error("Linear returned incomplete activity reconciliation data");
+  const activity: unknown = connection["nodes"][0];
+  if (activity === undefined) return null;
+  if (!isRecord(activity) || !isRecord(activity["agentSession"]))
+    throw new Error("Linear returned invalid activity reconciliation data");
+  const expected = {
+    id: input["id"],
+    sessionId: input["agentSessionId"],
+    content: input["content"],
+    ephemeral: input["ephemeral"] ?? false,
+    signal: input["signal"],
+    signalMetadata: input["signalMetadata"],
+  };
+  const actual = {
+    id: activity["id"],
+    sessionId: activity["agentSession"]["id"],
+    content: activity["content"],
+    ephemeral: activity["ephemeral"],
+    signal: activity["signal"],
+    signalMetadata: signalMetadata(activity["signalMetadata"]),
+  };
+  if (JSON.stringify(normalize(expected)) !== JSON.stringify(normalize(actual)))
+    throw new Error("The existing Linear activity does not match this delivery");
+  return { id: String(input["id"]) };
+}
+
+function signalMetadata(value: unknown): Record<string, unknown> | null {
+  if (value === null || value === undefined) return null;
+  const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+  if (!isRecord(parsed)) throw new Error("Linear returned invalid activity signal metadata");
+  return parsed;
+}
+
+function normalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalize);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== null && entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, normalize(entry)]),
+  );
 }
 
 export function activityInput(update: ProgressUpdate): Record<string, unknown> {

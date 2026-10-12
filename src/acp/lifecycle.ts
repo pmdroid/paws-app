@@ -9,6 +9,8 @@ import {
   type RunAgentResult,
 } from "./types";
 
+export class AcpCleanupError extends Error {}
+
 export type AcpConversationEntry = {
   kind: "request" | "response" | "tool_result";
   body: string;
@@ -57,7 +59,7 @@ export function createAcpPromptLifecycle(
           const result = await runAgent({ ...options, prompt, signal: controller.signal });
           if (!result.agentExited) {
             stopped = true;
-            throw new Error("ACP child did not exit; refusing another prompt");
+            throw new AcpCleanupError("ACP child did not exit; refusing another prompt");
           }
           if (result.transcriptPath) {
             history.push(...(await readConversation(result.transcriptPath, offset)));
@@ -100,13 +102,28 @@ export function reconstructAcpPrompt(
   ].join("\n\n");
 }
 
+export async function recoverAcpConversation(
+  path: string,
+  offset = 0,
+): Promise<AcpConversationEntry[]> {
+  return readConversation(path, offset);
+}
+
 async function readConversation(path: string, offset: number): Promise<AcpConversationEntry[]> {
   const history: AcpConversationEntry[] = [];
   const tools = new Map<string, Record<string, unknown>>();
   let response = "";
-  for (const line of (await readFile(path)).subarray(offset).toString("utf8").split("\n")) {
+  const lines = (await readFile(path)).subarray(offset).toString("utf8").split("\n");
+  for (const [index, line] of lines.entries()) {
     if (!line) continue;
-    const { event } = JSON.parse(line) as { event: AcpEvent };
+    let parsed: { event: AcpEvent };
+    try {
+      parsed = JSON.parse(line) as { event: AcpEvent };
+    } catch (error) {
+      if (index === lines.length - 1) break;
+      throw error;
+    }
+    const { event } = parsed;
     if (event.type !== "session_update") continue;
     const update = event.update;
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
@@ -114,7 +131,20 @@ async function readConversation(path: string, offset: number): Promise<AcpConver
     }
     if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
       const previous = tools.get(update.toolCallId) ?? {};
-      tools.set(update.toolCallId, { ...previous, ...toolObservation(update) });
+      const tool = { ...previous, ...toolObservation(update) };
+      for (const key of ["terminal_output_delta", "terminal_output"]) {
+        const output = update["_meta"]?.[key];
+        if (
+          output !== null &&
+          typeof output === "object" &&
+          "data" in output &&
+          typeof output.data === "string"
+        ) {
+          tool.terminalOutput = `${tool.terminalOutput ?? ""}${output.data}`.slice(-64 * 1024);
+          break;
+        }
+      }
+      tools.set(update.toolCallId, tool);
     }
   }
   if (response) history.push({ kind: "response", body: response });

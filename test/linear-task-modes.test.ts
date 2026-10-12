@@ -22,6 +22,14 @@ test("task classification accepts supported modes and explicit clarification", (
   expect(parseTaskClassification('{"mode":"code"}')).toEqual({ mode: "code" });
   expect(parseTaskClassification('```json\n{"mode":"answer"}\n```')).toEqual({ mode: "answer" });
   expect(parseTaskClassification('{"mode":"artifact"}')).toEqual({ mode: "artifact" });
+  expect(parseTaskClassification('{"mode":"answer","repository":true}')).toEqual({
+    mode: "answer",
+    repository: true,
+  });
+  expect(parseTaskClassification('{"mode":"artifact","repository":false}')).toEqual({
+    mode: "artifact",
+  });
+  expect(() => parseTaskClassification('{"mode":"answer","repository":"true"}')).toThrow("boolean");
   expect(
     parseTaskClassification('{"mode":"clarify","question":"Create a file or explain it?"}'),
   ).toEqual({ mode: "clarify", question: "Create a file or explain it?" });
@@ -57,7 +65,7 @@ test.each(["code", "answer", "artifact"] as const)(
       runId: "run-1",
       pawsRoot: root,
       home,
-      request: "A user request",
+      request: "Classify this image https://uploads.linear.app/private/image.png?signature=secret",
       profile: { agent: "codex", model: null },
       signal: new AbortController().signal,
       launch: (input) => {
@@ -78,6 +86,9 @@ test.each(["code", "answer", "artifact"] as const)(
       },
     });
     expect(result).toEqual({ mode });
+    const trace = JSON.parse(readFileSync(join(home, "result.json"), "utf8"));
+    expect(JSON.stringify(trace.prompts)).toContain("[private input file]");
+    expect(JSON.stringify(trace.prompts)).not.toContain("signature=secret");
     expect(existsSync(join(root, "tasks", "ENG-1", "classify", ".git"))).toBe(false);
     expect(existsSync(join(root, "tasks", "ENG-1", "classify", "forbidden.txt"))).toBe(false);
     expect(JSON.parse(readFileSync(join(home, "result.json"), "utf8")).fs[0]).toMatchObject({

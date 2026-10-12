@@ -11,8 +11,9 @@ import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
 import { CommandBus, FakeClock, JOB_KIND } from "../../src/core";
 import {
   applyWorkItemEvent,
+  claimNextJob,
+  completeJob,
   beginImplementRun,
-  enqueueJobOnce,
   enterMergeQueue,
   getWorkItem,
   insertQueuedItem,
@@ -25,6 +26,8 @@ import {
 import { createFakeGitHubComments, createGitHubCommentTracker } from "../../src/ghcomments";
 import { createGitHubCommentIngestor } from "../../src/index";
 import { detectCandidates } from "../../src/setup";
+import { enqueueVerifiedMerge } from "../../src/loop";
+import { probeLinearQuestionRestart } from "./linear-question-restart";
 
 export async function probeBoundaries(
   root: string,
@@ -35,6 +38,7 @@ export async function probeBoundaries(
     warning: null,
     load: async () => null,
     save: async () => {},
+    update: async (change) => change(null) !== null,
     markInvalid: async () => {},
     delete: async () => {},
   };
@@ -138,21 +142,16 @@ export async function probeBoundaries(
     { backend: brokenStore.backend, storeError, mode, dirMode, reloaded: saved !== null },
   );
   const clock = new FakeClock(1000);
-  const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
-  const first = createCommentMode({ board, clock });
   const binding = { itemId: "item", linearIssueId: "issue", sessionId: "issue" };
-  first.bind(binding);
-  await first.ask({ itemId: "item", title: "Proceed?", body: "Choose yes or no." });
-  const restarted = createCommentMode({ board, clock });
-  restarted.bind(binding);
-  clock.advance(1000);
-  board.post({ issueId: "issue", parentId: board.comments[0]!.id, body: "yes", userId: "human" });
-  const afterRestart = await restarted.sync("issue");
-  const withoutRestart = await first.sync("issue");
-  observe("question reply survives comment-adapter restart", afterRestart.resumed.length === 1, {
-    afterRestart,
-    withoutRestart,
-  });
+  const restart = await probeLinearQuestionRestart(join(root, "linear-question-restart"));
+  observe(
+    "question reply survives owned process restart",
+    restart.question.status === "answered" &&
+      restart.question.answeredBy === "human-owner" &&
+      restart.jobs.filter((job) => job.queue === JOB_KIND.resume).length === 1 &&
+      restart.duplicates.length === 0,
+    restart,
+  );
   const personalBoard = createFakeCommentBoard({ clock, selfUserId: "personal-token-owner" });
   const personal = createCommentMode({
     board: personalBoard,
@@ -239,28 +238,33 @@ export async function probeBoundaries(
     const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
     beginImplementRun(db, recovering.id, clock.now());
     enterMergeQueue(db, recovering.id, checkpoint);
-    const jobKey = `merge:${recovering.id}:${checkpoint.wipCommit}`;
-    const original = enqueueJobOnce(db, {
-      queue: JOB_KIND.merge,
-      jobKey,
-      payload: { itemId: recovering.id },
+    const original = enqueueVerifiedMerge(db, {
+      itemId: recovering.id,
+      head: checkpoint.wipCommit,
+      summary: "Accepted synthetic candidate",
       now: clock.now(),
     });
     recoverOnStartup(db, clock.now());
     if (getWorkItem(db, recovering.id)?.state === "verifying")
       applyWorkItemEvent(db, recovering.id, "closeout_accepted");
-    const retry = enqueueJobOnce(db, {
-      queue: JOB_KIND.merge,
-      jobKey,
-      payload: { itemId: recovering.id },
+    const reverification = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.reverify] });
+    if (reverification === null) throw new Error("Recovery did not schedule re-verification");
+    const retry = enqueueVerifiedMerge(db, {
+      itemId: recovering.id,
+      head: checkpoint.wipCommit,
+      summary: "Reverified synthetic candidate",
       now: clock.now(),
+      reverifyJobId: reverification.id,
     });
+    completeJob(db, reverification, clock.now());
+    const runnable = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     observe(
       "reverified merge schedules a runnable retry",
-      listJobs(db).some((job) => job.queue === JOB_KIND.merge && job.status === "pending"),
+      runnable?.id === retry && retry !== original,
       {
         original,
         retry,
+        claimedRetry: runnable?.id ?? null,
         jobs: listJobs(db).map(({ id, queue, status }) => ({ id, queue, status })),
       },
     );
