@@ -61,6 +61,7 @@ Run `bun --no-env-file test/local/dashboard-browser.cjs <loopback-origin> <serve
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
 - Direct HTTPS using production TLS configuration, a fresh local certificate and a client that verifies the certificate. A fresh child reads the service’s `NODE_ENV` setting and verifies that an uncaught enrollment error returns HTTP 500 without its error details. Run this probe from a checkout path containing spaces or Unicode when checking child-import portability.
 - Exact Ed25519-signed Linux release manifests and SHA-256 artifact verification. Ephemeral signing fixtures exercise wrong keys, unsigned or modified content, platform/version fields, duplicate paths, archive traversal, links and unsafe modes. Inspect `linux-release-verification.log`.
+- Real Ed25519 runner command signatures with strict typed payloads, runner/workspace identity, repository allowlists, expiry and replay protection persisted through SQLite close/reopen. The protocol probe performs no repository fetch.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
 - Direct host ACP execution, credential environment filtering and guarded filesystem requests, with a retained scripted-agent trace. Removed container CLI commands must fail before starting Paws.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
