@@ -158,3 +158,4 @@ export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./l
 export { getConversation, saveConversation } from "./acp-conversations";
 
 export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
+export { prepareLinearActivity } from "./linear-delivery";

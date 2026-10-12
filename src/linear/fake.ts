@@ -57,6 +57,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     return { id: question.id ?? crypto.randomUUID() };
   }
   return {
+    supportsActivityReconciliation: true,
     epics: byId,
     deps,
     progress,

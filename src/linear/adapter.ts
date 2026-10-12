@@ -8,7 +8,11 @@ import type {
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
 
-export type TrackerRequestOptions = { signal?: AbortSignal };
+export type TrackerRequestOptions = {
+  signal?: AbortSignal;
+  reconcile?: boolean;
+  isCurrent?: () => boolean;
+};
 
 /**
  * Tracker port. Linear is the first implementation; later trackers use the same methods.
@@ -21,6 +25,7 @@ export interface TrackerAdapter {
     options?: TrackerRequestOptions,
   ): Promise<readonly LinearActivitySnapshot[]>;
   issueRepositorySuggestions?: LinearRepositoryAdapter["issueRepositorySuggestions"];
+  supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;
