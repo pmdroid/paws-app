@@ -1306,7 +1306,7 @@ input[type="url"] {
   }
   .tabbar {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     position: fixed;
     left: 0;
     right: 0;
@@ -1789,4 +1789,64 @@ input[type="url"] {
 }
 .linear-session-start [data-session-status]:empty {
   display: none;
+}
+
+.runner-section {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--border);
+}
+.runner-section h2 {
+  margin: 0 0 12px;
+}
+.runner-section .field {
+  min-width: 0;
+  max-width: 28rem;
+}
+.runner-section input,
+.runner-section select {
+  width: 100%;
+  min-width: 0;
+}
+.runner-section code {
+  overflow-wrap: anywhere;
+}
+.runner-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.runner-list > li {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+.runner-list h2 {
+  margin: 0 0 8px;
+}
+.runner-list .row {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.runner-checks {
+  padding-left: 20px;
+}
+.runner-checks > li {
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+}
+
+body[data-area="runners"] .linear-session-start {
+  display: none;
+}
+.runner-section fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.runner-section select {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  padding: 7px 9px;
+  min-height: 44px;
 }

@@ -14,10 +14,12 @@ import { parseRoute } from "./route";
 import { createAgentSettings } from "./agent-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
+import { createRunners } from "./runners";
 import { initializeWorkspaceAccess } from "./workspace";
 
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
+const runners = createRunners();
 
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
@@ -174,7 +176,9 @@ function paint(): void {
       : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
-  document.body.dataset.area = model.route.view === "settings" ? "settings" : "overview";
+  document.body.dataset.area = ["settings", "runners"].includes(model.route.view)
+    ? model.route.view
+    : "overview";
   document.title = view.title;
   setHtml("#side", view.side);
   setHtml("#top", view.top);
@@ -185,6 +189,8 @@ function paint(): void {
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot) sessionStart.mount(sessionRoot, currentEngine(), snapshot?.source);
+  const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
+  if (runnerRoot) runners.mount(runnerRoot, currentEngine(), snapshot?.source);
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {
@@ -286,7 +292,10 @@ function onClick(event: Event): void {
   if (action === "drawer") document.body.classList.add("drawer-open");
   if (action === "drawer-close") document.body.classList.remove("drawer-open");
   if (action === "github-signin") void signInWithGitHub();
-  if (action === "refresh") void reload();
+  if (action === "refresh") {
+    void reload();
+    if (parseRoute(location.hash).view === "runners") void runners.refresh();
+  }
   if (action === "source") openDialog();
   if (action === "epic-view") {
     const mode = target.closest("[data-mode]")?.getAttribute("data-mode");
