@@ -1,0 +1,496 @@
+import { rmSync } from "node:fs";
+import { z } from "zod";
+import { createHash } from "node:crypto";
+import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
+import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runner-daemon";
+import {
+  createRunnerBrokerClient,
+  publishRunnerJob,
+  readRunnerResultFile,
+  type RunnerBrokerClient,
+  type RunnerSpool,
+  type RunnerResults,
+} from "../runner-execution";
+import { publishRunnerAnswer } from "../runner-answers";
+import { createRunnerRepositories } from "../runner-repositories";
+import { RunnerResultSchema, type RunnerResult } from "../runner-protocol";
+import { openExecutionJournal, type Execution, type WorkCommand } from "../runner-journal";
+
+class RemoteFailure extends Error {}
+
+async function remote<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) throw error;
+    throw new RemoteFailure("Runner control plane is unavailable");
+  }
+}
+
+const workerResult = z.object({
+  executionId: z.string(),
+  commandId: z.string(),
+  run: RunnerResultSchema.omit({
+    executionId: true,
+    commandId: true,
+    candidateSha: true,
+    reviewText: true,
+  }).strip(),
+  candidateSha: RunnerResultSchema.shape.candidateSha,
+  reviewText: RunnerResultSchema.shape.reviewText,
+});
+type Active = {
+  execution: Execution;
+  abort: AbortController;
+  deadline: number;
+  grant?: RunnerGrant;
+  task?: Promise<void>;
+  stopped?: Promise<void>;
+  quiesced?: Promise<void>;
+  publicationBranch?: string;
+};
+
+export async function openRunnerRuntime(options: {
+  root: string;
+  daemon: Pick<
+    RunnerDaemon,
+    | "status"
+    | "heartbeat"
+    | "pollCommands"
+    | "pendingCommands"
+    | "acknowledgeCommand"
+    | "issueRunGrant"
+    | "sendEvent"
+    | "answers"
+    | "postResult"
+    | "repositoryCredential"
+    | "renewCertificate"
+    | "uploadArtifact"
+  >;
+  spool: RunnerSpool;
+  results: RunnerResults;
+  repositoryRoot: string;
+  home: string;
+  broker?: RunnerBrokerClient;
+  networkGit?: Parameters<typeof createRunnerRepositories>[0]["networkGit"];
+  now?: () => number;
+  monotonic?: () => number;
+  onError?: (error: Error) => void;
+}) {
+  if (options.daemon.status().phase !== "paired")
+    throw new Error("Runner must be paired before execution");
+  const journal = openExecutionJournal(options.root);
+  const broker = options.broker ?? createRunnerBrokerClient();
+  const now = options.now ?? Date.now;
+  const monotonic = options.monotonic ?? (() => performance.now());
+  const report = () => options.onError?.(new Error("Runner runtime operation failed"));
+  try {
+    for (const previous of journal.executions(true)) {
+      await broker.stop(previous.id);
+      journal.phase(previous.id, "interrupted");
+    }
+  } catch (error) {
+    journal.close();
+    throw error;
+  }
+  let active: Active | undefined;
+  let closed = false;
+  let ticking: Promise<void> | undefined;
+  let pulsing: Promise<void> | undefined;
+  let stopping: Promise<void> | undefined;
+  const leases = new Map<string, number>();
+  const key = (command: WorkCommand) => `${command.runId}:${command.generation}`;
+  async function grant(entry: Active) {
+    check(entry);
+    if (!entry.grant || entry.grant.expiresAt <= now() + 5000) {
+      const value = await remote(() =>
+        options.daemon.issueRunGrant(entry.execution.command.runId, {
+          commandId: entry.execution.command.id,
+          generation: entry.execution.command.generation,
+        }),
+      );
+      check(entry);
+      entry.grant = value;
+    }
+    return entry.grant.token;
+  }
+  async function interrupt(entry: Active) {
+    entry.abort.abort();
+    entry.stopped ??= (async () => {
+      await quiesce(entry);
+      journal.phase(entry.execution.id, "interrupted");
+      entry.execution.phase = "interrupted";
+    })();
+    await entry.stopped;
+  }
+  function quiesce(entry: Active) {
+    entry.quiesced ??= (async () => {
+      await broker.stop(entry.execution.id);
+    })();
+    return entry.quiesced;
+  }
+  function check(entry: Active) {
+    if (closed || monotonic() >= entry.deadline) {
+      void interrupt(entry).catch(report);
+      throw new Error("Runner lease expired");
+    }
+    entry.abort.signal.throwIfAborted();
+  }
+  const repositories = createRunnerRepositories({
+    root: options.repositoryRoot,
+    home: options.home,
+    networkGit: options.networkGit,
+    async credential(command, access) {
+      const entry = active;
+      if (!entry || entry.execution.command.id !== command.id)
+        throw new Error("Runner command is not active");
+      check(entry);
+      const credential = await options.daemon.repositoryCredential(
+        command.runId,
+        command.generation,
+        access,
+        await grant(entry),
+      );
+      check(entry);
+      if (access === "write" && credential.branch !== entry.publicationBranch)
+        throw new Error("Runner publication branch changed");
+      return credential.token;
+    },
+  });
+  function pulse(): Promise<void> {
+    if (pulsing) return pulsing;
+    if (closed) return Promise.resolve();
+    pulsing = (async () => {
+      const started = monotonic();
+      const response = await options.daemon.heartbeat();
+      if (closed) return;
+      const observed = monotonic();
+      leases.clear();
+      for (const lease of response.leases)
+        leases.set(
+          `${lease.runId}:${lease.generation}`,
+          Math.min(
+            started + 60_000,
+            observed + Math.max(0, Math.min(60_000, lease.expiresAt - now())),
+          ),
+        );
+      const entry = active;
+      if (entry) {
+        const deadline = leases.get(key(entry.execution.command));
+        if (
+          !deadline ||
+          response.fenced.some(
+            (value) =>
+              value.runId === entry.execution.command.runId &&
+              value.generation === entry.execution.command.generation,
+          )
+        )
+          await interrupt(entry);
+        else if (!entry.abort.signal.aborted) entry.deadline = deadline;
+      }
+      const identity = options.daemon.status();
+      if (identity.phase === "paired" && identity.expiresAt - now() < 60 * 60_000)
+        await options.daemon.renewCertificate();
+    })().finally(() => {
+      pulsing = undefined;
+    });
+    return pulsing;
+  }
+  async function launch(entry: Active) {
+    let bundle: string | undefined;
+    try {
+      await grant(entry);
+      check(entry);
+      if (entry.execution.command.expiresAt <= now())
+        throw new Error("Runner command expired before dispatch");
+      const prepared = await repositories.prepare(entry.execution.command, entry.abort.signal);
+      bundle = prepared.bundle;
+      check(entry);
+      if (entry.execution.command.expiresAt <= now())
+        throw new Error("Runner command expired before dispatch");
+      publishRunnerJob(
+        options.spool,
+        { executionId: entry.execution.id, command: entry.execution.command },
+        { repositoryBundle: bundle },
+      );
+      check(entry);
+      if (entry.execution.command.expiresAt <= now())
+        throw new Error("Runner command expired before dispatch");
+      const receipt = await broker.start(entry.execution.id);
+      if (receipt.alreadyAdmitted)
+        throw new Error("Runner execution identity was already consumed");
+      check(entry);
+      if (entry.execution.command.expiresAt <= now())
+        throw new Error("Runner command expired before dispatch");
+      journal.phase(entry.execution.id, "running");
+    } catch {
+      await interrupt(entry);
+      report();
+    } finally {
+      if (bundle) rmSync(bundle, { force: true });
+    }
+  }
+  async function deliver(entry: Active) {
+    check(entry);
+    try {
+      journal.ingest(
+        entry.execution.id,
+        readRunnerResultFile(options.results, entry.execution.id, "events.jsonl"),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    for (const delivery of journal.pending(entry.execution.id)) {
+      const token = await grant(entry);
+      if (delivery.event.type === "artifact") {
+        const artifact = delivery.event.artifact;
+        const bytes = readRunnerResultFile(
+          options.results,
+          entry.execution.id,
+          `artifact-${artifact.id}.bytes`,
+        );
+        if (
+          bytes.length !== artifact.sizeBytes ||
+          createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+        )
+          throw new Error("Runner artifact output changed");
+        const count = Math.max(1, Math.ceil(bytes.length / RUNNER_ARTIFACT_CHUNK_BYTES));
+        for (let index = 0; index < count; index++) {
+          check(entry);
+          const chunk = {
+            generation: entry.execution.command.generation,
+            artifact,
+            index,
+            data: bytes
+              .subarray(
+                index * RUNNER_ARTIFACT_CHUNK_BYTES,
+                (index + 1) * RUNNER_ARTIFACT_CHUNK_BYTES,
+              )
+              .toString("base64"),
+          };
+          await remote(() =>
+            options.daemon.uploadArtifact(entry.execution.command.runId, chunk, token),
+          );
+        }
+      }
+      await remote(() =>
+        options.daemon.sendEvent(
+          {
+            runId: entry.execution.command.runId,
+            generation: entry.execution.command.generation,
+            ...delivery,
+          },
+          token,
+        ),
+      );
+      check(entry);
+      journal.sent(entry.execution.id, delivery.sequence);
+    }
+    const token = await grant(entry);
+    const answers = await remote(() =>
+      options.daemon.answers(
+        entry.execution.command.runId,
+        entry.execution.command.generation,
+        journal.answerCursor(entry.execution.id),
+        token,
+      ),
+    );
+    for (const answer of answers.answers) {
+      check(entry);
+      const requestId = journal.requestId(entry.execution.id, answer.sequence);
+      if (!requestId) throw new Error("Runner answer does not match a question");
+      publishRunnerAnswer(options.spool, entry.execution.id, { requestId, answer: answer.answer });
+      journal.answered(entry.execution.id, answer.sequence);
+    }
+  }
+  async function complete(entry: Active) {
+    let raw: Buffer;
+    try {
+      raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    try {
+      JSON.parse(raw.toString("utf8"));
+    } catch {
+      return;
+    }
+    await quiesce(entry);
+    check(entry);
+    await deliver(entry);
+    const worker = workerResult.parse(
+      JSON.parse(
+        readRunnerResultFile(options.results, entry.execution.id, "result.json").toString("utf8"),
+      ),
+    );
+    if (
+      worker.executionId !== entry.execution.id ||
+      worker.commandId !== entry.execution.command.id ||
+      worker.run.role !== (entry.execution.command.type === "review" ? "reviewer" : "implementer")
+    )
+      throw new Error("Runner result identity mismatch");
+    const result: RunnerResult = RunnerResultSchema.parse({
+      ...worker.run,
+      executionId: worker.executionId,
+      commandId: worker.commandId,
+      ...(worker.candidateSha ? { candidateSha: worker.candidateSha } : {}),
+      ...(worker.reviewText !== undefined ? { reviewText: worker.reviewText } : {}),
+    });
+    journal.phase(entry.execution.id, "publishing");
+    entry.execution.phase = "publishing";
+    if (result.candidateSha && result.candidateSha !== entry.execution.command.repository.baseSha) {
+      if (
+        entry.execution.command.type !== "run" ||
+        result.stopReason !== "end_turn" ||
+        result.cancelled ||
+        result.timedOut ||
+        result.authRequired ||
+        !result.agentExited ||
+        result.errorMessage
+      )
+        throw new Error("Unsafe runner candidate result");
+      const credential = await options.daemon.repositoryCredential(
+        entry.execution.command.runId,
+        entry.execution.command.generation,
+        "write",
+        await grant(entry),
+      );
+      check(entry);
+      if (!credential.branch) throw new Error("Runner publication branch is missing");
+      entry.publicationBranch = credential.branch;
+      await repositories.publish(
+        entry.execution.command,
+        {
+          bundle: readRunnerResultFile(options.results, entry.execution.id, "candidate.bundle"),
+          sha: result.candidateSha,
+          branch: credential.branch,
+        },
+        entry.abort.signal,
+      );
+      check(entry);
+    }
+    const token = await grant(entry);
+    await remote(() =>
+      options.daemon.postResult(
+        entry.execution.command.runId,
+        entry.execution.command.generation,
+        result,
+        token,
+      ),
+    );
+    check(entry);
+    journal.phase(entry.execution.id, "complete");
+    active = undefined;
+  }
+  async function step() {
+    await pulse().catch(report);
+    if (closed) return;
+    await options.daemon.pollCommands();
+    if (closed) return;
+    const commands = options.daemon.pendingCommands();
+    for (const command of commands) {
+      if (command.type !== "cancel") continue;
+      if (
+        active &&
+        active.execution.command.runId === command.runId &&
+        active.execution.command.generation === command.generation
+      )
+        await interrupt(active);
+      await options.daemon.acknowledgeCommand(command.id);
+    }
+    if (active) {
+      const entry = active;
+      if (entry.abort.signal.aborted) {
+        await entry.stopped;
+        await entry.task;
+        if (active === entry) active = undefined;
+      } else if (entry.task) {
+        if (entry.execution.phase === "preparing") return;
+      }
+    }
+    if (!active) {
+      for (const command of commands) {
+        if (command.type !== "run" && command.type !== "review") continue;
+        if (command.expiresAt <= now()) {
+          await options.daemon.acknowledgeCommand(command.id);
+          continue;
+        }
+        const deadline = leases.get(key(command));
+        if (!deadline || deadline <= monotonic()) continue;
+        if (closed) return;
+        const execution = journal.admit(command, now());
+        if (!execution) {
+          await options.daemon.acknowledgeCommand(command.id);
+          continue;
+        }
+        const entry: Active = { execution, abort: new AbortController(), deadline };
+        active = entry;
+        entry.task = launch(entry)
+          .then(() => {
+            entry.execution.phase = entry.abort.signal.aborted ? "interrupted" : "running";
+          })
+          .catch(report);
+        await options.daemon.acknowledgeCommand(command.id).catch(report);
+        return;
+      }
+    }
+    if (
+      active &&
+      (active.execution.phase === "running" || active.execution.phase === "publishing")
+    ) {
+      const entry = active;
+      try {
+        await deliver(entry);
+        await complete(entry);
+      } catch (error) {
+        if (error instanceof RemoteFailure) {
+          report();
+          return;
+        }
+        await interrupt(entry);
+        report();
+      }
+    }
+  }
+  const heartbeat = setInterval(() => {
+    void pulse().catch(report);
+  }, 15_000);
+  const watchdog = setInterval(() => {
+    if (
+      active &&
+      (monotonic() >= active.deadline ||
+        (active.execution.phase === "preparing" && active.execution.command.expiresAt <= now()))
+    )
+      void interrupt(active).catch(report);
+  }, 250);
+  return {
+    status: () => ({
+      active: active
+        ? {
+            executionId: active.execution.id,
+            commandId: active.execution.command.id,
+            phase: active.execution.phase,
+          }
+        : null,
+    }),
+    tick() {
+      if (closed) return Promise.reject(new Error("Runner runtime is closed"));
+      ticking ??= step().finally(() => {
+        ticking = undefined;
+      });
+      return ticking;
+    },
+    stop() {
+      stopping ??= (async () => {
+        closed = true;
+        clearInterval(heartbeat);
+        clearInterval(watchdog);
+        if (active) await interrupt(active);
+        await Promise.allSettled([ticking, pulsing, active?.task]);
+        journal.close();
+      })();
+      return stopping;
+    },
+  };
+}
