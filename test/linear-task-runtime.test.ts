@@ -22,6 +22,7 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { attachOrchestrator, type AgentLaunch } from "../src/loop";
+import { findOpenQuestion } from "../src/questions";
 import { tempDb, tempHome } from "./helpers";
 
 function event(): AcceptedLinearEvent {
@@ -358,11 +359,14 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
+    const answeredAt = Math.max(Date.now(), findOpenQuestion(f.db, "session")!.createdAt + 1);
     await f.orchestrator.onLinearEvent({
       ...event(),
       action: "prompted",
       dedupeKey: "answer",
       activityId: "answer",
+      activityCreatedAtMs: answeredAt,
+      updatedAtMs: answeredAt,
       body: "Explain the parent architecture.",
     });
     await f.jobs.tick();
