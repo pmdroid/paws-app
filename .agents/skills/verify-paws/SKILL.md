@@ -57,6 +57,8 @@ Run `bun --no-env-file test/local/dashboard-browser.cjs <loopback-origin> <serve
 
 ## What the fixture exercises
 
+For Linux execution spool changes, run `bun test test/runner-execution.test.ts test/boundaries.test.ts`. These checks publish and reload the production strict unsigned job schema, verify immutable repository-bundle copies, reject unsafe directory modes, symlinks, hardlinks and extra credential fields, and drive the Unix broker client against a delayed local response. The production subprocess fixture `test/local/runner-execution-process.ts` accepts `publish`, `read`, `result` and `verify` operations against its supplied fixture root.
+
 - Fresh startup configures Linear issue tracking. Linear tracker and comment adapters use local fakes with an epic and two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
 - Direct HTTPS using production TLS configuration, a fresh local certificate and a client that verifies the certificate. A fresh child reads the service’s `NODE_ENV` setting and verifies that an uncaught enrollment error returns HTTP 500 without its error details. Run this probe from a checkout path containing spaces or Unicode when checking child-import portability.
