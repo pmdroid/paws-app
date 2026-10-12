@@ -211,3 +211,50 @@ test("history refuses a repeated cursor and cancellation instead of returning pa
     tracker.listSessionActivities("session", { signal: controller.signal }),
   ).rejects.toThrow();
 });
+
+test.each(["", " \n "])("history preserves a string action parameter %j", async (parameter) => {
+  const tracker = createLinearTracker({
+    async query() {
+      return {
+        agentSession: {
+          id: "session",
+          activities: {
+            nodes: [
+              { ...activity("action"), content: { type: "action", action: "Read", parameter } },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      };
+    },
+  });
+  expect((await tracker.listSessionActivities("session"))[0]?.content).toEqual({
+    type: "action",
+    action: "Read",
+    parameter,
+  });
+});
+
+test.each([undefined, null, 123, {}, []])(
+  "history rejects a non-string action parameter %j",
+  async (parameter) => {
+    const tracker = createLinearTracker({
+      async query() {
+        return {
+          agentSession: {
+            id: "session",
+            activities: {
+              nodes: [
+                { ...activity("action"), content: { type: "action", action: "Read", parameter } },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        };
+      },
+    });
+    await expect(tracker.listSessionActivities("session")).rejects.toThrow(
+      "Missing or invalid Linear parameter",
+    );
+  },
+);
