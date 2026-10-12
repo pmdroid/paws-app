@@ -1,3 +1,4 @@
+import { probeWorkspaceRuntime } from "./workspace-runtime";
 import { probeWorkspaceIdentityLinks } from "./workspace-identity-links";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,6 +37,10 @@ try {
       console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
     },
   );
+  await probeWorkspaceRuntime(join(root, "workspace-runtime"), (name, passed, observed) => {
+    observations.push({ name, passed, observed });
+    console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
+  });
 } catch (error) {
   observations.push({
     name: "Workspace verification completed",
