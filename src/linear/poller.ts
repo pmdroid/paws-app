@@ -153,7 +153,7 @@ export function startCatchUpPoller(options: {
     const events = [
       ...issueEvents,
       ...sighting.sessions
-        .filter((session) => !issueEvents.some((event) => event.issueId === session.issueId))
+        .filter((session) => !issueEvents.some((event) => event.sessionId === session.id))
         .map((session) => sessionEvent(session, since, options.store)),
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),

@@ -27,7 +27,7 @@ const NOW = 1_700_000_000_000;
 const TEAM = "team_1";
 
 describe("linear intake poll", () => {
-  test("binds the latest own session without any agent activities", async () => {
+  test("preserves every own active session without any agent activities", async () => {
     const db = tempDb();
     const seen: AcceptedLinearEvent[] = [];
     const { client } = scripted(() => ({
@@ -68,7 +68,7 @@ describe("linear intake poll", () => {
     poller.stop();
     await poller.settled;
     db.close();
-    expect(seen.map((event) => event.sessionId)).toEqual(["session-new"]);
+    expect(seen.map((event) => event.sessionId)).toEqual(["session-old", "session-new"]);
   });
 
   test.each([true, false])(

@@ -21,7 +21,7 @@ import {
   type EpicSnapshot,
   type LinearClient,
 } from "../src/linear";
-import { attachOrchestrator, routeBySource } from "../src/loop";
+import { attachOrchestrator, routeBySource, itemPathId } from "../src/loop";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -245,7 +245,7 @@ for (const source of ["linear", "github", "linear-comments"] as const) {
         "fix",
         "review",
       ]);
-      const pathId = source === "github" ? "gh-acme-widgets-2" : "ENG-2";
+      const pathId = itemPathId(item!);
       expect(readFileSync(join(worktreePath(pawsRoot, pathId), "result.txt"), "utf8")).toBe(
         "BODY_ONLY_37_雪-fixed",
       );

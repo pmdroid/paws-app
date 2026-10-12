@@ -52,6 +52,12 @@ import {
   markRun,
   saveCheckpoint,
   saveRunResult,
+  bindLinearSessionTask,
+  ensureLinearSession,
+  activateLinearItem,
+  linearSessionForEpic,
+  recordLinearTurn,
+  applyLinearTurns,
   saveLinearSessionContext,
   getLinearSessionContext,
   hasLinearSessionSnapshotContext,
@@ -93,6 +99,7 @@ import {
 } from "./agents";
 import { deliverLinearOutbox } from "./dispatch";
 import { renderWorkBrief } from "./brief";
+import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 
 export type GitHubBinding = {
   appId: string;
@@ -167,7 +174,41 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted") {
+      const question = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
+      const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
+      const linearPrompt =
+        this.options.channel !== "comments" &&
+        event.sessionId &&
+        !isGitHubIssue(event.sessionId) &&
+        !isGitHubIssue(questionItem?.linearIssueId ?? event.issueId ?? "");
+      if (linearPrompt && event.sessionId && event.body) {
+        const session = recordLinearSessionEvent(this.db, event, this.now());
+        if (questionItem && session && !session.epicId) {
+          bindLinearSessionTask(this.db, event.sessionId, questionItem.epicId);
+          activateLinearItem(this.db, event.sessionId, questionItem.id);
+        }
+        recordLinearTurn(this.db, {
+          eventKey: event.dedupeKey,
+          activityId: event.activityId,
+          sessionId: event.sessionId,
+          actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
+          body: event.body,
+          payload: event.payload,
+          createdAtMs:
+            "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
+              ? event.activityCreatedAtMs
+              : event.updatedAtMs,
+          now: this.now(),
+        });
+      }
       await this.deliverPrompt(event);
+      if (
+        linearPrompt &&
+        question &&
+        findOpenQuestion(this.db, question.sessionId)?.id !== question.id &&
+        event.sessionId
+      )
+        applyLinearTurns(this.db, event.sessionId, [event.dedupeKey], question.itemId);
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
@@ -182,11 +223,19 @@ export class Orchestrator {
     }
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
+    const session =
+      this.options.channel !== "comments" && !isGitHubIssue(event.issueId)
+        ? recordLinearSessionEvent(this.db, event, this.now())
+        : null;
     const result = await intakeDelegatedIssue(this.db, tracker, {
       linearIssueId: event.issueId,
       sessionId: event.sessionId,
+      ...(session ? { taskKey: sessionTaskKey(this.db, session) } : {}),
     });
-    if (event.sessionId !== null) this.assignSession(result.epic.id, event.sessionId);
+    if (event.sessionId !== null) {
+      if (session) bindLinearSessionTask(this.db, event.sessionId, result.epic.id);
+      this.assignSession(result.epic.id, event.sessionId);
+    }
     if (result.ok) {
       const caps = this.options.caps;
       if (caps !== undefined) {
@@ -254,6 +303,8 @@ export class Orchestrator {
     if (loaded === null) return;
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
+    const sessionId = linearSessionForEpic(this.db, loaded.epicId);
+    if (sessionId) activateLinearItem(this.db, sessionId, loaded.id);
     if (loaded.state === "queued") applyWorkItemEvent(this.db, loaded.id, "dispatched");
     if (loaded.state === "recovering") applyWorkItemEvent(this.db, loaded.id, "recovered");
     const item = getWorkItem(this.db, loaded.id);
@@ -627,6 +678,7 @@ export class Orchestrator {
       evidence: summary,
       worktree,
       issue: publishIssueKey(item),
+      branchKey: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
       title: item.title,
@@ -647,7 +699,8 @@ export class Orchestrator {
     let closeoutFailure: CloseoutVerdict | null = null;
     const merged = await serialMerge({
       worktree,
-      issue: itemPathId(item),
+      issue: isGitHubIssue(item.linearIssueId) ? itemPathId(item) : item.linearIdentifier,
+      branchKey: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
       prNumber: published.pull.number,
@@ -1083,9 +1136,19 @@ export class Orchestrator {
   }
 
   private assignSession(epicId: string, sessionId: string): void {
-    for (const item of this.epicItems(epicId)) {
-      configureWorkItem(this.db, item.id, { sessionKey: sessionId });
+    const items = this.epicItems(epicId);
+    if (
+      this.options.channel === "comments" ||
+      isGitHubIssue(sessionId) ||
+      items.some((item) => isGitHubIssue(item.linearIssueId))
+    ) {
+      for (const item of items) configureWorkItem(this.db, item.id, { sessionKey: sessionId });
+      return;
     }
+    const item =
+      items.find((entry) => inFlight(entry.state)) ??
+      items.find((entry) => entry.state === "queued");
+    if (item) activateLinearItem(this.db, sessionId, item.id);
   }
 
   private abortItem(itemId: string): void {
@@ -1097,7 +1160,10 @@ export class Orchestrator {
   }
 
   private itemsForSession(sessionId: string): WorkItemRecord[] {
-    return this.allItems().filter((item) => item.sessionKey === sessionId);
+    return this.allItems().filter(
+      (item) =>
+        item.sessionKey === sessionId || linearSessionForEpic(this.db, item.epicId) === sessionId,
+    );
   }
 
   private allItems(): WorkItemRecord[] {
@@ -1141,6 +1207,14 @@ export class Orchestrator {
     if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
       const session = await this.tracker.getSession(sessionId, { signal });
       signal.throwIfAborted();
+      const durable = ensureLinearSession(this.db, {
+        sessionId,
+        issueId: session.issue?.id,
+        appUserId: session.appUserId,
+        creatorId: session.creatorId,
+        now: this.now(),
+      });
+      if (durable.epicId) bindLinearSessionTask(this.db, sessionId, durable.epicId);
       saveLinearSessionSnapshotContext(
         this.db,
         sessionId,

@@ -17,6 +17,7 @@ import { immediate } from "./tx";
 
 export type WorkItemRecord = {
   id: string;
+  taskKey?: string | null;
   epicId: string;
   linearIssueId: string;
   linearIdentifier: string;
@@ -40,6 +41,7 @@ export type WorkItemRecord = {
 
 type ItemSql = {
   id: string;
+  task_key: string | null;
   epic_id: string;
   linear_issue_id: string;
   linear_identifier: string;
@@ -313,6 +315,7 @@ function failureEvent(state: WorkItemState): WorkItemEvent | null {
 function mapItem(row: ItemSql): WorkItemRecord {
   return {
     id: row.id,
+    taskKey: row.task_key,
     epicId: row.epic_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,

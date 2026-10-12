@@ -172,9 +172,9 @@ export function createIntakePollSource(
       const pendingActivities = finished.has("activities") ? [] : activities.nodes;
       if (!finished.has("sessions")) {
         for (const session of readSessions(root, appUserId, teamId)) {
-          const prior = latestSessions.get(session.issueId);
+          const prior = latestSessions.get(session.id);
           if (prior === undefined || session.createdAtMs > prior.createdAtMs) {
-            latestSessions.set(session.issueId, session);
+            latestSessions.set(session.id, session);
           }
         }
       }
@@ -261,9 +261,9 @@ function readSessions(
     const createdAtMs = readTime(node, "createdAt");
     const updatedAtMs = readTime(node, "updatedAt");
     if (id === null || issueId === null || createdAtMs === null || updatedAtMs === null) continue;
-    const prior = latest.get(issueId);
+    const prior = latest.get(id);
     if (prior === undefined || createdAtMs > prior.createdAtMs) {
-      latest.set(issueId, { id, issueId, createdAtMs, updatedAtMs });
+      latest.set(id, { id, issueId, createdAtMs, updatedAtMs });
     }
   }
   return [...latest.values()];

@@ -41,18 +41,27 @@ export function cycleMessage(identifiers: readonly string[]): string {
 export async function intakeDelegatedIssue(
   db: Database,
   tracker: TrackerAdapter,
-  input: { linearIssueId: string; sessionId?: string | null; now?: number },
+  input: {
+    linearIssueId: string;
+    sessionId?: string | null;
+    now?: number;
+    taskKey?: string;
+    singleIssue?: boolean;
+  },
 ): Promise<IntakeResult> {
   const now = input.now ?? Date.now();
-  const existing = readEpicByLinearId(db, input.linearIssueId);
+  const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
+  const existing = readEpicByLinearId(db, input.linearIssueId, taskKey);
   if (existing !== null) return replay(db, existing);
-  const snapshot = await tracker.loadEpic(input.linearIssueId);
+  const loaded = await tracker.loadEpic(input.linearIssueId);
+  const snapshot = input.singleIssue ? { ...loaded, subIssues: [] } : loaded;
   const delegatedAlone = snapshot.subIssues.length === 0;
   const nodes = workNodes(snapshot);
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
   if (!ordered.ok) {
     const epic = insertStalledEpic(db, {
+      taskKey,
       linearIssueId: snapshot.linearIssueId,
       identifier: snapshot.identifier,
       title: snapshot.title,
@@ -63,6 +72,7 @@ export async function intakeDelegatedIssue(
     return { ok: false, reason: "cycle", epic, identifiers, alreadyExisted: false };
   }
   const saved = insertRunningQueue(db, {
+    taskKey,
     linearIssueId: snapshot.linearIssueId,
     identifier: snapshot.identifier,
     title: snapshot.title,
