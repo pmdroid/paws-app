@@ -29,6 +29,8 @@ const MODULES = [
   "sandbox",
   "auth",
   "runner-protocol",
+  "runner-repositories",
+  "process",
   "ghissues",
   "ghcomments",
   "workspace",
@@ -47,10 +49,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   db: ["core"],
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
-  acp: ["core", "config", "sandbox"],
+  acp: ["core", "config", "sandbox", "process"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core"],
-  github: [],
+  github: ["process"],
   questions: ["core"],
   web: ["db"],
   server: ["slack", "config", "linear", "github", "web", "auth", "settings"],
@@ -89,6 +91,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear"],
   "runner-identity": ["credentials"],
   "runner-protocol": [],
+  "runner-repositories": ["github", "runner-protocol"],
+  process: [],
 };
 
 describe("module boundaries", () => {

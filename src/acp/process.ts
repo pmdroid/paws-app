@@ -1,5 +1,5 @@
-import { OwnedProcess } from "./owned-process";
-export type { OwnedProcess } from "./owned-process";
+import { OwnedProcess } from "../process";
+export type { OwnedProcess } from "../process";
 import { buildDockerRun, type DockerAgent } from "../sandbox";
 
 export interface DockerSpawnOption {

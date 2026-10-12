@@ -55,6 +55,14 @@ bun --no-env-file scripts/verify-local.ts serve
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
+## Remote repository transfer
+
+The audit uses actual local Git origins to verify daemon mirror updates, immutable assigned-base bundles, candidate ancestry, exact-head publication and retry after rebuilding the adapter over the same durable cache. It interrupts an actual partial clone, proves that no incomplete mirror is published, retries through a fresh adapter and recovers an owned legacy incomplete mirror. It rejects a missing base, mismatched candidate, protected branch and reviewer push. Actual Git locks and AbortSignals verify snapshot removal after cleanup failure and interruption, including interruption during temporary-ref creation. A valid bundle with enough refs to exceed the 10 MiB Git output limit fails before requesting write credentials. Hosted GitHub network operations and credentials are scripted; Git objects, bundles and remote refs are real.
+
+## Repository transfer cancellation
+
+The audit runs the production credentialed Git adapter with a compiled Git stand-in that starts a real SIGTERM-resistant descendant. An AbortSignal must reject the operation and leave both processes stopped within three seconds. An already-aborted operation must fail before spawning. GitHub network behavior is scripted; process creation, group termination and credential cleanup use production code.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.
