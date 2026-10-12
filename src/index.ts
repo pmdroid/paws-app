@@ -92,6 +92,7 @@ import {
 } from "./linear";
 import {
   attachOrchestrator,
+  createLinearArtifactReader,
   itemPathId,
   repositoryAnswer,
   worktreeBranch,
@@ -259,6 +260,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     statusEnv: envSource,
     closeoutHome: paths.home,
+    readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
     ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
     agentSettings: {
       configPath: paths.configFile,

@@ -15,11 +15,35 @@ import {
   artifactAttachmentRequested,
   completeArtifactAttempt,
   enqueueOutboxOnce,
+  getArtifact,
   immediate,
   markArtifact,
   saveArtifact,
 } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
+
+export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
+  return async (
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; mimeType: string; displayName: string } | null> => {
+    signal?.throwIfAborted();
+    if (!/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(id)) return null;
+    const artifact = getArtifact(options.db, id);
+    if (artifact === null) return null;
+    const directory = join(options.secretsDir, "linear-artifacts");
+    for (const path of [options.secretsDir, directory]) {
+      const info = await lstat(path);
+      if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0)
+        throw new Error("Artifact storage must be a private directory");
+    }
+    const bytes = await readPrivate(join(directory, `${artifact.id}.bytes`), 10 * 1024 * 1024);
+    signal?.throwIfAborted();
+    if (bytes.byteLength !== artifact.sizeBytes || digest(bytes) !== artifact.sha256)
+      throw new Error("Artifact snapshot integrity check failed");
+    return { bytes, mimeType: artifact.mimeType, displayName: artifact.displayName };
+  };
+}
 
 export function createLinearArtifactPublisher(options: {
   db: Database;

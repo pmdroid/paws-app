@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
 import {
@@ -15,7 +15,7 @@ import {
   stopOutboxSession,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
-import { createLinearArtifactPublisher } from "../src/loop";
+import { createLinearArtifactPublisher, createLinearArtifactReader } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
 const URL = "https://uploads.linear.app/workspace/proof.png";
@@ -108,6 +108,41 @@ test("artifact publication persists immutable bytes privately and a durable inli
   expect(env.prepares()).toBe(1);
   expect(env.uploads()).toBe(1);
   expect(listOutbox(env.db, "session")).toHaveLength(1);
+  env.db.close();
+});
+
+test("dashboard artifact reads return the private snapshot rather than mutable workspace bytes or signed manifests", async () => {
+  const env = setup();
+  await env.publisher().publish(artifact, context);
+  const row = listArtifacts(env.db, "item")[0]!;
+  const read = createLinearArtifactReader(env);
+  expect(await read(row.id)).toEqual({ bytes, displayName: "proof.png", mimeType: "image/png" });
+  expect(await read("../../secrets")).toBeNull();
+  expect(await read(crypto.randomUUID())).toBeNull();
+  expect(JSON.stringify(await read(row.id))).not.toContain("private-secret");
+  const path = join(env.secretsDir, "linear-artifacts", `${row.id}.bytes`);
+  await writeFile(path, new Uint8Array(bytes.length));
+  await expect(read(row.id)).rejects.toThrow("integrity");
+  await writeFile(path, bytes);
+  await chmod(path, 0o644);
+  await expect(read(row.id)).rejects.toThrow("invalid");
+  await chmod(path, 0o600);
+  await unlink(path);
+  await symlink(join(env.secretsDir, "linear-artifacts", `${row.id}.upload`), path);
+  await expect(read(row.id)).rejects.toThrow();
+  env.db.close();
+});
+
+test("dashboard can read a prepared artifact while publication retries without exposing upload credentials", async () => {
+  const env = setup({ fail: true });
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow();
+  const row = listArtifacts(env.db, "item")[0]!;
+  expect(row.state).toBe("failed");
+  expect(await createLinearArtifactReader(env)(row.id)).toEqual({
+    bytes,
+    displayName: "proof.png",
+    mimeType: "image/png",
+  });
   env.db.close();
 });
 

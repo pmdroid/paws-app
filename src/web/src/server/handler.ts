@@ -10,6 +10,7 @@ import {
 import { demoStatus } from "../demo";
 import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
+import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
 
@@ -38,6 +39,7 @@ export interface StatusServerOptions {
   csrfToken?: string;
   closeoutHome?: string;
   evidenceRoot?: string;
+  readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
 }
 
@@ -66,6 +68,8 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
+  const artifact = await handleLinearArtifactRequest(request, options.readLinearArtifact);
+  if (artifact !== null) return artifact;
   const session = await handleSessionStartRequest(request, options);
   if (session !== null) return session;
   const auth = await handleGitHubAuthRequest(request, options.githubAuth, options.csrfToken);

@@ -4,7 +4,12 @@ import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
-import { fakeStatusProvider, handleStatusRequest, type StartLinearSession } from "../web";
+import {
+  fakeStatusProvider,
+  handleStatusRequest,
+  type ReadLinearArtifact,
+  type StartLinearSession,
+} from "../web";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 
 export type ServerOptions = {
@@ -25,6 +30,7 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
 };
@@ -57,6 +63,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         webhooks,
         githubAuth,
         csrfToken,
+        ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
         ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
         ...(options.agentSettings
           ? { agentSettings: { ...options.agentSettings, csrfToken } }
@@ -79,6 +86,7 @@ type Secrets = {
   webhooks: boolean;
   githubAuth: ReturnType<typeof createDashboardGitHubAuth>;
   csrfToken: string;
+  readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: AgentSettingsOptions;
   db?: Database;
@@ -98,6 +106,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   const status = await handleStatusRequest(request, {
     csrfToken: secrets.csrfToken,
+    ...(secrets.readLinearArtifact ? { readLinearArtifact: secrets.readLinearArtifact } : {}),
     ...(secrets.startLinearSession ? { startLinearSession: secrets.startLinearSession } : {}),
     githubAuth: secrets.githubAuth,
     ...(secrets.db

@@ -65,6 +65,12 @@ export function listArtifacts(db: Database, itemId: string): StoredArtifact[] {
     .all(itemId);
 }
 
+export function getArtifact(db: Database, id: string): StoredArtifact | null {
+  return db
+    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE id = ?`)
+    .get(id);
+}
+
 export function beginArtifactAttempt(db: Database, itemId: string, identityHash: string): number {
   return db
     .query<{ version: number }, [string, string]>(`INSERT INTO linear_artifact_attempt

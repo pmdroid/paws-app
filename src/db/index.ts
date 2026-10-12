@@ -153,6 +153,7 @@ export {
   markArtifact,
   listArtifacts,
   artifactPublicationReady,
+  getArtifact,
   beginArtifactAttempt,
   requestArtifactAttachment,
   artifactAttachmentRequested,

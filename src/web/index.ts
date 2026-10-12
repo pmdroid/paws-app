@@ -11,4 +11,5 @@ export type { LiveStatusOptions } from "./src/live/provider";
 export { STATUS_API_PATH, STATUS_PAGE_PATH, parseStatusSnapshot } from "./src/contract";
 export type { StatusSnapshot } from "./src/contract";
 export { demoStatus } from "./src/demo";
+export type { ReadLinearArtifact } from "./src/server/linear-artifact";
 export type { StartLinearSession } from "./src/server/session-start";
