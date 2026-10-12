@@ -8,7 +8,7 @@ import {
 import { errorText } from "./jobs";
 import { immediate } from "./tx";
 
-export const OUTBOX_TARGETS = ["linear", "slack", "github", "sandbox"] as const;
+export const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
 export type OutboxTarget = (typeof OUTBOX_TARGETS)[number];
 
 export const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;

@@ -79,7 +79,7 @@ Webhook handlers fail closed (HTTP 401) until the real HMAC check exists. Do not
 
 ## Parallel work
 
-Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire a constructed adapter) and `src/server/serve.ts` (one route branch). Add a module rather than widening an existing one when the work is a new concern (`src/intake`, `src/host`, `src/sandbox`).
+Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire a constructed adapter) and `src/server/serve.ts` (one route branch). Add a module rather than widening an existing one when the work is a new concern (`src/intake`, `src/host`).
 
 | Issue                                  | Directory                                  | Leaves alone                |
 | -------------------------------------- | ------------------------------------------ | --------------------------- |
@@ -92,7 +92,6 @@ Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire
 | QM-09 recovery, stop, caps             | `src/core/transition.ts`, `src/db/jobs.ts` | adapter internals           |
 | QM-11 status page                      | `src/web`                                  | the workflow                |
 | QM-12 sleep and wake                   | new `src/host`                             | merge logic                 |
-| QM-13 optional Docker                  | new `src/sandbox`                          | the default host path       |
 
 QM-09 is the owner of the edge table and the job claim. Other issues call `transition()`, `enqueueJob()`, and `enqueueOutbox()` without editing those files. `claimNextJob` and `dispatchOutbox` throw on purpose.
 

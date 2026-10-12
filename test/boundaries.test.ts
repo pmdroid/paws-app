@@ -26,7 +26,6 @@ const MODULES = [
   "comments",
   "install",
   "setup",
-  "sandbox",
   "auth",
 ] as const;
 
@@ -42,7 +41,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   db: ["core"],
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
-  acp: ["core", "config", "sandbox"],
+  acp: ["core", "config"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core"],
   github: [],
@@ -78,7 +77,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials"],
-  sandbox: [],
 };
 
 describe("module boundaries", () => {

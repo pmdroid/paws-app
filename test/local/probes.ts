@@ -27,11 +27,13 @@ import { createFakeTracker } from "../../src/linear";
 import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
+import { probeHostAcp } from "./host-acp";
 
 export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
+  await probeHostAcp(root, observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,

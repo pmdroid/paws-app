@@ -64,7 +64,3 @@ bun run paws
 ```
 
 Paws starts the ngrok tunnel for that domain. Delegate the parent issue to Paws in Linear to start an agent session.
-
-## Docker
-
-Docker is optional. `bun run paws --docker` runs the adapters in the sandbox. One-time container login is `bun run paws login claude --docker` and `bun run paws login codex --docker`. For Grok, run `grok login --device-auth` inside the container with the agent-home volume mounted so `cached_token` survives. The default run stays on the host.

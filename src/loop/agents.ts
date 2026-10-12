@@ -44,7 +44,6 @@ export type AcpAgentDeps = {
   onCleanupFailure?: () => void;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   timeoutMs?: number;
-  docker?: { proxyUrl: string; image?: string; bin?: string };
 };
 
 export function implementPrompt(input: {
@@ -100,7 +99,6 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        ...dockerOf(deps, deps.profiles?.reviewer.agent ?? "codex"),
         onEvent(event) {
           if (event.type !== "session_update") return;
           if (event.update.sessionUpdate !== "agent_message_chunk") return;
@@ -154,7 +152,6 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ...(deps.home ? { home: deps.home } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
         ...spawnOf(launch),
-        ...dockerOf(deps, deps.profiles?.implementer.agent ?? "claude"),
       });
       if (!result.agentExited) deps.onCleanupFailure?.();
       if (result.cancelled) return { ok: false, reason: "fix cancelled" };
@@ -186,25 +183,6 @@ export function parseFindings(text: string): Finding[] {
   const parsed = parseReviewFindings(text);
   if (!parsed.ok) throw new Error(`Invalid review findings: ${parsed.reason}`);
   return parsed.findings;
-}
-
-function dockerOf(
-  deps: AcpAgentDeps,
-  agent: "claude" | "codex" | "grok",
-):
-  | { docker: { agent: "claude" | "codex"; proxyUrl: string; image?: string; bin?: string } }
-  | Record<string, never> {
-  const docker = deps.docker;
-  if (docker === undefined) return {};
-  if (agent === "grok") throw new Error("Grok does not support the configured Docker sandbox");
-  return {
-    docker: {
-      agent,
-      proxyUrl: docker.proxyUrl,
-      ...(docker.image ? { image: docker.image } : {}),
-      ...(docker.bin ? { bin: docker.bin } : {}),
-    },
-  };
 }
 
 function spawnOf(launch: ReturnType<AgentLaunch>): {
