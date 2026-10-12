@@ -15,6 +15,7 @@ import { loginGitHubApp } from "./github-app";
 import { loadRuntime } from "../config";
 
 export type LoginIO = {
+  signal?: AbortSignal;
   auth?: "oauth" | "gh" | "app";
   repo?: string | null;
   port?: number;

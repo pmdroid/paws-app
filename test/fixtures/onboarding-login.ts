@@ -22,6 +22,12 @@ const store: GitHubTokenStore = {
   save: async (value) => {
     record("save", value.login);
   },
+  async update(change) {
+    const next = change(null);
+    if (next === null) return false;
+    await store.save(next);
+    return true;
+  },
   markInvalid: async () => {},
   delete: async () => {},
 };

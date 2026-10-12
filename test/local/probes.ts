@@ -36,6 +36,7 @@ export async function probeBoundaries(
     warning: null,
     load: async () => null,
     save: async () => {},
+    update: async (change) => change(null) !== null,
     markInvalid: async () => {},
     delete: async () => {},
   };
