@@ -1,0 +1,487 @@
+import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  beginImplementRun,
+  applyWorkItemEvent,
+  bindLinearSessionTask,
+  bindWorkItemRepository,
+  consumeWorkspaceBootstrap,
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  recordLinearInstallation,
+} from "../../src/db";
+import { createRunnerControl } from "../../src/runner-control";
+import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
+import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
+import { createRunnerWorkHttp, createRunnerWork } from "../../src/runner-work";
+import { openQuestion, answerQuestion } from "../../src/questions";
+import {
+  issueWorkspaceBootstrap,
+  workspaceId,
+  workspaceTokenHash,
+  type WorkspacePrincipal,
+} from "../../src/workspace";
+
+export async function probeRunnerWork(
+  root: string,
+  observe: (name: string, passed: boolean, observed: unknown) => void,
+) {
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const path = join(root, "paws.sqlite");
+  const db = openDatabase(path);
+  migrate(db);
+  let now = Date.now();
+  const userId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "owner",
+    name: "Owner",
+    email: "owner@example.invalid",
+  });
+  const bootstrap = issueWorkspaceBootstrap(db, "fixture-work", now);
+  const workspace = consumeWorkspaceBootstrap(db, {
+    id: workspaceId(),
+    organizationId: "fixture-work",
+    name: "Fixture",
+    userId,
+    tokenHash: workspaceTokenHash(bootstrap),
+    now,
+  });
+  const principal: WorkspacePrincipal = {
+    workspaceId: workspace.id,
+    userId,
+    role: "owner",
+    authenticatedAt: now,
+    teamIds: [],
+  };
+  const issuer = join(root, "issuer");
+  const authority = await initializeRunnerAuthority(issuer);
+  const control = createRunnerControl({
+    db,
+    authority,
+    certificateRoot: issuer,
+    disconnect() {},
+    now: () => now,
+  });
+  const client = await createRunnerKey(join(root, "client"));
+  async function paired(name: string) {
+    const pending = await control.beginPairing({ name, csr: client.csr });
+    return (await control.approvePairing(principal, pending.code)).runnerId;
+  }
+  const firstRunner = await paired("First VM");
+  const secondRunner = await paired("Second VM");
+  const keys = generateKeyPairSync("ed25519");
+  const keyPath = join(root, "fixture-signing.pem");
+  writeFileSync(keyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: keys.privateKey,
+    now: () => now,
+  });
+  const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
+  const { run } = beginImplementRun(db, item.id, now);
+  recordLinearInstallation(db, {
+    organizationId: "fixture-work",
+    oauthClientId: "fixture-app",
+    appUserId: "fixture-app-user",
+    sessionId: "fixture-session",
+    teamId: "fixture-team",
+    observedAtMs: now,
+  });
+  bindLinearSessionTask(db, "fixture-session", item.epicId, { actorId: "owner" });
+  const repository = {
+    owner: "fixture",
+    repo: "repository",
+    remoteUrl: "https://github.com/fixture/repository.git",
+    baseSha: "a".repeat(40),
+  };
+  bindWorkItemRepository(db, item.id, repository);
+  const command: Extract<RunnerCommand, { type: "run" }> = {
+    id: workspaceId(),
+    runnerId: firstRunner,
+    workspaceId: workspace.id,
+    issuedAt: now,
+    expiresAt: now + 5 * 60_000,
+    type: "run",
+    runId: run.id,
+    itemId: item.id,
+    generation: 1,
+    repository,
+    profile: { agent: "codex", model: "scripted" },
+    prompt: "Update the fixture.",
+  };
+  try {
+    assert.throws(() => work.assign(command), /repository access/);
+    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
+      workspace.id,
+      "fixture/repository",
+      "fixture-team",
+    ]);
+    assert.throws(
+      () =>
+        work.assign({
+          ...command,
+          repository: {
+            ...repository,
+            repo: "other",
+            remoteUrl: "https://github.com/fixture/other.git",
+          },
+        }),
+      /repository or task changed/,
+    );
+    const assigned = work.assign(command);
+    assert.equal(assigned.leaseUntil, now + 60_000);
+    const verified = verifyRunnerCommand(assigned.envelope, {
+      trustedKeys: new Map([["fixture", keys.publicKey]]),
+      runnerId: firstRunner,
+      workspaceId: workspace.id,
+      now,
+      allowedRepositories: ["fixture/repository"],
+      claimCommand: () => true,
+    });
+    assert(verified.ok);
+    assert.equal(work.commands(firstRunner).length, 1);
+    assert.equal(work.commands(secondRunner).length, 0);
+    observe("durable work is signed and bound to an active Linear workspace repository", true, {
+      signatureVerified: verified.ok,
+      firstRunnerCommands: 1,
+      secondRunnerCommands: 0,
+      leaseMs: 60_000,
+      unmappedAndChangedRepositoryDenied: true,
+    });
+    const before = await restartSnapshot(root, path, keyPath, firstRunner, now);
+    assert.deepEqual(before.commands, [command.id]);
+    work.acknowledge(firstRunner, command.id);
+    work.acknowledge(firstRunner, command.id);
+    assert.throws(() => work.acknowledge(secondRunner, command.id), /unknown/);
+    const after = await restartSnapshot(root, path, keyPath, firstRunner, now);
+    assert.deepEqual(after.commands, []);
+    observe(
+      "command delivery survives process restart and acknowledgments are durable and idempotent",
+      true,
+      {
+        before: before.commands,
+        after: after.commands,
+        duplicateAcknowledgmentAccepted: true,
+        wrongRunnerDenied: true,
+      },
+    );
+    const grantInput = {
+      runnerId: firstRunner,
+      runId: run.id,
+      commandId: command.id,
+      generation: 1,
+    };
+    assert.throws(() => work.issueGrant({ ...grantInput, runnerId: secondRunner }), /fenced/);
+    assert.throws(() => work.issueGrant({ ...grantInput, commandId: "other" }), /changed/);
+    const grant = work.issueGrant(grantInput);
+    const stored = db
+      .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_work_grant")
+      .get()!;
+    assert.notEqual(stored.token_hash, grant.token);
+    const event = {
+      ...grantInput,
+      token: grant.token,
+      sequence: 1,
+      event: { type: "progress" as const, text: "Working" },
+    };
+    assert.equal(work.event(event).duplicate, false);
+    assert.equal(work.event(event).duplicate, true);
+    const http = createRunnerWorkHttp(work);
+    const request = (route: string, body: unknown, token?: string) =>
+      new Request(`https://runner.invalid${route}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const httpEvent = { runId: run.id, generation: 1, sequence: 1, event: event.event };
+    assert.equal(
+      (await http(request("/v1/events", httpEvent, grant.token), firstRunner))!.status,
+      200,
+    );
+    assert.equal((await http(request("/v1/events", httpEvent, "bad"), firstRunner))!.status, 403);
+    assert.equal(
+      (await http(
+        request(`/v1/runs/${run.id}/grant`, {
+          ...grantInput,
+          runnerId: undefined,
+          runId: undefined,
+          generation: 2,
+        }),
+        firstRunner,
+      ))!.status,
+      409,
+    );
+    assert.equal((await http(request("/v1/heartbeat", {}), firstRunner))!.status, 200);
+    let pulls = 0;
+    let cancelled = false;
+    const oversized = new Request("https://runner.invalid/v1/heartbeat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream(
+        {
+          pull(controller) {
+            if (++pulls <= 3) controller.enqueue(new Uint8Array(40_000));
+            else controller.close();
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+    });
+    assert.equal((await http(oversized, firstRunner))!.status, 403);
+    assert.equal(pulls, 2);
+    assert.equal(cancelled, true);
+
+    assert.throws(
+      () => work.event({ ...event, event: { type: "progress", text: "Changed" } }),
+      /changed its payload/,
+    );
+    assert.throws(() => work.event({ ...event, sequence: 3 }), /gap/);
+    assert.throws(() => work.event({ ...event, token: "wrong", sequence: 2 }), /grant/);
+    assert.throws(() => work.event({ ...event, runnerId: secondRunner, sequence: 2 }), /fenced/);
+    assert.equal(work.authorize(event).command.id, command.id);
+    assert.throws(() => work.authorize({ ...event, token: "wrong" }), /grant/);
+    db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
+      workspace.id,
+      "fixture/other",
+      "fixture-team",
+    ]);
+    db.run(
+      "UPDATE work_item_repository SET repo='other',remote_url='https://github.com/fixture/other.git' WHERE item_id=?",
+      [item.id],
+    );
+    assert.throws(() => work.authorize(event), /repository binding changed/);
+    assert.throws(() => work.event({ ...event, sequence: 2 }), /repository binding changed/);
+    assert.throws(() => work.issueGrant(grantInput), /repository binding changed/);
+    db.run("UPDATE work_item_repository SET repo=?,remote_url=? WHERE item_id=?", [
+      repository.repo,
+      repository.remoteUrl,
+      item.id,
+    ]);
+    observe(
+      "repository credentials and events remain bound to the exact assigned repository after configuration changes",
+      true,
+      { changedBindingDenied: true, wrongGrantDenied: true },
+    );
+    observe(
+      "run grants are separate hash-only credentials and events reject cross-runner, changed replay and sequence gaps",
+      true,
+      {
+        hashOnly: true,
+        duplicateAccepted: true,
+        changedReplayDenied: true,
+        gapDenied: true,
+        wrongRunnerDenied: true,
+      },
+    );
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    assert.throws(() => work.authorize(event), /matching open question/);
+    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    const question = openQuestion(db, {
+      itemId: item.id,
+      runId: run.id,
+      sessionId: "fixture-session",
+      body: "Continue the remote task?",
+      now,
+    });
+    assert.equal(work.authorize(event).command.id, command.id);
+    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
+    assert.equal(work.event(event).duplicate, true);
+    assert.throws(() => work.event({ ...event, sequence: 2 }), /matching open question/);
+    assert.throws(() => work.authorize(event), /matching open question/);
+    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    applyWorkItemEvent(db, item.id, "answer_received");
+    assert.equal(work.authorize(event).command.id, command.id);
+    observe(
+      "a live remote task retains its lease while its own Linear question awaits an answer",
+      true,
+      { matchingQuestionAllowed: true, unrelatedWaitDenied: true, answeredTaskResumed: true },
+    );
+    now += 15_000;
+    const heartbeat = work.heartbeat(firstRunner);
+    assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
+    const cap = command.expiresAt - 30_000;
+    db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [command.expiresAt, run.id]);
+    now = cap;
+    assert.equal(work.heartbeat(firstRunner).leases[0]!.expiresAt, command.expiresAt);
+    now = command.expiresAt;
+    assert.throws(() => work.issueGrant(grantInput), /lease expired/);
+    assert.throws(() => work.event({ ...event, sequence: 2 }), /lease expired/);
+    const expired = work.heartbeat(firstRunner);
+    assert.deepEqual(expired.leases, []);
+    assert.equal(expired.fenced[0]!.generation, 1);
+    const secondCommand = {
+      ...command,
+      id: workspaceId(),
+      runnerId: secondRunner,
+      generation: 2,
+      issuedAt: now,
+      expiresAt: now + 5 * 60_000,
+    };
+    work.assign(secondCommand);
+    assert.throws(() => work.issueGrant(grantInput), /fenced/);
+    assert.equal(work.commands(firstRunner).length, 0);
+    assert.equal(work.commands(secondRunner).length, 1);
+    observe(
+      "expired leases cannot be revived and reassignment fences the previous generation",
+      true,
+      {
+        leaseExpiredAt: now,
+        previousGeneration: 1,
+        currentGeneration: 2,
+        oldRunnerDenied: true,
+        heartbeatDidNotRevive: true,
+      },
+    );
+    const current = {
+      runnerId: secondRunner,
+      runId: run.id,
+      commandId: secondCommand.id,
+      generation: 2,
+    };
+    const currentGrant = work.issueGrant(current);
+    work.enqueue({
+      id: workspaceId(),
+      type: "cancel",
+      runnerId: secondRunner,
+      workspaceId: workspace.id,
+      runId: run.id,
+      generation: 2,
+      issuedAt: now,
+      expiresAt: now + 60_000,
+    });
+    assert.throws(
+      () =>
+        work.event({
+          ...current,
+          token: currentGrant.token,
+          sequence: 1,
+          event: { type: "candidate", sha: "b".repeat(40) },
+        }),
+      /fenced/,
+    );
+    const cancel = work.commands(secondRunner);
+    assert.equal(cancel.length, 1);
+    assert.equal(
+      JSON.parse(Buffer.from(cancel[0]!.payload, "base64url").toString("utf8")).type,
+      "cancel",
+    );
+    observe("durable cancellation revokes grants before delivering the stop command", true, {
+      lateCandidateDenied: true,
+      cancelCommandPersisted: true,
+      originalRunState: db
+        .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
+        .get(item.id)!.state,
+    });
+    const third = { ...secondCommand, id: workspaceId(), generation: 3 };
+    work.assign(third);
+    const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
+    control.setStatus(principal, secondRunner, "revoked");
+    assert.throws(
+      () =>
+        work.event({
+          ...current,
+          generation: 3,
+          token: thirdGrant.token,
+          sequence: 1,
+          event: { type: "completed" },
+        }),
+      /unavailable/,
+    );
+    assert.throws(() => work.heartbeat(secondRunner), /unavailable/);
+    const replacement = { ...third, id: workspaceId(), runnerId: firstRunner, generation: 4 };
+    work.assign(replacement);
+    assert.equal(work.current(run.id, 4).command.id, replacement.id);
+    for (let index = 0; index < 64; index++) {
+      const blocked = insertQueuedItem(db, {
+        id: `blocked-${index}`,
+        now,
+        sessionKey: "fixture-session",
+      });
+      const started = beginImplementRun(db, blocked.id, now);
+      bindWorkItemRepository(db, blocked.id, repository);
+      work.assign({
+        ...replacement,
+        id: workspaceId(),
+        itemId: blocked.id,
+        runId: started.run.id,
+        generation: 1,
+      });
+      db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [blocked.id]);
+    }
+    const probeId = workspaceId();
+    work.enqueue({
+      id: probeId,
+      runnerId: firstRunner,
+      workspaceId: workspace.id,
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      type: "probe",
+      profile: command.profile,
+    });
+    assert(
+      work
+        .commands(firstRunner)
+        .some(
+          (envelope) =>
+            JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")).id === probeId,
+        ),
+    );
+    observe(
+      "runner revocation fences current work independently of an otherwise valid run grant",
+      true,
+      { revokedRunnerDenied: true, completionDenied: true, heartbeatDenied: true },
+    );
+  } finally {
+    db.close();
+  }
+}
+
+async function restartSnapshot(
+  root: string,
+  path: string,
+  keyPath: string,
+  runnerId: string,
+  now: number,
+): Promise<{ commands: string[] }> {
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      join(import.meta.dir, "../fixtures/runner-work-restart.ts"),
+      path,
+      keyPath,
+      runnerId,
+      String(now),
+    ],
+    {
+      env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, TMPDIR: root },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  try {
+    const [exit, output, error] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    assert.equal(exit, 0, error);
+    return JSON.parse(output);
+  } finally {
+    clearTimeout(timeout);
+  }
+}

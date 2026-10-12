@@ -78,3 +78,9 @@ The TLS probe advances the authorization clock while an actual POST body is stil
 The TLS probe expires an identity during asynchronous authorization and before a streaming response starts. It verifies that the handler is not called after the failed access check and that a rejected response stream receives cancellation.
 
 Runner HTTP proof uses real HTTPS enrollment and actual mTLS renewal with real SQLite role checks. Its browser route harness supplies a scripted principal; the workspace access probes prove browser authentication, origin and CSRF enforcement. It checks strict bounded JSON, one-use approval, denied member approval, certificate ownership and revocation.
+
+The runner work probe uses real SQLite, signed commands and a fresh child process to verify durable acknowledgements and ordered event replay. It checks canonical current-run, Linear workspace/team repository access, sixty-second leases, short run grants, generation fencing, cancellation and revocation. Hosted agents and tracker delivery are scripted.
+
+Runner work verification covers production HTTP request handlers with valid and denied grants, stale generations, heartbeat JSON, and a chunked oversized body that must be cancelled before the third chunk is read. It also replaces a revoked runner immediately with a fresh generation and polls a later health command beyond 64 invalid run commands.
+
+An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
