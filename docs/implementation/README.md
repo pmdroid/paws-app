@@ -10,8 +10,8 @@ This implementation reference follows the source changes linked on each page. Th
 
 ## Start here
 
-| Question                                                 | Read                                                     |
-| -------------------------------------------------------- | -------------------------------------------------------- |
+| Question                                                 | Read                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------ |
 | What happens after I delegate an issue?                  | [The execution loop](execution.md)                     |
 | Who can sign in, administer a workspace, or pair a host? | [The control plane](control-plane.md)                  |
 | How does the VM connect, fetch code, and run an agent?   | [Remote Linux hosts](remote-hosts.md)                  |
