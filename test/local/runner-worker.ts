@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   linkSync,
@@ -15,6 +15,7 @@ import { git } from "../../src/acp";
 import { publishRunnerAnswer, readRunnerAnswer } from "../../src/runner-answers";
 import { publishRunnerJob, type RunnerJob, type RunnerSpool } from "../../src/runner-execution";
 import { executeRunnerCommand } from "../../src/runner-worker";
+import { RunnerArtifactSchema } from "../../src/runner-protocol";
 
 export async function probeRunnerWorker(
   root: string,
@@ -126,10 +127,33 @@ export async function probeRunnerWorker(
       content: `[core]\nrepositoryformatversion = 0\nbare = false\nhooksPath = /dev/null\nfsmonitor = /usr/bin/python3 ${monitor} ${checkpointEnvironment}\n`,
     },
     { type: "fs_write", path: "implemented.txt", content: "candidate\n" },
+    { type: "fs_write", path: "report.txt", content: "actual worker artifact\n" },
+    { type: "publish_artifact", path: "report.txt", displayName: "Report", attachToIssue: true },
     { type: "ask_team", question: "Include archived rows?", options: ["Yes", "No"] },
     { type: "end" },
   ]);
   let answeredRequest = "";
+  const snapshots: { id: string; path: string; attachToIssue: boolean }[] = [];
+  function artifactAnswer(directory: string, requestId: string) {
+    const record = readFileSync(join(directory, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((event) => event.type === "artifact" && event.requestId === requestId);
+    if (!record) return null;
+    const artifact = RunnerArtifactSchema.parse(record.artifact);
+    assert.equal(artifact.id, requestId);
+    const path = join(directory, `artifact-${artifact.id}.bytes`);
+    const bytes = readFileSync(path);
+    assert.equal(bytes.length, artifact.sizeBytes);
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), artifact.sha256);
+    const info = statSync(path);
+    assert.equal(info.uid, process.getuid!());
+    assert.equal(info.gid, process.getgid!());
+    assert.equal(info.mode & 0o777, 0o640);
+    snapshots.push(artifact);
+    return JSON.stringify({ url: `https://linear.app/artifact/${artifact.id}` });
+  }
   const previousGithub = process.env.GH_TOKEN;
   process.env.GH_TOKEN = "synthetic-checkpoint-denied";
   const candidate = await (async () => {
@@ -143,6 +167,15 @@ export async function probeRunnerWorker(
         resultsGid: process.getgid!(),
         launch: firstAgent.launch,
         async answer(requestId) {
+          const publication = artifactAnswer(firstOutput, requestId);
+          if (publication) {
+            writeFileSync(
+              join(root, "work", first.executionId, "report.txt"),
+              "changed after snapshot\n",
+            );
+            publishRunnerAnswer(spool, first.executionId, { requestId, answer: publication });
+            return readRunnerAnswer(spool, first.executionId, requestId)!;
+          }
           answeredRequest = requestId;
           assert.equal(readRunnerAnswer(spool, first.executionId, requestId), null);
           publishRunnerAnswer(spool, first.executionId, { requestId, answer: "Yes" });
@@ -181,6 +214,18 @@ export async function probeRunnerWorker(
     { baseSha, candidateSha: candidate.candidateSha },
   );
   const fake = JSON.parse(readFileSync(firstAgent.result, "utf8"));
+  assert.equal(fake.artifact.ok, true);
+  assert.equal(snapshots[0]?.path, "report.txt");
+  assert.equal(snapshots[0]?.attachToIssue, true);
+  assert.equal(
+    readFileSync(join(firstOutput, `artifact-${snapshots[0]!.id}.bytes`), "utf8"),
+    "actual worker artifact\n",
+  );
+  observe(
+    "actual run ACP snapshots artifact bytes before receiving its request-bound publication URL",
+    true,
+    { artifact: snapshots[0], response: fake.artifact.text },
+  );
   assert.deepEqual(fake.env, { xaiApiKey: false, ghToken: false, sshAuthSock: false, aws: false });
   assert.equal(statSync(join(firstOutput, "result.json")).mode & 0o777, 0o640);
   assert.equal(statSync(join(firstOutput, "candidate.bundle")).mode & 0o777, 0o640);
@@ -294,6 +339,7 @@ export async function probeRunnerWorker(
   const reviewOutput = output(2);
   const reviewAgent = launch(2, [
     { type: "fs_write", path: "base.txt", content: "illegal change\n" },
+    { type: "publish_artifact", path: "base.txt", displayName: "Review evidence" },
     {
       type: "update",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
@@ -308,8 +354,25 @@ export async function probeRunnerWorker(
     home,
     resultsGid: process.getgid!(),
     launch: reviewAgent.launch,
+    async answer(requestId) {
+      const answer = artifactAnswer(reviewOutput, requestId);
+      assert(answer);
+      return { answer };
+    },
   });
   assert.equal(reviewed.reviewText, "[]");
+  assert.equal(JSON.parse(readFileSync(reviewAgent.result, "utf8")).artifact.ok, true);
+  assert.equal(snapshots[1]?.path, "base.txt");
+  assert.equal(snapshots[1]?.attachToIssue, false);
+  assert.equal(
+    readFileSync(join(reviewOutput, `artifact-${snapshots[1]!.id}.bytes`), "utf8"),
+    "exact assigned base\n",
+  );
+  observe(
+    "read-only review ACP publishes assigned evidence without changing the repository",
+    true,
+    { artifact: snapshots[1] },
+  );
   assert.equal(reviewed.candidateSha, undefined);
   assert.equal(JSON.parse(readFileSync(reviewAgent.result, "utf8")).fs[0].ok, false);
   assert.equal(
@@ -320,6 +383,68 @@ export async function probeRunnerWorker(
     "remote review uses real read-only ACP and returns review text without publishing a candidate",
     true,
     { reviewText: reviewed.reviewText, writeDenied: true },
+  );
+  for (const [index, receipt] of [
+    [6, "{}"],
+    [7, JSON.stringify({ url: "file:///private/report" })],
+  ] as const) {
+    const invalidOutput = output(index + 100);
+    const invalidJob = job(index, "review");
+    invalidJob.executionId = invalidJob.executionId.slice(0, -1) + (index === 6 ? "A" : "B");
+    const invalidAgent = launch(index + 100, [
+      { type: "publish_artifact", path: "base.txt" },
+      { type: "end" },
+    ]);
+    await execute({
+      job: invalidJob,
+      repositoryBundle,
+      outputDirectory: invalidOutput,
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: invalidAgent.launch,
+      async answer(requestId) {
+        assert(artifactAnswer(invalidOutput, requestId));
+        return { answer: receipt };
+      },
+    });
+    const publication = JSON.parse(readFileSync(invalidAgent.result, "utf8")).artifact;
+    assert.equal(publication.ok, false);
+    assert.match(publication.error, /artifact/);
+    assert.equal(publication.text, undefined);
+  }
+  observe("artifact tools reject malformed and non-HTTPS publication receipts", true, {
+    denied: 2,
+  });
+  const waitingOutput = output(10);
+  const waitingAgent = launch(10, [
+    { type: "publish_artifact", path: "base.txt" },
+    { type: "end" },
+  ]);
+  const waitingAbort = new AbortController();
+  const waiting = await execute({
+    job: job(0),
+    repositoryBundle,
+    outputDirectory: waitingOutput,
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: waitingAgent.launch,
+    signal: waitingAbort.signal,
+    async answer(requestId) {
+      const answer = artifactAnswer(waitingOutput, requestId);
+      assert(answer);
+      waitingAbort.abort();
+      return { answer };
+    },
+  });
+  assert.equal(waiting.run.cancelled, true);
+  assert.equal(waiting.run.agentExited, true);
+  assert.equal(waiting.candidateSha, undefined);
+  observe(
+    "cancelling artifact publication joins the ACP process without publishing a candidate",
+    true,
+    { cancelled: waiting.run.cancelled, agentExited: waiting.run.agentExited },
   );
   const chunk = {
     sessionUpdate: "agent_message_chunk",
