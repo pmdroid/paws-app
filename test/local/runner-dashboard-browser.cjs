@@ -173,9 +173,15 @@ const assert = require("node:assert/strict");
     observe("normal authenticated dashboard has three areas and a real empty runner list", {
       anonymous: 401,
     });
+    const verifierKey = crypto.generateKeyPairSync("ed25519").publicKey;
+    const verifierFingerprint = crypto
+      .createHash("sha256")
+      .update(verifierKey.export({ type: "spki", format: "der" }))
+      .digest("hex");
     const pairing = await exchange(port, "/api/runner-pairings", {
       name: "Linux proof host",
       csr: manifest.client.csr,
+      verifierPublicKeyPem: verifierKey.export({ type: "spki", format: "pem" }).toString(),
     });
     assert.equal(pairing.status, 200);
     await owner.getByLabel("Pairing code from the host").fill("0000000000000000");
@@ -188,7 +194,25 @@ const assert = require("node:assert/strict");
     await owner.getByLabel("Pairing code from the host").fill(pairing.body.code);
     await owner.getByLabel("Pairing code from the host").press("Enter");
     await owner.getByText(pairing.body.requestFingerprint, { exact: true }).waitFor();
+    await owner.getByText(verifierFingerprint, { exact: true }).waitFor();
+    await owner.getByText("Verification key fingerprint", { exact: true }).waitFor();
+    await owner.screenshot({ path: path.join(root, "verifier-desktop.png"), fullPage: true });
+    await owner.setViewportSize({ width: 390, height: 844 });
+    await owner.waitForFunction(
+      () => document.querySelector("#side").getBoundingClientRect().right <= 0,
+    );
+    assert.equal(
+      await owner.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await owner.screenshot({ path: path.join(root, "verifier-mobile.png"), fullPage: true });
+    await owner.setViewportSize({ width: 1440, height: 1000 });
+    const approvalRequest = owner.waitForRequest(
+      (request) =>
+        request.url().endsWith("/api/runners/pairings/approve") && request.method() === "POST",
+    );
     await submit(owner, "Approve runner", "/approve");
+    assert.equal((await approvalRequest).postDataJSON().verifierFingerprint, verifierFingerprint);
     await owner
       .locator(".runner-list")
       .getByRole("heading", { name: "Linux proof host" })
@@ -198,12 +222,15 @@ const assert = require("node:assert/strict");
       claim: pairing.body.claim,
     });
     assert.equal(claimed.status, 200);
+    assert.equal(claimed.body.verifierFingerprint, verifierFingerprint);
     peer = { cert: claimed.body.certificate, key: manifest.client.key };
     const runnerId = claimed.body.runnerId,
       healthPath = `/api/runners/${runnerId}/health`;
     observe("keyboard inspection and administrator approval pair the actual HTTPS host", {
       runnerId,
       fingerprintCompared: true,
+      verifierFingerprintCompared: true,
+      exactVerifierFingerprintSubmitted: true,
     });
     await owner.getByRole("button", { name: "View health" }).click();
     await owner.getByText("No health checks yet.", { exact: true }).waitFor();
