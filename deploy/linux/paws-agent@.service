@@ -1,0 +1,32 @@
+[Unit]
+Description=Paws agent execution %i
+
+[Service]
+Type=exec
+User=paws-agent
+Group=paws-agent
+Environment=HOME=/var/lib/paws-agent
+StateDirectory=paws-agent
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib
+ExecCondition=!/usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard %i
+ExecStart=/opt/paws-runner/bin/bun --no-env-file /opt/paws-runner/current/src/index.ts runner worker --execution-id %i
+KillMode=control-group
+KillSignal=SIGKILL
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+SendSIGKILL=yes
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadOnlyPaths=/var/lib/paws-runner-spool
+ReadWritePaths=/var/lib/paws-agent-results /var/lib/paws-runner-broker
+InaccessiblePaths=-/var/lib/paws-runner -/run/user -/run/dbus

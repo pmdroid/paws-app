@@ -18,7 +18,10 @@ export function createRunnerBrokerClient(
     return new Promise((resolve, reject) => {
       const socket = createConnection(socketPath);
       let response = "";
-      const timer = setTimeout(() => socket.destroy(new Error("Runner broker timed out")), 60_000);
+      const timer = setTimeout(
+        () => socket.destroy(new Error("Runner broker timed out")),
+        operation === "start" ? 120_000 : 60_000,
+      );
       socket.on("connect", () => socket.write(`${JSON.stringify({ operation, executionId })}\n`));
       let settled = false;
       function fail(error: Error): void {

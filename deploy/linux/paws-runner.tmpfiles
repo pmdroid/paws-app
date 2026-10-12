@@ -1,0 +1,5 @@
+d /var/lib/paws-runner 0700 paws-runner paws-runner -
+d /var/lib/paws-agent 0700 paws-agent paws-agent -
+d /var/lib/paws-runner-spool 2750 paws-runner paws-agent -
+d /var/lib/paws-agent-results 0750 root paws-results -
+d /var/lib/paws-runner-broker 0700 root root -
