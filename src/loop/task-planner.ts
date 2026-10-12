@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { AgentProfile } from "../config";
 import {
+  assertLinearSessionCleanup,
+  blockLinearSessionCleanup,
   getLinearSession,
   getTaskClassification,
   saveTaskClassification,
@@ -37,12 +39,14 @@ export function createTaskPlanner(options: {
       const initialStopVersion = stopVersion;
       const initialSessionStop = sessionStopVersions.get(input.sessionId);
       const checkStopped = () => {
+        assertLinearSessionCleanup(options.db, input.sessionId);
         if (
           stopVersion !== initialStopVersion ||
           sessionStopVersions.get(input.sessionId) !== initialSessionStop
         )
           throw new Error("Task classification was stopped");
       };
+      checkStopped();
       const saved = getTaskClassification(options.db, input.taskKey);
       if (saved) return saved;
       let pending = active.get(input.sessionId);
@@ -78,6 +82,7 @@ export function createTaskPlanner(options: {
           profile: options.profile(),
           signal: controller.signal,
           launch: options.launch,
+          onCleanupFailure: () => blockLinearSessionCleanup(options.db, input.sessionId),
         });
         current();
         saveTaskClassification(options.db, input.taskKey, classification);
@@ -97,6 +102,7 @@ export function createTaskPlanner(options: {
         : [...active.values()];
       for (const entry of pending) entry.controller.abort();
       await Promise.allSettled(pending.map((entry) => entry.work));
+      assertLinearSessionCleanup(options.db, sessionId);
     },
   };
 }
