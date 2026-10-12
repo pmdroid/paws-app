@@ -5,23 +5,7 @@ export {
   rateHoldMs,
 } from "./client";
 export type { FetchLike, GitHubIssuesClient, GitHubTokenProvider } from "./client";
-export { startFakeGitHubRest } from "./fake";
-export type {
-  FakeComment,
-  FakeGitHubRest,
-  FakeIssue,
-  FakeObservedRequest,
-  PostedComment,
-} from "./fake";
 export { GitHubEpicCycleError, loadGitHubEpic } from "./intake";
-export {
-  GITHUB_POLL_ACTIVE_MS,
-  GITHUB_POLL_IDLE_MS,
-  githubWorkIsHot,
-  pollIntervalMs,
-  startGitHubIssuePoller,
-} from "./poller";
-export type { GitHubCommentEvent, GitHubIssuePoller, GitHubTrigger, Sleeper } from "./poller";
 export {
   githubIdentifier,
   githubIssueKey,
