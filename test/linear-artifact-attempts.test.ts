@@ -305,6 +305,41 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
   }
 });
 
+test("exhausted attachment and image delivery preserve a claimable final response after reopen", async () => {
+  const f = setup();
+  try {
+    await f.run([
+      { type: "fs_write", path: "proof.png", content: "PNG bytes" },
+      { type: "publish_artifact", path: "proof.png", attachToIssue: true },
+    ]);
+    f.db.run("UPDATE outbox SET max_attempts = 1");
+    enqueueOutbox(f.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session",
+      idempotencyKey: "final",
+      payload: { sessionId: "session", kind: "response", body: "Done" },
+    });
+    const dispatcher = new OutboxDispatcher(f.db, { now: Date.now, mono: Date.now });
+    dispatcher.setHandler(async () => {
+      throw new Error("delivery exhausted");
+    });
+    for (const op of ["linear.attachment", "activity"]) {
+      expect(dispatcher.tick()[0]?.op).toBe(op);
+      await dispatcher.idle();
+    }
+    f.reopen();
+    expect(
+      listOutbox(f.db, "session")
+        .slice(0, 2)
+        .map((row) => row.status),
+    ).toEqual(["dead", "dead"]);
+    expect(claimOutboxHeads(f.db)[0]?.idempotencyKey).toBe("final");
+  } finally {
+    f.db.close();
+  }
+});
+
 test("a malformed attachment flag still leaves its publication attempt required", async () => {
   const f = setup();
   try {

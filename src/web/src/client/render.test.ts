@@ -84,6 +84,15 @@ describe("status views", () => {
       "Exhausted",
     );
     expect(render(model({ route: { view: "queue" } })).content).toContain("Rebase onto main");
+    const snapshot = demoStatus();
+    const question = snapshot.questions[0]!;
+    question.links = [
+      { label: "Answer in Linear", href: "https://linear.app/paws/issue/ENG-1#session" },
+    ];
+    const html = render(model({ snapshot, route: { view: "questions", id: question.id } })).content;
+    expect(html).toContain('href="https://linear.app/paws/issue/ENG-1#session"');
+    expect(html).toContain("Answer in Linear");
+    expect(html).not.toContain("Read-only.");
   });
 
   test("escapes text and drops non-http links", () => {

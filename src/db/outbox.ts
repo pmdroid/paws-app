@@ -144,6 +144,13 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
        WHERE o.status NOT IN ('sent', 'dropped')
          AND o.delivery_generation = COALESCE(f.generation, 0)
          AND (COALESCE(f.stopped, 0) = 0 OR o.delivery_kind = 'stop')
+         AND (o.status != 'dead' OR o.delivery_kind != 'ordered' OR NOT EXISTS (
+           SELECT 1 FROM outbox terminal WHERE terminal.target = o.target
+             AND terminal.ordering_key = o.ordering_key
+             AND terminal.delivery_generation = o.delivery_generation
+             AND terminal.delivery_kind IN ('terminal', 'stop')
+             AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
+         ))
      )
      UPDATE outbox SET locked_by = ?, locked_until = ?, attempts = attempts + 1
      WHERE id IN (
