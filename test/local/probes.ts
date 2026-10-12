@@ -29,6 +29,7 @@ import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probeHostAcp } from "./host-acp";
+import { probePublicTls } from "./public-tls";
 
 export async function probeBoundaries(
   root: string,
@@ -36,6 +37,7 @@ export async function probeBoundaries(
 ) {
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
+  await probePublicTls(root, observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
