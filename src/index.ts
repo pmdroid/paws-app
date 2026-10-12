@@ -27,7 +27,18 @@ import {
 } from "./core";
 import {
   enqueueCommand,
+  enqueueJob,
+  isLinearAppRevoked,
+  getLinearSessionAccess,
+  getTaskLinearActor,
+  getWorkItemRepository,
+  getWorkItemRepositoryChoice,
+  getWorkItemRepositoryAnswer,
+  getTaskMode,
+  taskRequiresRepository,
   listWorkItemsByStates,
+  listWorkItems,
+  linearSessionForEpic,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -35,10 +46,13 @@ import {
   recordGitHubDelivery,
   startLoops,
   submitCommand,
+  type WorkItemRecord,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
+  checkGitHubCliRepositoryAccess,
   createGitHubTokenProvider,
+  createVerifiedGitHubLogin,
   loginGitHub,
   logoutGitHub,
   type GitHubTokenProvider as AuthTokenProvider,
@@ -58,7 +72,13 @@ import {
   type GitHubCommentRequest,
   type GitHubCommentTracker,
 } from "./ghcomments";
-import { createFetchGitHubClient, githubHttpsUrl, type GitHubTokenProvider } from "./github";
+import {
+  checkRepositoryWriteAccess,
+  checkRepositoryReadAccess,
+  createFetchGitHubClient,
+  githubHttpsUrl,
+  type GitHubTokenProvider,
+} from "./github";
 import { startHost } from "./host";
 import {
   createInboxStore,
@@ -75,14 +95,20 @@ import {
   createLinearArtifactReader,
   itemPathId,
   routeBySource,
+  repositoryAnswer,
   worktreeBranch,
   type GitHubBinding,
+  LinearTaskAccess,
+  handleLinearAdministration,
+  refreshLinearNotificationContext,
   type Orchestrator,
   type RepositoryBinding,
+  type HostGitHubAuth,
 } from "./loop";
 import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
+import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion, type StoredQuestion } from "./questions";
 
 export type PawsProcess = {
@@ -94,7 +120,7 @@ export type PawsProcess = {
   tunnelUp: () => boolean;
   tunnelRequested: boolean;
   tunnelUrl: string | null;
-  stop: () => void;
+  stop: () => Promise<void>;
 };
 
 export type StartOptions = {
@@ -120,6 +146,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
   const repository = repositoryBinding(runtime.repo);
+  const repositories = [runtime.repo, ...runtime.file.githubRepos, ...runtime.trackerGithub.repos]
+    .map(repositoryBinding)
+    .filter((value): value is RepositoryBinding => value !== null);
   const useLinear = runtime.trackerKind !== "github";
   const useGitHub = runtime.trackerKind !== "linear";
   const auth = repository === null ? null : authProvider(runtime, repository);
@@ -129,7 +158,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     useLinear && runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const docker = sandboxOptions(options);
   const inbox = createInboxStore(db);
-  let githubPoller: { stop(): void; pollNow(): Promise<void> } | null = null;
+  let githubPoller: { stop(): Promise<void>; pollNow(): Promise<void> } | null = null;
+  const githubSyncTasks = new Set<Promise<void>>();
   let githubSync: ReturnType<typeof setInterval> | null = null;
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
@@ -144,19 +174,82 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     submitCommand(db, orchestrator.bus, command);
   };
 
+  let linearTaskAccess: LinearTaskAccess | null = null;
+  const stopLinearSession = (sessionId: string): void => {
+    for (const item of listWorkItems(db)) {
+      if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
+      if (["cancelled", "completed", "merged"].includes(item.state)) continue;
+      submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
+    }
+  };
   const linear =
     useLinear && channel === "agent-session"
       ? openLinear({
           db,
           secretsDir: paths.secretsDir,
+          isAuthorized: () =>
+            !isLinearAppRevoked(db, {
+              oauthClientId: runtime.linearClientId,
+              appUserId: runtime.linearViewerId,
+            }),
+          beforeEvent: async (event, request) => {
+            if (
+              await handleLinearAdministration(db, event, {
+                oauthClientId: runtime.linearClientId,
+                appUserId: runtime.linearViewerId,
+                interrupt: async (sessionId) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  await orchestrator.interruptLinearSession(sessionId);
+                },
+                revalidate: async (sessionIds) => {
+                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  await linearTaskAccess.revalidateSessions(sessionIds);
+                },
+                reconcile: async (notification) => {
+                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  await linearTaskAccess.reconcile(notification.issueId);
+                  await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
+                },
+                notify: (command) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  orchestrator.bus.emit(command);
+                },
+              })
+            )
+              return false;
+            if (
+              event.sessionId !== null &&
+              getLinearSessionAccess(db, event.sessionId) === "revoked"
+            )
+              return false;
+            if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+            return linearTaskAccess.accept(event, request);
+          },
           env: linearEnv(runtime, envSource),
           publicUrl: runtime.publicUrl,
           noTunnel: !webhooks || options?.noTunnel === true,
           webhooks,
           followUp,
+          progressReporter: (event) => {
+            if (orchestrator === null) throw new Error("loop is not attached");
+            return orchestrator.sessionProgressReporter(event);
+          },
           submitCommand: submit,
         })
       : null;
+
+  if (linear !== null)
+    linearTaskAccess = new LinearTaskAccess(db, {
+      access: linear.access,
+      lifecycle: linear.issueLifecycle,
+      oauthClientId: runtime.linearClientId,
+      appUserId: runtime.linearViewerId,
+      stopSession: stopLinearSession,
+      interruptSession: async (sessionId) => {
+        if (orchestrator === null) throw new Error("The loop is not attached.");
+        await orchestrator.interruptLinearSession(sessionId);
+      },
+    });
 
   const server = startServer({
     hostname: LOOPBACK,
@@ -174,7 +267,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
     agentSettings: {
       configPath: paths.configFile,
-      repos: runtime.repo ? [runtime.repo] : [],
+      repos: repositories.map((value) => `${value.owner}/${value.repo}`),
       probe: (profile) =>
         probeAgentProfile({
           profile,
@@ -219,6 +312,44 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         outbox: created.outbox,
         pawsRoot: paths.home,
         tracker,
+        linearTaskModes: true,
+        linearAccess: linearTaskAccess ?? undefined,
+        githubAuth:
+          useLinear && channel === "agent-session"
+            ? createLinearGitHubAuth({
+                runtime,
+                env: envSource,
+                repositoryForItem: (item) => {
+                  const bound = getWorkItemRepository(db, item.id);
+                  if (bound) return bound;
+                  const answer = getWorkItemRepositoryAnswer(db, item.id);
+                  const selected =
+                    getWorkItemRepositoryChoice(db, item.id) ??
+                    (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
+                  const configured = repositories.filter(
+                    (candidate, index) =>
+                      repositories.findIndex(
+                        (other) => other.owner === candidate.owner && other.repo === candidate.repo,
+                      ) === index,
+                  );
+                  return selected
+                    ? (configured.find(
+                        (candidate) =>
+                          candidate.owner === selected.owner &&
+                          candidate.repo === selected.repo &&
+                          candidate.remoteUrl === selected.remoteUrl,
+                      ) ?? null)
+                    : configured.length === 1
+                      ? configured[0]!
+                      : null;
+                },
+                accessForItem: (item) =>
+                  getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
+                    ? "read"
+                    : "write",
+                actorForItem: (item) => getTaskLinearActor(db, item.id),
+              })
+            : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {
@@ -226,12 +357,42 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await githubPoller?.pollNow();
         },
         repository,
+        repositories,
+        repositoryAccess: async (candidate, signal, access) => {
+          if (runtime.githubAuth === "gh")
+            return checkGitHubCliRepositoryAccess(
+              { repo: `${candidate.owner}/${candidate.repo}`, access },
+              signal,
+            );
+          const provider = authProvider(runtime, candidate, access);
+          if (!provider) return false;
+          return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
+            ...candidate,
+            token: await provider.token(),
+            app: provider.source === "app",
+            signal,
+          });
+        },
+        repositoryToken: async (_item, candidate, signal, access) => {
+          signal.throwIfAborted();
+          const provider = authProvider(runtime, candidate, access);
+          if (!provider)
+            throw new Error("GitHub sign-in is required before reading the repository.");
+          const token = await provider.token();
+          signal.throwIfAborted();
+          return token;
+        },
         github,
+        githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
         ...(docker ? { docker } : {}),
       });
       orchestrator = attached;
+      if (useLinear && channel === "agent-session") {
+        created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
+        enqueueJob(db, { queue: "github.auth.recover", priority: 0, now: Date.now() });
+      }
     },
   });
 
@@ -258,9 +419,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       tunnelUp: () => false,
       tunnelRequested: false,
       tunnelUrl: null,
-      stop() {
-        poller.stop();
-      },
+      stop: () => poller.stop(),
     };
   }
 
@@ -277,10 +436,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       onComment: (event) => ingest(event.issueId),
     });
     githubSync = setInterval(() => {
-      void syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
+      const task = syncOpenGitHubIssues(db, ingest).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "github comment sync failed";
         console.error(`github comment sync failed: ${message}`);
       });
+      githubSyncTasks.add(task);
+      void task.then(() => githubSyncTasks.delete(task));
     }, 5_000);
     githubSync.unref?.();
   }
@@ -290,17 +451,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
     restartFromMain: (item) => {
-      if (repository === null) return;
+      const selected = getWorkItemRepository(db, item.id) ?? repository;
+      if (selected === null) return;
       restartFromFreshMain({
         pawsRoot: paths.home,
-        owner: repository.owner,
-        repo: repository.repo,
+        owner: selected.owner,
+        repo: selected.repo,
         itemId: itemPathId(item),
         wipBranch: worktreeBranch(item),
       });
     },
   });
 
+  let stopping: Promise<void> | undefined;
   return {
     env,
     paths,
@@ -318,17 +481,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       return running.tunnelUrl;
     },
     stop() {
-      abort.abort();
-      host.stop();
-      loops.stop();
-      prepareShutdown(db, Date.now(), (item) => {
-        commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
-      });
-      if (githubSync !== null) clearInterval(githubSync);
-      githubPoller?.stop();
-      running.stop();
-      server.stop(true);
-      db.close();
+      stopping ??= (async () => {
+        abort.abort();
+        host.stop();
+        if (githubSync !== null) clearInterval(githubSync);
+        const githubStopped = githubPoller?.stop();
+        const linearStopped = running.stop();
+        server.stop(true);
+        await orchestrator?.shutdown();
+        await Promise.all([loops.stop(), githubStopped, linearStopped, ...githubSyncTasks]);
+        prepareShutdown(db, Date.now(), (item) => {
+          commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
+        });
+        db.close();
+      })();
+      return stopping;
     },
   };
 }
@@ -434,7 +601,7 @@ function down(): LinearRunning {
     tunnelUp: () => false,
     tunnelRequested: false,
     tunnelUrl: null,
-    stop() {},
+    stop: async () => undefined,
   };
 }
 
@@ -477,6 +644,7 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
 function authProvider(
   runtime: RuntimeConfig,
   repository: RepositoryBinding,
+  access: "read" | "write" = "write",
 ): AuthTokenProvider | null {
   const env = runtime.env;
   let privateKeyPem: string | null = null;
@@ -490,6 +658,7 @@ function authProvider(
   try {
     return createGitHubTokenProvider({
       auth: runtime.githubAuth,
+      access,
       oauthClientId: runtime.oauthClientId,
       repo: `${repository.owner}/${repository.repo}`,
       home: env.home,
@@ -502,6 +671,52 @@ function authProvider(
   } catch {
     return null;
   }
+}
+
+export function createLinearGitHubAuth(input: {
+  runtime: RuntimeConfig;
+  env: EnvSource;
+  repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
+  actorForItem: (item: WorkItemRecord) => string | null;
+  accessForItem?: (item: WorkItemRecord) => "read" | "write";
+}): HostGitHubAuth {
+  const loginFor = (item: WorkItemRecord) => {
+    const repository = input.repositoryForItem(item);
+    if (repository === null) throw new Error("Choose a GitHub repository before signing in.");
+    return createVerifiedGitHubLogin({
+      auth: input.runtime.githubAuth,
+      home: input.runtime.env.home,
+      env: input.env,
+      repo: `${repository.owner}/${repository.repo}`,
+      oauthClientId: input.runtime.oauthClientId,
+    });
+  };
+  return {
+    ...(input.runtime.githubAuth === "gh"
+      ? {
+          externalLogin: true,
+          recoveryMessage:
+            "Run gh auth login on the Paws host using your original GitHub account, then reply here to continue.",
+        }
+      : {}),
+    owner: input.actorForItem,
+    linkedAccount: (item) =>
+      input.runtime.githubAuth === "gh" ? Promise.resolve(null) : loginFor(item).linkedAccount(),
+    async check(item, signal) {
+      if (input.runtime.githubAuth !== "gh") return loginFor(item).check(signal);
+      const repository = input.repositoryForItem(item);
+      if (repository === null) return null;
+      const provider = authProvider(input.runtime, repository, input.accessForItem?.(item));
+      const user = await provider?.user().catch(() => null);
+      signal.throwIfAborted();
+      return user ?? null;
+    },
+    begin: (item, options) => {
+      if (input.runtime.githubAuth === "gh")
+        return Promise.reject(new Error("Use the existing GitHub CLI host login."));
+      return loginFor(item).begin(options);
+    },
+  };
 }
 
 function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
@@ -531,7 +746,7 @@ if (import.meta.main) {
     process.exit(await doctorMain());
   }
   if (command === "setup") {
-    process.exit(await runSetup(argv));
+    process.exit(await runSetup(argv, { linearReconnect: createLinearReconnect() }));
   }
   if (command === "login" && argv[1] === "github") {
     process.exit(await loginGitHubCommand(argv.slice(2)));
@@ -581,10 +796,15 @@ if (import.meta.main) {
     docker,
     proxyUrl: proxy === null ? null : `http://host.docker.internal:${proxy.port}`,
   });
+  let exiting = false;
   const shutdown = () => {
-    paws.stop();
-    void proxy?.close();
-    process.exit(0);
+    if (exiting) return;
+    exiting = true;
+    void (async () => {
+      await paws.stop();
+      await proxy?.close();
+      process.exit(0);
+    })().catch(() => process.exit(1));
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

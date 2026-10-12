@@ -26,6 +26,7 @@ export async function mintInstallationToken(input: {
   privateKeyPem: string;
   owner: string;
   repo: string;
+  access?: "read" | "write";
   now?: Date;
 }): Promise<MintedToken> {
   if (!/^\d+$/.test(input.installationId)) {
@@ -41,13 +42,14 @@ export async function mintInstallationToken(input: {
     token: jwt,
     body: {
       repositories: [input.repo],
-      permissions: INSTALLATION_PERMISSIONS,
+      permissions:
+        input.access === "read" ? { contents: "read", metadata: "read" } : INSTALLATION_PERMISSIONS,
     },
   });
   if (response.status !== 201) {
     throw new GitHubTokenError(`installation token request failed with status ${response.status}`);
   }
-  return assertScopedToken(response.body, input.owner, input.repo, now);
+  return assertScopedToken(response.body, input.owner, input.repo, now, input.access);
 }
 
 export function assertScopedToken(
@@ -55,6 +57,7 @@ export function assertScopedToken(
   owner: string,
   repo: string,
   now: Date,
+  access: "read" | "write" = "write",
 ): MintedToken {
   if (!isRecord(body)) throw new GitHubTokenError("installation token response is not an object");
   if (typeof body.token !== "string" || body.token.length === 0 || /\s/.test(body.token)) {
@@ -87,6 +90,16 @@ export function assertScopedToken(
       throw new GitHubTokenError("metadata permission must be read");
     }
   }
+  if (access === "read") {
+    if (
+      body.permissions.contents !== "read" ||
+      Object.entries(body.permissions).some(
+        ([key, value]) => !["contents", "metadata"].includes(key) || value !== "read",
+      )
+    )
+      throw new GitHubTokenError("repository read token grants unexpected permissions");
+    return { token: body.token, expiresAt };
+  }
   if (body.permissions.contents !== "write")
     throw new GitHubTokenError("contents permission must be write");
   if (body.permissions.pull_requests !== "write") {
@@ -118,6 +131,7 @@ export function createGitHubApp(options: GitHubAppOptions): GitHubApp {
         privateKeyPem: options.privateKeyPem,
         owner,
         repo,
+        ...(input.access ? { access: input.access } : {}),
         ...(options.now ? { now: options.now() } : {}),
       });
       return {

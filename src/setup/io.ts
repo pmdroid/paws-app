@@ -1,5 +1,10 @@
 import { createInterface } from "node:readline";
 import type { GitHubTokenStore } from "../auth";
+import type { StoredLinearToken } from "../linear";
+
+export type LinearReconnect = (home: string) => {
+  complete(input: { clientId: string; token: StoredLinearToken }): Promise<boolean>;
+};
 
 export type SetupGitHubHooks = {
   port?: number;
@@ -28,6 +33,7 @@ export type SetupIO = {
   readLine: () => Promise<string | null>;
   github?: SetupGitHubHooks;
   linear?: SetupLinearHooks;
+  linearReconnect?: LinearReconnect;
 };
 
 export type SetupOptions = {
@@ -39,6 +45,7 @@ export type SetupOptions = {
   readLine?: () => Promise<string | null>;
   github?: SetupGitHubHooks;
   linear?: SetupLinearHooks;
+  linearReconnect?: LinearReconnect;
 };
 
 export function createIO(options?: SetupOptions): SetupIO {
@@ -51,6 +58,7 @@ export function createIO(options?: SetupOptions): SetupIO {
     readLine: options?.readLine ?? readStdinLine,
     ...(options?.github ? { github: options.github } : {}),
     ...(options?.linear ? { linear: options.linear } : {}),
+    ...(options?.linearReconnect ? { linearReconnect: options.linearReconnect } : {}),
   };
 }
 

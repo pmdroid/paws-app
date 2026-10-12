@@ -1,8 +1,17 @@
 import type { TrackerRequestOptions } from "./adapter";
+import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
+import {
+  authorizedRepositorySuggestions,
+  repositoryCandidates,
+  type LinearRepositoryAdapter,
+  type RepositorySuggestion,
+  type RepositorySuggestionsInput,
+} from "./repositories";
 import type {
   DependencyEdge,
+  IssueAttachment,
   SessionElicitation,
   EpicSnapshot,
   ProgressUpdate,
@@ -12,18 +21,25 @@ import type {
   StatusUpdate,
 } from "./types";
 
-export type FakeTracker = LinearSessionAdapter & {
-  epics: Map<string, EpicSnapshot>;
-  deps: Map<string, readonly DependencyEdge[]>;
-  progress: ProgressUpdate[];
-  questions: SessionElicitation[];
-  statuses: StatusUpdate[];
-  sessionUpdates: SessionUpdate[];
-  issueSessions: SessionOnIssue[];
-  commentSessions: SessionOnComment[];
-};
+export type FakeTracker = LinearSessionAdapter &
+  LinearRepositoryAdapter & {
+    attachments: IssueAttachment[];
+    issueContexts: Map<string, LinearIssueContext>;
+    repositorySuggestionRequests: RepositorySuggestionsInput[];
+    repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
+    epics: Map<string, EpicSnapshot>;
+    deps: Map<string, readonly DependencyEdge[]>;
+    progress: ProgressUpdate[];
+    questions: SessionElicitation[];
+    statuses: StatusUpdate[];
+    sessionUpdates: SessionUpdate[];
+    issueSessions: SessionOnIssue[];
+    commentSessions: SessionOnComment[];
+  };
 
 export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTracker {
+  const attachments: IssueAttachment[] = [];
+  const issueContexts = new Map<string, LinearIssueContext>();
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
   const deps = new Map<string, readonly DependencyEdge[]>();
   const progress: ProgressUpdate[] = [];
@@ -32,6 +48,8 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const sessionUpdates: SessionUpdate[] = [];
   const issueSessions: SessionOnIssue[] = [];
   const commentSessions: SessionOnComment[] = [];
+  const repositorySuggestionRequests: RepositorySuggestionsInput[] = [];
+  const repositorySuggestions = new Map<string, readonly RepositorySuggestion[]>();
   async function createActivity(update: ProgressUpdate, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     activityInput(update);
@@ -45,6 +63,23 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     return { id: question.id ?? crypto.randomUUID() };
   }
   return {
+    supportsActivityReconciliation: true,
+    issueContexts,
+    async getIssueContext(id, options) {
+      options?.signal?.throwIfAborted();
+      const context = issueContexts.get(id);
+      if (!context) throw new Error("Missing fake Linear issue context");
+      return context;
+    },
+    attachments,
+    async createIssueAttachment(input, options) {
+      options?.signal?.throwIfAborted();
+      const existing = attachments.findIndex(
+        (row) => row.id === input.id || (row.issueId === input.issueId && row.url === input.url),
+      );
+      if (existing < 0) attachments.push(input);
+      else attachments[existing] = input;
+    },
     epics: byId,
     deps,
     progress,
@@ -53,6 +88,18 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     sessionUpdates,
     issueSessions,
     commentSessions,
+    repositorySuggestionRequests,
+    repositorySuggestions,
+    async issueRepositorySuggestions(input, options) {
+      options?.signal?.throwIfAborted();
+      const candidates = repositoryCandidates(input);
+      if (candidates.length === 0) return [];
+      repositorySuggestionRequests.push(structuredClone(input));
+      return authorizedRepositorySuggestions(
+        candidates,
+        repositorySuggestions.get(input.issueId) ?? [],
+      );
+    },
     createActivity,
     createElicitation,
     async updateSession(update, options) {

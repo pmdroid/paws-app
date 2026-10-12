@@ -18,7 +18,8 @@ export {
   WORKFLOW_SCOPE_NOTE,
 } from "./messages";
 export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
-export { createGitHubTokenProvider } from "./provider";
+export { checkGitHubCliRepositoryAccess, createGitHubTokenProvider } from "./provider";
+export { createVerifiedGitHubLogin } from "./verified-login";
 export type { GitHubAuthSource, GitHubTokenProvider, GitHubTokenProviderConfig } from "./provider";
 export { createTokenStore, githubOAuthPath, SecretServiceUnavailableError } from "./store";
 export type { GitHubTokenStore, StoredGitHubOAuth, TokenBackend } from "./store";

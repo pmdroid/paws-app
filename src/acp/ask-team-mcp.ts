@@ -16,8 +16,21 @@ const TOOL = {
       question: { type: "string", description: "Question for the team." },
       options: {
         type: "array",
-        items: { type: "string" },
-        description: "Optional choices, such as yes and no.",
+        items: {
+          anyOf: [
+            { type: "string", minLength: 1 },
+            {
+              type: "object",
+              properties: {
+                label: { type: "string", minLength: 1 },
+                value: { type: "string", minLength: 1 },
+              },
+              required: ["value"],
+              additionalProperties: false,
+            },
+          ],
+        },
+        description: "Optional strings or choices with a display label and a stable value.",
       },
       context: { type: "string", description: "Extra context the team should see." },
     },
@@ -33,8 +46,17 @@ const ARTIFACT_TOOL = {
     type: "object",
     properties: {
       path: { type: "string", description: "Workspace-relative path to the file to publish." },
-      displayName: { type: "string", description: "Optional file name shown to the user." },
+      displayName: {
+        type: "string",
+        description:
+          "Optional deliverable name shown to the user. Reuse this name when retrying with a corrected path.",
+      },
       mimeType: { type: "string", description: "Optional MIME type, such as image/png." },
+      attachToIssue: {
+        type: "boolean",
+        description:
+          "Add a persistent file attachment card to the current Linear issue when requested by the user.",
+      },
     },
     required: ["path"],
     additionalProperties: false,

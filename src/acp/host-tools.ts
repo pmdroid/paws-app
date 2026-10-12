@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -19,7 +18,7 @@ import {
   type WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
 import { minimalAgentEnv } from "./env";
-import { killTree, stopChild } from "./process";
+import { killTree, spawnAgent, stopChild, type OwnedProcess } from "./process";
 import { decidePermission, resolveInsideWorktree, type GuardContext } from "./permissions";
 
 const DEFAULT_OUTPUT_LIMIT = 1_000_000;
@@ -31,14 +30,14 @@ interface LiveTerminal {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   done: Promise<void>;
-  child: ChildProcess;
+  child: OwnedProcess;
 }
 
 export class TerminalRegistry {
   private readonly terminals = new Map<string, LiveTerminal>();
-  private readonly children = new Set<ChildProcess>();
+  private readonly children = new Set<OwnedProcess>();
   private seq = 0;
-  private closing: Promise<void> | undefined;
+  private closing: Promise<boolean> | undefined;
 
   constructor(
     private readonly guard: GuardContext,
@@ -68,13 +67,10 @@ export class TerminalRegistry {
         Object.fromEntries((params.env ?? []).map(({ name, value }) => [name, value])),
       ),
     };
-    const child = spawn(params.command, params.args ?? [], {
+    const child = spawnAgent(params.command, params.args ?? [], env, {
       cwd: params.cwd ? resolveInsideWorktree(params.cwd, this.guard) : this.guard.worktree,
-      env,
-      shell: false,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
     });
+    child.stdin?.end();
     const terminal: LiveTerminal = {
       output: "",
       truncated: false,
@@ -131,18 +127,21 @@ export class TerminalRegistry {
     return {};
   }
 
-  release(params: ReleaseTerminalRequest): ReleaseTerminalResponse {
+  async release(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> {
     const terminal = this.get(params.terminalId);
-    killTree(terminal.child, "SIGTERM");
+    if (!(await stopChild(terminal.child, 500)))
+      throw RequestError.invalidParams({}, "terminal process cleanup could not be verified");
+    this.children.delete(terminal.child);
     this.terminals.delete(params.terminalId);
     return {};
   }
 
-  close(graceMs: number): Promise<void> {
+  close(graceMs: number): Promise<boolean> {
     this.closing ??= Promise.all([...this.children].map((child) => stopChild(child, graceMs))).then(
-      () => {
+      (stopped) => {
         this.terminals.clear();
         this.children.clear();
+        return stopped.every(Boolean);
       },
     );
     return this.closing;

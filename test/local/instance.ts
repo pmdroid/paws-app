@@ -414,7 +414,7 @@ async function scenario(
     }
     stopped = true;
     await answerer;
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     const snapshot = await (await fetch(`${origin}/api/status`)).json();
     assert(parseStatusSnapshot(snapshot).ok);
@@ -457,7 +457,7 @@ async function scenario(
   } finally {
     stopped = true;
     await answerer;
-    poller.stop();
+    await poller.stop();
     await poller.settled;
     await server.stop(true);
     await rest.stop();
@@ -514,7 +514,7 @@ try {
       agentSettings,
     );
   } finally {
-    fresh.stop();
+    await fresh.stop();
   }
   const happy = await scenario("happy");
   observe(

@@ -1,9 +1,21 @@
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
-import { beginImplementRun, getWorkItem, insertQueuedItem, openDatabase } from "../src/db";
+import {
+  beginImplementRun,
+  bindLinearSessionTask,
+  enqueueJob,
+  ensureLinearSession,
+  getWorkItem,
+  insertQueuedItem,
+  openDatabase,
+  saveTaskMode,
+} from "../src/db";
+import { JOB_KIND } from "../src/core";
 import { startPaws } from "../src/index";
+import { linearTokenPath, writeStoredToken } from "../src/linear";
 import { tempHome } from "./helpers";
 
 describe("shutdown WIP", () => {
@@ -27,7 +39,7 @@ describe("shutdown WIP", () => {
       wipCommit: "wip",
       turn: 1,
     });
-    paws.stop();
+    await paws.stop();
 
     expect(
       (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
@@ -39,6 +51,157 @@ describe("shutdown WIP", () => {
     expect(getWorkItem(db, "ENG-21")?.state).toBe("recovering");
     db.close();
   }, 20_000);
+
+  test("stop joins a live ACP descendant before WIP recovery and database closure", async () => {
+    const home = tempHome();
+    const evidence = join(home, "owned-agent.jsonl");
+    await seedWorktree(home, "ENG-21");
+    await writeFile(join(worktreePath(home, "ENG-21"), "notes.txt"), "dirty\n");
+    await writeFile(join(home, "config.toml"), '[linear]\nmode = "agent-session"\n');
+    const previous = process.env.PAWS_CLAUDE_ACP;
+    process.env.PAWS_CLAUDE_ACP = [
+      process.execPath,
+      new URL("./fixtures/brief-agent.ts", import.meta.url).pathname,
+      "implement",
+      evidence,
+      "implementer",
+      "hang",
+    ].join(" ");
+    writeStoredToken(linearTokenPath(join(home, "secrets")), {
+      accessToken: "synthetic-linear-token",
+      refreshToken: "synthetic-refresh-token",
+      expiresAtMs: Date.now() + 600_000,
+      actor: "app",
+      scope: "read,write",
+    });
+    const nativeFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (_url: unknown, init?: RequestInit) => {
+        const { query, variables } = JSON.parse(String(init?.body));
+        if (query.includes("PawsSessionInstallation"))
+          return Response.json({
+            data: {
+              viewer: { id: "app", app: true, organization: { id: "org" } },
+              agentSession: {
+                id: "session",
+                appUser: { id: "app", app: true, organization: { id: "org" } },
+                issue: { id: "lin-item-answer", team: { id: "team" } },
+              },
+            },
+          });
+        if (query.includes("IssueOwnership"))
+          return Response.json({
+            data: {
+              issue: {
+                id: "lin-item-answer",
+                team: { id: "team" },
+                state: { type: "started" },
+                assignee: { id: "human" },
+                delegate: { id: "app" },
+              },
+            },
+          });
+        if (query.includes("PawsTeamAccess"))
+          return Response.json({ data: { team: { id: "team" } } });
+        if (query.includes("PawsAgentSessionHistory"))
+          return Response.json({
+            data: {
+              agentSession: {
+                id: "session",
+                activities: { nodes: [], pageInfo: { hasNextPage: false } },
+              },
+            },
+          });
+        if (query.includes("PawsAgentSession"))
+          return Response.json({
+            data: {
+              agentSession: {
+                id: "session",
+                status: "active",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                appUser: { id: "app" },
+                creator: { id: "human" },
+                issue: {
+                  id: "lin-item-answer",
+                  identifier: "answer",
+                  title: "Answer",
+                  description: null,
+                },
+                externalLinks: [],
+              },
+            },
+          });
+        if (query.includes("agentActivityCreate"))
+          return Response.json({
+            data: {
+              agentActivityCreate: { success: true, agentActivity: { id: variables.input.id } },
+            },
+          });
+        if (query.includes("agentSessionUpdate"))
+          return Response.json({
+            data: { agentSessionUpdate: { success: true, agentSession: { id: "session" } } },
+          });
+        if (query.includes("agentSessions") || query.includes("issues"))
+          return Response.json({
+            data: {
+              agentSessions: { nodes: [], pageInfo: { hasNextPage: false } },
+              issues: { nodes: [], pageInfo: { hasNextPage: false } },
+            },
+          });
+        throw new Error("Unexpected offline Linear request");
+      },
+      { preconnect: () => undefined },
+    );
+    const paws = startPaws({
+      PAWS_HOME: home,
+      PAWS_PORT: "0",
+      PAWS_HOST: "127.0.0.1",
+      PAWS_NO_TUNNEL: "1",
+      LINEAR_CLIENT_ID: "client",
+      LINEAR_CLIENT_SECRET: "synthetic-client-secret",
+      LINEAR_APP_USER_ID: "app",
+      LINEAR_TEAM_ID: "team",
+    });
+    try {
+      const answer = insertQueuedItem(paws.db, { id: "answer", sessionKey: "session" });
+      ensureLinearSession(paws.db, {
+        sessionId: "session",
+        issueId: answer.linearIssueId,
+        creatorId: "human",
+      });
+      bindLinearSessionTask(paws.db, "session", answer.epicId);
+      saveTaskMode(paws.db, answer.id, "answer");
+      enqueueJob(paws.db, { queue: JOB_KIND.start, payload: { itemId: answer.id } });
+      for (let i = 0; i < 5_000 && !existsSync(evidence + ".descendant"); i++) await Bun.sleep(1);
+      expect(existsSync(evidence + ".descendant")).toBe(true);
+      const descendant = Number(readFileSync(evidence + ".descendant", "utf8"));
+      expect(processAlive(descendant)).toBe(true);
+      insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
+      beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 });
+      const stopping = paws.stop();
+      expect(paws.stop()).toBe(stopping);
+      expect(getWorkItem(paws.db, answer.id)?.state).toBe("running");
+      await stopping;
+      expect(processAlive(descendant)).toBe(false);
+      expect(() => getWorkItem(paws.db, answer.id)).toThrow();
+      expect(
+        (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
+      ).toBe("wip: shutdown");
+      const recovered = openDatabase(paws.paths.db);
+      try {
+        expect(getWorkItem(recovered, "ENG-21")?.state).toBe("recovering");
+        expect(getWorkItem(recovered, answer.id)?.state).toBe("recovering");
+      } finally {
+        recovered.close();
+      }
+    } finally {
+      await paws.stop();
+      globalThis.fetch = nativeFetch;
+      if (previous === undefined) delete process.env.PAWS_CLAUDE_ACP;
+      else process.env.PAWS_CLAUDE_ACP = previous;
+    }
+  }, 15_000);
 
   test("SIGTERM commits the same WIP before exit", async () => {
     const home = tempHome();
@@ -158,4 +321,21 @@ async function readUntil(proc: Bun.Subprocess, needle: string, timeoutMs: number
     text += decoder.decode(chunk.value);
   }
   return text;
+}
+
+function processAlive(pid: number): boolean {
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]!);
+    } catch {
+      return false;
+    }
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

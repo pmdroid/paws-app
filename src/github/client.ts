@@ -7,7 +7,8 @@ export function createFetchGitHubClient(
   baseUrl = "https://api.github.com",
 ): GitHubClient {
   return {
-    async request({ method, path, token, body }): Promise<GitHubResponse> {
+    async request({ method, path, token, body, signal }): Promise<GitHubResponse> {
+      signal?.throwIfAborted();
       const response = await fetchImpl(`${baseUrl}${path}`, {
         method,
         headers: {
@@ -18,6 +19,7 @@ export function createFetchGitHubClient(
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal,
       });
       const text = await response.text();
       let parsed: unknown = {};

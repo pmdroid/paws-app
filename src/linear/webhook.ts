@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   activityKey,
   deliveryKey,
+  promptMetadata,
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type LinearEventAction,
@@ -189,6 +190,7 @@ export function parseAgentEvent(
     sessionId,
     issueId,
     activityId,
+    ...promptMetadata(rawBody),
     body,
     signal,
     updatedAtMs: timestampMs,

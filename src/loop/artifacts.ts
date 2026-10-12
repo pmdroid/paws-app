@@ -3,8 +3,23 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ArtifactSnapshot, PublishArtifactHook, PublishedArtifact } from "../acp";
-import { enqueueOutboxOnce, getArtifact, immediate, markArtifact, saveArtifact } from "../db";
+import type {
+  ArtifactSnapshot,
+  PublishArtifactHook,
+  PublishArtifactRequest,
+  PublishedArtifact,
+} from "../acp";
+import {
+  beginArtifactAttempt,
+  requestArtifactAttachment,
+  artifactAttachmentRequested,
+  completeArtifactAttempt,
+  enqueueOutboxOnce,
+  getArtifact,
+  immediate,
+  markArtifact,
+  saveArtifact,
+} from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
@@ -35,6 +50,7 @@ export function createLinearArtifactPublisher(options: {
   files: LinearFileTransfer;
   secretsDir: string;
   itemId: string;
+  issueId?: string;
   sessionId: string;
   now?: () => number;
 }): PublishArtifactHook {
@@ -47,6 +63,23 @@ export function createLinearArtifactPublisher(options: {
       .get(options.sessionId)?.generation ?? 0;
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
+    begin(request, context) {
+      context.signal.throwIfAborted();
+      const identityHash = publicationIdentity(request);
+      if (request.attachToIssue === true && !options.issueId)
+        throw new Error("Issue attachment is unavailable");
+      const version = immediate(options.db, () => {
+        const nextVersion = beginArtifactAttempt(options.db, options.itemId, identityHash);
+        if (request.attachToIssue === true)
+          requestArtifactAttachment(options.db, options.itemId, identityHash);
+        return nextVersion;
+      });
+      return {
+        complete() {
+          completeArtifactAttempt(options.db, options.itemId, identityHash, version);
+        },
+      };
+    },
     publish(artifact, context) {
       const key = JSON.stringify([
         artifact.path,
@@ -56,9 +89,12 @@ export function createLinearArtifactPublisher(options: {
       ]);
       const existing = inflight.get(key);
       if (existing) return existing;
-      const pending = publish(artifact, context.runId, context.signal).finally(() =>
-        inflight.delete(key),
-      );
+      const pending = publish(
+        artifact,
+        context.runId,
+        context.signal,
+        publicationIdentity(context.request ?? { path: artifact.path }),
+      ).finally(() => inflight.delete(key));
       inflight.set(key, pending);
       return pending;
     },
@@ -68,6 +104,7 @@ export function createLinearArtifactPublisher(options: {
     artifact: ArtifactSnapshot,
     runId: string,
     signal: AbortSignal,
+    identityHash: string,
   ): Promise<PublishedArtifact> {
     signal.throwIfAborted();
     const bytes = new Uint8Array(await artifact.bytes.arrayBuffer());
@@ -85,6 +122,7 @@ export function createLinearArtifactPublisher(options: {
       options.db,
       {
         id: randomUUID(),
+        identityHash,
         itemId: options.itemId,
         runId,
         path: artifact.path,
@@ -185,6 +223,26 @@ export function createLinearArtifactPublisher(options: {
     const body = `${row.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${assetUrl}>)`;
     immediate(options.db, () => {
       markArtifact(options.db, row.id, assetUrl);
+      if (artifactAttachmentRequested(options.db, options.itemId, identityHash)) {
+        if (!options.issueId) throw new Error("Issue attachment is unavailable");
+        enqueueOutboxOnce(options.db, {
+          target: "linear",
+          op: "linear.attachment",
+          delivery: "ordered",
+          priority: 0,
+          orderingKey: options.sessionId,
+          idempotencyKey: `artifact-card:${options.sessionId}:${generation}:${row.id}`,
+          generation,
+          now: now(),
+          payload: {
+            id: row.id,
+            itemId: options.itemId,
+            issueId: options.issueId,
+            title: row.displayName,
+            url: assetUrl,
+          },
+        });
+      }
       enqueueOutboxOnce(options.db, {
         target: "linear",
         op: "activity",
@@ -267,4 +325,16 @@ async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function publicationIdentity(request: PublishArtifactRequest): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        request.displayName === undefined
+          ? ["path", request.path]
+          : ["displayName", request.displayName],
+      ),
+    )
+    .digest("hex");
 }

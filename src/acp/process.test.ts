@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import type { OwnedProcess } from "./process";
 import * as fs from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,119 +13,123 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-test("an exited historical child never signals its former process group", async () => {
-  const child = { pid: 987654, exitCode: 0, signalCode: null } as ChildProcess;
+test("an exited ownership anchor never signals its former process group", async () => {
+  const root = await tempDir();
+  const child = spawnAgent(process.execPath, ["-e", "process.exit(0)"], {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: root,
+  });
+  await waitExit(child);
+  expect(await stopChild(child, 100)).toBe(true);
   const kill = spyOn(process, "kill").mockImplementation(() => true);
   try {
     killTree(child, "SIGTERM");
     expect(await stopChild(child, 10)).toBe(true);
+    expect(child.kill("SIGTERM")).toBe(false);
     expect(kill).not.toHaveBeenCalled();
   } finally {
     kill.mockRestore();
   }
 });
 
-test.skipIf(process.platform !== "linux")(
-  "shutdown stops a captured stubborn descendant after its leader exits",
+test.skipIf(process.platform === "win32")(
+  "shutdown stops stubborn descendants even when the command exits first",
   async () => {
     const { child, descendant } = await processFamily();
-    const kill = spyOn(process, "kill");
     try {
-      expect(await stopChild(child, 100)).toBe(true);
-      expect(kill).toHaveBeenCalledWith(-child.pid!, "SIGTERM");
-      expect(kill).toHaveBeenCalledWith(descendant, "SIGKILL");
-      expect(kill).not.toHaveBeenCalledWith(-child.pid!, "SIGKILL");
-      await waitUntilStopped(descendant);
-    } finally {
-      kill.mockRestore();
-      killTree(child, "SIGKILL");
-      await waitForExit(child, 100);
-      if (running(descendant)) process.kill(descendant, "SIGKILL");
-    }
-  },
-);
-
-test.skipIf(process.platform !== "linux")(
-  "post-exit cleanup skips a captured PID whose start-time identity changed",
-  async () => {
-    const { child, descendant } = await processFamily();
-    killTree(child, "SIGCONT");
-    child.kill("SIGTERM");
-    expect(await waitForExit(child, 1000)).toBe(true);
-    const originalRead = fs.readFileSync;
-    const read = spyOn(fs, "readFileSync").mockImplementation(((
-      ...args: Parameters<typeof fs.readFileSync>
-    ) => {
-      const value = originalRead(...args);
-      if (String(args[0]) !== `/proc/${descendant}/stat`) return value;
-      const text = String(value);
-      const end = text.lastIndexOf(")") + 2;
-      const fields = text.slice(end).split(" ");
-      fields[19] = String(BigInt(fields[19]!) + 1n);
-      return text.slice(0, end) + fields.join(" ");
-    }) as typeof fs.readFileSync);
-    const kill = spyOn(process, "kill");
-    try {
-      expect(await stopChild(child, 100)).toBe(true);
-      expect(kill).not.toHaveBeenCalled();
+      child.kill("SIGTERM");
+      expect(await waitForExit(child, 1000)).toBe(true);
       expect(running(descendant)).toBe(true);
+      expect(await stopChild(child, 100)).toBe(true);
+      await waitUntilStopped(descendant);
     } finally {
-      read.mockRestore();
-      kill.mockRestore();
+      await stopChild(child, 100);
       if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
 );
 
-test.skipIf(process.platform !== "linux")(
-  "shutdown retries captured descendants when group signalling observes leader exit",
+test.skipIf(process.platform === "win32")(
+  "shutdown retains group ownership when the command exits during graceful shutdown",
   async () => {
     const { child, descendant } = await processFamily();
-    const originalKill = process.kill;
-    const kill = spyOn(process, "kill").mockImplementation((pid, signal) => {
-      if (pid === -child.pid! && signal === "SIGTERM") {
-        child.kill("SIGKILL");
-        Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
-        throw Object.assign(new Error("group disappeared"), { code: "ESRCH" });
-      }
-      return originalKill(pid, signal);
-    });
     try {
       expect(await stopChild(child, 100)).toBe(true);
-      expect(kill).toHaveBeenCalledWith(descendant, "SIGKILL");
       await waitUntilStopped(descendant);
     } finally {
-      kill.mockRestore();
-      if (running(child.pid!)) originalKill(child.pid!, "SIGKILL");
-      if (running(descendant)) originalKill(descendant, "SIGKILL");
+      await stopChild(child, 100);
+      if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
 );
 
-async function processFamily(): Promise<{ child: ChildProcess; descendant: number }> {
+test.skipIf(process.platform === "win32")(
+  "lost ownership fails cleanup without signalling a historical group",
+  async () => {
+    const { child, descendant, leader } = await processFamily();
+    try {
+      process.kill(child.pid!, "SIGKILL");
+      await Bun.sleep(30);
+      const kill = spyOn(process, "kill");
+      try {
+        expect(await stopChild(child, 50)).toBe(false);
+        killTree(child, "SIGKILL");
+        expect(kill).not.toHaveBeenCalled();
+        expect(running(descendant)).toBe(true);
+      } finally {
+        kill.mockRestore();
+      }
+    } finally {
+      if (running(leader)) process.kill(leader, "SIGKILL");
+      if (running(descendant)) process.kill(descendant, "SIGKILL");
+    }
+  },
+);
+
+async function processFamily(): Promise<{
+  child: OwnedProcess;
+  descendant: number;
+  leader: number;
+}> {
   const root = await tempDir();
   const pidFile = join(root, "descendant.pid");
+  const leaderFile = join(root, "leader.pid");
   const script = `process.on('SIGTERM', () => {}); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
   const child = spawnAgent(
     process.execPath,
     [
       "-e",
-      `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(script)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
+      `require('fs').writeFileSync(${JSON.stringify(leaderFile)}, String(process.pid)); require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(script)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
     ],
     { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root },
   );
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
-      return { child, descendant: Number(fs.readFileSync(pidFile, "utf8")) };
-    } catch {
-      await Bun.sleep(10);
-    }
+      const descendant = Number(fs.readFileSync(pidFile, "utf8"));
+      const leader = Number(fs.readFileSync(leaderFile, "utf8"));
+      if (
+        Number.isSafeInteger(descendant) &&
+        descendant > 0 &&
+        Number.isSafeInteger(leader) &&
+        leader > 0
+      )
+        return { child, descendant, leader };
+    } catch {}
+    await Bun.sleep(10);
   }
   await stopChild(child, 100);
   throw new Error("descendant did not start");
 }
 
 function running(pid: number): boolean {
+  if (process.platform !== "linux") {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   try {
     const text = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
     return !["Z", "X"].includes(text.slice(text.lastIndexOf(")") + 2).split(" ")[0]!);
@@ -182,6 +186,36 @@ describe("spawnAgent", () => {
     expect(second?.env.GITHUB_TOKEN).toBe("ghp_secret");
   });
 
+  test("the ownership anchor ignores worktree Bun preloads and preserves the actual command cwd", async () => {
+    const root = await tempDir();
+    const marker = join(root, "host-preload");
+    fs.writeFileSync(join(root, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
+    fs.writeFileSync(
+      join(root, "preload.ts"),
+      `require("fs").writeFileSync(${JSON.stringify(marker)}, "host");`,
+    );
+    const bin = join(root, "command");
+    fs.writeFileSync(bin, "#!/bin/sh\npwd\n", { mode: 0o755 });
+    for (const sandbox of [false, true]) {
+      const child = spawnAgent(
+        bin,
+        [],
+        { PATH: process.env.PATH! },
+        {
+          cwd: root,
+          ...(sandbox
+            ? { docker: { agent: "claude", worktree: root, proxyUrl: "http://127.0.0.1:9", bin } }
+            : {}),
+        },
+      );
+      let output = "";
+      child.stdout?.on("data", (chunk) => (output += chunk.toString()));
+      await waitExit(child);
+      expect(output.trim()).toBe(root);
+      expect(fs.existsSync(marker)).toBe(false);
+    }
+  });
+
   test("docker mode spawns the fake docker binary with the sandbox argv", async () => {
     const root = await tempDir();
     const fake = await writeRecordingDocker(root);
@@ -226,7 +260,7 @@ describe("spawnAgent", () => {
   });
 });
 
-async function waitExit(child: ChildProcess): Promise<void> {
+async function waitExit(child: OwnedProcess): Promise<void> {
   let stderr = "";
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => {
@@ -245,6 +279,7 @@ async function waitExit(child: ChildProcess): Promise<void> {
     });
   });
   if (code !== 0) throw new Error(`spawn exited ${code}: ${stderr}`);
+  expect(await stopChild(child, 100)).toBe(true);
 }
 
 async function tempDir(): Promise<string> {

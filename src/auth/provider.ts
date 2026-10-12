@@ -1,5 +1,12 @@
-import { createAppTokenProvider, createFetchGitHubClient, createGhCliAuth } from "../github";
-import type { GitHubClient } from "../github";
+import {
+  checkRepositoryReadAccess,
+  checkRepositoryWriteAccess,
+  createAppTokenProvider,
+  createFetchGitHubClient,
+  createGhCliAuth,
+  readGhUserToken,
+} from "../github";
+import type { GhCliOptions, GitHubClient } from "../github";
 import { fetchGitHubAccount, type DeviceFetch } from "./github-device";
 import { refreshStoredToken, type LoginIO } from "./login";
 import { GITHUB_REAUTH_MESSAGE } from "./messages";
@@ -23,6 +30,7 @@ export type GitHubTokenProviderConfig = {
   auth?: GitHubAuthSource | null;
   oauthClientId?: string | null;
   repo?: string | null;
+  access?: "read" | "write";
   home?: string;
   env?: Record<string, string | undefined>;
   appId?: string | null;
@@ -111,23 +119,47 @@ function oauthProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
 }
 
 function ghProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
-  const names = namesOf(config);
-  const gh = createGhCliAuth({
-    owner: names.owner,
-    repo: names.repo,
-    ...(config.gh?.ghBin ? { ghBin: config.gh.ghBin } : {}),
-    ...(config.gh?.pathPrefix ? { pathPrefix: config.gh.pathPrefix } : {}),
-    ...(config.gh?.env ? { env: config.gh.env } : {}),
-    ...(config.gh?.cwd ? { cwd: config.gh.cwd } : {}),
-  });
+  const options = ghOptions(config);
+  const gh = createGhCliAuth(options);
   return {
     source: "gh",
     token: () => gh.tokenFor("push"),
     user: async () => {
-      const token = await gh.tokenFor("pr");
+      const token = await readGhUserToken(options);
       const account = await fetchGitHubAccount({ token, fetch: fetchOf(config) });
       return { login: account.login, id: account.id };
     },
+  };
+}
+
+export async function checkGitHubCliRepositoryAccess(
+  config: GitHubTokenProviderConfig,
+  signal: AbortSignal,
+): Promise<boolean> {
+  signal.throwIfAborted();
+  const options = ghOptions(config);
+  const token = await readGhUserToken(options);
+  signal.throwIfAborted();
+  return (config.access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
+    owner: options.owner,
+    repo: options.repo,
+    token,
+    app: false,
+    signal,
+    fetch: asFetch(config.fetch),
+  });
+}
+
+function ghOptions(config: GitHubTokenProviderConfig): GhCliOptions {
+  const names = namesOf(config);
+  return {
+    owner: names.owner,
+    repo: names.repo,
+    ...(config.access ? { access: config.access } : {}),
+    ...(config.gh?.ghBin ? { ghBin: config.gh.ghBin } : {}),
+    ...(config.gh?.pathPrefix ? { pathPrefix: config.gh.pathPrefix } : {}),
+    ...(config.gh?.env ? { env: config.gh.env } : {}),
+    ...(config.gh?.cwd ? { cwd: config.gh.cwd } : {}),
   };
 }
 
@@ -151,6 +183,7 @@ function appProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
     privateKeyPem: config.privateKeyPem,
     owner: names.owner,
     repo: names.repo,
+    ...(config.access ? { access: config.access } : {}),
     ...(config.now ? { now: () => new Date(config.now?.() ?? Date.now()) } : {}),
   });
   let bot: { login: string; id: number } | null = null;

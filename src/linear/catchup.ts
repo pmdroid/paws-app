@@ -49,6 +49,8 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
   ) @include(if: $includeActivities) {
     nodes {
       id
+      createdAt
+      user { id }
       updatedAt
       signal
       agentSession { id issue { id } }
@@ -82,6 +84,8 @@ export type PolledSession = {
 
 export type PolledActivity = {
   id: string;
+  actorId?: string | null;
+  activityCreatedAtMs?: number | null;
   issueId: string | null;
   sessionId: string | null;
   body: string | null;
@@ -341,8 +345,11 @@ function dedupeActivities(nodes: readonly Record<string, unknown>[]): PolledActi
     const content = isRecord(node["content"]) ? node["content"] : null;
     const session = isRecord(node["agentSession"]) ? node["agentSession"] : null;
     const issue = session !== null && isRecord(session["issue"]) ? session["issue"] : null;
+    const user = isRecord(node["user"]) ? node["user"] : null;
     activities.push({
       id,
+      actorId: user === null ? null : readString(user, "id"),
+      activityCreatedAtMs: readTime(node, "createdAt"),
       issueId: issue === null ? null : readString(issue, "id"),
       sessionId: session === null ? null : readString(session, "id"),
       body: content === null ? null : readString(content, "body"),

@@ -12,13 +12,28 @@ import {
   GITHUB_REAUTH_MESSAGE,
   MISSING_GITHUB_CLIENT_ID_MESSAGE,
 } from "../src/auth";
-import { pawsPaths, loadConfigFile, loadRuntime, renderConfigToml } from "../src/config";
+import {
+  pawsPaths,
+  loadConfigFile,
+  loadRuntime,
+  renderConfigToml,
+  ensureLayout,
+} from "../src/config";
+import {
+  getLinearSessionAccess,
+  migrate,
+  openDatabase,
+  recordLinearInstallation,
+  revokeLinearInstallation,
+} from "../src/db";
+import { createLinearReconnect } from "../src/linear-reconnect";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../src/core";
 import {
   LINEAR_APP_SCOPES,
   LINEAR_REDIRECT_URI,
   linearTokenPath,
   readStoredToken,
+  writeStoredToken,
 } from "../src/linear";
 import { runSetup, type SetupFetch, type SetupOptions } from "../src/setup";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
@@ -36,6 +51,78 @@ afterEach(async () => {
 });
 
 describe("paws setup", () => {
+  test("agent setup restores verified revoked access through the production reconnect callback", async () => {
+    const scene = await arrange({ bearer: true });
+    ensureLayout(scene.paths);
+    const db = openDatabase(scene.paths.db);
+    const scope = { organizationId: "org", oauthClientId: "client-id", appUserId: "user-1" };
+    try {
+      migrate(db);
+      recordLinearInstallation(db, {
+        ...scope,
+        sessionId: "session",
+        teamId: "team-1",
+        observedAtMs: 1,
+      });
+      revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 10 });
+    } finally {
+      db.close();
+    }
+    writeStoredToken(linearTokenPath(scene.paths.secretsDir), {
+      accessToken: "fake-old-access",
+      refreshToken: "fake-old-refresh",
+      expiresAtMs: 0,
+      scope: LINEAR_APP_SCOPES,
+      actor: "app",
+    });
+    let verified = 0;
+    const reconnect = createLinearReconnect({
+      now: () => 20,
+      fetch: async (_url, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
+        verified++;
+        return Response.json({
+          data: { viewer: { id: "user-1", app: true, organization: { id: "org" } } },
+        });
+      },
+    });
+    const result = await run(
+      scene,
+      [
+        "--yes",
+        "--tracker",
+        "linear",
+        "--home",
+        scene.home,
+        "--checkout",
+        scene.checkout,
+        "--linear-mode",
+        "agent",
+        "--linear-client-id",
+        "client-id",
+        "--linear-client-secret",
+        CLIENT_SECRET,
+        "--linear-access-token",
+        ACCESS_TOKEN,
+      ],
+      { linearReconnect: reconnect },
+    );
+    expect(result.code).toBe(0);
+    expect(result.stderr).toEqual([]);
+    expect(verified).toBe(1);
+    expect(readStoredToken(linearTokenPath(scene.paths.secretsDir))?.accessToken).toBe(
+      ACCESS_TOKEN,
+    );
+    const reopened = openDatabase(scene.paths.db);
+    try {
+      expect(getLinearSessionAccess(reopened, "session")).toBe("allowed");
+      expect(reopened.query("SELECT restored_after FROM linear_app_revocation").get()).toEqual({
+        restored_after: 20,
+      });
+    } finally {
+      reopened.close();
+    }
+  });
   test("scripted run writes config.toml and 0600 secrets, then a rerun changes nothing", async () => {
     const scene = await arrange();
     const first = await run(scene, happyArgs(scene));
@@ -698,7 +785,7 @@ function happyArgs(scene: Scene): string[] {
 async function run(
   scene: Scene,
   args: string[],
-  extra?: Pick<SetupOptions, "readLine" | "linear" | "fetch" | "env">,
+  extra?: Pick<SetupOptions, "readLine" | "linear" | "fetch" | "env" | "linearReconnect">,
 ): Promise<{ code: number; stdout: string[]; stderr: string[] }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -710,6 +797,7 @@ async function run(
     cwd: scene.checkout,
     fetch: extra?.fetch ?? scene.linear.fetch,
     ...(extra?.linear ? { linear: extra.linear } : {}),
+    ...(extra?.linearReconnect ? { linearReconnect: extra.linearReconnect } : {}),
     stdout: (line) => stdout.push(line),
     stderr: (line) => stderr.push(line),
     readLine:

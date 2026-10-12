@@ -72,6 +72,12 @@ function memoryStore() {
     save: async (token) => {
       saved = token;
     },
+    async update(change) {
+      const next = change(saved);
+      if (next === null) return false;
+      saved = next;
+      return true;
+    },
     markInvalid: async () => {
       invalidated = true;
     },

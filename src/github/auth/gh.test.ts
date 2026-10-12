@@ -20,6 +20,7 @@ import {
   inferGitHubRepository,
   openPullRequest,
   parseGitHubRemote,
+  readGhUserToken,
   pushBranch,
   serialMerge,
   type GitExec,
@@ -132,6 +133,64 @@ function ghEnv(fake: FakeGh, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 describe("gh auth token provider", () => {
+  test("host identity uses the stored login without repository permissions or injected tokens", async () => {
+    const fake = await fakeGh();
+    try {
+      const token = await readGhUserToken({
+        owner: "owner",
+        repo: "private",
+        ghBin: fake.bin,
+        env: ghEnv(fake, {
+          GH_FAKE_PUSH: "0",
+          GH_TOKEN: "synthetic-injected-gh-token",
+          GITHUB_TOKEN: "synthetic-injected-github-token",
+          PAWS_GITHUB_TOKEN: "synthetic-injected-paws-token",
+        }),
+      });
+      expect(token).toBe("gho_fake_1");
+      const log = await readFile(fake.log, "utf8");
+      expect(log).toContain("auth status");
+      expect(log).toContain("auth token");
+      expect(log).not.toContain("api repos/");
+      expect(log).not.toContain("synthetic-injected");
+    } finally {
+      await fake.cleanup();
+    }
+  });
+
+  test("read access accepts a host login without push permission", async () => {
+    const fake = await fakeGh();
+    try {
+      const provider = createTokenProvider(
+        { auth: "gh" },
+        {
+          gh: {
+            owner: "pmdroid",
+            repo: "paws-demo",
+            access: "read",
+            ghBin: fake.bin,
+            env: ghEnv(fake, { GH_FAKE_PUSH: "0" }),
+          },
+        },
+      );
+      expect(await provider.tokenFor("push")).toBe("gho_fake_1");
+      const write = createTokenProvider(
+        { auth: "gh" },
+        {
+          gh: {
+            owner: "pmdroid",
+            repo: "paws-demo",
+            ghBin: fake.bin,
+            env: ghEnv(fake, { GH_FAKE_PUSH: "0" }),
+          },
+        },
+      );
+      await expect(write.tokenFor("push")).rejects.toThrow("does not have push permission");
+    } finally {
+      await fake.cleanup();
+    }
+  });
+
   test("fetches a fresh token per push and keeps it out of the spawned agent env", async () => {
     const fake = await fakeGh();
     const beforeToken = process.env.PAWS_GITHUB_TOKEN;

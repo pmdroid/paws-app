@@ -1,11 +1,13 @@
 import type { ItemId } from "../core";
 
+export type QuestionOption = string | { label?: string; value: string };
+
 export type AskTeamInput = {
   itemId: ItemId;
   questionId?: string;
   title: string;
   body: string;
-  options?: readonly string[];
+  options?: readonly QuestionOption[];
 };
 
 export type TeamAnswer = {

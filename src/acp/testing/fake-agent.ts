@@ -229,6 +229,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
         method: "session/update",
         params: { sessionId, update: step.update },
       });
+      if (step.delayMs) await Bun.sleep(step.delayMs);
       continue;
     }
     if (step.type === "permission") {
@@ -341,6 +342,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
           path: step.path,
           ...(step.displayName ? { displayName: step.displayName } : {}),
           ...(step.mimeType ? { mimeType: step.mimeType } : {}),
+          ...(step.attachToIssue === undefined ? {} : { attachToIssue: step.attachToIssue }),
         });
         state.artifact = { ok: true, text };
       } catch (error) {
