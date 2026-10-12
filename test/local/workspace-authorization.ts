@@ -9,8 +9,10 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  replaceWorkspaceRepositories,
   saveArtifact,
   syncWorkspaceMember,
+  workspaceMember,
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
@@ -61,6 +63,11 @@ export async function probeWorkspaceAuthorization(
   });
   const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ownerId, now });
   const member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
+  const oldOwner = issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: ownerId,
+    now: now - 16 * 60_000,
+  });
   for (const [id, organizationId, teamId] of [
     ["own", "org", "team-a"],
     ["other-team", "org", "team-b"],
@@ -93,11 +100,12 @@ export async function probeWorkspaceAuthorization(
       repo: repo!,
       remoteUrl: `https://example.invalid/fixture/${repo}`,
     });
-  db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [
-    workspace.id,
-    "fixture/allowed",
-    "team-a",
-  ]);
+  replaceWorkspaceRepositories(db, {
+    workspaceId: workspace.id,
+    actorId: ownerId,
+    repositories: [{ repository: "fixture/allowed", teamId: "team-a" }],
+    now,
+  });
   const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   for (const [index, itemId] of ["own", "foreign"].entries())
     saveArtifact(
@@ -122,6 +130,9 @@ export async function probeWorkspaceAuthorization(
   let membershipFailure = false;
   const runnerCalls: { userId: string; workspaceId: string }[] = [];
   let enrollments = 0;
+  let memberTeams = ["team-a"];
+  let guest = false;
+  let memberReadBarrier: { entered: () => void; wait: Promise<void> } | undefined;
   const server = startServer({
     hostname: "127.0.0.1",
     port: 0,
@@ -165,23 +176,33 @@ export async function probeWorkspaceAuthorization(
     publicUrl: origin,
     clientId: "client",
     installedOrganization: { id: "org", name: "Workspace" },
+    verifyTeam: async (id) => id === "team-a" || id === "team-b",
     memberships: createLinearMembershipReads({
       async query(_query, variables) {
         if (membershipFailure) throw new Error("Linear unavailable");
-        return {
+        const result = {
           viewer: { app: true, organization: { id: "org" } },
           user: {
             id: variables?.["id"],
             active: true,
-            guest: false,
+            guest: variables?.["id"] === "member" && guest,
             admin: false,
             organization: { id: "org" },
             teams: {
-              nodes: [{ id: "team-a" }],
+              nodes: (variables?.["id"] === "member" ? memberTeams : ["team-a"]).map((id) => ({
+                id,
+              })),
               pageInfo: { hasNextPage: false, endCursor: null },
             },
           },
         };
+        if (variables?.["id"] === "member" && memberReadBarrier !== undefined) {
+          const barrier = memberReadBarrier;
+          memberReadBarrier = undefined;
+          barrier.entered();
+          await barrier.wait;
+        }
+        return result;
       },
     }),
   });
@@ -259,6 +280,63 @@ export async function probeWorkspaceAuthorization(
       settings.status === 403 && probe.status === 403 && probes === 0,
       { settings: settings.status, probe: probe.status, invocations: probes },
     );
+    const stale = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(oldOwner),
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
+    });
+    observe("workspace role changes require sign-in within fifteen minutes", stale.status === 403, {
+      status: stale.status,
+    });
+    const missingCsrf = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: { cookie: headers(owner).cookie, origin, "content-type": "application/json" },
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
+    });
+    const changed = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: "observer" }),
+    });
+    const lastOwner = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: ownerId, role: "member" }),
+    });
+    observe(
+      "owner administration enforces CSRF and retains an active owner",
+      missingCsrf.status === 403 && changed.status === 200 && lastOwner.status === 400,
+      { missingCsrf: missingCsrf.status, changed: changed.status, lastOwner: lastOwner.status },
+    );
+    const unmapped = await fetch(`${origin}/api/workspaces/repositories`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({
+        repositories: [{ repository: "fixture/private", teamId: "foreign" }],
+      }),
+    });
+    const mapped = await fetch(`${origin}/api/workspaces/repositories`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ repositories: [{ repository: "fixture/private", teamId: "team-a" }] }),
+    });
+    const remapped = (await (
+      await fetch(`${origin}/api/status`, { headers: headers(owner) })
+    ).json()) as typeof ownerSnapshot;
+    observe(
+      "repository scope changes only after an owner maps a verified Linear team",
+      unmapped.status === 400 &&
+        mapped.status === 200 &&
+        remapped.items
+          .map((item) => item.id)
+          .sort()
+          .join() === "other-team,unmapped-repo",
+      {
+        rejected: unmapped.status,
+        saved: mapped.status,
+        items: remapped.items.map((item) => item.id),
+      },
+    );
     const ownerPage = await fetch(`${origin}/status/`, { headers: headers(owner) });
     const pageCsrf = (await ownerPage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
     const pageAction = await fetch(`${origin}/api/settings/agents/test`, {
@@ -329,6 +407,131 @@ export async function probeWorkspaceAuthorization(
         runnerCalls,
       },
     );
+    guest = true;
+    const guestPromotion = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
+    });
+    observe(
+      "owner role overrides cannot grant steering to a verified Linear guest",
+      guestPromotion.status === 400,
+      { status: guestPromotion.status },
+    );
+    memberTeams = [];
+    await access.refreshMemberships();
+    const refreshed = (await (
+      await fetch(`${origin}/api/status`, { headers: headers(member) })
+    ).json()) as typeof ownerSnapshot;
+    const refreshedSession = (await (
+      await fetch(`${origin}/api/auth/session`, { headers: headers(member) })
+    ).json()) as { role: string; teamIds: string[] };
+    observe(
+      "forced membership sync removes team visibility immediately while retaining manual roles",
+      refreshed.items.length === 0 &&
+        refreshedSession.teamIds.length === 0 &&
+        refreshedSession.role === "observer",
+      { items: refreshed.items, teamIds: refreshedSession.teamIds, role: refreshedSession.role },
+    );
+    const invalidRole = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: ["owner"] }),
+    });
+    const invalidRoleBody = (await invalidRole.json()) as { error: string };
+    observe(
+      "role settings reject non-string roles before database binding",
+      invalidRole.status === 400 && invalidRoleBody.error === "Choose a workspace member and role.",
+      { status: invalidRole.status, error: invalidRoleBody.error },
+    );
+    guest = false;
+    await Bun.sleep(2);
+    const restoredOverride = await fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
+    });
+    await access.refreshMemberships();
+    const restoredOverrideSession = (await (
+      await fetch(`${origin}/api/auth/session`, { headers: headers(member) })
+    ).json()) as { role: string };
+    observe(
+      "a new manual role replaces the preserved override and survives verified membership sync",
+      restoredOverride.status === 200 && restoredOverrideSession.role === "admin",
+      { status: restoredOverride.status, role: restoredOverrideSession.role },
+    );
+    const pendingMembership = Promise.withResolvers<void>();
+    const releaseMembership = Promise.withResolvers<void>();
+    memberReadBarrier = {
+      entered: pendingMembership.resolve,
+      wait: releaseMembership.promise,
+    };
+    const delayedPromotion = fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: "owner" }),
+    });
+    await pendingMembership.promise;
+    guest = true;
+    syncWorkspaceMember(db, {
+      workspaceId: workspace.id,
+      userId: memberId,
+      role: "observer",
+      active: true,
+      teamIds: [],
+      now: Date.now(),
+    });
+    releaseMembership.resolve();
+    const stalePromotion = await delayedPromotion;
+    const cappedMember = workspaceMember(db, workspace.id, memberId)!;
+    observe(
+      "delayed owner promotion cannot lift a newer verified guest cap",
+      stalePromotion.status === 400 && cappedMember.role === "observer",
+      { status: stalePromotion.status, role: cappedMember.role },
+    );
+    const ownerReadStarted = Promise.withResolvers<void>();
+    const ownerReadRelease = Promise.withResolvers<void>();
+    memberReadBarrier = { entered: ownerReadStarted.resolve, wait: ownerReadRelease.promise };
+    guest = false;
+    const beforeDemotion = workspaceMember(db, workspace.id, memberId)!;
+    await Bun.sleep(2);
+    const demotedWrite = fetch(`${origin}/api/workspaces/members`, {
+      method: "PUT",
+      headers: headers(owner),
+      body: JSON.stringify({ userId: memberId, role: "admin" }),
+    });
+    await ownerReadStarted.promise;
+    syncWorkspaceMember(db, {
+      workspaceId: workspace.id,
+      userId: ownerId,
+      active: true,
+      role: "observer",
+      teamIds: [],
+      now: Date.now() + 1,
+    });
+    ownerReadRelease.resolve();
+    const deniedOwner = await demotedWrite;
+    const afterDemotion = workspaceMember(db, workspace.id, memberId)!;
+    observe(
+      "an owner demoted during membership lookup cannot mutate the target membership",
+      deniedOwner.status === 400 &&
+        afterDemotion.checkedAt === beforeDemotion.checkedAt &&
+        afterDemotion.role === beforeDemotion.role &&
+        afterDemotion.teamIds.join() === beforeDemotion.teamIds.join(),
+      {
+        status: deniedOwner.status,
+        before: beforeDemotion.checkedAt,
+        after: afterDemotion.checkedAt,
+      },
+    );
+    syncWorkspaceMember(db, {
+      workspaceId: workspace.id,
+      userId: ownerId,
+      active: true,
+      role: "member",
+      teamIds: ["team-a"],
+      now: Date.now() + 2,
+    });
     changeLinearTeamAccess(db, {
       eventKey: "fixture-team-removal",
       organizationId: "org",

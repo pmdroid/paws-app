@@ -14,6 +14,7 @@ import { parseRoute } from "./route";
 import { createAgentSettings } from "./agent-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
+import { initializeWorkspaceAccess } from "./workspace";
 
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
@@ -33,6 +34,7 @@ let snapshot: StatusSnapshot | null = null;
 let via: RenderModel["via"] = null;
 let error: string | null = null;
 let timer = 0;
+let workspaceReady = false;
 let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const dialog = document.querySelector("#source-dialog");
@@ -53,9 +55,11 @@ demoButton?.addEventListener("click", () => {
 });
 
 void boot();
-void paintGitHubAuth(null);
 
 async function boot(): Promise<void> {
+  workspaceReady = await initializeWorkspaceAccess();
+  if (!workspaceReady) return;
+  void paintGitHubAuth(null);
   const query = new URLSearchParams(location.search).get("engine");
   const fromQuery = query === null ? null : choiceFromValue(query);
   if (fromQuery) {
@@ -88,6 +92,10 @@ async function reload(): Promise<void> {
       headers: { Accept: "application/json", "ngrok-skip-browser-warning": "1" },
       cache: "no-store",
     });
+    if (response.status === 401) {
+      workspaceReady = await initializeWorkspaceAccess();
+      if (!workspaceReady) return;
+    }
     if (!response.ok) throw new Error(await errorText(response));
     const parsed = parseStatusSnapshot(await response.json());
     if (!parsed.ok) throw new Error(parsed.error);
@@ -151,6 +159,7 @@ function schedule(): void {
 }
 
 function paint(): void {
+  if (!workspaceReady) return;
   const model: RenderModel = {
     route: parseRoute(location.hash),
     phase,

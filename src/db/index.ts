@@ -232,15 +232,19 @@ export type {
   WorkspaceSession,
 } from "./workspace";
 export {
+  changeWorkspaceRole,
   consumeWorkspaceOAuthRequest,
   listUserWorkspaces,
+  listWorkspaceMembers,
+  listWorkspaceRepositories,
+  replaceWorkspaceRepositories,
   saveWorkspaceOAuthRequest,
 } from "./workspace-auth";
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
+export { workspaceSessionIds } from "./workspace-scope";
 
 export {
   linearSessionsForIssueContext,
   saveLinearIssueContext,
   getLinearIssueContext,
 } from "./linear-issue-context";
-export { workspaceSessionIds } from "./workspace-scope";

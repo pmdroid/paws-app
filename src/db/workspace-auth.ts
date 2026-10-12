@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type { WorkspaceRole } from "./workspace";
+import { immediate } from "./tx";
+import {
+  auditWorkspaceAccess,
+  syncWorkspaceMember,
+  workspaceMember,
+  type WorkspaceRole,
+} from "./workspace";
 
 export type WorkspaceOAuthRequest = {
   stateHash: string;
@@ -37,4 +43,105 @@ export function listUserWorkspaces(db: Database, userId: string) {
       WHERE m.user_id=? AND m.active=1 ORDER BY w.name,w.id`,
     )
     .all(userId);
+}
+
+export function listWorkspaceMembers(db: Database, workspaceId: string) {
+  return db
+    .query<{ id: string; name: string; role: WorkspaceRole; active: number }, [string]>(
+      `SELECT u.id,u.name,m.role,m.active FROM workspace_member m JOIN workspace_user u ON u.id=m.user_id
+      WHERE m.workspace_id=? ORDER BY u.name,u.id`,
+    )
+    .all(workspaceId);
+}
+
+export function changeWorkspaceRole(
+  db: Database,
+  input: {
+    workspaceId: string;
+    actorId: string;
+    userId: string;
+    role: WorkspaceRole;
+    now: number;
+    verified?: { active: boolean; guest: boolean; teamIds: readonly string[] };
+  },
+): void {
+  const error = immediate(db, () => {
+    const actor = workspaceMember(db, input.workspaceId, input.actorId);
+    if (actor?.role !== "owner" || !actor.active)
+      throw new Error("Workspace ownership is required.");
+    if (input.verified !== undefined) {
+      if (
+        !syncWorkspaceMember(db, {
+          ...input,
+          active: input.verified.active,
+          role: input.verified.guest ? "observer" : "member",
+          teamIds: input.verified.teamIds,
+        })
+      )
+        throw new Error("Linear membership changed. Try again.");
+      if (!input.verified.active) return "Current Linear membership is required.";
+      if (input.verified.guest && input.role !== "observer")
+        return "Linear guests can only have observer access.";
+    }
+    const member = workspaceMember(db, input.workspaceId, input.userId);
+    if (member === null || !member.active)
+      throw new Error("An active workspace member is required.");
+    if (member.role === "owner" && input.role !== "owner") {
+      const owners = db
+        .query<{ count: number }, [string]>(
+          "SELECT count(*) AS count FROM workspace_member WHERE workspace_id=? AND role='owner' AND active=1",
+        )
+        .get(input.workspaceId)!.count;
+      if (owners <= 1) throw new Error("The workspace must retain an active owner.");
+    }
+    db.run(
+      "UPDATE workspace_member SET role=?,manual_role=?,source='manual' WHERE workspace_id=? AND user_id=?",
+      [input.role, input.role, input.workspaceId, input.userId],
+    );
+    auditWorkspaceAccess(db, {
+      ...input,
+      userId: input.actorId,
+      action: "member.role.changed",
+      subject: `${input.userId}:${input.role}`,
+    });
+    return null;
+  });
+  if (error !== null) throw new Error(error);
+}
+
+export function replaceWorkspaceRepositories(
+  db: Database,
+  input: {
+    workspaceId: string;
+    actorId: string;
+    repositories: readonly { repository: string; teamId: string }[];
+    now: number;
+  },
+): void {
+  immediate(db, () => {
+    const actor = workspaceMember(db, input.workspaceId, input.actorId);
+    if (actor?.role !== "owner" || !actor.active)
+      throw new Error("Workspace ownership is required.");
+    db.run("DELETE FROM workspace_repository WHERE workspace_id=?", [input.workspaceId]);
+    for (const entry of input.repositories)
+      db.run("INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES(?,?,?)", [
+        input.workspaceId,
+        entry.repository,
+        entry.teamId,
+      ]);
+    auditWorkspaceAccess(db, {
+      ...input,
+      userId: input.actorId,
+      action: "repositories.changed",
+      subject: input.workspaceId,
+    });
+  });
+}
+
+export function listWorkspaceRepositories(db: Database, workspaceId: string) {
+  return db
+    .query<{ repository: string; teamId: string }, [string]>(
+      "SELECT repository,team_id AS teamId FROM workspace_repository WHERE workspace_id=? ORDER BY repository,team_id",
+    )
+    .all(workspaceId);
 }
