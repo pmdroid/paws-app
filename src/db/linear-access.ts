@@ -10,6 +10,45 @@ export type LinearInstallationScope = {
 
 export type LinearSessionAccess = "allowed" | "revoked" | "team_removed" | "unknown";
 
+export function hasLinearNotification(
+  db: Database,
+  input: LinearInstallationScope & { notificationId: string; createdAtMs: number },
+): boolean {
+  return (
+    db
+      .query("SELECT 1 FROM linear_access_event WHERE event_key = ?")
+      .get(notificationKey(input)) !== null
+  );
+}
+
+export function recordLinearNotification(
+  db: Database,
+  input: LinearInstallationScope & { notificationId: string; createdAtMs: number },
+): boolean {
+  return recordEvent(db, notificationKey(input), input.createdAtMs);
+}
+
+function notificationKey(
+  input: LinearInstallationScope & { notificationId: string; createdAtMs: number },
+): string {
+  validate(input.organizationId, input.oauthClientId, input.appUserId, input.notificationId);
+  validateTime(input.createdAtMs);
+  return JSON.stringify([
+    "notification",
+    input.organizationId,
+    input.oauthClientId,
+    input.appUserId,
+    input.notificationId,
+  ]);
+}
+
+export function dropLinearSessionDeliveries(db: Database, sessionId: string): void {
+  db.run(
+    "UPDATE outbox SET status = 'dropped', error = 'Linear installation access was revoked.' WHERE target = 'linear' AND ordering_key = ? AND status IN ('pending','dead')",
+    [sessionId],
+  );
+}
+
 export function recordLinearInstallation(
   db: Database,
   input: LinearInstallationScope & {
@@ -151,6 +190,17 @@ export function changeLinearTeamAccess(
   });
 }
 
+export function listLinearInstallationSessions(
+  db: Database,
+  scope: Pick<LinearInstallationScope, "organizationId" | "oauthClientId"> & { appUserId?: string },
+): string[] {
+  return sessions(
+    db,
+    "organization_id = ? AND oauth_client_id = ? AND (? IS NULL OR app_user_id = ?)",
+    [scope.organizationId, scope.oauthClientId, scope.appUserId ?? null, scope.appUserId ?? null],
+  );
+}
+
 export function getLinearInstallationPermissions(
   db: Database,
   scope: LinearInstallationScope,
@@ -211,17 +261,21 @@ export function getLinearSessionAccess(db: Database, sessionId: string): LinearS
   )
     return "revoked";
   if (installation.teamId === null) return "unknown";
+  return getLinearTeamAccess(db, { ...installation, teamId: installation.teamId }) === "removed"
+    ? "team_removed"
+    : "allowed";
+}
+
+export function getLinearTeamAccess(
+  db: Database,
+  input: LinearInstallationScope & { teamId: string },
+): "allowed" | "removed" | "unknown" {
   const team = db
     .query<{ allowed: number }, [string, string, string, string]>(
       "SELECT allowed FROM linear_team_access WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id = ? AND team_id = ?",
     )
-    .get(
-      installation.organizationId,
-      installation.oauthClientId,
-      installation.appUserId,
-      installation.teamId,
-    );
-  return team?.allowed === 0 ? "team_removed" : "allowed";
+    .get(input.organizationId, input.oauthClientId, input.appUserId, input.teamId);
+  return team === null ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
 }
 
 export function isLinearAppRevoked(
@@ -300,21 +354,29 @@ export function restoreLinearInstallation(
   validateTime(input.grantStartedAtMs);
   if (!Number.isSafeInteger(input.generation) || input.generation < 1)
     throw new Error("Linear revocation generation is invalid");
-  return (
-    db.run(
-      `UPDATE linear_app_revocation SET restored_after = ?, restored_credential_fingerprint = ?
+  return immediate(db, () => {
+    const restored =
+      db.run(
+        `UPDATE linear_app_revocation SET restored_after = ?, restored_credential_fingerprint = ?
       WHERE organization_id = ? AND oauth_client_id = ? AND generation = ?
         AND restored_after IS NULL AND revoked_at < ?`,
-      [
-        input.grantStartedAtMs,
-        input.credentialFingerprint,
+        [
+          input.grantStartedAtMs,
+          input.credentialFingerprint,
+          input.organizationId,
+          input.oauthClientId,
+          input.generation,
+          input.grantStartedAtMs,
+        ],
+      ).changes === 1;
+    if (restored)
+      for (const sessionId of sessions(db, "organization_id = ? AND oauth_client_id = ?", [
         input.organizationId,
         input.oauthClientId,
-        input.generation,
-        input.grantStartedAtMs,
-      ],
-    ).changes === 1
-  );
+      ]))
+        dropLinearSessionDeliveries(db, sessionId);
+    return restored;
+  });
 }
 
 function recordEvent(db: Database, eventKey: string, createdAtMs: number): boolean {
@@ -326,9 +388,9 @@ function recordEvent(db: Database, eventKey: string, createdAtMs: number): boole
   );
 }
 
-function sessions(db: Database, predicate: string, values: string[]): string[] {
+function sessions(db: Database, predicate: string, values: (string | null)[]): string[] {
   return db
-    .query<{ session_id: string }, string[]>(
+    .query<{ session_id: string }, (string | null)[]>(
       `SELECT session_id FROM linear_session WHERE ${predicate} ORDER BY session_id`,
     )
     .all(...values)
@@ -343,16 +405,4 @@ function validate(...values: string[]): void {
 function validateTime(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new Error("Linear access timestamp is invalid");
-}
-
-export function getLinearTeamAccess(
-  db: Database,
-  input: LinearInstallationScope & { teamId: string },
-): "allowed" | "removed" | "unknown" {
-  const team = db
-    .query<{ allowed: number }, [string, string, string, string]>(
-      "SELECT allowed FROM linear_team_access WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id = ? AND team_id = ?",
-    )
-    .get(input.organizationId, input.oauthClientId, input.appUserId, input.teamId);
-  return team === null ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
 }
