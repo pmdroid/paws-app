@@ -10,6 +10,8 @@ import {
   insertQueuedItem,
   listArtifacts,
   listOutbox,
+  saveArtifact,
+  markArtifact,
   stopOutboxSession,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
@@ -201,5 +203,30 @@ test("a pending artifact link survives final response and is delivered first", a
   const pending = listOutbox(env.db, "session");
   expect(pending[0]?.status).toBe("pending");
   expect(claimOutboxHeads(env.db, { now: Date.now() })[0]?.id).toBe(pending[0]?.id);
+  env.db.close();
+});
+
+test("an uploaded replacement still resolves a legacy failed artifact by its exact path", async () => {
+  const env = setup();
+  saveArtifact(
+    env.db,
+    {
+      id: "legacy",
+      itemId: "item",
+      runId: "old-run",
+      path: artifact.path,
+      displayName: artifact.displayName,
+      mimeType: artifact.mimeType,
+      sizeBytes: 0,
+      sha256: "legacy",
+      state: "failed",
+      assetUrl: null,
+    },
+    1,
+  );
+  markArtifact(env.db, "legacy", null);
+  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  await env.publisher().publish(artifact, context);
+  expect(artifactPublicationReady(env.db, "item")).toBe(true);
   env.db.close();
 });

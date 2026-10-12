@@ -27,6 +27,7 @@ export interface ArtifactSnapshot {
 }
 
 export interface PublishArtifactContext {
+  request?: PublishArtifactRequest;
   itemId: string;
   runId: string;
   worktreePath: string;
@@ -40,6 +41,7 @@ export interface PublishedArtifact {
 }
 
 export interface PublishArtifactHook {
+  begin?(request: PublishArtifactRequest, context: PublishArtifactContext): { complete(): void };
   publish(artifact: ArtifactSnapshot, context: PublishArtifactContext): Promise<PublishedArtifact>;
 }
 
