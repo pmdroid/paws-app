@@ -126,3 +126,5 @@ The runner work probe uses real SQLite, signed commands and a fresh child proces
 Runner work verification covers production HTTP request handlers with valid and denied grants, stale generations, heartbeat JSON, and a chunked oversized body that must be cancelled before the third chunk is read. It also replaces a revoked runner immediately with a fresh generation and polls a later health command beyond 64 invalid run commands.
 
 An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
+
+Runner artifact verification drives production HTTP handlers with real SQLite grants and private disk files. It proves chunked evidence roundtrip, descriptor-bound events, exact retry, rejected metadata mutation, grant/generation fences, secret-path rejection, file permissions, redirected-file denial, twenty-artifact limits and finished-work denial.
