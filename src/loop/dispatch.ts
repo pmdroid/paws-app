@@ -1,4 +1,11 @@
-import type { ActivityKind, TrackerAdapter, TrackerRequestOptions } from "../linear";
+import type {
+  ActionDetails,
+  ActivityKind,
+  AuthSignal,
+  SelectOption,
+  TrackerAdapter,
+  TrackerRequestOptions,
+} from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
@@ -45,8 +52,23 @@ async function postActivity(
   if (body === null) throw new Error("activity has no body");
   const kind = readKind(payload["kind"]);
   if (kind === null) throw new Error("activity has no valid kind");
-  const id = readString(payload, "id");
-  await tracker.postProgress({ sessionId, kind, body, ...(id ? { id } : {}) }, options);
+  const id = optionalString(payload, "id");
+  const action = readAction(payload["action"]);
+  const ephemeral = payload["ephemeral"];
+  if (ephemeral !== undefined && typeof ephemeral !== "boolean") {
+    throw new Error("activity ephemeral must be a boolean");
+  }
+  await tracker.postProgress(
+    {
+      sessionId,
+      kind,
+      body,
+      ...(id === undefined ? {} : { id }),
+      ...(action === undefined ? {} : { action }),
+      ...(ephemeral === undefined ? {} : { ephemeral }),
+    },
+    options,
+  );
 }
 
 async function postElicitation(
@@ -60,11 +82,15 @@ async function postElicitation(
     throw new Error("elicitation is missing session or body");
   const options = readOptions(payload["options"]);
   const questionId = readString(payload, "questionId");
+  const id = optionalString(payload, "id");
+  const auth = readAuth(payload["auth"]);
   await tracker.askQuestion(
     {
       sessionId,
       body,
       ...(questionId === null ? {} : { questionId }),
+      ...(id === undefined ? {} : { id }),
+      ...(auth === undefined ? {} : { auth }),
       ...(options.length > 0 ? { options } : {}),
     },
     requestOptions,
@@ -90,9 +116,56 @@ function readKind(value: unknown): ActivityKind | null {
     : null;
 }
 
-function readOptions(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+function readOptions(value: unknown): (string | SelectOption)[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("elicitation options must be an array");
+  return value.map((option) => {
+    if (typeof option === "string" && option.trim().length > 0) return option;
+    if (isRecord(option)) {
+      const label = optionalString(option, "label");
+      const optionValue = readString(option, "value");
+      if (optionValue !== null)
+        return { value: optionValue, ...(label === undefined ? {} : { label }) };
+    }
+    throw new Error("elicitation options must be strings or label/value choices");
+  });
+}
+
+function readAction(value: unknown): ActionDetails | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("activity action must be structured");
+  const action = readString(value, "action");
+  const parameter = value["parameter"];
+  const result = value["result"];
+  if (
+    action === null ||
+    typeof parameter !== "string" ||
+    (result !== undefined && typeof result !== "string")
+  ) {
+    throw new Error("activity action requires action and parameter strings");
+  }
+  return { action, parameter, ...(result === undefined ? {} : { result }) };
+}
+
+function readAuth(value: unknown): AuthSignal | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("elicitation auth must be structured");
+  const url = readString(value, "url");
+  if (url === null) throw new Error("elicitation auth requires a URL");
+  const userId = optionalString(value, "userId");
+  const providerName = optionalString(value, "providerName");
+  return {
+    url,
+    ...(userId === undefined ? {} : { userId }),
+    ...(providerName === undefined ? {} : { providerName }),
+  };
+}
+
+function optionalString(record: Record<string, unknown>, key: string): string | undefined {
+  if (record[key] === undefined) return undefined;
+  const value = readString(record, key);
+  if (value === null) throw new Error(`${key} must be a nonempty string`);
+  return value;
 }
 
 function isStateType(value: string | null): value is "started" | "completed" | "canceled" {

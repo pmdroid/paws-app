@@ -1,6 +1,6 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AcpEvent } from "../acp";
-import type { ActivityKind } from "../linear";
+import type { ActivityKind, ProgressUpdate } from "../linear";
 
 /** Backup post when a run has produced no Linear activity yet. */
 export const FIRST_ACTIVITY_MS = 10_000;
@@ -15,6 +15,8 @@ export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
 const ACTIVITY_LIMIT = 3_500;
 
+export type AcpActivity = Omit<ProgressUpdate, "sessionId">;
+
 export function shouldPostFirstActivity(alreadyPosted: boolean, elapsedMs: number): boolean {
   return !alreadyPosted && elapsedMs >= FIRST_ACTIVITY_MS;
 }
@@ -23,7 +25,7 @@ export function shouldKeepAlive(sinceLastActivityMs: number): boolean {
   return sinceLastActivityMs >= KEEPALIVE_MS;
 }
 
-export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; body: string } | null {
+export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
   switch (event.type) {
     case "session_update":
       return fromSessionUpdate(event.update);
@@ -43,11 +45,14 @@ export function activityFromAcpEvent(event: AcpEvent): { kind: ActivityKind; bod
   }
 }
 
-export function createAcpActivityReporter(
-  post: (activity: { kind: ActivityKind; body: string }) => void,
-): { onEvent(event: AcpEvent): void; flush(): void; resultBody(): string } {
+export function createAcpActivityReporter(post: (activity: AcpActivity) => void): {
+  onEvent(event: AcpEvent): void;
+  flush(): void;
+  resultBody(): string;
+} {
   let pending = "";
   let resultBody = "";
+  const toolTitles = new Map<string, string>();
 
   function flush(): boolean {
     const body = pending.trim();
@@ -63,6 +68,22 @@ export function createAcpActivityReporter(
     onEvent(event) {
       if (event.type === "session_update") {
         const update = event.update;
+        if (update.sessionUpdate === "tool_call" && update.title?.trim()) {
+          toolTitles.set(update.toolCallId, update.title);
+        }
+        if (update.sessionUpdate === "tool_call_update") {
+          const title = update.title?.trim() || toolTitles.get(update.toolCallId);
+          if (title) {
+            const activity = toolActivity(title, update.toolCallId, update.status ?? undefined);
+            if (activity) {
+              flush();
+              post(activity);
+              if (update.status === "completed" || update.status === "failed")
+                toolTitles.delete(update.toolCallId);
+              return;
+            }
+          }
+        }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
           pending += textOf(update.content);
@@ -86,16 +107,22 @@ export function clipActivity(body: string): string {
   return `${trimmed.slice(0, ACTIVITY_LIMIT - 1)}…`;
 }
 
-function fromSessionUpdate(update: SessionUpdate): { kind: ActivityKind; body: string } | null {
+function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
   switch (update.sessionUpdate) {
     case "agent_thought_chunk":
       return null;
     case "agent_message_chunk":
       return clip("thought", textOf(update.content));
     case "tool_call":
-      return clip("action", update.title?.trim() || update.toolCallId);
+      return toolActivity(
+        update.title?.trim() || update.toolCallId,
+        update.toolCallId,
+        update.status,
+      );
     case "tool_call_update":
-      return update.title ? clip("action", update.title) : null;
+      return update.title
+        ? toolActivity(update.title, update.toolCallId, update.status ?? undefined)
+        : null;
     case "plan": {
       const body = update.entries
         .map((entry) => entry.content)
@@ -108,11 +135,25 @@ function fromSessionUpdate(update: SessionUpdate): { kind: ActivityKind; body: s
   }
 }
 
+function toolActivity(title: string, toolCallId: string, status?: string): AcpActivity | null {
+  const activity = clip("action", title);
+  if (activity === null) return null;
+  return {
+    ...activity,
+    action: {
+      action: activity.body,
+      parameter: toolCallId,
+      ...(status === undefined ? {} : { result: status }),
+    },
+    ...(status === "completed" || status === "failed" ? {} : { ephemeral: true }),
+  };
+}
+
 function textOf(content: { type: string; text?: string }): string {
   return content.type === "text" ? (content.text ?? "") : "";
 }
 
-function clip(kind: ActivityKind, body: string): { kind: ActivityKind; body: string } | null {
+function clip(kind: ActivityKind, body: string): AcpActivity | null {
   const clipped = clipActivity(body);
   if (clipped === "") return null;
   return { kind, body: clipped };

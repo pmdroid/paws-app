@@ -52,13 +52,11 @@ export type Elicitation = {
   questionId?: string;
   body: string;
   id?: string;
-  options?: readonly string[];
+  options?: readonly (string | SelectOption)[];
   auth?: AuthSignal;
 };
 
-export type SessionElicitation = Omit<Elicitation, "options"> & {
-  options?: readonly (string | SelectOption)[];
-};
+export type SessionElicitation = Elicitation;
 
 export type StatusUpdate = {
   linearIssueId: string;

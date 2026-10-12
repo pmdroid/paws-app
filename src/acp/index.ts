@@ -27,6 +27,7 @@ export {
   type AskTeamBridge,
   type AskTeamContext,
   type AskTeamHook,
+  type AskTeamOption,
   type AskTeamRequest,
   type AskTeamResponse,
 } from "./ask-team";

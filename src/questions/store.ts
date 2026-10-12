@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import type { QuestionOption } from "./channel";
 
 export type StoredQuestion = {
   id: string;
@@ -7,7 +8,7 @@ export type StoredQuestion = {
   runId: string | null;
   sessionId: string;
   body: string;
-  options: string[];
+  options: QuestionOption[];
   status: "open" | "answered";
   answer: string | null;
   answeredBy: string | null;
@@ -36,7 +37,7 @@ export function openQuestion(
     runId?: string | null;
     sessionId: string;
     body: string;
-    options?: readonly string[];
+    options?: readonly QuestionOption[];
     now?: number;
   },
 ): StoredQuestion {
@@ -96,7 +97,7 @@ function mapQuestion(row: QuestionRow): StoredQuestion {
     runId: row.run_id,
     sessionId: row.session_id,
     body: row.body,
-    options: row.options === null ? [] : (JSON.parse(row.options) as string[]),
+    options: row.options === null ? [] : (JSON.parse(row.options) as QuestionOption[]),
     status: row.status,
     answer: row.answer,
     answeredBy: row.answered_by,

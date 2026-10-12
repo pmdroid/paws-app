@@ -1,4 +1,4 @@
-export type { AskTeamInput, QuestionChannel, TeamAnswer } from "./channel";
+export type { AskTeamInput, QuestionChannel, QuestionOption, TeamAnswer } from "./channel";
 export const pawsQuestionMarker = (questionId: string): string => `<!-- paws:q:${questionId} -->`;
 export { createFakeQuestionChannel } from "./fake";
 export type { FakeQuestionChannel } from "./fake";

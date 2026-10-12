@@ -11,12 +11,14 @@ import {
   type PublishArtifactRequest,
 } from "./artifacts";
 
+export type AskTeamOption = string | { label?: string; value: string };
+
 export const ASK_TEAM_TOOL_NAME = "ask_team";
 
 /** Question the agent sends. QM-07 turns this into a Linear elicitation. */
 export interface AskTeamRequest {
   question: string;
-  options?: string[];
+  options?: readonly AskTeamOption[];
   context?: string;
 }
 
@@ -160,7 +162,7 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       tool?: string;
       arguments?: Record<string, unknown>;
       question?: string;
-      options?: string[];
+      options?: readonly AskTeamOption[];
       context?: string;
     };
     id = parsed.id ?? 0;
@@ -241,7 +243,7 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
 
 function parseAsk(value: {
   question?: string;
-  options?: string[];
+  options?: readonly AskTeamOption[];
   context?: string;
 }): AskTeamRequest {
   if (typeof value.question !== "string" || !value.question.trim()) {
@@ -249,15 +251,27 @@ function parseAsk(value: {
   }
   if (
     value.options != null &&
-    (!Array.isArray(value.options) || value.options.some((item) => typeof item !== "string"))
+    (!Array.isArray(value.options) || value.options.some((item) => !isAskTeamOption(item)))
   ) {
-    throw new Error("ask_team options must be strings");
+    throw new Error("ask_team options must be strings or label/value choices");
   }
   return {
     question: value.question,
     ...(value.options ? { options: value.options } : {}),
     ...(value.context ? { context: value.context } : {}),
   };
+}
+
+function isAskTeamOption(value: unknown): value is AskTeamOption {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const option = value as Record<string, unknown>;
+  return (
+    typeof option.value === "string" &&
+    option.value.trim().length > 0 &&
+    (option.label === undefined ||
+      (typeof option.label === "string" && option.label.trim().length > 0))
+  );
 }
 
 function listen(server: Server, socketPath: string): Promise<void> {

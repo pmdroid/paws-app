@@ -16,8 +16,21 @@ const TOOL = {
       question: { type: "string", description: "Question for the team." },
       options: {
         type: "array",
-        items: { type: "string" },
-        description: "Optional choices, such as yes and no.",
+        items: {
+          anyOf: [
+            { type: "string", minLength: 1 },
+            {
+              type: "object",
+              properties: {
+                label: { type: "string", minLength: 1 },
+                value: { type: "string", minLength: 1 },
+              },
+              required: ["value"],
+              additionalProperties: false,
+            },
+          ],
+        },
+        description: "Optional strings or choices with a display label and a stable value.",
       },
       context: { type: "string", description: "Extra context the team should see." },
     },
