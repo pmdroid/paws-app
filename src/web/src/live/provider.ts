@@ -44,6 +44,7 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
+  getLinearConversationSource,
   listCloseoutProgress,
   listJobs,
   listOpenQuestions,
@@ -169,7 +170,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     epics: epicsFor(records, rows),
     items,
     runs,
-    questions: questionsFor(records, rows, runs, openQuestions),
+    questions: questionsFor(db, records, rows, runs, openQuestions),
     verdicts: records.flatMap((record) =>
       verdictFor(record, rows, jobs, progress, now.getTime(), env),
     ),
@@ -298,6 +299,7 @@ function blockersFor(
 }
 
 function questionsFor(
+  db: Database,
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
   runs: readonly StatusRun[],
@@ -326,7 +328,7 @@ function questionsFor(
       recommendedOption: null,
       askedAt: iso(question.createdAt),
       claimedBy: null,
-      links: [],
+      links: questionLinks(db, question.sessionId, record.linearIssueId, record.linearIdentifier),
     });
   }
   const waiting = records.filter((record) => record.state === "awaiting_input");
@@ -363,10 +365,40 @@ function questionsFor(
       recommendedOption: null,
       askedAt: iso(row.createdAt),
       claimedBy: null,
-      links: [],
+      links: questionLinks(db, session, record.linearIssueId, record.linearIdentifier),
     });
   }
   return questions;
+}
+
+function questionLinks(
+  db: Database,
+  sessionId: string,
+  issueId: string,
+  identifier: string,
+): StatusQuestion["links"] {
+  const source = getLinearConversationSource(db, sessionId);
+  if (source !== null) {
+    try {
+      const url = new URL(source);
+      if (url.origin === "https://linear.app" && !url.username && !url.password)
+        return [{ label: "Answer in Linear", href: url.href }];
+    } catch {}
+  }
+  const github = /^github:([\w.-]+)\/([\w.-]+)#([1-9]\d*)$/.exec(issueId);
+  if (github)
+    return [
+      {
+        label: "Answer on GitHub",
+        href: `https://github.com/${github[1]}/${github[2]}/issues/${github[3]}`,
+      },
+    ];
+  return [
+    {
+      label: "Answer in Linear",
+      href: `https://linear.app/issue/${encodeURIComponent(identifier)}`,
+    },
+  ];
 }
 
 function verdictFor(
