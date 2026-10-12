@@ -31,7 +31,6 @@ import {
 import {
   CommandBus,
   JOB_KIND,
-  MERGE_LANE,
   transitionEpic,
   type Clock,
   type LinearCommand,
@@ -131,6 +130,7 @@ import {
   openQuestion,
   questionReplyConsumed,
 } from "../questions";
+import { enqueueVerifiedMerge } from "./merge-jobs";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -678,13 +678,13 @@ export class Orchestrator {
       this.executeQueued(job.payload, context.extendLease),
     );
     jobs.register(JOB_KIND.reverify, (job) =>
-      this.runOwnedJob(job.payload, () => this.reverify(job.payload)),
+      this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const lease = setInterval(() => context.extendLease(60_000), 10_000);
       lease.unref?.();
       try {
-        await this.runOwnedJob(job.payload, () => this.merge(job.payload));
+        await this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id));
       } finally {
         clearInterval(lease);
       }
@@ -1275,11 +1275,10 @@ export class Orchestrator {
         baseSha: base,
         wipCommit: acceptedHead,
       });
-      enqueueJobOnce(this.db, {
-        queue: JOB_KIND.merge,
-        lane: MERGE_LANE,
-        jobKey: `merge:${item.id}:${acceptedHead}`,
-        payload: { itemId: item.id, summary: verdict.summary, head: acceptedHead },
+      enqueueVerifiedMerge(this.db, {
+        itemId: item.id,
+        head: acceptedHead,
+        summary: verdict.summary,
         now: this.now(),
       });
       return;
@@ -1401,7 +1400,7 @@ export class Orchestrator {
     });
   }
 
-  private async reverify(payload: unknown): Promise<void> {
+  private async reverify(payload: unknown, jobId: number): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
@@ -1436,16 +1435,16 @@ export class Orchestrator {
     if (item.state === "verifying") applyWorkItemEvent(this.db, item.id, "closeout_accepted");
     head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
     saveCheckpoint(this.db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
-    enqueueJobOnce(this.db, {
-      queue: JOB_KIND.merge,
-      lane: MERGE_LANE,
-      jobKey: `merge:${item.id}:${head}`,
-      payload: { itemId: item.id, summary: verdict.summary, head },
+    enqueueVerifiedMerge(this.db, {
+      itemId: item.id,
+      head,
+      summary: verdict.summary,
       now: this.now(),
+      reverifyJobId: jobId,
     });
   }
 
-  private async merge(payload: unknown): Promise<void> {
+  private async merge(payload: unknown, jobId: number): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
@@ -1618,7 +1617,7 @@ export class Orchestrator {
         applyWorkItemEvent(this.db, item.id, "main_moved");
         enqueueJobOnce(this.db, {
           queue: JOB_KIND.reverify,
-          jobKey: `reverify:${item.id}:${merged.head ?? "again"}`,
+          jobKey: `reverify:${item.id}:${merged.head ?? "again"}:merge:${jobId}`,
           payload: { itemId: item.id },
           now: this.now(),
         });
