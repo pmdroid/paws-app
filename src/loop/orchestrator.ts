@@ -227,6 +227,7 @@ export class Orchestrator {
       sessionId: string | null;
       generation: number;
       controller: AbortController;
+      progress: string | null;
       done: Promise<void>;
       finish(): void;
     }
@@ -1096,7 +1097,7 @@ export class Orchestrator {
       this.post(
         item,
         "thought",
-        `Still working on ${item.linearIdentifier}.`,
+        live.progress ?? `Still working on ${item.linearIdentifier}.`,
         `${run.id}:keep:${this.now()}`,
         { ephemeral: true },
       );
@@ -1293,18 +1294,65 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
   ): Promise<CloseoutVerdict> {
-    this.sessionProgress(item)?.phase("verifying");
+    const sessionProgress = this.sessionProgress(item);
+    sessionProgress?.phase("verifying");
     const deps = this.agentDeps(item);
+    const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
+    const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
+    const report = (body: string) => {
+      if (deps.signal?.aborted || !this.canReportProgress(item.id)) return;
+      if (live) live.progress = body;
+      this.post(item, "thought", body, `${key}:${++this.activitySeq}`);
+    };
+    const activity = createAcpActivityReporter(
+      (update) => {
+        if (
+          deps.signal?.aborted ||
+          !this.canReportProgress(item.id) ||
+          update.kind === "elicitation"
+        )
+          return;
+        this.post(item, update.kind, update.body, `${key}:acp:${++this.activitySeq}`, update);
+      },
+      (steps) => {
+        if (!deps.signal?.aborted && this.canReportProgress(item.id)) sessionProgress?.plan(steps);
+      },
+    );
     const onCandidate = deps.onCandidate;
     deps.onCandidate = (identity) => {
       if (deps.signal?.aborted) return;
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
+    const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
     const gate = createCloseoutGate({
       candidate,
       reviewer: createAcpCodexReviewer(deps),
-      fixer: createAcpFixRunner(deps),
+      fixer: {
+        applyFix: async (request) => {
+          if (this.stopped(item.id)) return { ok: false, reason: "fix cancelled" };
+          sessionProgress?.phase("fixing");
+          const failed = request.items.filter((check) => check.state === "failed");
+          report(
+            `Fixing Closeout findings for ${item.linearIdentifier}, fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}. Failed checks: ${failed.map((check) => check.id).join(", ")}.`,
+          );
+          await this.flush();
+          let result;
+          try {
+            result = await fixer.applyFix(request);
+          } finally {
+            activity.flush();
+          }
+          if (result.ok && !this.stopped(item.id)) {
+            sessionProgress?.phase("verifying");
+            report(
+              `Rechecking ${item.linearIdentifier} with Closeout after fix attempt ${request.fixAttempt}.`,
+            );
+            await this.flush();
+          }
+          return result;
+        },
+      },
       recorder: {
         record: async (verdict) => {
           if (deps.signal?.aborted) return;
@@ -1321,13 +1369,20 @@ export class Orchestrator {
       ...recoveryOptions(this.db, item.id),
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
-    return gate.run({
-      taskId: itemPathId(item),
-      worktree,
-      baseSha: base,
-      headSha: head,
-      attempt: 1,
-    });
+    try {
+      report(`Closeout is checking ${item.linearIdentifier}.`);
+      await this.flush();
+      return await gate.run({
+        taskId: itemPathId(item),
+        worktree,
+        baseSha: base,
+        headSha: head,
+        attempt: 1,
+      });
+    } finally {
+      activity.flush();
+      if (live) live.progress = null;
+    }
   }
 
   private async askCloseoutHelp(
@@ -2161,6 +2216,7 @@ export class Orchestrator {
       sessionId,
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller: new AbortController(),
+      progress: null as string | null,
       done: new Promise<void>((resolve) => {
         finish = resolve;
       }),
@@ -2276,6 +2332,13 @@ export class Orchestrator {
       );
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
+      if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
+        this.db.run(
+          "UPDATE work_item SET cancel_requested = 0, awake_ms = 0, last_mono_ms = NULL, turn_count = 0, recovery_attempts = 0 WHERE id = ?",
+          [item!.id],
+        );
+        if (this.options.caps) configureWorkItem(this.db, item!.id, this.options.caps);
+      }
       if (item!.currentRunId) markRun(this.db, item!.currentRunId!, "ended", this.now());
       if (item!.state === "failed" || item!.state === "exhausted")
         applyWorkItemEvent(this.db, item!.id, "requeue");

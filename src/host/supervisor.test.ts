@@ -260,6 +260,31 @@ describe("laptop sleep and wake", () => {
     expect(getWorkItem(db, "eng-9")?.state).toBe("failed");
   });
 
+  test("the default budget allows a 45-minute task and stops at three hours", () => {
+    const { clock, db, host } = boot();
+    try {
+      startRun(db, clock);
+      host.tick();
+      clock.advance(45 * 60_000);
+      host.tick();
+      expect(getWorkItem(db, "eng-9")?.state).toBe("running");
+      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      clock.advance(135 * 60_000 - 1);
+      host.tick();
+      expect(getWorkItem(db, "eng-9")?.state).toBe("verifying");
+      clock.advance(1);
+      host.tick();
+      expect(getWorkItem(db, "eng-9")?.state).toBe("failed");
+      expect(activities(db).at(-1)?.payload).toMatchObject({
+        kind: "error",
+        body: "Run hit the awake time cap (180 min).",
+      });
+    } finally {
+      host.stop();
+      db.close();
+    }
+  });
+
   test("parked time is not awake time", () => {
     const { clock, db, host } = boot();
     startRun(db, clock);

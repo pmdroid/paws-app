@@ -14,6 +14,8 @@ import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
   bindWorkItemRepository,
+  accrueAwake,
+  configureWorkItem,
   getWorkItemRepository,
   listWorkItems,
   OutboxDispatcher,
@@ -45,7 +47,7 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
-import { handleStatusRequest } from "../src/web";
+import { handleStatusRequest, parseStatusSnapshot } from "../src/web";
 import {
   attachOrchestrator,
   itemPathId,
@@ -63,6 +65,183 @@ const { privateKey } = generateKeyPairSync("rsa", {
   privateKeyEncoding: { type: "pkcs8", format: "pem" },
 });
 const PRIVATE_KEY = privateKey as string;
+
+test.each([false, true, "cap"] as const)(
+  "Closeout repairs publish live progress to Linear and the dashboard, stopped: %s",
+  async (stop) => {
+    const layout = await repoLayout();
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "repair",
+        identifier: "ENG-302",
+        title: "Repair missing output",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    let entered = "";
+    let release = "";
+    const heartbeats: (() => void)[] = [];
+    const interval = globalThis.setInterval;
+    const intervalSpy = spyOn(globalThis, "setInterval").mockImplementation(((
+      handler: () => void,
+      delay?: number,
+    ) => {
+      if (delay === KEEPALIVE_MS) heartbeats.push(handler);
+      return interval(handler, delay);
+    }) as typeof setInterval);
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      launch(input) {
+        if (input.purpose === "fix") {
+          entered = path.join(input.worktree, "fix-entered");
+          release = path.join(input.worktree, "fix-release");
+        }
+        const scriptPath = path.join(layout.root, `repair-${input.purpose}.json`);
+        const script: FakeScript = {
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : input.purpose === "fix"
+                ? [
+                    {
+                      type: "update",
+                      update: {
+                        sessionUpdate: "plan",
+                        entries: [
+                          {
+                            content: "Repair missing output",
+                            priority: "high",
+                            status: "in_progress",
+                          },
+                        ],
+                      },
+                    },
+                    {
+                      type: "update",
+                      update: {
+                        sessionUpdate: "agent_thought_chunk",
+                        content: { type: "text", text: "PRIVATE_FIX_REASONING" },
+                      },
+                    },
+                    ...["Fixing the ", "missing output."].map((text) => ({
+                      type: "update" as const,
+                      update: {
+                        sessionUpdate: "agent_message_chunk",
+                        content: { type: "text", text },
+                      },
+                    })),
+                    {
+                      type: "update",
+                      update: {
+                        sessionUpdate: "tool_call",
+                        toolCallId: "repair",
+                        title: "Write repaired output",
+                        status: "in_progress",
+                      },
+                    },
+                    {
+                      type: "terminal",
+                      command: "bun",
+                      args: [
+                        "-e",
+                        `await Bun.write(${JSON.stringify(entered)}, "ready"); while (!(await Bun.file(${JSON.stringify(release)}).exists())) await Bun.sleep(10);`,
+                      ],
+                    },
+                    writeOk(input.worktree),
+                    { type: "end" },
+                  ]
+                : [
+                    {
+                      type: "fs_write",
+                      path: path.join(input.worktree, "candidate.txt"),
+                      content: "needs repair",
+                    },
+                    { type: "end" },
+                  ],
+        };
+        writeFileSync(scriptPath, JSON.stringify(script));
+        return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+      },
+    });
+    let running: Promise<unknown> | undefined;
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "repair"));
+      running = jobs.tick();
+      for (let i = 0; i < 1_000 && !existsSync(entered); i++) await Bun.sleep(10);
+      expect(existsSync(entered), debug(layout, db)).toBe(true);
+      while (outbox.tick().length > 0) await outbox.idle();
+      expect(tracker.progress.map((update) => update.body)).toContain("Fixing the missing output.");
+      expect(tracker.progress.map((update) => update.body)).toContain("Write repaired output");
+      expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
+      expect(tracker.sessionUpdates.findLast((update) => update.summary)?.summary).toBe(
+        "ENG-302: fixing Closeout findings",
+      );
+      expect(tracker.sessionUpdates.findLast((update) => update.plan)?.plan?.[0]).toEqual({
+        content: "Repair missing output",
+        status: "inProgress",
+      });
+      for (const heartbeat of heartbeats) heartbeat();
+      await outbox.idle();
+      expect(tracker.progress.at(-1)?.body).toContain("fix attempt 1 of 5");
+      const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
+        db,
+      });
+      const parsed = parseStatusSnapshot(await response!.json());
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) throw new Error("Invalid status snapshot");
+      const run = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-302");
+      expect(run?.activity.map((entry) => entry.text)).toContain("Fixing the missing output.");
+      expect(run?.summary).toContain("fix attempt 1 of 5");
+      expect(JSON.stringify(tracker.progress)).not.toContain("PRIVATE_FIX_REASONING");
+      expect(JSON.stringify(parsed.snapshot)).not.toContain("PRIVATE_FIX_REASONING");
+      if (stop === true) await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
+      if (stop === "cap") {
+        const item = listWorkItems(db)[0]!;
+        configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
+        accrueAwake(db, item.id, 0);
+        accrueAwake(db, item.id, 1_000);
+        expect(getWorkItem(db, item.id)?.state).toBe("failed");
+        await orchestrator.onLinearEvent(linearEvent("prompted", "Continue the repair", null));
+        await running;
+        expect(getWorkItem(db, item.id)).toMatchObject({
+          state: "queued",
+          cancelRequested: false,
+          awakeMs: 0,
+          maxAwakeMs: 3 * 60 * 60 * 1000,
+        });
+        running = jobs.tick();
+      }
+      if (release) writeFileSync(release, "go");
+      await running;
+      while (outbox.tick().length > 0) await outbox.idle();
+      expect(stateOf(db, "ENG-302")).toBe(stop === true ? "cancelled" : "merge_queue");
+      expect(tracker.progress.some((update) => update.body.includes("Rechecking ENG-302"))).toBe(
+        stop !== true,
+      );
+    } finally {
+      writeFileSync(release, "go");
+      await running;
+      await orchestrator.shutdown();
+      intervalSpy.mockRestore();
+      db.close();
+      await layout.cleanup();
+    }
+  },
+  20000,
+);
 
 test("a bound two-item epic asks, verifies and merges in its repository after the default changes", async () => {
   const layout = await repoLayout();

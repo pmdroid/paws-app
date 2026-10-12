@@ -49,6 +49,17 @@ describe("config", () => {
     expect(env.githubAppId).toBeNull();
   });
 
+  test("tasks default to three hours and retain explicit time limits", () => {
+    const paths = pawsPaths(tempHome());
+    ensureLayout(paths);
+    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(3 * 60 * 60 * 1000);
+    writeFileSync(paths.configFile, "[caps]\nmax_awake_ms = 3600000\n");
+    expect(loadRuntime({ PAWS_HOME: paths.home }).maxAwakeMs).toBe(60 * 60 * 1000);
+    expect(loadRuntime({ PAWS_HOME: paths.home, PAWS_MAX_AWAKE_MS: "7200000" }).maxAwakeMs).toBe(
+      2 * 60 * 60 * 1000,
+    );
+  });
+
   test("reads overrides and rejects a bad port", () => {
     const env = loadEnv({
       PAWS_HOME: "/tmp/paws-home",
