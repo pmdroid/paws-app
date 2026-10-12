@@ -14,14 +14,13 @@ import { withCommentActivities } from "../src/comments";
 import { worktreePath } from "../src/acp";
 import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
 import { systemClock } from "../src/core";
-import { loadGitHubEpic, createGitHubIssuesClient, startFakeGitHubRest } from "../src/ghissues";
 import {
   createFakeTracker,
   createLinearTracker,
   type EpicSnapshot,
   type LinearClient,
 } from "../src/linear";
-import { attachOrchestrator, routeBySource, itemPathId } from "../src/loop";
+import { attachOrchestrator, itemPathId } from "../src/loop";
 
 const agent = new URL("./fixtures/brief-agent.ts", import.meta.url).pathname;
 const childDescription =
@@ -43,7 +42,7 @@ items:
     failOn: P1
 `;
 
-for (const source of ["linear", "github", "linear-comments"] as const) {
+for (const source of ["linear", "linear-comments"] as const) {
   test(`${source} intake delivers a persisted body-only requirement to real implementation, fix and review prompts`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-brief-"));
     const seed = join(root, "seed");
@@ -67,8 +66,7 @@ for (const source of ["linear", "github", "linear-comments"] as const) {
     git("-C", seed, "add", ".");
     git("-C", seed, "commit", "-m", "Seed policy");
     git("-C", seed, "push", "origin", "main");
-    const fake = startFakeGitHubRest();
-    const snapshot = source === "github" ? await githubSnapshot(fake) : await linearSnapshot();
+    const snapshot = await linearSnapshot();
     const tracker = createFakeTracker([snapshot]);
     if (source === "linear")
       tracker.listSessionActivities = async () => [
@@ -140,7 +138,7 @@ for (const source of ["linear", "github", "linear-comments"] as const) {
       jobs,
       outbox,
       ...(source === "linear-comments" ? { channel: "comments" as const } : {}),
-      tracker: routeBySource({ linear: withCommentActivities(tracker, tracker), github: tracker }),
+      tracker: withCommentActivities(tracker, tracker),
       repository,
       pawsRoot,
       home: process.env.HOME,
@@ -181,10 +179,7 @@ for (const source of ["linear", "github", "linear-comments"] as const) {
         jobs,
         outbox,
         ...(source === "linear-comments" ? { channel: "comments" as const } : {}),
-        tracker: routeBySource({
-          linear: withCommentActivities(tracker, tracker),
-          github: tracker,
-        }),
+        tracker: withCommentActivities(tracker, tracker),
         repository,
         pawsRoot,
         home: process.env.HOME,
@@ -251,7 +246,6 @@ for (const source of ["linear", "github", "linear-comments"] as const) {
       );
     } finally {
       db.close();
-      await fake.stop();
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
@@ -282,30 +276,4 @@ async function linearSnapshot(): Promise<EpicSnapshot> {
     },
   };
   return createLinearTracker(client).loadEpic("parent");
-}
-
-async function githubSnapshot(fake: ReturnType<typeof startFakeGitHubRest>): Promise<EpicSnapshot> {
-  const issue = (number: number, body: string) => ({
-    number,
-    title: number === 1 ? "Export epic" : "Export child",
-    body,
-    user: { id: 1, login: "owner" },
-    author_association: "OWNER",
-    labels: [],
-    updated_at: new Date(1).toISOString(),
-  });
-  fake.addIssue("acme", "widgets", issue(1, parentDescription));
-  fake.addIssue("acme", "widgets", issue(2, childDescription));
-  fake.setSubIssues("acme", "widgets", 1, [issue(2, childDescription)]);
-  return loadGitHubEpic(
-    createGitHubIssuesClient({
-      baseUrl: fake.origin,
-      provider: {
-        source: "gh",
-        token: async () => "fake-token",
-        user: async () => ({ login: "owner", id: 1 }),
-      },
-    }),
-    { owner: "acme", repo: "widgets", number: 1 },
-  );
 }
