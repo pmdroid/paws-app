@@ -24,6 +24,8 @@ export function loadPublicTls(source: EnvSource): PublicTls | undefined {
     const certificate = new X509Certificate(cert);
     if (!certificate.publicKey.equals(createPublicKey(createPrivateKey(key))))
       throw new Error("mismatched");
+    if (certificate.keyUsage && !certificate.keyUsage.includes("1.3.6.1.5.5.7.3.1"))
+      throw new Error("unsupported server purpose");
     const now = Date.now();
     const validFrom = Date.parse(certificate.validFrom);
     const validTo = Date.parse(certificate.validTo);

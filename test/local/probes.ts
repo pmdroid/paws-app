@@ -31,6 +31,7 @@ import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
 import { probeRunnerTls } from "./runner-tls";
+import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
   root: string,
@@ -39,6 +40,7 @@ export async function probeBoundaries(
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
+  await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
     [
