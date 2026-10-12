@@ -474,3 +474,30 @@ test.each(["allowed", "denied", "retry"])(
     });
   },
 );
+
+test("production revocation fences zero-item intake across immediate verified reconnect", async () => {
+  const child = Bun.spawn(
+    [process.execPath, "test/fixtures/linear-revoked-intake-ingress.ts", tempHome()],
+    {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+    statuses: [200, 200],
+    restored: true,
+    items: 0,
+    pending: 0,
+    mutations: [],
+    generation: 1,
+    stopped: true,
+  });
+});
