@@ -344,3 +344,15 @@ function validateTime(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new Error("Linear access timestamp is invalid");
 }
+
+export function getLinearTeamAccess(
+  db: Database,
+  input: LinearInstallationScope & { teamId: string },
+): "allowed" | "removed" | "unknown" {
+  const team = db
+    .query<{ allowed: number }, [string, string, string, string]>(
+      "SELECT allowed FROM linear_team_access WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id = ? AND team_id = ?",
+    )
+    .get(input.organizationId, input.oauthClientId, input.appUserId, input.teamId);
+  return team === null ? "unknown" : team.allowed === 0 ? "removed" : "allowed";
+}
