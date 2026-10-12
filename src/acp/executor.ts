@@ -13,6 +13,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
     owner: options.owner,
     repo: options.repo,
     pawsRoot: options.pawsRoot,
+    ...(options.networkGit ? { networkGit: options.networkGit } : {}),
   });
   const worktree = await createWorktree({
     owner: options.owner,

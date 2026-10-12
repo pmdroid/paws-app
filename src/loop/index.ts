@@ -49,3 +49,5 @@ export { FakeHostGitHubAuth } from "./fake-auth";
 export { LinearTaskAccess } from "./linear-task-access";
 
 export { handleLinearAdministration } from "./linear-administration";
+
+export { createRepositoryGit } from "./repository-git";

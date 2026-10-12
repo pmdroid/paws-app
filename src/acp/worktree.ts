@@ -49,13 +49,14 @@ export async function ensureBareMirror(options: {
   owner: string;
   repo: string;
   pawsRoot: string;
+  networkGit?: (args: string[]) => Promise<string>;
 }): Promise<Mirror> {
   const path = mirrorPath(options.pawsRoot, options.owner, options.repo);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await mkdir(options.pawsRoot, { recursive: true, mode: 0o700 });
 
   if (!(await exists(path))) {
-    await git(["clone", "--bare", options.remoteUrl, path]);
+    await (options.networkGit ?? git)(["clone", "--bare", options.remoteUrl, path]);
   } else {
     const current = (await git(["--git-dir", path, "remote", "get-url", "origin"])).trim();
     if (current !== options.remoteUrl) {
@@ -65,8 +66,16 @@ export async function ensureBareMirror(options: {
 
   await git(["--git-dir", path, "config", "remote.origin.fetch", TRACKING_REF]);
   try {
-    await git(["--git-dir", path, "fetch", "--prune", "origin"]);
+    await (options.networkGit ?? git)([
+      "--git-dir",
+      path,
+      "fetch",
+      "--prune",
+      options.remoteUrl,
+      TRACKING_REF,
+    ]);
   } catch (error) {
+    if (options.networkGit) throw error;
     const cached = await resolveStartRef(path);
     if (!cached) throw error;
   }

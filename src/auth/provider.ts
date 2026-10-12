@@ -23,6 +23,7 @@ export type GitHubTokenProviderConfig = {
   auth?: GitHubAuthSource | null;
   oauthClientId?: string | null;
   repo?: string | null;
+  access?: "read" | "write";
   home?: string;
   env?: Record<string, string | undefined>;
   appId?: string | null;
@@ -115,6 +116,7 @@ function ghProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
   const gh = createGhCliAuth({
     owner: names.owner,
     repo: names.repo,
+    ...(config.access ? { access: config.access } : {}),
     ...(config.gh?.ghBin ? { ghBin: config.gh.ghBin } : {}),
     ...(config.gh?.pathPrefix ? { pathPrefix: config.gh.pathPrefix } : {}),
     ...(config.gh?.env ? { env: config.gh.env } : {}),
@@ -151,6 +153,7 @@ function appProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
     privateKeyPem: config.privateKeyPem,
     owner: names.owner,
     repo: names.repo,
+    ...(config.access ? { access: config.access } : {}),
     ...(config.now ? { now: () => new Date(config.now?.() ?? Date.now()) } : {}),
   });
   let bot: { login: string; id: number } | null = null;

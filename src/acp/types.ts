@@ -136,6 +136,7 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
   owner: string;
   repo: string;
   remoteUrl: string;
+  networkGit?: (args: string[]) => Promise<string>;
   role?: AgentRole;
   startRef?: string;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
