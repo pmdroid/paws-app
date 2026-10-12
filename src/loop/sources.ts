@@ -47,6 +47,7 @@ export function routeBySource(input: {
     return chosen;
   }
   const linear = input.linear;
+  const updateSession = input.linear?.updateSession?.bind(input.linear);
   return {
     ...(linear?.getSession ? { getSession: linear.getSession.bind(linear) } : {}),
     ...(linear?.listSessionActivities
@@ -62,6 +63,7 @@ export function routeBySource(input: {
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),
     askQuestion: (question, options) => pick(question.sessionId).askQuestion(question, options),
+    ...(updateSession ? { updateSession } : {}),
     setStatus: (update, options) => pick(update.linearIssueId).setStatus(update, options),
   };
 }

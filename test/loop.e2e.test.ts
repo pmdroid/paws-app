@@ -226,6 +226,19 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
     expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
     expect(
+      tracker.sessionUpdates.some((update) =>
+        update.addedExternalUrls?.some((link) => link.label === "Pull request"),
+      ),
+    ).toBe(true);
+    const completedPlan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
+    expect(completedPlan?.slice(-3).map((step) => step.content)).toEqual([
+      "Verify changes",
+      "Open pull request",
+      "Merge verified changes",
+    ]);
+    expect(completedPlan?.every((step) => step.status === "completed")).toBe(true);
+
+    expect(
       tracker.progress.some((update) => update.body.includes("Need a product decision.")),
     ).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Adding the header."))).toBe(

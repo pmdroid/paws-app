@@ -11,6 +11,7 @@ import {
   listArtifacts,
   migrate,
   openDatabase,
+  listOutbox,
   JobLoop,
   OutboxDispatcher,
 } from "../src/db";
@@ -48,6 +49,8 @@ function setup(
   artifactUpload: "ok" | "fail" | "omit" = "ok",
   resolvedMode?: "answer" | "code" | "artifact",
   database?: Database,
+  plan = false,
+  hangResponse = false,
 ) {
   const db = database ?? tempDb();
   const home = tempHome();
@@ -79,6 +82,25 @@ function setup(
                 },
               ]
             : []),
+          ...(plan && input.purpose !== "classify"
+            ? [
+                {
+                  type: "update",
+                  update: {
+                    sessionUpdate: "plan",
+                    entries: [
+                      { content: "Read the reference", status: "completed", priority: "medium" },
+                      {
+                        content: "Prepare the requested result",
+                        status: "in_progress",
+                        priority: "high",
+                      },
+                    ],
+                  },
+                },
+              ]
+            : []),
+          ...(hangResponse && input.purpose !== "classify" ? [{ type: "hang" }] : []),
           { type: "fs_write", path: "forbidden.txt", content: "denied" },
           {
             type: "update",
@@ -520,3 +542,78 @@ test("Stop during the intake announcement cancels the already associated task", 
     f.db.close();
   }
 });
+
+test.each(["answer", "artifact"] as const)(
+  "%s runtime publishes ACP plans and durable completion metadata",
+  async (mode) => {
+    const f = setup(mode, "unused", false, "ok", undefined, undefined, true);
+    try {
+      await f.orchestrator.onLinearEvent(event());
+      await f.jobs.tick();
+      expect(f.tracker.sessionUpdates.findLast((update) => update.plan)?.plan).toEqual([
+        { content: "Read the reference", status: "completed" },
+        { content: "Prepare the requested result", status: "completed" },
+      ]);
+      expect(f.tracker.sessionUpdates.findLast((update) => update.summary)?.summary).toBe(
+        "ENG-1: completed",
+      );
+      expect(
+        f.tracker.sessionUpdates
+          .flatMap((update) => update.plan ?? [])
+          .some((step) => /pull request|Merge|Verify changes/.test(step.content)),
+      ).toBe(false);
+      expect(
+        f.tracker.sessionUpdates.every(
+          (update) => !("mode" in update) && !("identifier" in update),
+        ),
+      ).toBe(true);
+      expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
+        "completed",
+      );
+    } finally {
+      f.db.close();
+    }
+  },
+);
+
+test("Stop fences pending answer plans and prevents completed session metadata", async () => {
+  const f = setup("answer", "unused", false, "ok", undefined, undefined, true, true);
+  try {
+    await f.orchestrator.onLinearEvent(event());
+    const running = f.jobs.tick();
+    for (
+      let i = 0;
+      i < 1000 &&
+      !listOutbox(f.db, "session").some((row) =>
+        JSON.stringify(row.payload).includes("Read the reference"),
+      );
+      i++
+    )
+      await Bun.sleep(1);
+    expect(
+      listOutbox(f.db, "session").some((row) =>
+        JSON.stringify(row.payload).includes("Read the reference"),
+      ),
+    ).toBe(true);
+    await f.orchestrator.onLinearEvent({
+      ...event(),
+      dedupeKey: "stop-answer-plan",
+      action: "prompted",
+      signal: "stop",
+    });
+    await running;
+    expect(
+      listOutbox(f.db, "session")
+        .filter((row) => row.op.startsWith("linear.session."))
+        .every((row) => row.status === "dropped"),
+    ).toBe(true);
+    expect(f.tracker.sessionUpdates.some((update) => update.summary === "ENG-1: completed")).toBe(
+      false,
+    );
+    expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
+      "cancelled",
+    );
+  } finally {
+    f.db.close();
+  }
+}, 15000);

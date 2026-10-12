@@ -5,6 +5,8 @@ import type {
   EpicSnapshot,
   ProgressUpdate,
   StatusUpdate,
+  SessionUpdate,
+  SessionReceipt,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
 
@@ -30,5 +32,6 @@ export interface TrackerAdapter {
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;
   postProgress(update: ProgressUpdate, options?: TrackerRequestOptions): Promise<void>;
   askQuestion(question: Elicitation, options?: TrackerRequestOptions): Promise<void>;
+  updateSession?(update: SessionUpdate, options?: TrackerRequestOptions): Promise<SessionReceipt>;
   setStatus(update: StatusUpdate, options?: TrackerRequestOptions): Promise<void>;
 }
