@@ -38,3 +38,5 @@ export {
   writeAgentSettings,
 } from "./agents";
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
+
+export { loadRunnerControl } from "./runner-control";

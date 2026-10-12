@@ -39,7 +39,9 @@ export async function runGitHubGit(input: {
   refspec?: string;
   env?: NodeJS.ProcessEnv;
   gitBin?: string;
+  signal?: AbortSignal;
 }): Promise<void> {
+  input.signal?.throwIfAborted();
   if (/\s/.test(input.token)) throw new Error(OAUTH_REAUTH_MESSAGE);
   assertCleanRemote(input.remoteUrl, input.token);
   const gitExec = defaultGitExec(input.gitBin ?? trustedGitBin(input.env));
@@ -61,7 +63,11 @@ export async function runGitHubGit(input: {
         args = ["push", input.remoteUrl, input.refspec];
       }
       try {
-        await helper.exec([...helper.argsPrefix, ...args], { cwd, env: helper.env });
+        await helper.exec([...helper.argsPrefix, ...args], {
+          cwd,
+          env: helper.env,
+          signal: input.signal,
+        });
       } catch (error) {
         const detail = error instanceof GitCommandError ? error.stderr : String(error);
         throw new Error(redact(input.token, detail), { cause: error });

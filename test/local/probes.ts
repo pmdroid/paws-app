@@ -1,9 +1,12 @@
+import { probeRunnerControlStartup } from "./runner-control-startup";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
+import { probeRunnerRepositories } from "./runner-repositories";
+import { probeGitCancellation } from "./git-cancellation";
 import { statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -50,6 +53,7 @@ export async function probeBoundaries(
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
+  await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
@@ -78,6 +82,8 @@ export async function probeBoundaries(
   );
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
   await probeRunnerHttp(join(root, "runner-http"), observe);
+  await probeRunnerRepositories(join(root, "runner-repositories"), observe);
+  await probeGitCancellation(join(root, "git-cancellation"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
