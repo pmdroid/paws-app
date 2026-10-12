@@ -71,6 +71,9 @@ async function postActivity(
   if (ephemeral !== undefined && typeof ephemeral !== "boolean") {
     throw new Error("activity ephemeral must be a boolean");
   }
+  if (ephemeral && kind !== "thought" && kind !== "action")
+    throw new Error("Only thought and action activities can be ephemeral");
+  if (action && kind !== "action") throw new Error("Structured details require an action");
   await tracker.postProgress(
     {
       sessionId,

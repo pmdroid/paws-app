@@ -1,3 +1,4 @@
+import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -51,6 +52,7 @@ function setup(
   database?: Database,
   plan = false,
   hangResponse = false,
+  toolUpdates: readonly SessionUpdate[] = [],
 ) {
   const db = database ?? tempDb();
   const home = tempHome();
@@ -101,6 +103,9 @@ function setup(
               ]
             : []),
           ...(hangResponse && input.purpose !== "classify" ? [{ type: "hang" }] : []),
+          ...(input.purpose === "classify"
+            ? []
+            : toolUpdates.map((update) => ({ type: "update", update, delayMs: 30 }))),
           { type: "fs_write", path: "forbidden.txt", content: "denied" },
           {
             type: "update",
@@ -617,3 +622,58 @@ test("Stop fences pending answer plans and prevents completed session metadata",
     f.db.close();
   }
 }, 15000);
+
+test.each(["answer", "artifact"] as const)(
+  "%s ACP tool details reach Linear with transient starts and durable results",
+  async (mode) => {
+    const f = setup(mode, undefined, false, "ok", undefined, undefined, false, false, [
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "private-tool-identifier",
+        kind: "execute",
+        title: "Check the requested output",
+        status: "in_progress",
+        rawInput: { command: "bun test output.test.ts", token: "must-not-be-published" },
+      },
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "private-tool-identifier",
+        status: "completed",
+        rawOutput: { stdout: "Output verified", exitCode: 0 },
+      },
+      {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "Private reasoning must not reach Linear" },
+      },
+    ]);
+    const delivery = setInterval(() => f.outbox.tick(), 1);
+    try {
+      await f.orchestrator.onLinearEvent(event());
+      await f.jobs.tick();
+      await f.outbox.idle();
+      const actions = f.tracker.progress.filter(
+        (update) => update.action?.action === "Check the requested output",
+      );
+      expect(actions).toHaveLength(2);
+      expect(actions[0]?.ephemeral).toBe(true);
+      expect(actions[0]?.action?.parameter).toContain("bun test output.test.ts");
+      expect(actions[1]?.action?.parameter).toBe(actions[0]?.action?.parameter);
+      expect(actions[1]?.action?.result).toContain("Output verified");
+      expect(actions[1]?.ephemeral).not.toBe(true);
+      expect(JSON.stringify(f.tracker.progress)).not.toContain("must-not-be-published");
+      expect(JSON.stringify(f.tracker.progress)).not.toContain("Private reasoning");
+      expect(
+        f.tracker.progress
+          .filter((update) => update.kind === "response")
+          .every((update) => !update.ephemeral),
+      ).toBe(true);
+      expect(f.tracker.progress.findLast((update) => update.kind === "response")?.body).toContain(
+        f.answer.trim(),
+      );
+    } finally {
+      clearInterval(delivery);
+      await f.outbox.idle();
+      f.db.close();
+    }
+  },
+);

@@ -1,6 +1,7 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AcpEvent } from "../acp";
 import type { ActivityKind, ProgressUpdate, SessionPlanStep } from "../linear";
+import { scrubText } from "../closeout";
 
 /** Backup post when a run has produced no Linear activity yet. */
 export const FIRST_ACTIVITY_MS = 10_000;
@@ -14,8 +15,15 @@ export const KEEPALIVE_MS = 10 * 60 * 1000;
 export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
 const ACTIVITY_LIMIT = 3_500;
-
-export type AcpActivity = Omit<ProgressUpdate, "sessionId">;
+type AcpActivity = Omit<ProgressUpdate, "sessionId">;
+type ToolUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
+type ToolActivity = {
+  title: string;
+  kind?: string;
+  parameter: string;
+  result: string;
+  status?: string;
+};
 
 export function shouldPostFirstActivity(alreadyPosted: boolean, elapsedMs: number): boolean {
   return !alreadyPosted && elapsedMs >= FIRST_ACTIVITY_MS;
@@ -48,10 +56,14 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
 export function createAcpActivityReporter(
   post: (activity: AcpActivity) => void,
   onPlan?: (steps: readonly SessionPlanStep[]) => void,
-): { onEvent(event: AcpEvent): void; flush(): void; resultBody(): string } {
+): {
+  onEvent(event: AcpEvent): void;
+  flush(): void;
+  resultBody(): string;
+} {
   let pending = "";
   let resultBody = "";
-  const toolTitles = new Map<string, string>();
+  const tools = new Map<string, ToolActivity>();
 
   function flush(): boolean {
     const body = pending.trim();
@@ -67,22 +79,6 @@ export function createAcpActivityReporter(
     onEvent(event) {
       if (event.type === "session_update") {
         const update = event.update;
-        if (update.sessionUpdate === "tool_call" && update.title?.trim()) {
-          toolTitles.set(update.toolCallId, update.title);
-        }
-        if (update.sessionUpdate === "tool_call_update") {
-          const title = update.title?.trim() || toolTitles.get(update.toolCallId);
-          if (title) {
-            const activity = toolActivity(title, update.toolCallId, update.status ?? undefined);
-            if (activity) {
-              flush();
-              post(activity);
-              if (update.status === "completed" || update.status === "failed")
-                toolTitles.delete(update.toolCallId);
-              return;
-            }
-          }
-        }
         if (update.sessionUpdate === "plan") {
           onPlan?.(
             update.entries.map((entry) => ({
@@ -90,6 +86,21 @@ export function createAcpActivityReporter(
               status: entry.status === "in_progress" ? "inProgress" : entry.status,
             })),
           );
+        }
+        if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+          const tool = updateTool(update, tools.get(update.toolCallId));
+          if (tool.status === "completed" || tool.status === "failed")
+            tools.delete(update.toolCallId);
+          else {
+            tools.set(update.toolCallId, tool);
+            if (tools.size > 100) tools.delete(tools.keys().next().value!);
+          }
+          const activity = toolActivity(tool);
+          if (activity) {
+            flush();
+            post(activity);
+          }
+          return;
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
@@ -121,15 +132,8 @@ function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
     case "agent_message_chunk":
       return clip("thought", textOf(update.content));
     case "tool_call":
-      return toolActivity(
-        update.title?.trim() || update.toolCallId,
-        update.toolCallId,
-        update.status,
-      );
     case "tool_call_update":
-      return update.title
-        ? toolActivity(update.title, update.toolCallId, update.status ?? undefined)
-        : null;
+      return toolActivity(updateTool(update));
     case "plan": {
       const body = update.entries
         .map((entry) => entry.content)
@@ -142,20 +146,6 @@ function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
   }
 }
 
-function toolActivity(title: string, toolCallId: string, status?: string): AcpActivity | null {
-  const activity = clip("action", title);
-  if (activity === null) return null;
-  return {
-    ...activity,
-    action: {
-      action: activity.body,
-      parameter: toolCallId,
-      ...(status === undefined ? {} : { result: status }),
-    },
-    ...(status === "completed" || status === "failed" ? {} : { ephemeral: true }),
-  };
-}
-
 function textOf(content: { type: string; text?: string }): string {
   return content.type === "text" ? (content.text ?? "") : "";
 }
@@ -164,4 +154,108 @@ function clip(kind: ActivityKind, body: string): AcpActivity | null {
   const clipped = clipActivity(body);
   if (clipped === "") return null;
   return { kind, body: clipped };
+}
+
+function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
+  const tool: ToolActivity = {
+    title: previous?.title ?? "",
+    kind: previous?.kind,
+    parameter: previous?.parameter ?? "",
+    result: previous?.result ?? "",
+    status: previous?.status,
+  };
+  if (update.title?.trim()) tool.title = publicToolText(update.title);
+  if (update.kind) tool.kind = update.kind;
+  if (update.status) tool.status = update.status;
+  if (update.rawInput !== undefined && update.rawInput !== null)
+    tool.parameter = publicToolText(update.rawInput);
+  else if (!tool.parameter && update.locations?.length)
+    tool.parameter = publicToolText(update.locations.map((location) => location.path));
+  if (update.rawOutput !== undefined && update.rawOutput !== null)
+    tool.result = publicToolText(update.rawOutput);
+  else if (update.content)
+    tool.result = publicToolText(
+      update.content
+        .flatMap((entry) =>
+          entry.type === "content" && entry.content.type === "text" ? [entry.content.text] : [],
+        )
+        .join("\n"),
+    );
+  return tool;
+}
+
+function toolActivity(tool: ToolActivity): AcpActivity | null {
+  if (!tool.title || tool.kind === "think" || tool.kind === "switch_mode") return null;
+  const terminal = tool.status === "completed" || tool.status === "failed";
+  return {
+    kind: "action",
+    body: tool.title,
+    action: {
+      action: tool.title,
+      parameter: tool.parameter,
+      ...(tool.result || terminal ? { result: tool.result || tool.status! } : {}),
+    },
+    ...(terminal ? {} : { ephemeral: true }),
+  };
+}
+
+function publicToolText(value: unknown): string {
+  const secrets = Object.entries(process.env).flatMap(([key, secret]) =>
+    /API.?KEY|PASSWORD|SECRET|TOKEN|CREDENTIAL|PRIVATE.?KEY/i.test(key) && secret ? [secret] : [],
+  );
+  function text(content: string): string {
+    return scrubText(content, secrets)
+      .replace(
+        /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
+        "[redacted]",
+      )
+      .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, "$1 [redacted]")
+      .replace(
+        /\b([\w-]*(?:api[_-]?key|password|secret|token|authorization|cookie)[\w-]*\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        "$1[redacted]",
+      )
+      .replace(/https?:\/\/[^\s<>"']+/g, (raw) => {
+        try {
+          const url = new URL(raw);
+          url.username = "";
+          url.password = "";
+          url.search = "";
+          url.hash = "";
+          return url.href;
+        } catch {
+          return "[redacted URL]";
+        }
+      });
+  }
+  function clean(input: unknown, depth: number): unknown {
+    if (typeof input === "string") return clipActivity(text(input));
+    if (input === null || typeof input === "number" || typeof input === "boolean") return input;
+    if (depth >= 4) return "[truncated]";
+    if (Array.isArray(input)) return input.slice(0, 20).map((entry) => clean(entry, depth + 1));
+    if (typeof input !== "object" || input === undefined) return "";
+    return Object.fromEntries(
+      Object.entries(input)
+        .slice(0, 20)
+        .flatMap(([key, entry]) => {
+          if (/reasoning|thought|analysis/i.test(key)) return [];
+          return [
+            [
+              text(key),
+              /api.?key|password|secret|token|authorization|cookie|credential|private.?key/i.test(
+                key,
+              )
+                ? "[redacted]"
+                : clean(entry, depth + 1),
+            ],
+          ];
+        }),
+    );
+  }
+  if (typeof value === "string" && /^[\s]*[[{]/.test(value)) {
+    try {
+      value = JSON.parse(value);
+    } catch {}
+  }
+  const cleaned = clean(value, 0);
+  return clipActivity(typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned));
 }
