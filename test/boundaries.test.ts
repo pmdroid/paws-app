@@ -44,6 +44,7 @@ const MODULES = [
   "runner-work",
   "runner-results",
   "runner-health",
+  "runner-health-runtime",
   "runner-coordinator",
   "runner-transcripts",
   "runner-artifacts",
@@ -120,7 +121,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-verifier": ["runner-check"],
   "runner-repositories": ["github", "runner-protocol"],
   process: [],
-  "runner-worker": ["acp", "runner-execution", "runner-answers", "install"],
+  "runner-worker": ["acp", "runner-execution", "runner-answers", "install", "runner-protocol"],
   "runner-answers": ["runner-execution"],
   "runner-control": ["db", "workspace", "runner-identity"],
   "runner-daemon": [
@@ -133,6 +134,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
+  "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
   "runner-coordinator": [
     "github",
     "runner-repository-access",

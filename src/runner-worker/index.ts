@@ -13,7 +13,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join, isAbsolute } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   git,
@@ -34,6 +34,7 @@ import {
 } from "../runner-execution";
 import { readRunnerAnswer } from "../runner-answers";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
+import { RunnerArtifactSchema, type RunnerArtifact } from "../runner-protocol";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -50,7 +51,8 @@ export interface RunnerWorkerOptions {
 
 export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
-  | { type: "question"; requestId: string; question: string; options: readonly unknown[] };
+  | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
+  | { type: "artifact"; requestId: string; artifact: RunnerArtifact };
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -233,6 +235,47 @@ export async function executeRunnerCommand(
           throw error;
         }
       },
+      publishArtifact: repository
+        ? {
+            async publish(snapshot, context) {
+              if (!options.answer) throw new Error("Runner artifact publication is unavailable");
+              const bytes = Buffer.from(await snapshot.bytes.arrayBuffer());
+              context.signal.throwIfAborted();
+              const artifact = RunnerArtifactSchema.parse({
+                id: randomUUID(),
+                path: snapshot.path,
+                displayName: snapshot.displayName,
+                mimeType: snapshot.mimeType,
+                sizeBytes: snapshot.sizeBytes,
+                sha256: snapshot.sha256,
+                attachToIssue: context.request?.attachToIssue ?? false,
+              });
+              if (
+                bytes.length !== artifact.sizeBytes ||
+                createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+              )
+                throw new Error("Runner artifact snapshot changed");
+              const file = outputFile(
+                options.outputDirectory,
+                `artifact-${artifact.id}.bytes`,
+                options.resultsGid,
+              );
+              try {
+                writeFileSync(file, bytes);
+                fsyncSync(file);
+              } finally {
+                closeSync(file);
+              }
+              emit({ type: "artifact", requestId: artifact.id, artifact });
+              const reply = await options.answer(artifact.id, context.signal);
+              context.signal.throwIfAborted();
+              const publication = JSON.parse(reply.answer) as { url?: unknown };
+              if (typeof publication.url !== "string")
+                throw new Error("Runner artifact publication response is invalid");
+              return { url: publication.url };
+            },
+          }
+        : undefined,
       askTeam: {
         async ask(request, context) {
           if (!options.answer) throw new Error("Runner question channel is unavailable");

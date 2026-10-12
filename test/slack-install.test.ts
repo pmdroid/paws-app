@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   authorizeSlack,
   createSlackAuth,
+  handleSlackWebhook,
   loginSlack,
   readSlackApp,
   readSlackToken,
@@ -256,7 +257,7 @@ test("Slack front door verifies raw-body HMAC and a five-minute timestamp window
         .status,
     ).toBe(401);
     expect(
-      (await fetch(endpoint, { method: "POST", body: raw, headers: headers(timestamp + 301) }))
+      (await fetch(endpoint, { method: "POST", body: raw, headers: headers(timestamp + 600) }))
         .status,
     ).toBe(401);
     const response = await fetch(endpoint, {
@@ -277,5 +278,27 @@ test("Slack front door verifies raw-body HMAC and a five-minute timestamp window
     ).toBe(400);
   } finally {
     await server.stop(true);
+  }
+});
+
+test("Slack webhook enforces exact past and future timestamp boundaries with a fixed clock", async () => {
+  const secret = "synthetic-signing-secret";
+  const timestamp = 1_000_000;
+  const raw = JSON.stringify({ type: "url_verification", challenge: "clock-boundary" });
+  for (const offset of [-301, -300, -299, 0, 299, 300, 301]) {
+    const time = timestamp + offset;
+    const response = await handleSlackWebhook(
+      new Request("https://paws.example/webhooks/slack", {
+        method: "POST",
+        body: raw,
+        headers: {
+          "x-slack-request-timestamp": String(time),
+          "x-slack-signature": `v0=${createHmac("sha256", secret).update(`v0:${time}:${raw}`).digest("hex")}`,
+        },
+      }),
+      secret,
+      timestamp * 1000,
+    );
+    expect(response.status).toBe(Math.abs(offset) <= 300 ? 200 : 401);
   }
 });
