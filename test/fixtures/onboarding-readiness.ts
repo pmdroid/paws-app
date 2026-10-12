@@ -38,6 +38,7 @@ const setupCode = await runSetup(["--tracker", "github"], {
         invalid: false,
       }),
       save: async () => {},
+      update: async (change) => change(null) !== null,
       markInvalid: async () => {},
       delete: async () => {},
     },
