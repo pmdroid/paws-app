@@ -50,11 +50,14 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const evidenceRoot = options.evidenceRoot;
   const githubAuth = createDashboardGitHubAuth({ env: process.env });
   const csrfToken = crypto.randomUUID();
-  return Bun.serve({
+  const requests = new Set<Promise<Response>>();
+  let stopping = false;
+  const server = Bun.serve({
     hostname,
     port,
     fetch(request) {
-      return route(request, {
+      if (stopping) return new Response("Paws is stopping.", { status: 503 });
+      const operation = route(request, {
         slackSigningSecret,
         linearWebhookSecret,
         githubWebhook,
@@ -73,8 +76,17 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(closeoutHome ? { closeoutHome } : {}),
         ...(evidenceRoot ? { evidenceRoot } : {}),
       });
+      requests.add(operation);
+      return operation.finally(() => requests.delete(operation));
     },
   });
+  const stop = server.stop.bind(server);
+  server.stop = async (closeActiveConnections) => {
+    stopping = true;
+    await stop(closeActiveConnections);
+    await Promise.allSettled([...requests]);
+  };
+  return server;
 }
 
 type Secrets = {

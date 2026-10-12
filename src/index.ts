@@ -440,9 +440,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         abort.abort();
         host.stop();
         const linearStopped = running.stop();
-        server.stop(true);
+        const serverStopped = server.stop(true);
         await orchestrator?.shutdown();
-        await Promise.all([loops.stop(), linearStopped]);
+        await Promise.all([loops.stop(), linearStopped, serverStopped]);
         prepareShutdown(db, Date.now(), (item) => {
           commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
         });
