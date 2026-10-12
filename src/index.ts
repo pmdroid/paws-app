@@ -90,6 +90,7 @@ import {
 import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
+import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion, type StoredQuestion } from "./questions";
 
 export type PawsProcess = {
@@ -569,7 +570,7 @@ if (import.meta.main) {
     process.exit(await doctorMain());
   }
   if (command === "setup") {
-    process.exit(await runSetup(argv));
+    process.exit(await runSetup(argv, { linearReconnect: createLinearReconnect() }));
   }
   if (command === "login" && argv[1] === "github") {
     process.exit(await loginGitHubCommand(argv.slice(2)));

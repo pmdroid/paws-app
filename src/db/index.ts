@@ -172,6 +172,9 @@ export {
   getLinearSessionAccess,
   getLinearSessionInstallation,
   getLinearInstallationPermissions,
+  listLinearInstallationRevocations,
+  restoreLinearInstallation,
+  type LinearInstallationRevocation,
   type LinearInstallationScope,
   type LinearSessionAccess,
 } from "./linear-access";
