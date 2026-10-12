@@ -134,3 +134,11 @@ Run `bun test test/runner-health.test.ts` for signed health delivery over actual
 ## Runner coordinator
 
 Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initialization, verified HTTPS pairing with advertised public signing keys, actual mTLS renewal, heartbeat, generation-fenced result delivery, persisted health receipts and role checks, and keepalive revocation. The fixture uses real OpenSSL, SQLite and HTTPS sockets with synthetic work and health results. `check` and `audit` also run this recipe.
+
+Run the daemon, work and result probes together to verify their published modules coexist in one checkout:
+
+```sh
+bun test test/runner-daemon.test.ts test/runner-work.test.ts test/runner-results.test.ts test/boundaries.test.ts
+```
+
+The daemon probe uses real HTTPS/mTLS and fresh subprocesses. The work and result probes use real SQLite, signed assignments and production request handlers. Inspect each probe's observations alongside the full credential-free check.
