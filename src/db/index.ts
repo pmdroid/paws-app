@@ -248,3 +248,9 @@ export {
   saveLinearIssueContext,
   getLinearIssueContext,
 } from "./linear-issue-context";
+export {
+  saveWorkspaceIdentityLink,
+  workspaceIdentityCandidates,
+  workspaceIdentityLinks,
+} from "./workspace-links";
+export type { WorkspaceIdentityLink } from "./workspace-links";
