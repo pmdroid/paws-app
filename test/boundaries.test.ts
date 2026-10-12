@@ -25,6 +25,7 @@ const MODULES = [
   "doctor",
   "comments",
   "install",
+  "deployment",
   "setup",
   "sandbox",
   "auth",
@@ -50,7 +51,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   github: [],
   questions: ["core"],
   web: ["db"],
-  server: ["slack", "config", "linear", "github", "web", "auth", "settings"],
+  server: ["slack", "config", "linear", "github", "web", "auth", "settings", "deployment"],
   settings: ["config"],
   host: ["core", "db"],
   loop: ["core", "db", "linear", "intake", "acp", "closeout", "github", "questions", "config"],
@@ -66,6 +67,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   comments: ["core", "linear", "questions"],
   install: ["acp", "config"],
+  deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: [
     "db",
