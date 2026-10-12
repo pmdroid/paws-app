@@ -1,4 +1,10 @@
-import { createHash, createPrivateKey, createPublicKey, X509Certificate } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  X509Certificate,
+  type KeyObject,
+} from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -16,6 +22,30 @@ import { readSecretFile, writeSecretFile } from "../credentials";
 import { createRunnerKey, describeRunnerCertificate } from "../runner-identity";
 
 export const identifier = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
+export const SigningKeysSchema = z
+  .array(
+    z.strictObject({
+      keyId: identifier,
+      publicKeyPem: z
+        .string()
+        .max(4096)
+        .refine((pem) => {
+          try {
+            if (!pem.startsWith("-----BEGIN PUBLIC KEY-----\n")) return false;
+            const key = createPublicKey(pem);
+            return (
+              key.asymmetricKeyType === "ed25519" &&
+              key.export({ type: "spki", format: "pem" }) === pem
+            );
+          } catch {
+            return false;
+          }
+        }),
+    }),
+  )
+  .min(1)
+  .max(8)
+  .refine((keys) => new Set(keys.map((key) => key.keyId)).size === keys.length);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const common = {
   controlPlaneUrl: z.string(),
@@ -38,15 +68,39 @@ export const ApprovedIdentitySchema = z.strictObject({
   workspaceId: identifier,
   certificate: z.string().min(1).max(32_768),
   authority: z.string().min(1).max(32_768),
+  signingKeys: SigningKeysSchema,
 });
 const StateSchema = z.discriminatedUnion("phase", [
   z.strictObject({ ...common, phase: z.literal("prepared") }),
   z.strictObject({ ...common, phase: z.literal("pending"), ...PairingChallengeSchema.shape }),
-  z.strictObject({ ...common, phase: z.literal("paired"), ...ApprovedIdentitySchema.shape }),
+  z.strictObject({
+    ...common,
+    phase: z.literal("paired"),
+    ...ApprovedIdentitySchema.shape,
+    signingKeys: SigningKeysSchema.optional(),
+  }),
 ]);
 export type RunnerState = z.infer<typeof StateSchema>;
 export type PairedState = Extract<RunnerState, { phase: "paired" }>;
 export type PairingChallenge = z.infer<typeof PairingChallengeSchema>;
+
+export function trustedSigningKeys(
+  state: PairedState,
+  pins?: ReadonlyMap<string, KeyObject>,
+): ReadonlyMap<string, KeyObject> {
+  if (!state.signingKeys) {
+    if (pins?.size) return pins;
+    throw new Error("Runner job signing keys require authenticated renewal.");
+  }
+  const keys = new Map(
+    state.signingKeys.map(({ keyId, publicKeyPem }) => [keyId, createPublicKey(publicKeyPem)]),
+  );
+  if (pins)
+    for (const [id, key] of keys)
+      if (!pins.get(id)?.equals(key))
+        throw new Error("Runner job signing key does not match its pin.");
+  return keys;
+}
 
 export function readRecovery(root: string, runnerId: string): PairingChallenge | null {
   const raw = readSecretFile(join(root, "identity", "recovery.json"));

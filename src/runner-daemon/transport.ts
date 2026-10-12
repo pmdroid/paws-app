@@ -1,5 +1,12 @@
 import { request } from "node:https";
 
+export class RunnerRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Runner request failed with HTTP ${status}.`);
+    this.name = "RunnerRequestError";
+  }
+}
+
 export function httpsOrigin(value: string): string {
   const url = new URL(value);
   if (
@@ -21,6 +28,7 @@ export function requestJson(input: {
   body?: unknown;
   serverCa?: string;
   identity?: { key: string; certificate: string };
+  runGrant?: string;
 }): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body));
@@ -35,6 +43,7 @@ export function requestJson(input: {
         ...(input.identity ? { key: input.identity.key, cert: input.identity.certificate } : {}),
         headers: {
           accept: "application/json",
+          ...(input.runGrant ? { authorization: `Bearer ${input.runGrant}` } : {}),
           ...(body ? { "content-type": "application/json", "content-length": body.length } : {}),
         },
       },
@@ -52,7 +61,7 @@ export function requestJson(input: {
         response.on("error", reject);
         response.on("end", () => {
           if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`Runner request failed with HTTP ${response.statusCode ?? 0}.`));
+            reject(new RunnerRequestError(response.statusCode ?? 0));
             return;
           }
           try {
