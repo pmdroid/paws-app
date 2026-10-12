@@ -41,6 +41,7 @@ import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
 import { probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
+import { probeRunnerVerifier } from "./runner-verifier";
 import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
@@ -57,6 +58,7 @@ export async function probeBoundaries(
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
+  probeRunnerVerifier(observe);
   const release = Bun.spawn(
     [
       "/usr/bin/python3",

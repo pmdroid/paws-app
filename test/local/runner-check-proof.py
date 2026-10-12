@@ -63,4 +63,35 @@ linked.unlink()
 path.rename(linked)
 path.symlink_to(linked)
 assert run("reject", 1001) == {"rejected": True}
-print(json.dumps({"verified": True, "runnerUid": 1001, "agentUid": 1002, "checkUid": 1005, "inputGid": 1004, "fixedCheckEnvironmentDerived": True, "publicCanonicalInputDigestMatches": True, "rootWitnessResultRead": True, "boundedEscapedBinaryOutputRead": True, "daemonResultWriteDenied": True, "agentAndCheckInputDenied": True, "agentAndCheckResultForgeryDenied": True, "candidateAttemptAndInputDigestMismatchRejected": True, "writableHardlinkAndSymlinkResultRejected": True}), flush=True)
+path.unlink()
+linked.rename(path)
+assert run("sign-witness", 0) == {"signed": True}
+assert run("read-signature", 1001) == {"signatureVerified": True, "writeDenied": True}
+signature_path = directory / "verifier-signature"
+signature = signature_path.read_bytes()
+signature_path.write_bytes((b"A" if signature[:1] != b"A" else b"B") + signature[1:])
+assert run("reject-signature", 1001) == {"rejectedSignature": True}
+signature_path.write_bytes(signature)
+for mode, uid, gid in ((0o660, 0, 1001), (0o640, 1001, 1001), (0o640, 0, 1002)):
+    signature_path.chmod(mode)
+    os.chown(signature_path, uid, gid)
+    assert run("reject-signature", 1001) == {"rejectedSignature": True}
+signature_path.chmod(0o640)
+os.chown(signature_path, 0, 1001)
+signature_link = directory / "signature-link"
+os.link(signature_path, signature_link)
+assert run("reject-signature", 1001) == {"rejectedSignature": True}
+signature_link.unlink()
+signature_path.rename(signature_link)
+signature_path.symlink_to(signature_link)
+assert run("reject-signature", 1001) == {"rejectedSignature": True}
+signature_path.unlink()
+signature_link.rename(signature_path)
+for content in (signature + b"\n", signature[:-1], b"A" * 88):
+    signature_path.write_bytes(content)
+    assert run("reject-signature", 1001) == {"rejectedSignature": True}
+signature_path.unlink()
+os.mkfifo(signature_path, 0o640)
+os.chown(signature_path, 0, 1001)
+assert run("reject-signature", 1001) == {"rejectedSignature": True}
+print(json.dumps({"verified": True, "runnerUid": 1001, "agentUid": 1002, "checkUid": 1005, "inputGid": 1004, "fixedCheckEnvironmentDerived": True, "publicCanonicalInputDigestMatches": True, "rootWitnessResultRead": True, "boundedEscapedBinaryOutputRead": True, "daemonResultWriteDenied": True, "agentAndCheckInputDenied": True, "agentAndCheckResultForgeryDenied": True, "candidateAttemptAndInputDigestMismatchRejected": True, "writableHardlinkAndSymlinkResultRejected": True, "rootWitnessSignatureVerified": True, "daemonSignatureWriteDenied": True, "alteredUnsafeAndMalformedSignaturesRejected": True, "signatureFifoRejectedWithoutBlocking": True}), flush=True)
