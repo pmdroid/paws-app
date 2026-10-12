@@ -7,6 +7,106 @@ function emit(reporter: ReturnType<typeof createAcpActivityReporter>, update: Se
   reporter.onEvent({ type: "session_update", sessionId: "s", update });
 }
 
+test.each(["completed", "failed"] as const)(
+  "terminal output deltas become the %s action result",
+  (status) => {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    emit(reporter, {
+      sessionUpdate: "tool_call",
+      toolCallId: "command",
+      title: "Run checks",
+      status: "in_progress",
+      rawInput: { command: "bun test" },
+      content: [{ type: "terminal", terminalId: "terminal" }],
+    });
+    for (const data of ["First check passed.\n", "Second check failed."])
+      emit(reporter, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "command",
+        _meta: { terminal_output_delta: { terminal_id: "terminal", data } },
+      });
+    emit(reporter, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "command",
+      status,
+      _meta: { terminal_exit: { terminal_id: "terminal", exit_code: status === "failed" ? 1 : 0 } },
+    });
+    expect(posted.at(-1)?.action?.result).toBe(
+      `${status === "failed" ? "Failed.\n\n" : ""}First check passed.\nSecond check failed.`,
+    );
+    expect(posted.at(-1)?.action?.parameter).toContain("bun test");
+    expect(posted.at(-1)?.ephemeral).not.toBe(true);
+    expect(posted.slice(0, -1).every((update) => update.action?.result === undefined)).toBe(true);
+  },
+);
+
+test("legacy terminal output chunks append once", () => {
+  const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+  const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+  emit(reporter, { sessionUpdate: "tool_call", toolCallId: "command", title: "Read file" });
+  for (const data of ["First line\n", "Second line"])
+    emit(reporter, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "command",
+      _meta: { terminal_output: { terminal_id: "terminal", data } },
+    });
+  emit(reporter, {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "command",
+    status: "completed",
+    _meta: { terminal_output_delta: { terminal_id: "terminal", data: "\nLast line" } },
+  });
+  expect(posted.at(-1)?.action?.result).toBe("First line\nSecond line\nLast line");
+});
+
+test("bounded terminal output redacts an incomplete private key block", () => {
+  const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+  const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+  emit(reporter, { sessionUpdate: "tool_call", toolCallId: "command", title: "Read output" });
+  emit(reporter, {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "command",
+    status: "completed",
+    _meta: {
+      terminal_output_delta: {
+        data:
+          "-----BEGIN PRIVATE KEY-----\n" +
+          "private-material".repeat(10_000) +
+          "\n-----END PRIVATE KEY-----",
+      },
+    },
+  });
+  expect(posted.at(-1)?.action?.result).toBe("[redacted]");
+});
+
+test("terminal results redact credentials split across chunks and bound oversized output", () => {
+  const previous = process.env.PAWS_ACTIVITY_TEST_TOKEN;
+  process.env.PAWS_ACTIVITY_TEST_TOKEN = "synthetic-host-credential";
+  try {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    emit(reporter, { sessionUpdate: "tool_call", toolCallId: "command", title: "Read output" });
+    for (const data of ["synthetic-host-", "credential\n", "x".repeat(20_000)])
+      emit(reporter, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "command",
+        _meta: { terminal_output_delta: { terminal_id: "terminal", data } },
+      });
+    emit(reporter, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "command",
+      status: "completed",
+    });
+    expect(posted.at(-1)?.action?.result).toContain("[redacted]");
+    expect(posted.at(-1)?.action?.result?.length).toBeLessThanOrEqual(3500);
+    expect(JSON.stringify(posted)).not.toContain("synthetic-host-");
+  } finally {
+    if (previous === undefined) delete process.env.PAWS_ACTIVITY_TEST_TOKEN;
+    else process.env.PAWS_ACTIVITY_TEST_TOKEN = previous;
+  }
+});
+
 test("tool results retain the input from their start and terminal details are durable", () => {
   const posted: Omit<ProgressUpdate, "sessionId">[] = [];
   const reporter = createAcpActivityReporter((activity) => posted.push(activity));

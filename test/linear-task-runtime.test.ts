@@ -808,9 +808,14 @@ test("Stop fences pending answer plans and prevents completed session metadata",
   }
 }, 15000);
 
-test.each(["answer", "artifact"] as const)(
-  "%s ACP tool details reach Linear with transient starts and durable results",
-  async (mode) => {
+test.each([
+  ["answer", "raw"],
+  ["artifact", "raw"],
+  ["answer", "terminal_output"],
+  ["artifact", "terminal_output_delta"],
+] as const)(
+  "%s ACP %s tool details reach Linear with transient starts and durable results",
+  async (mode, format) => {
     const f = setup(mode, undefined, false, "ok", undefined, undefined, false, false, [
       {
         sessionUpdate: "tool_call",
@@ -820,11 +825,25 @@ test.each(["answer", "artifact"] as const)(
         status: "in_progress",
         rawInput: { command: "bun test output.test.ts", token: "must-not-be-published" },
       },
+      ...(format === "raw"
+        ? []
+        : [
+            {
+              sessionUpdate: "tool_call_update" as const,
+              toolCallId: "private-tool-identifier",
+              _meta: { [format]: { terminal_id: "terminal", data: "Output " } },
+            },
+            {
+              sessionUpdate: "tool_call_update" as const,
+              toolCallId: "private-tool-identifier",
+              _meta: { [format]: { terminal_id: "terminal", data: "verified" } },
+            },
+          ]),
       {
         sessionUpdate: "tool_call_update",
         toolCallId: "private-tool-identifier",
         status: "completed",
-        rawOutput: { stdout: "Output verified", exitCode: 0 },
+        ...(format === "raw" ? { rawOutput: { stdout: "Output verified", exitCode: 0 } } : {}),
       },
       {
         sessionUpdate: "agent_thought_chunk",
@@ -839,12 +858,12 @@ test.each(["answer", "artifact"] as const)(
       const actions = f.tracker.progress.filter(
         (update) => update.action?.action === "Check the requested output",
       );
-      expect(actions).toHaveLength(2);
+      expect(actions).toHaveLength(format === "raw" ? 2 : 4);
       expect(actions[0]?.ephemeral).toBe(true);
       expect(actions[0]?.action?.parameter).toContain("bun test output.test.ts");
-      expect(actions[1]?.action?.parameter).toBe(actions[0]?.action?.parameter);
-      expect(actions[1]?.action?.result).toContain("Output verified");
-      expect(actions[1]?.ephemeral).not.toBe(true);
+      expect(actions.at(-1)?.action?.parameter).toBe(actions[0]?.action?.parameter);
+      expect(actions.at(-1)?.action?.result).toContain("Output verified");
+      expect(actions.at(-1)?.ephemeral).not.toBe(true);
       expect(JSON.stringify(f.tracker.progress)).not.toContain("must-not-be-published");
       expect(JSON.stringify(f.tracker.progress)).not.toContain("Private reasoning");
       expect(
