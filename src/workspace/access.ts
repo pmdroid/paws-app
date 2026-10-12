@@ -12,6 +12,8 @@ import {
   workspaceMember,
 } from "../db";
 import type { LinearMembershipReads } from "../linear";
+import type { SlackIdentityReads } from "../slack";
+import { createWorkspaceIdentityLinks } from "./identity-links";
 import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 import { handleWorkspaceAdministration, readWorkspaceJson } from "./administration";
 import {
@@ -31,6 +33,7 @@ export type WorkspaceAccessOptions = {
   memberships: LinearMembershipReads;
   fetch?: typeof fetch;
   now?: () => number;
+  slackIdentities?: SlackIdentityReads | null;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
 };
 
@@ -48,6 +51,11 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
+  const links = createWorkspaceIdentityLinks({
+    db: options.db,
+    slack: options.slackIdentities,
+    now,
+  });
   const pending = new Map<string, Promise<void>>();
   async function refresh(workspaceKey: string, userId: string, force = false): Promise<void> {
     const member = workspaceMember(options.db, workspaceKey, userId);
@@ -98,6 +106,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (workspace === null) return;
     for (const member of listWorkspaceMembers(options.db, workspace.id))
       await refresh(workspace.id, member.id, true);
+    await links.syncWorkspace(workspace.id);
   }
   async function authenticate(request: Request) {
     if (new URL(request.url).origin !== origin) return null;
@@ -114,6 +123,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
+        "/api/workspaces/identity-links",
         "/api/auth/logout",
         "/api/workspaces",
         "/api/workspaces/members",
@@ -206,6 +216,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamIds: identity.teamIds,
           now: syncAt,
         });
+        await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
         if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
         const issued = issueWorkspaceSession(options.db, {
@@ -257,6 +268,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         return json({ error: "This workspace is not installed or authorized." }, 403);
       return json({ ok: true });
     }
+    const identityAdministration = await links.handle(request, { ...access, origin, now: now() });
+    if (identityAdministration !== null) return identityAdministration;
     const administration = await handleWorkspaceAdministration(request, {
       db: options.db,
       ...access,

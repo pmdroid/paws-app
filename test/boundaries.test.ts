@@ -84,7 +84,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ghissues: ["core", "linear", "intake", "auth"],
   ghcomments: ["comments", "core", "linear"],
   sandbox: [],
-  workspace: ["db", "linear"],
+  workspace: ["db", "linear", "slack"],
 };
 
 describe("module boundaries", () => {
