@@ -27,8 +27,10 @@ import {
 } from "./format";
 import { routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
+import { renderConversations, type ConversationModel } from "./conversations";
 
 export interface RenderModel {
+  conversations?: ConversationModel;
   route: Route;
   phase: "loading" | "ready" | "error";
   snapshot: StatusSnapshot | null;
@@ -83,6 +85,7 @@ const NAV = [
   { view: "overview", label: "Overview", icon: "overview" },
   { view: "epics", label: "Epics", icon: "epic" },
   { view: "runs", label: "Agent runs", icon: "run" },
+  { view: "sessions", label: "Linear conversations", icon: "inbox" },
   { view: "questions", label: "Open questions", icon: "inbox" },
   { view: "verdicts", label: "Closeout", icon: "verify" },
   { view: "queue", label: "Merge queue", icon: "queue" },
@@ -93,6 +96,7 @@ const CRUMB: Record<Route["view"], string> = {
   overview: "Overview",
   epics: "Epics",
   runs: "Agent runs",
+  sessions: "Linear conversations",
   questions: "Open questions",
   verdicts: "Closeout",
   queue: "Merge queue",
@@ -185,6 +189,7 @@ function renderTabbar(model: RenderModel): string {
     ["overview", "Home", "overview"],
     ["epics", "Epics", "epic"],
     ["runs", "Runs", "run"],
+    ["sessions", "Linear", "inbox"],
     ["questions", "Questions", "inbox"],
     ["verdicts", "Closeout", "verify"],
     ["settings", "Settings", "settings"],
@@ -202,6 +207,8 @@ function renderTabbar(model: RenderModel): string {
 const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
 
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
+  if (model.route.view === "sessions")
+    return renderConversations(model.conversations, model.route.id);
   if (snapshot.items.length === 0) return `<div class="empty">${esc(EMPTY_ITEMS)}</div>`;
   switch (model.route.view) {
     case "overview":
@@ -831,6 +838,7 @@ function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
     overview: 0,
     epics: snapshot.epics.length,
     runs: snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length,
+    sessions: 0,
     questions: snapshot.questions.length,
     verdicts: snapshot.verdicts.filter((verdict) => verdict.decision !== "accepted").length,
     queue: snapshot.mergeQueue.length,

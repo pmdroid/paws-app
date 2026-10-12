@@ -12,6 +12,7 @@ import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 
 import { createAgentSettings } from "./agent-settings";
+import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 
 const settings = createAgentSettings(() => paint());
@@ -32,6 +33,7 @@ let snapshot: StatusSnapshot | null = null;
 let via: RenderModel["via"] = null;
 let error: string | null = null;
 let timer = 0;
+let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const dialog = document.querySelector("#source-dialog");
 const form = document.querySelector("#source-form");
@@ -93,6 +95,7 @@ async function reload(): Promise<void> {
     via = "engine";
     phase = "ready";
     error = null;
+    conversations = await loadConversations(engineUrl, snapshot.source, location.origin);
   } catch (caught) {
     error = caught instanceof Error ? caught.message : "Could not load status";
     phase = "error";
@@ -157,6 +160,9 @@ function paint(): void {
     engineUrl: currentEngine(),
     epicView,
     selectedCheck,
+    conversations: canReadConversations(currentEngine(), snapshot?.source, location.origin)
+      ? conversations
+      : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
   document.title = view.title;
