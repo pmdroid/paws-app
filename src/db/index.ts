@@ -163,3 +163,14 @@ export { getConversation, saveConversation } from "./acp-conversations";
 
 export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session-cleanup";
 export { prepareLinearActivity } from "./linear-delivery";
+
+export {
+  recordLinearInstallation,
+  revokeLinearInstallation,
+  changeLinearTeamAccess,
+  getLinearSessionAccess,
+  getLinearSessionInstallation,
+  getLinearInstallationPermissions,
+  type LinearInstallationScope,
+  type LinearSessionAccess,
+} from "./linear-access";
