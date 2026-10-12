@@ -652,4 +652,21 @@ ALTER TABLE linear_app_revocation ADD COLUMN restored_after INTEGER;
 ALTER TABLE linear_app_revocation ADD COLUMN restored_credential_fingerprint TEXT;
 `,
   },
+  {
+    id: "012_linear_github_auth",
+    sql: `
+CREATE TABLE linear_github_auth (
+  question_id TEXT PRIMARY KEY REFERENCES question(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  actor_id TEXT NOT NULL,
+  github_account_id INTEGER,
+  phase TEXT NOT NULL CHECK (phase IN ('initial', 'publication')),
+  generation INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'verified', 'expired', 'revoked')),
+  expires_at INTEGER NOT NULL,
+  verified_at INTEGER
+) STRICT;
+CREATE INDEX linear_github_auth_pending ON linear_github_auth (item_id, status);
+`,
+  },
 ];

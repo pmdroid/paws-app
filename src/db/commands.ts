@@ -50,6 +50,10 @@ export function applyLinearCommand(
     }
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
     db.run(
+      "UPDATE linear_github_auth SET status = 'revoked',generation = generation + 1 WHERE item_id = ? AND status IN ('pending','expired')",
+      [item.id],
+    );
+    db.run(
       "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status = 'open' AND cancelled_at IS NULL",
       [now, item.id],
     );

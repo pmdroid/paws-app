@@ -37,3 +37,11 @@ export { createLinearArtifactPublisher } from "./artifacts";
 export { createLinearInputLoader, inputSources } from "./input-files";
 export { createTaskPlanner } from "./task-planner";
 export { createLinearSessionProgress } from "./session-progress";
+
+export {
+  GitHubAuthQuestions,
+  type HostGitHubAuth,
+  type GitHubAuthPhase,
+  type VerifiedGitHubAccount,
+} from "./github-auth";
+export { FakeHostGitHubAuth } from "./fake-auth";
