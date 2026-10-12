@@ -321,6 +321,7 @@ export function createRunnerWork(options: {
       return immediate(db, () => {
         runner(runnerId);
         const at = now();
+        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,

@@ -910,4 +910,16 @@ CREATE TABLE runner_question_answer (
 ) STRICT;
 `,
   },
+  {
+    id: "029_runner_health",
+    sql: `
+ALTER TABLE runner ADD COLUMN last_seen_at INTEGER;
+CREATE TABLE runner_health_result (
+  command_id TEXT PRIMARY KEY REFERENCES runner_command(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  result_json TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
