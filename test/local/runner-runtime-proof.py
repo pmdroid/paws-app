@@ -30,7 +30,7 @@ broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
 broker.SPOOL = str(root / "spool")
 broker.RESULTS = str(root / "results")
-broker.RECEIPTS = str(root / "receipts")
+pathlib.Path(broker.RECEIPTS).mkdir(mode=0o700, parents=True)
 shutil.copyfile("/proof/paws-agent@.service", root / "paws-agent@.service")
 os.chmod(root / "paws-agent@.service", 0o644)
 broker.UNIT = str(root / "paws-agent@.service")
@@ -52,7 +52,8 @@ def actor(mode, uid, execution_id=None):
     return process
 
 
-def control(operation, execution_id):
+def control(operation, execution_id, template="paws-agent"):
+    assert template == "paws-agent"
     if operation == "start":
         assert execution_id not in workers
         workers[execution_id] = actor("worker", 1002, execution_id)
