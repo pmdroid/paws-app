@@ -1,3 +1,4 @@
+import { probeRunnerCloseout } from "./runner-closeout";
 import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
@@ -58,6 +59,7 @@ export async function probeBoundaries(
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
   await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
+  await probeRunnerCloseout(join(root, "runner-closeout"), observe);
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
