@@ -588,4 +588,25 @@ CREATE TABLE linear_artifact_attempt (
     id: "019_linear_artifact_cards",
     sql: `ALTER TABLE linear_artifact_attempt ADD COLUMN attachment_requested INTEGER NOT NULL DEFAULT 0 CHECK (attachment_requested IN (0, 1));`,
   },
+  {
+    id: "011_linear_question_lifecycle",
+    sql: `
+ALTER TABLE question ADD COLUMN cancelled_at INTEGER;
+ALTER TABLE question ADD COLUMN answer_event_key TEXT;
+UPDATE question SET cancelled_at = created_at
+WHERE status = 'open' AND (
+  item_id IN (SELECT id FROM work_item WHERE state IN ('cancelled', 'merged', 'failed'))
+  OR EXISTS (
+    SELECT 1 FROM question newer
+    WHERE newer.session_id = question.session_id AND newer.status = 'open'
+      AND (newer.created_at > question.created_at
+        OR (newer.created_at = question.created_at AND newer.id > question.id))
+  )
+);
+CREATE UNIQUE INDEX question_one_active_session ON question (session_id)
+WHERE status = 'open' AND cancelled_at IS NULL;
+CREATE UNIQUE INDEX question_answer_event ON question (session_id, answer_event_key)
+WHERE answer_event_key IS NOT NULL;
+`,
+  },
 ];

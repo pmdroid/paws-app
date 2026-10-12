@@ -58,7 +58,6 @@ import {
   applyWorkItemEvent,
   configureWorkItem,
   drainCommands,
-  enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
   failWorkItem,
@@ -123,6 +122,7 @@ import {
   findOpenQuestion,
   handoffNote,
   openQuestion,
+  questionReplyConsumed,
 } from "../questions";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
@@ -1279,7 +1279,7 @@ export class Orchestrator {
         op: "elicitation",
         orderingKey: sessionId,
         idempotencyKey: `closeout-help:${question.id}`,
-        payload: { sessionId, questionId: question.id, body },
+        payload: { sessionId, questionId: question.id, id: question.id, body },
         now: this.now(),
       });
     });
@@ -1496,7 +1496,7 @@ export class Orchestrator {
             itemId: item.id,
             runId,
             sessionId,
-            body: request.question,
+            body: [request.question.trim(), request.context?.trim()].filter(Boolean).join("\n\n"),
             options,
             now: this.now(),
           });
@@ -1517,6 +1517,7 @@ export class Orchestrator {
             payload: {
               sessionId,
               questionId: opened.id,
+              id: opened.id,
               body: elicitationBody(request.question, request.context),
               options,
             },
@@ -1555,28 +1556,49 @@ export class Orchestrator {
     const sessionId = event.sessionId;
     const answer = event.body?.trim() ?? "";
     if (sessionId === null || answer === "") return "rejected";
+    if (questionReplyConsumed(this.db, sessionId, event.dedupeKey)) return "rejected";
     const open = findOpenQuestion(this.db, sessionId);
     if (open === null) return "rejected";
+    const createdAt =
+      event.activityCreatedAtMs === undefined ? event.updatedAtMs : event.activityCreatedAtMs;
+    if (createdAt === null || createdAt <= open.createdAt) return "rejected";
     const recovery = listCloseoutRecoveries(this.db, open.itemId).find(
       (entry) => entry.questionId === open.id,
     );
-    let answeredBy = event.activityId ? `linear-activity:${event.activityId}` : "linear";
+    let answeredBy = event.actorId ?? "unknown";
     try {
-      const payload = JSON.parse(event.payload) as { answeredBy?: unknown; questionId?: unknown };
+      const payload = JSON.parse(event.payload) as {
+        answeredBy?: unknown;
+        questionId?: unknown;
+        agentActivity?: unknown;
+      };
       if (typeof payload.questionId === "string" && payload.questionId !== open.id)
         return "rejected";
-      if (typeof payload.answeredBy === "string" && payload.answeredBy.trim())
+      if (
+        payload.agentActivity === undefined &&
+        typeof payload.questionId === "string" &&
+        typeof payload.answeredBy === "string" &&
+        payload.answeredBy.trim()
+      )
         answeredBy = payload.answeredBy;
     } catch {}
+    if (answeredBy === "unknown" || answeredBy === "linear" || !answeredBy.trim())
+      return "rejected";
     if (recovery) {
       const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);
-      const identifiable = answeredBy !== "linear" && answeredBy !== "unknown";
       const item = getWorkItem(this.db, open.itemId);
       if (item === null || item.state !== "awaiting_input") return "rejected";
       const outcome = immediate(this.db, () => {
-        if (answerQuestion(this.db, open.id, { answer, answeredBy, now: this.now() }) === null)
+        if (
+          answerQuestion(this.db, open.id, {
+            answer,
+            answeredBy,
+            eventKey: event.dedupeKey,
+            now: this.now(),
+          }) === null
+        )
           return "rejected";
-        if (parsed === null || (parsed.kind === "bypass" && !identifiable)) {
+        if (parsed === null) {
           this.openCloseoutQuestion(
             item,
             sessionId,
@@ -1620,10 +1642,18 @@ export class Orchestrator {
       return outcome;
     }
     const outcome = immediate(this.db, () => {
-      if (answerQuestion(this.db, open.id, { answer, answeredBy, now: this.now() }) === null)
-        return "rejected" as const;
       const item = getWorkItem(this.db, open.itemId);
-      if (item?.state === "awaiting_input") applyWorkItemEvent(this.db, item.id, "answer_received");
+      if (item?.state !== "awaiting_input") return "rejected" as const;
+      if (
+        answerQuestion(this.db, open.id, {
+          answer,
+          answeredBy,
+          eventKey: event.dedupeKey,
+          now: this.now(),
+        }) === null
+      )
+        return "rejected" as const;
+      applyWorkItemEvent(this.db, item.id, "answer_received");
       if (redirect) {
         announceLinearTurn(this.db, sessionId, event.dedupeKey, this.now());
         for (const live of this.live.values())
@@ -1632,14 +1662,14 @@ export class Orchestrator {
       }
       if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      if (this.waiters.has(open.id) || item === null) return "answered" as const;
-      enqueueJob(this.db, {
+      if (this.waiters.has(open.id)) return "answered" as const;
+      enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `resume:answer:${open.id}`,
         payload: {
           itemId: open.itemId,
           freshSession: true,
-          handoff: handoffNote({ question: open.body, answer }),
+          handoff: handoffNote({ question: open.body, options: open.options, answer }),
           reason: "answer",
         },
         now: this.now(),
@@ -1651,6 +1681,7 @@ export class Orchestrator {
       this.waiters.delete(open.id);
       waiter?.(answer);
     }
+    await this.flush();
     return outcome;
   }
 

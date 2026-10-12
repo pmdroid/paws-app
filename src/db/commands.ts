@@ -49,6 +49,10 @@ export function applyLinearCommand(
       return { applied: false };
     }
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
+    db.run(
+      "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status = 'open' AND cancelled_at IS NULL",
+      [now, item.id],
+    );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     cancelOpenJobs(db, { itemId: item.id, reason: command.type, now });
     const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId) ?? item.id;

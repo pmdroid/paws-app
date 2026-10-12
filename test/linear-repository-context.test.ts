@@ -208,7 +208,9 @@ test.each(["answer", "artifact", "clarify", "repository_choice", "repository_fre
           activityId: "clarification",
           body: "Explain the repository source",
           payload: JSON.stringify({ agentActivity: { userId: "human" } }),
-          updatedAtMs: 2,
+          updatedAtMs: Date.now() + 1,
+          activityCreatedAtMs: Date.now() + 1,
+          actorId: "human",
         });
       }
       if (repositoryChoice) {
@@ -228,7 +230,9 @@ test.each(["answer", "artifact", "clarify", "repository_choice", "repository_fre
           activityId: "repository-answer",
           body: scenario === "repository_freeform" ? "Use app, not other." : "2",
           payload: JSON.stringify({ agentActivity: { userId: "human" } }),
-          updatedAtMs: 2,
+          updatedAtMs: Date.now() + 1,
+          activityCreatedAtMs: Date.now() + 1,
+          actorId: "human",
         });
         expect(getLinearSessionGeneration(db, "session")).toBe(0);
       }

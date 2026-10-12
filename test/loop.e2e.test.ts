@@ -81,9 +81,11 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
   const outbox = new OutboxDispatcher(db, systemClock);
   const results = new Map<string, string>();
   let scripts = 0;
+  const implementationLaunches: string[] = [];
   const repository = { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare };
   const selectedRepositories: unknown[] = [];
   const launch: AgentLaunch = (input) => {
+    if (input.purpose === "implement") implementationLaunches.push(sourceIdentifier(input.itemId));
     scripts += 1;
     const scriptPath = path.join(layout.root, `script-${scripts}.json`);
     const resultPath = path.join(layout.root, `result-${scripts}.json`);
@@ -270,6 +272,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     expect(github.opened[0]?.body).toContain("Closeout:");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
     expect(github.merged).toHaveLength(2);
+    expect(implementationLaunches).toEqual(["ENG-2", "ENG-3"]);
     expect(uploadedDuringCode).toBe(true);
     expect(inputDownloads).toBe(1);
     const inputTrace = JSON.parse(await readFile(results.get("implement:ENG-2")!, "utf8")) as {
@@ -442,6 +445,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
             sessionId: question.issueId,
             issueId: question.issueId,
             activityId: null,
+            actorId: answer.answeredBy,
             body: answer.answer,
             signal: null,
             updatedAtMs: Date.now(),
@@ -1641,6 +1645,7 @@ function linearEvent(
     sessionId: "ses_1",
     issueId,
     activityId: action === "prompted" ? "act-1" : null,
+    actorId: action === "prompted" ? "human-1" : null,
     body,
     signal,
     updatedAtMs: Date.now(),

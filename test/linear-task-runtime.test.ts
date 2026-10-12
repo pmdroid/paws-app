@@ -33,6 +33,7 @@ function event(): AcceptedLinearEvent {
     sessionId: "session",
     issueId: "parent",
     activityId: null,
+    actorId: "human",
     body: null,
     signal: null,
     updatedAtMs: Date.now(),

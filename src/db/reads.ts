@@ -64,7 +64,7 @@ export function listOpenQuestions(db: Database): OpenQuestionRecord[] {
     .query<QuestionSql, []>(
       `SELECT id, item_id, run_id, session_id, body, options, created_at
        FROM question
-       WHERE status = 'open'
+       WHERE status = 'open' AND cancelled_at IS NULL
        ORDER BY created_at, id`,
     )
     .all()

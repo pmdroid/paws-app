@@ -57,6 +57,8 @@ function event(body: string | null = null): AcceptedLinearEvent {
     body,
     signal: null,
     updatedAtMs: 2_000,
+    actorId: "human",
+    activityCreatedAtMs: 2_000,
     payload: JSON.stringify({ answeredBy: "human" }),
   };
 }

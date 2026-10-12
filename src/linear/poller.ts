@@ -8,7 +8,7 @@ import type {
   PolledIssue,
   PolledSession,
 } from "./catchup";
-import { activityKey, type AcceptedLinearEvent } from "./events";
+import { activityKey, promptMetadata, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
 
 /** Poll while a work item is open or a question is unanswered. */
@@ -39,7 +39,10 @@ export function linearWorkIsHot(db: Database): boolean {
   ) {
     return true;
   }
-  return count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open'") > 0;
+  return (
+    count(db, "SELECT COUNT(*) AS n FROM question WHERE status = 'open' AND cancelled_at IS NULL") >
+    0
+  );
 }
 
 export function sleepGapMs(input: {
@@ -366,6 +369,8 @@ function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
     updatedAtMs: activity.updatedAtMs,
     payload: {
       activityId: activity.id,
+      actorId: activity.actorId ?? null,
+      activityCreatedAtMs: activity.activityCreatedAtMs ?? null,
       sessionId: activity.sessionId,
       body: activity.body,
       signal: activity.signal,
@@ -396,6 +401,7 @@ function inboxEvent(input: {
     signal: input.signal,
     updatedAtMs: input.updatedAtMs,
     payload: JSON.stringify(input.payload),
+    ...promptMetadata(JSON.stringify(input.payload)),
   };
 }
 
