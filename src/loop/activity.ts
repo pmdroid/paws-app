@@ -188,9 +188,7 @@ function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
     if (data !== null) tool.terminalOutput = (tool.terminalOutput + data).slice(0, 64 * 1024);
   }
   if ((tool.status === "completed" || tool.status === "failed") && tool.terminalOutput)
-    tool.result = publicToolText(
-      `${tool.status === "failed" ? "Failed.\n\n" : ""}${tool.terminalOutput}`,
-    );
+    tool.result = publicToolText(tool.terminalOutput);
   return tool;
 }
 
