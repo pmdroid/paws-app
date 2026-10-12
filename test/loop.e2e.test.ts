@@ -18,6 +18,7 @@ import {
   listWorkItems,
   OutboxDispatcher,
   getWorkItem,
+  getConfirmedRemoteMerge,
   enqueueJob,
   listJobs,
   listCloseoutRecoveries,
@@ -1871,4 +1872,127 @@ function taskPath(db: Database, identifier: string): string {
     .get(identifier);
   if (!row) throw new Error("Fixture task missing");
   return itemPathId(getWorkItem(db, row.id)!);
+}
+
+for (const race of ["token", "merge", "followup"] as const) {
+  test(`Stop during GitHub ${race} publication preserves verified external truth`, async () => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "publication",
+        identifier: "ENG-50",
+        title: "Guard publication",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const github = createFakeGitHub();
+    const original = githubClient(layout.bare, github);
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let sequence = 0;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        tokenProvider: {
+          mode: "oauth",
+          async tokenFor(purpose) {
+            if (race === "token" && purpose === "push") {
+              reached.resolve();
+              await release.promise;
+            }
+            return "synthetic-token";
+          },
+        },
+        client: {
+          async request(request) {
+            const response = await original.request(request);
+            if (race !== "token" && request.method === "PUT") {
+              reached.resolve();
+              await release.promise;
+            }
+            return response;
+          },
+        },
+      },
+      launch(input) {
+        const script = path.join(layout.root, `publication-${++sequence}.json`);
+        writeFileSync(
+          script,
+          JSON.stringify({
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+            steps:
+              input.purpose === "review"
+                ? emptyReview().steps
+                : [writeOk(input.worktree), { type: "end" }],
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", script], env: process.env };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "publication"));
+      await jobs.tick();
+      const item = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
+      expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
+      const publication = jobs.tick();
+      await reached.promise;
+      const stopped = orchestrator.onLinearEvent(
+        race === "followup"
+          ? linearEvent("prompted", "Also implement a different follow-up", null, "publication")
+          : linearEvent("prompted", null, "stop"),
+      );
+      if (race !== "followup")
+        for (let i = 0; i < 1_000 && getWorkItem(db, item.id)?.state !== "cancelled"; i++)
+          await Bun.sleep(1);
+      if (race !== "followup") expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
+      else await Bun.sleep(10);
+      release.resolve();
+      await publication;
+      await stopped;
+      expect(getWorkItem(db, item.id)?.state).toBe(race === "followup" ? "merged" : "cancelled");
+      if (race === "followup") {
+        const items = db
+          .query<{ id: string; state: string }, []>("SELECT id, state FROM work_item")
+          .all();
+        expect(items).toHaveLength(2);
+        expect(items.find((entry) => entry.id !== item.id)?.state).toBe("queued");
+      }
+      expect(tracker.statuses.some((status) => status.stateType === "completed")).toBe(false);
+      if (race === "token") {
+        expect(github.opened).toEqual([]);
+        expect(github.merged).toEqual([]);
+        expect(getConfirmedRemoteMerge(db, item.id)).toBeNull();
+      } else {
+        expect(github.merged).toHaveLength(1);
+        const sha = (
+          await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
+        ).stdout.trim();
+        expect(getConfirmedRemoteMerge(db, item.id)).toMatchObject({
+          repositoryOwner: "pmdroid",
+          repositoryName: "paws-demo",
+          pullNumber: 1,
+          mergeSha: sha,
+        });
+      }
+    } finally {
+      release.resolve();
+      await orchestrator.shutdown();
+      db.close();
+      await layout.cleanup();
+    }
+  }, 30_000);
 }

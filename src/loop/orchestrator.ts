@@ -41,6 +41,8 @@ import {
 } from "../core";
 import {
   getTaskMode,
+  getConfirmedRemoteMerge,
+  recordConfirmedRemoteMerge,
   getTaskModeGeneration,
   getLinearSessionGeneration,
   getLinearSession,
@@ -145,6 +147,7 @@ import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
+import { guardGitHubPublication } from "./publication";
 import { classifyTask } from "./task-classifier";
 import {
   interpretRepositoryAnswer,
@@ -206,7 +209,14 @@ export class Orchestrator {
   private readonly waiters = new Map<string, AnswerWaiter>();
   private readonly live = new Map<
     string,
-    { itemId: string; controller: AbortController; done: Promise<void>; finish(): void }
+    {
+      itemId: string;
+      sessionId: string | null;
+      generation: number;
+      controller: AbortController;
+      done: Promise<void>;
+      finish(): void;
+    }
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
   private readonly sessionEvents = new Map<string, Promise<void>>();
@@ -1345,18 +1355,43 @@ export class Orchestrator {
       item.state === "completed"
     )
       return;
+    if (getConfirmedRemoteMerge(this.db, item.id)) {
+      if (item.state === "merge_queue") {
+        applyWorkItemEvent(this.db, item.id, "merge_accepted");
+        this.pump();
+      }
+      return;
+    }
     const repository = this.repositoryForItem(item);
-    const github = repository === null ? null : this.githubForRepository(repository);
+    const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
     if (
       repository === null ||
       repository === undefined ||
-      github === null ||
-      github === undefined
+      configuredGitHub === null ||
+      configuredGitHub === undefined
     ) {
       this.fail(item, "no_github", "GitHub App is not configured.");
       return;
     }
     if (item.state !== "merge_queue") return;
+    const live = this.live.get(`operation:${item.id}`);
+    if (!live) throw new Error("GitHub publication has no owned operation.");
+    const github = guardGitHubPublication({
+      github: configuredGitHub,
+      repository,
+      signal: live.controller.signal,
+      onCleanupFailure: () => {
+        const stored = getConversation(this.db, item.id);
+        saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
+      },
+      isCurrent: () =>
+        !this.stopped(item.id) &&
+        (live.sessionId === null ||
+          getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
+      assert: async () => {
+        await this.taskAccess(item)?.assert(item, live.controller.signal);
+      },
+    });
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
@@ -1381,10 +1416,12 @@ export class Orchestrator {
       repo: repository.repo,
       title: item.title,
       client: github.client,
+      gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
     if (this.stopped(item.id)) return;
+    if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!published.published) {
       this.fail(item, "publish", published.reason);
       return;
@@ -1410,6 +1447,7 @@ export class Orchestrator {
       installationId: github.installationId,
       privateKeyPem: github.privateKeyPem,
       client: github.client,
+      gitExec: github.gitExec,
       ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
@@ -1441,11 +1479,22 @@ export class Orchestrator {
         };
       },
     });
+    if (merged.merged)
+      recordConfirmedRemoteMerge(this.db, {
+        itemId: item.id,
+        repositoryOwner: repository.owner,
+        repositoryName: repository.repo,
+        pullNumber: published.pull.number,
+        pullUrl: published.pull.url,
+        mergeSha: merged.sha ?? null,
+        confirmedAt: this.now(),
+      });
     if (this.stopped(item.id)) {
       if (merged.merged && getWorkItem(this.db, item.id)?.state === "merge_queue")
         applyWorkItemEvent(this.db, item.id, "merge_accepted");
       return;
     }
+    if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!merged.merged) {
       if (closeoutFailure !== null) {
         const failure = closeoutFailure as CloseoutVerdict;
@@ -1992,8 +2041,12 @@ export class Orchestrator {
 
   private beginLive(itemId: string, key: string) {
     let finish!: () => void;
+    const item = getWorkItem(this.db, itemId);
+    const sessionId = item === null ? null : this.activitySession(item);
     const live = {
       itemId,
+      sessionId,
+      generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller: new AbortController(),
       done: new Promise<void>((resolve) => {
         finish = resolve;
