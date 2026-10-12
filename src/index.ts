@@ -152,9 +152,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     runtime.linearMode === "agent-session" ? "agent-session" : "comments";
   const inbox = createInboxStore(db);
 
-  const followUp = async (event: AcceptedLinearEvent): Promise<void> => {
+  const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
-    await orchestrator.onLinearEvent(event);
+    return orchestrator.onLinearEvent(event);
   };
   const submit = (command: LinearCommand): void => {
     if (orchestrator === null) {
@@ -331,6 +331,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         tracker,
         linearTaskModes: true,
         linearAccess: linearTaskAccess ?? undefined,
+        ...(workspace
+          ? {
+              authorizeLinearEvent: async (event) =>
+                (await workspace.access).authorizeLinearEvent(event),
+            }
+          : {}),
         githubAuth:
           channel === "agent-session"
             ? createLinearGitHubAuth({

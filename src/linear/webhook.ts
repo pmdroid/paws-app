@@ -34,7 +34,7 @@ export type SignatureInput = {
 
 export type LinearWebhookDeps = {
   store: InboxStore;
-  onEvent?: (event: AcceptedLinearEvent) => void | Promise<void>;
+  onEvent?: (event: AcceptedLinearEvent) => void | boolean | Promise<void | boolean>;
   now?: () => number;
 };
 

@@ -224,6 +224,7 @@ export {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceMember,
+  workspaceLinearMember,
 } from "./workspace";
 export type {
   WorkspaceMember,

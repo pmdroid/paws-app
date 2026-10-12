@@ -84,6 +84,13 @@ export function workspaceMember(
   return { ...row, active: row.active === 1, teamIds: teams.map((team) => team.team_id) };
 }
 
+export function workspaceLinearMember(db: Database, workspaceId: string, linearUserId: string) {
+  const user = db
+    .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+    .get(linearUserId);
+  return user === null ? null : workspaceMember(db, workspaceId, user.id);
+}
+
 export function syncWorkspaceMember(
   db: Database,
   input: {

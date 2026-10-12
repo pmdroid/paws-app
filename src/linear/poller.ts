@@ -100,7 +100,7 @@ export function createTimerSleeper(): Sleeper {
 export function startCatchUpPoller(options: {
   source: IntakePollSource;
   store: InboxStore;
-  onEvent: (event: AcceptedLinearEvent) => Promise<void> | void;
+  onEvent: (event: AcceptedLinearEvent) => Promise<void | boolean> | void | boolean;
   hot?: () => boolean;
   submitCommand?: (command: LinearCommand) => void;
   db?: Database;
@@ -178,8 +178,8 @@ export function startCatchUpPoller(options: {
   }
 
   async function deliver(event: AcceptedLinearEvent): Promise<void> {
-    await options.onEvent(event);
-    if (event.signal === "stop") submitStops(event);
+    const accepted = await options.onEvent(event);
+    if (accepted !== false && event.signal === "stop") submitStops(event);
     options.store.markHandled(event.dedupeKey);
   }
 
@@ -348,14 +348,19 @@ function activityEvent(activity: PolledActivity): AcceptedLinearEvent | null {
   if (stop) {
     return inboxEvent({
       dedupeKey: `activity:${activity.id}:stop`,
-      action: "other",
+      action: "prompted",
       sessionId: activity.sessionId,
       issueId: activity.issueId,
       activityId: activity.id,
       body: activity.body,
       signal: "stop",
       updatedAtMs: activity.updatedAtMs,
-      payload: { kind: "stop", reason: "agent" },
+      payload: {
+        kind: "stop",
+        reason: "agent",
+        actorId: activity.actorId ?? null,
+        activityCreatedAtMs: activity.activityCreatedAtMs ?? null,
+      },
     });
   }
   return inboxEvent({
