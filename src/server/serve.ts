@@ -2,6 +2,7 @@ import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
+import type { PublicTls } from "../deployment";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
 import {
@@ -25,6 +26,7 @@ export type ServerOptions = {
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   hostname?: string;
   port?: number;
+  tls?: PublicTls;
   linearWebhookSecret?: string | null;
   githubWebhookSecret?: string | null;
   githubWebhook?: GitHubWebhook;
@@ -63,6 +65,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   return Bun.serve({
     hostname,
     port,
+    ...(options.tls ? { tls: options.tls } : {}),
     fetch(request) {
       return route(request, {
         slackSigningSecret,
