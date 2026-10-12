@@ -117,3 +117,11 @@ export {
   type StoredLinearSession,
   type StoredLinearTurn,
 } from "./linear-sessions";
+
+export {
+  saveArtifact,
+  markArtifact,
+  listArtifacts,
+  artifactPublicationReady,
+  type StoredArtifact,
+} from "./artifacts";

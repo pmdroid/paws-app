@@ -77,7 +77,12 @@ import {
   type GitHubTokenProvider,
 } from "../github";
 import { intakeDelegatedIssue } from "../intake";
-import type { AcceptedLinearEvent, TrackerAdapter, LinearActivitySnapshot } from "../linear";
+import type {
+  AcceptedLinearEvent,
+  TrackerAdapter,
+  LinearActivitySnapshot,
+  LinearFileTransfer,
+} from "../linear";
 import { parseLinearSessionContext, renderLinearSessionContext } from "../linear";
 import {
   answerQuestion,
@@ -86,6 +91,7 @@ import {
   handoffNote,
   openQuestion,
 } from "../questions";
+import { createLinearArtifactPublisher } from "./artifacts";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -123,6 +129,8 @@ export type OrchestratorOptions = {
   pawsRoot: string;
   home?: string;
   tracker?: TrackerAdapter | null;
+  files?: LinearFileTransfer | null;
+  secretsDir?: string;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   github?: GitHubBinding | null;
@@ -414,6 +422,7 @@ export class Orchestrator {
         home: this.options.home ?? homedir(),
         signal: controller.signal,
         askTeam,
+        publishArtifact: this.artifactPublisher(item),
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
@@ -1265,11 +1274,31 @@ export class Orchestrator {
       .join("\n\n");
   }
 
+  private artifactPublisher(item: WorkItemRecord) {
+    const sessionId = this.activitySession(item);
+    if (
+      !sessionId ||
+      !this.options.files ||
+      !this.options.secretsDir ||
+      isGitHubIssue(item.linearIssueId)
+    )
+      return undefined;
+    return createLinearArtifactPublisher({
+      db: this.db,
+      files: this.options.files,
+      secretsDir: this.options.secretsDir,
+      itemId: item.id,
+      sessionId,
+      now: () => this.now(),
+    });
+  }
+
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
     return {
       pawsRoot: this.options.pawsRoot,
       profiles: this.profileSnapshot(runId),
+      publishArtifact: this.artifactPublisher(item),
       onCandidate: (identity) => this.saveCandidate(runId, identity),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),

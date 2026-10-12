@@ -329,7 +329,7 @@ test("publish_artifact publishes a snapshot through MCP without an ask_team hook
   expect(trace.tools).toEqual(["publish_artifact"]);
   expect(trace.artifact).toEqual({
     ok: true,
-    text: "[shot\\[1\\].png](<https://uploads.example/asset.png>)",
+    text: "![shot\\[1\\].png](<https://uploads.example/asset.png>)",
   });
 });
 

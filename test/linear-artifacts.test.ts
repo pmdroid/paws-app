@@ -1,0 +1,205 @@
+import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { ArtifactSnapshot, PublishArtifactContext } from "../src/acp";
+import {
+  artifactPublicationReady,
+  claimOutboxHeads,
+  enqueueOutbox,
+  insertQueuedItem,
+  listArtifacts,
+  listOutbox,
+  stopOutboxSession,
+} from "../src/db";
+import { createLinearFileTransfer } from "../src/linear";
+import { createLinearArtifactPublisher } from "../src/loop";
+import { tempDb, tempHome } from "./helpers";
+
+const URL = "https://uploads.linear.app/workspace/proof.png";
+const SIGNED = "https://storage.example/upload?signature=private-secret";
+const bytes = new TextEncoder().encode("snapshot bytes");
+const artifact: ArtifactSnapshot = {
+  path: "proof.png",
+  displayName: "proof.png",
+  mimeType: "image/png",
+  sizeBytes: bytes.length,
+  sha256: createHash("sha256").update(bytes).digest("hex"),
+  bytes: new Blob([bytes]),
+};
+const context: PublishArtifactContext = {
+  itemId: "ENG-1",
+  runId: "run-1",
+  worktreePath: "/unused",
+  role: "implementer",
+  signal: new AbortController().signal,
+};
+
+function setup(options: { failAfterUpload?: boolean; fail?: boolean; expired?: boolean } = {}) {
+  const db = tempDb();
+  insertQueuedItem(db, { id: "item", sessionKey: "session" });
+  const secretsDir = join(tempHome(), "secrets");
+  let prepares = 0;
+  let uploads = 0;
+  let stored: Uint8Array | null = null;
+  let lostResponse = options.failAfterUpload;
+  const files = createLinearFileTransfer({
+    client: {
+      async query() {
+        return {
+          fileUpload: {
+            success: true,
+            uploadFile: {
+              uploadUrl: `${SIGNED}&attempt=${++prepares}`,
+              assetUrl: URL,
+              headers: [],
+            },
+          },
+        };
+      },
+    },
+    auth: {
+      async ensureFresh() {
+        return "host-only-token";
+      },
+    },
+    fetch: async (url, request) => {
+      if (request?.method === "PUT") {
+        uploads++;
+        if (options.fail) return new Response(null, { status: 503 });
+        if (options.expired && String(url).includes("attempt=1"))
+          return new Response(null, { status: 403 });
+        stored = new Uint8Array(request.body as Uint8Array);
+        if (lostResponse) {
+          lostResponse = false;
+          throw new Error("lost response private-secret");
+        }
+        return new Response(null, { status: 200 });
+      }
+      return stored === null ? new Response(null, { status: 404 }) : new Response(stored);
+    },
+  });
+  const publisher = () =>
+    createLinearArtifactPublisher({ db, files, secretsDir, itemId: "item", sessionId: "session" });
+  return { db, publisher, secretsDir, prepares: () => prepares, uploads: () => uploads };
+}
+
+test("artifact publication persists immutable bytes privately and a durable inline image", async () => {
+  const env = setup();
+  expect(await env.publisher().publish(artifact, context)).toEqual({
+    url: URL,
+    displayName: "proof.png",
+  });
+  const rows = listArtifacts(env.db, "item");
+  expect(rows[0]?.state).toBe("uploaded");
+  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  expect(JSON.stringify(rows)).not.toContain("private-secret");
+  const directory = join(env.secretsDir, "linear-artifacts");
+  expect((await stat(directory)).mode & 0o777).toBe(0o700);
+  for (const filename of await readdir(directory))
+    expect((await stat(join(directory, filename))).mode & 0o777).toBe(0o600);
+  expect(new Uint8Array(await readFile(join(directory, `${rows[0]!.id}.bytes`)))).toEqual(bytes);
+  expect(listOutbox(env.db, "session")[0]?.payload).toMatchObject({
+    body: `![proof.png](<${URL}>)`,
+  });
+  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
+  expect(env.prepares()).toBe(1);
+  expect(env.uploads()).toBe(1);
+  expect(listOutbox(env.db, "session")).toHaveLength(1);
+  env.db.close();
+});
+
+test("restart reconciles an uploaded asset after losing the PUT response", async () => {
+  const env = setup({ failAfterUpload: true });
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("upload request failed");
+  expect(listArtifacts(env.db, "item")[0]?.state).toBe("failed");
+  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  expect(listOutbox(env.db, "session")).toHaveLength(0);
+  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
+  expect(env.prepares()).toBe(1);
+  expect(env.uploads()).toBe(1);
+  expect(listArtifacts(env.db, "item")[0]?.state).toBe("uploaded");
+  env.db.close();
+});
+
+test("concurrent identical publications share one upload and durable result", async () => {
+  const env = setup();
+  const publisher = env.publisher();
+  const results = await Promise.all([
+    publisher.publish(artifact, context),
+    publisher.publish(artifact, context),
+  ]);
+  expect(results[0]).toEqual(results[1]);
+  expect(env.uploads()).toBe(1);
+  env.db.close();
+});
+
+test("failed uploads remain incomplete and never publish a link", async () => {
+  const env = setup({ fail: true });
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 503");
+  expect(artifactPublicationReady(env.db, "item")).toBe(false);
+  expect(listOutbox(env.db, "session")).toHaveLength(0);
+  env.db.close();
+});
+
+test("Stop fences a captured artifact callback from posting a late success", async () => {
+  const env = setup();
+  const publisher = env.publisher();
+  stopOutboxSession(env.db, "linear", "session", 1);
+  await publisher.publish(artifact, context);
+  expect(listOutbox(env.db, "session")[0]?.status).toBe("dropped");
+  env.db.close();
+});
+
+test("recovery refuses tampered snapshot bytes before a second upload", async () => {
+  const env = setup({ fail: true });
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow();
+  const row = listArtifacts(env.db, "item")[0]!;
+  await writeFile(join(env.secretsDir, "linear-artifacts", `${row.id}.bytes`), "tampered");
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("integrity");
+  expect(env.uploads()).toBe(1);
+  env.db.close();
+});
+
+test("expired restored destinations refresh after confirming the old asset is absent", async () => {
+  const env = setup({ expired: true });
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 403");
+  expect(await env.publisher().publish(artifact, context)).toMatchObject({ url: URL });
+  expect(env.prepares()).toBe(2);
+  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  env.db.close();
+});
+
+test("a successful replacement resolves a failed artifact at the same path", async () => {
+  const options = { fail: true };
+  const env = setup(options);
+  await expect(env.publisher().publish(artifact, context)).rejects.toThrow("HTTP 503");
+  const replacementBytes = new TextEncoder().encode("replacement bytes");
+  const replacement = {
+    ...artifact,
+    sizeBytes: replacementBytes.length,
+    bytes: new Blob([replacementBytes]),
+    sha256: createHash("sha256").update(replacementBytes).digest("hex"),
+  };
+  options.fail = false;
+  await env.publisher().publish(replacement, context);
+  expect(artifactPublicationReady(env.db, "item")).toBe(true);
+  expect(listArtifacts(env.db, "item")).toHaveLength(2);
+  env.db.close();
+});
+
+test("a pending artifact link survives final response and is delivered first", async () => {
+  const env = setup();
+  await env.publisher().publish(artifact, context);
+  enqueueOutbox(env.db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: "session",
+    idempotencyKey: "final",
+    payload: { sessionId: "session", kind: "response", body: "Done" },
+  });
+  const pending = listOutbox(env.db, "session");
+  expect(pending[0]?.status).toBe("pending");
+  expect(claimOutboxHeads(env.db, { now: Date.now() })[0]?.id).toBe(pending[0]?.id);
+  env.db.close();
+});
