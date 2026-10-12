@@ -96,7 +96,7 @@ def validate_identity_separation():
 def prerequisites():
     if os.getuid() != 0:
         raise ValueError("Installation requires root")
-    for path in ("/usr/bin/node", "/usr/bin/git", "/usr/bin/openssl", "/usr/bin/python3", "/usr/bin/flock", "/usr/bin/systemctl", "/usr/bin/systemd-sysusers", "/usr/bin/systemd-tmpfiles"):
+    for path in ("/usr/bin/node", "/usr/bin/git", "/usr/bin/openssl", "/usr/bin/python3", "/usr/bin/flock", "/usr/sbin/runuser", "/usr/bin/env", "/usr/bin/systemctl", "/usr/bin/systemd-sysusers", "/usr/bin/systemd-tmpfiles"):
         resolved = pathlib.Path(path).resolve(strict=True)
         info = resolved.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not info.st_mode & 0o001:
@@ -114,6 +114,10 @@ def prerequisites():
     release.command(["/usr/bin/python3", "--version"])
     if not release.command(["/usr/bin/flock", "--version"]).startswith(b"flock from util-linux "):
         raise ValueError("util-linux flock is required at /usr/bin/flock")
+    if not release.command(["/usr/sbin/runuser", "--version"]).startswith(b"runuser from util-linux "):
+        raise ValueError("util-linux runuser is required at /usr/sbin/runuser")
+    if b"--chdir" not in release.command(["/usr/bin/env", "--help"]):
+        raise ValueError("GNU env with --chdir is required at /usr/bin/env")
     release.command(["/usr/bin/systemctl", "--version"])
     validate_identity_separation()
 
@@ -223,12 +227,14 @@ def install(manifest, artifact, fingerprint):
             raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         accepted = admitted_release(manifest, fingerprint)
-        runtime = BASE / "bin/bun"
-        if runtime.is_symlink():
-            if runtime.lstat().st_uid != 0 or os.readlink(runtime) != "../current/bin/bun":
+        pointers = {"bun": "../current/bin/bun", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
+        for name, target in pointers.items():
+            pointer = BASE / "bin" / name
+            if pointer.is_symlink():
+                if pointer.lstat().st_uid != 0 or os.readlink(pointer) != target:
+                    raise ValueError("Unsafe runtime release pointer")
+            elif pointer.exists():
                 raise ValueError("Unsafe runtime release pointer")
-        elif runtime.exists():
-            raise ValueError("Unsafe runtime release pointer")
         root_directory(BASE)
         root_directory(BASE / "releases")
         with tempfile.TemporaryDirectory(prefix=".install-", dir=BASE / "releases") as temporary:
@@ -259,9 +265,11 @@ def install(manifest, artifact, fingerprint):
                 os.rename(staged, destination)
             sync_directory(destination.parent)
             root_directory(BASE / "bin")
-            if not runtime.is_symlink():
-                runtime.symlink_to("../current/bin/bun")
-                sync_directory(runtime.parent)
+            for name, target in pointers.items():
+                pointer = BASE / "bin" / name
+                if not pointer.is_symlink():
+                    pointer.symlink_to(target)
+                    sync_directory(pointer.parent)
             assets = unpacked / "deploy/linux"
             deployed_assets = destination / "deploy/linux"
             root_directory(deployed_assets)
@@ -308,7 +316,9 @@ def install(manifest, artifact, fingerprint):
             release.command(["/usr/bin/systemctl", "daemon-reload"])
             release.command(["/usr/bin/systemctl", "enable", "paws-runner-broker.socket"])
             write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
-        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "verifierIdentity": verifier_identity}
+        login_prefix = "/usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
+        login_commands = {"claude": login_prefix + "/opt/paws-runner/bin/claude auth login", "codex": login_prefix + "/opt/paws-runner/bin/codex login --device-auth"}
+        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "verifierIdentity": verifier_identity, "providerLoginCommands": login_commands}
     finally:
         os.close(lock)
 
