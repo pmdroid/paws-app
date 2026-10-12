@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConversation, insertQueuedItem, migrate, openDatabase, saveConversation } from "../db";
 import { tmpdir } from "node:os";
@@ -38,11 +38,18 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     },
   }).catch((error: unknown) => error);
   try {
+    let prompts: unknown[] | undefined;
     for (let i = 0; i < 300; i++) {
-      if (existsSync(trace) && JSON.parse(readFileSync(trace, "utf8")).prompts?.length) break;
+      try {
+        const saved = JSON.parse(readFileSync(trace, "utf8"));
+        if (Array.isArray(saved.prompts) && saved.prompts.length) {
+          prompts = saved.prompts;
+          break;
+        }
+      } catch {}
       await Bun.sleep(5);
     }
-    expect(JSON.parse(readFileSync(trace, "utf8")).prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(1);
     const owner = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; anchor: number };
     pid = owner.pid;
     expect(owner.anchor).toBeGreaterThan(0);
