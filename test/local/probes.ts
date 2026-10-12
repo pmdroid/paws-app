@@ -1,3 +1,4 @@
+import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -34,6 +35,7 @@ export async function probeBoundaries(
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
   await probeHostAcp(root, observe);
+  await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
