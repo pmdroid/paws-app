@@ -170,10 +170,14 @@ export class GitHubAuthQuestions {
   private async start(previous: AuthRequest): Promise<void> {
     if (this.active.has(previous.question_id) || !this.valid(previous)) return;
     if (previous.github_account_id === null) return;
-    this.db.run("UPDATE linear_github_auth SET generation = generation + 1 WHERE question_id = ?", [
-      previous.question_id,
-    ]);
-    const request = this.read(previous.question_id)!;
+    const request = immediate(this.db, () => {
+      this.db.run(
+        "UPDATE linear_github_auth SET generation = generation + 1 WHERE question_id = ?",
+        [previous.question_id],
+      );
+      this.dropPrompt(previous.question_id);
+      return this.read(previous.question_id)!;
+    });
     const controller = new AbortController();
     this.active.set(request.question_id, controller);
     const timeout = setTimeout(
@@ -212,7 +216,7 @@ export class GitHubAuthQuestions {
         .then((account) => {
           if (!controller.signal.aborted) return this.complete(request, account, controller.signal);
         })
-        .catch(() => undefined)
+        .catch(() => this.failed(request))
         .finally(() => {
           clearTimeout(timeout);
           if (this.active.get(request.question_id) === controller)
@@ -220,8 +224,38 @@ export class GitHubAuthQuestions {
         });
     } catch {
       clearTimeout(timeout);
-      this.active.delete(request.question_id);
+      this.failed(request);
+      if (this.active.get(request.question_id) === controller)
+        this.active.delete(request.question_id);
     }
+  }
+
+  private failed(request: AuthRequest): void {
+    if (!this.valid(request)) return;
+    immediate(this.db, () => {
+      const question = getQuestion(this.db, request.question_id)!;
+      this.dropPrompt(question.id);
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: question.sessionId,
+        idempotencyKey: `github-auth:retry:${question.id}:${request.generation}`,
+        payload: {
+          id: crypto.randomUUID(),
+          questionId: question.id,
+          sessionId: question.sessionId,
+          body: "GitHub sign-in could not finish. Reply here to try again.",
+        },
+        now: this.now(),
+      });
+    });
+  }
+
+  private dropPrompt(questionId: string): void {
+    this.db.run(
+      "UPDATE outbox SET status = 'dropped',locked_by = NULL,locked_until = NULL WHERE status IN ('pending','dead') AND op = 'elicitation' AND json_extract(payload,'$.questionId') = ?",
+      [questionId],
+    );
   }
 
   private async complete(
@@ -287,10 +321,7 @@ export class GitHubAuthQuestions {
         [request.question_id, request.generation],
       );
       if (expired.changes === 0) return;
-      this.db.run(
-        "UPDATE outbox SET status = 'dropped',locked_by = NULL,locked_until = NULL WHERE status IN ('pending','dead') AND op = 'elicitation' AND json_extract(payload,'$.questionId') = ?",
-        [request.question_id],
-      );
+      this.dropPrompt(request.question_id);
     });
     this.active.get(request.question_id)?.abort();
     this.active.delete(request.question_id);

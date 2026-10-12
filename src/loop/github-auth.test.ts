@@ -52,6 +52,63 @@ function fixture(phase: "initial" | "publication" = "initial", path = ":memory:"
 const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("verified GitHub authentication questions", () => {
+  test.each(["begin", "completion"] as const)(
+    "failed %s publishes a durable retry question without resuming",
+    async (phase) => {
+      const f = fixture();
+      const begin = f.host.begin.bind(f.host);
+      if (phase === "begin")
+        f.host.begin = async () => {
+          throw new Error("Private provider failure details");
+        };
+      await f.auth.ensure(f.item, "initial", f.signal);
+      if (phase === "completion") {
+        f.host.challenges[0]!.fail(new Error("Private provider failure details"));
+        await settled();
+      }
+      const question = findOpenQuestion(f.db, "session")!;
+      const pending = listOutbox(f.db).filter((row) => row.status === "pending");
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.payload).toMatchObject({
+        questionId: question.id,
+        sessionId: "session",
+        body: "GitHub sign-in could not finish. Reply here to try again.",
+      });
+      expect(JSON.stringify(pending)).not.toContain("Private provider");
+      expect(getQuestion(f.db, question.id)?.status).toBe("open");
+      expect(getWorkItem(f.db, "item")?.state).toBe("awaiting_input");
+      expect(listJobs(f.db)).toEqual([]);
+      f.host.begin = begin;
+      await f.auth.retry(question.id, "another-user");
+      expect(listOutbox(f.db).filter((row) => row.status === "pending")).toEqual(pending);
+      await f.auth.retry(question.id, "linear-owner");
+      expect(f.host.challenges.at(-1)?.acceptAccount(7)).toBe(true);
+      expect(findOpenQuestion(f.db, "session")?.id).toBe(question.id);
+      expect(listJobs(f.db)).toEqual([]);
+    },
+  );
+
+  test.each(["stop", "close"] as const)(
+    "a late provider failure after %s creates no retry delivery",
+    async (action) => {
+      const f = fixture();
+      await f.auth.ensure(f.item, "initial", f.signal);
+      if (action === "close") f.auth.close();
+      else
+        submitCommand(f.db, new CommandBus(), {
+          type: "stop",
+          source: "linear",
+          itemId: "item",
+          requestedAt: f.clock.now(),
+        });
+      const before = listOutbox(f.db);
+      f.host.challenges[0]!.fail(new Error("Provider failed after cancellation"));
+      await settled();
+      expect(listOutbox(f.db)).toEqual(before);
+      expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toEqual([]);
+    },
+  );
+
   test("requires the verified task owner and previous host account", async () => {
     const f = fixture();
     f.host.actorId = null;

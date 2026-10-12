@@ -9,6 +9,7 @@ export class FakeHostGitHubAuth implements HostGitHubAuth {
     signal: AbortSignal;
     acceptAccount: (id: number) => boolean;
     complete: (account: VerifiedGitHubAccount) => void;
+    fail: (error: Error) => void;
   }[] = [];
 
   owner(_item: WorkItemRecord): string | null {
@@ -29,7 +30,7 @@ export class FakeHostGitHubAuth implements HostGitHubAuth {
     input: { signal: AbortSignal; acceptAccount: (id: number) => boolean },
   ) {
     const completed = Promise.withResolvers<VerifiedGitHubAccount>();
-    this.challenges.push({ ...input, complete: completed.resolve });
+    this.challenges.push({ ...input, complete: completed.resolve, fail: completed.reject });
     return {
       url: "https://github.example/authorize?state=fake-csrf-state",
       completed: completed.promise.then((account) => {
