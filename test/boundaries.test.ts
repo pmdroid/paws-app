@@ -27,6 +27,7 @@ const MODULES = [
   "install",
   "setup",
   "auth",
+  "workspace",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -77,6 +78,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials"],
+  workspace: ["db", "linear"],
 };
 
 describe("module boundaries", () => {

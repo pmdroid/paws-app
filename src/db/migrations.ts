@@ -729,4 +729,73 @@ CREATE TABLE linear_issue_context (
 ) STRICT;
 `,
   },
+  {
+    id: "023_workspace_access",
+    sql: `
+CREATE TABLE workspace (
+  id TEXT PRIMARY KEY,
+  linear_organization_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE workspace_user (
+  id TEXT PRIMARY KEY,
+  linear_user_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL
+) STRICT;
+CREATE TABLE workspace_member (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  role TEXT NOT NULL CHECK(role IN ('owner','admin','member','observer')),
+  source TEXT NOT NULL CHECK(source IN ('linear','manual')),
+  active INTEGER NOT NULL CHECK(active IN (0,1)),
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY(workspace_id,user_id)
+) STRICT;
+CREATE TABLE workspace_user_team (
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  PRIMARY KEY(workspace_id,user_id,team_id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+CREATE TABLE workspace_repository (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  repository TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  PRIMARY KEY(workspace_id,repository,team_id)
+) STRICT;
+CREATE TABLE workspace_session (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  csrf_token TEXT NOT NULL,
+  authenticated_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE workspace_bootstrap (
+  token_hash TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER
+) STRICT;
+CREATE TABLE workspace_oauth_request (
+  state_hash TEXT PRIMARY KEY,
+  browser_hash TEXT NOT NULL,
+  verifier TEXT NOT NULL,
+  bootstrap_hash TEXT,
+  expires_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE workspace_access_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace_id TEXT REFERENCES workspace(id),
+  user_id TEXT REFERENCES workspace_user(id),
+  action TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

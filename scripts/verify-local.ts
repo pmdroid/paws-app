@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const mode = process.argv[2] ?? "check";
-if (!["check", "audit", "serve"].includes(mode)) {
-  throw new Error("Usage: bun run verify:local [check|audit|serve]");
+if (!["check", "audit", "serve", "workspace"].includes(mode)) {
+  throw new Error("Usage: bun run verify:local [check|audit|serve|workspace]");
 }
 const repo = resolve(import.meta.dir, "..");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "paws-verify-")));
@@ -44,8 +44,10 @@ const commands = [
         ["run", "build:status"],
         ["run", "links"],
       ]
-    : [["run", "build:status"]]),
-  ["test/local/instance.ts", mode],
+    : mode === "workspace"
+      ? []
+      : [["run", "build:status"]]),
+  [mode === "workspace" ? "test/local/workspace-instance.ts" : "test/local/instance.ts", mode],
 ];
 const gitHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo, env });
 const gitDiff = Bun.spawnSync(["git", "diff", "HEAD"], { cwd: repo, env });
