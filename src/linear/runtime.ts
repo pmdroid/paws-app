@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { LinearCommand } from "../core";
 import { acknowledgeNewSession } from "./acknowledge";
+import { createLinearAccessReads, type LinearAccessReads } from "./access";
 import type { TrackerAdapter } from "./adapter";
 import type { ProgressUpdate } from "./types";
 import { createIntakePollSource } from "./catchup";
@@ -40,6 +41,7 @@ export type OpenLinear = {
   tracker: TrackerAdapter | null;
   files: LinearFileTransfer | null;
   issueLifecycle: LinearIssueLifecycle | null;
+  access: LinearAccessReads | null;
   start(port: number): LinearRunning;
 };
 
@@ -82,6 +84,7 @@ export function openLinear(options: {
   });
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
   const tracker = client === null ? null : createLinearTracker(client);
+  const access = client === null ? null : createLinearAccessReads(client, settings.clientId);
   const issueLifecycle = client === null ? null : createLinearIssueLifecycle(client);
   const files =
     client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
@@ -93,6 +96,7 @@ export function openLinear(options: {
     tracker,
     files,
     issueLifecycle,
+    access,
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;

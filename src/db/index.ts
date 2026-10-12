@@ -170,6 +170,7 @@ export {
   isLinearAppRevoked,
   changeLinearTeamAccess,
   getLinearSessionAccess,
+  getLinearTeamAccess,
   getLinearSessionInstallation,
   getLinearInstallationPermissions,
   listLinearInstallationRevocations,
@@ -178,3 +179,10 @@ export {
   type LinearInstallationScope,
   type LinearSessionAccess,
 } from "./linear-access";
+
+export {
+  getLinearTaskDelegation,
+  linearSessionsForDelegatedTeams,
+  requireLinearTaskDelegation,
+  type LinearTaskDelegation,
+} from "./linear-delegation";

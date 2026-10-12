@@ -669,4 +669,17 @@ CREATE TABLE linear_github_auth (
 CREATE INDEX linear_github_auth_pending ON linear_github_auth (item_id, status);
 `,
   },
+  {
+    id: "017_linear_task_delegation",
+    sql: `
+CREATE TABLE linear_task_delegation (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  issue_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  app_user_id TEXT NOT NULL,
+  human_actor_id TEXT,
+  PRIMARY KEY (item_id, issue_id)
+) STRICT;
+`,
+  },
 ];

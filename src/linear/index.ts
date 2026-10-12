@@ -45,6 +45,7 @@ export type {
   LinearIssueLifecycle,
   LinearIssueOwnership,
   StartLinearCodeIssue,
+  StartLinearCodeIssueOptions,
 } from "./issue-lifecycle";
 export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxStore } from "./inbox";
@@ -117,3 +118,10 @@ export type {
   LinearActivityContent,
   LinearSessionStatus,
 } from "./history";
+
+export {
+  createLinearAccessReads,
+  type LinearAccessReads,
+  type LinearSessionInstallation,
+} from "./access";
+export { createFakeLinearAccessReads } from "./fake-access";

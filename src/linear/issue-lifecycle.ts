@@ -16,11 +16,15 @@ export type StartLinearCodeIssue = {
   actorId: string | null;
 };
 
+export type StartLinearCodeIssueOptions = TrackerRequestOptions & {
+  beforeStart?: (issue: LinearIssueOwnership) => void;
+};
+
 export interface LinearIssueLifecycle {
   inspect(issueId: string, options?: TrackerRequestOptions): Promise<LinearIssueOwnership>;
   startCodeIssue(
     input: StartLinearCodeIssue,
-    options?: TrackerRequestOptions,
+    options?: StartLinearCodeIssueOptions,
   ): Promise<{ issue: LinearIssueOwnership; eligible: boolean }>;
 }
 
@@ -82,6 +86,9 @@ export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLif
       if (issue.teamId !== first.teamId) throw new Error("The Linear issue changed teams.");
       if (issue.stateType !== "started" && stateId === null)
         throw new Error("The Linear issue changed workflow state.");
+      options?.signal?.throwIfAborted();
+      options?.beforeStart?.(issue);
+      options?.signal?.throwIfAborted();
       const change: { stateId?: string; delegateId?: string } = {};
       if (issue.stateType !== "started" && stateId !== null) change.stateId = stateId;
       if (issue.delegateId === null) change.delegateId = input.appUserId;
