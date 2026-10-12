@@ -83,6 +83,7 @@ const ICONS = {
 
 const NAV = [
   { view: "overview", label: "Overview", icon: "overview" },
+  { view: "runners", label: "Runners", icon: "run" },
   { view: "settings", label: "Settings", icon: "settings" },
 ] as const;
 
@@ -97,6 +98,7 @@ const WORK_VIEWS = [
 
 const CRUMB: Record<Route["view"], string> = {
   overview: "Overview",
+  runners: "Runners",
   epics: "Epics",
   runs: "Agent runs",
   sessions: "Linear conversations",
@@ -114,11 +116,13 @@ export function render(model: RenderModel): Rendered {
     top: renderTop(model),
     banner: renderBanner(model),
     content:
-      model.route.view === "settings"
-        ? '<div id="agent-settings" class="agent-settings"></div>'
-        : snapshot && model.phase !== "loading"
-          ? renderWorkNavigation(model) + renderView(snapshot, model)
-          : renderPending(model),
+      model.route.view === "runners"
+        ? '<div id="runner-settings"></div>'
+        : model.route.view === "settings"
+          ? '<div id="agent-settings" class="agent-settings"></div>'
+          : snapshot && model.phase !== "loading"
+            ? renderWorkNavigation(model) + renderView(snapshot, model)
+            : renderPending(model),
     tabbar: renderTabbar(model),
     title,
   };
@@ -130,7 +134,10 @@ function renderSide(model: RenderModel): string {
   const workspace = project?.workspace ? `${esc(project.workspace)} · ` : "";
   const counts = snapshot ? navCounts(snapshot) : null;
   const links = NAV.map((item) => {
-    const active = model.route.view === "settings" ? "settings" : "overview";
+    const active =
+      model.route.view === "settings" || model.route.view === "runners"
+        ? model.route.view
+        : "overview";
     const on = active === item.view ? " on" : "";
     const count = counts ? counts[item.view] : 0;
     const hot = item.view === "overview" && count > 0 ? " hot" : "";
@@ -151,7 +158,7 @@ function renderTop(model: RenderModel): string {
   const pill = sourcePill(model);
   const clockText = model.snapshot ? clock(model.snapshot.generatedAt) : "";
   return `<button class="btn ghost hamb" type="button" data-action="drawer" aria-label="Open menu">☰</button>
-    <div class="crumbs"><span class="c-root">${esc(name)} <span class="dim">/</span></span>${model.route.view !== "overview" && model.route.view !== "settings" ? '<a href="#/">Overview</a> <span class="dim">/</span> ' : ""}<b>${crumb}</b>${param ? ` <span class="c-param"><span class="dim">/</span> <span class="mono">${esc(param)}</span></span>` : ""}</div>
+    <div class="crumbs"><span class="c-root">${esc(name)} <span class="dim">/</span></span>${model.route.view !== "overview" && model.route.view !== "settings" && model.route.view !== "runners" ? '<a href="#/">Overview</a> <span class="dim">/</span> ' : ""}<b>${crumb}</b>${param ? ` <span class="c-param"><span class="dim">/</span> <span class="mono">${esc(param)}</span></span>` : ""}</div>
     ${pill}
     <div class="sp"></div>
     <span class="clock">${clockText}</span>
@@ -190,11 +197,15 @@ function renderTabbar(model: RenderModel): string {
   const counts = model.snapshot ? navCounts(model.snapshot) : null;
   const tabs = [
     ["overview", "Overview", "overview"],
+    ["runners", "Runners", "run"],
     ["settings", "Settings", "settings"],
   ] as const;
   return tabs
     .map(([view, label, icon]) => {
-      const active = model.route.view === "settings" ? "settings" : "overview";
+      const active =
+        model.route.view === "settings" || model.route.view === "runners"
+          ? model.route.view
+          : "overview";
       const on = active === view ? " on" : "";
       const count = counts ? counts[view] : 0;
       const badge = view === "overview" && count > 0 ? `<span class="cnt">${count}</span>` : "";
@@ -231,6 +242,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return viewVerdicts(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "queue":
       return viewQueue(snapshot);
+    case "runners":
+      return '<div id="runner-settings"></div>';
     case "settings":
       return '<div id="agent-settings" class="agent-settings"></div>';
   }
@@ -814,6 +827,7 @@ function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined 
 function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
   return {
     overview: snapshot.questions.length,
+    runners: 0,
     epics: snapshot.epics.length,
     runs: snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length,
     sessions: 0,
@@ -825,7 +839,13 @@ function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
 }
 
 function routeParam(route: Route): string | null {
-  if (route.view === "overview" || route.view === "queue" || route.view === "settings") return null;
+  if (
+    route.view === "overview" ||
+    route.view === "queue" ||
+    route.view === "settings" ||
+    route.view === "runners"
+  )
+    return null;
   return route.id;
 }
 
