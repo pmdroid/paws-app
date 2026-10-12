@@ -1,5 +1,6 @@
 export type Route =
   | { view: "overview" }
+  | { view: "runners" }
   | { view: "epics"; id: string | null }
   | { view: "runs"; id: string | null }
   | { view: "sessions"; id: string | null }
@@ -20,6 +21,8 @@ export function parseRoute(hash: string): Route {
     case undefined:
     case "overview":
       return { view: "overview" };
+    case "runners":
+      return { view: "runners" };
     case "epics":
       return { view: "epics", id };
     case "runs":
@@ -41,7 +44,8 @@ export function parseRoute(hash: string): Route {
 
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "#/";
-  if (route.view === "queue" || route.view === "settings") return `#/${route.view}`;
+  if (route.view === "queue" || route.view === "settings" || route.view === "runners")
+    return `#/${route.view}`;
   return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
 }
 

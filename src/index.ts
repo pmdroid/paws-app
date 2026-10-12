@@ -1,3 +1,4 @@
+import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
@@ -837,6 +838,7 @@ async function doctorMain(): Promise<number> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
   if (command === "runner-authority") {
     try {
       if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
