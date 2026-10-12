@@ -168,3 +168,7 @@ Runner transcript verification uploads and retrieves ten megabytes through the p
 Runner artifact verification drives production HTTP handlers with real SQLite grants and private disk files. It proves chunked evidence roundtrip, descriptor-bound events, exact retry, rejected metadata mutation, grant/generation fences, secret-path rejection, file permissions, redirected-file denial, twenty-artifact limits and finished-work denial.
 
 For worker publication, run `bun test test/worker-publication.test.ts test/runner-worker.test.ts`. The publication probe observes the canonical event and result filenames at the ownership-assignment boundary while the real worker executes Git and scripted ACP. Both filenames stay absent until their metadata is ready, and completed results parse normally. The worker probe also repeats a consumed execution and supplies preexisting legacy journals and final results, verifying that neither path appends to or replaces retained output or creates a new claim.
+
+## Runner daemon health transport
+
+Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.

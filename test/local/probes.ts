@@ -1,3 +1,4 @@
+import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
@@ -57,6 +58,7 @@ export async function probeBoundaries(
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
+  await probeRunnerDaemonHealth(join(root, "runner-daemon-health"), observe);
   await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
   await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
