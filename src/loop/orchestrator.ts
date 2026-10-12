@@ -42,8 +42,9 @@ import {
 import {
   getTaskMode,
   getLinearSessionAccess,
-  getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
+  getConfirmedRemoteMerge,
+  getLinearTaskDelegation,
   getTaskModeGeneration,
   getLinearSessionGeneration,
   getLinearSession,
@@ -73,8 +74,9 @@ import {
   discardLinearTurns,
   bindWorkItemRepository,
   getWorkItemRepository,
-  getLinearTaskDelegation,
   getWorkItemRepositoryAnswer,
+  getWorkItemRepositoryChoice,
+  rememberWorkItemRepositoryChoice,
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
@@ -142,15 +144,16 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import type { LinearTaskAccess } from "./linear-task-access";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
-import { guardGitHubPublication } from "./publication";
-import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import { classifyTask } from "./task-classifier";
+import type { LinearTaskAccess } from "./linear-task-access";
+import { guardGitHubPublication } from "./publication";
+import { createRepositoryGit } from "./repository-git";
+import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
   rankRepositories,
@@ -188,6 +191,12 @@ export type OrchestratorOptions = {
     signal: AbortSignal,
     access?: "read" | "write",
   ) => Promise<boolean>;
+  repositoryToken?: (
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+    signal: AbortSignal,
+    access: "read" | "write",
+  ) => Promise<string>;
   github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
@@ -947,9 +956,12 @@ export class Orchestrator {
       if (taskRequiresRepository(this.db, item.id)) {
         const repository = getWorkItemRepository(this.db, item.id);
         if (repository === null) throw new Error("The requested repository has not been selected");
+        const auth = this.authorization(item);
+        if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
         const source = await prepareRepositorySnapshot({
           ...repository,
           workspace,
+          networkGit: this.repositoryGit(item, repository, controller.signal, "read"),
           signal: controller.signal,
           onCleanupFailure: () => this.blockConversation(item.id),
         });
@@ -1021,7 +1033,11 @@ export class Orchestrator {
       sessionProgress?.phase("completed");
       this.pump();
     } catch (error) {
-      if (!this.stopped(item.id) && !controller.signal.aborted)
+      if (
+        !this.stopped(item.id) &&
+        !controller.signal.aborted &&
+        getWorkItem(this.db, item.id)?.state !== "awaiting_input"
+      )
         this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
     } finally {
       clearInterval(keepAlive);
@@ -1112,7 +1128,8 @@ export class Orchestrator {
       try {
         await this.preflight(item, run.id, profiles, controller.signal);
       } catch (error) {
-        if (this.stopped(item.id)) return;
+        if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
+          return;
         markRunEnded(this.db, run.id, this.now());
         this.post(
           item,
@@ -1145,6 +1162,7 @@ export class Orchestrator {
         owner: repository.owner,
         repo: repository.repo,
         remoteUrl: repository.remoteUrl,
+        networkGit: this.repositoryGit(item, repository, controller.signal, "write"),
         pawsRoot: this.options.pawsRoot,
         home: this.options.home ?? homedir(),
         signal: controller.signal,
@@ -1193,6 +1211,7 @@ export class Orchestrator {
         !controller.signal.aborted &&
         current &&
         current.state !== "cancelled" &&
+        current.state !== "awaiting_input" &&
         !current.cancelRequested
       ) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1357,7 +1376,7 @@ export class Orchestrator {
         op: "elicitation",
         orderingKey: sessionId,
         idempotencyKey: `closeout-help:${question.id}`,
-        payload: { sessionId, questionId: question.id, id: question.id, body },
+        payload: { sessionId, questionId: question.id, body },
         now: this.now(),
       });
     });
@@ -1635,9 +1654,9 @@ export class Orchestrator {
             orderingKey: sessionId,
             idempotencyKey: `ask:${opened.id}`,
             payload: {
+              id: opened.id,
               sessionId,
               questionId: opened.id,
-              id: opened.id,
               body: elicitationBody(request.question, request.context),
               options,
             },
@@ -2131,6 +2150,44 @@ export class Orchestrator {
     return live;
   }
 
+  private taskAccess(item: WorkItemRecord): LinearTaskAccess | undefined {
+    return this.options.linearTaskModes &&
+      this.options.channel !== "comments" &&
+      !isGitHubIssue(item.linearIssueId)
+      ? this.options.linearAccess
+      : undefined;
+  }
+
+  private repositoryGit(
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+    signal: AbortSignal,
+    access: "read" | "write",
+  ) {
+    if (!this.options.repositoryToken) return undefined;
+    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+    return createRepositoryGit({
+      remoteUrl: repository.remoteUrl,
+      signal,
+      token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
+      onCleanupFailure: () => this.blockConversation(item.id),
+      assert: async () => {
+        signal.throwIfAborted();
+        if (
+          this.stopped(item.id) ||
+          (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+        )
+          throw new Error("The repository read belongs to an obsolete task.");
+        await this.taskAccess(item)?.assert(item, signal, {
+          allowTerminalIssue: access === "read",
+        });
+        const auth = this.authorization(item);
+        if (auth && !(await auth.ensure(item, "initial", signal)))
+          throw new Error("GitHub sign-in is required before reading the repository.");
+      },
+    });
+  }
+
   private authorization(item: WorkItemRecord): GitHubAuthQuestions | null {
     return this.options.channel !== "comments" &&
       !isGitHubIssue(item.linearIssueId) &&
@@ -2259,14 +2316,6 @@ export class Orchestrator {
       await this.options.outbox.idle();
       if (claimed.length === 0) return;
     }
-  }
-
-  private taskAccess(item: WorkItemRecord): LinearTaskAccess | undefined {
-    return this.options.linearTaskModes &&
-      this.options.channel !== "comments" &&
-      !isGitHubIssue(item.linearIssueId)
-      ? this.options.linearAccess
-      : undefined;
   }
 
   private stopped(itemId: string): boolean {
@@ -2558,7 +2607,11 @@ export class Orchestrator {
   ): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
-    await ensureBareMirror({ ...repository, pawsRoot: this.options.pawsRoot });
+    await ensureBareMirror({
+      ...repository,
+      pawsRoot: this.options.pawsRoot,
+      networkGit: this.repositoryGit(item, repository, signal, "write"),
+    });
     const worktree = await createWorktree({
       ...repository,
       itemId: itemPathId(item),
@@ -2639,8 +2692,17 @@ export class Orchestrator {
     const liveKey = `repository:${item.id}`;
     const live = this.beginLive(item.id, liveKey);
     const controller = live.controller;
+    const auth = this.authorization(item);
+    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+    const current = () =>
+      !this.stopped(item.id) &&
+      (!item.sessionKey || getLinearSessionGeneration(this.db, item.sessionKey) === generation);
     try {
       if (bound !== null) {
+        if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
+          await this.flush();
+          return false;
+        }
         const allowed =
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(bound, controller.signal, access));
@@ -2663,8 +2725,8 @@ export class Orchestrator {
             `${candidate.owner}/${candidate.repo}`.toLowerCase() ===
               `${source[1]}/${source[2]}`.toLowerCase()),
       );
-      const candidates: RepositoryBinding[] = [];
-      for (const candidate of configured) {
+      const candidates: RepositoryBinding[] = auth ? [...configured] : [];
+      for (const candidate of auth ? [] : configured) {
         controller.signal.throwIfAborted();
         if (
           !this.options.repositoryAccess ||
@@ -2674,9 +2736,13 @@ export class Orchestrator {
       }
       if (this.stopped(item.id)) return false;
       const savedAnswer = getWorkItemRepositoryAnswer(this.db, item.id);
-      let selected = savedAnswer
-        ? repositoryAnswer(savedAnswer.answer, savedAnswer.candidates)
-        : null;
+      const remembered = getWorkItemRepositoryChoice(this.db, item.id);
+      let selected =
+        remembered && candidates.some((candidate) => sameRepository(candidate, remembered))
+          ? remembered
+          : savedAnswer
+            ? repositoryAnswer(savedAnswer.answer, savedAnswer.candidates)
+            : null;
       if (!selected && savedAnswer) {
         const offered = savedAnswer.candidates.filter((previous) =>
           candidates.some(
@@ -2711,6 +2777,17 @@ export class Orchestrator {
           )
         : -1;
       if (selected && selectedIndex >= 0) {
+        controller.signal.throwIfAborted();
+        if (!current()) return false;
+        if (
+          savedAnswer &&
+          !rememberWorkItemRepositoryChoice(this.db, item.id, savedAnswer.questionId, selected)
+        )
+          return false;
+        if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
+          await this.flush();
+          return false;
+        }
         const accessible =
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(selected, controller.signal, access));
@@ -2727,6 +2804,20 @@ export class Orchestrator {
         return false;
       }
       if (candidates.length === 1 && savedAnswer === null) {
+        if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
+          await this.flush();
+          return false;
+        }
+        const accessible =
+          !auth ||
+          !this.options.repositoryAccess ||
+          (await this.options.repositoryAccess(candidates[0]!, controller.signal, access));
+        controller.signal.throwIfAborted();
+        if (!current()) return false;
+        if (!accessible) {
+          this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
+          return false;
+        }
         bindWorkItemRepository(this.db, item.id, candidates[0]!);
         return true;
       }
@@ -2864,4 +2955,10 @@ function readString(payload: unknown, key: string): string | null {
   if (typeof payload !== "object" || payload === null) return null;
   const value = (payload as Record<string, unknown>)[key];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function sameRepository(left: RepositoryBinding, right: RepositoryBinding): boolean {
+  return (
+    left.owner === right.owner && left.repo === right.repo && left.remoteUrl === right.remoteUrl
+  );
 }

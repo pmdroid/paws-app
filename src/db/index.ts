@@ -51,6 +51,8 @@ export {
   bindWorkItemRepository,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
+  getWorkItemRepositoryChoice,
+  rememberWorkItemRepositoryChoice,
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
 } from "./repositories";
