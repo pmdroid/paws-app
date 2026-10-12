@@ -27,6 +27,8 @@ import {
 } from "./core";
 import {
   enqueueCommand,
+  enqueueJob,
+  getTaskLinearActor,
   isLinearAppRevoked,
   getWorkItemRepository,
   getLinearSessionAccess,
@@ -40,10 +42,12 @@ import {
   recordGitHubDelivery,
   startLoops,
   submitCommand,
+  type WorkItemRecord,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
   createGitHubTokenProvider,
+  createVerifiedGitHubLogin,
   loginGitHub,
   logoutGitHub,
   type GitHubTokenProvider as AuthTokenProvider,
@@ -91,6 +95,7 @@ import {
   handleLinearAdministration,
   type Orchestrator,
   type RepositoryBinding,
+  type HostGitHubAuth,
 } from "./loop";
 import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
@@ -299,6 +304,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         tracker,
         linearTaskModes: true,
         linearAccess: linearTaskAccess ?? undefined,
+        githubAuth:
+          useLinear && channel === "agent-session"
+            ? createLinearGitHubAuth({
+                runtime,
+                env: envSource,
+                repositoryForItem: () => repository,
+                actorForItem: (item) => getTaskLinearActor(db, item.id),
+              })
+            : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {
@@ -324,6 +338,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         ...(docker ? { docker } : {}),
       });
       orchestrator = attached;
+      if (useLinear && channel === "agent-session") {
+        created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
+        enqueueJob(db, { queue: "github.auth.recover", priority: 0, now: Date.now() });
+      }
     },
   });
 
@@ -600,6 +618,40 @@ function authProvider(
   } catch {
     return null;
   }
+}
+
+export function createLinearGitHubAuth(input: {
+  runtime: RuntimeConfig;
+  env: EnvSource;
+  repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
+  actorForItem: (item: WorkItemRecord) => string | null;
+}): HostGitHubAuth {
+  const loginFor = (item: WorkItemRecord) => {
+    const repository = input.repositoryForItem(item);
+    if (repository === null) throw new Error("Choose a GitHub repository before signing in.");
+    return createVerifiedGitHubLogin({
+      auth: input.runtime.githubAuth,
+      home: input.runtime.env.home,
+      env: input.env,
+      repo: `${repository.owner}/${repository.repo}`,
+      oauthClientId: input.runtime.oauthClientId,
+    });
+  };
+  return {
+    owner: input.actorForItem,
+    linkedAccount: (item) =>
+      input.runtime.githubAuth === "gh" ? Promise.resolve(null) : loginFor(item).linkedAccount(),
+    async check(item, signal) {
+      if (input.runtime.githubAuth !== "gh") return loginFor(item).check(signal);
+      const repository = input.repositoryForItem(item);
+      if (repository === null) return null;
+      const provider = authProvider(input.runtime, repository);
+      const user = await provider?.user().catch(() => null);
+      signal.throwIfAborted();
+      return user ?? null;
+    },
+    begin: (item, options) => loginFor(item).begin(options),
+  };
 }
 
 function linearEnv(runtime: RuntimeConfig, source: EnvSource): EnvSource {
