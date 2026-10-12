@@ -803,4 +803,23 @@ CREATE TABLE workspace_access_audit (
     sql: `ALTER TABLE workspace_member ADD COLUMN manual_role TEXT
       CHECK(manual_role IN ('owner','admin','member','observer'));`,
   },
+  {
+    id: "027_workspace_identity_links",
+    sql: `
+CREATE TABLE workspace_identity_link (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  provider TEXT NOT NULL CHECK(provider IN ('slack','github')),
+  external_id TEXT,
+  installation_id TEXT,
+  method TEXT NOT NULL CHECK(method IN ('email','manual')),
+  status TEXT NOT NULL CHECK(status IN ('linked','unmatched','error')),
+  checked_at INTEGER NOT NULL,
+  PRIMARY KEY(workspace_id,user_id,provider),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id),
+  UNIQUE(workspace_id,provider,external_id),
+  CHECK((status='linked' AND external_id IS NOT NULL) OR (status!='linked' AND external_id IS NULL))
+) STRICT;
+`,
+  },
 ];

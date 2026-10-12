@@ -91,7 +91,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials"],
-  workspace: ["db", "linear"],
+  workspace: ["db", "linear", "slack"],
 };
 
 describe("module boundaries", () => {

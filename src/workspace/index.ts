@@ -19,3 +19,4 @@ export {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
 } from "./runtime";
+export { createWorkspaceIdentityLinks } from "./identity-links";

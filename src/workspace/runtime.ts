@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { LinearMembershipReads } from "../linear";
+import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess } from "./access";
 import { issueWorkspaceBootstrap } from "./session";
 
@@ -8,6 +9,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;
+  slackIdentities?: SlackIdentityReads | null;
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
 }) {
   const installedOrganization = await options.memberships.installation(AbortSignal.timeout(10_000));
