@@ -231,6 +231,12 @@ export type {
   WorkspaceRole,
   WorkspaceSession,
 } from "./workspace";
+export {
+  consumeWorkspaceOAuthRequest,
+  listUserWorkspaces,
+  saveWorkspaceOAuthRequest,
+} from "./workspace-auth";
+export type { WorkspaceOAuthRequest } from "./workspace-auth";
 
 export {
   linearSessionsForIssueContext,

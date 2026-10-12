@@ -12,3 +12,5 @@ export {
   WORKSPACE_COOKIE,
 } from "./session";
 export type { WorkspacePrincipal } from "./session";
+export { createWorkspaceAccess } from "./access";
+export type { WorkspaceAccess, WorkspaceAccessOptions } from "./access";

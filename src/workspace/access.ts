@@ -1,0 +1,288 @@
+import type { Database } from "bun:sqlite";
+import {
+  auditWorkspaceAccess,
+  consumeWorkspaceBootstrap,
+  deleteWorkspaceSession,
+  getWorkspace,
+  listUserWorkspaces,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+  workspaceForOrganization,
+  workspaceMember,
+} from "../db";
+import type { LinearMembershipReads } from "../linear";
+import { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
+import {
+  clearWorkspaceSessionCookie,
+  issueWorkspaceSession,
+  requestWorkspaceSession,
+  validWorkspaceCsrf,
+  workspaceId,
+  workspaceSessionCookie,
+} from "./session";
+
+export type WorkspaceAccessOptions = {
+  db: Database;
+  publicUrl: string;
+  clientId: string;
+  installedOrganization: { id: string; name: string };
+  memberships: LinearMembershipReads;
+  fetch?: typeof fetch;
+  now?: () => number;
+};
+
+export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
+  const configured = new URL(options.publicUrl);
+  if (
+    configured.username ||
+    configured.password ||
+    (configured.protocol !== "https:" &&
+      !(
+        configured.protocol === "http:" &&
+        ["127.0.0.1", "localhost", "[::1]"].includes(configured.hostname)
+      ))
+  )
+    throw new Error("Paws browser sign-in requires an HTTPS origin.");
+  const origin = configured.origin;
+  const now = options.now ?? Date.now;
+  const pending = new Map<string, Promise<void>>();
+  async function refresh(workspaceKey: string, userId: string) {
+    const member = workspaceMember(options.db, workspaceKey, userId);
+    const workspace = getWorkspace(options.db, workspaceKey);
+    if (
+      member === null ||
+      workspace === null ||
+      workspace.organizationId !== options.installedOrganization.id
+    )
+      throw new Error("This workspace is not installed.");
+    const observedAt = now();
+    if (member.checkedAt <= observedAt && observedAt - member.checkedAt < 5 * 60_000) return;
+    const key = `${workspaceKey}:${userId}`;
+    let operation = pending.get(key);
+    if (operation === undefined) {
+      operation = options.memberships
+        .member(workspace.organizationId, member.linearUserId, AbortSignal.timeout(10_000))
+        .then((identity) => {
+          if (
+            identity.userId !== member.linearUserId ||
+            identity.organizationId !== workspace.organizationId
+          )
+            throw new Error("Linear returned another member.");
+          syncWorkspaceMember(options.db, {
+            workspaceId: workspaceKey,
+            userId,
+            active: identity.active,
+            role: identity.guest ? "observer" : "member",
+            teamIds: identity.teamIds,
+            now: observedAt,
+          });
+        });
+      pending.set(key, operation);
+    }
+    try {
+      await operation;
+    } finally {
+      if (pending.get(key) === operation) pending.delete(key);
+    }
+  }
+  async function authenticate(request: Request) {
+    if (new URL(request.url).origin !== origin) return null;
+    const current = requestWorkspaceSession(options.db, request, now());
+    if (current === null) return null;
+    await refresh(current.principal.workspaceId, current.principal.userId);
+    return requestWorkspaceSession(options.db, request, now());
+  }
+  async function handle(request: Request): Promise<Response | null> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (
+      ![
+        "/auth/linear",
+        "/auth/linear/callback",
+        "/api/auth/session",
+        "/api/auth/logout",
+        "/api/workspaces",
+      ].includes(path)
+    )
+      return null;
+    if (
+      url.origin !== origin ||
+      (request.headers.has("host") &&
+        request.headers.get("host")?.toLowerCase() !== url.host.toLowerCase())
+    )
+      return json({ error: "Use the configured Paws origin." }, 403);
+    if (path === "/auth/linear") {
+      if (!["GET", "POST"].includes(request.method))
+        return json({ error: "Method not allowed" }, 405);
+      let bootstrap: string | null = null;
+      if (request.method === "POST") {
+        if (request.headers.get("origin") !== origin) return json({ error: "Forbidden" }, 403);
+        if (Number(request.headers.get("content-length") ?? 0) > 4096)
+          return json({ error: "Invalid bootstrap grant" }, 400);
+        let body: string;
+        try {
+          body = await smallBody(request);
+        } catch {
+          return json({ error: "Invalid bootstrap grant" }, 400);
+        }
+        bootstrap = new URLSearchParams(body).get("bootstrap");
+        if (bootstrap !== null && !/^[A-Za-z0-9_-]{43}$/.test(bootstrap))
+          return json({ error: "Invalid bootstrap grant" }, 400);
+      }
+      return beginWorkspaceOAuth(options.db, {
+        clientId: options.clientId,
+        origin,
+        now: now(),
+        bootstrap,
+      });
+    }
+    if (path === "/auth/linear/callback") {
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+      try {
+        const result = await completeWorkspaceOAuth(options.db, request, {
+          clientId: options.clientId,
+          origin,
+          now: now(),
+          fetch: options.fetch ?? fetch,
+        });
+        if (result.identity.organizationId !== options.installedOrganization.id)
+          return json({ error: "This Linear workspace is not installed in Paws." }, 403);
+        const observedAt = now();
+        const identity = await options.memberships.member(
+          result.identity.organizationId,
+          result.identity.userId,
+          AbortSignal.timeout(10_000),
+        );
+        if (
+          !identity.active ||
+          identity.userId !== result.identity.userId ||
+          identity.organizationId !== result.identity.organizationId
+        )
+          return json({ error: "Current Linear membership is required." }, 403);
+        const userId = putWorkspaceUser(options.db, {
+          id: workspaceId(now()),
+          linearUserId: result.identity.userId,
+          name: result.identity.name,
+          email: result.identity.email,
+        });
+        let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
+        let syncAt = observedAt;
+        if (result.bootstrapHash !== null) {
+          if (identity.guest) return json({ error: "Guests cannot bootstrap a workspace." }, 403);
+          syncAt = now();
+          workspace = consumeWorkspaceBootstrap(options.db, {
+            id: workspaceId(now()),
+            organizationId: result.identity.organizationId,
+            name: options.installedOrganization.name,
+            tokenHash: result.bootstrapHash,
+            userId,
+            now: syncAt,
+          });
+        }
+        if (workspace === null)
+          return json({ error: "Ask the Paws operator to bootstrap this workspace." }, 403);
+        syncWorkspaceMember(options.db, {
+          workspaceId: workspace.id,
+          userId,
+          active: true,
+          role: identity.guest ? "observer" : "member",
+          teamIds: identity.teamIds,
+          now: syncAt,
+        });
+        const previous = requestWorkspaceSession(options.db, request, now());
+        if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
+        const issued = issueWorkspaceSession(options.db, {
+          userId,
+          workspaceId: workspace.id,
+          now: now(),
+        });
+        const headers = new Headers({
+          location: "/status/",
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+        });
+        headers.append("set-cookie", workspaceSessionCookie(issued.token));
+        headers.append(
+          "set-cookie",
+          "__Host-paws-login=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0",
+        );
+        return new Response(null, { status: 303, headers });
+      } catch {
+        return json({ error: "Linear sign-in could not be completed. Start sign-in again." }, 400);
+      }
+    }
+    let access;
+    try {
+      access =
+        path === "/api/auth/logout"
+          ? requestWorkspaceSession(options.db, request, now())
+          : await authenticate(request);
+    } catch {
+      return json({ error: "Linear membership could not be refreshed." }, 503);
+    }
+    if (access === null) return json({ error: "Sign in to Paws." }, 401);
+    const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
+    if (selected !== null && selected !== access.principal.workspaceId)
+      return json({ error: "Workspace access denied." }, 403);
+    if (path === "/api/auth/session" && request.method === "GET")
+      return json({
+        ...access.principal,
+        csrfToken: access.session.csrfToken,
+        workspaces: listUserWorkspaces(options.db, access.principal.userId),
+      });
+    if (path === "/api/workspaces" && request.method === "GET")
+      return json({ workspaces: listUserWorkspaces(options.db, access.principal.userId) });
+    if (path === "/api/auth/logout" && request.method === "POST") {
+      if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))
+        return json({ error: "CSRF token required." }, 403);
+      deleteWorkspaceSession(options.db, access.session.tokenHash);
+      auditWorkspaceAccess(options.db, {
+        workspaceId: access.principal.workspaceId,
+        userId: access.principal.userId,
+        action: "session.ended",
+        subject: access.principal.userId,
+        now: now(),
+      });
+      return Response.json(
+        { ok: true },
+        { headers: { "cache-control": "no-store", "set-cookie": clearWorkspaceSessionCookie() } },
+      );
+    }
+    return json({ error: "Method not allowed" }, 405);
+  }
+  return { authenticate, handle, origin };
+}
+
+export type WorkspaceAccess = ReturnType<typeof createWorkspaceAccess>;
+
+function json(body: unknown, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+async function smallBody(request: Request): Promise<string> {
+  const reader = request.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) return Buffer.concat(chunks).toString("utf8");
+      length += result.value.byteLength;
+      if (length > 4096) {
+        await reader.cancel();
+        throw new Error("Request too large");
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
