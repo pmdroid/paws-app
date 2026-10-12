@@ -103,3 +103,5 @@ export type {
   ReviewerOptions,
   ReviewRunResult,
 } from "./review/index";
+
+export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";

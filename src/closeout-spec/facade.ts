@@ -20,7 +20,7 @@ import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
 import { scrubCommandEnv } from "./run/env";
-import { changedPaths as diffPaths, resolveCommit } from "./run/exec";
+import { changedPaths as diffPaths, resolveCommit, type PawsCommandRunner } from "./run/exec";
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
 import { runCloseoutCommands } from "./run/run";
@@ -98,6 +98,7 @@ export type RunRequest = {
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
+  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
 };
 
 export type ReviewIntake =
@@ -278,6 +279,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.pawsHome !== undefined ? { home: input.pawsHome } : {}),
     ...(input.env !== undefined ? { env: input.env } : {}),
     ...(input.progress !== undefined ? { progress: input.progress } : {}),
+    ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
   });
   if (ran.blocked !== undefined) {

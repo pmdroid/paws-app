@@ -1,3 +1,4 @@
+import type { PawsCommandRunner } from "../closeout-spec";
 import type { FixRunner } from "./fixer";
 import { runCloseoutGate, type GateInput } from "./run";
 import type { CodexReviewer } from "./reviewer";
@@ -43,6 +44,7 @@ export type CloseoutGateOptions = {
   retryBaseline?: readonly string[];
   bypasses?: GateInput["bypasses"];
   progress?: GateInput["progress"];
+  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
 };
 
 /**
@@ -75,6 +77,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.bypasses ? { bypasses: options.bypasses } : {}),
         ...(options.retryBaseline ? { retryBaseline: options.retryBaseline } : {}),
         ...(options.progress ? { progress: options.progress } : {}),
+        ...(options.commandRunner ? { commandRunner: options.commandRunner } : {}),
       });
       return toVerdict(result, input.attempt);
     },

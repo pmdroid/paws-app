@@ -67,6 +67,7 @@ export type CloseoutRunInput = {
   /** Parent environment for setup steps and commands. Credentials are removed. */
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
+  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
 };
 
@@ -131,7 +132,7 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       );
       return { blocked: "could not create a worktree at the candidate commit", dispositions: [] };
     }
-    const runner = createCommandRunner({ env: input.env });
+    const runner = input.commandRunner ?? createCommandRunner({ env: input.env });
     const dispositions: CommandDisposition[] = [];
     let stop = false;
     try {
@@ -270,7 +271,7 @@ function classify(
 }
 
 async function runOne(
-  runner: PawsCommandRunner,
+  runner: Pick<PawsCommandRunner, "runLogged">,
   input: CloseoutRunInput,
   item: Runnable,
   cwd: string,

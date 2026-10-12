@@ -28,6 +28,7 @@ import {
   run,
   scrubText,
   type CloseoutProgress,
+  type PawsCommandRunner,
   type CloseoutProgressIdentity,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
@@ -45,6 +46,7 @@ export type EvaluateInput = {
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   progress?: CloseoutProgress;
+  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
 };
@@ -74,6 +76,7 @@ export type GateInput = {
   pawsHome?: string;
   maxFixAttempts?: number;
   progress?: CloseoutProgress;
+  commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
 };
@@ -154,6 +157,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(input.progress !== undefined ? { progress: input.progress } : {}),
+      ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
