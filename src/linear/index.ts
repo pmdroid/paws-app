@@ -15,6 +15,7 @@ export type {
 export { activityKey, deliveryKey, sessionCreatedKey } from "./events";
 export type { AcceptedLinearEvent, LinearEventAction, LinearEventSource } from "./events";
 export { createFakeTracker } from "./fake";
+export { createFakeLinearIssueLifecycle } from "./fake-issue-lifecycle";
 export type { FakeTracker } from "./fake";
 export { createLinearFileTransfer } from "./files";
 export type {
@@ -33,6 +34,12 @@ export type {
   RepositorySuggestion,
   RepositorySuggestionsInput,
 } from "./repositories";
+export { createLinearIssueLifecycle } from "./issue-lifecycle";
+export type {
+  LinearIssueLifecycle,
+  LinearIssueOwnership,
+  StartLinearCodeIssue,
+} from "./issue-lifecycle";
 export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxStore } from "./inbox";
 export {
