@@ -16,6 +16,7 @@ RuntimeDirectoryMode=0700
 WorkingDirectory=/var/lib/paws
 Environment=HOME=/var/lib/paws
 Environment=PAWS_HOME=/var/lib/paws
+Environment=NODE_ENV=production
 EnvironmentFile=/etc/paws/control-plane.env
 ExecStart=/opt/paws/bin/bun --no-env-file /opt/paws/current/src/index.ts --no-tunnel
 Restart=on-failure
