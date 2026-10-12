@@ -25,6 +25,7 @@ import {
 import { createFakeGitHubComments, createGitHubCommentTracker } from "../../src/ghcomments";
 import { createGitHubCommentIngestor } from "../../src/index";
 import { detectCandidates } from "../../src/setup";
+import { probeLinearQuestionRestart } from "./linear-question-restart";
 
 export async function probeBoundaries(
   root: string,
@@ -138,21 +139,16 @@ export async function probeBoundaries(
     { backend: brokenStore.backend, storeError, mode, dirMode, reloaded: saved !== null },
   );
   const clock = new FakeClock(1000);
-  const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
-  const first = createCommentMode({ board, clock });
   const binding = { itemId: "item", linearIssueId: "issue", sessionId: "issue" };
-  first.bind(binding);
-  await first.ask({ itemId: "item", title: "Proceed?", body: "Choose yes or no." });
-  const restarted = createCommentMode({ board, clock });
-  restarted.bind(binding);
-  clock.advance(1000);
-  board.post({ issueId: "issue", parentId: board.comments[0]!.id, body: "yes", userId: "human" });
-  const afterRestart = await restarted.sync("issue");
-  const withoutRestart = await first.sync("issue");
-  observe("question reply survives comment-adapter restart", afterRestart.resumed.length === 1, {
-    afterRestart,
-    withoutRestart,
-  });
+  const restart = await probeLinearQuestionRestart(join(root, "linear-question-restart"));
+  observe(
+    "question reply survives owned process restart",
+    restart.question.status === "answered" &&
+      restart.question.answeredBy === "human-owner" &&
+      restart.jobs.filter((job) => job.queue === JOB_KIND.resume).length === 1 &&
+      restart.duplicates.length === 0,
+    restart,
+  );
   const personalBoard = createFakeCommentBoard({ clock, selfUserId: "personal-token-owner" });
   const personal = createCommentMode({
     board: personalBoard,

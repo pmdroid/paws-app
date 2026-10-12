@@ -343,8 +343,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
 
   function isPaws(comment: IssueComment): boolean {
     if (written.has(comment.id)) return true;
-    if (selfDetection === "marker") return isPawsText(comment.body) || hasPawsMarker(comment.body);
-    if (comment.userId !== null && comment.userId === selfUserId) return true;
+    if (hasPawsMarker(comment.body)) return true;
     if (comment.botId !== null && comment.botId === selfUserId) return true;
     return isPawsText(comment.body);
   }

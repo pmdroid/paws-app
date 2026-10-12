@@ -5,7 +5,7 @@ import { FakeClock } from "../src/core";
 const ISSUE = "iss-1";
 
 describe("comment mode self-detection", () => {
-  test("selfDetection user keeps Linear author matching", async () => {
+  test("Linear thread matching excludes Paws bot messages", async () => {
     const clock = new FakeClock(1_000);
     const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
     const mode = createCommentMode({
@@ -21,7 +21,7 @@ describe("comment mode self-detection", () => {
     )?.id;
 
     clock.advance(1);
-    board.post({ issueId: ISSUE, parentId: questionId, userId: "paws", body: "yes" });
+    board.post({ issueId: ISSUE, parentId: questionId, userId: null, botId: "paws", body: "yes" });
     expect((await mode.sync(ISSUE)).resumed).toEqual([]);
     expect(mode.phase("item-1")).toBe("parked");
 
