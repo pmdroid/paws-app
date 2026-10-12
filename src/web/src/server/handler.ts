@@ -69,6 +69,14 @@ export async function handleStatusRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const { pathname } = url;
+  if (pathname === "/") {
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return text("Method not allowed", 405);
+    return new Response(null, {
+      status: 307,
+      headers: { Location: `${STATUS_PAGE_PATH}/${url.search}`, "Cache-Control": "no-store" },
+    });
+  }
   const artifact = await handleLinearArtifactRequest(request, options.readLinearArtifact);
   if (artifact !== null) return artifact;
   const conversations = handleLinearConversationsRequest(request, options.db);
