@@ -1007,8 +1007,14 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   }
 }, 60_000);
 
-for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
-  test(`Closeout ${recovery} survives restart and resumes the correct work`, async () => {
+for (const recovery of [
+  "guidance",
+  "bypass",
+  "stale bypass",
+  "missing bypass reason",
+  "unfailed bypass check",
+] as const) {
+  test(`Closeout ${recovery} survives restart`, async () => {
     const layout = await repoLayout();
     const seed = path.join(layout.root, "seed");
     await writeFile(
@@ -1108,7 +1114,11 @@ for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
       const answer =
         recovery === "guidance"
           ? "Create ok.txt to satisfy the command"
-          : "/paws bypass test -- Approved known fixture failure";
+          : recovery === "missing bypass reason"
+            ? "/paws bypass test"
+            : recovery === "unfailed bypass check"
+              ? "/paws bypass unrelated -- Wrong check"
+              : "/paws bypass test -- Approved known fixture failure";
       const event = {
         ...linearEvent("prompted", answer, null),
         payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
@@ -1116,6 +1126,35 @@ for (const recovery of ["guidance", "bypass", "stale bypass"] as const) {
       await runtime.orchestrator.onLinearEvent(event);
       await runtime.orchestrator.onLinearEvent(event);
       expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+      if (recovery === "missing bypass reason" || recovery === "unfailed bypass check") {
+        expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+        const replacement = findOpenQuestion(db, "ses_1")!;
+        expect(replacement.id).not.toBe(question.id);
+        expect(replacement.body).toContain("Use /paws bypass check-id -- your reason");
+        await runtime.orchestrator.onLinearEvent({
+          ...event,
+          dedupeKey: `${event.dedupeKey}:old-question`,
+          activityId: "old-question-reply",
+          updatedAtMs: Math.max(Date.now(), replacement.createdAt + 1),
+          body: "/paws bypass test -- Approved known fixture failure",
+        });
+        expect(getQuestion(db, replacement.id)?.status).toBe("open");
+        expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+        expect(
+          listJobs(db).filter(
+            (job) => job.queue === JOB_KIND.resume || job.queue === JOB_KIND.reverify,
+          ),
+        ).toHaveLength(0);
+        expect(
+          listCloseoutRecoveries(db, question.itemId).find(
+            (entry) => entry.questionId === replacement.id,
+          )?.retryBaseline,
+        ).toEqual(context.retryBaseline);
+        expect(launches).toEqual(["implement", "fix"]);
+        expect(github.opened).toHaveLength(0);
+        expect(github.merged).toHaveLength(0);
+        return;
+      }
       expect(
         listJobs(db).filter(
           (job) => job.queue === (recovery === "guidance" ? JOB_KIND.resume : JOB_KIND.reverify),

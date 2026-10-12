@@ -51,6 +51,8 @@ bun --no-env-file scripts/verify-local.ts serve
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
+The Linear Closeout cases in `test/loop.e2e.test.ts` reconstruct the adapter, reject bypass replies without a reason or naming an unfailed check, preserve the replacement question's retry history, ignore replies to the old question, and queue no resume or reverify work.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.
