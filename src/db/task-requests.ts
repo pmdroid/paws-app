@@ -5,6 +5,7 @@ import { immediate } from "./tx";
 export type StoredTaskClassification =
   | {
       mode: TaskMode;
+      repository?: boolean;
       redirect?: { taskKey: string; itemId: string };
       context?: string;
       sourceItemId?: string;

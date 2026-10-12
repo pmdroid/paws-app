@@ -20,17 +20,27 @@ export function saveTaskMode(
   itemId: string,
   mode: TaskMode,
   generation = 0,
+  repository = false,
 ): TaskMode {
   return immediate(db, () => {
-    db.run("INSERT OR IGNORE INTO work_item_task (item_id, mode, generation) VALUES (?, ?, ?)", [
-      itemId,
-      mode,
-      generation,
-    ]);
+    db.run(
+      "INSERT OR IGNORE INTO work_item_task (item_id, mode, generation, repository_context) VALUES (?, ?, ?, ?)",
+      [itemId, mode, generation, repository ? 1 : 0],
+    );
     const saved = getTaskMode(db, itemId);
     if (saved !== mode) throw new Error("Task mode already selected");
     return saved;
   });
+}
+
+export function taskRequiresRepository(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query<{ repository_context: number }, [string]>(
+        "SELECT repository_context FROM work_item_task WHERE item_id = ?",
+      )
+      .get(itemId)?.repository_context === 1
+  );
 }
 
 export function getTaskModeGeneration(db: Database, itemId: string): number {
@@ -48,6 +58,7 @@ export function selectTaskModeForTurn(
   itemId: string,
   mode: TaskMode,
   generation: number,
+  repository = false,
 ): TaskMode {
   return immediate(db, () => {
     const item = getWorkItem(db, itemId);
@@ -64,8 +75,8 @@ export function selectTaskModeForTurn(
     if (getTaskModeGeneration(db, itemId) >= generation)
       throw new Error("Task outcome changes require a newer accepted turn");
     db.run(
-      "UPDATE work_item_task SET mode = ?, generation = ?, response = NULL WHERE item_id = ?",
-      [mode, generation, itemId],
+      "UPDATE work_item_task SET mode = ?, generation = ?, repository_context = ?, response = NULL WHERE item_id = ?",
+      [mode, generation, repository ? 1 : 0, itemId],
     );
     return mode;
   });

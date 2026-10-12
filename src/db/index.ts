@@ -7,6 +7,7 @@ export {
   getTaskMode,
   getTaskModeGeneration,
   saveTaskMode,
+  taskRequiresRepository,
   selectTaskModeForTurn,
 } from "./tasks";
 export {
@@ -50,6 +51,7 @@ export {
   bindWorkItemRepository,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
+  isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
 } from "./repositories";
 export { migrations } from "./migrations";

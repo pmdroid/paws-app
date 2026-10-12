@@ -61,6 +61,7 @@ import {
 } from "./ghcomments";
 import {
   checkRepositoryWriteAccess,
+  checkRepositoryReadAccess,
   createFetchGitHubClient,
   githubHttpsUrl,
   type GitHubTokenProvider,
@@ -240,10 +241,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repository,
         repositories,
-        repositoryAccess: async (candidate, signal) => {
+        repositoryAccess: async (candidate, signal, access) => {
           const provider = authProvider(runtime, candidate);
           if (!provider) return false;
-          return checkRepositoryWriteAccess({
+          return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
             ...candidate,
             token: await provider.token(),
             app: provider.source === "app",
