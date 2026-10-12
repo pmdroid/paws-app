@@ -912,4 +912,38 @@ CREATE TABLE runner_event (
 ) STRICT;
 `,
   },
+  {
+    id: "028_runner_results",
+    sql: `
+CREATE TABLE runner_result (
+  run_id TEXT NOT NULL REFERENCES runner_work(run_id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  command_id TEXT NOT NULL REFERENCES runner_command(id),
+  payload TEXT NOT NULL CHECK(json_valid(payload)),
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation)
+) STRICT;
+CREATE TABLE runner_question_answer (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  answer TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation,sequence),
+  FOREIGN KEY(run_id,generation,sequence) REFERENCES runner_event(run_id,generation,sequence)
+) STRICT;
+`,
+  },
+  {
+    id: "029_runner_health",
+    sql: `
+ALTER TABLE runner ADD COLUMN last_seen_at INTEGER;
+CREATE TABLE runner_health_result (
+  command_id TEXT PRIMARY KEY REFERENCES runner_command(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  result_json TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
