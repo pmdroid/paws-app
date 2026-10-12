@@ -45,6 +45,7 @@ bun --no-env-file scripts/verify-local.ts serve
 
 - Linear tracker and comment adapters against local fakes; a Linear epic with two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
+- Linux runner pairing through a local HTTPS service, real P-256 client certificates, actual mTLS command polling, signed-job persistence across subprocess restarts, transactional receipt rollback, durable acknowledgment retry after restart, certificate replacement, revocation, server-hostname and untrusted-authority rejection. Expired identities allow explicit re-pairing while work operations fail closed; interrupted replacement preserves the old identity, retries after restart and never revives old commands. Held real HTTPS responses from the previous identity must fail with identity-fence errors and cannot mutate the replacement; late expired approvals cannot overwrite newer pairing challenges, and delayed enrollment responses cannot replace a newer challenge or approved identity; consumed recovery challenges are ignored after another expiry and restart. The fixture uses a scripted enrollment service and the production runner listener.
 - Real Ed25519 runner command signatures with strict typed payloads, runner/workspace identity, repository allowlists, expiry and replay protection persisted through SQLite close/reopen. The protocol probe performs no repository fetch.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
@@ -86,3 +87,11 @@ Runner work verification covers production HTTP request handlers with valid and 
 An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
 
 Runner result verification drives production HTTP handlers with real migrated SQLite and signed assignments. It checks immutable run/review results, grant and generation denial, paged question answers, rejected answer mutation, bounded streamed bodies and persistence after reopening SQLite. Answer later questions first and confirm delivery waits for earlier replies before advancing the question cursor. Submit a 900 KB Unicode review successfully and check that schema validation rejects Unicode and JSON-escaped results exceeding the HTTP byte limit.
+
+Run the daemon, work and result probes together to verify their published modules coexist in one checkout:
+
+```sh
+bun test test/runner-daemon.test.ts test/runner-work.test.ts test/runner-results.test.ts test/boundaries.test.ts
+```
+
+The daemon probe uses real HTTPS/mTLS and fresh subprocesses. The work and result probes use real SQLite, signed assignments and production request handlers. Inspect each probe's observations alongside the full credential-free check.
