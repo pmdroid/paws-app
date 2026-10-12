@@ -91,11 +91,18 @@ export function readRunnerResultFile(
     let total = 0;
     while (true) {
       const chunk = Buffer.alloc(Math.min(65_536, limits[name] + 1 - total));
-      const count = readSync(fd, chunk, 0, chunk.length, null);
-      if (count === 0) return Buffer.concat(chunks, total);
-      total += count;
-      if (total > limits[name]) throw new Error("Runner result exceeds size limit");
-      chunks.push(chunk.subarray(0, count));
+      let filled = 0;
+      while (filled < chunk.length) {
+        const count = readSync(fd, chunk, filled, chunk.length - filled, null);
+        if (count === 0) {
+          chunks.push(chunk.subarray(0, filled));
+          return Buffer.concat(chunks, total);
+        }
+        filled += count;
+        total += count;
+        if (total > limits[name]) throw new Error("Runner result exceeds size limit");
+      }
+      chunks.push(chunk);
     }
   } finally {
     if (fd !== undefined) closeSync(fd);

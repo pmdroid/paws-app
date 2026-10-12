@@ -6,11 +6,23 @@ import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RunnerCommandSchema,
+  RunnerArtifactChunkSchema,
+  RunnerHealthResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
   type RunnerCommand,
+  type RunnerArtifactChunk,
   type RunnerCommandRejection,
+  type RunnerHealthResult,
+  type RunnerResult,
 } from "../runner-protocol";
+import {
+  RunnerTranscriptChunkSchema,
+  RunnerTranscriptFinishSchema,
+  RUNNER_TRANSCRIPT_MAX_BYTES,
+  type RunnerTranscriptChunk,
+  type RunnerTranscriptFinish,
+} from "../runner-transcripts";
 import {
   ApprovedIdentitySchema,
   identifier,
@@ -20,6 +32,7 @@ import {
   readRecovery,
   readState,
   requestFingerprint,
+  trustedSigningKeys,
   validateIdentity,
   writeRecovery,
   writeState,
@@ -27,13 +40,28 @@ import {
   type PairedState,
 } from "./state";
 import { httpsOrigin, requestJson } from "./transport";
+import {
+  RunnerAnswersRequestSchema,
+  RunnerAnswersSchema,
+  RunnerEventDeliverySchema,
+  RunnerEventReceiptSchema,
+  RunnerGrantRequestSchema,
+  RunnerGrantSchema,
+  RunnerGrantTokenSchema,
+  RunnerHeartbeatSchema,
+  RunnerRepositoryAccessSchema,
+  RunnerRepositoryCredentialSchema,
+  RunnerResultDeliverySchema,
+  type RunnerEventDelivery,
+  type RunnerGrantRequest,
+} from "./work";
 
 export type RunnerDaemonOptions = {
   root: string;
   controlPlaneUrl: string;
   runnerApiUrl: string;
   serverCa?: string;
-  trustedKeys: ReadonlyMap<string, KeyObject>;
+  trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
   now?: () => number;
 };
@@ -44,6 +72,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
   };
   const now = options.now ?? Date.now;
+  const pins = options.trustedKeys ? new Map(options.trustedKeys) : undefined;
+  if (pins)
+    for (const key of pins.values())
+      if (key.type !== "public" || key.asymmetricKeyType !== "ed25519")
+        throw new Error("Runner job signing pins must be Ed25519 public keys.");
   let state = readState(options.root);
   let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
   let closed = false;
@@ -101,13 +134,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       expiresAt: certificate.notAfter,
     };
   }
-  async function authenticated(path: string, method: "GET" | "POST", body?: unknown) {
+  async function authenticated(
+    path: string,
+    method: "GET" | "POST",
+    body?: unknown,
+    runGrant?: string,
+  ) {
     const identity = paired();
     const response = await requestJson({
       origin: origins.runnerApiUrl,
       path,
       method,
       body,
+      runGrant,
       serverCa: options.serverCa,
       identity: { certificate: identity.certificate, key: localKey(options.root) },
     });
@@ -214,6 +253,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const { status: _status, ...identity } = result;
       const approved = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, approved, now());
+      trustedSigningKeys(approved, pins);
       if (previous && identity.runnerId === previous.runnerId)
         throw new Error("Re-pairing requires a new runner identity.");
       if (previous)
@@ -226,11 +266,152 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       recovery = null;
       return status();
     },
-    async heartbeat(): Promise<void> {
-      await authenticated("/v1/heartbeat", "POST", {});
+    async heartbeat() {
+      return RunnerHeartbeatSchema.parse(await authenticated("/v1/heartbeat", "POST", {}));
+    },
+    async postHealth(result: RunnerHealthResult) {
+      const body = RunnerHealthResultSchema.parse(result);
+      return RunnerEventReceiptSchema.parse(await authenticated("/v1/health", "POST", body));
+    },
+    async uploadArtifact(runId: string, chunk: RunnerArtifactChunk, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerArtifactChunkSchema.parse(chunk);
+      RunnerGrantTokenSchema.parse(grantToken);
+      return z
+        .strictObject({ ok: z.literal(true) })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/artifacts`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+    },
+    async uploadTranscript(runId: string, chunk: RunnerTranscriptChunk, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerTranscriptChunkSchema.parse(chunk);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const receipt = z
+        .strictObject({
+          offset: z.number().int().nonnegative().max(RUNNER_TRANSCRIPT_MAX_BYTES),
+          duplicate: z.boolean(),
+        })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/transcript/chunks`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+      if (receipt.offset !== body.offset + Buffer.from(body.data, "base64").byteLength)
+        throw new Error("Runner transcript receipt offset is invalid.");
+      return receipt;
+    },
+    async finishTranscript(runId: string, finish: RunnerTranscriptFinish, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerTranscriptFinishSchema.parse(finish);
+      RunnerGrantTokenSchema.parse(grantToken);
+      return z
+        .strictObject({ uri: z.string().min(1).max(8192) })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/transcript/finish`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+    },
+    async issueRunGrant(runId: string, request: RunnerGrantRequest) {
+      identifier.parse(runId);
+      const body = RunnerGrantRequestSchema.parse(request);
+      const grant = RunnerGrantSchema.parse(
+        await authenticated(`/v1/runs/${encodeURIComponent(runId)}/grant`, "POST", body),
+      );
+      if (grant.expiresAt <= now()) throw new Error("Runner work grant is expired.");
+      return grant;
+    },
+    async sendEvent(delivery: RunnerEventDelivery, token: string) {
+      const body = RunnerEventDeliverySchema.parse(delivery);
+      RunnerGrantTokenSchema.parse(token);
+      return RunnerEventReceiptSchema.parse(await authenticated("/v1/events", "POST", body, token));
+    },
+    async postResult(runId: string, generation: number, result: RunnerResult, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerResultDeliverySchema.parse({ generation, result });
+      RunnerGrantTokenSchema.parse(grantToken);
+      return RunnerEventReceiptSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/result`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+    },
+    async answers(runId: string, generation: number, after: number, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerAnswersRequestSchema.parse({ generation, after });
+      RunnerGrantTokenSchema.parse(grantToken);
+      const response = RunnerAnswersSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/answers`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+      let previous = after;
+      for (const answer of response.answers) {
+        if (answer.sequence <= previous) throw new Error("Runner answer sequence is invalid.");
+        previous = answer.sequence;
+      }
+      return response;
+    },
+    async repositoryCredential(
+      runId: string,
+      generation: number,
+      access: "read" | "write",
+      grantToken: string,
+    ) {
+      ensureOpen();
+      identifier.parse(runId);
+      const body = RunnerRepositoryAccessSchema.parse({ generation, access });
+      RunnerGrantTokenSchema.parse(grantToken);
+      const stored = db
+        .query<{ payload: string }, [string, number]>(
+          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review') ORDER BY rowid DESC LIMIT 1",
+        )
+        .get(runId, generation);
+      if (!stored) throw new Error("Runner work command is unknown.");
+      const command = RunnerCommandSchema.parse(JSON.parse(stored.payload));
+      if (command.type !== "run" && command.type !== "review")
+        throw new Error("Runner work command is invalid.");
+      if (access === "write" && command.type !== "run")
+        throw new Error("Review commands cannot request repository write access.");
+      const credential = RunnerRepositoryCredentialSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/repository-credential`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+      const current = now();
+      if (
+        credential.expiresAt <= current ||
+        credential.expiresAt > current + 60 * 60_000 ||
+        credential.remoteUrl !== command.repository.remoteUrl ||
+        (access === "read" ? credential.branch !== null : credential.branch === null)
+      )
+        throw new Error("Runner repository credential does not match the admitted work.");
+      return credential;
     },
     async pollCommands() {
       const identity = paired();
+      trustedSigningKeys(identity, pins);
       for (const row of db
         .query<{ id: string }, []>(
           "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
@@ -242,11 +423,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         .parse(await authenticated("/v1/commands", "GET"));
       ensureOpen();
       unchangedIdentity(identity);
+      const trustedKeys = trustedSigningKeys(paired(), pins);
       const rejected: RunnerCommandRejection[] = [];
       for (const envelope of response.commands) {
         const result = immediate(db, () => {
           const verified = verifyRunnerCommand(envelope, {
-            trustedKeys: options.trustedKeys,
+            trustedKeys,
             runnerId: identity.runnerId,
             workspaceId: identity.workspaceId,
             now: now(),
@@ -280,6 +462,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Renewed certificate changes the paired identity.");
       const renewed = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, renewed, now());
+      trustedSigningKeys(renewed, pins);
       writeState(options.root, renewed);
       state = renewed;
       return status();

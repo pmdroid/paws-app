@@ -1,0 +1,391 @@
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fchownSync,
+  fstatSync,
+  fsyncSync,
+  mkdirSync,
+  lstatSync,
+  openSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
+import { join, isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  git,
+  runAgent,
+  minimalAgentEnv,
+  type AcpEvent,
+  type RunAgentOptions,
+  type RunAgentResult,
+} from "../acp";
+import {
+  readRunnerJob,
+  runnerRepositoryBundlePath,
+  runnerResultDirectory,
+  RunnerJobSchema,
+  type RunnerJob,
+  type RunnerResults,
+  type RunnerSpool,
+} from "../runner-execution";
+import { readRunnerAnswer } from "../runner-answers";
+import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
+
+export interface RunnerWorkerOptions {
+  job: RunnerJob;
+  repositoryBundle?: string;
+  outputDirectory: string;
+  workRoot: string;
+  home: string;
+  resultsGid: number;
+  signal?: AbortSignal;
+  launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
+  answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
+  loginCommand?: LoginCommandRunner;
+}
+
+export type RunnerWorkerEvent =
+  | { type: "acp"; event: AcpEvent }
+  | { type: "question"; requestId: string; question: string; options: readonly unknown[] };
+
+export interface RunnerWorkerResult {
+  executionId: string;
+  commandId: string;
+  run: RunAgentResult;
+  candidateSha?: string;
+  reviewText?: string;
+  login?: {
+    agent: "claude" | "codex" | "grok";
+    authenticated: boolean;
+    method: "subscription" | "api_key" | "other" | "none";
+    command: string;
+  };
+}
+
+function outputFile(directory: string, name: string, resultsGid: number): number {
+  const fd = openSync(
+    join(directory, name),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o640,
+  );
+  try {
+    fchownSync(fd, process.getuid!(), resultsGid);
+    fchmodSync(fd, 0o640);
+    return fd;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+export async function executeRunnerCommand(
+  options: RunnerWorkerOptions,
+): Promise<RunnerWorkerResult> {
+  const job = RunnerJobSchema.parse(options.job);
+  const command = job.command;
+  const repository = command.type === "run" || command.type === "review";
+  if (
+    ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
+    !Number.isSafeInteger(options.resultsGid) ||
+    options.resultsGid < 0 ||
+    repository !== (options.repositoryBundle !== undefined)
+  )
+    throw new Error("Invalid runner worker configuration");
+  options.signal?.throwIfAborted();
+  for (const [name, kind] of [
+    ["events.jsonl", "journal"],
+    ["result.json", "result"],
+  ] as const) {
+    try {
+      lstatSync(join(options.outputDirectory, name));
+      throw new Error(`Runner ${kind} already exists`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
+  try {
+    fsyncSync(claim);
+  } finally {
+    closeSync(claim);
+  }
+  const journalName = `.events-${randomUUID()}.tmp`;
+  const journalPath = join(options.outputDirectory, journalName);
+  let journal: number | undefined;
+  try {
+    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
+    fsyncSync(journal);
+    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
+    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+  } catch (error) {
+    if (journal !== undefined) closeSync(journal);
+    throw error;
+  } finally {
+    rmSync(journalPath, { force: true });
+  }
+  const eventJournal = journal;
+  let journalSize = 0;
+  function emit(event: RunnerWorkerEvent): void {
+    const line = `${JSON.stringify(event)}\n`;
+    const length = Buffer.byteLength(line);
+    if (length > 262_144 || journalSize + length > 16_777_216)
+      throw new Error("Runner event journal exceeds size limit");
+    writeFileSync(eventJournal, line);
+    fsyncSync(eventJournal);
+    journalSize += length;
+  }
+  try {
+    mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
+    const worktree = join(options.workRoot, job.executionId);
+    const env = {
+      PATH: "/usr/bin:/bin",
+      HOME: options.home,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    };
+    const invokeGit = (args: string[]) => git(args, { env, signal: options.signal });
+    if (repository) {
+      const bundle = openSync(
+        options.repositoryBundle!,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const info = fstatSync(bundle);
+        if (!info.isFile() || info.size === 0 || info.size > 536_870_912)
+          throw new Error("Invalid runner repository bundle");
+      } finally {
+        closeSync(bundle);
+      }
+      await invokeGit([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "clone",
+        "--no-checkout",
+        "--",
+        options.repositoryBundle!,
+        worktree,
+      ]);
+      const base = (
+        await invokeGit([
+          "-C",
+          worktree,
+          "rev-parse",
+          "--verify",
+          `${command.repository.baseSha}^{commit}`,
+        ])
+      ).trim();
+      if (base !== command.repository.baseSha) throw new Error("Runner repository base mismatch");
+      await invokeGit(["-C", worktree, "config", "core.hooksPath", "/dev/null"]);
+      await invokeGit(["-C", worktree, "checkout", "-b", `paws/${job.executionId}`, base]);
+      await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
+    } else {
+      mkdirSync(worktree, { mode: 0o700 });
+    }
+    let reviewText = "";
+    let eventFailure: Error | undefined;
+    const agentEnv = minimalAgentEnv({
+      PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
+      ...options.launch?.env,
+      HOME: options.home,
+    });
+    const run = await runAgent({
+      ...options.launch,
+      env: agentEnv,
+      checkpointEnv: env,
+      profile:
+        command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
+      role: command.type === "review" ? "reviewer" : "implementer",
+      readOnly: command.type !== "run",
+      checkpoint: command.type === "run",
+      prepareOnly: !repository,
+      itemId: repository ? command.itemId : job.executionId,
+      runId: job.executionId,
+      prompt: repository ? command.prompt : "Check agent connection.",
+      worktreePath: worktree,
+      pawsRoot: join(options.workRoot, ".paws"),
+      home: options.home,
+      signal: options.signal,
+      onEvent(event) {
+        try {
+          if (
+            command.type === "review" &&
+            event.type === "session_update" &&
+            event.update.sessionUpdate === "agent_message_chunk" &&
+            event.update.content.type === "text"
+          ) {
+            reviewText += event.update.content.text;
+            if (Buffer.byteLength(reviewText) > 524_288)
+              throw new Error("Runner response exceeds size limit");
+          }
+          emit({ type: "acp", event });
+        } catch (error) {
+          eventFailure = error instanceof Error ? error : new Error(String(error));
+          throw error;
+        }
+      },
+      askTeam: {
+        async ask(request, context) {
+          if (!options.answer) throw new Error("Runner question channel is unavailable");
+          const requestId = randomUUID();
+          emit({
+            type: "question",
+            requestId,
+            question: request.question,
+            options: request.options ?? [],
+          });
+          return options.answer(requestId, context.signal);
+        },
+      },
+    });
+    if (eventFailure) throw eventFailure;
+    if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
+      throw new Error("Runner response exceeds size limit");
+    const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
+    if (command.type === "login_check") {
+      const checked =
+        command.agent === "grok"
+          ? null
+          : await checkDeveloperLogin({
+              cli: command.agent,
+              env: agentEnv,
+              run: options.loginCommand,
+            });
+      const authenticated =
+        run.stopReason === "end_turn" &&
+        !run.authRequired &&
+        !run.errorMessage &&
+        (checked?.loggedIn ?? Boolean(run.identity));
+      result.login = {
+        agent: command.agent,
+        authenticated,
+        method: !authenticated
+          ? "none"
+          : checked?.authMethod === "api_key" || checked?.authMethod === "api_key_helper"
+            ? "api_key"
+            : checked?.authMethod === "claude.ai" || checked?.authMethod === "oauth_token"
+              ? "subscription"
+              : "other",
+        command:
+          command.agent === "claude"
+            ? "claude auth login"
+            : command.agent === "codex"
+              ? "codex login --device-auth"
+              : "grok login",
+      };
+    }
+    if (repository && run.stopReason === "end_turn" && !run.errorMessage && run.agentExited) {
+      const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
+      if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
+      await invokeGit([
+        "-C",
+        worktree,
+        "merge-base",
+        "--is-ancestor",
+        command.repository.baseSha,
+        sha,
+      ]);
+      if (command.type === "run") {
+        result.candidateSha = sha;
+        if (sha !== command.repository.baseSha) {
+          const candidatePath = join(options.outputDirectory, "candidate.bundle");
+          const fd = outputFile(options.outputDirectory, "candidate.bundle", options.resultsGid);
+          closeSync(fd);
+          await invokeGit([
+            "-C",
+            worktree,
+            "bundle",
+            "create",
+            candidatePath,
+            "HEAD",
+            `^${command.repository.baseSha}`,
+          ]);
+          const candidate = openSync(candidatePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            const info = fstatSync(candidate);
+            if (!info.isFile() || info.size > 536_870_912)
+              throw new Error("Runner candidate exceeds size limit");
+            fchownSync(candidate, process.getuid!(), options.resultsGid);
+            fchmodSync(candidate, 0o640);
+            fsyncSync(candidate);
+          } finally {
+            closeSync(candidate);
+          }
+        }
+      } else result.reviewText = reviewText;
+    }
+    const serialized = JSON.stringify(result);
+    if (Buffer.byteLength(serialized) > 1_048_576)
+      throw new Error("Runner result exceeds size limit");
+    const stagingName = `.result-${randomUUID()}.tmp`;
+    const stagingPath = join(options.outputDirectory, stagingName);
+    try {
+      const final = outputFile(options.outputDirectory, stagingName, options.resultsGid);
+      try {
+        writeFileSync(final, serialized);
+        fsyncSync(final);
+      } finally {
+        closeSync(final);
+      }
+      renameSync(stagingPath, join(options.outputDirectory, "result.json"));
+    } finally {
+      rmSync(stagingPath, { force: true });
+    }
+    const directory = openSync(
+      options.outputDirectory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    return result;
+  } finally {
+    closeSync(journal);
+  }
+}
+
+export async function runRunnerWorker(options: {
+  executionId: string;
+  spool: RunnerSpool;
+  results: RunnerResults;
+  workRoot: string;
+  home: string;
+  signal?: AbortSignal;
+}): Promise<RunnerWorkerResult> {
+  if (
+    process.getuid?.() !== options.results.agentUid ||
+    options.results.agentUid === options.spool.runnerUid
+  )
+    throw new Error("Runner worker must use the separate agent identity");
+  const job = readRunnerJob(options.spool, options.executionId);
+  return executeRunnerCommand({
+    job,
+    ...(job.command.type === "run" || job.command.type === "review"
+      ? { repositoryBundle: runnerRepositoryBundlePath(options.spool, options.executionId) }
+      : {}),
+    outputDirectory: runnerResultDirectory(options.results, options.executionId),
+    workRoot: options.workRoot,
+    home: options.home,
+    resultsGid: options.results.resultsGid,
+    signal: options.signal,
+    async answer(requestId, signal) {
+      while (true) {
+        signal.throwIfAborted();
+        const answer = readRunnerAnswer(options.spool, options.executionId, requestId);
+        if (answer) return { answer: answer.answer };
+        await delay(250, undefined, { signal });
+      }
+    },
+  });
+}

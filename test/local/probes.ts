@@ -1,11 +1,17 @@
+import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
+import { probeRunnerTranscripts } from "./runner-transcripts";
+import { probeRunnerArtifacts } from "./runner-artifacts";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
+import { probeRunnerRepositories } from "./runner-repositories";
+import { probeGitCancellation } from "./git-cancellation";
 import { statSync, writeFileSync } from "node:fs";
+import { probeRunnerWorker } from "./runner-worker";
 import { dirname, join } from "node:path";
 import {
   createTokenStore,
@@ -38,6 +44,8 @@ import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
 import { probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
+import { probeRunnerVerifier } from "./runner-verifier";
+import { probeRunnerEvidenceRelays } from "./runner-evidence-relays";
 import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
@@ -52,8 +60,13 @@ export async function probeBoundaries(
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
+  await probeRunnerDaemonHealth(join(root, "runner-daemon-health"), observe);
+  await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
+  await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
+  probeRunnerVerifier(observe);
+  await probeRunnerEvidenceRelays(join(root, "runner-evidence-relays"), observe);
   const release = Bun.spawn(
     [
       "/usr/bin/python3",
@@ -80,6 +93,9 @@ export async function probeBoundaries(
   );
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
   await probeRunnerHttp(join(root, "runner-http"), observe);
+  await probeRunnerRepositories(join(root, "runner-repositories"), observe);
+  await probeGitCancellation(join(root, "git-cancellation"), observe);
+  await probeRunnerWorker(join(root, "runner-worker"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,
