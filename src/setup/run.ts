@@ -13,6 +13,7 @@ import {
   type PawsSetupConfig,
 } from "../config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../core";
+import { assertLinearQueue } from "../db";
 import {
   checkGhPushPermission,
   ghDoctorChecks,
@@ -30,12 +31,11 @@ import { GITHUB_REAUTH_MESSAGE } from "../auth";
 import {
   chooseGitHubRepo,
   cloneGitHubMirror,
-  ensureGitHubLabels,
   ensureGitHubSignIn,
   resolveSetupGitHubClientId,
   tokenStore,
 } from "./github";
-import { HELP, parseArgs, type LinearModeFlag, type SetupFlags, type TrackerFlag } from "./args";
+import { HELP, parseArgs, type LinearModeFlag, type SetupFlags } from "./args";
 import { ensureCloseoutPolicy } from "./closeout";
 import { chooseTeam, connectLinear, ensurePawsLabel } from "./linear";
 import { createIO, definedEnv, withProcessPath, type SetupIO, type SetupOptions } from "./io";
@@ -91,14 +91,22 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
 
   ensureBun(io.env);
   ensureGit(io.env);
-  const tracker: TrackerFlag = flags.tracker ?? "github";
   const home = resolveHome(flags, io);
   const paths = pawsPaths(home);
+  assertLinearQueue(paths.db);
   ensureLayout(paths);
   const oauthClientId = resolveSetupGitHubClientId(home, io.env);
-  const useGitHubApp = loadRuntime({ ...io.env, PAWS_HOME: home }).githubAuth === "app";
+  const previous = loadRuntime({ ...io.env, PAWS_HOME: home });
+  const githubAuth =
+    previous.configured ||
+    previous.githubAuth === "app" ||
+    io.env.GITHUB_AUTH ||
+    io.env.PAWS_GITHUB_AUTH
+      ? previous.githubAuth
+      : "oauth";
+  const useGitHubApp = githubAuth === "app";
   let githubToken: string | null = null;
-  if (tracker === "github" || tracker === "both" || useGitHubApp) {
+  if (githubAuth !== "gh") {
     const signedIn = await ensureGitHubSignIn({
       yes: flags.yes,
       home,
@@ -111,7 +119,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     });
     githubToken = signedIn.token;
   }
-  if (tracker === "linear" && !useGitHubApp) await ensureGhLogin(io, flags.yes);
+  if (githubAuth === "gh") await ensureGhLogin(io, flags.yes);
   const implementer = await chooseImplementer(flags, io);
   if (implementer === "claude") await ensureDeveloperLogin("claude", io, flags.yes);
   if (implementer === "grok") await ensureGrokLogin(io, flags.yes);
@@ -123,12 +131,11 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   }
 
   const mode = flags.linearMode ?? DEFAULT_LINEAR_MODE;
-  const useLinear = tracker === "linear" || tracker === "both";
-  const reconnect = useLinear && mode === "agent-session" ? io.linearReconnect?.(home) : undefined;
+  const reconnect = mode === "agent-session" ? io.linearReconnect?.(home) : undefined;
   let linear: LinearSecrets | null = null;
   let team: { key: string; id: string } | null = null;
   let viewerId = "";
-  if (useLinear) {
+  {
     linear = await resolveLinear(flags, io, mode, secrets);
     const connected = await connectLinear({ mode, secret: linear.apiSecret, fetch: io.fetch });
     team = await chooseTeam({
@@ -143,7 +150,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   }
 
   let repository: { owner: string; repo: string };
-  if (tracker === "github" || tracker === "both" || useGitHubApp) {
+  if (githubAuth !== "gh") {
     if (githubToken === null) stop(GITHUB_REAUTH_MESSAGE);
     const store = tokenStore(home, io.github);
     repository = await chooseGitHubRepo({
@@ -160,14 +167,6 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       token: githubToken,
       env: io.env,
     });
-    if (tracker !== "linear")
-      await ensureGitHubLabels({
-        token: githubToken,
-        owner: repository.owner,
-        repo: repository.repo,
-        ...(io.fetch ? { fetch: io.fetch } : {}),
-        store,
-      });
   } else {
     repository = await withProcessPath(io.env.PATH, () => resolveRepository(flags, io, checkout));
     const remoteUrl = githubHttpsUrl(repository.owner, repository.repo);
@@ -207,7 +206,6 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   }
   const webhookSecret = io.env.LINEAR_WEBHOOK_SECRET;
   if (webhookSecret) writeSecretFile(join(paths.secretsDir, "linear-webhook"), webhookSecret);
-  const githubAuth = useGitHubApp ? "app" : tracker === "linear" ? "gh" : "oauth";
   const config: PawsSetupConfig = {
     linearMode: mode,
     linearTeam: team?.key ?? "",
@@ -217,7 +215,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     linearClientFile: mode === "agent-session" ? CLIENT_FILE : null,
     githubAuth,
     ...(githubAuth !== "gh" ? { oauthClientId } : {}),
-    trackerKind: tracker,
+    trackerKind: "linear",
     repo: `${repository.owner}/${repository.repo}`,
     checkout,
     maxTurns: DEFAULT_MAX_TURNS,

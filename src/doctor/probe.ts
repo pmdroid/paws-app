@@ -312,7 +312,7 @@ function applyGhFallback(
   facts: GitHubDoctorFacts,
   gh: { login: { ok: boolean; detail: string }; push: { ok: boolean; detail: string } },
 ): GitHubDoctorFacts {
-  if (runtime.trackerKind === "linear" || runtime.githubAuth !== "gh" || facts.placeholder) {
+  if (runtime.githubAuth !== "gh" || facts.placeholder) {
     return facts;
   }
   return {
@@ -327,7 +327,7 @@ async function githubDoctorFact(
   repo: { owner: string; repo: string } | null,
 ): Promise<GitHubDoctorFacts> {
   const unused = idleGitHubFacts();
-  if (runtime.trackerKind === "linear") return unused;
+  if (runtime.githubAuth === "gh") return unused;
   const placeholder =
     runtime.githubAuth === "oauth" && missingGitHubClientId(runtime.oauthClientId);
   const store =
@@ -388,14 +388,6 @@ async function githubDoctorFact(
           : `no push access to ${repo.owner}/${repo.repo}`,
       };
     }
-    const label = await githubGet(
-      token,
-      `/repos/${repo.owner}/${repo.repo}/labels/${encodeURIComponent("paws")}`,
-    );
-    facts.label =
-      label.status === 200
-        ? { ok: true, detail: "paws" }
-        : { ok: false, detail: "paws label is missing" };
     const rate = await githubGet(token, "/rate_limit");
     const remaining = coreRemaining(rate.body);
     if (!rate.ok || remaining === null) {

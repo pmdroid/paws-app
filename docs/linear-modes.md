@@ -1,6 +1,6 @@
 # Linear modes
 
-GitHub issues are the default tracker ([GitHub issues](github-issues.md), sign-in in [GitHub sign-in](github-login.md)). This page is the optional Linear path.
+Linear is the issue tracker. GitHub authentication for repositories and pull requests is described in [GitHub sign-in](github-login.md).
 
 Comment mode is the Linear mode Paws writes for a local run. Agent-session mode stays available in `src/linear` and is optional.
 

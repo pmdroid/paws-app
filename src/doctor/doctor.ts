@@ -52,7 +52,6 @@ const FIX = {
   githubApp: "Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, and a private key at mode 0600.",
   githubLogin: "Run bun run paws login github.",
   githubPush: "Grant this login push access to the repository.",
-  githubLabel: "Create the paws label on the repository.",
   githubRate: "Wait for the GitHub rate limit to recover.",
 } as const;
 
@@ -62,8 +61,6 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
   const paths = pawsPaths(env.home);
   const facts = probe.facts;
   const repoOk = facts.repo !== null && /^[^/\s]+\/[^/\s]+$/.test(facts.repo);
-  const githubTracker = facts.trackerKind === "github" || facts.trackerKind === "both";
-  const linearTracker = facts.trackerKind !== "github";
   const checks: DoctorCheck[] = [
     check("git", probe.which("git") !== null, probe.which("git") ?? "git is not on PATH", FIX.git),
     check(
@@ -79,12 +76,12 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.home,
     ),
   ];
-  if (linearTracker) {
+  {
     checks.push(linearCheck(facts), modeCheck(facts), teamCheck(facts));
     if (facts.linearMode === "comments") checks.push(labelCheck(facts));
   }
-  if (githubTracker) {
-    checks.push(...githubTrackerChecks(facts));
+  if (facts.githubAuth !== "gh") {
+    checks.push(...githubAuthChecks(facts));
   } else {
     checks.push(
       check("gh-login", facts.ghLogin.ok, facts.ghLogin.detail, FIX.ghLogin),
@@ -180,7 +177,7 @@ export async function realProbe(env: EnvSource = process.env): Promise<DoctorPro
   };
 }
 
-function githubTrackerChecks(facts: ProbeFacts): DoctorCheck[] {
+function githubAuthChecks(facts: ProbeFacts): DoctorCheck[] {
   if (
     facts.githubAuth === "oauth" &&
     (facts.githubDoctor.placeholder || missingGitHubClientId(facts.oauthClientId))
@@ -205,7 +202,6 @@ function githubTrackerChecks(facts: ProbeFacts): DoctorCheck[] {
       github.push.detail,
       github.push.ok ? undefined : FIX.githubPush,
     ),
-    check("github-label", github.label.ok, github.label.detail, FIX.githubLabel),
     check("github-rate", github.rate.ok, github.rate.detail, FIX.githubRate),
   ];
   return checks;

@@ -21,12 +21,12 @@ import {
 
 const home = process.argv[2]!;
 const mode = process.argv[3] ?? "notification";
-const contextMode = mode === "context" || mode === "hybrid";
+const contextMode = mode === "context" || mode === "github-auth";
 let githubReads = 0;
-if (mode === "hybrid") {
+if (mode === "github-auth") {
   writeFileSync(
     join(home, "config.toml"),
-    '[tracker]\nkind = "both"\n[github]\nauth = "oauth"\nrepo = "acme/app"\n',
+    '[tracker]\nkind = "linear"\n[github]\nauth = "oauth"\nrepo = "acme/app"\n',
   );
   await createTokenStore({ home, which: () => null }).save({
     accessToken: "synthetic-host-token",
@@ -249,7 +249,7 @@ reopened.close();
 console.log(
   JSON.stringify({
     statuses,
-    ...(mode === "hybrid" ? { githubReads } : {}),
+    ...(mode === "github-auth" ? { githubReads } : {}),
     state,
     pending,
     ...(contextMode ? { contextReads, context, restoredContext } : {}),

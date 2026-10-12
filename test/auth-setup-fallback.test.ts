@@ -103,7 +103,7 @@ test("interactive setup recovers unavailable Secret Service through device login
     configured: true,
     linearMode: "comments",
     githubAuth: "oauth",
-    trackerKind: "github",
+    trackerKind: "linear",
     oauthClientId: s.input.oauthClientId,
     githubDoctor: {
       placeholder: false,
