@@ -57,7 +57,7 @@ test.each(["code", "answer", "artifact"] as const)(
       runId: "run-1",
       pawsRoot: root,
       home,
-      request: "A user request",
+      request: "Classify this image https://uploads.linear.app/private/image.png?signature=secret",
       profile: { agent: "codex", model: null },
       signal: new AbortController().signal,
       launch: (input) => {
@@ -78,6 +78,9 @@ test.each(["code", "answer", "artifact"] as const)(
       },
     });
     expect(result).toEqual({ mode });
+    const trace = JSON.parse(readFileSync(join(home, "result.json"), "utf8"));
+    expect(JSON.stringify(trace.prompts)).toContain("[private input file]");
+    expect(JSON.stringify(trace.prompts)).not.toContain("signature=secret");
     expect(existsSync(join(root, "tasks", "ENG-1", "classify", ".git"))).toBe(false);
     expect(existsSync(join(root, "tasks", "ENG-1", "classify", "forbidden.txt"))).toBe(false);
     expect(JSON.parse(readFileSync(join(home, "result.json"), "utf8")).fs[0]).toMatchObject({

@@ -41,7 +41,12 @@ export async function classifyTask(options: {
     "artifact: creating a deliverable file or image without changing repository files.",
     "clarify: the requested outcome is ambiguous and a question is needed before choosing a mode.",
     "Do not perform the task, use tools, edit files, or include reasoning in the output.",
-    JSON.stringify({ request: options.request }),
+    JSON.stringify({
+      request: options.request.replace(
+        /https:\/\/uploads\.linear\.app\/[^\s<>"'\\)\]]+/g,
+        "[private input file]",
+      ),
+    }),
   ].join("\n\n");
   const launched = options.launch({
     role: "implementer",
