@@ -18,7 +18,6 @@ import {
   createAcpActivityReporter,
   createLinearSessionProgress,
   deliverLinearOutbox,
-  routeBySource,
 } from "../src/loop";
 import { tempDb } from "./helpers";
 
@@ -141,7 +140,7 @@ test("Stop and newer turns fence captured metadata callbacks", async () => {
   db.close();
 });
 
-test("PR links use incremental session updates through the routed GraphQL adapter", async () => {
+test("PR links use incremental session updates through the GraphQL adapter", async () => {
   const db = tempDb();
   const sent: unknown[] = [];
   const linear = createLinearTracker({
@@ -150,7 +149,7 @@ test("PR links use incremental session updates through the routed GraphQL adapte
       return { agentSessionUpdate: { success: true, agentSession: { id: "session" } } };
     },
   });
-  const tracker = routeBySource({ linear, github: createFakeTracker() });
+  const tracker = linear;
   const progress = createLinearSessionProgress(db, "session", "ENG-1");
   progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
   const dispatcher = new OutboxDispatcher(db, new FakeClock(1));

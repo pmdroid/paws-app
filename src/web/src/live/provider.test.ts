@@ -86,19 +86,6 @@ describe("live status provider", () => {
     ]);
   });
 
-  test("historical GitHub questions hand off to their source issue", () => {
-    const db = database();
-    const item = insertQueuedItem(db, { id: "GH-1", sessionKey: "github:owner/repo#7" });
-    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
-      "github:owner/repo#7",
-      item.id,
-    ]);
-    seedQuestion(db, item.id, "github:owner/repo#7");
-    expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
-      { label: "Answer on GitHub", href: "https://github.com/owner/repo/issues/7" },
-    ]);
-  });
-
   test("a Linear question without session metadata uses its readable issue key", () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });

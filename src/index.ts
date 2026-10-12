@@ -18,13 +18,7 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
-import {
-  transitionEpic,
-  WORK_ITEM_STATES,
-  type Clock,
-  type EpicState,
-  type LinearCommand,
-} from "./core";
+import { WORK_ITEM_STATES, type LinearCommand } from "./core";
 import {
   assertLinearQueue,
   enqueueCommand,
@@ -58,20 +52,6 @@ import {
   logoutGitHub,
   type GitHubTokenProvider as AuthTokenProvider,
 } from "./auth";
-import {
-  createGitHubIssuesClient,
-  githubIssueKey,
-  githubTrackerConfig,
-  loadGitHubEpic,
-  parseGitHubIssueKey,
-  type FetchLike,
-  type GitHubIssuesClient,
-} from "./ghissues";
-import {
-  createGitHubCommentTracker,
-  type GitHubCommentRequest,
-  type GitHubCommentTracker,
-} from "./ghcomments";
 import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
@@ -108,7 +88,7 @@ import { loginDocker, startAllowProxy, type AllowProxy } from "./sandbox";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
-import { findOpenQuestion, type StoredQuestion } from "./questions";
+import { findOpenQuestion } from "./questions";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -778,209 +758,6 @@ export function gitHostToken(provider: AuthTokenProvider): GitHubTokenProvider {
     mode: provider.source,
     tokenFor: () => provider.token(),
   };
-}
-
-export function openGitHubWork(options: {
-  provider: AuthTokenProvider;
-  owner: string;
-  repo: string;
-  repos?: readonly string[];
-  triggerLabel?: string;
-  mention?: string;
-  trusted?: readonly string[];
-  labels?: boolean;
-  fetch?: FetchLike;
-  baseUrl?: string;
-  clock?: Clock;
-}): { client: GitHubIssuesClient; comments: GitHubCommentTracker; tracker: TrackerAdapter } {
-  const repos =
-    options.repos !== undefined && options.repos.length > 0
-      ? [...options.repos]
-      : [`${options.owner}/${options.repo}`];
-  const client = createGitHubIssuesClient({
-    provider: options.provider,
-    config: githubTrackerConfig({
-      ...(options.triggerLabel === undefined ? {} : { trigger_label: options.triggerLabel }),
-      ...(options.mention === undefined ? {} : { mention: options.mention }),
-      ...(options.trusted === undefined ? {} : { trusted: options.trusted }),
-      repos,
-    }),
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-  });
-  const request = githubCommentRequest(options.provider, options.fetch, options.baseUrl);
-  const comments = createGitHubCommentTracker({
-    request,
-    owner: options.owner,
-    repo: options.repo,
-    ...(options.clock === undefined ? {} : { clock: options.clock }),
-    ...(options.trusted === undefined ? {} : { trustedAssociations: options.trusted }),
-    ...(options.labels === false ? { labels: false } : {}),
-  });
-  const tracker: TrackerAdapter = {
-    async loadEpic(id) {
-      comments.bind({ itemId: id, issueId: id, sessionId: id });
-      return loadGitHubEpic(client, requireGitHubIssue(id));
-    },
-    async listDeps(id) {
-      const ref = requireGitHubIssue(id);
-      const blockers = await client.listBlockedBy({ owner: ref.owner, repo: ref.repo }, ref.number);
-      return blockers
-        .filter((issue) => !issue.pullRequest)
-        .map((issue) => ({
-          blockerLinearIssueId: githubIssueKey(issue.owner, issue.repo, issue.number),
-          blockedLinearIssueId: id,
-        }));
-    },
-    async postProgress(update) {
-      await comments.postProgress(update);
-      if (update.body.includes("Epic complete.")) await closeGitHubIssue(request, update.sessionId);
-    },
-    askQuestion: (question) => comments.askQuestion(question),
-    setStatus: (update) => comments.setStatus(update),
-  };
-  return { client, comments, tracker };
-}
-
-export function githubCreatedEvent(issueId: string, updatedAtMs: number): AcceptedLinearEvent {
-  return {
-    dedupeKey: `github:created:${issueId}`,
-    deliveryId: null,
-    source: "poll",
-    action: "created",
-    sessionId: issueId,
-    issueId,
-    activityId: null,
-    body: null,
-    signal: null,
-    updatedAtMs,
-    payload: "{}",
-  };
-}
-
-export async function ingestGitHubComments(
-  comments: GitHubCommentTracker,
-  issueId: string,
-  deliver: (event: AcceptedLinearEvent) => Promise<void>,
-  stop: (itemId: string, at: number) => void,
-  pending?: StoredQuestion | null,
-): Promise<void> {
-  const result = await comments.sync(issueId, pending);
-  for (const answer of result.resumed) {
-    await deliver({
-      dedupeKey: `github-answer:${answer.questionId}`,
-      deliveryId: null,
-      source: "poll",
-      action: "prompted",
-      sessionId: issueId,
-      issueId,
-      activityId: null,
-      body: answer.answer,
-      signal: null,
-      updatedAtMs: Date.now(),
-      payload: JSON.stringify({ answeredBy: answer.answeredBy, questionId: answer.questionId }),
-    });
-  }
-  for (const stopped of result.stopped) {
-    stop(stopped.itemId, stopped.requestedAt);
-  }
-}
-
-export function createGitHubCommentIngestor(
-  db: Database,
-  comments: GitHubCommentTracker,
-  deliver: (event: AcceptedLinearEvent) => Promise<void>,
-  submit: (command: LinearCommand) => void,
-): (issueId: string) => Promise<void> {
-  return (issueId) => {
-    comments.bind({ itemId: issueId, issueId, sessionId: issueId });
-    return ingestGitHubComments(
-      comments,
-      issueId,
-      deliver,
-      (_key, requestedAt) => {
-        const epic = db
-          .query<{ id: string; state: EpicState }, [string]>(
-            "SELECT id, state FROM epic WHERE linear_issue_id = ?",
-          )
-          .get(issueId);
-        if (epic !== null) {
-          const cancelled = transitionEpic(epic.state, "cancel");
-          if (cancelled.ok) {
-            db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
-              cancelled.to,
-              epic.id,
-              epic.state,
-            ]);
-          }
-        }
-        const targets = db
-          .query<{ id: string }, [string, string]>(
-            `SELECT work_item.id FROM work_item
-           JOIN epic ON epic.id = work_item.epic_id
-           WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
-             AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
-           ORDER BY work_item.position, work_item.id`,
-          )
-          .all(issueId, issueId);
-        for (const { id } of targets) {
-          submit({ type: "stop", itemId: id, source: "linear", requestedAt });
-        }
-      },
-      findOpenQuestion(db, issueId),
-    );
-  };
-}
-
-function githubCommentRequest(
-  provider: AuthTokenProvider,
-  fetchImpl: FetchLike = fetch,
-  baseUrl = "https://api.github.com",
-): GitHubCommentRequest {
-  const root = baseUrl.replace(/\/$/, "");
-  return async (input) => {
-    const token = await provider.token();
-    const response = await fetchImpl(`${root}${input.path}`, {
-      method: input.method,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "paws",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(input.body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
-      body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    });
-    const text = await response.text();
-    let body: unknown = {};
-    if (text.length > 0) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = {};
-      }
-    }
-    return { status: response.status, body, link: response.headers.get("link") };
-  };
-}
-
-async function closeGitHubIssue(request: GitHubCommentRequest, issueId: string): Promise<void> {
-  const ref = parseGitHubIssueKey(issueId);
-  if (ref === null) return;
-  const closed = await request({
-    method: "PATCH",
-    path: `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/issues/${ref.number}`,
-    body: { state: "closed" },
-  });
-  if (closed.status !== 200) {
-    throw new Error(`closing GitHub issue #${ref.number} failed with status ${closed.status}`);
-  }
-}
-
-function requireGitHubIssue(id: string): { owner: string; repo: string; number: number } {
-  const ref = parseGitHubIssueKey(id);
-  if (ref === null) throw new Error(`invalid GitHub issue id: ${id}`);
-  return ref;
 }
 
 async function loginGitHubCommand(args: readonly string[]): Promise<number> {

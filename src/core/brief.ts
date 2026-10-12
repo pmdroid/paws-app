@@ -1,5 +1,5 @@
 export type IssueBrief = {
-  source: "linear" | "github";
+  source: "linear";
   issueId: string;
   identifier: string;
   title: string;

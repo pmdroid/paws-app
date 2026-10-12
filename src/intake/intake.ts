@@ -129,7 +129,7 @@ function issueBrief(issue: {
   acceptanceCriteria?: string | null;
 }): IssueBrief {
   return {
-    source: issue.linearIssueId.startsWith("github:") ? "github" : "linear",
+    source: "linear",
     issueId: issue.linearIssueId,
     identifier: issue.identifier,
     title: issue.title,

@@ -55,7 +55,7 @@ describe("local agent settings API", () => {
     const { options } = fixture();
     writeFileSync(
       options.configPath,
-      '[github]\nrepo = "pmdroid/other"\n[agents.grok]\npath = "/secret/bin"\n',
+      '[github]\nrepo = "pmdroid/other"\nrepos = ["pmdroid/library", "pmdroid/other"]\n[agents.grok]\npath = "/secret/bin"\n',
     );
     const response = await handleAgentSettingsRequest(request(), options);
     expect(response?.status).toBe(200);
@@ -66,7 +66,11 @@ describe("local agent settings API", () => {
         implementer: { agent: "claude", model: null },
         reviewer: { agent: "codex", model: null },
       },
-      projects: [{ repo: "pmdroid/other" }, { repo: "pmdroid/barkvisor" }],
+      projects: [
+        { repo: "pmdroid/other" },
+        { repo: "pmdroid/library" },
+        { repo: "pmdroid/barkvisor" },
+      ],
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });

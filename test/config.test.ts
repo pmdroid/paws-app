@@ -251,13 +251,6 @@ describe("config", () => {
     expect(runtime.githubAuth).toBe("oauth");
     expect(runtime.oauthClientId).toBe("Iv1.from-env");
     expect(runtime.trackerKind).toBe("linear");
-    expect(runtime.trackerGithub).toEqual({
-      triggerLabel: "paws",
-      mention: "@paws",
-      trusted: ["OWNER", "MEMBER", "COLLABORATOR"],
-      repos: [],
-      statusLabels: true,
-    });
     const text = readFileSync(paths.configFile, "utf8");
     expect(text).toContain('auth = "oauth"');
     expect(text).toContain('kind = "linear"');

@@ -328,7 +328,7 @@ function questionsFor(
       recommendedOption: null,
       askedAt: iso(question.createdAt),
       claimedBy: null,
-      links: questionLinks(db, question.sessionId, record.linearIssueId, record.linearIdentifier),
+      links: questionLinks(db, question.sessionId, record.linearIdentifier),
     });
   }
   const waiting = records.filter((record) => record.state === "awaiting_input");
@@ -365,7 +365,7 @@ function questionsFor(
       recommendedOption: null,
       askedAt: iso(row.createdAt),
       claimedBy: null,
-      links: questionLinks(db, session, record.linearIssueId, record.linearIdentifier),
+      links: questionLinks(db, session, record.linearIdentifier),
     });
   }
   return questions;
@@ -374,7 +374,6 @@ function questionsFor(
 function questionLinks(
   db: Database,
   sessionId: string,
-  issueId: string,
   identifier: string,
 ): StatusQuestion["links"] {
   const source = getLinearConversationSource(db, sessionId);
@@ -385,14 +384,6 @@ function questionLinks(
         return [{ label: "Answer in Linear", href: url.href }];
     } catch {}
   }
-  const github = /^github:([\w.-]+)\/([\w.-]+)#([1-9]\d*)$/.exec(issueId);
-  if (github)
-    return [
-      {
-        label: "Answer on GitHub",
-        href: `https://github.com/${github[1]}/${github[2]}/issues/${github[3]}`,
-      },
-    ];
   return [
     {
       label: "Answer in Linear",

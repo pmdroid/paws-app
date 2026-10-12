@@ -9,7 +9,7 @@ import {
   stopOutboxSession,
 } from "../src/db";
 import { createLinearClient, createLinearTracker } from "../src/linear";
-import { deliverLinearOutbox, routeBySource } from "../src/loop";
+import { deliverLinearOutbox } from "../src/loop";
 
 test("Stop aborts active Linear HTTP delivery before its final acknowledgement starts", async () => {
   const db = openDatabase(":memory:");
@@ -49,12 +49,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
     }),
   );
   dispatcher.setHandler((message, context) =>
-    deliverLinearOutbox(
-      message,
-      routeBySource({ linear: tracker, github: null }),
-      async () => {},
-      context,
-    ),
+    deliverLinearOutbox(message, tracker, async () => {}, context),
   );
   const progress = enqueueOutbox(db, {
     target: "linear",

@@ -10,7 +10,6 @@ import {
   type GitHubConfigAuth,
   type LinearConfigMode,
   type PawsConfigFile,
-  type TrackerGithubConfig,
 } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
@@ -39,7 +38,6 @@ export type RuntimeConfig = {
   githubAuth: GitHubConfigAuth;
   oauthClientId: string | null;
   trackerKind: "linear";
-  trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
   checkout: string | null;
@@ -74,7 +72,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
-  if (file.trackerSpecified && file.trackerKind !== "linear") {
+  if (file.retiredTrackerConfigured || (file.trackerSpecified && file.trackerKind !== "linear")) {
     configError =
       'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and run paws setup with Linear credentials. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
   }
@@ -108,7 +106,6 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     githubAuth,
     oauthClientId: resolveOAuthClientId(file, source, githubAuth) ?? app?.clientId ?? null,
     trackerKind: "linear",
-    trackerGithub: file.trackerGithub,
     repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
     checkout: optional(source, "PAWS_CHECKOUT") ?? file.checkout,

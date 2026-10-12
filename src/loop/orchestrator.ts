@@ -134,7 +134,7 @@ import { enqueueVerifiedMerge } from "./merge-jobs";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { isGitHubIssue, itemPathId, publishIssueKey, worktreeBranch } from "./sources";
+import { itemPathId, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   createAcpFixRunner,
@@ -255,7 +255,7 @@ export class Orchestrator {
           options.githubAuth,
           () => this.now(),
           (item) =>
-            !this.taskAccess(item) ||
+            !this.taskAccess() ||
             (item.sessionKey !== null &&
               getLinearSessionAccess(this.db, item.sessionKey) === "allowed"),
         )
@@ -317,8 +317,7 @@ export class Orchestrator {
       event.sessionId &&
       event.body !== null &&
       !findOpenQuestion(this.db, event.sessionId) &&
-      this.options.channel !== "comments" &&
-      !isGitHubIssue(event.issueId ?? event.sessionId)
+      this.options.channel !== "comments"
     ) {
       const turn = this.recordTurn(event);
       if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
@@ -407,11 +406,7 @@ export class Orchestrator {
     if (event.action === "prompted") {
       const question = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
       const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
-      const linearPrompt =
-        this.options.channel !== "comments" &&
-        event.sessionId &&
-        !isGitHubIssue(event.sessionId) &&
-        !isGitHubIssue(questionItem?.linearIssueId ?? event.issueId ?? "");
+      const linearPrompt = this.options.channel !== "comments" && event.sessionId;
       if (linearPrompt && event.sessionId && event.body) {
         const session = recordLinearSessionEvent(this.db, event, this.now());
         if (questionItem && session && !session.epicId) {
@@ -455,7 +450,7 @@ export class Orchestrator {
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
     const session =
-      this.options.channel !== "comments" && !isGitHubIssue(event.issueId)
+      this.options.channel !== "comments"
         ? recordLinearSessionEvent(this.db, event, this.now())
         : null;
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
@@ -547,7 +542,7 @@ export class Orchestrator {
     const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
     const progressTracker =
-      sessionId && this.options.channel !== "comments" && !isGitHubIssue(issueId)
+      sessionId && this.options.channel !== "comments"
         ? {
             ...tracker,
             postProgress: (update: ProgressUpdate) =>
@@ -560,11 +555,7 @@ export class Orchestrator {
         : tracker;
     let intakeTracker = progressTracker;
     const classification =
-      this.options.linearTaskModes &&
-      sessionId &&
-      taskKey &&
-      this.options.channel !== "comments" &&
-      !isGitHubIssue(issueId)
+      this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
         ? await this.taskPlanner.plan({
             taskKey,
             sessionId,
@@ -702,7 +693,6 @@ export class Orchestrator {
         this.options.linearAccess &&
         this.options.channel !== "comments" &&
         message.orderingKey &&
-        !isGitHubIssue(message.orderingKey) &&
         message.op !== "catchup" &&
         message.op !== "linear.catchup"
       ) {
@@ -752,12 +742,7 @@ export class Orchestrator {
     lease.unref?.();
     try {
       const handoff = readString(payload, "handoff") ?? undefined;
-      if (
-        this.options.linearTaskModes &&
-        item.sessionKey &&
-        !isGitHubIssue(item.linearIssueId) &&
-        this.options.channel !== "comments"
-      ) {
+      if (this.options.linearTaskModes && item.sessionKey && this.options.channel !== "comments") {
         if (!(await this.resolveTaskMode(item, handoff))) return;
         const mode = getTaskMode(this.db, item.id);
         if (mode === "answer" || mode === "artifact") {
@@ -970,7 +955,7 @@ export class Orchestrator {
     }, KEEPALIVE_MS);
     keepAlive.unref?.();
     try {
-      await this.taskAccess(item)?.assert(item, controller.signal, { allowTerminalIssue: true });
+      await this.taskAccess()?.assert(item, controller.signal, { allowTerminalIssue: true });
       const promptRunner = await this.prepareConversation(item);
       let repositoryContext = "";
       if (taskRequiresRepository(this.db, item.id)) {
@@ -1126,15 +1111,15 @@ export class Orchestrator {
     );
 
     try {
-      await this.taskAccess(item)?.assert(item, controller.signal);
+      await this.taskAccess()?.assert(item, controller.signal);
       const auth = this.authorization(item);
       if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
-      await this.taskAccess(item)?.prepare(item, controller.signal);
+      await this.taskAccess()?.prepare(item, controller.signal);
       this.post(item, "action", `Working on ${item.linearIdentifier}.`, `${run.id}:working`, {
         ephemeral: true,
       });
       sessionProgress?.phase("implementing");
-      if (!this.taskAccess(item)) this.postStatus(item, "started");
+      if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const prompt = implementPrompt({
@@ -1544,7 +1529,7 @@ export class Orchestrator {
         (live.sessionId === null ||
           getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
       assert: async () => {
-        await this.taskAccess(item)?.assert(item, live.controller.signal);
+        await this.taskAccess()?.assert(item, live.controller.signal);
         const auth = this.authorization(item);
         if (auth && !(await auth.ensure(item, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
@@ -1568,7 +1553,7 @@ export class Orchestrator {
       accepted: true,
       evidence: summary,
       worktree,
-      issue: publishIssueKey(item),
+      issue: item.linearIdentifier,
       branchKey: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
@@ -1596,7 +1581,7 @@ export class Orchestrator {
     let closeoutFailure: CloseoutVerdict | null = null;
     const merged = await serialMerge({
       worktree,
-      issue: isGitHubIssue(item.linearIssueId) ? itemPathId(item) : item.linearIdentifier,
+      issue: item.linearIdentifier,
       branchKey: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
@@ -1908,7 +1893,7 @@ export class Orchestrator {
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
     const requestedAt = at > 0 ? at : this.now();
-    const agentSession = this.options.channel !== "comments" && !isGitHubIssue(sessionId);
+    const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
     const accepted = immediate(this.db, () => {
       if (agentSession && acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null)
@@ -1998,12 +1983,11 @@ export class Orchestrator {
       if (
         epicIssueId &&
         items.every((item) => item.state === "merged") &&
-        this.taskAccess(items[0]!) &&
+        this.taskAccess() &&
         items.every((item) => getLinearTaskDelegation(this.db, item.id, epicIssueId)?.humanActorId)
       )
         this.postStatus(items.at(-1)!, "completed", epicIssueId);
-      const session =
-        epicIssueId !== null && isGitHubIssue(epicIssueId) ? epicIssueId : this.epicSession(items);
+      const session = this.epicSession(items);
       if (session === null) return;
       const identifiers = items.map((item) => item.linearIdentifier).join(", ");
       const results = items.flatMap((item) => {
@@ -2107,12 +2091,7 @@ export class Orchestrator {
   }
 
   private sessionProgress(item: WorkItemRecord, mode: "code" | "answer" | "artifact" = "code") {
-    if (
-      this.options.channel === "comments" ||
-      isGitHubIssue(item.linearIssueId) ||
-      !this.tracker?.updateSession
-    )
-      return null;
+    if (this.options.channel === "comments" || !this.tracker?.updateSession) return null;
     const sessionId = this.activitySession(item);
     return sessionId === null
       ? null
@@ -2160,7 +2139,7 @@ export class Orchestrator {
     stateType: "started" | "completed" | "canceled",
     issueId = item.linearIssueId,
   ): void {
-    if (this.taskAccess(item) && !getLinearTaskDelegation(this.db, item.id, issueId)?.humanActorId)
+    if (this.taskAccess() && !getLinearTaskDelegation(this.db, item.id, issueId)?.humanActorId)
       return;
     const sessionId = this.activitySession(item) ?? item.id;
     enqueueOutboxOnce(this.db, {
@@ -2175,11 +2154,7 @@ export class Orchestrator {
 
   private assignSession(epicId: string, sessionId: string): void {
     const items = this.epicItems(epicId);
-    if (
-      this.options.channel === "comments" ||
-      isGitHubIssue(sessionId) ||
-      items.some((item) => isGitHubIssue(item.linearIssueId))
-    ) {
+    if (this.options.channel === "comments") {
       for (const item of items) configureWorkItem(this.db, item.id, { sessionKey: sessionId });
       return;
     }
@@ -2226,10 +2201,8 @@ export class Orchestrator {
     return live;
   }
 
-  private taskAccess(item: WorkItemRecord): LinearTaskAccess | undefined {
-    return this.options.linearTaskModes &&
-      this.options.channel !== "comments" &&
-      !isGitHubIssue(item.linearIssueId)
+  private taskAccess(): LinearTaskAccess | undefined {
+    return this.options.linearTaskModes && this.options.channel !== "comments"
       ? this.options.linearAccess
       : undefined;
   }
@@ -2254,7 +2227,7 @@ export class Orchestrator {
           (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
         )
           throw new Error("The repository read belongs to an obsolete task.");
-        await this.taskAccess(item)?.assert(item, signal, {
+        await this.taskAccess()?.assert(item, signal, {
           allowTerminalIssue: access === "read",
         });
         const auth = this.authorization(item);
@@ -2265,11 +2238,7 @@ export class Orchestrator {
   }
 
   private authorization(item: WorkItemRecord): GitHubAuthQuestions | null {
-    return this.options.channel !== "comments" &&
-      !isGitHubIssue(item.linearIssueId) &&
-      item.sessionKey !== null
-      ? this.githubAuth
-      : null;
+    return this.options.channel !== "comments" && item.sessionKey !== null ? this.githubAuth : null;
   }
 
   private signalForItem(itemId: string): AbortSignal | undefined {
@@ -2430,7 +2399,7 @@ export class Orchestrator {
   }
 
   private async hydrateLinearContext(sessionId: string | null, signal: AbortSignal): Promise<void> {
-    if (this.options.channel === "comments" || !sessionId || isGitHubIssue(sessionId)) return;
+    if (this.options.channel === "comments" || !sessionId) return;
     if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
       const session = await this.tracker.getSession(sessionId, { signal });
       signal.throwIfAborted();
@@ -2493,13 +2462,7 @@ export class Orchestrator {
 
   private artifactPublisher(item: WorkItemRecord) {
     const sessionId = this.activitySession(item);
-    if (
-      !sessionId ||
-      !this.options.files ||
-      !this.options.secretsDir ||
-      isGitHubIssue(item.linearIssueId)
-    )
-      return undefined;
+    if (!sessionId || !this.options.files || !this.options.secretsDir) return undefined;
     return createLinearArtifactPublisher({
       db: this.db,
       files: this.options.files,
@@ -2514,7 +2477,7 @@ export class Orchestrator {
   private prepareInputFiles(item: WorkItemRecord, turnId: string) {
     const loader = this.inputLoader;
     const sessionId = this.activitySession(item);
-    if (!loader || !sessionId || isGitHubIssue(item.linearIssueId)) return undefined;
+    if (!loader || !sessionId) return undefined;
     return (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
       loader({ ...input, sessionId, turnId });
   }
@@ -2621,7 +2584,6 @@ export class Orchestrator {
   }
 
   private activitySession(item: WorkItemRecord): string | null {
-    if (isGitHubIssue(item.linearIssueId)) return item.linearIssueId;
     if (this.options.channel === "comments") return item.linearIssueId;
     const session = item.sessionKey;
     if (session === null || session.length === 0) return null;
@@ -2814,17 +2776,13 @@ export class Orchestrator {
       }
       const available =
         this.options.repositories ?? (this.options.repository ? [this.options.repository] : []);
-      const source = /^github:([^/]+)\/([^#]+)#/.exec(item.linearIssueId);
       const configured = available.filter(
         (candidate, index) =>
           available.findIndex(
             (other) =>
               `${other.owner}/${other.repo}`.toLowerCase() ===
               `${candidate.owner}/${candidate.repo}`.toLowerCase(),
-          ) === index &&
-          (!source ||
-            `${candidate.owner}/${candidate.repo}`.toLowerCase() ===
-              `${source[1]}/${source[2]}`.toLowerCase()),
+          ) === index,
       );
       const candidates: RepositoryBinding[] = auth ? [...configured] : [];
       for (const candidate of auth ? [] : configured) {
@@ -2923,7 +2881,7 @@ export class Orchestrator {
         return true;
       }
       let ranked = candidates;
-      if (!isGitHubIssue(item.linearIssueId) && this.tracker?.issueRepositorySuggestions) {
+      if (this.tracker?.issueRepositorySuggestions) {
         try {
           const suggestions = await this.tracker.issueRepositorySuggestions(
             {
