@@ -89,7 +89,7 @@ import { startServer } from "./server";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion } from "./questions";
-import { loadPublicTls } from "./deployment";
+import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import { issueVerifiedWorkspaceBootstrap, startWorkspaceAccess } from "./workspace";
 
 export type PawsProcess = {
@@ -116,7 +116,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
-  const tls = loadPublicTls(envSource);
+  const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   if (publicDashboard) {
     const origin = runtime.publicUrl === null ? null : new URL(runtime.publicUrl);
     if (
@@ -724,6 +724,17 @@ async function doctorMain(): Promise<number> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
+  if (command === "public-tls") {
+    try {
+      if (argv.length !== 2 || argv[1] !== "validate") throw new Error("Invalid command");
+      validatePublicTls(process.env);
+      console.log("Public HTTPS certificate is valid.");
+      process.exit(0);
+    } catch {
+      console.error("Public HTTPS certificate validation failed.");
+      process.exit(1);
+    }
+  }
   if (command === "workspace") {
     try {
       if (argv.length !== 2 || argv[1] !== "bootstrap")
@@ -806,16 +817,27 @@ if (import.meta.main) {
     noTunnel: argv.includes("--no-tunnel"),
   });
   let exiting = false;
-  const shutdown = () => {
+  const shutdown = (exitCode = 0) => {
     if (exiting) return;
     exiting = true;
     void (async () => {
       await paws.stop();
-      process.exit(0);
+      process.exit(exitCode);
     })().catch(() => process.exit(1));
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown());
+  process.on("SIGTERM", () => shutdown());
+  if (process.env.PAWS_PUBLIC_DASHBOARD === "1")
+    process.on("SIGHUP", () => {
+      if (exiting) return;
+      try {
+        validatePublicTls(process.env);
+      } catch {
+        console.error("Public HTTPS certificate renewal rejected.");
+        return;
+      }
+      shutdown(PUBLIC_TLS_RESTART_EXIT);
+    });
   const origin = `${paws.server.protocol}://${paws.server.hostname}:${paws.server.port}`;
   const tunnel =
     paws.tunnelRequested && paws.tunnelUrl !== null ? ` · tunnel ${paws.tunnelUrl}` : "";
