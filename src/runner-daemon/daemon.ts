@@ -1,0 +1,295 @@
+import type { KeyObject } from "node:crypto";
+import { join } from "node:path";
+import { chmodSync } from "node:fs";
+import { z } from "zod";
+import { immediate, openDatabase } from "../db";
+import { describeRunnerCertificate } from "../runner-identity";
+import {
+  RunnerCommandSchema,
+  SignedRunnerCommandSchema,
+  verifyRunnerCommand,
+  type RunnerCommand,
+  type RunnerCommandRejection,
+} from "../runner-protocol";
+import {
+  ApprovedIdentitySchema,
+  identifier,
+  localKey,
+  PairingChallengeSchema,
+  prepareState,
+  readRecovery,
+  readState,
+  requestFingerprint,
+  validateIdentity,
+  writeRecovery,
+  writeState,
+  type PairingChallenge,
+  type PairedState,
+} from "./state";
+import { httpsOrigin, requestJson } from "./transport";
+
+export type RunnerDaemonOptions = {
+  root: string;
+  controlPlaneUrl: string;
+  runnerApiUrl: string;
+  serverCa?: string;
+  trustedKeys: ReadonlyMap<string, KeyObject>;
+  allowedRepositories: readonly string[];
+  now?: () => number;
+};
+
+export function openRunnerDaemon(options: RunnerDaemonOptions) {
+  const origins = {
+    controlPlaneUrl: httpsOrigin(options.controlPlaneUrl),
+    runnerApiUrl: httpsOrigin(options.runnerApiUrl),
+  };
+  const now = options.now ?? Date.now;
+  let state = readState(options.root);
+  let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
+  let closed = false;
+  if (
+    state &&
+    (state.controlPlaneUrl !== origins.controlPlaneUrl ||
+      state.runnerApiUrl !== origins.runnerApiUrl)
+  )
+    throw new Error("Runner endpoint origins do not match the paired state.");
+  if (state?.phase === "paired") validateIdentity(options.root, state, now(), true);
+  const dbPath = join(options.root, "commands.db");
+  const db = openDatabase(dbPath);
+  chmodSync(dbPath, 0o600);
+  db.run(
+    "CREATE TABLE IF NOT EXISTS command_receipt (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT",
+  );
+  db.run(
+    "CREATE TABLE IF NOT EXISTS pending_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))) STRICT",
+  );
+
+  function ensureOpen() {
+    if (closed) throw new Error("Runner daemon is closed.");
+  }
+  function paired(): PairedState {
+    ensureOpen();
+    if (state?.phase !== "paired") throw new Error("Runner is not paired.");
+    validateIdentity(options.root, state, now());
+    return state;
+  }
+  function unchangedIdentity(identity: PairedState) {
+    const current = paired();
+    if (current.runnerId !== identity.runnerId || current.workspaceId !== identity.workspaceId)
+      throw new Error("Runner identity changed while awaiting the response.");
+  }
+  function common() {
+    if (!state) throw new Error("Runner identity is not prepared.");
+    return { ...origins, csr: state.csr };
+  }
+  function pendingStatus(challenge: PairingChallenge) {
+    const { id, code, requestFingerprint: fingerprint, expiresAt } = challenge;
+    return { phase: "pending" as const, id, code, requestFingerprint: fingerprint, expiresAt };
+  }
+  function status() {
+    ensureOpen();
+    if (!state || state.phase === "prepared") return { phase: "unpaired" as const };
+    if (state.phase === "pending") return pendingStatus(state);
+    const certificate = describeRunnerCertificate(state.certificate);
+    if (certificate.notAfter <= now() && recovery && recovery.expiresAt > now())
+      return pendingStatus(recovery);
+    return {
+      phase: certificate.notAfter <= now() ? ("expired" as const) : ("paired" as const),
+      runnerId: state.runnerId,
+      workspaceId: state.workspaceId,
+      fingerprint: certificate.fingerprint,
+      expiresAt: certificate.notAfter,
+    };
+  }
+  async function authenticated(path: string, method: "GET" | "POST", body?: unknown) {
+    const identity = paired();
+    const response = await requestJson({
+      origin: origins.runnerApiUrl,
+      path,
+      method,
+      body,
+      serverCa: options.serverCa,
+      identity: { certificate: identity.certificate, key: localKey(options.root) },
+    });
+    unchangedIdentity(identity);
+    return response;
+  }
+  function pendingCommands(): RunnerCommand[] {
+    paired();
+    return db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM pending_command WHERE acknowledged=0 ORDER BY rowid",
+      )
+      .all()
+      .map((row) => RunnerCommandSchema.parse(JSON.parse(row.payload)));
+  }
+  async function acknowledgeCommand(id: string): Promise<void> {
+    const identity = paired();
+    identifier.parse(id);
+    if (!db.query("SELECT id FROM pending_command WHERE id=?").get(id))
+      throw new Error("Runner command is unknown.");
+    db.run("UPDATE pending_command SET acknowledged=1 WHERE id=? AND acknowledged=0", [id]);
+    await authenticated(`/v1/commands/${encodeURIComponent(id)}/ack`, "POST", {});
+    unchangedIdentity(identity);
+    db.run("UPDATE pending_command SET acknowledged=2 WHERE id=?", [id]);
+  }
+  return {
+    status,
+    pendingCommands,
+    async beginPairing(name: string) {
+      ensureOpen();
+      if (state?.phase === "paired") {
+        if (describeRunnerCertificate(state.certificate).notAfter > now())
+          throw new Error("Runner is already paired.");
+        if (recovery && recovery.expiresAt > now()) return status();
+      }
+      if (state?.phase === "pending" && state.expiresAt > now()) return status();
+      const parsedName = z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .refine((value) =>
+          Array.from(value).every(
+            (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+          ),
+        )
+        .parse(name);
+      if (!state) state = await prepareState(options.root, origins);
+      const previousState = state;
+      const previousRecovery = recovery;
+      const response = await requestJson({
+        origin: origins.controlPlaneUrl,
+        path: "/api/runner-pairings",
+        method: "POST",
+        body: { name: parsedName, csr: state.csr },
+        serverCa: options.serverCa,
+      });
+      ensureOpen();
+      if (state !== previousState || recovery !== previousRecovery)
+        throw new Error("Runner pairing changed while awaiting the response.");
+      const challenge = PairingChallengeSchema.parse(response);
+      if (
+        challenge.expiresAt <= now() ||
+        challenge.requestFingerprint !== requestFingerprint(state.csr)
+      )
+        throw new Error("Runner pairing challenge does not match the local request.");
+      const pending = { ...common(), phase: "pending" as const, ...challenge };
+      if (state.phase === "paired") {
+        writeRecovery(options.root, state.runnerId, challenge);
+        recovery = challenge;
+      } else {
+        writeState(options.root, pending);
+        state = pending;
+      }
+      return status();
+    },
+    async pollPairing() {
+      ensureOpen();
+      const previous = state?.phase === "paired" ? state : null;
+      if (previous && describeRunnerCertificate(previous.certificate).notAfter > now())
+        return status();
+      const challenge = previous ? recovery : state?.phase === "pending" ? state : null;
+      if (!challenge || challenge.expiresAt <= now())
+        throw new Error("Runner pairing is missing or expired.");
+      const response = await requestJson({
+        origin: origins.controlPlaneUrl,
+        path: "/api/runner-pairings",
+        method: "POST",
+        body: { id: challenge.id, claim: challenge.claim },
+        serverCa: options.serverCa,
+      });
+      ensureOpen();
+      const result = z
+        .discriminatedUnion("status", [
+          z.strictObject({ status: z.literal("pending") }),
+          z.strictObject({ status: z.literal("approved"), ...ApprovedIdentitySchema.shape }),
+        ])
+        .parse(response);
+      const currentChallenge =
+        state?.phase === "paired" ? recovery : state?.phase === "pending" ? state : null;
+      if (currentChallenge !== challenge || challenge.expiresAt <= now())
+        throw new Error("Runner pairing changed while awaiting the response.");
+      if (result.status === "pending") return status();
+      const { status: _status, ...identity } = result;
+      const approved = { ...common(), phase: "paired" as const, ...identity };
+      validateIdentity(options.root, approved, now());
+      if (previous && identity.runnerId === previous.runnerId)
+        throw new Error("Re-pairing requires a new runner identity.");
+      if (previous)
+        immediate(db, () => {
+          db.run("DELETE FROM pending_command");
+          db.run("DELETE FROM command_receipt");
+        });
+      writeState(options.root, approved);
+      state = approved;
+      recovery = null;
+      return status();
+    },
+    async heartbeat(): Promise<void> {
+      await authenticated("/v1/heartbeat", "POST", {});
+    },
+    async pollCommands() {
+      const identity = paired();
+      for (const row of db
+        .query<{ id: string }, []>(
+          "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
+        )
+        .all())
+        await acknowledgeCommand(row.id);
+      const response = z
+        .strictObject({ commands: z.array(SignedRunnerCommandSchema).max(16) })
+        .parse(await authenticated("/v1/commands", "GET"));
+      ensureOpen();
+      unchangedIdentity(identity);
+      const rejected: RunnerCommandRejection[] = [];
+      for (const envelope of response.commands) {
+        const result = immediate(db, () => {
+          const verified = verifyRunnerCommand(envelope, {
+            trustedKeys: options.trustedKeys,
+            runnerId: identity.runnerId,
+            workspaceId: identity.workspaceId,
+            now: now(),
+            allowedRepositories: options.allowedRepositories,
+            claimCommand: (id, expiresAt) =>
+              db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
+                id,
+                expiresAt,
+              ]).changes === 1,
+          });
+          if (verified.ok)
+            db.run("INSERT INTO pending_command (id,payload) VALUES (?,?)", [
+              verified.command.id,
+              JSON.stringify(verified.command),
+            ]);
+          return verified;
+        });
+        if (!result.ok) rejected.push(result.reason);
+      }
+      return { commands: pendingCommands(), rejected };
+    },
+    acknowledgeCommand,
+    async renewCertificate() {
+      const previous = paired();
+      const identity = ApprovedIdentitySchema.parse(
+        await authenticated("/v1/certificate", "POST", { csr: previous.csr }),
+      );
+      ensureOpen();
+      unchangedIdentity(previous);
+      if (identity.runnerId !== previous.runnerId || identity.workspaceId !== previous.workspaceId)
+        throw new Error("Renewed certificate changes the paired identity.");
+      const renewed = { ...common(), phase: "paired" as const, ...identity };
+      validateIdentity(options.root, renewed, now());
+      writeState(options.root, renewed);
+      state = renewed;
+      return status();
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      db.close();
+    },
+  };
+}
+
+export type RunnerDaemon = ReturnType<typeof openRunnerDaemon>;
