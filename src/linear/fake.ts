@@ -1,4 +1,5 @@
 import type { TrackerRequestOptions } from "./adapter";
+import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
 import {
@@ -23,6 +24,7 @@ import type {
 export type FakeTracker = LinearSessionAdapter &
   LinearRepositoryAdapter & {
     attachments: IssueAttachment[];
+    issueContexts: Map<string, LinearIssueContext>;
     repositorySuggestionRequests: RepositorySuggestionsInput[];
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
     epics: Map<string, EpicSnapshot>;
@@ -37,6 +39,7 @@ export type FakeTracker = LinearSessionAdapter &
 
 export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTracker {
   const attachments: IssueAttachment[] = [];
+  const issueContexts = new Map<string, LinearIssueContext>();
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
   const deps = new Map<string, readonly DependencyEdge[]>();
   const progress: ProgressUpdate[] = [];
@@ -61,6 +64,13 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   }
   return {
     supportsActivityReconciliation: true,
+    issueContexts,
+    async getIssueContext(id, options) {
+      options?.signal?.throwIfAborted();
+      const context = issueContexts.get(id);
+      if (!context) throw new Error("Missing fake Linear issue context");
+      return context;
+    },
     attachments,
     async createIssueAttachment(input, options) {
       options?.signal?.throwIfAborted();

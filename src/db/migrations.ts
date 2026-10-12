@@ -717,4 +717,16 @@ CREATE TABLE linear_github_task_account (
     id: "022_work_item_repository_choice",
     sql: "ALTER TABLE work_item_repository_question ADD COLUMN chosen_repository TEXT CHECK(chosen_repository IS NULL OR json_valid(chosen_repository));",
   },
+  {
+    id: "021_linear_issue_context",
+    sql: `
+CREATE TABLE linear_issue_context (
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  issue_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  context TEXT NOT NULL,
+  PRIMARY KEY (session_id,issue_id)
+) STRICT;
+`,
+  },
 ];

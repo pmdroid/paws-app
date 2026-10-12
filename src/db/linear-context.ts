@@ -1,3 +1,4 @@
+import { getLinearIssueContext } from "./linear-issue-context";
 import type { Database } from "bun:sqlite";
 
 export function saveLinearSessionContext(
@@ -20,7 +21,9 @@ export function getLinearSessionContext(db: Database, sessionId: string): string
       "SELECT context, snapshot_context FROM linear_session_context WHERE session_id = ?",
     )
     .get(sessionId);
-  return [row?.context, row?.snapshot_context].filter(Boolean).join("\n\n");
+  return [row?.context, row?.snapshot_context, getLinearIssueContext(db, sessionId)]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function hasLinearSessionSnapshotContext(db: Database, sessionId: string): boolean {
