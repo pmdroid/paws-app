@@ -22,6 +22,7 @@ type ToolActivity = {
   kind?: string;
   parameter: string;
   result: string;
+  terminalOutput: string;
   status?: string;
 };
 
@@ -162,6 +163,7 @@ function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
     kind: previous?.kind,
     parameter: previous?.parameter ?? "",
     result: previous?.result ?? "",
+    terminalOutput: previous?.terminalOutput ?? "",
     status: previous?.status,
   };
   if (update.title?.trim()) tool.title = publicToolText(update.title);
@@ -181,7 +183,24 @@ function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
         )
         .join("\n"),
     );
+  for (const key of ["terminal_output", "terminal_output_delta"]) {
+    const data = terminalText(update["_meta"]?.[key]);
+    if (data !== null) tool.terminalOutput = (tool.terminalOutput + data).slice(0, 64 * 1024);
+  }
+  if ((tool.status === "completed" || tool.status === "failed") && tool.terminalOutput)
+    tool.result = publicToolText(
+      `${tool.status === "failed" ? "Failed.\n\n" : ""}${tool.terminalOutput}`,
+    );
   return tool;
+}
+
+function terminalText(value: unknown): string | null {
+  return value !== null &&
+    typeof value === "object" &&
+    "data" in value &&
+    typeof value.data === "string"
+    ? value.data
+    : null;
 }
 
 function toolActivity(tool: ToolActivity): AcpActivity | null {
@@ -206,7 +225,7 @@ function publicToolText(value: unknown): string {
   function text(content: string): string {
     return scrubText(content, secrets)
       .replace(
-        /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
+        /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g,
         "[redacted]",
       )
       .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, "$1 [redacted]")
