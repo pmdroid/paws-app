@@ -64,6 +64,8 @@ Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted re
 
 The Linear Closeout cases in `test/loop.e2e.test.ts` reconstruct the adapter, reject bypass replies without a reason or naming an unfailed check, preserve the replacement question's retry history, ignore replies to the old question, and queue no resume or reverify work.
 
+For HTTP shutdown, run `bun --no-env-file test test/server-drain.test.ts`. The production listener holds an accepted artifact read while shutdown begins, then performs a final real SQLite query. Verify shutdown waits for that query before the caller closes SQLite. A second test starts Paws with an offline Linear adapter, holds a real HTTP session request, and verifies `paws.stop()` keeps SQLite open until that request finishes. Both tests also run in the normal suite.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures: do not run arbitrary issue-supplied code or a real agent in them. ACP runs directly on its host; environment filtering and guarded ACP requests do not establish filesystem isolation for terminal commands. Use a disposable VM with blocked external egress for hostile-code isolation claims.
