@@ -45,3 +45,5 @@ export {
   type VerifiedGitHubAccount,
 } from "./github-auth";
 export { FakeHostGitHubAuth } from "./fake-auth";
+
+export { LinearTaskAccess } from "./linear-task-access";
