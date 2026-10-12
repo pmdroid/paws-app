@@ -64,6 +64,8 @@ bun --no-env-file scripts/verify-local.ts serve
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
+For HTTP shutdown, run `bun --no-env-file test test/server-drain.test.ts`. The production listener holds an accepted artifact read while shutdown begins, then performs a final real SQLite query. Verify shutdown waits for that query before the caller closes SQLite. A second test starts Paws with an offline Linear adapter, holds a real HTTP session request, and verifies `paws.stop()` keeps SQLite open until that request finishes. Both tests also run in the normal suite.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures, not an OS sandbox: do not run arbitrary issue-supplied code or a real agent in them. Use a disposable container/VM with blocked external egress for hostile-code isolation claims.
