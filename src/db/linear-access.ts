@@ -60,12 +60,17 @@ export function revokeLinearInstallation(
   validateTime(input.createdAtMs);
   return immediate(db, () => {
     if (!recordEvent(db, input.eventKey, input.createdAtMs)) return [];
-    db.run(
+    const changed = db.run(
       `INSERT INTO linear_app_revocation (organization_id, oauth_client_id, revoked_at)
       VALUES (?, ?, ?) ON CONFLICT (organization_id, oauth_client_id) DO UPDATE SET
-      revoked_at = MAX(linear_app_revocation.revoked_at, excluded.revoked_at)`,
+      revoked_at = MAX(linear_app_revocation.revoked_at, excluded.revoked_at),
+      generation = linear_app_revocation.generation + 1, restored_after = NULL,
+      restored_credential_fingerprint = NULL
+      WHERE linear_app_revocation.restored_after IS NULL
+        OR excluded.revoked_at >= linear_app_revocation.restored_after`,
       [input.organizationId, input.oauthClientId, input.createdAtMs],
-    );
+    ).changes;
+    if (changed === 0) return [];
     return sessions(db, "organization_id = ? AND oauth_client_id = ?", [
       input.organizationId,
       input.oauthClientId,
@@ -200,7 +205,7 @@ export function getLinearSessionAccess(db: Database, sessionId: string): LinearS
   if (
     db
       .query(
-        "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ?",
+        "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ? AND restored_after IS NULL",
       )
       .get(installation.organizationId, installation.oauthClientId)
   )
@@ -239,14 +244,76 @@ export function isLinearAppRevoked(
       (scope) =>
         db
           .query(
-            "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ?",
+            "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ? AND restored_after IS NULL",
           )
           .get(scope.organization_id, scope.oauth_client_id) !== null,
     );
   return (
     db
-      .query("SELECT 1 FROM linear_app_revocation WHERE ? IS NULL OR oauth_client_id = ? LIMIT 1")
+      .query(
+        "SELECT 1 FROM linear_app_revocation WHERE (? IS NULL OR oauth_client_id = ?) AND restored_after IS NULL LIMIT 1",
+      )
       .get(input.oauthClientId, input.oauthClientId) !== null
+  );
+}
+
+export type LinearInstallationRevocation = {
+  organizationId: string;
+  oauthClientId: string;
+  generation: number;
+  revokedAtMs: number;
+  appUserIds: string[];
+};
+
+export function listLinearInstallationRevocations(db: Database): LinearInstallationRevocation[] {
+  return db
+    .query<
+      { organization_id: string; oauth_client_id: string; generation: number; revoked_at: number },
+      []
+    >(
+      "SELECT * FROM linear_app_revocation WHERE restored_after IS NULL ORDER BY organization_id, oauth_client_id",
+    )
+    .all()
+    .map((row) => ({
+      organizationId: row.organization_id,
+      oauthClientId: row.oauth_client_id,
+      generation: row.generation,
+      revokedAtMs: row.revoked_at,
+      appUserIds: db
+        .query<{ app_user_id: string }, [string, string]>(
+          "SELECT DISTINCT app_user_id FROM linear_session WHERE organization_id = ? AND oauth_client_id = ? AND app_user_id IS NOT NULL ORDER BY app_user_id",
+        )
+        .all(row.organization_id, row.oauth_client_id)
+        .map((user) => user.app_user_id),
+    }));
+}
+
+export function restoreLinearInstallation(
+  db: Database,
+  input: LinearInstallationScope & {
+    generation: number;
+    grantStartedAtMs: number;
+    credentialFingerprint: string;
+  },
+): boolean {
+  validate(input.organizationId, input.oauthClientId, input.appUserId, input.credentialFingerprint);
+  validateTime(input.grantStartedAtMs);
+  if (!Number.isSafeInteger(input.generation) || input.generation < 1)
+    throw new Error("Linear revocation generation is invalid");
+  return (
+    db.run(
+      `UPDATE linear_app_revocation SET restored_after = ?, restored_credential_fingerprint = ?
+      WHERE organization_id = ? AND oauth_client_id = ? AND generation = ?
+        AND restored_after IS NULL AND revoked_at < ?`,
+      [
+        input.grantStartedAtMs,
+        input.credentialFingerprint,
+        input.organizationId,
+        input.oauthClientId,
+        input.generation,
+        input.grantStartedAtMs,
+      ],
+    ).changes === 1
   );
 }
 

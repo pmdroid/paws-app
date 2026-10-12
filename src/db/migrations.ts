@@ -644,4 +644,12 @@ CREATE TABLE linear_access_event (
 ) STRICT;
 `,
   },
+  {
+    id: "014_linear_verified_reconnect",
+    sql: `
+ALTER TABLE linear_app_revocation ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE linear_app_revocation ADD COLUMN restored_after INTEGER;
+ALTER TABLE linear_app_revocation ADD COLUMN restored_credential_fingerprint TEXT;
+`,
+  },
 ];
