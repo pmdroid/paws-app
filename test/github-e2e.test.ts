@@ -7,17 +7,9 @@ import { promisify } from "node:util";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
-import { FakeClock, JOB_KIND, systemClock } from "../src/core";
+import { FakeClock, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
-import { createFakeGitHubComments } from "../src/ghcomments";
-import type { GitHubCommentMethod } from "../src/ghcomments";
-import {
-  startFakeGitHubRest,
-  startGitHubIssuePoller,
-  type FetchLike,
-  type Sleeper,
-} from "../src/ghissues";
-import type { FakeGitHubRest } from "../src/ghissues";
+import { createCommentMode, createFakeCommentBoard } from "../src/comments";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -25,43 +17,41 @@ import {
   type GitHubClient,
   type GitHubResponse,
 } from "../src/github";
-import {
-  githubCreatedEvent,
-  gitHostToken,
-  ingestGitHubComments,
-  openGitHubWork,
-} from "../src/index";
+import { commentTracker, syncComments } from "../src/index";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, routeBySource, type AgentLaunch } from "../src/loop";
+import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
-const TOKEN = "gho_test_token";
 
-test("a GitHub epic merges three pull requests with one plain reply and one fix", async () => {
+test("a Linear epic publishes and merges three GitHub pull requests with one plain reply and one fix", async () => {
   const seed = JSON.parse(
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;
   const layout = await repoLayout();
-  const rest = startFakeGitHubRest();
   const clock = new FakeClock(Date.now());
-  const comments = createFakeGitHubComments({ clock, selfLogin: "octocat" });
-  const closed: number[] = [];
-  const provider = {
-    source: "oauth" as const,
-    token: async () => TOKEN,
-    user: async () => ({ login: "octocat", id: 1 }),
-  };
-  seedEpic(rest, seed);
-  const githubWork = openGitHubWork({
-    provider,
-    owner: "pmdroid",
-    repo: "paws-demo",
-    repos: ["pmdroid/paws-demo"],
-    fetch: routeFetch(rest, comments, closed),
-    baseUrl: rest.origin,
-    clock,
-  });
+  const comments = createFakeCommentBoard({ clock, selfUserId: "octocat" });
+  const mode = createCommentMode({ board: comments, clock, selfUserId: "octocat" });
+  const linear = createFakeTracker([
+    {
+      linearIssueId: "parent",
+      identifier: "DEMO-1",
+      title: seed.parent.title,
+      description: seed.parent.description,
+      subIssues: seed.children.map((child, index) => ({
+        linearIssueId: `child-${index + 2}`,
+        identifier: `DEMO-${index + 2}`,
+        title: child.title,
+        description: child.title,
+      })),
+    },
+  ]);
+  linear.deps.set("child-3", [
+    { blockerLinearIssueId: "child-2", blockedLinearIssueId: "child-3" },
+  ]);
+  linear.deps.set("child-4", [
+    { blockerLinearIssueId: "child-3", blockedLinearIssueId: "child-4" },
+  ]);
   const prompts: string[] = [];
   const github = createFakeGitHub();
   const apiPaths: string[] = [];
@@ -94,38 +84,19 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
     outbox,
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    tracker: githubWork.tracker,
+    tracker: commentTracker(db, linear, mode),
     repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
     github: {
       appId: "",
       installationId: "",
       privateKeyPem: "",
       client,
-      tokenProvider: gitHostToken(provider),
+      tokenProvider: { mode: "oauth", tokenFor: async () => "synthetic-delivery-token" },
     },
     launch,
     channel: "comments",
   });
-  const sleeper = heldSleeper();
-  const poller = startGitHubIssuePoller({
-    db,
-    client: githubWork.client,
-    sleeper,
-    onTrigger: (event) =>
-      orchestrator.onLinearEvent(githubCreatedEvent(event.issueId, event.updatedAtMs)),
-    onComment: (event) =>
-      ingestGitHubComments(
-        githubWork.comments,
-        event.issueId,
-        (accepted) => orchestrator.onLinearEvent(accepted),
-        (itemId, at) => {
-          /* stop is covered by the comment sync; the poller does not bypass the marker */
-          void itemId;
-          void at;
-        },
-      ),
-  });
-
+  await orchestrator.onLinearEvent(created("parent"));
   let delivered = false;
   let whileAsking = "";
   let stop = false;
@@ -137,17 +108,17 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
       );
       if (question && !delivered) {
         delivered = true;
-        whileAsking = ["#2", "#3", "#4"]
-          .map((suffix) => stateOf(db, `paws-demo${suffix}`) ?? "missing")
+        whileAsking = ["DEMO-2", "DEMO-3", "DEMO-4"]
+          .map((identifier) => stateOf(db, identifier) ?? "missing")
           .join("/");
         clock.advance(6_000);
         comments.post({
-          issueNumber: question.issueNumber,
+          issueId: question.issueId,
+          parentId: question.id,
           body: "yes",
-          login: "octocat",
-          association: "OWNER",
+          userId: "octocat",
         });
-        await poller.pollNow();
+        await syncComments(db, mode, orchestrator);
       }
       await Bun.sleep(20);
     }
@@ -175,312 +146,46 @@ test("a GitHub epic merges three pull requests with one plain reply and one fix"
     expect(whileAsking, debug(layout, db)).toBe("merged/merged/awaiting_input");
     expect(epicState(db), debug(layout, db)).toBe("done");
     expect(
-      ["paws-demo#2", "paws-demo#3", "paws-demo#4"].map((id) => stateOf(db, id)),
+      ["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id)),
       debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
     expect(github.opened.map((pull) => pull.head)).toEqual([
-      "paws/gh-pmdroid-paws-demo-2",
-      "paws/gh-pmdroid-paws-demo-3",
-      "paws/gh-pmdroid-paws-demo-4",
+      "paws/DEMO-2",
+      "paws/DEMO-3",
+      "paws/DEMO-4",
     ]);
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
-      "Closes #2",
-      "Closes #3",
-      "Closes #4",
+      "Fixes DEMO-2",
+      "Fixes DEMO-3",
+      "Fixes DEMO-4",
     ]);
     expect(github.opened[0]?.body).toContain("Fix attempts: 1");
     expect(prompts.some((prompt) => prompt.includes("P1") && prompt.includes("failOn"))).toBe(true);
     const history = await readFile(
-      path.join(layout.pawsRoot, "runs", "gh-pmdroid-paws-demo-2", "closeout-history.jsonl"),
+      path.join(layout.pawsRoot, "runs", "DEMO-2", "closeout-history.jsonl"),
       "utf8",
     );
     expect(history).toContain("failOn P1");
     expect(github.merged).toHaveLength(3);
-    expect(comments.commentUpdates).toBeGreaterThan(0);
     const question = comments.comments.find((comment) => comment.body.includes("<!-- paws:q:"));
     expect(question?.body).toContain("Include archived rows?");
-    expect(question?.login).toBe("octocat");
+    expect(question?.userId).toBe("octocat");
     const reply = comments.comments.find((comment) => comment.body === "yes");
-    expect(reply?.login).toBe("octocat");
-    expect(reply?.issueNumber).toBe(question?.issueNumber);
+    expect(reply?.userId).toBe("octocat");
+    expect(reply?.issueId).toBe(question?.issueId);
     expect(reply?.body).not.toContain("<!--");
     expect(reply?.body.startsWith("Paws:")).toBe(false);
     expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(true);
     expect(comments.comments.some((comment) => comment.body.includes("Picked up 3"))).toBe(true);
-    expect(closed).toContain(1);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
-    expect(rest.requests.some((request) => request.path.includes("webhook"))).toBe(false);
-    expect(rest.requests.some((request) => request.authorization === `Bearer ${TOKEN}`)).toBe(true);
     expect(github.minted).toHaveLength(0);
   } finally {
     stop = true;
-    await poller.stop();
-    await poller.settled;
     db.close();
-    await rest.stop();
     await layout.cleanup();
   }
 }, 120_000);
-
-test("linear and github issues share one queue and report to their own tracker", async () => {
-  const layout = await repoLayout();
-  const rest = startFakeGitHubRest();
-  const clock = new FakeClock(Date.now());
-  const comments = createFakeGitHubComments({ clock, selfLogin: "octocat" });
-  const closed: number[] = [];
-  const provider = {
-    source: "oauth" as const,
-    token: async () => TOKEN,
-    user: async () => ({ login: "octocat", id: 1 }),
-  };
-  const now = new Date().toISOString();
-  rest.addIssue("pmdroid", "paws-demo", {
-    number: 8,
-    title: "GitHub only",
-    body: "One GitHub issue.",
-    user: { login: "octocat", id: 1 },
-    authorAssociation: "OWNER",
-    labels: ["paws"],
-    updatedAt: now,
-  });
-  const githubWork = openGitHubWork({
-    provider,
-    owner: "pmdroid",
-    repo: "paws-demo",
-    repos: ["pmdroid/paws-demo"],
-    fetch: routeFetch(rest, comments, closed),
-    baseUrl: rest.origin,
-    clock,
-    labels: true,
-  });
-  const linear = createFakeTracker([
-    {
-      linearIssueId: "lin-9",
-      identifier: "ENG-9",
-      title: "Linear only",
-      description: null,
-      subIssues: [],
-    },
-  ]);
-  const github = createFakeGitHub();
-  const client = githubClient(layout.bare, github, []);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
-  const started: string[] = [];
-  let scripts = 0;
-  const launch: AgentLaunch = (input) => {
-    if (input.purpose === "implement") {
-      started.push(
-        `${input.itemId}:${stateOf(db, "ENG-9") ?? "missing"}/${stateOf(db, "paws-demo#8") ?? "missing"}`,
-      );
-    }
-    scripts += 1;
-    const scriptPath = path.join(layout.root, `both-script-${scripts}.json`);
-    writeFileSync(
-      scriptPath,
-      JSON.stringify({
-        ...plainScript(input),
-        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
-      }),
-    );
-    return {
-      command: process.execPath,
-      args: [fakeAgent, "", scriptPath],
-      env: process.env,
-    };
-  };
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker: routeBySource({ linear, github: githubWork.tracker }),
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
-      appId: "",
-      installationId: "",
-      privateKeyPem: "",
-      client,
-      tokenProvider: gitHostToken(provider),
-    },
-    launch,
-    channel: "comments",
-  });
-  const sleeper = heldSleeper();
-  await orchestrator.onLinearEvent(created("lin-9"));
-  const poller = startGitHubIssuePoller({
-    db,
-    client: githubWork.client,
-    sleeper,
-    onTrigger: (event) =>
-      orchestrator.onLinearEvent(githubCreatedEvent(event.issueId, event.updatedAtMs)),
-    onComment: () => undefined,
-  });
-  try {
-    const appeared = Date.now() + 10_000;
-    while (Date.now() < appeared && stateOf(db, "paws-demo#8") === null) await Bun.sleep(20);
-    expect(stateOf(db, "ENG-9"), debug(layout, db)).toBe("queued");
-    expect(stateOf(db, "paws-demo#8"), debug(layout, db)).toBe("queued");
-    const deadline = Date.now() + 90_000;
-    let idle = 0;
-    while (
-      Date.now() < deadline &&
-      (stateOf(db, "ENG-9") !== "merged" || stateOf(db, "paws-demo#8") !== "merged")
-    ) {
-      const job = await jobs.tick();
-      if (job === null) {
-        idle += 1;
-        if (idle > 4) break;
-        await Bun.sleep(20);
-      } else {
-        idle = 0;
-      }
-    }
-    expect(stateOf(db, "ENG-9"), debug(layout, db)).toBe("merged");
-    expect(stateOf(db, "paws-demo#8"), debug(layout, db)).toBe("merged");
-    const implement = started.filter((line) => line.startsWith("ENG-9:") || line.startsWith("gh-"));
-    expect(implement[0]).toBe("ENG-9:running/queued");
-    expect(implement[1]?.startsWith("gh-pmdroid-paws-demo-8:")).toBe(true);
-    expect(implement[1]).toContain("merged/");
-    expect(linear.progress.some((update) => update.body.includes("ENG-9"))).toBe(true);
-    expect(linear.progress.some((update) => update.body.includes("paws-demo#8"))).toBe(false);
-    expect(comments.comments.some((comment) => comment.body.includes("paws-demo#8"))).toBe(true);
-    expect(comments.comments.some((comment) => comment.body.includes("ENG-9"))).toBe(false);
-    const responses = comments.comments.filter((comment) =>
-      comment.body.includes("paws-demo#8: Verified locally."),
-    );
-    expect(responses).toHaveLength(1);
-    expect(responses[0]?.body).toContain("Epic complete. Merged paws-demo#8.");
-    expect(
-      comments.comments.some((comment) =>
-        /^Paws: (?:I|Verified| locally\.|Finished \(end_turn\)\.)\n/.test(comment.body),
-      ),
-    ).toBe(false);
-    expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
-      "Fixes ENG-9",
-      "Closes #8",
-    ]);
-    expect(github.minted).toHaveLength(0);
-    expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge && job.status === "dead")).toBe(
-      false,
-    );
-  } finally {
-    await poller.stop();
-    await poller.settled;
-    db.close();
-    await rest.stop();
-    await layout.cleanup();
-  }
-}, 120_000);
-
-function seedEpic(rest: FakeGitHubRest, seed: DemoSeed): void {
-  const now = new Date().toISOString();
-  const author = { login: "octocat", id: 1 };
-  rest.addIssue("pmdroid", "paws-demo", {
-    number: 1,
-    title: seed.parent.title,
-    body: seed.parent.description,
-    user: author,
-    authorAssociation: "OWNER",
-    labels: ["paws"],
-    updatedAt: now,
-  });
-  const children = seed.children.map((child, index) => ({
-    number: index + 2,
-    title: child.title,
-    body: child.title,
-    user: author,
-    authorAssociation: "OWNER" as const,
-    labels: [] as string[],
-    updatedAt: now,
-  }));
-  for (const child of children) rest.addIssue("pmdroid", "paws-demo", child);
-  rest.setSubIssues("pmdroid", "paws-demo", 1, children);
-  rest.setBlockedBy("pmdroid", "paws-demo", 3, [children[0]!]);
-  rest.setBlockedBy("pmdroid", "paws-demo", 4, [children[1]!]);
-}
-
-function routeFetch(
-  rest: FakeGitHubRest,
-  comments: ReturnType<typeof createFakeGitHubComments>,
-  closed: number[],
-): FetchLike {
-  const native = globalThis.fetch.bind(globalThis);
-  return async (input, init) => {
-    const raw =
-      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    const url = new URL(raw);
-    const method = (init?.method ?? "GET").toUpperCase();
-    if (method === "PATCH" && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(url.pathname)) {
-      const number = Number(url.pathname.split("/").at(-1));
-      closed.push(number);
-      return jsonResponse(200, { number, state: "closed" });
-    }
-    if (method === "GET" && /^\/repos\/[^/]+\/[^/]+\/issues\/comments$/.test(url.pathname)) {
-      return jsonResponse(
-        200,
-        comments.comments.map((comment) => ({
-          id: comment.id,
-          body: comment.body,
-          user: { login: comment.login, id: comment.id },
-          author_association: comment.association,
-          created_at: new Date(comment.createdAtMs).toISOString(),
-          updated_at: new Date(comment.createdAtMs).toISOString(),
-          issue_url: `https://api.github.com/repos/pmdroid/paws-demo/issues/${comment.issueNumber}`,
-          html_url: `https://github.com/pmdroid/paws-demo/issues/${comment.issueNumber}#issuecomment-${comment.id}`,
-        })),
-      );
-    }
-    if (url.pathname.includes("/comments") || url.pathname.includes("/labels")) {
-      let parsed: unknown;
-      if (typeof init?.body === "string" && init.body.length > 0) parsed = JSON.parse(init.body);
-      const response = await comments.request({
-        method: method as GitHubCommentMethod,
-        path: `${url.pathname}${url.search}`,
-        ...(parsed === undefined ? {} : { body: parsed }),
-      });
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        "x-ratelimit-remaining": "5000",
-        "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
-      };
-      if (response.link) headers.link = response.link;
-      return new Response(JSON.stringify(response.body), { status: response.status, headers });
-    }
-    return native(`${rest.origin}${url.pathname}${url.search}`, init);
-  };
-}
-
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "x-ratelimit-remaining": "5000",
-      "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
-    },
-  });
-}
-
-function heldSleeper(): Sleeper {
-  let resolveWait: (() => void) | null = null;
-  return {
-    wait() {
-      return new Promise((resolve) => {
-        resolveWait = resolve;
-      });
-    },
-    wake() {
-      const resolve = resolveWait;
-      resolveWait = null;
-      resolve?.();
-    },
-  };
-}
 
 const P1_FINDING = JSON.stringify([
   {
@@ -571,37 +276,6 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
         path: path.join(input.worktree, `${input.itemId}.txt`),
         content: "done\n",
       },
-      { type: "end", stopReason: "end_turn" },
-    ],
-  };
-}
-
-function plainScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
-  if (input.purpose === "review") return reviewScript("[]");
-  return {
-    steps: [
-      ...["I", " will check the issue."].map((text) => ({
-        type: "update" as const,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-      })),
-      {
-        type: "update",
-        update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Check locally" },
-      },
-      {
-        type: "fs_write",
-        path: path.join(input.worktree, "ok.txt"),
-        content: "ok\n",
-      },
-      {
-        type: "fs_write",
-        path: path.join(input.worktree, `${input.itemId}.txt`),
-        content: "done\n",
-      },
-      ...["Verified", " locally."].map((text) => ({
-        type: "update" as const,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
-      })),
       { type: "end", stopReason: "end_turn" },
     ],
   };

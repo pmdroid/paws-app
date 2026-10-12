@@ -41,11 +41,11 @@ bun --no-env-file scripts/verify-local.ts serve
 
 ## What the fixture exercises
 
-- Linear tracker and comment adapters against local fakes; a Linear epic with two dependent items.
+- Fresh startup configures Linear issue tracking. Linear tracker and comment adapters use local fakes with an epic and two dependent items.
 - Real SQLite migrations, jobs, outbox, intake and orchestrator.
 - Existing `src/acp/testing/fake-agent.ts` subprocess over real ACP JSON-RPC, including fragmented text, filesystem writes and ask_team through MCP. Each fake subprocess has a bounded timeout.
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
-- Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. Check final main content, not just fake merge calls.
+- Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. The GitHub request journal proves each Linear item publishes a pull request with its issue reference and Closeout evidence. Check final main content, not just fake merge calls.
 - Production status HTTP handlers and browser assets reading that database, plus a fresh `startPaws` process object for startup routes.
 - Negative probes for missing issue instructions, discarded review instructions, malformed reviewer output, Codex independence, login visibility, setup detection, token-store failure, source-question links, Linear same-account replies, question restart, Linear stop identity and merge-job recovery.
 

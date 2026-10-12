@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { FakeClock, systemClock, WORK_ITEM_STATES } from "../../src/core";
-import { writeAgentSettings, type AgentSettings } from "../../src/config";
+import { loadRuntime, writeAgentSettings, type AgentSettings } from "../../src/config";
 import {
   JobLoop,
   OutboxDispatcher,
@@ -426,6 +426,12 @@ try {
         webhook.status === 404,
       { health, source, pageStatus: page.status, webhookStatus: webhook.status },
     );
+    const trackerKind = loadRuntime({ PAWS_HOME: process.env.PAWS_HOME }).trackerKind;
+    observe(
+      "fresh instance configures Linear issue tracking",
+      trackerKind === "linear",
+      trackerKind,
+    );
     observe("documented root URL opens the dashboard", rootResponse.ok, rootResponse.status);
     observe(
       "fresh instance exposes local agent settings with vendor defaults",
@@ -453,6 +459,27 @@ try {
       JSON.stringify(happy.parked) === '["awaiting_input","queued"]' &&
       happy.merged.length === 2,
     { states: happy.states, parked: happy.parked, merges: happy.merged.length },
+  );
+  const publications = happy.requests.filter(
+    (request) =>
+      typeof request === "object" &&
+      request !== null &&
+      "method" in request &&
+      "path" in request &&
+      request.method === "POST" &&
+      request.path === "/repos/local/fixture/pulls",
+  );
+  observe(
+    "Linear work publishes GitHub pull requests with issue references and evidence",
+    publications.length === 2 &&
+      happy.pulls.length === 2 &&
+      happy.pulls.every(
+        (pull, index) =>
+          pull.body.startsWith(`Fixes LOCAL-${index + 2}\n`) &&
+          pull.body.includes("Closeout") &&
+          !pull.body.includes("Closes #"),
+      ),
+    { publications, pulls: happy.pulls },
   );
   const completed = happy.comments.filter((comment) =>
     comment.body.startsWith("Paws: Epic complete."),
