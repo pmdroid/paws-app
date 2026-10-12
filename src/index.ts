@@ -191,7 +191,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               oauthClientId: runtime.linearClientId,
               appUserId: runtime.linearViewerId,
             }),
-          beforeEvent: async (event) => {
+          beforeEvent: async (event, request) => {
             if (
               await handleLinearAdministration(db, event, {
                 oauthClientId: runtime.linearClientId,
@@ -222,7 +222,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             )
               return false;
             if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-            return linearTaskAccess.accept(event);
+            return linearTaskAccess.accept(event, request);
           },
           env: linearEnv(runtime, envSource),
           publicUrl: runtime.publicUrl,

@@ -1,4 +1,4 @@
-import type { TrackerAdapter } from "./adapter";
+import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import type { AcceptedLinearEvent } from "./events";
 
 /** Posted before intake so a slow Linear read still meets the 10 second first-activity rule. */
@@ -8,6 +8,7 @@ export async function acknowledgeNewSession(
   tracker: TrackerAdapter,
   event: AcceptedLinearEvent,
   followUp?: (event: AcceptedLinearEvent) => Promise<void>,
+  initialRequest?: TrackerRequestOptions,
 ): Promise<void> {
   if (event.signal === "stop") {
     await followUp?.(event);
@@ -15,11 +16,16 @@ export async function acknowledgeNewSession(
   }
   if (event.action !== "created" && event.action !== "prompted") return;
   if (event.action === "created" && event.sessionId !== null) {
-    await tracker.postProgress({
-      sessionId: event.sessionId,
-      kind: "thought",
-      body: FIRST_ACTIVITY_BODY,
-    });
+    initialRequest?.signal?.throwIfAborted();
+    await tracker.postProgress(
+      {
+        sessionId: event.sessionId,
+        kind: "thought",
+        body: FIRST_ACTIVITY_BODY,
+      },
+      initialRequest,
+    );
+    initialRequest?.signal?.throwIfAborted();
   }
   if (followUp === undefined) return;
   try {
