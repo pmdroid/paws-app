@@ -68,6 +68,12 @@ export function createGhCliAuth(options: GhCliOptions): GitHubTokenProvider {
   };
 }
 
+export async function readGhUserToken(options: GhCliOptions): Promise<string> {
+  const status = await checkGhAuthStatus(options);
+  if (!status.ok) throw new GhAuthError(status.message);
+  return readGhAuthToken(options, "pr");
+}
+
 /** Doctor check: `gh auth status` shows a login. Does not print or keep a token. */
 export async function checkGhAuthStatus(options: GhCliOptions): Promise<DoctorCheck> {
   assertRepo(options.owner, options.repo);

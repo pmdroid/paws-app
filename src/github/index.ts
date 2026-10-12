@@ -32,6 +32,7 @@ export {
   createOAuthGitAuth,
   createTokenProvider,
   ghDoctorChecks,
+  readGhUserToken,
   githubAuthMode,
   inferGitHubRepository,
   OAUTH_REAUTH_MESSAGE,

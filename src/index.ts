@@ -50,6 +50,7 @@ import {
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import {
+  checkGitHubCliRepositoryAccess,
   createGitHubTokenProvider,
   createVerifiedGitHubLogin,
   loginGitHub,
@@ -356,6 +357,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
+          if (runtime.githubAuth === "gh")
+            return checkGitHubCliRepositoryAccess(
+              { repo: `${candidate.owner}/${candidate.repo}`, access },
+              signal,
+            );
           const provider = authProvider(runtime, candidate, access);
           if (!provider) return false;
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
