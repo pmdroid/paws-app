@@ -59,6 +59,7 @@ export {
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
 export { openDatabase } from "./open";
+export { assertLinearQueue } from "./legacy-tracker";
 export {
   advanceOutboxSession,
   stopOutboxSession,

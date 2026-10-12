@@ -2,7 +2,7 @@
 
 Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, implements the change with your Claude Code, Grok, or Codex session over ACP, checks it with Closeout, and merges a pull request.
 
-GitHub issues are the default tracker. Linear remains available. This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
+Linear is the issue tracker. GitHub hosts the repositories and pull requests. This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
 
 ## Setup
 
@@ -10,14 +10,14 @@ Install [Bun](https://bun.sh) 1.4 or newer, then:
 
 ```sh
 bun install
-bun run paws setup    # sign in with GitHub, pick a repo; tracker defaults to github; implementer is claude, grok, or codex
+bun run paws setup    # connect Linear, sign in with GitHub, and pick a repo
 bun run paws doctor
 bun run paws
 ```
 
-Add the `paws` label to an issue in the repository you picked. Paws polls that repository and starts the work. Sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). Triggers, epic order, and the comment protocol are in [docs/github-issues.md](docs/github-issues.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
+Add the `paws` label to a Linear issue or delegate it to the configured Linear user. Paws polls Linear and starts the work. Linear credentials, triggers, and questions are in [docs/linear-modes.md](docs/linear-modes.md). GitHub sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
 
-`setup` writes `~/.paws/config.toml`. It runs the GitHub device-flow sign-in, asks which repository to use, sets `[tracker] kind` to `github`, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button that starts the same device flow. The default path uses no webhook, no public URL, and no GitHub App.
+`setup` writes `~/.paws/config.toml`. It connects your Linear personal API key and team, signs in to GitHub, asks which repository to use, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). Existing GitHub authentication settings are preserved. The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. Comment mode polls without a public URL; Linear agent-session mode is also available.
 
 Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
 
@@ -30,7 +30,7 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 | Path                  | What it is                                                                                                       |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
-| `~/.paws/config.toml` | `github` auth and repo, `[tracker] kind`, caps, and `agents.implementer`                                         |
+| `~/.paws/config.toml` | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
 | `~/.paws/secrets/`    | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
 | `~/.paws/worktrees/`  | One git worktree per item                                                                                        |
 | `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |

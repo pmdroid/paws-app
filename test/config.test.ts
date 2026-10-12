@@ -213,7 +213,7 @@ describe("config", () => {
     expect(runtime.file.trackerSpecified).toBe(false);
   });
 
-  test("new github tracker config keeps the frozen keys", () => {
+  test("Linear tracker config keeps GitHub OAuth authentication", () => {
     const home = tempHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
@@ -226,7 +226,7 @@ describe("config", () => {
       linearClientFile: null,
       githubAuth: "oauth",
       oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
-      trackerKind: "github",
+      trackerKind: "linear",
       repo: "pmdroid/paws-demo",
       checkout: home,
       maxTurns: 40,
@@ -239,7 +239,7 @@ describe("config", () => {
     });
     expect(runtime.githubAuth).toBe("oauth");
     expect(runtime.oauthClientId).toBe("Iv1.from-env");
-    expect(runtime.trackerKind).toBe("github");
+    expect(runtime.trackerKind).toBe("linear");
     expect(runtime.trackerGithub).toEqual({
       triggerLabel: "paws",
       mention: "@paws",
@@ -249,8 +249,7 @@ describe("config", () => {
     });
     const text = readFileSync(paths.configFile, "utf8");
     expect(text).toContain('auth = "oauth"');
-    expect(text).toContain('kind = "github"');
-    expect(text).toContain('mention = "@paws"');
-    expect(text).toContain("status_labels = true");
+    expect(text).toContain('kind = "linear"');
+    expect(text).not.toContain("[tracker.github]");
   });
 });

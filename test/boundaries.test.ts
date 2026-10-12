@@ -68,6 +68,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   install: ["acp", "config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: [
+    "db",
     "credentials",
     "config",
     "core",
