@@ -22,6 +22,7 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
       current();
       const run = async (token: string) => {
         current();
+        options.auth.assertAuthorized?.();
         return fetchImpl(GRAPHQL_URL, {
           method: "POST",
           headers: {

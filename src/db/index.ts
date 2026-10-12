@@ -167,6 +167,7 @@ export { prepareLinearActivity } from "./linear-delivery";
 export {
   recordLinearInstallation,
   revokeLinearInstallation,
+  isLinearAppRevoked,
   changeLinearTeamAccess,
   getLinearSessionAccess,
   getLinearSessionInstallation,

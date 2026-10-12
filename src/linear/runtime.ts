@@ -57,6 +57,7 @@ export function openLinear(options: {
   env: EnvSource;
   publicUrl: string | null;
   noTunnel?: boolean;
+  isAuthorized?: () => boolean;
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
   followUp?: (event: AcceptedLinearEvent, tracker: TrackerAdapter) => Promise<void>;
@@ -68,6 +69,7 @@ export function openLinear(options: {
 }): OpenLinear {
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(options.db);
+  const accessAllowed = options.isAuthorized ?? (() => true);
   const auth = createLinearAuth({
     db: options.db,
     tokenPath: linearTokenPath(options.secretsDir),
@@ -75,6 +77,7 @@ export function openLinear(options: {
     clientSecret: settings.clientSecret,
     bootstrapAccessToken: settings.accessToken,
     bootstrapRefreshToken: settings.refreshToken,
+    isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
   const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
@@ -101,18 +104,20 @@ export function openLinear(options: {
         authtoken: settings.ngrokAuthtoken,
         spawn: options.spawn,
       });
-      const poller = startPoller({
-        auth,
-        onEvent,
-        store,
-        tunnel,
-        fetchImpl: options.fetch,
-        db: options.db,
-        teamId: settings.teamId,
-        appUserId: settings.appUserId,
-        submitCommand:
-          options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
-      });
+      const poller = accessAllowed()
+        ? startPoller({
+            auth,
+            onEvent,
+            store,
+            tunnel,
+            fetchImpl: options.fetch,
+            db: options.db,
+            teamId: settings.teamId,
+            appUserId: settings.appUserId,
+            submitCommand:
+              options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
+          })
+        : null;
       running = {
         catchUp: () => poller?.pollNow() ?? Promise.resolve(),
         tunnelUp: () => tunnel.isUp(),
