@@ -134,6 +134,10 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-coordinator": [
+    "github",
+    "runner-repository-access",
+    "runner-artifacts",
+    "runner-transcripts",
     "credentials",
     "runner-control",
     "runner-identity",

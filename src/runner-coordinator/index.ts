@@ -14,6 +14,19 @@ import { createRunnerResults } from "../runner-results";
 import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
+import type { GitHubApp } from "../github";
+import { createRunnerRepositoryAccess } from "../runner-repository-access";
+import { createRunnerArtifactStore } from "../runner-artifacts";
+import {
+  createRunnerTranscripts,
+  createRunnerTranscriptsHttp,
+  type RunnerTranscriptObjects,
+} from "../runner-transcripts";
+
+export type RunnerRepositoryAccessOptions = {
+  github: GitHubApp;
+  installationForRepository(repository: string): string | null;
+};
 
 const SIGNING_FILE = "runner-command-key.pem";
 
@@ -43,6 +56,8 @@ export async function openRunnerCoordinator(options: {
   port: number;
   now?: () => number;
   onError(error: unknown): void;
+  repositoryAccess?: RunnerRepositoryAccessOptions;
+  transcriptObjects?: RunnerTranscriptObjects;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -65,6 +80,14 @@ export async function openRunnerCoordinator(options: {
   const workHttp = createRunnerWorkHttp(work);
   const results = createRunnerResults({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
+  const repository = options.repositoryAccess
+    ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
+    : undefined;
+  const transcripts = options.transcriptObjects
+    ? createRunnerTranscripts({ db: options.db, work, objects: options.transcriptObjects })
+    : undefined;
+  const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
   listener = await startRunnerListener({
     tls: { ...options.tls, ca: authority.certificate },
     hostname: options.hostname,
@@ -86,6 +109,9 @@ export async function openRunnerCoordinator(options: {
         (await workHttp(request, runnerId)) ??
         (await results.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
+        (await repository?.(request, runnerId)) ??
+        (await artifacts.fetch(request, runnerId)) ??
+        (await transcriptsHttp?.(request, runnerId)) ??
         new Response(null, { status: 404 })
       );
     },
@@ -106,6 +132,8 @@ export async function openRunnerCoordinator(options: {
     work,
     results,
     health,
+    artifacts,
+    transcripts,
     async browser(request: Request, principal: WorkspacePrincipal) {
       return (await http.browser(request, principal)) ?? health.browser(request, principal);
     },
