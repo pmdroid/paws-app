@@ -637,6 +637,34 @@ export class Orchestrator {
       if (message.target !== "linear") return;
       const tracker = this.tracker;
       if (tracker === null) throw new Error("Linear is not connected");
+      if (
+        this.options.linearAccess &&
+        this.options.channel !== "comments" &&
+        message.orderingKey &&
+        !isGitHubIssue(message.orderingKey) &&
+        message.op !== "catchup" &&
+        message.op !== "linear.catchup"
+      ) {
+        const itemId =
+          readString(message.payload, "itemId") ??
+          getLinearSession(this.db, message.orderingKey)?.activeItemId ??
+          undefined;
+        const issueId =
+          readString(message.payload, "linearIssueId") ??
+          readString(message.payload, "issueId") ??
+          undefined;
+        if (
+          message.op === "status" &&
+          (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
+        )
+          throw new Error("Linear workflow updates require verified human task ownership.");
+        await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
+          itemId,
+          issueId,
+          stop: message.delivery === "stop",
+          isCurrent: context.isCurrent,
+        });
+      }
       await deliverLinearOutbox(message, tracker, () => this.catchUpFn(), context, this.db);
     });
   }
@@ -1974,7 +2002,7 @@ export class Orchestrator {
       op: "activity",
       orderingKey: sessionId,
       idempotencyKey: key,
-      payload: { ...details, sessionId, kind, body },
+      payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
   }
