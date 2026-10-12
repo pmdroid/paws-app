@@ -888,4 +888,26 @@ CREATE TABLE runner_event (
 ) STRICT;
 `,
   },
+  {
+    id: "028_runner_results",
+    sql: `
+CREATE TABLE runner_result (
+  run_id TEXT NOT NULL REFERENCES runner_work(run_id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  command_id TEXT NOT NULL REFERENCES runner_command(id),
+  payload TEXT NOT NULL CHECK(json_valid(payload)),
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation)
+) STRICT;
+CREATE TABLE runner_question_answer (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  sequence INTEGER NOT NULL,
+  answer TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation,sequence),
+  FOREIGN KEY(run_id,generation,sequence) REFERENCES runner_event(run_id,generation,sequence)
+) STRICT;
+`,
+  },
 ];

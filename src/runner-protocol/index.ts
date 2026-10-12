@@ -17,3 +17,5 @@ export {
 } from "./signature";
 
 export { RunnerEventSchema, type RunnerEvent } from "./events";
+
+export { RunnerResultSchema, type RunnerResult } from "./results";

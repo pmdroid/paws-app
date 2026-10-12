@@ -1,3 +1,4 @@
+import { probeRunnerResults } from "./runner-results";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { statSync } from "node:fs";
@@ -36,6 +37,7 @@ export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
+  await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
