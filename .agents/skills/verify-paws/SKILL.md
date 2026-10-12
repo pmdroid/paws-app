@@ -47,7 +47,7 @@ bun --no-env-file scripts/verify-local.ts serve
 - A real acceptance-test failure, fix commit and native Closeout re-evaluation; scripted independent-review text.
 - Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. The GitHub request journal proves each Linear item publishes a pull request with its issue reference and Closeout evidence. Check final main content, not just fake merge calls.
 - Production status HTTP handlers and browser assets reading that database, plus a fresh `startPaws` process object for startup routes.
-- Negative probes for missing issue instructions, discarded review instructions, malformed reviewer output, Codex independence, login visibility, setup detection, token-store failure, source-question links, Linear same-account replies, question restart, Linear stop identity and merge-job recovery.
+- Negative probes for missing issue instructions, discarded review instructions, malformed reviewer output, Codex independence, login visibility, setup detection, token-store failure, source-question links, Linear same-account replies, threaded question restart excluding unthreaded and previous-thread replies, Linear stop identity and merge-job recovery.
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 

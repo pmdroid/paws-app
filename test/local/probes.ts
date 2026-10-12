@@ -144,11 +144,12 @@ export async function probeBoundaries(
   const binding = { itemId: "item", linearIssueId: "issue", sessionId: "issue" };
   const restart = await probeLinearQuestionRestart(join(root, "linear-question-restart"));
   observe(
-    "question reply survives owned process restart",
+    "threaded question reply survives owned process restart and ignores unrelated replies",
     restart.question.status === "answered" &&
       restart.question.answeredBy === "human-owner" &&
       restart.jobs.filter((job) => job.queue === JOB_KIND.resume).length === 1 &&
-      restart.duplicates.length === 0,
+      restart.duplicates.length === 0 &&
+      restart.ignored.length === 0,
     restart,
   );
   const personalBoard = createFakeCommentBoard({ clock, selfUserId: "personal-token-owner" });

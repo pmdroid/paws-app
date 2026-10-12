@@ -25,21 +25,11 @@ export type CommentSync = {
   stopped: readonly { itemId: string; requestedAt: number }[];
 };
 
-/**
- * How a comment is recognized as written by Paws.
- * `"user"` matches the personal-key author (Linear).
- * `"marker"` matches a `Paws:` prefix or a paws HTML marker, not the author.
- * GitHub user tokens post as the developer, so an unmarked reply still counts.
- */
-export type SelfDetection = "user" | "marker";
-
 export type CommentModeOptions = {
   board: CommentBoard;
   clock?: Clock;
   /** Linear user id of the personal API key. Comments from this user are Paws when selfDetection is `"user"`. */
   selfUserId?: string;
-  /** Defaults to `"user"` so Linear comment mode keeps author matching. */
-  selfDetection?: SelfDetection;
   commands?: CommandBus;
   onResume?: (answer: TeamAnswer) => void | Promise<void>;
   onStop?: (command: LinearCommand) => void | Promise<void>;
@@ -91,9 +81,6 @@ type Waiter = {
 
 const DONE_STATUS = "Done.";
 
-/** Present on every GitHub status and evidence comment. Question threads use `<!-- paws:q:… -->`. */
-const PAWS_MARKER = "<!-- paws -->";
-
 /**
  * Comment mode. Progress is one edited `Paws:` comment per item.
  * `response` is a final comment. `ask` posts a question and parks the run
@@ -106,7 +93,6 @@ const PAWS_MARKER = "<!-- paws -->";
 export function createCommentMode(options: CommentModeOptions): CommentMode {
   const clock = options.clock ?? systemClock;
   const selfUserId = options.selfUserId ?? "paws";
-  const selfDetection = options.selfDetection ?? "user";
   const items = new Map<string, Binding>();
   const slots = new Map<string, StatusSlot>();
   const questions = new Map<string, OpenQuestion>();
@@ -184,22 +170,16 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
     slot.lastWriteMs = now;
   }
 
-  function markBody(text: string): string {
-    const formatted = formatPawsText(text);
-    if (selfDetection !== "marker" || hasPawsMarker(formatted)) return formatted;
-    return `${formatted}\n\n${PAWS_MARKER}`;
-  }
-
   async function postStatus(binding: Binding, body: string): Promise<void> {
     const slot = slotFor(binding);
-    slot.pending = markBody(body);
+    slot.pending = formatPawsText(body);
     await flushSlot(slot, clock.now());
   }
 
   async function postEvidence(binding: Binding, body: string): Promise<void> {
     const slot = slotFor(binding);
     if (slot.commentId === null) {
-      slot.pending = markBody(DONE_STATUS);
+      slot.pending = formatPawsText(DONE_STATUS);
       await flushSlot(slot, clock.now());
     }
     const parentId = slot.commentId;
@@ -207,7 +187,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
     const created = await options.board.create({
       issueId: binding.linearIssueId,
       parentId,
-      body: markBody(body),
+      body: formatPawsText(body),
     });
     written.add(created.id);
   }
@@ -397,7 +377,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
     }
     for (const open of questions.values()) {
       if (open.linearIssueId !== linearIssueId || open.state !== "parked") continue;
-      const reply = firstAnswer(comments, open, isPaws, selfDetection === "marker");
+      const reply = firstAnswer(comments, open, isPaws);
       if (reply === null) continue;
       const answer: TeamAnswer = {
         questionId: open.questionId,
@@ -467,14 +447,9 @@ function firstAnswer(
   comments: readonly IssueComment[],
   question: OpenQuestion,
   isPaws: (comment: IssueComment) => boolean,
-  flat: boolean,
 ): IssueComment | null {
   const replies = comments
-    .filter((comment) =>
-      flat
-        ? comment.issueId === question.linearIssueId && comment.id !== question.commentId
-        : comment.parentId === question.commentId,
-    )
+    .filter((comment) => comment.parentId === question.commentId)
     .filter((comment) => isLaterThan(comment, question))
     .filter((comment) => !isPaws(comment))
     .filter((comment) => !isStopCommand(comment.body))

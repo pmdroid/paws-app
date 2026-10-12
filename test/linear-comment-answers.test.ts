@@ -23,6 +23,7 @@ test("a personal-token owner's answer resumes once after the parked process is t
     expect(result.jobs[0]?.payload.handoff).toContain("Include archived rows?");
     expect(result.resumed).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
+    expect(result.ignored).toHaveLength(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -105,4 +106,45 @@ test("a Paws bot reply remains excluded while a teammate can answer", async () =
   expect((await mode.sync("iss-1")).resumed).toEqual([
     { questionId: asked.questionId, answer: "Yes", answeredBy: "teammate" },
   ]);
+});
+
+test("repeated question text after restart only accepts a reply to the current question", async () => {
+  const clock = new FakeClock(1000);
+  const db = tempDb();
+  const board = createFakeCommentBoard({ clock, selfUserId: "owner" });
+  const options = { board, clock, selfUserId: "owner" };
+  let mode = createCommentMode(options);
+  mode.bind({ itemId: "item", linearIssueId: "issue", sessionId: "session" });
+  await mode.askQuestion({ sessionId: "session", questionId: "previous", body: "Which screen?" });
+  const previous = board.comments[0]!;
+  clock.advance(1);
+  board.post({ issueId: "issue", parentId: previous.id, userId: "human", body: "Old answer" });
+  const current = openQuestion(db, {
+    itemId: "item",
+    sessionId: "session",
+    body: "Which screen?",
+    now: clock.now(),
+  });
+  await mode.askQuestion({ sessionId: "session", questionId: current.id, body: current.body });
+  const currentRoot = board.comments.find((comment) =>
+    comment.body.includes(questionMarker(current.id)),
+  )!;
+  mode = createCommentMode(options);
+  mode.bind({ itemId: "item", linearIssueId: "issue", sessionId: "session" });
+  expect((await mode.sync("issue", current)).resumed).toEqual([]);
+  clock.advance(1);
+  board.post({ issueId: "issue", parentId: previous.id, userId: "human", body: "Late old answer" });
+  board.post({ issueId: "issue", userId: "human", body: "Unthreaded answer" });
+  expect((await mode.sync("issue")).resumed).toEqual([]);
+  board.post({
+    issueId: "issue",
+    parentId: currentRoot.id,
+    userId: "human",
+    body: "Current answer",
+  });
+  expect((await mode.sync("issue")).resumed).toEqual([
+    { questionId: current.id, answer: "Current answer", answeredBy: "human" },
+  ]);
+  expect((await mode.sync("issue")).resumed).toEqual([]);
+  db.close();
 });

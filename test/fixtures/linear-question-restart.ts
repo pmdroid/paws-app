@@ -48,6 +48,16 @@ if (stage === "ask") {
   const saved = JSON.parse(readFileSync(join(root, "comments.json"), "utf8")) as IssueComment[];
   for (const comment of saved) board.post({ ...comment, createdAtMs: comment.createdAtMs });
   const pending = findOpenQuestion(db, binding.sessionId)!;
+  board.post({ issueId: binding.linearIssueId, userId: "human-owner", body: "Unthreaded answer" });
+  board.post({
+    issueId: binding.linearIssueId,
+    parentId: "previous-question",
+    userId: "human-owner",
+    body: "Old thread answer",
+  });
+  const ignored = await mode.sync(binding.linearIssueId, pending);
+  if (ignored.resumed.length !== 0)
+    throw new Error("Unrelated replies resumed the current question");
   board.post({
     issueId: binding.linearIssueId,
     parentId: saved[0]!.id,
@@ -86,6 +96,7 @@ if (stage === "ask") {
       item: getWorkItem(db, binding.itemId),
       jobs: listJobs(db),
       resumed: result.resumed,
+      ignored: ignored.resumed,
       duplicates: duplicate.resumed,
     }),
   );
