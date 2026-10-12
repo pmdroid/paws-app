@@ -97,7 +97,12 @@ export function syncWorkspaceMember(
 ): void {
   immediate(db, () => {
     const previous = workspaceMember(db, input.workspaceId, input.userId);
-    if (previous !== null && previous.checkedAt > input.now) return;
+    if (
+      previous !== null &&
+      (previous.checkedAt > input.now ||
+        (previous.checkedAt === input.now && !previous.active && input.active))
+    )
+      return;
     db.run(
       `INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at)
       VALUES(?,?,?,'linear',?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET

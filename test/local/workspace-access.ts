@@ -199,6 +199,20 @@ export async function probeWorkspaceAccess(
     teamIds: ["stale-team"],
     now: now + 3,
   });
+  syncWorkspaceMember(restored, {
+    workspaceId: workspace.id,
+    userId,
+    role: "member",
+    active: true,
+    teamIds: ["stale-team"],
+    now: now + 3,
+  });
+  const tied = workspaceMember(restored, workspace.id, userId);
+  observe(
+    "same-timestamp active observation cannot restore revoked membership or teams",
+    tied?.active === false && tied.teamIds.length === 0,
+    tied,
+  );
   const repeatedAudits = restored
     .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_access_audit")
     .get()!.count;
