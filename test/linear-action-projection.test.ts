@@ -32,9 +32,7 @@ test.each(["completed", "failed"] as const)(
       status,
       _meta: { terminal_exit: { terminal_id: "terminal", exit_code: status === "failed" ? 1 : 0 } },
     });
-    expect(posted.at(-1)?.action?.result).toBe(
-      `${status === "failed" ? "Failed.\n\n" : ""}First check passed.\nSecond check failed.`,
-    );
+    expect(posted.at(-1)?.action?.result).toBe("First check passed.\nSecond check failed.");
     expect(posted.at(-1)?.action?.parameter).toContain("bun test");
     expect(posted.at(-1)?.ephemeral).not.toBe(true);
     expect(posted.slice(0, -1).every((update) => update.action?.result === undefined)).toBe(true);
