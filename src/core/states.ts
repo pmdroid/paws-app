@@ -55,6 +55,7 @@ export const WORK_ITEM_EVENTS = [
   "take_over",
   "human_completed",
   "answer_completed",
+  "artifact_completed",
   "cancel",
 ] as const;
 
