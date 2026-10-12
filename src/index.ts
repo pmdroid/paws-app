@@ -29,6 +29,9 @@ import {
   enqueueCommand,
   isLinearAppRevoked,
   getWorkItemRepository,
+  getLinearSessionAccess,
+  listWorkItems,
+  linearSessionForEpic,
   listWorkItemsByStates,
   migrate,
   openDatabase,
@@ -84,6 +87,8 @@ import {
   routeBySource,
   worktreeBranch,
   type GitHubBinding,
+  LinearTaskAccess,
+  handleLinearAdministration,
   type Orchestrator,
   type RepositoryBinding,
 } from "./loop";
@@ -156,6 +161,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     submitCommand(db, orchestrator.bus, command);
   };
 
+  let linearTaskAccess: LinearTaskAccess | null = null;
+  const stopLinearSession = (sessionId: string): void => {
+    for (const item of listWorkItems(db)) {
+      if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
+      if (["cancelled", "completed", "merged"].includes(item.state)) continue;
+      submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
+    }
+  };
   const linear =
     useLinear && channel === "agent-session"
       ? openLinear({
@@ -166,6 +179,38 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               oauthClientId: runtime.linearClientId,
               appUserId: runtime.linearViewerId,
             }),
+          beforeEvent: async (event) => {
+            if (
+              await handleLinearAdministration(db, event, {
+                oauthClientId: runtime.linearClientId,
+                appUserId: runtime.linearViewerId,
+                interrupt: async (sessionId) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  await orchestrator.interruptLinearSession(sessionId);
+                },
+                revalidate: async (sessionIds) => {
+                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  await linearTaskAccess.revalidateSessions(sessionIds);
+                },
+                reconcile: async (notification) => {
+                  if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  await linearTaskAccess.reconcile(notification.issueId);
+                },
+                notify: (command) => {
+                  if (orchestrator === null) throw new Error("The loop is not attached.");
+                  orchestrator.bus.emit(command);
+                },
+              })
+            )
+              return false;
+            if (
+              event.sessionId !== null &&
+              getLinearSessionAccess(db, event.sessionId) === "revoked"
+            )
+              return false;
+            if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+            return linearTaskAccess.accept(event);
+          },
           env: linearEnv(runtime, envSource),
           publicUrl: runtime.publicUrl,
           noTunnel: !webhooks || options?.noTunnel === true,
@@ -178,6 +223,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           submitCommand: submit,
         })
       : null;
+
+  if (linear !== null)
+    linearTaskAccess = new LinearTaskAccess(db, {
+      access: linear.access,
+      lifecycle: linear.issueLifecycle,
+      oauthClientId: runtime.linearClientId,
+      appUserId: runtime.linearViewerId,
+      stopSession: stopLinearSession,
+      interruptSession: async (sessionId) => {
+        if (orchestrator === null) throw new Error("The loop is not attached.");
+        await orchestrator.interruptLinearSession(sessionId);
+      },
+    });
 
   const server = startServer({
     hostname: LOOPBACK,
@@ -240,6 +298,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         pawsRoot: paths.home,
         tracker,
         linearTaskModes: true,
+        linearAccess: linearTaskAccess ?? undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {

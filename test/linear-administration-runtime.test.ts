@@ -364,3 +364,113 @@ test("notification dedupe follows successful reconciliation and serializes overl
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
   expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("queued");
 });
+
+test("production disconnected ingress preserves a signed created session across database reopen", async () => {
+  const child = Bun.spawn(
+    [process.execPath, "test/fixtures/linear-disconnected-ingress.ts", tempHome()],
+    {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect(exitCode).toBe(0);
+  expect(stderr).toContain("Linear is not connected");
+  expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+    status: 200,
+    requests: 0,
+    pending: ["disconnected-session"],
+  });
+});
+
+test("production notification ingress reconciles delegation once without workflow mutation", async () => {
+  const child = Bun.spawn(
+    [process.execPath, "test/fixtures/linear-notification-ingress.ts", tempHome()],
+    {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+    statuses: [200, 200],
+    state: "cancelled",
+    pending: 0,
+    sessionReads: 1,
+    workflowMutations: 0,
+  });
+});
+
+test.each(["token", "disconnected"])(
+  "production signed Stop before created prevents delayed work with %s",
+  async (connection) => {
+    const child = Bun.spawn(
+      [process.execPath, "test/fixtures/linear-early-stop-ingress.ts", tempHome(), connection],
+      {
+        cwd: new URL("..", import.meta.url).pathname,
+        env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+      statuses: [200, 200],
+      items: 0,
+      pending: 0,
+      stopped: true,
+      generation: 1,
+      apiReads: 0,
+      firstAcknowledgements: 0,
+    });
+  },
+);
+
+test.each(["allowed", "denied", "retry"])(
+  "production public-team drop revalidates authoritative access: %s",
+  async (mode) => {
+    const child = Bun.spawn(
+      [process.execPath, "test/fixtures/linear-notification-ingress.ts", tempHome(), mode],
+      {
+        cwd: new URL("..", import.meta.url).pathname,
+        env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(0);
+    if (mode === "retry") expect(stderr).toContain("Temporary offline permission read");
+    else expect(stderr).toBe("");
+    expect(JSON.parse(stdout.trim().split("\n").at(-1)!)).toEqual({
+      statuses: mode === "retry" ? [200, 200] : [200],
+      state: mode === "denied" ? "cancelled" : "awaiting_input",
+      pending: 0,
+      sessionReads: mode === "retry" ? 2 : 1,
+      teamReads: mode === "retry" ? 2 : 1,
+      workflowMutations: 0,
+    });
+  },
+);
