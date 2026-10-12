@@ -55,6 +55,7 @@ export function createLinearTracker(
 ): LinearSessionAdapter & ReturnType<typeof createLinearSessionReads> & LinearRepositoryAdapter {
   const sessions = createLinearSessionMethods(client);
   return {
+    supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearRepositoryMethods(client),
     async loadEpic(linearIssueId) {

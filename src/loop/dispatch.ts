@@ -7,6 +7,8 @@ import type {
   TrackerRequestOptions,
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
+import { prepareLinearActivity } from "../db";
+import type { Database } from "bun:sqlite";
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
 
@@ -19,12 +21,17 @@ export async function deliverLinearOutbox(
   tracker: TrackerAdapter,
   catchUp: () => Promise<void>,
   context?: OutboxDeliveryContext,
+  db?: Database,
 ): Promise<void> {
   context?.signal.throwIfAborted();
   if (context && !context.isCurrent())
     throw new Error("Linear delivery superseded by a session fence.");
+  if (db && tracker.supportsActivityReconciliation) message = prepareLinearActivity(db, message);
   const payload = isRecord(message.payload) ? message.payload : {};
-  const options = context ? { signal: context.signal } : undefined;
+  const options = {
+    ...(context ? { signal: context.signal, isCurrent: context.isCurrent } : {}),
+    ...(message.attempts > 1 ? { reconcile: true } : {}),
+  };
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker, options);
   }

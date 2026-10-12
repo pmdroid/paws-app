@@ -55,6 +55,9 @@ export function routeBySource(input: {
     ...(input.linear?.issueRepositorySuggestions
       ? { issueRepositorySuggestions: input.linear.issueRepositorySuggestions.bind(input.linear) }
       : {}),
+    ...(input.linear?.supportsActivityReconciliation
+      ? { supportsActivityReconciliation: true as const }
+      : {}),
     loadEpic: (id) => pick(id).loadEpic(id),
     listDeps: (id) => pick(id).listDeps(id),
     postProgress: (update, options) => pick(update.sessionId).postProgress(update, options),

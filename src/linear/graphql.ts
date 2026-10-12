@@ -7,17 +7,21 @@ export type LinearClient = {
   query(
     query: string,
     variables?: Record<string, unknown>,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; isCurrent?: () => boolean },
   ): Promise<unknown>;
 };
 
 export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLike }): LinearClient {
   const fetchImpl = options.fetch ?? fetch;
   const client: LinearClient = {
-    async query(query, variables, { signal } = {}) {
-      signal?.throwIfAborted();
-      const run = async (token: string) => {
+    async query(query, variables, { signal, isCurrent } = {}) {
+      const current = () => {
         signal?.throwIfAborted();
+        if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
+      };
+      current();
+      const run = async (token: string) => {
+        current();
         return fetchImpl(GRAPHQL_URL, {
           method: "POST",
           headers: {
@@ -41,7 +45,7 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
         if (error instanceof Error && error.name === "AbortError") throw error;
         return null;
       });
-      signal?.throwIfAborted();
+      current();
       const limited = rateLimitFrom(response, json, budget);
       if (limited !== null) throw limited;
       const errors = isRecord(json) ? json["errors"] : undefined;

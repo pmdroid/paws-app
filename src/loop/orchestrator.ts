@@ -623,7 +623,7 @@ export class Orchestrator {
       if (message.target !== "linear") return;
       const tracker = this.tracker;
       if (tracker === null) throw new Error("Linear is not connected");
-      await deliverLinearOutbox(message, tracker, () => this.catchUpFn(), context);
+      await deliverLinearOutbox(message, tracker, () => this.catchUpFn(), context, this.db);
     });
   }
 
