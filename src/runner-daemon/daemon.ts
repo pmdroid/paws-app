@@ -6,10 +6,12 @@ import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RunnerCommandSchema,
+  RunnerHealthResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
   type RunnerCommand,
   type RunnerCommandRejection,
+  type RunnerHealthResult,
   type RunnerResult,
 } from "../runner-protocol";
 import {
@@ -257,6 +259,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     },
     async heartbeat() {
       return RunnerHeartbeatSchema.parse(await authenticated("/v1/heartbeat", "POST", {}));
+    },
+    async postHealth(result: RunnerHealthResult) {
+      const body = RunnerHealthResultSchema.parse(result);
+      return RunnerEventReceiptSchema.parse(await authenticated("/v1/health", "POST", body));
     },
     async issueRunGrant(runId: string, request: RunnerGrantRequest) {
       identifier.parse(runId);

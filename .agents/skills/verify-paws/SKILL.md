@@ -160,3 +160,7 @@ bun test test/runner-daemon.test.ts test/runner-work.test.ts test/runner-results
 The daemon probe uses real HTTPS/mTLS and fresh subprocesses. The work and result probes use real SQLite, signed assignments and production request handlers. Inspect each probe's observations alongside the full credential-free check.
 
 The daemon probe also checks enrollment keyrings, optional public-key pins, authenticated signing-key rotation, validated lease and fence responses, separate bearer grants, ordered events, repository credential binding, result receipts and question-answer cursors. Inspect its malformed-response observations, safe HTTP 409 status, fresh subprocess identities and checks that grant and repository tokens remain absent from stored files and process output.
+
+## Runner daemon health transport
+
+Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
