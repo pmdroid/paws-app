@@ -1,0 +1,39 @@
+[Unit]
+Description=Paws paired Linux runner daemon
+Wants=network-online.target
+Requires=paws-runner-broker.socket
+After=network-online.target paws-runner-broker.socket
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=paws-runner
+Group=paws-runner
+SupplementaryGroups=paws-agent paws-results
+Environment=HOME=/var/lib/paws-runner
+StateDirectory=paws-runner
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/paws-runner
+ExecStart=/opt/paws-runner/bin/bun --no-env-file /opt/paws-runner/current/src/index.ts runner daemon --config /etc/paws-runner/config.json
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/paws-runner-spool
+ReadOnlyPaths=/var/lib/paws-agent-results
+InaccessiblePaths=-/var/lib/paws-agent -/var/lib/paws-runner-broker
+
+[Install]
+WantedBy=multi-user.target
