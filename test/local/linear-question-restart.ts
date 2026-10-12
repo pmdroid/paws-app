@@ -7,6 +7,7 @@ export async function probeLinearQuestionRestart(root: string): Promise<{
   jobs: { queue: string; payload: { handoff?: string } }[];
   resumed: unknown[];
   duplicates: unknown[];
+  ignored: unknown[];
   stoppedPid: number;
   stoppedExit: number;
 }> {

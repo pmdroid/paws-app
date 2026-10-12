@@ -27,5 +27,4 @@ export type {
   CommentModeOptions,
   CommentRunPhase,
   CommentSync,
-  SelfDetection,
 } from "./mode";
