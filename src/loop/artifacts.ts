@@ -3,8 +3,20 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ArtifactSnapshot, PublishArtifactHook, PublishedArtifact } from "../acp";
-import { enqueueOutboxOnce, immediate, markArtifact, saveArtifact } from "../db";
+import type {
+  ArtifactSnapshot,
+  PublishArtifactHook,
+  PublishArtifactRequest,
+  PublishedArtifact,
+} from "../acp";
+import {
+  beginArtifactAttempt,
+  completeArtifactAttempt,
+  enqueueOutboxOnce,
+  immediate,
+  markArtifact,
+  saveArtifact,
+} from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 
 export function createLinearArtifactPublisher(options: {
@@ -24,6 +36,16 @@ export function createLinearArtifactPublisher(options: {
       .get(options.sessionId)?.generation ?? 0;
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
+    begin(request, context) {
+      context.signal.throwIfAborted();
+      const identityHash = publicationIdentity(request);
+      const version = beginArtifactAttempt(options.db, options.itemId, identityHash);
+      return {
+        complete() {
+          completeArtifactAttempt(options.db, options.itemId, identityHash, version);
+        },
+      };
+    },
     publish(artifact, context) {
       const key = JSON.stringify([
         artifact.path,
@@ -33,9 +55,12 @@ export function createLinearArtifactPublisher(options: {
       ]);
       const existing = inflight.get(key);
       if (existing) return existing;
-      const pending = publish(artifact, context.runId, context.signal).finally(() =>
-        inflight.delete(key),
-      );
+      const pending = publish(
+        artifact,
+        context.runId,
+        context.signal,
+        publicationIdentity(context.request ?? { path: artifact.path }),
+      ).finally(() => inflight.delete(key));
       inflight.set(key, pending);
       return pending;
     },
@@ -45,6 +70,7 @@ export function createLinearArtifactPublisher(options: {
     artifact: ArtifactSnapshot,
     runId: string,
     signal: AbortSignal,
+    identityHash: string,
   ): Promise<PublishedArtifact> {
     signal.throwIfAborted();
     const bytes = new Uint8Array(await artifact.bytes.arrayBuffer());
@@ -62,6 +88,7 @@ export function createLinearArtifactPublisher(options: {
       options.db,
       {
         id: randomUUID(),
+        identityHash,
         itemId: options.itemId,
         runId,
         path: artifact.path,
@@ -244,4 +271,16 @@ async function writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
 
 function isMissing(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}
+
+function publicationIdentity(request: PublishArtifactRequest): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        request.displayName === undefined
+          ? ["path", request.path]
+          : ["displayName", request.displayName],
+      ),
+    )
+    .digest("hex");
 }

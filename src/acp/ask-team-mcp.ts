@@ -46,7 +46,11 @@ const ARTIFACT_TOOL = {
     type: "object",
     properties: {
       path: { type: "string", description: "Workspace-relative path to the file to publish." },
-      displayName: { type: "string", description: "Optional file name shown to the user." },
+      displayName: {
+        type: "string",
+        description:
+          "Optional deliverable name shown to the user. Reuse this name when retrying with a corrected path.",
+      },
       mimeType: { type: "string", description: "Optional MIME type, such as image/png." },
     },
     required: ["path"],

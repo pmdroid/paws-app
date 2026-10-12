@@ -584,6 +584,145 @@ test.each(["claude", "codex", "grok"])(
   20_000,
 );
 
+test.each([false, true])(
+  "mixed code publication blocks an ignored artifact failure and permits a corrected retry: %s",
+  async (retry) => {
+    const layout = await repoLayout();
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "artifact-gap",
+        identifier: "ENG-98",
+        title: "Change code and return a screenshot",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const github = createFakeGitHub();
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const resultPath = path.join(layout.root, "missing-artifact-result.json");
+    const launch: AgentLaunch = (input) => {
+      const script = path.join(layout.root, `artifact-${input.purpose}.json`);
+      writeFileSync(
+        script,
+        JSON.stringify({
+          model:
+            input.role === "reviewer" || input.profile?.agent === "codex"
+              ? "test-codex-model"
+              : "test-claude-model",
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : [
+                  writeOk(input.worktree),
+                  { type: "publish_artifact", path: "missing.png", displayName: "Screenshot.png" },
+                  ...(retry
+                    ? [
+                        { type: "fs_write", path: "correct.png", content: "PNG bytes" },
+                        {
+                          type: "publish_artifact",
+                          path: "correct.png",
+                          displayName: "Screenshot.png",
+                        },
+                      ]
+                    : []),
+                  { type: "end" },
+                ],
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [
+          fakeAgent,
+          input.purpose === "implement"
+            ? resultPath
+            : path.join(layout.root, `${input.purpose}.result.json`),
+          script,
+        ],
+        env: process.env,
+      };
+    };
+    let uploads = 0;
+    const files = createLinearFileTransfer({
+      client: {
+        async query() {
+          return {
+            fileUpload: {
+              success: true,
+              uploadFile: {
+                uploadUrl: "https://storage.example/upload?signature=host-only",
+                assetUrl: "https://uploads.linear.app/workspace/result",
+                headers: [],
+              },
+            },
+          };
+        },
+      },
+      auth: {
+        async ensureFresh() {
+          return "host-only";
+        },
+      },
+      fetch: async () => {
+        uploads++;
+        return new Response(null, { status: 200 });
+      },
+    });
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      launch,
+      files,
+      secretsDir: path.join(layout.pawsRoot, "secrets"),
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: githubClient(layout.bare, github),
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "artifact-gap"));
+      for (
+        let tick = 0;
+        tick < 10 && !["failed", "merged"].includes(stateOf(db, "ENG-98") ?? "");
+        tick++
+      )
+        await jobs.tick();
+      const trace = JSON.parse(await readFile(resultPath, "utf8"));
+      expect(
+        trace.artifact,
+        JSON.stringify({ trace, state: stateOf(db, "ENG-98"), progress: tracker.progress }),
+      ).toBeDefined();
+      expect(trace.artifact.ok).toBe(retry);
+      expect(stateOf(db, "ENG-98"), debug(layout, db)).toBe(retry ? "merged" : "failed");
+      expect(github.opened).toHaveLength(retry ? 1 : 0);
+      expect(github.merged).toHaveLength(retry ? 1 : 0);
+      expect(uploads).toBe(retry ? 1 : 0);
+      if (!retry) {
+        expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+        expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
+        expect(
+          tracker.progress.some(
+            (update) => update.kind === "error" && update.body.includes("requested artifact"),
+          ),
+        ).toBe(true);
+      }
+    } finally {
+      db.close();
+      await layout.cleanup();
+    }
+  },
+  20000,
+);
+
 test("an unconfigured repository halts with an error and never completes the session", async () => {
   const db = openDatabase(":memory:");
   migrate(db);

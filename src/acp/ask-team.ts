@@ -171,9 +171,17 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       if (!options.publishArtifact || !options.context.worktreePath) {
         throw new Error("publish_artifact is unavailable");
       }
+      const request = (parsed.arguments ?? {}) as unknown as PublishArtifactRequest;
+      const context = {
+        ...options.context,
+        request,
+        worktreePath: options.context.worktreePath,
+        signal: options.signal,
+      };
+      const attempt = options.publishArtifact.begin?.(request, context);
       const artifact = await snapshotArtifactFile(
         options.context.worktreePath,
-        (parsed.arguments ?? {}) as unknown as PublishArtifactRequest,
+        request,
         options.artifactLimits,
         options.signal,
       );
@@ -181,11 +189,7 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       let published;
       try {
         published = await abortable(
-          options.publishArtifact.publish(artifact, {
-            ...options.context,
-            worktreePath: options.context.worktreePath,
-            signal: options.signal,
-          }),
+          options.publishArtifact.publish(artifact, context),
           options.signal,
         );
       } catch {
@@ -212,6 +216,8 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       ) {
         throw new Error("artifact upload returned an invalid display name");
       }
+      options.signal.throwIfAborted();
+      attempt?.complete();
       const label = name.replace(/[\\[\]]/g, "\\$&");
       socket.end(
         `${JSON.stringify({ id, answer: `${artifact.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${url.href}>)` })}\n`,

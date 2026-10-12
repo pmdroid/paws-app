@@ -150,6 +150,8 @@ export {
   markArtifact,
   listArtifacts,
   artifactPublicationReady,
+  beginArtifactAttempt,
+  completeArtifactAttempt,
   type StoredArtifact,
 } from "./artifacts";
 

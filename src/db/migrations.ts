@@ -571,4 +571,17 @@ CREATE TABLE work_item_repository_question (
     id: "021_task_repository_context",
     sql: "ALTER TABLE work_item_task ADD COLUMN repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1));",
   },
+  {
+    id: "018_linear_artifact_attempts",
+    sql: `
+ALTER TABLE linear_artifact ADD COLUMN identity_hash TEXT;
+CREATE TABLE linear_artifact_attempt (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  identity_hash TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  completed_version INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(item_id, identity_hash)
+) STRICT;
+`,
+  },
 ];
