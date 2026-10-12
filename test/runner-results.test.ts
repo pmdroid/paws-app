@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
+import { RUNNER_RESULT_BODY_LIMIT, RunnerResultSchema } from "../src/runner-protocol";
 import { probeRunnerResults } from "./local/runner-results";
 
 test("remote agent results and question answers persist with immutable grant-bound delivery", async () => {
@@ -18,3 +20,35 @@ test("remote agent results and question answers persist with immutable grant-bou
     rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("runner result bounds preserve health schema derivation and escaped metadata", () => {
+  const result = RunnerResultSchema.parse({
+    executionId: "01K00000000000000000000000",
+    commandId: "c".repeat(128),
+    role: "reviewer",
+    stopReason: "end_turn",
+    timedOut: false,
+    cancelled: false,
+    authRequired: false,
+    agentExited: true,
+    sessionId: "\u0000".repeat(512),
+    errorMessage: "\u0000".repeat(16384),
+    identity: {
+      session: "\u0000".repeat(512),
+      model: "\u0000".repeat(512),
+      provider: "\u0000".repeat(512),
+    },
+    reviewText: "\u0000".repeat(150000),
+  });
+  assert(
+    Buffer.byteLength(JSON.stringify({ generation: Number.MAX_SAFE_INTEGER, result })) <=
+      RUNNER_RESULT_BODY_LIMIT,
+  );
+  const health = RunnerResultSchema.omit({ candidateSha: true, reviewText: true }).extend({
+    models: z.array(z.strictObject({ id: z.string(), name: z.string() })),
+  });
+  const metadata = { ...result };
+  delete metadata.reviewText;
+  assert(health.safeParse({ ...metadata, models: [{ id: "codex", name: "Codex" }] }).success);
+  assert(RunnerResultSchema.shape.reviewText.safeParse(result.reviewText).success);
+});

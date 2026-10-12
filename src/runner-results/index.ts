@@ -1,7 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { immediate } from "../db";
-import { RunnerResultSchema, RunnerEventSchema, type RunnerResult } from "../runner-protocol";
+import {
+  RUNNER_RESULT_BODY_LIMIT,
+  RunnerResultSchema,
+  RunnerEventSchema,
+  type RunnerResult,
+} from "../runner-protocol";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 
 const integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -134,11 +139,22 @@ export function createRunnerResults(options: {
     }) {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
+      const unanswered = db
+        .query<{ sequence: number }, [string, number]>(
+          `SELECT e.sequence FROM runner_event e
+           LEFT JOIN runner_question_answer a
+             ON a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence
+           WHERE e.run_id=? AND e.generation=? AND a.sequence IS NULL
+             AND json_extract(e.payload, '$.type') IN ('question','artifact')
+           ORDER BY e.sequence LIMIT 1`,
+        )
+        .get(input.runId, input.generation);
       return db
         .query<{ sequence: number; answer: string }, [string, number, number]>(
           "SELECT sequence,answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",
         )
-        .all(input.runId, input.generation, input.after);
+        .all(input.runId, input.generation, input.after)
+        .filter((answer) => !unanswered || answer.sequence < unanswered.sequence);
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const match = /^\/v1\/runs\/([^/]+)\/(result|answers)$/.exec(new URL(request.url).pathname);
@@ -188,7 +204,7 @@ async function readBody(request: Request) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > 1_048_576) throw new Error("Runner result input is too large");
+      if (bytes > RUNNER_RESULT_BODY_LIMIT) throw new Error("Runner result input is too large");
       chunks.push(part.value);
     }
     timeout.throwIfAborted();

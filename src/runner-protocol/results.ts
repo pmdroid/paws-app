@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const RUNNER_RESULT_BODY_LIMIT = 1_048_576;
+const resultMetadataBudget = 131_072;
+
 export const RunnerResultSchema = z.strictObject({
   executionId: z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
   commandId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/),
@@ -30,7 +33,15 @@ export const RunnerResultSchema = z.strictObject({
     .string()
     .regex(/^[a-f0-9]{40}$/)
     .optional(),
-  reviewText: z.string().max(524288).optional(),
+  reviewText: z
+    .string()
+    .max(524288)
+    .refine(
+      (text) =>
+        Buffer.byteLength(JSON.stringify(text)) <= RUNNER_RESULT_BODY_LIMIT - resultMetadataBudget,
+      "Runner review exceeds the maximum JSON request size",
+    )
+    .optional(),
 });
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;

@@ -17,6 +17,7 @@ import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
 import {
   verifyRunnerCommand,
+  RunnerResultSchema,
   type RunnerCommand,
   type RunnerResult,
 } from "../../src/runner-protocol";
@@ -136,6 +137,21 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         agentExited: true,
         ...(type === "run" ? { candidateSha: "b".repeat(40) } : { reviewText: "[]" }),
       };
+      if (type === "review") {
+        assert.equal(
+          RunnerResultSchema.safeParse({ ...result, reviewText: "界".repeat(400000) }).success,
+          false,
+        );
+        assert.equal(
+          RunnerResultSchema.safeParse({ ...result, reviewText: "\u0000".repeat(180000) }).success,
+          false,
+        );
+        assert(
+          RunnerResultSchema.safeParse({ ...result, reviewText: "\u0000".repeat(150000) }).success,
+        );
+        result.reviewText = "界".repeat(300000);
+        assert(RunnerResultSchema.safeParse(result).success);
+      }
       const request = (body: unknown, token = access.token) =>
         new Request(`https://runner.invalid/v1/runs/${run.id}/result`, {
           method: "POST",
@@ -201,6 +217,24 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       assert.equal(answers!.status, 200);
       assert.deepEqual(await answers!.json(), { answers: [{ sequence: 2, answer: "A" }] });
       assert.deepEqual(results.answers({ ...access, after: 2 }), []);
+      work.event({
+        ...access,
+        sequence: 3,
+        event: { type: "question", text: "Older question", options: ["A"] },
+      });
+      work.event({
+        ...access,
+        sequence: 4,
+        event: { type: "question", text: "Newer question", options: ["B"] },
+      });
+      results.answer({ runId: run.id, generation, sequence: 4, answer: "B" });
+      assert.deepEqual(results.answers({ ...access, after: 2 }), []);
+      results.answer({ runId: run.id, generation, sequence: 3, answer: "A" });
+      assert.deepEqual(results.answers({ ...access, after: 2 }), [
+        { sequence: 3, answer: "A" },
+        { sequence: 4, answer: "B" },
+      ]);
+      assert.deepEqual(results.answers({ ...access, after: 4 }), []);
       let pulls = 0;
       let cancelled = false;
       const oversized = new Request(`https://runner.invalid/v1/runs/${run.id}/result`, {
@@ -234,6 +268,8 @@ export async function probeRunnerResults(root: string, observe: Observe) {
           staleGeneration: 409,
           wrongRole: 403,
           questionAnswers: [{ sequence: 2, answer: "A" }],
+          outOfOrderAnswersDeliveredInQuestionOrder: true,
+          ...(type === "review" ? { unicodeReviewBytes: 900000, escapedSizeChecked: true } : {}),
           oversized: { status: 403, pulls, cancelled },
         },
       );
@@ -251,11 +287,11 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         reopened
           .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_question_answer")
           .get()!.count,
-        2,
+        6,
       );
       observe("result and answer receipts persist after SQLite reopen", true, {
         results: 2,
-        answers: 2,
+        answers: 6,
       });
     } finally {
       reopened.close();
