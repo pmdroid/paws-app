@@ -18,7 +18,8 @@ export type AgentPurpose =
   | "prepare"
   | "classify"
   | "answer"
-  | "artifact";
+  | "artifact"
+  | "select_repository";
 
 export type AgentLaunch = (input: {
   role: AgentRole;

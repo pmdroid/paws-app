@@ -140,7 +140,11 @@ import { createLinearArtifactPublisher } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
-import { rankRepositories, repositoryAnswer } from "./repository-selection";
+import {
+  interpretRepositoryAnswer,
+  rankRepositories,
+  repositoryAnswer,
+} from "./repository-selection";
 
 export type GitHubBinding = {
   appId: string;
@@ -2059,6 +2063,18 @@ export class Orchestrator {
       loader({ ...input, sessionId, turnId });
   }
 
+  private blockConversation(itemId: string): void {
+    const stored = getConversation(this.db, itemId);
+    saveConversation(
+      this.db,
+      itemId,
+      stored.entries,
+      stored.transcript,
+      true,
+      stored.transcriptOffset,
+    );
+  }
+
   private async prepareConversation(item: WorkItemRecord) {
     const taskKey = this.db
       .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
@@ -2306,6 +2322,8 @@ export class Orchestrator {
   }
 
   private async selectRepository(item: WorkItemRecord): Promise<boolean> {
+    if (getConversation(this.db, item.id).blocked)
+      throw new Error("ACP process cleanup could not be verified");
     if (getWorkItemRepository(this.db, item.id) !== null) return true;
     const liveKey = `repository:${item.id}`;
     const live = this.beginLive(item.id, liveKey);
@@ -2336,20 +2354,53 @@ export class Orchestrator {
       }
       if (this.stopped(item.id)) return false;
       const savedAnswer = getWorkItemRepositoryAnswer(this.db, item.id);
-      const selected = savedAnswer
+      let selected = savedAnswer
         ? repositoryAnswer(savedAnswer.answer, savedAnswer.candidates)
         : null;
-      if (
-        selected &&
-        candidates.some(
-          (candidate) =>
-            candidate.owner === selected.owner &&
-            candidate.repo === selected.repo &&
-            candidate.remoteUrl === selected.remoteUrl,
-        )
-      ) {
-        bindWorkItemRepository(this.db, item.id, selected);
-        return true;
+      if (!selected && savedAnswer) {
+        const offered = savedAnswer.candidates.filter((previous) =>
+          candidates.some(
+            (candidate) =>
+              previous.owner === candidate.owner &&
+              previous.repo === candidate.repo &&
+              previous.remoteUrl === candidate.remoteUrl,
+          ),
+        );
+        selected = await interpretRepositoryAnswer({
+          answer: savedAnswer.answer,
+          candidates: offered,
+          offered: savedAnswer.candidates,
+          itemId: item.id,
+          pawsRoot: this.options.pawsRoot,
+          home: this.options.home,
+          profile: resolveAgentProfiles(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+            .implementer,
+          signal: controller.signal,
+          launch: this.launchAgent,
+          onCleanupFailure: () => this.blockConversation(item.id),
+        });
+        controller.signal.throwIfAborted();
+        if (this.stopped(item.id)) return false;
+      }
+      const selectedIndex = selected
+        ? candidates.findIndex(
+            (candidate) =>
+              candidate.owner === selected.owner &&
+              candidate.repo === selected.repo &&
+              candidate.remoteUrl === selected.remoteUrl,
+          )
+        : -1;
+      if (selected && selectedIndex >= 0) {
+        const accessible =
+          !this.options.repositoryAccess ||
+          (await this.options.repositoryAccess(selected, controller.signal));
+        controller.signal.throwIfAborted();
+        if (this.stopped(item.id)) return false;
+        if (accessible) {
+          bindWorkItemRepository(this.db, item.id, selected);
+          return true;
+        }
+        candidates.splice(selectedIndex, 1);
       }
       if (candidates.length === 0) {
         this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
