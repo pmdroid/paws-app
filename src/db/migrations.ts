@@ -702,4 +702,15 @@ CREATE TABLE remote_merge_fact (
 ALTER TABLE linear_github_auth ADD COLUMN session_generation INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  {
+    id: "020_linear_github_task_account",
+    sql: `
+CREATE TABLE linear_github_task_account (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  account_id INTEGER NOT NULL CHECK (account_id > 0),
+  login TEXT NOT NULL,
+  verified_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

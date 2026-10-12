@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { FakeClock, CommandBus } from "../core";
+import { FakeClock, CommandBus, JOB_KIND } from "../core";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,109 @@ function fixture(phase: "initial" | "publication" = "initial", path = ":memory:"
 const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("verified GitHub authentication questions", () => {
+  test("a pinned task cannot publish after the operator relinks during account lookup", async () => {
+    const f = fixture();
+    f.host.account = { id: 7, login: "owner" };
+    expect(await f.auth.ensure(f.item, "initial", f.signal)).toBe(true);
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    const lookup = Promise.withResolvers<number | null>();
+    const reading = Promise.withResolvers<void>();
+    f.host.linkedAccount = () => {
+      reading.resolve();
+      return lookup.promise;
+    };
+    let published = false;
+    const publication = f.auth
+      .ensure(getWorkItem(f.db, f.item.id)!, "publication", f.signal)
+      .then((ready) => {
+        if (ready) published = true;
+        return ready;
+      });
+    await reading.promise;
+    f.host.linkedId = 8;
+    lookup.resolve(8);
+    expect(await publication).toBe(false);
+    expect(published).toBe(false);
+    expect(getWorkItem(f.db, f.item.id)?.state).toBe("awaiting_input");
+    expect(f.host.challenges[0]!.acceptAccount(8)).toBe(false);
+    expect(listJobs(f.db)).toEqual([]);
+  });
+
+  test("publication retains the verified task account after the operator relinks", async () => {
+    const f = fixture();
+    f.host.account = { id: 7, login: "owner" };
+    expect(await f.auth.ensure(f.item, "initial", f.signal)).toBe(true);
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    f.host.account = { id: 8, login: "other-operator" };
+    f.host.linkedId = 8;
+    expect(await f.auth.ensure(getWorkItem(f.db, f.item.id)!, "publication", f.signal)).toBe(false);
+    expect(f.host.challenges[0]!.acceptAccount(8)).toBe(false);
+    expect(
+      f.db
+        .query<{ account_id: number }, []>("SELECT account_id FROM linear_github_task_account")
+        .get()?.account_id,
+    ).toBe(7);
+    expect(listJobs(f.db)).toEqual([]);
+  });
+
+  test("the owner can restore the pinned host account after a rejected retry", async () => {
+    const f = fixture();
+    f.host.account = { id: 7, login: "owner" };
+    expect(await f.auth.ensure(f.item, "initial", f.signal)).toBe(true);
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    f.host.linkedId = 8;
+    f.host.account = { id: 8, login: "other" };
+    await f.auth.ensure(getWorkItem(f.db, f.item.id)!, "publication", f.signal);
+    const question = findOpenQuestion(f.db, "session")!;
+    f.host.challenges[0]!.fail(new Error("Wrong host account"));
+    await settled();
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(false);
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(false);
+    expect(listOutbox(f.db).filter((row) => row.status === "pending")).toHaveLength(1);
+    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    expect(listJobs(f.db)).toEqual([]);
+    expect(listOutbox(f.db).at(-1)?.payload).toMatchObject({
+      body: "Reconnect the original GitHub account on the Paws host, then reply here to continue.",
+    });
+    f.host.linkedId = 7;
+    f.host.account = { id: 7, login: "owner" };
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(true);
+    expect(getQuestion(f.db, question.id)?.status).toBe("answered");
+    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(false);
+  });
+
+  test("external host login retries verify the original account without an OAuth challenge", async () => {
+    const f = fixture();
+    f.host.linkedId = null;
+    const external = Object.assign(f.host, {
+      externalLogin: true,
+      recoveryMessage: "Run gh auth login on the Paws host, then reply here.",
+    });
+    external.account = { id: 7, login: "owner" };
+    external.begin = async () => {
+      throw new Error("Host login required");
+    };
+    expect(await f.auth.ensure(f.item, "initial", f.signal)).toBe(true);
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    external.account = null;
+    await f.auth.ensure(getWorkItem(f.db, f.item.id)!, "publication", f.signal);
+    const question = findOpenQuestion(f.db, "session")!;
+    expect(listOutbox(f.db).at(-1)?.payload).toMatchObject({ body: external.recoveryMessage });
+    external.account = { id: 8, login: "other-operator" };
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(true);
+    expect(getQuestion(f.db, question.id)?.status).toBe("open");
+    external.account = { id: 7, login: "owner" };
+    expect(await f.auth.retry(question.id, "linear-owner")).toBe(true);
+    expect(getQuestion(f.db, question.id)?.status).toBe("answered");
+    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect(f.host.challenges).toHaveLength(0);
+  });
+
   test.each(["prompt", "revocation"] as const)(
     "a %s fence rejects an old native completion without answering",
     async (reason) => {
@@ -204,7 +307,7 @@ describe("verified GitHub authentication questions", () => {
     expect(f.host.challenges[0]!.acceptAccount(8)).toBe(true);
   });
 
-  test("recovery revokes a request when the host account changes during verification", async () => {
+  test("recovery pauses a request when the host account changes during verification", async () => {
     const f = fixture();
     await f.auth.ensure(f.item, "initial", f.signal);
     f.auth.close();
@@ -219,7 +322,7 @@ describe("verified GitHub authentication questions", () => {
     expect(getWorkItem(f.db, "item")?.state).toBe("awaiting_input");
     expect(
       f.db.query<{ status: string }, []>("SELECT status FROM linear_github_auth").get()?.status,
-    ).toBe("revoked");
+    ).toBe("expired");
   });
 
   test("targets the task owner and renewal never answers authentication", async () => {
@@ -276,7 +379,7 @@ describe("verified GitHub authentication questions", () => {
     expect(findOpenQuestion(f.db, "session")?.status).toBe("open");
     expect(
       f.db.query<{ status: string }, []>("SELECT status FROM linear_github_auth").get()?.status,
-    ).toBe("revoked");
+    ).toBe("expired");
   });
 
   test("an expired challenge cannot renew the account that the operator unlinked", async () => {
@@ -291,7 +394,7 @@ describe("verified GitHub authentication questions", () => {
     expect(listJobs(f.db)).toHaveLength(0);
     expect(
       f.db.query<{ status: string }, []>("SELECT status FROM linear_github_auth").get()?.status,
-    ).toBe("revoked");
+    ).toBe("expired");
   });
 
   test("Stop during an awaited completion account check prevents continuation", async () => {

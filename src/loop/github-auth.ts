@@ -14,6 +14,8 @@ import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../
 export type GitHubAuthPhase = "initial" | "publication";
 export type VerifiedGitHubAccount = { id: number; login: string };
 export type HostGitHubAuth = {
+  recoveryMessage?: string;
+  externalLogin?: boolean;
   owner(item: WorkItemRecord): string | null;
   check(item: WorkItemRecord, signal: AbortSignal): Promise<VerifiedGitHubAccount | null>;
   linkedAccount(item: WorkItemRecord): Promise<number | null>;
@@ -40,6 +42,7 @@ const AUTH_LIFETIME_MS = 10 * 60_000;
 export class GitHubAuthQuestions {
   private readonly active = new Map<string, AbortController>();
   private closed = false;
+  private readonly checks = new Map<string, AbortController>();
 
   constructor(
     private readonly db: Database,
@@ -74,11 +77,20 @@ export class GitHubAuthQuestions {
     const expected = await this.host.linkedAccount(item);
     signal.throwIfAborted();
     if (!isCurrent()) return false;
-    if (account !== null && (expected === null || account.id === expected)) return true;
+    const bound = this.accountFor(item.id);
+    const accountId = bound ?? expected;
+    if (
+      account !== null &&
+      (accountId === null || account.id === accountId) &&
+      (expected === null ? bound === null || this.host.externalLogin : account.id === expected)
+    ) {
+      this.bindAccount(item.id, account);
+      return true;
+    }
     const actorId = this.host.owner(item);
     if (actorId === null)
       throw new Error("The Linear task owner must be verified before GitHub sign-in.");
-    if (expected === null)
+    if (accountId === null)
       throw new Error("Sign in to GitHub in Paws before connecting this Linear task.");
     const sessionId = item.sessionKey;
     if (sessionId === null)
@@ -101,7 +113,7 @@ export class GitHubAuthQuestions {
           question.id,
           item.id,
           actorId,
-          expected,
+          accountId,
           phase,
           this.now() + AUTH_LIFETIME_MS,
           sessionGeneration,
@@ -133,8 +145,11 @@ export class GitHubAuthQuestions {
       if (this.closed || signal.aborted) return;
       const expected = await this.host.linkedAccount(item);
       if (this.closed || signal.aborted) return;
-      if (expected !== request.github_account_id) {
-        this.revoke(request.item_id);
+      if (
+        expected !== request.github_account_id &&
+        !(this.host.externalLogin && expected === null)
+      ) {
+        this.pause(request);
         continue;
       }
       if (account !== null && account.id === request.github_account_id) {
@@ -147,6 +162,8 @@ export class GitHubAuthQuestions {
 
   revoke(itemId: string): void {
     if (this.closed) return;
+    for (const [questionId, controller] of this.checks)
+      if (this.read(questionId)?.item_id === itemId) controller.abort();
     for (const [questionId, controller] of this.active) {
       if (this.read(questionId)?.item_id !== itemId) continue;
       controller.abort();
@@ -160,6 +177,8 @@ export class GitHubAuthQuestions {
 
   close(): void {
     this.closed = true;
+    for (const controller of this.checks.values()) controller.abort();
+    this.checks.clear();
     for (const controller of this.active.values()) controller.abort();
     this.active.clear();
   }
@@ -174,26 +193,43 @@ export class GitHubAuthQuestions {
     if (
       request === null ||
       actorId !== request.actor_id ||
+      this.checks.has(questionId) ||
       this.active.has(questionId) ||
       !this.current(request)
     )
       return false;
-    const item = getWorkItem(this.db, request.item_id)!;
-    const expected = await this.host.linkedAccount(item);
-    if (this.active.has(questionId) || !this.current(request)) return false;
-    if (expected !== request.github_account_id) {
-      this.revoke(request.item_id);
-      return false;
+    const controller = new AbortController();
+    this.checks.set(questionId, controller);
+    try {
+      const item = getWorkItem(this.db, request.item_id)!;
+      const account = await this.host.check(item, controller.signal).catch(() => null);
+      if (controller.signal.aborted || this.active.has(questionId) || !this.current(request))
+        return false;
+      const expected = await this.host.linkedAccount(item);
+      if (controller.signal.aborted || this.active.has(questionId) || !this.current(request))
+        return false;
+      if (
+        expected !== request.github_account_id &&
+        !(this.host.externalLogin && expected === null)
+      ) {
+        this.pause(request);
+        return false;
+      }
+      immediate(this.db, () => {
+        this.db.run(
+          "UPDATE linear_github_auth SET status = 'pending',expires_at = ?,generation = generation + 1 WHERE question_id = ?",
+          [this.now() + AUTH_LIFETIME_MS, questionId],
+        );
+        consume();
+      });
+      const renewed = this.read(questionId)!;
+      if (account?.id === renewed.github_account_id)
+        await this.complete(renewed, account, controller.signal);
+      else await this.start(renewed);
+      return true;
+    } finally {
+      if (this.checks.get(questionId) === controller) this.checks.delete(questionId);
     }
-    immediate(this.db, () => {
-      this.db.run(
-        "UPDATE linear_github_auth SET status = 'pending',expires_at = ?,generation = generation + 1 WHERE question_id = ?",
-        [this.now() + AUTH_LIFETIME_MS, questionId],
-      );
-      consume();
-    });
-    await this.start(this.read(questionId)!);
-    return true;
   }
 
   private async start(previous: AuthRequest): Promise<void> {
@@ -273,7 +309,9 @@ export class GitHubAuthQuestions {
           id: crypto.randomUUID(),
           questionId: question.id,
           sessionId: question.sessionId,
-          body: "GitHub sign-in could not finish. Reply here to try again.",
+          body:
+            this.host.recoveryMessage ??
+            "GitHub sign-in could not finish. Reply here to try again.",
         },
         now: this.now(),
       });
@@ -295,12 +333,13 @@ export class GitHubAuthQuestions {
     if (signal?.aborted || !this.valid(request) || account.id !== request.github_account_id) return;
     const expected = await this.host.linkedAccount(getWorkItem(this.db, request.item_id)!);
     if (signal?.aborted || !this.valid(request)) return;
-    if (expected !== request.github_account_id) {
-      this.revoke(request.item_id);
+    if (expected !== request.github_account_id && !(this.host.externalLogin && expected === null)) {
+      this.pause(request);
       return;
     }
     immediate(this.db, () => {
       if (account.id !== request.github_account_id || !this.valid(request)) return;
+      this.bindAccount(request.item_id, account);
       const question = getQuestion(this.db, request.question_id)!;
       if (
         answerQuestion(this.db, question.id, {
@@ -341,6 +380,34 @@ export class GitHubAuthQuestions {
       this.active.get(request.question_id)?.abort();
       this.active.delete(request.question_id);
     }
+  }
+
+  private pause(request: AuthRequest): void {
+    if (!this.current(request)) return;
+    immediate(this.db, () => {
+      this.db.run(
+        "UPDATE linear_github_auth SET status = 'expired',generation = generation + 1 WHERE question_id = ? AND generation = ? AND status IN ('pending','expired')",
+        [request.question_id, request.generation],
+      );
+      this.dropPrompt(request.question_id);
+      const paused = this.read(request.question_id)!;
+      const question = getQuestion(this.db, request.question_id)!;
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: question.sessionId,
+        idempotencyKey: `github-auth:account:${question.id}:${paused.generation}`,
+        payload: {
+          id: crypto.randomUUID(),
+          questionId: question.id,
+          sessionId: question.sessionId,
+          body: "Reconnect the original GitHub account on the Paws host, then reply here to continue.",
+        },
+        now: this.now(),
+      });
+    });
+    this.active.get(request.question_id)?.abort();
+    this.active.delete(request.question_id);
   }
 
   private expire(request: AuthRequest): void {
@@ -387,5 +454,24 @@ export class GitHubAuthQuestions {
     return this.db
       .query<AuthRequest, [string]>("SELECT * FROM linear_github_auth WHERE question_id = ?")
       .get(questionId);
+  }
+
+  private accountFor(itemId: string): number | null {
+    return (
+      this.db
+        .query<{ account_id: number }, [string]>(
+          "SELECT account_id FROM linear_github_task_account WHERE item_id = ?",
+        )
+        .get(itemId)?.account_id ?? null
+    );
+  }
+
+  private bindAccount(itemId: string, account: VerifiedGitHubAccount): void {
+    this.db.run(
+      "INSERT INTO linear_github_task_account (item_id,account_id,login,verified_at) VALUES (?,?,?,?) ON CONFLICT (item_id) DO NOTHING",
+      [itemId, account.id, account.login, this.now()],
+    );
+    if (this.accountFor(itemId) !== account.id)
+      throw new Error("The GitHub account does not match this task.");
   }
 }
