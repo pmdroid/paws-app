@@ -12,6 +12,7 @@ import {
   listOutbox,
   saveArtifact,
   markArtifact,
+  OutboxDispatcher,
   stopOutboxSession,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
@@ -240,6 +241,37 @@ test("a pending artifact link survives final response and is delivered first", a
   expect(claimOutboxHeads(env.db, { now: Date.now() })[0]?.id).toBe(pending[0]?.id);
   env.db.close();
 });
+
+test.each([false, true])(
+  "exhausted artifact delivery cannot trap the final response, final already queued: %s",
+  async (finalAlreadyQueued) => {
+    const env = setup();
+    try {
+      await env.publisher().publish(artifact, context);
+      env.db.run("UPDATE outbox SET max_attempts = 1");
+      const final = () =>
+        enqueueOutbox(env.db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: "session",
+          idempotencyKey: "final",
+          payload: { sessionId: "session", kind: "response", body: "Done" },
+        });
+      if (finalAlreadyQueued) final();
+      const dispatcher = new OutboxDispatcher(env.db, { now: Date.now, mono: Date.now });
+      dispatcher.setHandler(async () => {
+        throw new Error("delivery exhausted");
+      });
+      dispatcher.tick();
+      await dispatcher.idle();
+      if (!finalAlreadyQueued) final();
+      expect(listOutbox(env.db, "session")[0]?.status).toBe("dead");
+      expect(claimOutboxHeads(env.db)[0]?.idempotencyKey).toBe("final");
+    } finally {
+      env.db.close();
+    }
+  },
+);
 
 test("an uploaded replacement still resolves a legacy failed artifact by its exact path", async () => {
   const env = setup();
