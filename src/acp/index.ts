@@ -105,3 +105,5 @@ export {
   type Mirror,
   type Worktree,
 } from "./worktree";
+
+export { snapshotAgentInputs, buildAgentPrompt, type AgentInputFile } from "./input-files";

@@ -1,3 +1,4 @@
+import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
@@ -77,6 +78,7 @@ export interface RunAgentOptions {
   itemId: string;
   runId: string;
   prompt: string;
+  inputFiles?: readonly AgentInputFile[];
   worktreePath: string;
   pawsRoot: string;
   home?: string;

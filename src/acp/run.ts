@@ -10,12 +10,14 @@ import {
   ndJsonStream,
   type ClientContext,
   type InitializeResponse,
+  type ContentBlock,
   type PermissionOption,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type StopReason,
 } from "@agentclientprotocol/sdk";
 import { loadConfigFile, resolveAgentProfiles } from "../config";
+import { buildAgentPrompt, snapshotAgentInputs } from "./input-files";
 import { commitCheckpoint } from "./checkpoint";
 import { assertSafeSegment, runDir } from "./paths";
 import {
@@ -113,6 +115,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   }
   assertSafeSegment(options.itemId, "item id");
   assertSafeSegment(options.runId, "run id");
+  const inputFiles = snapshotAgentInputs(options.worktreePath, options.inputFiles);
   if (!isAbsolute(options.worktreePath)) throw new Error("worktreePath must be absolute");
   const info = await lstat(options.worktreePath);
   if (!info.isDirectory()) throw new Error("worktreePath is not a directory");
@@ -408,7 +411,12 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           ctx,
           child,
           sessionId,
-          prompt: options.prompt,
+          prompt: buildAgentPrompt(
+            options.prompt,
+            options.worktreePath,
+            inputFiles,
+            (initialized as InitializeResponse).agentCapabilities?.promptCapabilities,
+          ),
           state,
           timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
           graceMs,
@@ -515,7 +523,7 @@ async function runPrompt(options: {
   ctx: ClientContext;
   child: ChildProcess;
   sessionId: string;
-  prompt: string;
+  prompt: ContentBlock[];
   state: PromptState;
   timeoutMs: number;
   graceMs: number;
@@ -554,7 +562,7 @@ async function runPrompt(options: {
   try {
     const response = await ctx.request(methods.agent.session.prompt, {
       sessionId,
-      prompt: [{ type: "text", text: options.prompt }],
+      prompt: options.prompt,
     });
     acpStopReason = response.stopReason;
   } catch (error) {
