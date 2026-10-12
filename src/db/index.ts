@@ -213,6 +213,26 @@ export { assertLinearSessionCleanup, blockLinearSessionCleanup } from "./session
 export { prepareLinearActivity } from "./linear-delivery";
 
 export {
+  auditWorkspaceAccess,
+  consumeWorkspaceBootstrap,
+  createWorkspaceBootstrap,
+  deleteWorkspaceSession,
+  getWorkspace,
+  putWorkspaceUser,
+  readWorkspaceSession,
+  saveWorkspaceSession,
+  syncWorkspaceMember,
+  workspaceForOrganization,
+  workspaceMember,
+} from "./workspace";
+export type {
+  WorkspaceMember,
+  WorkspaceRecord,
+  WorkspaceRole,
+  WorkspaceSession,
+} from "./workspace";
+
+export {
   linearSessionsForIssueContext,
   saveLinearIssueContext,
   getLinearIssueContext,

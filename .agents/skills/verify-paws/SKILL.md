@@ -31,6 +31,8 @@ For the behavioral audit without repeating the suite:
 bun --no-env-file scripts/verify-local.ts audit
 ```
 
+For workspace ownership and browser session evidence, run `bun --no-env-file scripts/verify-local.ts workspace`. This uses real SQLite and two owned HTTP subprocesses to prove persistent identity across an actual process restart. It checks organization-bound single-use bootstrap, hashed session storage, cookie attributes, idle and absolute expiry, manual owner preservation, membership revocation, revocation precedence at equal observation times and verified restoration. The same probe runs in the normal test suite. Inspect `workspace-access/audit.json` and the observation journal. User identities and organization membership are synthetic fixtures.
+
 For browser inspection:
 
 ```sh
