@@ -870,4 +870,46 @@ BEGIN
 END;
 `,
   },
+  {
+    id: "025_runner_work",
+    sql: `
+CREATE TABLE runner_work (
+  run_id TEXT PRIMARY KEY REFERENCES run(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  runner_fence INTEGER NOT NULL CHECK(runner_fence>=0),
+  command_id TEXT NOT NULL UNIQUE,
+  lease_until INTEGER NOT NULL,
+  last_sequence INTEGER NOT NULL DEFAULT 0 CHECK(last_sequence>=0),
+  ended_at INTEGER
+) STRICT;
+CREATE TABLE runner_command (
+  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  run_id TEXT REFERENCES run(id),
+  generation INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('run','review','cancel','probe','login_check','upgrade')),
+  envelope TEXT NOT NULL CHECK(json_valid(envelope)),
+  expires_at INTEGER NOT NULL,
+  acknowledged_at INTEGER
+) STRICT;
+CREATE INDEX runner_command_pending ON runner_command(runner_id,acknowledged_at,ordinal);
+CREATE TABLE runner_work_grant (
+  token_hash TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runner_work(run_id),
+  generation INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE runner_event (
+  run_id TEXT NOT NULL REFERENCES runner_work(run_id),
+  generation INTEGER NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence>0),
+  payload TEXT NOT NULL CHECK(json_valid(payload)),
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation,sequence)
+) STRICT;
+`,
+  },
 ];
