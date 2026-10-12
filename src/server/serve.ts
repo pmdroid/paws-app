@@ -1,8 +1,8 @@
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
+import type { PublicTls } from "../deployment";
 import { createDashboardGitHubAuth } from "../auth";
 import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
-import type { PublicTls } from "../deployment";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
 import {
@@ -21,12 +21,12 @@ import {
 } from "../workspace";
 
 export type ServerOptions = {
+  tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   runnerEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   hostname?: string;
   port?: number;
-  tls?: PublicTls;
   linearWebhookSecret?: string | null;
   githubWebhookSecret?: string | null;
   githubWebhook?: GitHubWebhook;
@@ -62,12 +62,21 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const evidenceRoot = options.evidenceRoot;
   const githubAuth = createDashboardGitHubAuth({ env: process.env });
   const csrfToken = crypto.randomUUID();
+  let workspaceAccess: WorkspaceAccess | null | undefined =
+    options.workspaceAccess === undefined ? undefined : null;
+  if (options.workspaceAccess !== undefined)
+    void Promise.resolve(options.workspaceAccess).then(
+      (value) => {
+        workspaceAccess = value;
+      },
+      () => {},
+    );
   const requests = new Set<Promise<Response>>();
   let stopping = false;
   const server = Bun.serve({
     hostname,
     port,
-    ...(options.tls ? { tls: options.tls } : {}),
+    ...(options.tls ? { tls: options.tls, development: false } : {}),
     fetch(request) {
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
       const operation = route(request, {
@@ -79,7 +88,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         webhooks,
         githubAuth,
         csrfToken,
-        ...(options.workspaceAccess ? { workspaceAccess: options.workspaceAccess } : {}),
+        ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
         ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
         ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
         ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
@@ -106,7 +115,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
 }
 
 type Secrets = {
-  workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
+  workspaceAccess?: WorkspaceAccess | null;
   runnerEnrollment?: ServerOptions["runnerEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   slackSigningSecret: string | null;
@@ -133,16 +142,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
     return secrets.runnerEnrollment(request);
-  let workspace: WorkspaceAccess | undefined;
-  try {
-    workspace = await secrets.workspaceAccess;
-  } catch {
-    if (!path.startsWith("/webhooks"))
-      return Response.json(
-        { error: "Paws workspace access is not ready. Check the Linear app installation." },
-        { status: 503 },
-      );
-  }
+  if (secrets.workspaceAccess === null && !path.startsWith("/webhooks"))
+    return Response.json(
+      { error: "Paws workspace access is not ready. Check the Linear app installation." },
+      { status: 503 },
+    );
+  const workspace = secrets.workspaceAccess ?? undefined;
   let csrfToken = secrets.csrfToken;
   let sessionIds: readonly string[] | undefined;
   if (workspace !== undefined) {

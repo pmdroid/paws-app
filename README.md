@@ -40,6 +40,8 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 
 ## Status dashboard
 
+Shared workspaces use [Linear sign-in and workspace access](docs/workspace-access.md) over HTTPS. Owners manage Paws roles and repository mappings in the dashboard.
+
 The QM-11 status page lives in [`src/web`](src/web/README.md). It is read-only: epics, items, current runs, open questions, Closeout verdicts, and the merge queue. It does not import the rest of the engine.
 
 The Paws engine stays on the developer's machine. The dashboard has two shapes:
