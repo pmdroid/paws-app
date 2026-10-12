@@ -6,6 +6,7 @@ import { z } from "zod";
 import { openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
+import { runPairedDaemon } from "./daemon";
 
 const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
@@ -116,22 +117,30 @@ export async function runRunnerCli(
       abort.signal.throwIfAborted();
       return 0;
     }
+    const daemonCommand =
+      operation === "daemon" && args.length === 2 && args[0] === "--config" && Boolean(args[1]);
     if (
-      operation !== "pair" ||
-      args.length !== 4 ||
-      args[0] !== "--config" ||
-      !args[1] ||
-      args[2] !== "--name" ||
-      !args[3]
+      !daemonCommand &&
+      (operation !== "pair" ||
+        args.length !== 4 ||
+        args[0] !== "--config" ||
+        !args[1] ||
+        args[2] !== "--name" ||
+        !args[3])
     )
       throw new Error("Invalid pairing command");
     if (process.getuid?.() !== ids.runnerUid) throw new Error("Pairing identity is invalid");
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
-      ...loadConfig(args[1], ids.runnerUid),
+      ...loadConfig(args[1]!, ids.runnerUid),
     });
     try {
-      const pending = await daemon.beginPairing(args[3]);
+      if (daemonCommand) {
+        await runPairedDaemon(daemon, ids, abort.signal, () => error("Runner operation failed."));
+        abort.signal.throwIfAborted();
+        return 0;
+      }
+      const pending = await daemon.beginPairing(args[3]!);
       abort.signal.throwIfAborted();
       if (pending.phase !== "pending") throw new Error("Pairing is not pending");
       write(JSON.stringify(pending));

@@ -36,6 +36,7 @@ function snapshot() {
 const source = snapshot();
 console.log(`Evidence ${root}`);
 const baseline = process.argv.includes("--baseline");
+const daemonBaseline = process.argv.includes("--daemon-baseline");
 for (const [entrypoint, name] of [
   ["src/index.ts", "paws.js"],
   ["test/fixtures/runner-cli-instance.ts", "instance.js"],
@@ -45,19 +46,28 @@ for (const [entrypoint, name] of [
     entrypoints: [join(repository, entrypoint)],
     target: "bun",
     plugins:
-      baseline && entrypoint === "src/index.ts"
+      (baseline || daemonBaseline) && entrypoint === "src/index.ts"
         ? [
             {
               name: "published-entrypoint",
               setup(build) {
-                build.onLoad({ filter: /\/src\/index\.ts$/ }, () => {
-                  const original = Bun.spawnSync(
-                    ["git", "show", "758682d519402b44a8218678a78131a0a165e1f8:src/index.ts"],
-                    { cwd: repository, env },
-                  );
-                  assert.equal(original.exitCode, 0);
-                  return { contents: original.stdout.toString(), loader: "ts" };
-                });
+                build.onLoad(
+                  { filter: daemonBaseline ? /\/runner-cli\/index\.ts$/ : /\/src\/index\.ts$/ },
+                  () => {
+                    const original = Bun.spawnSync(
+                      [
+                        "git",
+                        "show",
+                        daemonBaseline
+                          ? "b907baaac4d6361abd77c4f05affa44b7637bc14:src/runner-cli/index.ts"
+                          : "758682d519402b44a8218678a78131a0a165e1f8:src/index.ts",
+                      ],
+                      { cwd: repository, env },
+                    );
+                    assert.equal(original.exitCode, 0);
+                    return { contents: original.stdout.toString(), loader: "ts" };
+                  },
+                );
               },
             },
           ]
@@ -95,6 +105,8 @@ const child = Bun.spawn(
       [join(root, "fake-agent.js"), "/proof/fake-agent.js"],
       [join(root, "script.json"), "/proof/script.json"],
       [join(repository, "src/process/process-anchor.ts"), "/proof/process-anchor.ts"],
+      [join(repository, "deploy/linux/runner-broker.py"), "/proof/runner-broker.py"],
+      [join(repository, "deploy/linux/paws-agent@.service"), "/proof/paws-agent@.service"],
       [join(repository, "test/local/runner-cli-proof.py"), "/proof/proof.py"],
     ].flatMap(([from, to]) => ["--mount", `type=bind,src=${from},dst=${to},readonly`]),
     "--entrypoint",
@@ -116,7 +128,7 @@ const [exit, output, errors] = await Promise.all([
 writeFileSync(join(root, "native.log"), output + errors);
 writeFileSync(
   join(root, "source.json"),
-  JSON.stringify({ source, baseline, image, exit }, null, 2),
+  JSON.stringify({ source, baseline, daemonBaseline, image, exit }, null, 2),
 );
 assert.deepEqual(snapshot(), source);
 assert.equal(exit, 0, `Native CLI failed; evidence ${root}\n${errors}`);
