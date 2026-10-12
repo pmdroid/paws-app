@@ -97,6 +97,19 @@ describe("status HTTP stub", () => {
     servers.push(server);
     const base = `http://127.0.0.1:${server.port}`;
 
+    const root = await fetch(`${base}/?engine=demo`, { redirect: "manual" });
+    expect(root.status).toBe(307);
+    expect(root.headers.get("location")).toBe("/status/?engine=demo");
+    const landing = await fetch(`${base}/?engine=demo`);
+    expect(landing.status).toBe(200);
+    expect(landing.url).toBe(`${base}/status/?engine=demo`);
+    expect(await landing.text()).toContain("status-dashboard");
+    const head = await fetch(`${base}/`, { method: "HEAD", redirect: "manual" });
+    expect(head.status).toBe(307);
+    expect(await head.text()).toBe("");
+    const write = await fetch(`${base}/`, { method: "POST", redirect: "manual" });
+    expect(write.status).toBe(405);
+
     const page = await fetch(`${base}/status`, { redirect: "manual" });
     expect(page.status).toBe(200);
     const html = await page.text();
