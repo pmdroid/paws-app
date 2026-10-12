@@ -343,9 +343,17 @@ export class Orchestrator {
         await this.resumeLinearSession(event.sessionId);
         return;
       }
-      const outcome = await this.deliverPrompt(event);
+      const outcome = await this.deliverPrompt(
+        event,
+        Boolean(
+          linearPrompt &&
+          questionItem &&
+          ["answer", "artifact"].includes(getTaskMode(this.db, questionItem.id) ?? ""),
+        ),
+      );
       if (linearPrompt && event.sessionId) {
         if (outcome === "rejected") discardLinearTurns(this.db, event.sessionId, [event.dedupeKey]);
+        if (outcome === "redirect") await this.resumeLinearSession(event.sessionId);
       }
       return;
     }
@@ -426,7 +434,7 @@ export class Orchestrator {
     issueId: string,
     sessionId: string | null,
     taskKey?: string,
-    options: { followupBodies?: readonly string[] } = {},
+    options: { followupBodies?: readonly string[]; conversation?: string } = {},
   ) {
     const tracker = this.tracker;
     if (!tracker) throw new Error("Linear is not connected");
@@ -475,6 +483,7 @@ export class Orchestrator {
                 JSON.stringify(snapshot),
                 getLinearSessionContext(this.db, sessionId),
                 JSON.stringify(history),
+                options.conversation ?? "",
                 ...(options.followupBodies ??
                   listPendingLinearTurns(this.db, sessionId).map((turn) => turn.body)),
               ].join("\n\n");
@@ -509,6 +518,12 @@ export class Orchestrator {
               );
             }
           }
+          if (accepted.ok && options.conversation)
+            for (const child of accepted.items) {
+              const stored = getConversation(this.db, child.id);
+              if (stored.entries === "[]" && !stored.transcript)
+                saveConversation(this.db, child.id, options.conversation, null);
+            }
           if (sessionId !== null) {
             if (initialSession) bindLinearSessionTask(this.db, sessionId, accepted.epic.id);
             this.assignSession(accepted.epic.id, sessionId);
@@ -655,7 +670,9 @@ export class Orchestrator {
       const resolved = await classifyTask({
         itemId: itemPathId(item),
         runId: run.id,
-        request: [this.workContext(item), handoff].join("\n\n"),
+        request: [this.workContext(item), getConversation(this.db, item.id).entries, handoff].join(
+          "\n\n",
+        ),
         pawsRoot: this.options.pawsRoot,
         home: this.options.home,
         profile: this.profileSnapshot(run.id).implementer,
@@ -670,7 +687,11 @@ export class Orchestrator {
         return false;
       if (resolved.mode === "clarify")
         return this.requestTaskClarification(item, run.id, resolved.question);
-      if (resolved.mode === "code" && classification?.mode === "clarify" && taskKey) {
+      if (
+        resolved.mode === "code" &&
+        (classification?.mode === "clarify" || saved === "answer" || saved === "artifact") &&
+        taskKey
+      ) {
         const issueId = this.epicIssueId(item.epicId)!;
         const snapshot = await this.tracker!.loadEpic(issueId);
         controller.signal.throwIfAborted();
@@ -1402,7 +1423,10 @@ export class Orchestrator {
     };
   }
 
-  private async deliverPrompt(event: AcceptedLinearEvent): Promise<"answered" | "rejected"> {
+  private async deliverPrompt(
+    event: AcceptedLinearEvent,
+    redirect = false,
+  ): Promise<"answered" | "redirect" | "rejected"> {
     const sessionId = event.sessionId;
     const answer = event.body?.trim() ?? "";
     if (sessionId === null || answer === "") return "rejected";
@@ -1475,6 +1499,12 @@ export class Orchestrator {
         return "rejected" as const;
       const item = getWorkItem(this.db, open.itemId);
       if (item?.state === "awaiting_input") applyWorkItemEvent(this.db, item.id, "answer_received");
+      if (redirect) {
+        announceLinearTurn(this.db, sessionId, event.dedupeKey, this.now());
+        for (const live of this.live.values())
+          if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
+        return "redirect" as const;
+      }
       if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
       if (this.waiters.has(open.id) || item === null) return "answered" as const;
@@ -1792,7 +1822,7 @@ export class Orchestrator {
     await this.stopTaskPlanning(sessionId);
     await Promise.all(active.map((live) => live.done));
     if (this.shuttingDown) throw new Error("Paws is shutting down; user update remains pending");
-    const turns = listPendingLinearTurns(this.db, sessionId);
+    let turns = listPendingLinearTurns(this.db, sessionId);
     if (!turns.length) return;
     if (this.tracker === null)
       throw new Error("Linear is disconnected; user update remains pending");
@@ -1816,11 +1846,18 @@ export class Orchestrator {
       item.state === "merged" ||
       item.state === "cancelled"
     ) {
+      let conversation: string | undefined;
+      if (item) {
+        await durableConversation(this.db, item.id);
+        conversation = getConversation(this.db, item.id).entries;
+        turns = listPendingLinearTurns(this.db, sessionId);
+        if (!turns.length) return;
+      }
       const result = await this.intakeLinearTask(
         session.issueId,
         sessionId,
         `turn:${turns[0]!.eventKey}`,
-        { followupBodies: turns.map((turn) => turn.body) },
+        { followupBodies: turns.map((turn) => turn.body), conversation },
       );
       if (!result.ok) throw new Error("Follow-up task intake failed");
       bindLinearSessionTask(this.db, sessionId, result.epic.id, { actorId: turns[0]!.actorId });
@@ -1997,6 +2034,16 @@ export class Orchestrator {
   }
 
   private async prepareConversation(item: WorkItemRecord) {
+    const taskKey = this.db
+      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
+      .get(item.epicId)?.task_key;
+    const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    const sourceItemId = classification?.mode !== "clarify" ? classification?.sourceItemId : null;
+    const stored = getConversation(this.db, item.id);
+    if (sourceItemId && stored.entries === "[]" && !stored.transcript) {
+      await durableConversation(this.db, sourceItemId);
+      saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
+    }
     const runner = await durableConversation(this.db, item.id);
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
