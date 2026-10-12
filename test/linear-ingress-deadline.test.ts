@@ -61,11 +61,11 @@ function fixture() {
   let delayTeam = false;
   let delayActivity = false;
   let followedUp = 0;
-  let followUpOperation: ((event: AcceptedLinearEvent) => Promise<void>) | undefined;
+  let followUpOperation: ((event: AcceptedLinearEvent) => Promise<void | boolean>) | undefined;
   let rejectProgress = false;
   let gate: LinearTaskAccess;
   let orchestrator: ReturnType<typeof attachOrchestrator>;
-  let pending: Promise<void> | undefined;
+  let pending: Promise<void | boolean> | undefined;
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const linear = openLinear({
     db,
@@ -199,7 +199,7 @@ function fixture() {
     get followedUp() {
       return followedUp;
     },
-    followUp(operation: (event: AcceptedLinearEvent) => Promise<void>) {
+    followUp(operation: (event: AcceptedLinearEvent) => Promise<void | boolean>) {
       followUpOperation = operation;
     },
     runFollowUps() {

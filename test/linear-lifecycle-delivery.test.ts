@@ -79,7 +79,7 @@ for (const [body, existing] of [
       progressReporter: (event) => orchestrator.sessionProgressReporter(event),
       followUp: (event) => orchestrator.onLinearEvent(event),
     });
-    let intake: Promise<void> | undefined;
+    let intake: Promise<void | boolean> | undefined;
     try {
       intake = Promise.resolve(linear.webhook.onEvent!(created()));
       const signal = await ready.promise;

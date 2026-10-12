@@ -15,7 +15,7 @@ export function createSessionStarter(options: {
   client: LinearClient;
   store: InboxStore;
   appUserId: string | null;
-  onEvent: (event: AcceptedLinearEvent) => Promise<void>;
+  onEvent: (event: AcceptedLinearEvent) => Promise<void | boolean>;
 }) {
   return async (
     target: LinearSessionTarget,

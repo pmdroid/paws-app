@@ -1,3 +1,4 @@
+import { probeWorkspaceLinearActions } from "./workspace-linear-actions";
 import { probeWorkspaceRuntime } from "./workspace-runtime";
 import { probeWorkspaceIdentityLinks } from "./workspace-identity-links";
 import { writeFileSync } from "node:fs";
@@ -11,6 +12,13 @@ const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace.");
 const observations: { name: string; passed: boolean; observed: unknown }[] = [];
 try {
+  await probeWorkspaceLinearActions(
+    join(root, "workspace-linear-actions"),
+    (name, passed, observed) => {
+      observations.push({ name, passed, observed });
+      console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);
+    },
+  );
   await probeWorkspaceAccess(join(root, "workspace-access"), (name, passed, observed) => {
     observations.push({ name, passed, observed });
     console.log(`${passed ? "PASS" : "FAIL"} ${name}: ${JSON.stringify(observed)}`);

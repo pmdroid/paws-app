@@ -181,6 +181,7 @@ export type OrchestratorOptions = {
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
+  authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
@@ -231,7 +232,7 @@ export class Orchestrator {
     }
   >();
   private readonly stopEvents = new Map<string, Promise<void>>();
-  private readonly sessionEvents = new Map<string, Promise<void>>();
+  private readonly sessionEvents = new Map<string, Promise<void | boolean>>();
   private readonly conversations = new Map<
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
@@ -291,8 +292,10 @@ export class Orchestrator {
 
   agentAlive = (runId: string): boolean => this.live.has(runId);
 
-  async onLinearEvent(event: AcceptedLinearEvent): Promise<void> {
+  async onLinearEvent(event: AcceptedLinearEvent): Promise<void | boolean> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
+    if (this.options.authorizeLinearEvent && !(await this.options.authorizeLinearEvent(event)))
+      return false;
     if (event.signal === "stop") {
       const receiptKey = JSON.stringify(
         event.activityId ? ["activity", event.activityId] : ["event", event.dedupeKey],
@@ -310,6 +313,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted" && !event.body?.trim()) return;
+    let turnEventKey = event.dedupeKey;
     if (
       event.action === "prompted" &&
       event.sessionId &&
@@ -318,6 +322,7 @@ export class Orchestrator {
       this.options.channel !== "comments"
     ) {
       const turn = this.recordTurn(event);
+      if (turn) turnEventKey = turn.eventKey;
       if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
@@ -327,10 +332,22 @@ export class Orchestrator {
     }
     const key = event.sessionId ?? event.issueId ?? event.dedupeKey;
     const previous = this.sessionEvents.get(key) ?? Promise.resolve();
-    const done = previous.catch(() => undefined).then(() => this.handleLinearEvent(event));
+    const done = previous
+      .catch(() => undefined)
+      .then(async () => {
+        if (
+          this.options.authorizeLinearEvent &&
+          !(await this.options.authorizeLinearEvent(event))
+        ) {
+          if (event.sessionId !== null)
+            discardLinearTurns(this.db, event.sessionId, [turnEventKey]);
+          return false;
+        }
+        await this.handleLinearEvent(event);
+      });
     this.sessionEvents.set(key, done);
     try {
-      await done;
+      return await done;
     } finally {
       if (this.sessionEvents.get(key) === done) this.sessionEvents.delete(key);
     }

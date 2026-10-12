@@ -7,12 +7,11 @@ export const FIRST_ACTIVITY_BODY = "Picked up this issue.";
 export async function acknowledgeNewSession(
   tracker: TrackerAdapter,
   event: AcceptedLinearEvent,
-  followUp?: (event: AcceptedLinearEvent) => Promise<void>,
+  followUp?: (event: AcceptedLinearEvent) => Promise<void | boolean>,
   initialRequest?: TrackerRequestOptions,
-): Promise<void> {
+): Promise<void | boolean> {
   if (event.signal === "stop") {
-    await followUp?.(event);
-    return;
+    return followUp?.(event);
   }
   if (event.action !== "created" && event.action !== "prompted") return;
   if (event.action === "created" && event.sessionId !== null) {
@@ -29,7 +28,7 @@ export async function acknowledgeNewSession(
   }
   if (followUp === undefined) return;
   try {
-    await followUp(event);
+    return await followUp(event);
   } catch (error) {
     const message = error instanceof Error ? error.message : "follow-up failed";
     console.error(`linear session follow-up failed: ${message}`);
