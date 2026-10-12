@@ -38,8 +38,9 @@ export function readSecretFile(path: string, migrate = true): string | null {
   }
 }
 
-export function writeSecretFile(path: string, value: string): boolean {
+export function writeSecretFile(path: string, value: string, exclusive = false): boolean {
   if (existsSync(path)) {
+    if (exclusive) throw new Error("Paws credential file already exists.");
     const current = readFileSync(path, "utf8");
     if (current.startsWith(PREFIX) && readSecretFile(path, false) === value) {
       chmodSync(path, 0o600);
@@ -53,7 +54,7 @@ export function writeSecretFile(path: string, value: string): boolean {
     key: encrypt(key, dataKey, context),
     value: encrypt(dataKey, Buffer.from(value), context),
   };
-  atomicWrite(path, PREFIX + JSON.stringify(envelope));
+  atomicWrite(path, PREFIX + JSON.stringify(envelope), exclusive);
   return true;
 }
 
@@ -97,7 +98,7 @@ function decrypt(key: Buffer, value: string, context: Buffer): Buffer {
   return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]);
 }
 
-function atomicWrite(path: string, value: string | Buffer): void {
+function atomicWrite(path: string, value: string | Buffer, exclusive = false): void {
   const temporary = `${path}.${randomBytes(16).toString("hex")}.tmp`;
   let fd: number | undefined;
   try {
@@ -106,7 +107,8 @@ function atomicWrite(path: string, value: string | Buffer): void {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    renameSync(temporary, path);
+    if (exclusive) linkSync(temporary, path);
+    else renameSync(temporary, path);
     syncDirectory(dirname(path));
   } finally {
     if (fd !== undefined) closeSync(fd);
