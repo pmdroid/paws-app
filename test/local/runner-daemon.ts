@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join } from "node:path";
@@ -12,10 +12,13 @@ import {
   startRunnerListener,
 } from "../../src/runner-identity";
 import {
+  RunnerEventSchema,
+  RunnerResultSchema,
   signRunnerCommand,
   type RunnerCommand,
   type SignedRunnerCommand,
 } from "../../src/runner-protocol";
+import { z } from "zod";
 
 export async function probeRunnerDaemon(
   root: string,
@@ -26,10 +29,25 @@ export async function probeRunnerDaemon(
   const foreignClient = await createRunnerKey(join(root, "foreign-client"));
   const server = await serverIdentity(join(root, "server"));
   const signingKey = generateKeyPairSync("ed25519");
+  const publicKeyPem = signingKey.publicKey.export({ type: "spki", format: "pem" }).toString();
+  let signingKeys: unknown = [{ keyId: "coordinator", publicKeyPem }];
   const active = new Set<string>();
   const peers: string[] = [];
   const enrollmentBodies: Record<string, unknown>[] = [];
   const acknowledgments: string[] = [];
+  const workRequests: { path: string; body: unknown; bearer: boolean }[] = [];
+  const runGrant = randomBytes(32).toString("base64url");
+  const repositoryToken = `ghs_${randomBytes(32).toString("base64url")}`;
+  const generations = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+  let heartbeatResponse: unknown = { leases: [], fenced: [] };
+  let grantResponse: unknown = { token: runGrant, expiresAt: Date.now() + 60_000 };
+  let eventResponse: unknown;
+  let repositoryResponse: Record<string, unknown> | undefined;
+  let answersResponse: unknown;
+  let resultResponse: unknown;
+  let resultFenced = false;
+  const results = new Set<string>();
+  let deliveredEvents = 0;
   let approved = false;
   let challengeTtl = 60_000;
   let enrollmentNow = Date.now;
@@ -76,6 +94,7 @@ export async function probeRunnerDaemon(
               workspaceId,
               certificate,
               authority: authority.certificate,
+              signingKeys,
             }
           : { status: "pending" };
       }
@@ -105,7 +124,82 @@ export async function probeRunnerDaemon(
         return Response.json(value);
       }
       if (path === "/v1/commands") return deliver({ commands });
-      if (path === "/v1/heartbeat") return deliver({ ok: true });
+      if (path === "/v1/heartbeat") return deliver(heartbeatResponse);
+      if (path === "/v1/runs/run-one/grant") {
+        assert.equal(request.headers.get("authorization"), null);
+        const body = z
+          .strictObject({ commandId: z.literal("command-one"), generation: generations })
+          .parse(await request.json());
+        assert.equal(body.generation, 1);
+        workRequests.push({ path, body, bearer: false });
+        return deliver(grantResponse);
+      }
+      if (path === "/v1/events") {
+        assert.equal(request.headers.get("authorization"), `Bearer ${runGrant}`);
+        assert.equal(request.headers.get("content-type"), "application/json");
+        const body = z
+          .strictObject({
+            runId: z.literal("run-one"),
+            generation: generations,
+            sequence: generations,
+            event: RunnerEventSchema,
+          })
+          .parse(await request.json());
+        assert.equal(body.generation, 1);
+        assert.equal(body.sequence, 1);
+        workRequests.push({ path, body, bearer: true });
+        deliveredEvents++;
+        return deliver(eventResponse ?? { duplicate: deliveredEvents > 1 });
+      }
+      if (path === "/v1/runs/run-one/repository-credential") {
+        assert.equal(request.headers.get("authorization"), `Bearer ${runGrant}`);
+        const body = z
+          .strictObject({ generation: generations, access: z.enum(["read", "write"]) })
+          .parse(await request.json());
+        assert.equal(body.generation, 1);
+        workRequests.push({ path, body, bearer: true });
+        return deliver({
+          token: repositoryToken,
+          expiresAt: Date.now() + 60_000,
+          remoteUrl: "https://github.com/local/fixture.git",
+          branch: body.access === "write" ? "paws/local-1" : null,
+          ...repositoryResponse,
+        });
+      }
+      if (path === "/v1/runs/run-one/result") {
+        assert.equal(request.headers.get("authorization"), `Bearer ${runGrant}`);
+        const body = z
+          .strictObject({ generation: generations, result: RunnerResultSchema })
+          .parse(await request.json());
+        assert.equal(body.generation, 1);
+        assert.equal(body.result.commandId, "command-one");
+        if (resultFenced)
+          return Response.json({ error: repositoryToken, code: "fenced" }, { status: 409 });
+        const payload = JSON.stringify(body);
+        const duplicate = results.has(payload);
+        results.add(payload);
+        workRequests.push({ path, body, bearer: true });
+        return Response.json(resultResponse ?? { duplicate });
+      }
+      if (path === "/v1/runs/run-one/answers") {
+        assert.equal(request.headers.get("authorization"), `Bearer ${runGrant}`);
+        const body = z
+          .strictObject({
+            generation: generations,
+            after: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+          })
+          .parse(await request.json());
+        assert.equal(body.generation, 1);
+        workRequests.push({ path, body, bearer: true });
+        return Response.json(
+          answersResponse ?? {
+            answers: [
+              { sequence: 2, answer: "Include archived rows." },
+              { sequence: 5, answer: "Keep existing columns." },
+            ].filter((answer) => answer.sequence > body.after),
+          },
+        );
+      }
       if (path.endsWith("/ack")) {
         acknowledgments.push(path.split("/")[3]!);
         return deliver({ ok: true });
@@ -119,6 +213,7 @@ export async function probeRunnerDaemon(
         workspaceId,
         certificate: renewed.pem,
         authority: authority.certificate,
+        signingKeys,
       });
     },
   });
@@ -128,7 +223,7 @@ export async function probeRunnerDaemon(
     controlPlaneUrl: `https://localhost:${address.port}`,
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
-    signingKey: signingKey.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    signingKey: publicKeyPem,
   };
   const configPath = join(root, "config.json");
   writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
@@ -164,6 +259,10 @@ export async function probeRunnerDaemon(
         new Response(process.stderr).text(),
       ]);
       assert.equal(exit, succeeds ? 0 : 1, stdout + stderr);
+      assert(!stdout.includes(runGrant));
+      assert(!stderr.includes(runGrant));
+      assert(!stdout.includes(repositoryToken));
+      assert(!stderr.includes(repositoryToken));
       const output = JSON.parse(stdout);
       pids.push(output.pid);
       return output;
@@ -177,11 +276,47 @@ export async function probeRunnerDaemon(
     assert(!JSON.stringify(paired).includes("local-claim"));
     assert.equal((await child("claim")).result.phase, "pending");
     approved = true;
+    const statePath = join(daemonRoot, "identity", "state.json");
+    const pendingState = readFileSync(statePath);
+    const validSigningKeys = signingKeys;
+    const malformedSigningKeys = [
+      undefined,
+      [],
+      Array.from({ length: 9 }, (_, index) => ({ keyId: `key-${index}`, publicKeyPem })),
+      [
+        { keyId: "duplicate", publicKeyPem },
+        { keyId: "duplicate", publicKeyPem },
+      ],
+      [{ keyId: "coordinator", publicKeyPem: `${publicKeyPem}\n` }],
+      [{ keyId: "coordinator", publicKeyPem: "invalid" }],
+      [{ keyId: "coordinator", publicKeyPem, unexpected: true }],
+      [{ keyId: "coordinator", publicKeyPem: server.cert }],
+      [
+        {
+          keyId: "coordinator",
+          publicKeyPem: signingKey.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+        },
+      ],
+      [
+        {
+          keyId: "coordinator",
+          publicKeyPem: generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+            .publicKey.export({ type: "spki", format: "pem" })
+            .toString(),
+        },
+      ],
+    ];
+    for (const malformed of malformedSigningKeys) {
+      signingKeys = malformed;
+      await child("claim", [], configPath, false);
+      assert(pendingState.equals(readFileSync(statePath)));
+    }
+    signingKeys = validSigningKeys;
     const identity = (await child("claim")).result;
     assert.equal(identity.runnerId, runnerId);
     assert.equal(identity.workspaceId, workspaceId);
     const keyPath = join(daemonRoot, "identity", "runner-key.pem");
-    const statePath = join(daemonRoot, "identity", "state.json");
+    assert.deepEqual(JSON.parse(readSecretFile(statePath)!).signingKeys, signingKeys);
     assert(!readFileSync(keyPath, "utf8").includes("PRIVATE KEY"));
     assert(!readFileSync(statePath, "utf8").includes("local-claim"));
     assert.equal(statSync(daemonRoot).mode & 0o777, 0o700);
@@ -323,6 +458,219 @@ export async function probeRunnerDaemon(
     };
     commands = [signed(unacknowledged)];
     assert.deepEqual((await child("commands")).result.ids, ["unacknowledged-before-expiry"]);
+    heartbeatResponse = {
+      leases: [{ runId: "run-one", generation: 1, expiresAt: Date.now() + 60_000 }],
+      fenced: [{ runId: "run-old", generation: 2 }],
+    };
+    assert.deepEqual((await child("leases")).result, heartbeatResponse);
+    assert.deepEqual((await child("events")).result, {
+      first: { duplicate: false },
+      replay: { duplicate: true },
+    });
+    assert.equal(workRequests.length, 3);
+    assert(!JSON.stringify(workRequests).includes(runGrant));
+    assert(!readFileSync(statePath, "utf8").includes(runGrant));
+    assert(!readFileSync(dbPath).includes(Buffer.from(runGrant)));
+    observe(
+      "mTLS heartbeat returns validated leases and fences while events use a separate in-memory bearer grant",
+      true,
+      { heartbeat: heartbeatResponse, requests: [...workRequests], deliveredEvents },
+    );
+    commands = [signed({ ...command, id: "command-review", type: "review", runId: "run-review" })];
+    assert.deepEqual((await child("commands")).result.ids, [
+      "unacknowledged-before-expiry",
+      "command-review",
+    ]);
+    await child("ack", ["command-review"]);
+    commands = [];
+    const requestsBeforeInvalid = peers.length;
+    assert.deepEqual((await child("invalid-work")).result, { rejected: 9 });
+    assert.equal(peers.length, requestsBeforeInvalid);
+    const validHeartbeat = heartbeatResponse;
+    for (const malformed of [
+      { leases: [], fenced: [], unexpected: true },
+      { leases: [{ runId: "run-one", generation: 0, expiresAt: 1 }], fenced: [] },
+    ]) {
+      heartbeatResponse = malformed;
+      await child("leases", [], configPath, false);
+    }
+    heartbeatResponse = validHeartbeat;
+    const validGrant = grantResponse;
+    for (const malformed of [
+      { token: runGrant, expiresAt: 1 },
+      { token: runGrant, expiresAt: Date.now() + 60_000, credential: "forbidden" },
+      { token: "invalid", expiresAt: Date.now() + 60_000 },
+    ]) {
+      grantResponse = malformed;
+      await child("events", [], configPath, false);
+    }
+    grantResponse = validGrant;
+    eventResponse = { duplicate: false, unexpected: true };
+    await child("events", [], configPath, false);
+    eventResponse = undefined;
+    observe(
+      "invalid work identities, generations, bearer tokens and server response fields fail closed",
+      true,
+      {
+        localRejections: 9,
+        malformedHeartbeatResponses: 2,
+        malformedGrantResponses: 3,
+        malformedEventResponses: 1,
+      },
+    );
+    assert.deepEqual((await child("repository")).result, [
+      { remoteUrl: "https://github.com/local/fixture.git", branch: null },
+      { remoteUrl: "https://github.com/local/fixture.git", branch: "paws/local-1" },
+    ]);
+    const invalidCredentials = [
+      { expiresAt: 1 },
+      { expiresAt: Date.now() + 2 * 60 * 60_000 },
+      { token: "contains whitespace" },
+      { token: "contains\u0000control" },
+      { remoteUrl: "https://github.com/local/other.git" },
+      { remoteUrl: "https://user@github.com/local/fixture.git" },
+      { remoteUrl: "https://github.com/local/fixture.git?token=forbidden" },
+      { branch: null },
+      { branch: "main" },
+      { branch: "paws/../main" },
+      { branch: "paws/unsafe..branch" },
+      { branch: "paws/unsafe.lock" },
+      { credential: "forbidden" },
+    ];
+    for (const invalid of invalidCredentials) {
+      repositoryResponse = invalid;
+      await child("repository-write", [], configPath, false);
+    }
+    repositoryResponse = { branch: "paws/local-1" };
+    await child("repository-read", [], configPath, false);
+    repositoryResponse = undefined;
+    assert(!readFileSync(statePath, "utf8").includes(repositoryToken));
+    assert(!readFileSync(dbPath).includes(Buffer.from(repositoryToken)));
+    observe(
+      "repository credentials bind the admitted signed repository and access mode without persisting tokens",
+      true,
+      {
+        readBranch: null,
+        writeBranch: "paws/local-1",
+        malformedResponsesRejected: invalidCredentials.length + 1,
+      },
+    );
+    assert.deepEqual((await child("results")).result, {
+      first: { duplicate: false },
+      replay: { duplicate: true },
+    });
+    assert.deepEqual((await child("answers")).result, {
+      first: {
+        answers: [
+          { sequence: 2, answer: "Include archived rows." },
+          { sequence: 5, answer: "Keep existing columns." },
+        ],
+      },
+      next: { answers: [] },
+    });
+    const beforeInvalidResults = peers.length;
+    assert.deepEqual((await child("invalid-results")).result, { rejected: 6 });
+    assert.equal(peers.length, beforeInvalidResults);
+    resultResponse = { duplicate: false, rawOutput: "forbidden" };
+    await child("results", [], configPath, false);
+    resultResponse = undefined;
+    const malformedAnswers = [
+      { answers: [{ sequence: 0, answer: "invalid" }] },
+      { answers: [{ sequence: 1, answer: "" }] },
+      { answers: [{ sequence: 2, answer: "valid", rawOutput: "forbidden" }] },
+      {
+        answers: [
+          { sequence: 2, answer: "first" },
+          { sequence: 2, answer: "duplicate" },
+        ],
+      },
+      {
+        answers: [
+          { sequence: 5, answer: "first" },
+          { sequence: 2, answer: "out of order" },
+        ],
+      },
+      { answers: [], unexpected: true },
+    ];
+    for (const malformed of malformedAnswers) {
+      answersResponse = malformed;
+      await child("answers", [], configPath, false);
+    }
+    answersResponse = { answers: [{ sequence: 2, answer: "older than requested cursor" }] };
+    await child("answers", [], configPath, false);
+    answersResponse = undefined;
+    resultFenced = true;
+    assert.deepEqual((await child("fenced-result")).result, { status: 409 });
+    resultFenced = false;
+    observe(
+      "mTLS results and ordered question answers validate strict payloads and expose safe numeric fencing status",
+      true,
+      {
+        resultPayloads: results.size,
+        localRejections: 6,
+        malformedResponses: malformedAnswers.length + 2,
+        fencedStatus: 409,
+      },
+    );
+    const legacyState = JSON.parse(readSecretFile(statePath)!);
+    delete legacyState.signingKeys;
+    writeSecretFile(statePath, JSON.stringify(legacyState));
+    commands = [];
+    const requestsBeforeMissingKeys = peers.length;
+    await child("commands", [], configPath, false);
+    assert.equal(peers.length, requestsBeforeMissingKeys);
+    await child("heartbeat");
+    const pinnedConfig = join(root, "pinned.json");
+    writeFileSync(pinnedConfig, JSON.stringify({ ...config, pinned: true }));
+    assert.deepEqual((await child("commands", [], pinnedConfig)).result.ids, [
+      "unacknowledged-before-expiry",
+    ]);
+    await child("renew");
+    const enrolledState = readFileSync(statePath);
+    for (const malformed of malformedSigningKeys) {
+      signingKeys = malformed;
+      await child("renew", [], configPath, false);
+      assert(enrolledState.equals(readFileSync(statePath)));
+    }
+    signingKeys = validSigningKeys;
+    const wrongPins = join(root, "wrong-pins.json");
+    const rotatedKey = generateKeyPairSync("ed25519");
+    const rotatedPem = rotatedKey.publicKey.export({ type: "spki", format: "pem" }).toString();
+    writeFileSync(wrongPins, JSON.stringify({ ...config, pinned: true, signingKey: rotatedPem }));
+    await child("commands", [], wrongPins, false);
+    await child("renew", [], wrongPins, false);
+    assert(enrolledState.equals(readFileSync(statePath)));
+    signingKeys = [{ keyId: "rotated", publicKeyPem: rotatedPem }];
+    const pinnedRejection = await child("renew", [], pinnedConfig, false);
+    assert(enrolledState.equals(readFileSync(statePath)));
+    await child("renew");
+    commands = [
+      signed({ ...command, id: "old-key-command" }),
+      signRunnerCommand({
+        keyId: "rotated",
+        privateKey: rotatedKey.privateKey,
+        command: { ...command, id: "rotated-key-command", expiresAt: Date.now() + 60_000 },
+      }),
+    ];
+    const rotated = (await child("commands")).result;
+    assert.deepEqual(rotated, {
+      ids: ["unacknowledged-before-expiry", "rotated-key-command"],
+      rejected: ["untrusted_key"],
+    });
+    await child("ack", ["rotated-key-command"]);
+    observe(
+      "verified enrollment bootstraps public signing keys and authenticated renewal atomically rotates admission trust",
+      true,
+      {
+        malformedEnrollmentKeys: malformedSigningKeys.length,
+        malformedRenewalKeys: malformedSigningKeys.length,
+        legacyPollingRejectedBeforeRequest: requestsBeforeMissingKeys,
+        pinnedRenewalError: pinnedRejection.error,
+        rotated,
+      },
+    );
+    signingKeys = validSigningKeys;
+    await child("renew");
     active.clear();
     const count = peers.length;
     await child("heartbeat", [], configPath, false);
@@ -403,7 +751,7 @@ export async function probeRunnerDaemon(
     await assert.rejects(() => daemon.pollPairing());
     assert.equal(
       db.query<{ count: number }, []>("SELECT count(*) AS count FROM pending_command").get()!.count,
-      3,
+      5,
     );
     assert(previousState.equals(readFileSync(statePath)));
     db.run("DROP TRIGGER reject_clear");
