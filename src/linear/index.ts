@@ -1,4 +1,10 @@
 export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
+export {
+  parseLinearAdministration,
+  parseLinearSessionInstallation,
+  matchesLinearInstallation,
+} from "./administration";
+export type { LinearAdministration, LinearInstallation } from "./administration";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export { linearBudget, LinearRateLimitError } from "./budget";
