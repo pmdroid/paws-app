@@ -3,6 +3,7 @@ import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
 import { probeRunnerResults } from "./runner-results";
 import { probeRunnerTranscripts } from "./runner-transcripts";
+import { probeRunnerArtifacts } from "./runner-artifacts";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { statSync, writeFileSync } from "node:fs";
@@ -52,6 +53,7 @@ export async function probeBoundaries(
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
+  await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
   const release = Bun.spawn(
