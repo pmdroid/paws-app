@@ -190,3 +190,9 @@ export {
   requireLinearTaskDelegation,
   type LinearTaskDelegation,
 } from "./linear-delegation";
+
+export {
+  getConfirmedRemoteMerge,
+  recordConfirmedRemoteMerge,
+  type ConfirmedRemoteMerge,
+} from "./remote-merges";
