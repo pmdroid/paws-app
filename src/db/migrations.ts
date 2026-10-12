@@ -546,4 +546,15 @@ CREATE TABLE task_request (
       session_id TEXT PRIMARY KEY REFERENCES linear_session(session_id)
     ) STRICT;`,
   },
+  {
+    id: "011_work_item_repository",
+    sql: `
+CREATE TABLE work_item_repository (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  remote_url TEXT NOT NULL
+) STRICT;
+`,
+  },
 ];

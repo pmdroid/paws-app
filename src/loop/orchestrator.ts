@@ -35,6 +35,7 @@ import {
   type Clock,
   type LinearCommand,
   type EpicState,
+  type RepositoryBinding,
   systemClock,
 } from "../core";
 import {
@@ -66,6 +67,8 @@ import {
   announceLinearTurn,
   getLinearTurnGeneration,
   discardLinearTurns,
+  bindWorkItemRepository,
+  getWorkItemRepository,
   getWorkItem,
   immediate,
   insertRun,
@@ -145,11 +148,7 @@ export type GitHubBinding = {
   tokenProvider?: GitHubTokenProvider;
 };
 
-export type RepositoryBinding = {
-  owner: string;
-  repo: string;
-  remoteUrl: string;
-};
+export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
   db: Database;
@@ -164,6 +163,7 @@ export type OrchestratorOptions = {
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   github?: GitHubBinding | null;
+  githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
@@ -878,7 +878,7 @@ export class Orchestrator {
   }
 
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
-    const repository = this.options.repository;
+    const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
       return;
@@ -1191,7 +1191,7 @@ export class Orchestrator {
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
     if (item === null) return;
-    const repository = this.options.repository;
+    const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
       this.fail(item, "no_repository", "PAWS_GITHUB_REPOSITORY is not set.");
       return;
@@ -1241,8 +1241,8 @@ export class Orchestrator {
       item.state === "completed"
     )
       return;
-    const repository = this.options.repository;
-    const github = this.options.github;
+    const repository = this.repositoryForItem(item);
+    const github = repository === null ? null : this.githubForRepository(repository);
     if (
       repository === null ||
       repository === undefined ||
@@ -1711,6 +1711,7 @@ export class Orchestrator {
       const existing = getRun(this.db, item.currentRunId);
       if (existing && existing.status === "active") return existing;
     }
+    const repository = this.repositoryForItem(item);
     const run = insertRun(this.db, {
       itemId: item.id,
       now: this.now(),
@@ -1718,9 +1719,7 @@ export class Orchestrator {
       kind: "implement",
       agent: resolveAgentProfiles(
         loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-        this.options.repository
-          ? `${this.options.repository.owner}/${this.options.repository.repo}`
-          : undefined,
+        repository ? `${repository.owner}/${repository.repo}` : undefined,
       ).implementer.agent,
       freshSession: true,
     });
@@ -2197,7 +2196,9 @@ export class Orchestrator {
     const saved = this.readProfileSnapshot(runId);
     if (saved) return saved.profiles;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
-    const repository = this.options.repository;
+    const run = getRun(this.db, runId);
+    const item = run === null ? null : getWorkItem(this.db, run.itemId);
+    const repository = item === null ? null : this.repositoryForItem(item);
     const profiles = resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
@@ -2226,7 +2227,8 @@ export class Orchestrator {
     profiles: { implementer: AgentProfile; reviewer: AgentProfile },
     signal: AbortSignal,
   ): Promise<void> {
-    const repository = this.options.repository!;
+    const repository = this.repositoryForItem(item);
+    if (repository === null) throw new Error("The work item has no repository");
     await ensureBareMirror({ ...repository, pawsRoot: this.options.pawsRoot });
     const worktree = await createWorktree({
       ...repository,
@@ -2291,6 +2293,26 @@ export class Orchestrator {
       ...(this.options.home !== undefined ? { home: this.options.home } : {}),
       pawsHome: this.options.pawsRoot,
     };
+  }
+
+  private repositoryForItem(item: WorkItemRecord): RepositoryBinding | null {
+    const saved = getWorkItemRepository(this.db, item.id);
+    if (saved !== null) return saved;
+    const repository = this.options.repository;
+    return repository ? bindWorkItemRepository(this.db, item.id, repository) : null;
+  }
+
+  private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {
+    if (this.options.githubForRepository) return this.options.githubForRepository(repository);
+    const configured = this.options.repository;
+    if (
+      configured?.owner !== repository.owner ||
+      configured.repo !== repository.repo ||
+      configured.remoteUrl !== repository.remoteUrl
+    ) {
+      return null;
+    }
+    return this.options.github ?? null;
   }
 
   private launchAgent: AgentLaunch = (input) => {
