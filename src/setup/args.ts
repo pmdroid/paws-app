@@ -2,7 +2,7 @@ import { stop } from "./stop";
 
 export type LinearModeFlag = "comments" | "agent-session";
 
-export type TrackerFlag = "github" | "linear" | "both";
+export type TrackerFlag = "linear";
 
 export type SetupFlags = {
   help: boolean;
@@ -85,7 +85,7 @@ export function parseArgs(argv: readonly string[]): SetupFlags {
 export const HELP = [
   "paws setup",
   "  --yes                        non-interactive; missing answers exit",
-  "  --tracker github|linear|both GitHub is the default; linear keeps the previous setup",
+  "  --tracker linear             Linear issue tracking",
   "  --home DIR                   ~/.paws directory (or PAWS_HOME)",
   "  --checkout DIR               local clone used to infer owner/repo",
   "  --repo OWNER/REPO            GitHub repository you can push to",
@@ -116,9 +116,11 @@ function assign(flags: SetupFlags, key: ValueKey, value: string): void {
   flags[key] = value;
 }
 
-function parseTracker(value: string): "github" | "linear" | "both" {
-  if (value === "github" || value === "linear" || value === "both") return value;
-  stop("Pass --tracker as github, linear, or both.");
+function parseTracker(value: string): TrackerFlag {
+  if (value === "linear") return value;
+  stop(
+    "Paws uses Linear for issue tracking. Pass --tracker linear and provide Linear credentials. GitHub authentication is configured independently with github.auth.",
+  );
 }
 
 function parseMode(value: string): LinearModeFlag {

@@ -259,11 +259,11 @@ test("doctor uses role profiles and Grok status carried by the real probe", () =
   expect(checks.find((item) => item.name === "codex")?.note).toBe(true);
 });
 
-test("doctor is green for a GitHub tracker with no Linear config", () => {
+test("doctor requires Linear credentials even with GitHub OAuth", () => {
   const ready = probe(true);
   ready.facts = {
     ...ready.facts,
-    trackerKind: "github",
+    trackerKind: "linear",
     githubAuth: "oauth",
     oauthClientId: "Iv1.real-client",
     team: null,
@@ -280,25 +280,24 @@ test("doctor is green for a GitHub tracker with no Linear config", () => {
     githubDoctor: githubReady(),
   };
   const checks = doctorChecks(ready);
-  expect(checks.every((item) => item.ok)).toBe(true);
+  expect(checks.find((item) => item.name === "linear")?.ok).toBe(false);
   const names = checks.map((item) => item.name);
   expect(names).toContain("github-auth");
   expect(names).toContain("github-push");
-  expect(names).toContain("github-label");
+  expect(names).not.toContain("github-label");
   expect(names).toContain("github-rate");
   expect(names).toContain("github-token-store");
-  expect(names).not.toContain("linear");
-  expect(names).not.toContain("linear-mode");
-  expect(names).not.toContain("linear-team");
-  expect(names).not.toContain("linear-label");
+  expect(names).toContain("linear");
+  expect(names).toContain("linear-mode");
+  expect(names).toContain("linear-team");
+  expect(names).toContain("linear-label");
   expect(names).not.toContain("gh-login");
   expect(names).not.toContain("gh-push");
   const text = formatDoctor(checks);
   expect(text).toContain("ok github-auth: signed in as octocat");
-  expect(text).toContain("ok github-label: paws");
   expect(text).toContain("ok github-rate: 4800 remaining");
   expect(text).toContain("ok github-token-store: keychain");
-  expect(text).not.toContain("missing");
+  expect(text).toContain("missing linear:");
   expect(text).not.toContain("gho_");
 });
 
@@ -306,20 +305,9 @@ test("a placeholder GitHub client id is one actionable line", () => {
   const ready = probe(true);
   ready.facts = {
     ...ready.facts,
-    trackerKind: "github",
+    trackerKind: "linear",
     githubAuth: "oauth",
     oauthClientId: PAWS_GITHUB_OAUTH_CLIENT_ID,
-    team: null,
-    teamId: null,
-    linear: {
-      attempted: false,
-      reachable: false,
-      viewerId: null,
-      viewerMatches: false,
-      teamFound: false,
-      labelFound: false,
-      error: null,
-    },
     githubDoctor: { ...githubReady(), placeholder: true },
   };
   const checks = doctorChecks(ready);
@@ -334,7 +322,7 @@ test("a placeholder GitHub client id is one actionable line", () => {
   const empty = probe(true);
   empty.facts = {
     ...ready.facts,
-    trackerKind: "github",
+    trackerKind: "linear",
     githubAuth: "oauth",
     oauthClientId: "",
     githubDoctor: { ...githubReady(), placeholder: false },
@@ -346,20 +334,9 @@ test("a file token store is a note and does not fail doctor", () => {
   const ready = probe(true);
   ready.facts = {
     ...ready.facts,
-    trackerKind: "github",
+    trackerKind: "linear",
     githubAuth: "oauth",
     oauthClientId: "Iv1.real-client",
-    team: null,
-    teamId: null,
-    linear: {
-      attempted: false,
-      reachable: false,
-      viewerId: null,
-      viewerMatches: false,
-      teamFound: false,
-      labelFound: false,
-      error: null,
-    },
     githubDoctor: {
       ...githubReady(),
       storeKind: "file",
@@ -374,11 +351,11 @@ test("a file token store is a note and does not fail doctor", () => {
   expect(text).not.toContain("missing");
 });
 
-test("both trackers keep Linear checks and GitHub checks", () => {
+test("Linear tracking keeps independent GitHub OAuth checks", () => {
   const ready = probe(true);
   ready.facts = {
     ...ready.facts,
-    trackerKind: "both",
+    trackerKind: "linear",
     githubAuth: "oauth",
     oauthClientId: "Iv1.real-client",
     githubDoctor: githubReady(),
@@ -387,7 +364,7 @@ test("both trackers keep Linear checks and GitHub checks", () => {
   expect(names).toContain("linear");
   expect(names).toContain("linear-label");
   expect(names).toContain("github-auth");
-  expect(names).toContain("github-label");
+  expect(names).not.toContain("github-label");
   expect(names).not.toContain("gh-login");
 });
 

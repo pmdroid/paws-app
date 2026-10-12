@@ -1625,3 +1625,19 @@ input[type="url"] {
     gap: 4px;
   }
 }
+
+#linear-session-start {
+  padding: 16px 24px 0;
+}
+.linear-session-start summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+}
+.linear-session-start form {
+  max-width: 42rem;
+  margin-top: 16px;
+}
+.linear-session-start [data-session-status]:empty {
+  display: none;
+}

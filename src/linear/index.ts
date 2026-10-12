@@ -94,6 +94,8 @@ export {
   parseAgentEvent,
 } from "./webhook";
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
+export { createSessionStarter } from "./start-session";
+export type { LinearSessionTarget, StartedLinearSession } from "./start-session";
 
 export { parseLinearSessionContext, renderLinearSessionContext } from "./context";
 export type { LinearSessionContext } from "./context";

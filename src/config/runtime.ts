@@ -11,7 +11,6 @@ import {
   type LinearConfigMode,
   type PawsConfigFile,
   type TrackerGithubConfig,
-  type TrackerKind,
 } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
@@ -39,7 +38,7 @@ export type RuntimeConfig = {
   linearClientSecret: string | null;
   githubAuth: GitHubConfigAuth;
   oauthClientId: string | null;
-  trackerKind: TrackerKind;
+  trackerKind: "linear";
   trackerGithub: TrackerGithubConfig;
   repo: string | null;
   publicUrl: string | null;
@@ -75,6 +74,10 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
+  if (file.trackerSpecified && file.trackerKind !== "linear") {
+    configError =
+      'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and run paws setup with Linear credentials. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
+  }
   const linearMode = resolveMode(file, source, configured, configError);
   const secrets = readLinearSecrets(env.home, file, linearMode);
   const apiFromEnv = optional(source, "LINEAR_API_KEY");
@@ -104,7 +107,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     githubAuth,
     oauthClientId: resolveOAuthClientId(file, source, githubAuth) ?? app?.clientId ?? null,
-    trackerKind: resolveTrackerKind(file),
+    trackerKind: "linear",
     trackerGithub: file.trackerGithub,
     repo: optional(source, "PAWS_GITHUB_REPOSITORY") ?? file.repo ?? env.githubRepository,
     publicUrl: optional(source, "PAWS_PUBLIC_URL") ?? file.publicUrl,
@@ -169,11 +172,6 @@ function resolveOAuthClientId(
   if (file.oauthClientId !== null) return file.oauthClientId;
   if (auth === "oauth") return PAWS_GITHUB_OAUTH_CLIENT_ID;
   return null;
-}
-
-function resolveTrackerKind(file: PawsConfigFile): TrackerKind {
-  if (!file.trackerSpecified) return "linear";
-  return file.trackerKind ?? "github";
 }
 
 function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
