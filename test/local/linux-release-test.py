@@ -35,7 +35,36 @@ class ReleaseVerification(unittest.TestCase):
         self.archive()
         self.sign()
 
+    def test_active_execution_refusal_preserves_running_broker(self):
+        specification = importlib.util.spec_from_file_location("installer", pathlib.Path(sys.argv[1]).with_name("install.py"))
+        installer = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(installer)
+        calls = []
+        def systemctl(arguments):
+            calls.append(arguments)
+            if arguments[1] == "list-unit-files":
+                return b"paws-runner.service enabled\npaws-runner-broker.socket enabled\npaws-runner-broker.service enabled\n"
+            if arguments[1] == "list-units":
+                return b"paws-check-witness@01K00000000000000000000000.service loaded active running\n"
+            return b""
+        installer.release.command = systemctl
+        with self.assertRaises(ValueError):
+            installer.stop_for_install()
+        self.assertFalse(any(arguments[1] == "stop" for arguments in calls))
 
+    def test_extracted_directories_remain_searchable_under_private_umask(self):
+        specification = importlib.util.spec_from_file_location("installer", pathlib.Path(sys.argv[1]).with_name("install.py"))
+        installer = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(installer)
+        destination = self.root / "extracted"
+        destination.mkdir()
+        previous = os.umask(0o077)
+        try:
+            installer.extract_verified(self.artifact, destination)
+        finally:
+            os.umask(previous)
+        for directory in (destination / "app", destination / "app/src", destination / "app/node_modules", destination / "app/node_modules/.bin", destination / "deploy/linux", destination / "bin"):
+            self.assertEqual(directory.stat().st_mode & 0o7777, 0o755)
 
     def test_packaged_launcher_targets_are_validated_and_archived(self):
         specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
