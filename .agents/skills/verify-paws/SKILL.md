@@ -76,6 +76,10 @@ The Linear Closeout cases in `test/loop.e2e.test.ts` reconstruct the adapter, re
 
 For HTTP shutdown, run `bun --no-env-file test test/server-drain.test.ts`. The production listener holds an accepted artifact read while shutdown begins, then performs a final real SQLite query. Verify shutdown waits for that query before the caller closes SQLite. A second test starts Paws with an offline Linear adapter, holds a real HTTP session request, and verifies `paws.stop()` keeps SQLite open until that request finishes. Both tests also run in the normal suite.
 
+## Runner pairing
+
+The audit uses real P-256 CSRs, signed certificates, SQLite and HTTPS client authentication. It verifies administrator approval, recent login, single-use codes, ten-minute expiry, workspace ownership, five-minute renewal overlap, superseded-certificate renewal rejection, three owned coordinator subprocesses, persistent revocation and membership removal. It also approves a runner immediately before the original pairing deadline, leaves its certificate unclaimed, and proves expiry revokes that runner with a system audit record while preserving a claimed runner. A real mTLS connection remains open in a coordinator subprocess while the parent revokes its database identity; the periodic sweep must close that connection within five seconds.
+
 ## Safety and evidence
 
 Use synthetic requirements and tokens only. All scenario Git remotes are local paths; injected HTTP routes assert the fake origin and the scenario rejects non-loopback fetches. These are deterministic trusted fixtures: do not run arbitrary issue-supplied code or a real agent in them. ACP runs directly on its host; environment filtering and guarded ACP requests do not establish filesystem isolation for terminal commands. Use a disposable VM with blocked external egress for hostile-code isolation claims.
