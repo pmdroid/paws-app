@@ -6,6 +6,7 @@ import { z } from "zod";
 import { openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
+import { installedVerifierPublicKey } from "./verifier";
 
 const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
@@ -129,6 +130,7 @@ export async function runRunnerCli(
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1], ids.runnerUid),
+      verifierPublicKeyPem: installedVerifierPublicKey(),
     });
     try {
       const pending = await daemon.beginPairing(args[3]);
@@ -144,6 +146,7 @@ export async function runRunnerCli(
               paired: true,
               runnerId: status.runnerId,
               workspaceId: status.workspaceId,
+              verifierFingerprint: status.verifierFingerprint,
             }),
           );
           return 0;
