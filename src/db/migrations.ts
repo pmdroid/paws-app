@@ -798,4 +798,9 @@ CREATE TABLE workspace_access_audit (
 ) STRICT;
 `,
   },
+  {
+    id: "026_workspace_manual_roles",
+    sql: `ALTER TABLE workspace_member ADD COLUMN manual_role TEXT
+      CHECK(manual_role IN ('owner','admin','member','observer'));`,
+  },
 ];

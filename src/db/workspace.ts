@@ -100,13 +100,16 @@ export function syncWorkspaceMember(
     if (
       previous !== null &&
       (previous.checkedAt > input.now ||
-        (previous.checkedAt === input.now && !previous.active && input.active))
+        (previous.checkedAt === input.now &&
+          input.active &&
+          (!previous.active || (previous.role === "observer" && input.role !== "observer"))))
     )
       return;
     db.run(
       `INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at)
       VALUES(?,?,?,'linear',?,?) ON CONFLICT(workspace_id,user_id) DO UPDATE SET
-      role=CASE WHEN workspace_member.source='manual' THEN workspace_member.role ELSE excluded.role END,
+      role=CASE WHEN excluded.role='observer' THEN excluded.role WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE excluded.role END,
+      manual_role=CASE WHEN workspace_member.source='manual' THEN COALESCE(workspace_member.manual_role,workspace_member.role) ELSE workspace_member.manual_role END,
       active=excluded.active,checked_at=excluded.checked_at`,
       [input.workspaceId, input.userId, input.role, input.active ? 1 : 0, input.now],
     );

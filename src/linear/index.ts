@@ -125,3 +125,5 @@ export { createFakeLinearAccessReads } from "./fake-access";
 export type { LinearAccessReads, LinearSessionInstallation } from "./access";
 
 export { createLinearIssueContextReads, type LinearIssueContext } from "./issue-context";
+export { createLinearMembershipReads } from "./membership";
+export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
