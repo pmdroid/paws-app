@@ -31,6 +31,7 @@ export type FakeStep =
   | { type: "hang" }
   | {
       type: "end";
+      updatesAfterResponse?: Record<string, unknown>[];
       stopReason?: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
     };
 
