@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { JOB_KIND, systemClock } from "../src/core";
 import { expect, test } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
@@ -14,8 +15,24 @@ import {
   createTokenStore,
   createVerifiedGitHubLogin,
 } from "../src/auth";
-import { createRepositoryGit } from "../src/loop";
-import { tempHome } from "./helpers";
+import { attachOrchestrator, createRepositoryGit, LinearTaskAccess } from "../src/loop";
+import {
+  createFakeLinearAccessReads,
+  createFakeLinearIssueLifecycle,
+  createFakeTracker,
+} from "../src/linear";
+import {
+  bindLinearSessionTask,
+  enqueueJob,
+  ensureLinearSession,
+  getWorkItem,
+  insertQueuedItem,
+  JobLoop,
+  OutboxDispatcher,
+  saveTaskMode,
+  recordLinearInstallation,
+} from "../src/db";
+import { tempDb, tempHome } from "./helpers";
 
 const token = "synthetic-host-git-token";
 
@@ -213,6 +230,129 @@ test("verified saved credentials reach real host clone and fetch without reachin
       "Updated source\n",
     );
     expect(JSON.parse(await readFile(leaked, "utf8"))).toEqual({ leaked: false });
+    const db = tempDb();
+    const orchestratedRoot = join(home, "orchestrated-paws");
+    const item = insertQueuedItem(db, { id: "repository-answer", sessionKey: "host-git-session" });
+    ensureLinearSession(db, {
+      sessionId: item.sessionKey!,
+      issueId: item.linearIssueId,
+      now: Date.now(),
+    });
+    bindLinearSessionTask(db, item.sessionKey!, item.epicId, { actorId: "human" });
+    saveTaskMode(db, item.id, "answer", 0, true);
+    const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
+    recordLinearInstallation(db, {
+      ...installation,
+      sessionId: item.sessionKey!,
+      teamId: "team",
+      observedAtMs: Date.now(),
+    });
+    const access = createFakeLinearAccessReads({
+      installation,
+      sessions: [
+        {
+          ...installation,
+          sessionId: item.sessionKey!,
+          issueId: item.linearIssueId,
+          teamId: "team",
+        },
+      ],
+      teams: ["team"],
+    });
+    const lifecycle = createFakeLinearIssueLifecycle({
+      id: item.linearIssueId,
+      teamId: "team",
+      stateType: "completed",
+      delegateId: "app",
+      assigneeId: "human",
+    });
+    const tracker = createFakeTracker();
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    let checkedReads = 0;
+    const priorCa = process.env.GIT_SSL_CAINFO;
+    process.env.GIT_SSL_CAINFO = cert;
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      tracker,
+      pawsRoot: orchestratedRoot,
+      home,
+      linearTaskModes: true,
+      repositories: [{ owner: "acme", repo: "private", remoteUrl }],
+      linearAccess: new LinearTaskAccess(db, {
+        access: access.adapter,
+        lifecycle,
+        ...installation,
+        stopSession: () => {
+          throw new Error("Unexpected access removal");
+        },
+      }),
+      githubAuth: {
+        owner: () => "human",
+        linkedAccount: async () => (await store.load())?.id ?? null,
+        check: (_item, signal) => verified.check(signal),
+        begin: async () => {
+          throw new Error("Valid host credentials must not request sign-in");
+        },
+      },
+      repositoryAccess: async (_repository, _signal, purpose) => {
+        expect(purpose).toBe("read");
+        checkedReads++;
+        return true;
+      },
+      repositoryToken: async (_item, _repository, _signal, purpose) => {
+        expect(purpose).toBe("read");
+        return provider.token();
+      },
+      launch(input) {
+        expect(input.purpose).toBe("answer");
+        expect(input.prompt).toContain("./repository");
+        return {
+          command: process.execPath,
+          args: [wrapper, trace, script],
+          env: { PATH: "/usr/bin:/bin", HOME: home },
+        };
+      },
+    });
+    try {
+      await writeFile(
+        script,
+        JSON.stringify({
+          steps: [
+            { type: "fs_read", path: "repository/README.md" },
+            {
+              type: "update",
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Complete private repository explanation." },
+              },
+            },
+            { type: "end" },
+          ],
+        }),
+      );
+      enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: item.id }, now: Date.now() });
+      await jobs.tick();
+      expect(getWorkItem(db, item.id)?.state).toBe("completed");
+      expect(checkedReads).toBe(1);
+      expect(lifecycle.started).toEqual([]);
+      expect(lifecycle.issue.assigneeId).toBe("human");
+      expect(tracker.statuses).toEqual([]);
+      expect(
+        await readFile(
+          join(orchestratedRoot, "tasks", item.id, "answer", "repository", "README.md"),
+          "utf8",
+        ),
+      ).toBe("Updated source\n");
+      expect(JSON.parse(await readFile(leaked, "utf8"))).toEqual({ leaked: false });
+    } finally {
+      await orchestrator.shutdown();
+      db.close();
+      if (priorCa === undefined) delete process.env.GIT_SSL_CAINFO;
+      else process.env.GIT_SSL_CAINFO = priorCa;
+    }
     expect(accepted).toBeGreaterThan(3);
     expect(assertions).toBeGreaterThanOrEqual(8);
   } finally {

@@ -713,4 +713,8 @@ CREATE TABLE linear_github_task_account (
 ) STRICT;
 `,
   },
+  {
+    id: "022_work_item_repository_choice",
+    sql: "ALTER TABLE work_item_repository_question ADD COLUMN chosen_repository TEXT CHECK(chosen_repository IS NULL OR json_valid(chosen_repository));",
+  },
 ];

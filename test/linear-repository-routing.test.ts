@@ -8,11 +8,17 @@ import {
   enqueueJob,
   getWorkItem,
   getWorkItemRepository,
+  getWorkItemRepositoryChoice,
   listJobs,
   saveConversation,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, repositoryAnswer, routeBySource } from "../src/loop";
+import {
+  attachOrchestrator,
+  FakeHostGitHubAuth,
+  repositoryAnswer,
+  routeBySource,
+} from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { withCommentActivities } from "../src/comments";
 import { tempDb, tempHome } from "./helpers";
@@ -68,6 +74,7 @@ function fixture(
     channel?: "comments" | "agent-session";
     issueId?: string;
     defaultRepository?: boolean;
+    auth?: FakeHostGitHubAuth;
     interpretation?: { output: string; hang?: boolean; removeAccess?: string };
   } = {},
 ) {
@@ -101,6 +108,7 @@ function fixture(
       tracker,
       pawsRoot,
       clock,
+      githubAuth: options.auth,
       channel: options.channel,
       repository: options.defaultRepository ? repositories[0] : undefined,
       repositories: [...repositories, repositories[0]!],
@@ -158,6 +166,69 @@ function fixture(
     launches: () => launches,
   };
 }
+
+test("a natural-language repository choice survives host sign-in recovery before access or binding", async () => {
+  const host = new FakeHostGitHubAuth();
+  host.actorId = "human";
+  const f = fixture({
+    auth: host,
+    interpretation: { output: '{"repositoryFullName":"acme/two"}' },
+  });
+  let orchestrator = f.attach();
+  try {
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const repositoryQuestion = findOpenQuestion(f.db, "session")!;
+    expect(f.checked).toEqual([]);
+    expect(host.challenges).toEqual([]);
+    expect(f.tracker.statuses).toEqual([]);
+    await orchestrator.onLinearEvent(event("Use the backend one, acme/two."));
+    await f.jobs.tick();
+    const authQuestion = findOpenQuestion(f.db, "session")!;
+    expect(authQuestion.id).not.toBe(repositoryQuestion.id);
+    expect(getWorkItemRepositoryChoice(f.db, repositoryQuestion.itemId)).toEqual(repositories[1]!);
+    expect(getWorkItemRepository(f.db, repositoryQuestion.itemId)).toBeNull();
+    expect(f.launches()).toBe(1);
+    expect(f.checked).toEqual([]);
+    expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
+    await orchestrator.shutdown();
+    orchestrator = f.attach();
+    await orchestrator.recoverGitHubAuth();
+    expect(host.challenges).toHaveLength(2);
+    host.challenges[1]!.complete({ id: 7, login: "owner" });
+    await new Promise((done) => setTimeout(done, 0));
+    await f.jobs.tick();
+    expect(getWorkItemRepository(f.db, repositoryQuestion.itemId)).toEqual(repositories[1]!);
+    expect(f.checked).toEqual(["two"]);
+    expect(f.launches()).toBe(1);
+  } finally {
+    await orchestrator.shutdown();
+    f.db.close();
+  }
+});
+
+test("verified sign-in cannot bind a provisionally chosen inaccessible repository", async () => {
+  const host = new FakeHostGitHubAuth();
+  host.actorId = "human";
+  host.account = { id: 7, login: "owner" };
+  const f = fixture({ auth: host });
+  const orchestrator = f.attach();
+  try {
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const question = findOpenQuestion(f.db, "session")!;
+    await orchestrator.onLinearEvent(event("acme/private"));
+    await f.jobs.tick();
+    expect(getWorkItemRepository(f.db, question.itemId)).toBeNull();
+    expect(f.checked).toEqual(["private"]);
+    expect(findOpenQuestion(f.db, "session")?.id).not.toBe(question.id);
+    expect(f.tracker.statuses).toEqual([]);
+    expect(f.launches()).toBe(0);
+  } finally {
+    await orchestrator.shutdown();
+    f.db.close();
+  }
+});
 
 test("an incomplete access scan retries without binding the surviving repository", async () => {
   const f = fixture();

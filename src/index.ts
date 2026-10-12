@@ -28,13 +28,17 @@ import {
 import {
   enqueueCommand,
   enqueueJob,
-  getTaskLinearActor,
   isLinearAppRevoked,
-  getWorkItemRepository,
   getLinearSessionAccess,
+  getTaskLinearActor,
+  getWorkItemRepository,
+  getWorkItemRepositoryChoice,
+  getWorkItemRepositoryAnswer,
+  getTaskMode,
+  taskRequiresRepository,
+  listWorkItemsByStates,
   listWorkItems,
   linearSessionForEpic,
-  listWorkItemsByStates,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -89,6 +93,7 @@ import {
   attachOrchestrator,
   itemPathId,
   routeBySource,
+  repositoryAnswer,
   worktreeBranch,
   type GitHubBinding,
   LinearTaskAccess,
@@ -309,7 +314,34 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ? createLinearGitHubAuth({
                 runtime,
                 env: envSource,
-                repositoryForItem: () => repository,
+                repositoryForItem: (item) => {
+                  const bound = getWorkItemRepository(db, item.id);
+                  if (bound) return bound;
+                  const answer = getWorkItemRepositoryAnswer(db, item.id);
+                  const selected =
+                    getWorkItemRepositoryChoice(db, item.id) ??
+                    (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
+                  const configured = repositories.filter(
+                    (candidate, index) =>
+                      repositories.findIndex(
+                        (other) => other.owner === candidate.owner && other.repo === candidate.repo,
+                      ) === index,
+                  );
+                  return selected
+                    ? (configured.find(
+                        (candidate) =>
+                          candidate.owner === selected.owner &&
+                          candidate.repo === selected.repo &&
+                          candidate.remoteUrl === selected.remoteUrl,
+                      ) ?? null)
+                    : configured.length === 1
+                      ? configured[0]!
+                      : null;
+                },
+                accessForItem: (item) =>
+                  getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
+                    ? "read"
+                    : "write",
                 actorForItem: (item) => getTaskLinearActor(db, item.id),
               })
             : undefined,
@@ -322,7 +354,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         repository,
         repositories,
         repositoryAccess: async (candidate, signal, access) => {
-          const provider = authProvider(runtime, candidate);
+          const provider = authProvider(runtime, candidate, access);
           if (!provider) return false;
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
             ...candidate,
@@ -330,6 +362,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             app: provider.source === "app",
             signal,
           });
+        },
+        repositoryToken: async (_item, candidate, signal, access) => {
+          signal.throwIfAborted();
+          const provider = authProvider(runtime, candidate, access);
+          if (!provider)
+            throw new Error("GitHub sign-in is required before reading the repository.");
+          const token = await provider.token();
+          signal.throwIfAborted();
+          return token;
         },
         github,
         githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
@@ -593,6 +634,7 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
 function authProvider(
   runtime: RuntimeConfig,
   repository: RepositoryBinding,
+  access: "read" | "write" = "write",
 ): AuthTokenProvider | null {
   const env = runtime.env;
   let privateKeyPem: string | null = null;
@@ -606,6 +648,7 @@ function authProvider(
   try {
     return createGitHubTokenProvider({
       auth: runtime.githubAuth,
+      access,
       oauthClientId: runtime.oauthClientId,
       repo: `${repository.owner}/${repository.repo}`,
       home: env.home,
@@ -625,6 +668,7 @@ export function createLinearGitHubAuth(input: {
   env: EnvSource;
   repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
   actorForItem: (item: WorkItemRecord) => string | null;
+  accessForItem?: (item: WorkItemRecord) => "read" | "write";
 }): HostGitHubAuth {
   const loginFor = (item: WorkItemRecord) => {
     const repository = input.repositoryForItem(item);
@@ -652,7 +696,7 @@ export function createLinearGitHubAuth(input: {
       if (input.runtime.githubAuth !== "gh") return loginFor(item).check(signal);
       const repository = input.repositoryForItem(item);
       if (repository === null) return null;
-      const provider = authProvider(input.runtime, repository);
+      const provider = authProvider(input.runtime, repository, input.accessForItem?.(item));
       const user = await provider?.user().catch(() => null);
       signal.throwIfAborted();
       return user ?? null;
