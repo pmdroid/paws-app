@@ -13,7 +13,7 @@ Read `AGENTS.md`, `package.json`, `scripts/verify-local.ts`, `test/local/instanc
 
 ## Run
 
-Use Linux with Bun 1.4.2+, Git and GNU `timeout` available. From the repository root, use a tracked background task:
+Use Linux with Bun 1.4.2+, Git, OpenSSL 3 and GNU `timeout` available. From the repository root, use a tracked background task:
 
 ```sh
 bun --no-env-file scripts/verify-local.ts check
@@ -62,6 +62,7 @@ bun --no-env-file scripts/verify-local.ts serve
 - Real local branches, pushes, expected-head validation and squash merges into a disposable bare origin. The GitHub request journal proves each Linear item publishes a pull request with its issue reference and Closeout evidence. Check final main content, not just fake merge calls.
 - Production status HTTP handlers and browser assets reading that database, plus a fresh `startPaws` process object for startup routes.
 - Negative probes for missing issue instructions, discarded review instructions, malformed reviewer output, Codex independence, login visibility, setup detection, token-store failure, source-question links, Linear same-account replies, threaded question restart excluding unthreaded and previous-thread replies, Linear stop identity and merge-job recovery.
+- Real P-256 client certificates and an HTTPS listener on Bun's HTTP/2 server in HTTP/1.1 compatibility mode. Runner probes check actual peer identity, forged headers, missing and untrusted certificates, server hostname and trust failures, expiry on an established connection, live socket closure and response cancellation on revocation, encrypted issuer reload, concurrent issuer creation after a stale legacy lock, CSR rejection, rejected request body closure, oversized request rejection, serialized server certificate replacement and shutdown during reload. The expiry probe advances the authorization clock while retaining a real TLS connection.
 
 Use the existing suite for Linear delivery/HMAC, dedupe, rate limits, trusted replies, permission checks, stop/timeouts, shutdown, recovery and Closeout conformance. Open the specific test before crediting it with a claim. For a new bug, add a deterministic fixture at its actual boundary; do not replace real orchestration with an expected boolean. Review stop reasons, not only findings arrays. For restart claims, distinguish adapter reconstruction from an actual process restart.
 
@@ -77,6 +78,14 @@ Never copy operator credentials, use the operator's Kyoto root, call real tracke
 
 Evidence remains in the printed directory: manifest with source SHA/diff digest, command logs/exits, observations, network journal, prompts, ACP scripts/results/transcripts, SQLite state, Closeout reports, fake API journal and local origin history. Temporary HOME and scratch files are removed by the launcher after commands exit. Inspect evidence before deleting that exact directory; never use broad process matching or wildcard cleanup.
 
+Runner TLS evidence includes `runner-tls/certificate-metadata.json` with certificate fingerprints, serials, validity, key extended usages and accepted peer observations. Certificates and keys in this fixture are synthetic. Publish the metadata and observations, keeping private key files out of PR artifacts. These probes use the real TLS stack and no provider accounts.
+
 Report `VERIFIED`, `NOT VERIFIED` or `INCONCLUSIVE` for the stated claim. Name passing checks, failing checks and skipped checks separately. State which components were real and which were scripted. Do not infer real OAuth, subscription login, model judgment or hosted-service compatibility from a fake pass. For fixes, retain a baseline and treatment with the same scenario, and publish the smallest useful evidence artifact.
 
 The command-runner recipe keeps real origin-policy loading, detached candidate Git worktrees, native Closeout evaluation and evidence records. Command execution is injected and scripted. It checks accepted execution, nonzero exit, dirty worktree, moved HEAD, timeout and failed setup, and proves policy commands do not execute in the coordinator process when the runner is supplied.
+
+The TLS probe also rejects invalid replacement server key material and proves the unchanged previous listener still serves an authenticated request on the same port.
+
+The TLS probe advances the authorization clock while an actual POST body is still arriving and inside an awaited handler returning an empty response. Both expire with 403 before command delivery or successful response headers.
+
+The TLS probe expires an identity during asynchronous authorization and before a streaming response starts. It verifies that the handler is not called after the failed access check and that a rejected response stream receives cancellation.
