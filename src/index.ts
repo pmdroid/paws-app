@@ -27,6 +27,7 @@ import {
 } from "./core";
 import {
   enqueueCommand,
+  isLinearAppRevoked,
   getWorkItemRepository,
   listWorkItemsByStates,
   migrate,
@@ -159,6 +160,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? openLinear({
           db,
           secretsDir: paths.secretsDir,
+          isAuthorized: () =>
+            !isLinearAppRevoked(db, {
+              oauthClientId: runtime.linearClientId,
+              appUserId: runtime.linearViewerId,
+            }),
           env: linearEnv(runtime, envSource),
           publicUrl: runtime.publicUrl,
           noTunnel: !webhooks || options?.noTunnel === true,

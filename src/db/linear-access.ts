@@ -219,6 +219,37 @@ export function getLinearSessionAccess(db: Database, sessionId: string): LinearS
   return team?.allowed === 0 ? "team_removed" : "allowed";
 }
 
+export function isLinearAppRevoked(
+  db: Database,
+  input: { oauthClientId: string | null; appUserId: string | null },
+): boolean {
+  const scopes =
+    input.appUserId === null
+      ? []
+      : db
+          .query<
+            { organization_id: string; oauth_client_id: string },
+            [string, string | null, string | null]
+          >(`SELECT DISTINCT organization_id, oauth_client_id FROM linear_session
+    WHERE app_user_id = ? AND organization_id IS NOT NULL AND oauth_client_id IS NOT NULL
+    AND (? IS NULL OR oauth_client_id = ?)`)
+          .all(input.appUserId, input.oauthClientId, input.oauthClientId);
+  if (scopes.length > 0)
+    return scopes.some(
+      (scope) =>
+        db
+          .query(
+            "SELECT 1 FROM linear_app_revocation WHERE organization_id = ? AND oauth_client_id = ?",
+          )
+          .get(scope.organization_id, scope.oauth_client_id) !== null,
+    );
+  return (
+    db
+      .query("SELECT 1 FROM linear_app_revocation WHERE ? IS NULL OR oauth_client_id = ? LIMIT 1")
+      .get(input.oauthClientId, input.oauthClientId) !== null
+  );
+}
+
 function recordEvent(db: Database, eventKey: string, createdAtMs: number): boolean {
   return (
     db.run(
