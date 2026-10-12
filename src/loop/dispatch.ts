@@ -35,6 +35,16 @@ export async function deliverLinearOutbox(
     ...(context ? { signal: context.signal, isCurrent: context.isCurrent } : {}),
     ...(message.attempts > 1 ? { reconcile: true } : {}),
   };
+  if (message.op === "linear.attachment") {
+    if (!tracker.createIssueAttachment) throw new Error("Linear issue attachments are unavailable");
+    const id = readString(payload, "id");
+    const issueId = readString(payload, "issueId");
+    const title = readString(payload, "title");
+    const url = readString(payload, "url");
+    if (!id || !issueId || !title || !url)
+      throw new Error("Issue attachment is missing required fields");
+    return tracker.createIssueAttachment({ id, issueId, title, url }, options);
+  }
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker, options);
   }

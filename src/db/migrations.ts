@@ -584,4 +584,8 @@ CREATE TABLE linear_artifact_attempt (
 ) STRICT;
 `,
   },
+  {
+    id: "019_linear_artifact_cards",
+    sql: `ALTER TABLE linear_artifact_attempt ADD COLUMN attachment_requested INTEGER NOT NULL DEFAULT 0 CHECK (attachment_requested IN (0, 1));`,
+  },
 ];

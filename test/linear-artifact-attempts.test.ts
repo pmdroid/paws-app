@@ -6,14 +6,19 @@ import type { FakeScript } from "../src/acp/testing/script";
 import {
   artifactPublicationReady,
   beginArtifactAttempt,
+  claimOutboxHeads,
+  enqueueOutbox,
+  listOutbox,
+  OutboxDispatcher,
+  stopOutboxSession,
   completeArtifactAttempt,
   insertQueuedItem,
   listArtifacts,
   migrate,
   openDatabase,
 } from "../src/db";
-import { createLinearFileTransfer } from "../src/linear";
-import { createLinearArtifactPublisher } from "../src/loop";
+import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
+import { createLinearArtifactPublisher, deliverLinearOutbox } from "../src/loop";
 import { tempHome } from "./helpers";
 
 function setup() {
@@ -82,6 +87,7 @@ function setup() {
           files,
           secretsDir: join(home, "secrets"),
           itemId: "item",
+          issueId: "issue",
           sessionId: "session",
         }),
       });
@@ -191,6 +197,126 @@ test("a late earlier success does not resolve a newer failed invocation of the s
     expect(artifactPublicationReady(f.db, "item")).toBe(false);
     completeArtifactAttempt(f.db, "item", "same-identity", retry);
     expect(artifactPublicationReady(f.db, "item")).toBe(true);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("requested issue cards survive a missing file and reopen before a corrected-path retry", async () => {
+  const f = setup();
+  try {
+    await f.run([
+      {
+        type: "publish_artifact",
+        path: "missing.png",
+        displayName: "Screenshot.png",
+        attachToIssue: true,
+      },
+    ]);
+    expect(listOutbox(f.db, "session")).toHaveLength(0);
+    f.reopen();
+    await f.run([
+      { type: "fs_write", path: "fixed.png", content: "PNG bytes" },
+      { type: "publish_artifact", path: "fixed.png", displayName: "Screenshot.png" },
+    ]);
+    const artifact = listArtifacts(f.db, "item")[0]!;
+    const cards = listOutbox(f.db, "session").filter((row) => row.op === "linear.attachment");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.payload).toEqual({
+      id: artifact.id,
+      itemId: "item",
+      issueId: "issue",
+      title: "Screenshot.png",
+      url: artifact.assetUrl!,
+    });
+    const tracker = createFakeTracker();
+    await deliverLinearOutbox(cards[0]!, tracker, async () => {});
+    expect(tracker.attachments).toEqual([
+      { id: artifact.id, issueId: "issue", title: "Screenshot.png", url: artifact.assetUrl! },
+    ]);
+    expect(artifact.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    await f.run([
+      {
+        type: "publish_artifact",
+        path: "fixed.png",
+        displayName: "Screenshot.png",
+        attachToIssue: true,
+      },
+    ]);
+    expect(
+      listOutbox(f.db, "session").filter((row) => row.op === "linear.attachment"),
+    ).toHaveLength(1);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("ordinary publication does not create a requested issue card", async () => {
+  const f = setup();
+  try {
+    await f.run([
+      { type: "fs_write", path: "proof.png", content: "PNG bytes" },
+      { type: "publish_artifact", path: "proof.png" },
+    ]);
+    expect(listOutbox(f.db, "session").map((row) => row.op)).toEqual(["activity"]);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a requested card retries ahead of the terminal reply and is fenced by Stop", async () => {
+  const f = setup();
+  try {
+    await f.run([
+      { type: "fs_write", path: "proof.png", content: "PNG bytes" },
+      { type: "publish_artifact", path: "proof.png", attachToIssue: true },
+    ]);
+    const now = Date.now();
+    enqueueOutbox(f.db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: "session",
+      idempotencyKey: "final",
+      now,
+      payload: { sessionId: "session", kind: "response", body: "Done" },
+    });
+    const dispatcher = new OutboxDispatcher(
+      f.db,
+      { now: () => now, mono: () => now },
+      { backoffBaseMs: 1000 },
+    );
+    dispatcher.setHandler(async () => {
+      throw new Error("temporary failure");
+    });
+    expect(dispatcher.tick()[0]!.op).toBe("linear.attachment");
+    await dispatcher.idle();
+    f.reopen();
+    expect(claimOutboxHeads(f.db, { now: now + 1 })).toHaveLength(0);
+    expect(listOutbox(f.db, "session").find((row) => row.idempotencyKey === "final")?.status).toBe(
+      "pending",
+    );
+    stopOutboxSession(f.db, "linear", "session", now + 2);
+    expect(claimOutboxHeads(f.db, { now: now + 2000 })).toHaveLength(0);
+    expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a malformed attachment flag still leaves its publication attempt required", async () => {
+  const f = setup();
+  try {
+    await f.run([
+      { type: "fs_write", path: "proof.png", content: "PNG bytes" },
+      { type: "publish_artifact", path: "proof.png", attachToIssue: "true" as unknown as boolean },
+    ]);
+    expect(artifactPublicationReady(f.db, "item")).toBe(false);
+    expect(listOutbox(f.db, "session")).toHaveLength(0);
+    await f.run([{ type: "publish_artifact", path: "proof.png" }]);
+    expect(artifactPublicationReady(f.db, "item")).toBe(true);
+    expect(listOutbox(f.db, "session").some((row) => row.op === "linear.attachment")).toBe(false);
   } finally {
     f.db.close();
   }

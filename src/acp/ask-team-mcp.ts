@@ -52,6 +52,11 @@ const ARTIFACT_TOOL = {
           "Optional deliverable name shown to the user. Reuse this name when retrying with a corrected path.",
       },
       mimeType: { type: "string", description: "Optional MIME type, such as image/png." },
+      attachToIssue: {
+        type: "boolean",
+        description:
+          "Add a persistent file attachment card to the current Linear issue when requested by the user.",
+      },
     },
     required: ["path"],
     additionalProperties: false,

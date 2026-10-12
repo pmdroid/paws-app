@@ -342,6 +342,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
           path: step.path,
           ...(step.displayName ? { displayName: step.displayName } : {}),
           ...(step.mimeType ? { mimeType: step.mimeType } : {}),
+          ...(step.attachToIssue === undefined ? {} : { attachToIssue: step.attachToIssue }),
         });
         state.artifact = { ok: true, text };
       } catch (error) {

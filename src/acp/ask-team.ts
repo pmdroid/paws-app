@@ -179,6 +179,9 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
         signal: options.signal,
       };
       const attempt = options.publishArtifact.begin?.(request, context);
+      if (request.attachToIssue !== undefined && typeof request.attachToIssue !== "boolean") {
+        throw new Error("attachToIssue must be a boolean");
+      }
       const artifact = await snapshotArtifactFile(
         options.context.worktreePath,
         request,

@@ -11,6 +11,7 @@ export interface PublishArtifactRequest {
   path: string;
   displayName?: string;
   mimeType?: string;
+  attachToIssue?: boolean;
 }
 
 export interface ArtifactLimits {
