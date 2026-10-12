@@ -5,7 +5,7 @@ import { get } from "node:https";
 import { dirname, join } from "node:path";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../../src/acp";
 import { beginImplementRun, getWorkItem, insertQueuedItem, openDatabase } from "../../src/db";
-import { validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
+import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
 
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
@@ -41,12 +41,18 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     "-addext",
     "basicConstraints=critical,CA:TRUE",
   ]);
-  function pair(name: string, serial: number, hostname = "localhost") {
+  function pair(
+    name: string,
+    serial: number,
+    hostname = "localhost",
+    eku: string | null = "serverAuth",
+    ca = false,
+  ) {
     const keyPath = join(root, `${name}.key`),
       certPath = join(root, `${name}.crt`);
     writeFileSync(
       join(root, "extensions"),
-      `subjectAltName=DNS:${hostname}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
+      `subjectAltName=DNS:${hostname}\nbasicConstraints=critical,CA:${ca ? "TRUE" : "FALSE"}\n${eku === null ? "" : `extendedKeyUsage=${eku}\n`}`,
     );
     openssl([
       "req",
@@ -88,6 +94,17 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
   const old = pair("old", 1),
     replacement = pair("new", 2),
     wrongHost = pair("wrong", 3, "wrong.example.invalid");
+  const wrongPurposes = [
+    ["client-auth-only", pair("client-auth-only", 4, "localhost", "clientAuth")],
+    ["any-eku", pair("any-eku", 5, "localhost", "anyExtendedKeyUsage")],
+    ["any-and-client", pair("any-and-client", 6, "localhost", "anyExtendedKeyUsage,clientAuth")],
+    ["code-signing", pair("code-signing", 7, "localhost", "codeSigning")],
+  ] as const;
+  const validPurposes = [
+    ["absent-eku", pair("absent-eku", 8, "localhost", null)],
+    ["ca-server-auth", pair("ca-server-auth", 9, "localhost", "serverAuth", true)],
+    ["server-and-client", pair("server-and-client", 10, "localhost", "serverAuth,clientAuth")],
+  ] as const;
   const ca = readFileSync(join(root, "ca.crt"), "utf8");
   const keyPath = join(home, "secrets", "public.key"),
     certPath = join(home, "secrets", "public.crt");
@@ -170,15 +187,42 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
   const oldFingerprint = new X509Certificate(old.cert).fingerprint256;
   assert.equal(await fingerprint(port), oldFingerprint);
   const rejected: string[] = [];
+  const acceptedPurposes: string[] = [];
   try {
+    for (const [, tls] of wrongPurposes) {
+      const candidate = startServer({ hostname: "127.0.0.1", port: 0, tls, webhooks: false });
+      try {
+        await assert.rejects(fingerprint(candidate.port!), /certificate purpose/);
+      } finally {
+        await candidate.stop(true);
+      }
+    }
+    for (const [name, tls] of validPurposes) {
+      stage(tls);
+      assert.equal(await validateCli(), 0);
+      assert.deepEqual(loadPublicTls(env), tls);
+      const candidate = listen();
+      try {
+        assert.equal(
+          await fingerprint(candidate.port!),
+          new X509Certificate(tls.cert).fingerprint256,
+        );
+        acceptedPurposes.push(name);
+      } finally {
+        await candidate.stop(true);
+      }
+    }
     for (const [name, tls] of [
       ["malformed", { key: old.key, cert: "invalid certificate" }],
       ["mismatch", { key: old.key, cert: replacement.cert }],
       ["wrong-hostname", wrongHost],
+      ...wrongPurposes,
     ] as const) {
       stage(tls);
       assert.equal(await validateCli(), 1);
       assert.throws(() => validatePublicTls(env));
+      if (wrongPurposes.some(([purpose]) => purpose === name))
+        assert.throws(() => loadPublicTls(env));
       assert.equal(await fingerprint(port), oldFingerprint);
       rejected.push(name);
     }
@@ -199,6 +243,8 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       true,
       {
         rejected,
+        acceptedPurposes,
+        nativeWrongPurposeRejected: true,
         oldFingerprint,
         newFingerprint,
         hostnameRejected: true,
@@ -256,6 +302,7 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
       ["malformed", { key: old.key, cert: "invalid certificate" }],
       ["mismatch", { key: old.key, cert: replacement.cert }],
       ["wrong-hostname", wrongHost],
+      ...wrongPurposes,
     ] as const) {
       stage(tls);
       const previous = error.length;
