@@ -26,6 +26,13 @@ export type {
 } from "./files";
 export { createLinearClient } from "./graphql";
 export type { LinearClient } from "./graphql";
+export { createLinearRepositoryMethods } from "./repositories";
+export type {
+  CandidateRepository,
+  LinearRepositoryAdapter,
+  RepositorySuggestion,
+  RepositorySuggestionsInput,
+} from "./repositories";
 export { createInboxStore } from "./inbox";
 export type { CommitResult, InboxStore } from "./inbox";
 export {
