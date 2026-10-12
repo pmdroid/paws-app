@@ -96,6 +96,71 @@ describe("Linear private uploads", () => {
     expect(transfers[0]?.init?.body).toEqual(new Uint8Array([7, 8]));
   });
 
+  test("persists preparation before uploading the same destination across retries", async () => {
+    let attempts = 0;
+    const { transfer, transfers, queries, authCalls } = setup({
+      fetch: async () => new Response(null, { status: attempts++ === 0 ? 503 : 200 }),
+    });
+    const upload = await transfer.prepareUpload({
+      filename: "proof.png",
+      contentType: "image/png",
+      size: 4,
+    });
+    expect(transfers).toHaveLength(0);
+    const restored = JSON.parse(JSON.stringify(upload));
+    await expect(transfer.uploadPrepared({ upload: restored, bytes: BYTES })).rejects.toThrow(
+      "HTTP 503",
+    );
+    expect(await transfer.uploadPrepared({ upload: restored, bytes: BYTES })).toMatchObject({
+      assetUrl: ASSET,
+    });
+    expect(queries).toHaveLength(1);
+    expect(transfers.map((request) => request.url)).toEqual([SIGNED, SIGNED]);
+    expect(authCalls()).toBe(0);
+  });
+
+  test("validates persisted destinations and sizes before uploading", async () => {
+    const { transfer, transfers } = setup();
+    const upload = await transfer.prepareUpload({
+      filename: "proof.png",
+      contentType: "image/png",
+      size: 4,
+    });
+    await expect(transfer.uploadPrepared({ upload, bytes: new Uint8Array(3) })).rejects.toThrow(
+      "byte length",
+    );
+    await expect(
+      transfer.uploadPrepared({
+        upload: { ...upload, uploadUrl: "http://unsafe.example/file" },
+        bytes: BYTES,
+      }),
+    ).rejects.toThrow("HTTPS destination");
+    await expect(
+      transfer.uploadPrepared({
+        upload: { ...upload, assetUrl: "https://other.example/file" },
+        bytes: BYTES,
+      }),
+    ).rejects.toThrow("exact HTTPS");
+    expect(transfers).toHaveLength(0);
+  });
+
+  test("snapshots prepared bytes and metadata before starting the PUT", async () => {
+    const { transfer, transfers } = setup();
+    const upload = await transfer.prepareUpload({
+      filename: "proof.png",
+      contentType: "image/png",
+      size: 4,
+    });
+    const bytes = new Uint8Array(BYTES);
+    const pending = transfer.uploadPrepared({ upload, bytes });
+    upload.filename = "changed.png";
+    upload.headers.push({ key: "x-late-header", value: "late" });
+    bytes.fill(0);
+    expect(await pending).toMatchObject({ filename: "proof.png" });
+    expect(transfers[0]?.init?.body).toEqual(BYTES);
+    expect(new Headers(transfers[0]?.init?.headers).has("x-late-header")).toBe(false);
+  });
+
   test("rejects invalid preparation payloads without PUT", async () => {
     for (const payload of [
       {},

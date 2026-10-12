@@ -5,6 +5,7 @@ import { acknowledgeNewSession } from "./acknowledge";
 import type { TrackerAdapter } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
+import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { createLinearClient } from "./graphql";
 import { createInboxStore } from "./inbox";
 import {
@@ -35,6 +36,7 @@ export type LinearRunning = {
 export type OpenLinear = {
   webhook: LinearWebhookDeps;
   tracker: TrackerAdapter | null;
+  files: LinearFileTransfer | null;
   start(port: number): LinearRunning;
 };
 
@@ -71,14 +73,16 @@ export function openLinear(options: {
     bootstrapRefreshToken: settings.refreshToken,
     fetch: options.fetch,
   });
-  const tracker = auth.hasToken()
-    ? createLinearTracker(createLinearClient({ auth, fetch: options.fetch }))
-    : null;
+  const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
+  const tracker = client === null ? null : createLinearTracker(client);
+  const files =
+    client === null ? null : createLinearFileTransfer({ client, auth, fetch: options.fetch });
   const onEvent = tracker === null ? undefined : shareEvents(tracker, options.followUp);
   let running: LinearRunning | null = null;
   return {
     webhook: { store, onEvent },
     tracker,
+    files,
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;

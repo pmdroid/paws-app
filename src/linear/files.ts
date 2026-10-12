@@ -9,9 +9,22 @@ export type LinearFileMetadata = {
 };
 
 export type UploadedLinearFile = LinearFileMetadata & { assetUrl: string };
+export type PreparedLinearUpload = LinearFileMetadata & {
+  uploadUrl: string;
+  assetUrl: string;
+  headers: { key: string; value: string }[];
+};
 export type DownloadedLinearFile = LinearFileMetadata & { bytes: Uint8Array };
 
 export type LinearFileTransfer = {
+  prepareUpload(
+    input: LinearFileMetadata & { signal?: AbortSignal },
+  ): Promise<PreparedLinearUpload>;
+  uploadPrepared(input: {
+    upload: PreparedLinearUpload;
+    bytes: Uint8Array;
+    signal?: AbortSignal;
+  }): Promise<UploadedLinearFile>;
   upload(input: {
     filename: string;
     contentType: string;
@@ -48,57 +61,90 @@ export function createLinearFileTransfer(options: {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error("Linear file timeout must be a positive integer");
   }
+  function validateMetadata(input: LinearFileMetadata): void {
+    validateFilename(input.filename);
+    validateContentType(input.contentType);
+    if (!Number.isSafeInteger(input.size) || input.size < 0 || input.size > maxBytes) {
+      throw new Error("Linear file exceeds the byte limit");
+    }
+  }
+  async function prepare(
+    metadata: LinearFileMetadata,
+    signal: AbortSignal,
+  ): Promise<PreparedLinearUpload> {
+    const data = await abortable(
+      options.client.query(UPLOAD_MUTATION, { ...metadata, makePublic: false }, { signal }),
+      signal,
+    );
+    return { ...metadata, ...preparedUpload(data) };
+  }
+  async function put(
+    upload: PreparedLinearUpload,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<UploadedLinearFile> {
+    const headers = new Headers({ "content-type": upload.contentType });
+    try {
+      for (const header of upload.headers) headers.set(header.key, header.value);
+    } catch {
+      throw new Error("Linear fileUpload returned invalid upload headers");
+    }
+    signal.throwIfAborted();
+    const response = await fetchFile(
+      fetchImpl,
+      upload.uploadUrl,
+      { method: "PUT", headers, body: bytes, redirect: "error", signal },
+      signal,
+      "upload",
+    );
+    discardBody(response);
+    if (!response.ok) throw new Error(`Linear file upload HTTP ${response.status}`);
+    if (response.redirected) throw new Error("Linear file upload redirects are forbidden");
+    return {
+      assetUrl: upload.assetUrl,
+      filename: upload.filename,
+      contentType: upload.contentType,
+      size: upload.size,
+    };
+  }
   return {
+    async prepareUpload(input) {
+      const metadata = {
+        filename: input.filename,
+        contentType: input.contentType,
+        size: input.size,
+      };
+      validateMetadata(metadata);
+      return transfer(input.signal, timeoutMs, (signal) => prepare(metadata, signal));
+    },
+    async uploadPrepared(input) {
+      const metadata = {
+        filename: input.upload.filename,
+        contentType: input.upload.contentType,
+        size: input.upload.size,
+      };
+      validateMetadata(metadata);
+      if (input.bytes.byteLength !== metadata.size) {
+        throw new Error("Linear prepared upload byte length does not match");
+      }
+      const destination = preparedUpload({
+        fileUpload: { success: true, uploadFile: input.upload },
+      });
+      const upload = { ...metadata, ...destination };
+      const bytes = new Uint8Array(input.bytes);
+      return transfer(input.signal, timeoutMs, (signal) => put(upload, bytes, signal));
+    },
     async upload(input) {
-      const { filename, contentType } = input;
-      validateFilename(filename);
-      validateContentType(contentType);
-      if (input.bytes.byteLength > maxBytes) throw new Error("Linear file exceeds the byte limit");
+      const metadata = {
+        filename: input.filename,
+        contentType: input.contentType,
+        size: input.bytes.byteLength,
+      };
+      validateMetadata(metadata);
       const bytes = new Uint8Array(input.bytes);
       return transfer(input.signal, timeoutMs, async (signal) => {
-        const data = await abortable(
-          options.client.query(
-            UPLOAD_MUTATION,
-            {
-              contentType,
-              filename,
-              size: bytes.byteLength,
-              makePublic: false,
-            },
-            { signal },
-          ),
-          signal,
-        );
-        const file = preparedUpload(data);
-        const headers = new Headers({ "content-type": contentType });
-        try {
-          for (const header of file.headers) headers.set(header.key, header.value);
-        } catch {
-          throw new Error("Linear fileUpload returned invalid upload headers");
-        }
-        signal.throwIfAborted();
-        const response = await fetchFile(
-          fetchImpl,
-          file.uploadUrl,
-          {
-            method: "PUT",
-            headers,
-            body: bytes,
-            redirect: "error",
-            signal,
-          },
-          signal,
-          "upload",
-        );
-        discardBody(response);
-        if (!response.ok) throw new Error(`Linear file upload HTTP ${response.status}`);
-        if (response.redirected) throw new Error("Linear file upload redirects are forbidden");
-        return {
-          assetUrl: file.assetUrl,
-          filename,
-          contentType,
-          size: bytes.byteLength,
-        };
+        const upload = await prepare(metadata, signal);
+        return put(upload, bytes, signal);
       });
     },
     async download(input) {
