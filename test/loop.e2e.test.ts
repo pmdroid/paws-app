@@ -45,6 +45,7 @@ import {
   type AcceptedLinearEvent,
 } from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
+import { handleStatusRequest } from "../src/web";
 import {
   attachOrchestrator,
   itemPathId,
@@ -2372,6 +2373,20 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       { label: "Compact labels", value: "compact" },
     ]);
     const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
+    const reopenedDashboard = await handleStatusRequest(
+      new Request("http://127.0.0.1/api/linear/conversations"),
+      { db, staticDir: null },
+    );
+    expect(await reopenedDashboard!.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({
+          id: "ses_1",
+          questions: expect.arrayContaining([
+            expect.objectContaining({ id: recoveredQuestionId, state: "open" }),
+          ]),
+        }),
+      ]),
+    });
     expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
@@ -2422,11 +2437,49 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     const responses = tracker.progress.filter((update) => update.kind === "response");
     expect(responses).toHaveLength(1);
     expect(responses[0]?.body).toContain("Created the corrected chart and screenshot.");
-    expect(
-      tracker.progress.findIndex((update) =>
-        update.body.includes("https://uploads.linear.app/chart.png"),
-      ),
-    ).toBeLessThan(tracker.progress.findIndex((update) => update.kind === "response"));
+    const dashboard = await handleStatusRequest(
+      new Request("http://127.0.0.1/api/linear/conversations"),
+      { db, staticDir: null },
+    );
+    expect(dashboard?.status).toBe(200);
+    expect(await dashboard!.json()).toMatchObject({
+      sessions: expect.arrayContaining([
+        expect.objectContaining({
+          id: "ses_1",
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: task.id, state: "merged" }),
+          ]),
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "prompt",
+              text: "Use the corrected chart layout and include a screenshot.",
+            }),
+            expect.objectContaining({ kind: "response", text: responses[0]!.body, state: "sent" }),
+          ]),
+          artifacts: [
+            expect.objectContaining({
+              displayName: "chart.png",
+              state: "uploaded",
+              href: expect.stringMatching(/^\/api\/linear\/artifacts\//),
+            }),
+          ],
+          questions: expect.arrayContaining([
+            expect.objectContaining({
+              id: recoveredQuestionId,
+              state: "answered",
+              answer: "Use larger labels and keep the blue color.",
+            }),
+          ]),
+        }),
+      ]),
+    });
+    const artifactIndex = tracker.progress.findIndex((update) =>
+      update.body.includes("https://uploads.linear.app/chart.png"),
+    );
+    expect(artifactIndex).toBeGreaterThanOrEqual(0);
+    expect(artifactIndex).toBeLessThan(
+      tracker.progress.findIndex((update) => update.kind === "response"),
+    );
     expect(listArtifacts(db, task.id)).toHaveLength(1);
     expect(listArtifacts(db, task.id)[0]).toMatchObject({
       state: "uploaded",
