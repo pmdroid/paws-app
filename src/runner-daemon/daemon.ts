@@ -6,14 +6,23 @@ import { immediate, openDatabase } from "../db";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RunnerCommandSchema,
+  RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
   type RunnerCommand,
+  type RunnerArtifactChunk,
   type RunnerCommandRejection,
   type RunnerHealthResult,
   type RunnerResult,
 } from "../runner-protocol";
+import {
+  RunnerTranscriptChunkSchema,
+  RunnerTranscriptFinishSchema,
+  RUNNER_TRANSCRIPT_MAX_BYTES,
+  type RunnerTranscriptChunk,
+  type RunnerTranscriptFinish,
+} from "../runner-transcripts";
 import {
   ApprovedIdentitySchema,
   identifier,
@@ -263,6 +272,57 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     async postHealth(result: RunnerHealthResult) {
       const body = RunnerHealthResultSchema.parse(result);
       return RunnerEventReceiptSchema.parse(await authenticated("/v1/health", "POST", body));
+    },
+    async uploadArtifact(runId: string, chunk: RunnerArtifactChunk, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerArtifactChunkSchema.parse(chunk);
+      RunnerGrantTokenSchema.parse(grantToken);
+      return z
+        .strictObject({ ok: z.literal(true) })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/artifacts`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+    },
+    async uploadTranscript(runId: string, chunk: RunnerTranscriptChunk, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerTranscriptChunkSchema.parse(chunk);
+      RunnerGrantTokenSchema.parse(grantToken);
+      const receipt = z
+        .strictObject({
+          offset: z.number().int().nonnegative().max(RUNNER_TRANSCRIPT_MAX_BYTES),
+          duplicate: z.boolean(),
+        })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/transcript/chunks`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
+      if (receipt.offset !== body.offset + Buffer.from(body.data, "base64").byteLength)
+        throw new Error("Runner transcript receipt offset is invalid.");
+      return receipt;
+    },
+    async finishTranscript(runId: string, finish: RunnerTranscriptFinish, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerTranscriptFinishSchema.parse(finish);
+      RunnerGrantTokenSchema.parse(grantToken);
+      return z
+        .strictObject({ uri: z.string().min(1).max(8192) })
+        .parse(
+          await authenticated(
+            `/v1/runs/${encodeURIComponent(runId)}/transcript/finish`,
+            "POST",
+            body,
+            grantToken,
+          ),
+        );
     },
     async issueRunGrant(runId: string, request: RunnerGrantRequest) {
       identifier.parse(runId);
