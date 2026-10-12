@@ -5,6 +5,7 @@ import { probeRunnerResults } from "./runner-results";
 import { probeRunnerWork } from "./runner-work";
 import { probeRunnerHttp } from "./runner-http";
 import { statSync, writeFileSync } from "node:fs";
+import { probeRunnerWorker } from "./runner-worker";
 import { dirname, join } from "node:path";
 import {
   createTokenStore,
@@ -78,6 +79,7 @@ export async function probeBoundaries(
   );
   await probeRunnerPairing(join(root, "runner-pairing"), observe);
   await probeRunnerHttp(join(root, "runner-http"), observe);
+  await probeRunnerWorker(join(root, "runner-worker"), observe);
   const store: GitHubTokenStore = {
     backend: "file",
     warning: null,

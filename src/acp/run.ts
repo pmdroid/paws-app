@@ -498,6 +498,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           `wip: ${options.itemId} ${reason}`,
           options.signal,
           () => options.signal?.removeEventListener("abort", onAbort),
+          options.checkpointEnv,
         );
         if (checkpoint.committed || (!state.cancelling && !options.signal?.aborted)) {
           result.checkpoint = checkpoint;
