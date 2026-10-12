@@ -13,6 +13,9 @@ import { createCommentMode, createFakeCommentBoard, withCommentActivities } from
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
+  bindWorkItemRepository,
+  getWorkItemRepository,
+  listWorkItems,
   OutboxDispatcher,
   getWorkItem,
   enqueueJob,
@@ -54,7 +57,7 @@ const { privateKey } = generateKeyPairSync("rsa", {
 });
 const PRIVATE_KEY = privateKey as string;
 
-test("a two-item epic asks once, fixes one rejection, and merges in blocks order", async () => {
+test("a bound two-item epic asks, verifies and merges in its repository after the default changes", async () => {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -78,6 +81,8 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
   const outbox = new OutboxDispatcher(db, systemClock);
   const results = new Map<string, string>();
   let scripts = 0;
+  const repository = { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare };
+  const selectedRepositories: unknown[] = [];
   const launch: AgentLaunch = (input) => {
     scripts += 1;
     const scriptPath = path.join(layout.root, `script-${scripts}.json`);
@@ -153,12 +158,11 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     linearTaskModes: true,
     files: artifactFiles,
     secretsDir: path.join(layout.pawsRoot, "secrets"),
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: PRIVATE_KEY,
-      client,
+    repository: { owner: "other", repo: "wrong", remoteUrl: path.join(layout.root, "wrong.git") },
+    githubForRepository(selected) {
+      selectedRepositories.push(selected);
+      expect(selected).toEqual(repository);
+      return { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client };
     },
     launch,
   });
@@ -197,6 +201,7 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
+    for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && epicState(db) !== "done") {
@@ -272,6 +277,10 @@ test("a two-item epic asks once, fixes one rejection, and merges in blocks order
     expect(artifactIndex).toBeLessThan(
       tracker.progress.findIndex((update) => update.kind === "response"),
     );
+    expect(selectedRepositories).toHaveLength(2);
+    for (const item of listWorkItems(db)) {
+      expect(getWorkItemRepository(db, item.id)).toEqual(repository);
+    }
     const completedUpdates = tracker.progress.length;
     for (const tick of keepAliveTicks) tick();
     await outbox.idle();

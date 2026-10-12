@@ -27,6 +27,7 @@ import {
 } from "./core";
 import {
   enqueueCommand,
+  getWorkItemRepository,
   listWorkItemsByStates,
   migrate,
   openDatabase,
@@ -231,6 +232,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repository,
         github,
+        githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
         ...(docker ? { docker } : {}),
@@ -294,11 +296,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
     restartFromMain: (item) => {
-      if (repository === null) return;
+      const selected = getWorkItemRepository(db, item.id) ?? repository;
+      if (selected === null) return;
       restartFromFreshMain({
         pawsRoot: paths.home,
-        owner: repository.owner,
-        repo: repository.repo,
+        owner: selected.owner,
+        repo: selected.repo,
         itemId: itemPathId(item),
         wipBranch: worktreeBranch(item),
       });
