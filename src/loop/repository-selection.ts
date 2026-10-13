@@ -48,6 +48,7 @@ export async function interpretRepositoryAnswer(options: {
   profile: AgentProfile;
   signal: AbortSignal;
   launch: AgentLaunch;
+  agentRunner?: typeof runAgent;
   onCleanupFailure?: () => void;
 }): Promise<RepositoryBinding | null> {
   const names = options.candidates.map((candidate) => `${candidate.owner}/${candidate.repo}`);
@@ -75,16 +76,18 @@ export async function interpretRepositoryAnswer(options: {
       accessibleCandidates: names,
     }),
   ].join("\n\n");
-  const launched = options.launch({
-    role: "implementer",
-    profile: options.profile,
-    purpose: "select_repository",
-    itemId: options.itemId,
-    worktree: workspace,
-    prompt,
-  });
+  const launched = options.agentRunner
+    ? {}
+    : options.launch({
+        role: "implementer",
+        profile: options.profile,
+        purpose: "select_repository",
+        itemId: options.itemId,
+        worktree: workspace,
+        prompt,
+      });
   let text = "";
-  const result = await runAgent({
+  const result = await (options.agentRunner ?? runAgent)({
     ...launched,
     role: "implementer",
     profile: options.profile,

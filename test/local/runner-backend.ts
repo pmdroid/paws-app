@@ -126,6 +126,9 @@ export async function probeRunnerBackend(
     now: () => now,
     pollIntervalMs: 1,
     async fetchCandidate(candidate) {
+      assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
+      assert.equal(candidate.networkGit, git);
+      assert.equal(candidate.branch, getWorkItem(db, candidate.itemId)?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
       fetched++;
@@ -191,6 +194,7 @@ export async function probeRunnerBackend(
       prompt: "Implement fixture",
       worktreePath: source,
       pawsRoot: root,
+      networkGit: git,
       ...overrides,
     };
   }
@@ -366,6 +370,15 @@ export async function probeRunnerBackend(
       commandId: review.id,
       generation: review.generation,
     });
+    assert.throws(() =>
+      results.submit({
+        runnerId,
+        runId: review.runId,
+        generation: review.generation,
+        token: reviewGrant.token,
+        result: { ...result(review, "reviewer"), candidateSha: head },
+      }),
+    );
     work.event({
       runnerId,
       runId: review.runId,
@@ -541,6 +554,38 @@ export async function probeRunnerBackend(
       true,
       { canonicalState: getWorkItem(db, absent.id)?.state },
     );
+    const unauthorized = item();
+    const beforeUnauthorized = fetched;
+    const unauthorizedRun = backend.forItem(unauthorized.id)(
+      input(unauthorized, { networkGit: undefined }),
+    );
+    const unauthorizedRejection = assert.rejects(
+      unauthorizedRun,
+      /authorized implementation import/,
+    );
+    const unauthorizedCommand = await next();
+    if (unauthorizedCommand.type !== "run") throw new Error("Unexpected unauthorized candidate");
+    const unauthorizedGrant = work.issueGrant({
+      runnerId,
+      runId: unauthorizedCommand.runId,
+      commandId: unauthorizedCommand.id,
+      generation: unauthorizedCommand.generation,
+    });
+    results.submit({
+      runnerId,
+      runId: unauthorizedCommand.runId,
+      generation: unauthorizedCommand.generation,
+      token: unauthorizedGrant.token,
+      result: { ...result(unauthorizedCommand), candidateSha: head },
+    });
+    await unauthorizedRejection;
+    assert.equal((await next()).type, "cancel");
+    assert.equal(fetched, beforeUnauthorized);
+    assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), base);
+    observe("missing scoped Git authorization cannot fall back to a local candidate import", true, {
+      fetched,
+      head: base,
+    });
     const cancelled = item();
     const abort = new AbortController();
     const cancelledRun = backend.forItem(cancelled.id)(input(cancelled, { signal: abort.signal }));
