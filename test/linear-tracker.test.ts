@@ -48,6 +48,7 @@ describe("linear tracker", () => {
         }
         return {
           issue: {
+            id: "a",
             relations: {
               nodes: [
                 { type: "related", issue: { id: "a" }, relatedIssue: { id: "z" } },

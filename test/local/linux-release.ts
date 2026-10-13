@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 
 const repository = resolve(import.meta.dir, "../..");
 const selectedRecovery = process.argv.includes("--selected-recovery");
+const providerLogin = process.argv.includes("--provider-login");
+const proof = providerLogin
+  ? "test/local/linux-provider-login-proof.py"
+  : selectedRecovery
+    ? "test/local/linux-selected-recovery-proof.py"
+    : "test/local/linux-install-proof.py";
 const root = mkdtempSync(join(tmpdir(), "paws-release-verification-"));
 const source = resolve(process.env.PAWS_RELEASE_PROOF_SOURCE ?? repository);
 const node = resolve(process.env.PAWS_RELEASE_PROOF_NODE ?? "/usr/bin/node");
@@ -96,15 +102,7 @@ const observation = await run(
     ...[
       [join(repository, "deploy/linux/install.py"), "/proof/install.py"],
       [join(repository, "deploy/linux/release.py"), "/proof/release.py"],
-      [
-        join(
-          repository,
-          selectedRecovery
-            ? "test/local/linux-selected-recovery-proof.py"
-            : "test/local/linux-install-proof.py",
-        ),
-        "/proof/proof.py",
-      ],
+      [join(repository, proof), "/proof/proof.py"],
       [join(repository, "test/local/linux-install-proof.py"), "/proof/source.py"],
       [runtime, "/proof/host-runtime"],
       [artifactRoot, "/proof/package"],
@@ -130,14 +128,7 @@ writeFileSync(
       installerSha256: digest(join(repository, "deploy/linux/install.py")),
       verifierSha256: digest(join(repository, "deploy/linux/release.py")),
       packagerSha256: digest(join(repository, "deploy/linux/package.py")),
-      proofSha256: digest(
-        join(
-          repository,
-          selectedRecovery
-            ? "test/local/linux-selected-recovery-proof.py"
-            : "test/local/linux-install-proof.py",
-        ),
-      ),
+      proofSha256: digest(join(repository, proof)),
       fixtureSha256: digest(join(repository, "test/local/linux-install-proof.py")),
     },
     null,
@@ -145,5 +136,5 @@ writeFileSync(
   ),
 );
 console.log(
-  `VERIFIED signed Linux installation, dedicated identities, fixed paths and update fencing; evidence ${root}`,
+  `VERIFIED ${providerLogin ? "bundled provider status and isolated operator login" : "signed Linux installation, dedicated identities, fixed paths and update fencing"}; evidence ${root}`,
 );
