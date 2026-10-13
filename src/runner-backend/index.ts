@@ -7,11 +7,22 @@ import {
   rmSync,
   existsSync,
   writeFileSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
-import { getWorkItem, immediate, saveCheckpoint } from "../db";
-import { git, runDir, type AcpEvent, type RunAgentOptions, type RunAgentResult } from "../acp";
+import { getTaskMode, getWorkItem, immediate, saveCheckpoint } from "../db";
+import {
+  git,
+  recoverAcpConversation,
+  runDir,
+  type AcpEvent,
+  type RunAgentOptions,
+  type RunAgentResult,
+} from "../acp";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
@@ -25,7 +36,37 @@ import { workspaceId } from "../workspace";
 class RunnerUnavailableError extends Error {}
 export { createRemoteSessionAgentRunner } from "./helpers";
 
-type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
+
+function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {
+  const fd = openSync(`${workspace}.repository.json`, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = fstatSync(fd);
+    if (
+      !info.isFile() ||
+      info.nlink !== 1 ||
+      info.uid !== process.getuid?.() ||
+      (info.mode & 0o077) !== 0 ||
+      info.size > 4096
+    )
+      throw new Error("Repository snapshot metadata is unsafe");
+    const saved = JSON.parse(readFileSync(fd, "utf8")) as {
+      owner?: unknown;
+      repo?: unknown;
+      commit?: unknown;
+    };
+    if (
+      saved.owner !== repository.owner ||
+      saved.repo !== repository.repo ||
+      typeof saved.commit !== "string" ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(saved.commit)
+    )
+      throw new Error("Repository snapshot binding changed");
+    return saved.commit;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 export function createRemoteAgentRunner(options: {
   db: Database;
@@ -62,6 +103,7 @@ export function createRemoteAgentRunner(options: {
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
        AND r.last_seen_at>${now() - 60_000}
        AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>${now()})
+       AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>${now()})
        ORDER BY r.last_seen_at DESC,r.id`,
       )
       .all();
@@ -69,7 +111,10 @@ export function createRemoteAgentRunner(options: {
       if (runnerId && runner.id !== runnerId) continue;
       if (reservations.has(runner.id)) continue;
       try {
-        work.scope(item.currentRunId, runner.workspaceId);
+        const mode = getTaskMode(db, itemId);
+        if (mode === "answer" || mode === "artifact")
+          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
+        else work.scope(item.currentRunId, runner.workspaceId);
         reservations.add(runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch {}
@@ -183,7 +228,17 @@ export function createRemoteAgentRunner(options: {
       return async (input: RunAgentOptions): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
-        if (!input.prepareOnly && input.readOnly && input.role !== "reviewer")
+        const mode = getTaskMode(db, itemId);
+        const responseTask = mode === "answer" || mode === "artifact";
+        if (
+          responseTask &&
+          (input.role !== "implementer" ||
+            (!input.prepareOnly && Boolean(input.readOnly) !== (mode === "answer")))
+        )
+          throw new Error("Remote response task role or access changed");
+        if (responseTask && !options.transcripts)
+          throw new Error("Remote response task transcript is unavailable");
+        if (!responseTask && !input.prepareOnly && input.readOnly && input.role !== "reviewer")
           throw new Error("Read-only remote work requires the reviewer role");
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const selected = select(itemId);
@@ -206,6 +261,13 @@ export function createRemoteAgentRunner(options: {
           await input.onEvent?.(event);
         };
         try {
+          const taskScope = responseTask
+            ? work.scopeTask(
+                selected.runId,
+                selected.workspaceId,
+                work.identity(selected.id).userId,
+              )
+            : undefined;
           mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
           signal.throwIfAborted();
           if (options.transcripts && existsSync(transcript))
@@ -224,7 +286,13 @@ export function createRemoteAgentRunner(options: {
             });
             while (now() < issuedAt + 120_000) {
               signal.throwIfAborted();
-              work.scope(selected.runId, selected.workspaceId);
+              if (taskScope)
+                work.scopeTask(
+                  selected.runId,
+                  selected.workspaceId,
+                  work.identity(selected.id).userId,
+                );
+              else work.scope(selected.runId, selected.workspaceId);
               const result = health.read(selected.id, id);
               if (result) return { ...result, role: input.role, transcriptPath: transcript };
               await delay(interval, undefined, { signal });
@@ -240,9 +308,13 @@ export function createRemoteAgentRunner(options: {
             : { prompt: input.prompt, inputFiles: [] };
           const files = [...(input.inputFiles ?? []), ...prepared.inputFiles];
           if (files.length) throw new Error("Remote agent input transfer is unavailable");
-          const baseSha = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
-          const scoped = work.scope(selected.runId, selected.workspaceId);
-          if (!scoped.item.checkpoint && input.role === "implementer")
+          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
+          const baseSha = taskScope
+            ? taskScope.repository
+              ? snapshotCommit(input.worktreePath, taskScope.repository)
+              : undefined
+            : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+          if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
             saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
           const generation =
             (db
@@ -258,13 +330,26 @@ export function createRemoteAgentRunner(options: {
             workspaceId: selected.workspaceId,
             issuedAt,
             expiresAt: deadline,
-            type: input.role === "reviewer" ? "review" : "run",
             runId: selected.runId,
             itemId,
             generation,
-            repository: { ...scoped.repository, baseSha },
             profile,
             prompt: prepared.prompt,
+            ...(taskScope
+              ? {
+                  type: "task" as const,
+                  sessionId: taskScope.sessionId,
+                  sessionGeneration: taskScope.sessionGeneration,
+                  taskModeGeneration: taskScope.taskModeGeneration,
+                  purpose: taskScope.purpose,
+                  ...(taskScope.repository
+                    ? { repository: { ...taskScope.repository, baseSha: baseSha! } }
+                    : {}),
+                }
+              : {
+                  type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
+                  repository: { ...scoped.repository!, baseSha: baseSha! },
+                }),
           };
           immediate(db, () => {
             const occupied = db
@@ -291,7 +376,9 @@ export function createRemoteAgentRunner(options: {
                   sessionId: assigned.id,
                   update: {
                     sessionUpdate:
-                      input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                      input.role === "reviewer" || taskScope
+                        ? "agent_thought_chunk"
+                        : "agent_message_chunk",
                     content: { type: "text", text: event.text },
                   },
                 });
@@ -363,6 +450,8 @@ export function createRemoteAgentRunner(options: {
           }
           if (!complete) throw new Error("Remote run timed out");
           if (question) throw new Error("Remote run completed with an unanswered question");
+          if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))
+            throw new Error("Remote response task returned code work");
           if (complete.reviewText)
             await emit({
               type: "session_update",
@@ -389,7 +478,7 @@ export function createRemoteAgentRunner(options: {
             await options.fetchCandidate({
               itemId,
               worktree: input.worktreePath,
-              baseSha,
+              baseSha: baseSha!,
               candidateSha: complete.candidateSha,
               branch: scoped.item.branchName,
               remoteUrl: assigned.repository.remoteUrl,
@@ -408,7 +497,7 @@ export function createRemoteAgentRunner(options: {
               input.worktreePath,
               "merge-base",
               "--is-ancestor",
-              baseSha,
+              baseSha!,
               complete.candidateSha,
             ]);
           }
@@ -433,6 +522,23 @@ export function createRemoteAgentRunner(options: {
             } finally {
               rmSync(pending, { force: true });
             }
+          }
+          if (assigned.type === "task") {
+            const history = await recoverAcpConversation(transcript, previousTranscript.length);
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
+            const text = history
+              .filter((entry) => entry.kind === "response")
+              .map((entry) => entry.body)
+              .join("\n\n");
+            if (text)
+              await input.onEvent?.({
+                type: "session_update",
+                sessionId: complete.sessionId ?? assigned.id,
+                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+              });
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
           }
           work.finish(assigned.runId, assigned.generation);
           command = undefined;
