@@ -25,10 +25,19 @@ export function readSecretFile(path: string, migrate = true): string | null {
     return text;
   }
   try {
+    return decodeSecretEnvelope(basename(path), text, readFileSync(join(dirname(path), KEY_FILE)));
+  } catch {
+    throw new Error(
+      "Could not decrypt Paws credentials. Restore the envelope key and secret together.",
+    );
+  }
+}
+
+export function decodeSecretEnvelope(name: string, text: string, key: Buffer): string {
+  try {
+    if (!text.startsWith(PREFIX) || key.length !== 32) throw new Error();
     const envelope = JSON.parse(text.slice(PREFIX.length)) as { key: string; value: string };
-    const key = readFileSync(join(dirname(path), KEY_FILE));
-    if (key.length !== 32) throw new Error();
-    const context = Buffer.from(basename(path));
+    const context = Buffer.from(name);
     const dataKey = decrypt(key, envelope.key, context);
     return decrypt(dataKey, envelope.value, context).toString("utf8");
   } catch {

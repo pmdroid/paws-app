@@ -107,6 +107,10 @@ import {
   type RunnerRepositoryAccessOptions,
 } from "./runner-coordinator";
 import type { RunnerTranscriptObjects } from "./runner-transcripts";
+import {
+  loadRunnerTranscriptObjects,
+  runRunnerTranscriptStorageCli,
+} from "./runner-transcript-config";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -134,6 +138,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const envSource = source ?? process.env;
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
+  const transcriptObjects =
+    options?.runnerTranscriptObjects ??
+    (envSource.PAWS_EXECUTION === "remote"
+      ? loadRunnerTranscriptObjects(runtime.env.home)
+      : undefined);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
@@ -308,7 +317,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           port: runnerConfig.port,
           tls: tls!,
           repositoryAccess: options?.runnerRepositoryAccess ?? runnerRepositoryAccess(runtime),
-          transcriptObjects: options?.runnerTranscriptObjects,
+          transcriptObjects,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
           if (runnerStopping) {
@@ -839,6 +848,8 @@ if (import.meta.main) {
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (command === "runner") process.exit(await runRunnerCli(argv.slice(1)));
+  if (command === "runner-storage")
+    process.exit(await runRunnerTranscriptStorageCli(argv.slice(1), loadEnv(process.env).home));
   if (command === "runner-authority") {
     try {
       if (argv.length !== 2 || argv[1] !== "init") throw new Error("Invalid command");
