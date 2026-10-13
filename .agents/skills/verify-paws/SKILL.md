@@ -15,6 +15,8 @@ Run `TMPDIR=/tmp bun --no-env-file test/local/runner-inputs.ts` to exercise the 
 
 ## Run
 
+Run `bun --no-env-file test/local/intake-dependencies.ts /path/to/disposable-evidence` for authoritative dependency snapshots and readiness. Inspect all ten observations: internal and external edge persistence, strict merged code, delivered answer/artifact outcomes, manual and external Linear completion, local and Linear cancellation, cycles and descendants, unrelated ready work, delayed stale publication, workspace ownership, atomic rollback, a real SQLite writer conflict, and refreshed canonical session generations. The table test is `bun test test/intake-dependencies.test.ts`.
+
 Use Linux with Bun 1.4.2+, Git, Python 3, OpenSSL 3 and GNU `timeout` available. From the repository root, use a tracked background task:
 
 ```sh

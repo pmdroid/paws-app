@@ -162,7 +162,14 @@ export async function probeRunnerTaskAuthority(
         .all();
     const before = catalog();
     migrate(db);
-    assert.deepEqual(catalog(), before);
+    const after = catalog();
+    const retained = new Set(before.map((row) => (row as { name: string }).name));
+    assert.deepEqual(
+      after.filter((row) => retained.has((row as { name: string }).name)),
+      before,
+    );
+    migrate(db);
+    assert.deepEqual(catalog(), after);
     assert.deepEqual(db.query("SELECT * FROM runner_command").all(), rows);
     assert.equal(
       db.query<{ command_id: string }, []>("SELECT command_id FROM runner_health_result").get()
