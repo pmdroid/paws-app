@@ -28,7 +28,7 @@ export async function buildShortReadProbe(outdir: string): Promise<string> {
           build.onLoad({ filter: /.*/, namespace: "short-read" }, () => ({
             contents: `
 const native = import.meta.require("node:fs");
-export const { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync, writeSync, chmodSync, chownSync, mkdtempSync } = native;
+export const { closeSync, constants, fchmodSync, fchownSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync, chmodSync, chownSync, mkdtempSync } = native;
 const nativeReadSync = native.readSync;
 let seen = new WeakSet();
 let allocatedBytes = 0;

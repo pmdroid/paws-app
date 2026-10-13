@@ -193,6 +193,8 @@ For the trusted-check daemon runtime, run `PAWS_BROKER_VM_BASE=<standalone-qcow2
 
 ## Runner daemon health transport
 
+Run `bun --no-env-file test/local/runner-task-spool.ts` with a preloaded `PAWS_TASK_SPOOL_PROOF_IMAGE` for immutable task repository publication under real distinct Linux UIDs. Inspect actual paused-copy agent read denial, atomic source refusals, repository-optional jobs, exact-content retry, source mutation refusal, published0750/0640 ownership, agent read with write/chmod/publication denial, outsider denial and unsafe published mode/symlink refusal. The network-disabled rootless Docker proof records exercised source and image hashes.
+
 Run `bun --no-env-file test test/runner-task-authority.test.ts` for signed answer and artifact tasks through real HTTPS enrollment, mTLS grants, SQLite, repository credentials, questions, sealed transcripts and immutable results. The probe covers both purposes with and without repository context, strict task-mode and session generations, read-only repository credentials, candidate refusal, asynchronous mint fencing and permanent identity revocation after membership removal. The append-only migration proof retains existing command rows, dependent health receipts, schema objects, foreign keys and the ordinal highwater.
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
