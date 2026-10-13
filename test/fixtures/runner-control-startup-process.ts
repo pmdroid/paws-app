@@ -4,7 +4,16 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+  insertQueuedItem,
+  recordLinearInstallation,
+  bindLinearSessionTask,
+  getWorkItem,
+  listOutbox,
+} from "../../src/db";
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
@@ -18,11 +27,19 @@ import {
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
 import { runtimeLinear } from "./workspace-runtime-linear";
+import { probeExecutionRuntime } from "../local/execution-runtime";
 
 const mode = process.argv[2]!;
 const enabled = mode === "enabled" || mode === "remote";
+const realNow = Date.now;
+let executionClockOffset = 0;
+if (mode === "enabled") Date.now = () => realNow() + executionClockOffset;
 const source: EnvSource = { ...process.env, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" };
 if (mode === "remote") source.PAWS_EXECUTION = "remote";
+if (mode === "enabled") {
+  source.LINEAR_WEBHOOKS = "true";
+  source.LINEAR_WEBHOOK_SECRET = "execution-runtime-webhook";
+}
 const observations: { name: string; passed: boolean; observed: unknown }[] = [];
 const observe = (name: string, observed: unknown) =>
   observations.push({ name, passed: true, observed });
@@ -381,6 +398,87 @@ try {
         "normal runner monitoring composes persisted roles with actual mTLS heartbeat and health",
         { memberMutationStatus: 403, memberReadStatus: 200, healthPersisted: true },
       );
+      if (mode === "enabled") {
+        const policy = await call(browserPort, "/api/runners/policy", undefined, headers);
+        assert.equal(policy.status, 200);
+        assert.equal(
+          (
+            await call(
+              browserPort,
+              "/api/runners/policy",
+              {
+                fallbackAllowed: false,
+                personalOrganizationHost: false,
+              },
+              headers,
+            )
+          ).status,
+          200,
+        );
+        assert.equal(
+          (
+            await call(
+              browserPort,
+              `/api/runners/${claimed.body.runnerId}/policy`,
+              undefined,
+              headers,
+            )
+          ).status,
+          200,
+        );
+        observe("Production Paws startup wires current workspace and host account policy routes", {
+          workspacePolicy: true,
+          hostPolicy: true,
+        });
+        const controlled = insertQueuedItem(paws.db, {
+          id: "startup-controlled",
+          sessionKey: "startup-controlled-session",
+          now,
+        });
+        recordLinearInstallation(paws.db, {
+          sessionId: controlled.sessionKey!,
+          organizationId: "org",
+          teamId: "team",
+          oauthClientId: "client",
+          appUserId: "app",
+          observedAtMs: now,
+        });
+        bindLinearSessionTask(paws.db, controlled.sessionKey!, controlled.epicId);
+        const available = await call<{ available: boolean; actions: string[] }>(
+          browserPort,
+          `/api/execution-controls?itemId=${controlled.id}`,
+          undefined,
+          headers,
+        );
+        assert.equal(available.status, 200);
+        assert(available.body.available && available.body.actions.includes("stop"));
+        const stopResult = await call(
+          browserPort,
+          "/api/execution-controls",
+          {
+            itemId: controlled.id,
+            action: "stop",
+          },
+          headers,
+        );
+        assert.equal(stopResult.status, 200);
+        assert.equal(getWorkItem(paws.db, controlled.id)?.state, "cancelled");
+        assert(
+          listOutbox(paws.db, controlled.sessionKey!).some(
+            (row) =>
+              row.delivery === "stop" &&
+              (row.payload as { body?: string }).body === "Stopped from Paws.",
+          ),
+        );
+        observe(
+          "Production Paws startup exposes scoped selected-item Stop through its actual orchestrator",
+          {
+            available: true,
+            cancelled: true,
+            origin: "Paws",
+          },
+        );
+      }
       if (mode === "remote") {
         const checking = call<{ ok: boolean; models: unknown[] }>(
           browserPort,
@@ -448,6 +546,17 @@ try {
         signerPreserved: true,
         revokedRunnerDenied: true,
       });
+      if (mode === "enabled")
+        await probeExecutionRuntime({
+          db: paws.db,
+          workspaceId: workspace.id,
+          secret: source.LINEAR_WEBHOOK_SECRET!,
+          post: (body, eventHeaders) => call(browserPort, "/webhooks/linear", body, eventHeaders),
+          advance(ms) {
+            executionClockOffset += ms;
+          },
+          observe,
+        });
     }
   }
 } finally {

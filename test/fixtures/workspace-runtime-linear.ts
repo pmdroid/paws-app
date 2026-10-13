@@ -5,6 +5,9 @@ export const runtimeLinear = {
   reads: 0,
   slackReads: 0,
   installation: undefined as Promise<void> | undefined,
+  graph: undefined as
+    | ((query: string, variables: Record<string, unknown>) => Response | Promise<Response>)
+    | undefined,
 };
 
 globalThis.fetch = Object.assign(
@@ -81,6 +84,7 @@ globalThis.fetch = Object.assign(
         },
       });
     }
+    if (runtimeLinear.graph) return runtimeLinear.graph(body.query, body.variables ?? {});
     throw new Error("Unexpected scripted Linear query");
   },
   { preconnect: () => undefined },

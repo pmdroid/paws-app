@@ -13,7 +13,7 @@ test("normal startup preserves local mode and sends remote agent probes through 
       assert(passed, name);
       names.push(name);
     });
-    assert.equal(names.length, 20);
+    assert.equal(names.length, 26);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
