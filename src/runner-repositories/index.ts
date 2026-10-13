@@ -231,12 +231,12 @@ export function createRunnerRepositories(options: {
               )
             ).split("\0");
             if (
-              changed.some((path) =>
+              changed.some((changedPath) =>
                 command.inputFiles!.some(
                   (file) =>
-                    path === file.path ||
-                    path.startsWith(`${file.path}/`) ||
-                    file.path.startsWith(`${path}/`),
+                    changedPath === file.path ||
+                    changedPath.startsWith(`${file.path}/`) ||
+                    file.path.startsWith(`${changedPath}/`),
                 ),
               )
             )
