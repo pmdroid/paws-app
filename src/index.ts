@@ -27,18 +27,22 @@ import {
   WORK_ITEM_STATES,
   type LinearCommand,
   type GitCommitPolicy,
+  type AppBotIdentity,
   type Clock,
   policyCoauthors,
 } from "./core";
 import {
   assertLinearQueue,
   enqueueCommand,
-  enqueueJob,
   enqueueJobOnce,
   getLinearSession,
   getWorkItem,
   getItemRunCommitPolicy,
   workspaceLinearMember,
+  workspaceForOrganization,
+  listWorkspaceMembers,
+  listWorkspaceRepositories,
+  getLinearSessionInstallation,
   isLinearAppRevoked,
   getLinearSessionAccess,
   getTaskLinearActor,
@@ -64,6 +68,9 @@ import {
   checkGitHubCliRepositoryAccess,
   createGitHubTokenProvider,
   createVerifiedGitHubLogin,
+  createGitHubInstallationCheck,
+  createWorkspaceGitHubActivation,
+  type ActiveGitHubApp,
   loginGitHub,
   logoutGitHub,
   type GitHubTokenProvider as AuthTokenProvider,
@@ -96,6 +103,7 @@ import {
   worktreeBranch,
   type GitHubBinding,
   LinearTaskAccess,
+  authorizeLinearTask,
   handleLinearAdministration,
   refreshLinearNotificationContext,
   type Orchestrator,
@@ -120,6 +128,8 @@ import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./dep
 import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
+  createCommitPolicyForItem,
+  MissingCommitAttributionError,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
@@ -177,8 +187,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
-  const repositoryAccess = options?.runnerRepositoryAccess ?? runnerRepositoryAccess(runtime);
-  if (execution === "remote" && (runnerConfig === null || repositoryAccess === undefined))
+  let repositoryAccess = options?.runnerRepositoryAccess;
+  if (
+    execution === "remote" &&
+    (runnerConfig === null || (!repositoryAccess && runtime.githubAuth !== "app"))
+  )
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
   if (runnerConfig !== null && (!publicDashboard || tls === undefined))
     throw new Error("Runner control requires the public HTTPS dashboard.");
@@ -203,6 +216,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
+  const appActivation = createWorkspaceGitHubActivation(db, runtime.env.home, envSource);
+  const resolveApp = (repository: string) => appActivation.resolve(repository);
+  repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
@@ -218,7 +234,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
     .filter((value): value is RepositoryBinding => value !== null);
-  const auth = repository === null ? null : authProvider(runtime, repository);
+  const auth = repository === null ? null : authProvider(runtime, repository, "write", resolveApp);
   const github = githubBinding(auth);
   const webhooks = runtime.webhooks;
   const channel: "comments" | "agent-session" =
@@ -390,6 +406,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       workspace = startWorkspaceAccess({
         assignments,
+        githubAttributionClient: (() => {
+          try {
+            const { clientId, clientSecret } = appActivation.template();
+            return { clientId, clientSecret };
+          } catch {
+            return undefined;
+          }
+        })(),
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
         db,
         publicUrl: runtime.publicUrl!,
@@ -404,6 +428,33 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
+  const commitPolicyForItem = async (item: WorkItemRecord): Promise<GitCommitPolicy> => {
+    const selected = getWorkItemRepository(db, item.id) ?? repository;
+    if (!selected) throw new Error("Attribution repository is missing");
+    const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
+    if (!bot) throw new Error("Attribution App bot authority is unavailable");
+    const policy = options?.commitPolicyForItem
+      ? await options.commitPolicyForItem(item)
+      : linear?.tracker?.getIssueAttribution && linear.memberships && runtime.linearClientId
+        ? await createCommitPolicyForItem({
+            db,
+            bot,
+            clientId: runtime.linearClientId,
+            tracker: {
+              getIssueAttribution: linear.tracker.getIssueAttribution.bind(linear.tracker),
+            },
+            memberships: linear.memberships,
+          })(item)
+        : undefined;
+    if (!policy) throw new Error("Verified workspace attribution is unavailable");
+    if (
+      bot.appId !== policy.bot.appId ||
+      bot.id !== policy.bot.id ||
+      bot.login !== policy.bot.login
+    )
+      throw new Error("Attribution App bot authority changed");
+    return policy;
+  };
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   const runnerReady =
@@ -680,6 +731,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ? createLinearGitHubAuth({
                 runtime,
                 env: envSource,
+                resolveApp,
                 repositoryForItem: (item) => {
                   const bound = getWorkItemRepository(db, item.id);
                   if (bound) return bound;
@@ -709,29 +761,116 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     ? "read"
                     : "write",
                 actorForItem: (item) => getTaskLinearActor(db, item.id),
+                attributionReady: async (item) => {
+                  try {
+                    if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item);
+                    return true;
+                  } catch (error) {
+                    if (error instanceof MissingCommitAttributionError) return false;
+                    throw error;
+                  }
+                },
+                authorizeItem: async (item, signal, selectedRepository) => {
+                  if (
+                    linearTaskAccess &&
+                    !(await authorizeLinearTask(linearTaskAccess, item, signal))
+                  )
+                    return false;
+                  if (!workspace) return true;
+                  const session = item.sessionKey
+                    ? getLinearSessionInstallation(db, item.sessionKey)
+                    : null;
+                  const currentWorkspace = session?.organizationId
+                    ? workspaceForOrganization(db, session.organizationId)
+                    : null;
+                  const actorId = getTaskLinearActor(db, item.id);
+                  if (!currentWorkspace || !actorId || !session?.teamId || !linear?.memberships)
+                    return false;
+                  const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+                  const identity = await linear.memberships.member(
+                    currentWorkspace.organizationId,
+                    actorId,
+                    signal,
+                  );
+                  const latest = workspaceLinearMember(db, currentWorkspace.id, actorId);
+                  const currentSession = item.sessionKey
+                    ? getLinearSessionInstallation(db, item.sessionKey)
+                    : null;
+                  return (
+                    currentSession !== null &&
+                    currentSession.organizationId === session.organizationId &&
+                    currentSession.oauthClientId === session.oauthClientId &&
+                    currentSession.appUserId === session.appUserId &&
+                    currentSession.teamId === session.teamId &&
+                    identity.organizationId === currentWorkspace.organizationId &&
+                    identity.userId === actorId &&
+                    identity.active &&
+                    !identity.guest &&
+                    identity.teamIds.includes(session.teamId) &&
+                    member !== null &&
+                    member.active &&
+                    member.role !== "observer" &&
+                    member.teamIds.includes(session.teamId) &&
+                    latest !== null &&
+                    latest.active &&
+                    latest.role !== "observer" &&
+                    latest.teamIds.includes(session.teamId) &&
+                    listWorkspaceRepositories(db, currentWorkspace.id).some(
+                      (entry) =>
+                        entry.teamId === session.teamId &&
+                        entry.repository.toLowerCase() ===
+                          `${selectedRepository.owner}/${selectedRepository.repo}`.toLowerCase(),
+                    )
+                  );
+                },
+                currentIntegrationItem: (item) => {
+                  if (!workspace) return true;
+                  const session = item.sessionKey
+                    ? getLinearSessionInstallation(db, item.sessionKey)
+                    : null;
+                  const currentWorkspace = session?.organizationId
+                    ? workspaceForOrganization(db, session.organizationId)
+                    : null;
+                  const actorId = getTaskLinearActor(db, item.id);
+                  if (!currentWorkspace || !actorId || !session?.teamId) return false;
+                  const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+                  return (
+                    member !== null &&
+                    member.active &&
+                    member.role !== "observer" &&
+                    member.teamIds.includes(session.teamId)
+                  );
+                },
+                integrationIdentity: (item) =>
+                  JSON.stringify([
+                    getTaskLinearActor(db, item.id),
+                    getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
+                    db
+                      .query(
+                        "SELECT id,head,base,policy_digest,decision FROM closeout_progress WHERE item_id=? ORDER BY updated_at DESC,id DESC LIMIT 1",
+                      )
+                      .get(item.id),
+                  ]),
+                administratorsForItem: (item) => {
+                  const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
+                  const currentWorkspace = session?.organizationId
+                    ? workspaceForOrganization(db, session.organizationId)
+                    : null;
+                  if (!currentWorkspace) return [];
+                  return listWorkspaceMembers(db, currentWorkspace.id)
+                    .filter((member) => member.active && ["owner", "admin"].includes(member.role))
+                    .flatMap((member) => {
+                      const linked = db
+                        .query<{ id: string }, [string]>(
+                          "SELECT linear_user_id AS id FROM workspace_user WHERE id=?",
+                        )
+                        .get(member.id);
+                      return linked ? [linked.id] : [];
+                    });
+                },
               })
             : undefined,
-        commitPolicyForItem:
-          runtime.githubAuth === "app"
-            ? async (item) => {
-                if (!options?.commitPolicyForItem)
-                  throw new Error(
-                    "Link consenting verified GitHub identities for the configured project lead and task steerer before App-backed work. Attribution identity provider is unavailable.",
-                  );
-                const policy = await options.commitPolicyForItem(item);
-                const selected = getWorkItemRepository(db, item.id) ?? repository;
-                if (!selected) throw new Error("Attribution repository is missing");
-                const bot = await authProvider(runtime, selected, "read")?.botIdentity?.();
-                if (
-                  !bot ||
-                  bot.appId !== policy.bot.appId ||
-                  bot.id !== policy.bot.id ||
-                  bot.login !== policy.bot.login
-                )
-                  throw new Error("Attribution App bot authority changed");
-                return policy;
-              }
-            : undefined,
+        commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {
@@ -745,7 +884,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               { repo: `${candidate.owner}/${candidate.repo}`, access },
               signal,
             );
-          const provider = authProvider(runtime, candidate, access);
+          const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider) return false;
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
             ...candidate,
@@ -756,7 +895,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repositoryToken: async (_item, candidate, signal, access) => {
           signal.throwIfAborted();
-          const provider = authProvider(runtime, candidate, access);
+          const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider)
             throw new Error("GitHub sign-in is required before reading the repository.");
           const token = await provider.token();
@@ -764,7 +903,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           return token;
         },
         github,
-        githubForRepository: (selected) => githubBinding(authProvider(runtime, selected)),
+        githubForRepository: (selected) =>
+          githubBinding(authProvider(runtime, selected, "write", resolveApp)),
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
       });
@@ -851,7 +991,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       if (channel === "agent-session") {
         created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
-        enqueueJob(db, { queue: "github.auth.recover", priority: 0, now: Date.now() });
+        enqueueJobOnce(db, {
+          queue: "github.auth.recover",
+          jobKey: "github.auth.recover",
+          recurringEveryMs: 30_000,
+          priority: 0,
+          now: Date.now(),
+        });
       }
     },
   });
@@ -1097,34 +1243,41 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
   };
 }
 
-function runnerRepositoryAccess(runtime: RuntimeConfig): RunnerRepositoryAccessOptions | undefined {
-  const { githubAppId, githubAppInstallationId, githubAppPrivateKeyPath } = runtime.env;
-  if (
-    runtime.githubAuth !== "app" ||
-    githubAppId === null ||
-    githubAppInstallationId === null ||
-    githubAppPrivateKeyPath === null
-  )
-    return undefined;
+export function runnerRepositoryAccess(
+  runtime: RuntimeConfig,
+  resolveApp?: (repository: string) => ActiveGitHubApp,
+): RunnerRepositoryAccessOptions | undefined {
+  if (runtime.githubAuth !== "app") return undefined;
   return {
     github: {
       async mintInstallationToken(input) {
-        const privateKeyPem = readSecretFile(githubAppPrivateKeyPath, false);
-        if (privateKeyPem === null) throw new Error("GitHub App credentials are unavailable.");
-        return createGitHubApp({
+        const before = resolveApp?.(input.repository);
+        if (!before || before.installationId !== input.installationId)
+          throw new Error("GitHub integration unavailable.");
+        const token = await createGitHubApp({
           client: createFetchGitHubClient(),
-          appId: githubAppId,
-          privateKeyPem,
+          appId: before.appId,
+          privateKeyPem: before.privateKeyPem,
         }).mintInstallationToken(input);
+        if (JSON.stringify(resolveApp?.(input.repository)) !== JSON.stringify(before))
+          throw new Error("GitHub integration replaced.");
+        return token;
       },
     },
-    installationForRepository: () => githubAppInstallationId,
+    installationForRepository: (repository) => {
+      try {
+        return resolveApp?.(repository).installationId ?? null;
+      } catch {
+        return null;
+      }
+    },
     async checkpointBot(repository) {
       const [owner, repo] = repository.split("/") as [string, string];
       const provider = authProvider(
         runtime,
         { owner, repo, remoteUrl: `https://github.com/${repository}.git` },
         "read",
+        resolveApp,
       );
       if (!provider?.botIdentity) throw new Error("GitHub App bot authority is unavailable.");
       return provider.botIdentity();
@@ -1132,11 +1285,42 @@ function runnerRepositoryAccess(runtime: RuntimeConfig): RunnerRepositoryAccessO
   };
 }
 
-function authProvider(
+export function authProvider(
   runtime: RuntimeConfig,
   repository: RepositoryBinding,
   access: "read" | "write" = "write",
+  resolveApp?: (repository: string) => ActiveGitHubApp,
 ): AuthTokenProvider | null {
+  if (runtime.githubAuth === "app" && resolveApp) {
+    const name = `${repository.owner}/${repository.repo}`;
+    const provider = () => {
+      const active = resolveApp(name);
+      return {
+        active,
+        provider: createGitHubTokenProvider({
+          auth: "app",
+          repo: name,
+          access,
+          appId: active.appId,
+          installationId: active.installationId,
+          privateKeyPem: active.privateKeyPem,
+        }),
+      };
+    };
+    const perform = async (operation: "token" | "user" | "botIdentity") => {
+      const before = provider();
+      const result = await before.provider[operation]!();
+      if (JSON.stringify(resolveApp(name)) !== JSON.stringify(before.active))
+        throw new Error("GitHub integration replaced.");
+      return result;
+    };
+    return {
+      source: "app",
+      token: async () => (await perform("token")) as string,
+      user: async () => (await perform("user")) as { login: string; id: number },
+      botIdentity: async () => (await perform("botIdentity")) as AppBotIdentity,
+    };
+  }
   const env = runtime.env;
   let privateKeyPem: string | null = null;
   if (runtime.githubAuth === "app" && env.githubAppPrivateKeyPath !== null) {
@@ -1167,9 +1351,19 @@ function authProvider(
 export function createLinearGitHubAuth(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
+  resolveApp?: (repository: string) => ActiveGitHubApp;
   repositoryForItem: (item: WorkItemRecord) => RepositoryBinding | null;
   actorForItem: (item: WorkItemRecord) => string | null;
+  authorizeItem?: (
+    item: WorkItemRecord,
+    signal: AbortSignal,
+    repository: RepositoryBinding,
+  ) => Promise<boolean>;
+  integrationIdentity?: (item: WorkItemRecord) => string;
+  currentIntegrationItem?: (item: WorkItemRecord) => boolean;
+  administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
+  attributionReady?: (item: WorkItemRecord) => Promise<boolean>;
 }): HostGitHubAuth {
   const loginFor = (item: WorkItemRecord) => {
     const repository = input.repositoryForItem(item);
@@ -1182,7 +1376,43 @@ export function createLinearGitHubAuth(input: {
       oauthClientId: input.runtime.oauthClientId,
     });
   };
+  const installation = createGitHubInstallationCheck({
+    home: input.runtime.env.home,
+    env: input.env,
+    ...(input.resolveApp ? { resolve: input.resolveApp } : {}),
+  });
   return {
+    ...(input.runtime.githubAuth === "app"
+      ? {
+          integration: {
+            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status#/settings`,
+            administrators: input.administratorsForItem ?? (() => []),
+            current: input.currentIntegrationItem ?? (() => true),
+            identity:
+              input.integrationIdentity ??
+              ((item) => JSON.stringify([input.actorForItem(item), input.repositoryForItem(item)])),
+            authorize: async (item: WorkItemRecord, signal: AbortSignal) => {
+              const selected = input.repositoryForItem(item);
+              return (
+                selected !== null &&
+                (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
+              );
+            },
+            attributionReady: input.attributionReady,
+            async check(item: WorkItemRecord, signal: AbortSignal) {
+              const selected = input.repositoryForItem(item);
+              return (
+                selected !== null &&
+                (await installation(
+                  `${selected.owner}/${selected.repo}`,
+                  input.accessForItem?.(item) ?? "write",
+                  signal,
+                ))
+              );
+            },
+          },
+        }
+      : {}),
     ...(input.runtime.githubAuth === "gh"
       ? {
           externalLogin: true,
