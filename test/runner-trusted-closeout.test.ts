@@ -12,5 +12,14 @@ test("trusted Closeout dispatch uses production mTLS and canonical check authori
   );
   writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
   console.log(`Evidence ${root}`);
-  expect(observations.map((entry) => entry.passed)).toEqual([true, true, true, true]);
+  expect(observations.map((entry) => entry.passed)).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+  ]);
 }, 30_000);
