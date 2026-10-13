@@ -3,7 +3,7 @@ import { demoStatus } from "../demo";
 import { parseEngineUrl, statusEndpoint } from "../endpoint";
 import { choiceFromValue, resolveEngineUrl, type SourceChoice } from "../source";
 import {
-  loadGitHubUser,
+  loadGitHubAccess,
   readCsrfToken,
   renderGitHubSignIn,
   startGitHubDevice,
@@ -294,6 +294,7 @@ function onClick(event: Event): void {
   if (action === "github-signin") void signInWithGitHub();
   if (action === "refresh") {
     void reload();
+    void paintGitHubAuth(null);
     if (parseRoute(location.hash).view === "runners") void runners.refresh();
   }
   if (action === "source") openDialog();
@@ -326,8 +327,11 @@ async function paintGitHubAuth(
 ): Promise<void> {
   const slot = document.querySelector("#github-auth");
   if (!slot) return;
-  const user = await loadGitHubUser().catch(() => null);
-  slot.innerHTML = renderGitHubSignIn({ user, device: user ? null : device });
+  const access = await loadGitHubAccess().catch(() => null);
+  if (access === null) return;
+  slot.innerHTML = access.allowed
+    ? renderGitHubSignIn({ user: access.user, device: access.user ? null : device })
+    : "";
 }
 
 async function signInWithGitHub(): Promise<void> {
@@ -339,14 +343,18 @@ async function signInWithGitHub(): Promise<void> {
       await new Promise((resolve) => {
         window.setTimeout(resolve, 1500);
       });
-      const user = await loadGitHubUser().catch(() => null);
-      if (user) {
-        if (slot) slot.innerHTML = renderGitHubSignIn({ user, device: null });
+      const access = await loadGitHubAccess().catch(() => null);
+      if (access === null) continue;
+      if (!access.allowed || access.user) {
+        if (slot)
+          slot.innerHTML = access.allowed
+            ? renderGitHubSignIn({ user: access.user, device: null })
+            : "";
         return;
       }
     }
   } catch {
-    if (slot) slot.innerHTML = renderGitHubSignIn({ user: null, device: null });
+    await paintGitHubAuth(null);
   }
 }
 
