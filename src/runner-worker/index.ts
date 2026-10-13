@@ -25,6 +25,8 @@ import {
 } from "../acp";
 import {
   readRunnerJob,
+  readRunnerJobInputs,
+  type RunnerJobInputs,
   runnerRepositoryBundlePath,
   runnerTaskRepositoryPath,
   runnerResultDirectory,
@@ -45,6 +47,7 @@ export interface RunnerWorkerOptions {
   job: RunnerJob;
   repositoryBundle?: string;
   repositorySnapshot?: string;
+  inputs?: RunnerJobInputs;
   outputDirectory: string;
   workRoot: string;
   home: string;
@@ -239,6 +242,45 @@ export async function executeRunnerCommand(
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
+    const inputFiles = options.inputs?.inputFiles ?? [];
+    if (command.type === "run" || command.type === "review" || command.type === "task") {
+      const descriptors = command.inputFiles ?? [];
+      const preparedPrompt = options.inputs?.prompt ?? command.prompt;
+      const promptBytes = Buffer.from(preparedPrompt);
+      if (
+        inputFiles.length !== descriptors.length ||
+        inputFiles.some(
+          (file, index) =>
+            file.path !== descriptors[index]!.path ||
+            file.mimeType !== descriptors[index]!.mimeType ||
+            file.bytes.length !== descriptors[index]!.sizeBytes ||
+            createHash("sha256").update(file.bytes).digest("hex") !== descriptors[index]!.sha256,
+        ) ||
+        (command.promptContext
+          ? promptBytes.length !== command.promptContext.sizeBytes ||
+            createHash("sha256").update(promptBytes).digest("hex") !==
+              command.promptContext.sha256 ||
+            promptBytes.toString("utf8") !== preparedPrompt
+          : preparedPrompt !== command.prompt)
+      )
+        throw new Error("Runner input contents are required");
+      for (const file of inputFiles) {
+        const parts = file.path.split("/");
+        let parent = worktree;
+        for (const part of parts.slice(0, -1)) {
+          parent = join(parent, part);
+          try {
+            mkdirSync(parent, { mode: 0o700 });
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          }
+          const info = lstatSync(parent);
+          if (!info.isDirectory() || info.isSymbolicLink())
+            throw new Error("Unsafe runner input workspace");
+        }
+        writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
+      }
+    }
     let reviewText = "";
     let eventFailure: Error | undefined;
     const agentEnv = minimalAgentEnv({
@@ -250,6 +292,7 @@ export async function executeRunnerCommand(
       ...options.launch,
       env: agentEnv,
       checkpointEnv: env,
+      checkpointExcludePaths: inputFiles.map((file) => file.path),
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
@@ -260,8 +303,9 @@ export async function executeRunnerCommand(
       runId: job.executionId,
       prompt:
         repository || task || command.type === "helper"
-          ? command.prompt
+          ? (options.inputs?.prompt ?? command.prompt)
           : "Check agent connection.",
+      inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home: options.home,
@@ -481,6 +525,7 @@ export async function runRunnerWorker(options: {
   const job = readRunnerJob(options.spool, options.executionId);
   return executeRunnerCommand({
     job,
+    inputs: readRunnerJobInputs(options.spool, options.executionId),
     ...(job.command.type === "run" || job.command.type === "review"
       ? { repositoryBundle: runnerRepositoryBundlePath(options.spool, options.executionId) }
       : job.command.type === "task" && job.command.repository

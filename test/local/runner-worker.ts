@@ -13,7 +13,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { git } from "../../src/acp";
 import { publishRunnerAnswer, readRunnerAnswer } from "../../src/runner-answers";
-import { publishRunnerJob, type RunnerJob, type RunnerSpool } from "../../src/runner-execution";
+import {
+  publishRunnerJob,
+  readRunnerJobInputs,
+  type RunnerJob,
+  type RunnerSpool,
+} from "../../src/runner-execution";
 import { executeRunnerCommand } from "../../src/runner-worker";
 import { RunnerArtifactSchema } from "../../src/runner-protocol";
 
@@ -21,6 +26,7 @@ export async function probeRunnerWorker(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
   execute: typeof executeRunnerCommand = executeRunnerCommand,
+  privateInputs = false,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const home = join(root, "home");
@@ -84,7 +90,14 @@ export async function probeRunnerWorker(
   function launch(index: number, steps: unknown[]) {
     const script = join(root, `script-${index}.json`);
     const result = join(root, `agent-${index}.json`);
-    writeFileSync(script, JSON.stringify({ model: "fixture-model", steps }));
+    writeFileSync(
+      script,
+      JSON.stringify({
+        model: "fixture-model",
+        steps,
+        ...(privateInputs ? { promptCapabilities: { embeddedContext: true } } : {}),
+      }),
+    );
     return {
       result,
       launch: {
@@ -109,7 +122,30 @@ export async function probeRunnerWorker(
     return path;
   }
   const first = job(1);
-  publishRunnerJob(spool, first, { repositoryBundle });
+  const privatePath = ".paws-linear-inputs/private [a]*!.txt";
+  const privateBytes = Buffer.from([0, 255, 3, 0, 7]);
+  const fullPrompt = "Restored context 日本語 " + "x".repeat(1_048_576) + " restored-tail";
+  if (privateInputs && first.command.type === "run") {
+    first.command.inputFiles = [
+      {
+        id: 0,
+        path: privatePath,
+        mimeType: "application/octet-stream",
+        sizeBytes: privateBytes.length,
+        sha256: createHash("sha256").update(privateBytes).digest("hex"),
+      },
+    ];
+    first.command.promptContext = {
+      sizeBytes: Buffer.byteLength(fullPrompt),
+      sha256: createHash("sha256").update(fullPrompt).digest("hex"),
+    };
+  }
+  publishRunnerJob(spool, first, {
+    repositoryBundle,
+    ...(privateInputs
+      ? { inputFiles: [privateBytes], promptContext: Buffer.from(fullPrompt) }
+      : {}),
+  });
   const firstOutput = output(1);
   const checkpointEnvironment = join(root, "checkpoint-env.json");
   const monitor = fileURLToPath(new URL("../fixtures/runner-checkpoint-env.py", import.meta.url));
@@ -126,6 +162,7 @@ export async function probeRunnerWorker(
       path: ".git/config",
       content: `[core]\nrepositoryformatversion = 0\nbare = false\nhooksPath = /dev/null\nfsmonitor = /usr/bin/python3 ${monitor} ${checkpointEnvironment}\n`,
     },
+    ...(privateInputs ? [{ type: "fs_write" as const, path: ".gitignore", content: "!*\n" }] : []),
     { type: "fs_write", path: "implemented.txt", content: "candidate\n" },
     { type: "fs_write", path: "report.txt", content: "actual worker artifact\n" },
     { type: "publish_artifact", path: "report.txt", displayName: "Report", attachToIssue: true },
@@ -160,6 +197,7 @@ export async function probeRunnerWorker(
     try {
       return await execute({
         job: first,
+        ...(privateInputs ? { inputs: readRunnerJobInputs(spool, first.executionId) } : {}),
         repositoryBundle,
         outputDirectory: firstOutput,
         workRoot: join(root, "work"),
@@ -214,6 +252,63 @@ export async function probeRunnerWorker(
     { baseSha, candidateSha: candidate.candidateSha },
   );
   const fake = JSON.parse(readFileSync(firstAgent.result, "utf8"));
+  if (privateInputs) {
+    assert.equal(fake.prompts[0][0].text, fullPrompt);
+    const resource = fake.prompts[0].find(
+      (block: { type: string }) => block.type === "resource",
+    ).resource;
+    assert.deepEqual(Buffer.from(resource.blob, "base64"), privateBytes);
+    assert.deepEqual(
+      readFileSync(join(root, "work", first.executionId, privatePath)),
+      privateBytes,
+    );
+    await assert.rejects(
+      invoke(["-C", acquired, "cat-file", "-e", `${candidate.candidateSha}:${privatePath}`]),
+    );
+    const collision = job(1);
+    collision.executionId = "01J0000000000000000000000Z";
+    if (collision.command.type === "run")
+      collision.command.inputFiles = [
+        {
+          id: 0,
+          path: "base.txt",
+          mimeType: "text/plain",
+          sizeBytes: privateBytes.length,
+          sha256: createHash("sha256").update(privateBytes).digest("hex"),
+        },
+      ];
+    publishRunnerJob(spool, collision, { repositoryBundle, inputFiles: [privateBytes] });
+    const collisionAgent = launch(99, [{ type: "end" }]);
+    await assert.rejects(
+      execute({
+        job: collision,
+        inputs: readRunnerJobInputs(spool, collision.executionId),
+        repositoryBundle,
+        outputDirectory: output(99),
+        workRoot: join(root, "work"),
+        home,
+        resultsGid: process.getgid!(),
+        launch: collisionAgent.launch,
+      }),
+      /EEXIST/,
+    );
+    assert.equal(
+      readFileSync(join(root, "work", collision.executionId, "base.txt"), "utf8"),
+      "exact assigned base\n",
+    );
+    assert.throws(() => readFileSync(collisionAgent.result), { code: "ENOENT" });
+    observe(
+      "worker restores exact prompt and binary inputs while protected checkpoint exclusions prevent candidate staging",
+      true,
+      {
+        promptBytes: Buffer.byteLength(fullPrompt),
+        attachmentBytes: privateBytes.length,
+        binaryResourceExact: true,
+        candidateExcludesPrivateInput: true,
+        trackedCollisionDeniedBeforeACP: true,
+      },
+    );
+  }
   assert.equal(fake.artifact.ok, true);
   assert.equal(snapshots[0]?.path, "report.txt");
   assert.equal(snapshots[0]?.attachToIssue, true);

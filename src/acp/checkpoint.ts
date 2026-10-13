@@ -50,6 +50,7 @@ export async function commitCheckpoint(
   signal?: AbortSignal,
   onPublished?: () => void,
   environment?: NodeJS.ProcessEnv,
+  excludePaths: readonly string[] = [],
 ): Promise<CheckpointResult> {
   const unchanged = { committed: false, message };
   if (signal?.aborted) return unchanged;
@@ -70,12 +71,42 @@ export async function commitCheckpoint(
     const env = { ...baseEnv, ...COMMIT_ENV_DEFAULTS, GIT_INDEX_FILE: privateIndex };
     if (originalIndex) writeFileSync(privateIndex, originalIndex);
     else await git(["-C", tree, "read-tree", head], { env });
+    if (excludePaths.length)
+      await git(
+        [
+          "-C",
+          tree,
+          "rm",
+          "-r",
+          "--cached",
+          "--ignore-unmatch",
+          "--",
+          ...excludePaths.map((path) => `:(literal)${path}`),
+        ],
+        { env },
+      );
     const status = (await git(["-C", tree, "status", "--porcelain"], { env })).trim();
     if (!status || signal?.aborted) return unchanged;
-    await git(["-C", tree, "add", "-A"], { env });
+    await git(
+      [
+        "-C",
+        tree,
+        "add",
+        "-A",
+        "--",
+        ".",
+        ...excludePaths.map((path) => `:(exclude,literal)${path}`),
+      ],
+      { env },
+    );
     if (signal?.aborted) return unchanged;
     const snapshot = (await git(["-C", tree, "write-tree"], { env })).trim();
     if (signal?.aborted) return unchanged;
+    if (
+      excludePaths.length &&
+      snapshot === (await git(["-C", tree, "rev-parse", `${head}^{tree}`], { env })).trim()
+    )
+      return unchanged;
     const sha = (
       await git(
         [
