@@ -4,6 +4,7 @@ import {
   changeWorkspaceRole,
   getWorkspace,
   listWorkspaceMembers,
+  listWorkspaceAudit,
   listWorkspaceRepositories,
   replaceWorkspaceRepositories,
   workspaceMember,
@@ -26,7 +27,12 @@ export async function handleWorkspaceAdministration(
   },
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
-  if (path !== "/api/workspaces/members" && path !== "/api/workspaces/repositories") return null;
+  if (
+    path !== "/api/workspaces/members" &&
+    path !== "/api/workspaces/repositories" &&
+    path !== "/api/workspaces/audit"
+  )
+    return null;
   const principal = options.principal;
   const deny = (message: string) => {
     auditWorkspaceAccess(options.db, {
@@ -41,6 +47,23 @@ export async function handleWorkspaceAdministration(
       { status: 403, headers: { "cache-control": "no-store" } },
     );
   };
+  if (path === "/api/workspaces/audit") {
+    if (!["owner", "admin"].includes(principal.role))
+      return deny("Workspace administration is required.");
+    if (request.method !== "GET")
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    const cursor = new URL(request.url).searchParams.get("before");
+    const before = cursor === null ? Number.MAX_SAFE_INTEGER : Number(cursor);
+    if (
+      (cursor !== null && !/^[1-9][0-9]*$/.test(cursor)) ||
+      !Number.isSafeInteger(before) ||
+      before < 1
+    )
+      return Response.json({ error: "Invalid audit cursor." }, { status: 400 });
+    return Response.json(listWorkspaceAudit(options.db, principal.workspaceId, before), {
+      headers: { "cache-control": "no-store" },
+    });
+  }
   if (principal.role !== "owner") return deny("Workspace ownership is required.");
   if (request.method === "GET")
     return Response.json(
