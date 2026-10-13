@@ -316,3 +316,5 @@ Run `bun --no-env-file test test/scheduler.test.ts src/db/jobs.test.ts src/db/lo
 Run `bun --no-env-file test/local/linear-project-members.ts "$EVIDENCE/linear-project-members"` to exercise canonical project membership and issue ownership through a disposable HTTP server. Its four observations cover pagination, project changes, malformed membership, cursor cycles and cancellation.
 
 Run `bun test test/runner-quota.test.ts` to verify actual provider quota messages, reset timestamps, relative waits, Retry-After headers, low usage warnings and rejection of ordinary errors. Unknown reset times remain unknown and use a separate bounded retry cooldown.
+
+Run `bun --no-env-file test/local/runner-placement.ts "$EVIDENCE/runner-placement"` to exercise actual Linear ownership, project sharing, personal seats, fallback permission, quota reset evidence, readiness recovery, independent review selection and persisted usage against disposable SQLite. The twelve observations preserve selection through checkpoint preparation, reject policy changes between selection and assignment and exclude offline or revoked members.

@@ -1135,4 +1135,52 @@ CREATE TABLE scheduler_admission (
 CREATE INDEX scheduler_project ON scheduler_admission(project_key);
 `,
   },
+  {
+    id: "042_runner_placement",
+    sql: `
+CREATE TABLE workspace_runner_policy (
+ workspace_id TEXT PRIMARY KEY REFERENCES workspace(id),
+ fallback_allowed INTEGER NOT NULL DEFAULT 0 CHECK(fallback_allowed IN (0,1)),
+ personal_organization_host INTEGER NOT NULL DEFAULT 0 CHECK(personal_organization_host IN (0,1))
+) STRICT;
+CREATE TABLE runner_policy (
+ runner_id TEXT PRIMARY KEY REFERENCES runner(id),
+ host_owner TEXT NOT NULL DEFAULT 'unknown' CHECK(host_owner IN ('member','workspace','unknown')),
+ sharing INTEGER NOT NULL DEFAULT 0 CHECK(sharing IN (0,1)),
+ fallback INTEGER NOT NULL DEFAULT 0 CHECK(fallback IN (0,1))
+) STRICT;
+CREATE TABLE runner_agent_policy (
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
+ seat TEXT NOT NULL DEFAULT 'unknown' CHECK(seat IN ('unknown','personal','organization','api')),
+ ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN (0,1)),
+ auth_expired INTEGER NOT NULL DEFAULT 0 CHECK(auth_expired IN (0,1)),
+ quota_state TEXT NOT NULL DEFAULT 'ok' CHECK(quota_state IN ('ok','low','exhausted')),
+ resets_at INTEGER,
+ cooldown_until INTEGER NOT NULL DEFAULT 0,
+ resolved_model TEXT,
+ last_used_at INTEGER NOT NULL DEFAULT 0,
+ virtual_finish REAL NOT NULL DEFAULT 0,
+ PRIMARY KEY(runner_id,agent)
+) STRICT;
+CREATE TABLE runner_execution_usage (
+ command_id TEXT PRIMARY KEY,
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ owner_user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ item_id TEXT REFERENCES work_item(id),
+ run_id TEXT REFERENCES run(id),
+ agent TEXT CHECK(agent IN ('claude','codex','grok')),
+ model TEXT,
+ seat TEXT NOT NULL,
+ role TEXT NOT NULL CHECK(role IN ('implementer','reviewer')),
+ purpose TEXT NOT NULL CHECK(purpose IN ('prepare','work','check','helper')),
+ started_at INTEGER NOT NULL,
+ ended_at INTEGER,
+ outcome TEXT,
+ resolved_model TEXT,
+ output_bytes INTEGER NOT NULL DEFAULT 0 CHECK(output_bytes>=0)
+) STRICT;
+CREATE INDEX runner_usage_item ON runner_execution_usage(item_id,ended_at);
+`,
+  },
 ];
