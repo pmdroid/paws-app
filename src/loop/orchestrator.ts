@@ -225,6 +225,7 @@ export type OrchestratorOptions = {
     candidate?: { sha: string; baseSha: string },
   ) => boolean | Promise<boolean>;
   canDispatchEpic?: (epicId: string) => boolean;
+  canAdvanceItem?: (itemId: string) => boolean;
   dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void;
   clock?: Clock;
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
@@ -1752,6 +1753,24 @@ export class Orchestrator {
       return;
     }
     if (item.state !== "merge_queue") return;
+    immediate(this.db, () => {
+      if (
+        this.workspaceForEpic(item.epicId)
+          ? this.options.canAdvanceItem?.(item.id) !== true
+          : !this.blockersClear(item)
+      )
+        throw new LinearReconciliationPendingError("Linear dependencies are still running");
+      const sessionId = linearSessionForEpic(this.db, item.epicId);
+      if (!sessionId) return;
+      const activeItemId = getLinearSession(this.db, sessionId)?.activeItemId;
+      if (
+        activeItemId &&
+        activeItemId !== item.id &&
+        listInFlightItems(this.db).some((active) => active.id === activeItemId)
+      )
+        throw new LinearReconciliationPendingError("Another Linear task owns this session");
+      activateLinearItem(this.db, sessionId, item.id);
+    });
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
     let publicationCandidate =
@@ -2459,6 +2478,7 @@ export class Orchestrator {
   }
 
   private pump(): void {
+    this.yieldIdleMergeSessions();
     const items = this.allItems();
     const epicIds = new Set(
       this.db
@@ -2497,6 +2517,32 @@ export class Orchestrator {
         payload: { itemId: item.id, handoff: this.dependencyHandoff(item.id) },
         now: this.now(),
       });
+    });
+  }
+
+  private yieldIdleMergeSessions(): void {
+    immediate(this.db, () => {
+      for (const item of this.allItems()) {
+        if (
+          item.state !== "merge_queue" ||
+          this.options.canDispatchEpic?.(item.epicId) === false ||
+          [...this.live.values()].some((live) => live.itemId === item.id) ||
+          !this.epicItems(item.epicId).some(
+            (other) =>
+              other.id !== item.id && other.state === "queued" && this.blockersClear(other),
+          )
+        )
+          continue;
+        this.db.run(
+          `UPDATE linear_session SET active_item_id=NULL WHERE active_item_id=?
+           AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
+           AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
+             AND json_extract(payload,'$.itemId')=?
+             AND (queue IN ('item.start','run.resume','run.reverify','github.merge')
+               OR queue LIKE 'github.merge.%' OR lane='merge'))`,
+          [item.id, item.id, this.now(), item.id],
+        );
+      }
     });
   }
 

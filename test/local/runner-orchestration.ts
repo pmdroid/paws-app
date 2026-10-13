@@ -22,14 +22,22 @@ import {
   markRun,
   recoverOnStartup,
   openDatabase,
+  saveTaskMode,
+  bindWorkItemRepository,
+  getLinearSession,
+  ensureLinearSession,
+  bindLinearSessionTask,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
+import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness } from "../../src/github";
 import { attachOrchestrator } from "../../src/loop";
+import { dispatchReadyItems, saveSchedulingContext } from "../../src/scheduler";
 
 export async function probeRunnerOrchestration(
   root: string,
   observe: (name: string, passed: boolean, value: unknown) => void,
+  mergeDependencyYield = false,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const source = join(root, "source");
@@ -91,21 +99,23 @@ export async function probeRunnerOrchestration(
   await git(["-C", source, "add", "."]);
   await git(["-C", source, "commit", "-m", "Fixture policy"]);
   await git(["clone", "--bare", source, origin]);
-  for (const scenario of [
-    "success",
-    "error",
-    "cancelled",
-    "reassigned",
-    "stale",
-    "merge",
-    "unavailable",
-    "crashed-implementation",
-    "crashed-review",
-    "start-lease",
-    "resume-lease",
-    "reverify-lease",
-    "merge-lease",
-  ]) {
+  for (const scenario of mergeDependencyYield
+    ? ["merge"]
+    : [
+        "success",
+        "error",
+        "cancelled",
+        "reassigned",
+        "stale",
+        "merge",
+        "unavailable",
+        "crashed-implementation",
+        "crashed-review",
+        "start-lease",
+        "resume-lease",
+        "reverify-lease",
+        "merge-lease",
+      ]) {
     const unavailable = scenario === "unavailable";
     const home = join(root, scenario);
     mkdirSync(home, { mode: 0o700 });
@@ -122,7 +132,7 @@ export async function probeRunnerOrchestration(
     ]);
     const leaseScenario = scenario.endsWith("-lease");
     const initialLease = scenario === "start-lease" || scenario === "resume-lease";
-    const clock = leaseScenario ? new FakeClock(Date.now()) : systemClock;
+    const clock = leaseScenario || mergeDependencyYield ? new FakeClock(Date.now()) : systemClock;
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: { role: string; prepare: boolean; prompt: string }[] = [];
@@ -202,6 +212,19 @@ export async function probeRunnerOrchestration(
       home,
       tracker,
       repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
+      linearTaskModes: mergeDependencyYield,
+      ...(mergeDependencyYield
+        ? {
+            dispatchReady({ legacyReadyItemIds }: { legacyReadyItemIds: readonly string[] }) {
+              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds, concurrency: 1 });
+            },
+            publicationReady(itemId: string) {
+              assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
+              assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
+              return true;
+            },
+          }
+        : {}),
       ...(scenario === "merge" || scenario === "merge-lease"
         ? {
             github: {
@@ -270,6 +293,7 @@ export async function probeRunnerOrchestration(
               await reclaim(options.signal);
             const script = join(home, `agent-${calls.length}.json`);
             const reviewer = options.role === "reviewer";
+            const answer = mergeDependencyYield && itemId === "new-blocker";
             if (!reviewer && !options.prepareOnly) implementationCount++;
             writeFileSync(
               script,
@@ -287,21 +311,32 @@ export async function probeRunnerOrchestration(
                       },
                       { type: "end" },
                     ]
-                  : [
-                      {
-                        type: "fs_write",
-                        path: join(options.worktreePath, "result.txt"),
-                        content: implementationCount === 1 ? "initial\n" : "fixed\n",
-                      },
-                      {
-                        type: "update",
-                        update: {
-                          sessionUpdate: "agent_message_chunk",
-                          content: { type: "text", text: "PUBLIC_REMOTE_RESPONSE" },
+                  : answer
+                    ? [
+                        {
+                          type: "update",
+                          update: {
+                            sessionUpdate: "agent_message_chunk",
+                            content: { type: "text", text: "Blocker delivered remotely." },
+                          },
                         },
-                      },
-                      { type: "end" },
-                    ],
+                        { type: "end" },
+                      ]
+                    : [
+                        {
+                          type: "fs_write",
+                          path: join(options.worktreePath, "result.txt"),
+                          content: implementationCount === 1 ? "initial\n" : "fixed\n",
+                        },
+                        {
+                          type: "update",
+                          update: {
+                            sessionUpdate: "agent_message_chunk",
+                            content: { type: "text", text: "PUBLIC_REMOTE_RESPONSE" },
+                          },
+                        },
+                        { type: "end" },
+                      ],
               }),
             );
             return runAgent({
@@ -382,20 +417,44 @@ export async function probeRunnerOrchestration(
       },
     });
     try {
-      await orchestrator.onLinearEvent({
-        dedupeKey: "created:issue",
-        deliveryId: null,
-        source: "webhook",
-        action: "created",
-        sessionId: "session",
-        issueId: "issue",
-        activityId: null,
-        actorId: null,
-        body: null,
-        signal: null,
-        updatedAtMs: Date.now(),
-        payload: "{}",
-      });
+      if (mergeDependencyYield) {
+        const intake = await intakeDelegatedIssue(db, tracker, {
+          linearIssueId: "issue",
+          now: clock.now(),
+        });
+        assert(intake.ok);
+        ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
+        bindLinearSessionTask(db, "session", intake.epic.id);
+      } else
+        await orchestrator.onLinearEvent({
+          dedupeKey: "created:issue",
+          deliveryId: null,
+          source: "webhook",
+          action: "created",
+          sessionId: "session",
+          issueId: "issue",
+          activityId: null,
+          actorId: null,
+          body: null,
+          signal: null,
+          updatedAtMs: Date.now(),
+          payload: "{}",
+        });
+      if (mergeDependencyYield) {
+        const queued = listWorkItems(db)[0]!;
+        saveTaskMode(db, queued.id, "code", 0, true);
+        bindWorkItemRepository(db, queued.id, {
+          owner: "acme",
+          repo: "fixture",
+          remoteUrl: origin,
+        });
+        saveSchedulingContext(db, {
+          itemId: queued.id,
+          projectId: "project",
+          paths: ["src/shared"],
+        });
+        orchestrator.reconcileExecution();
+      }
       if (scenario === "resume-lease") {
         const pending = listWorkItems(db)[0]!;
         beginImplementRun(db, pending.id, clock.now(), {
@@ -464,11 +523,59 @@ export async function probeRunnerOrchestration(
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");
           assert.equal(getRun(db, foreignRunId)?.status, "active");
         }
+        if (mergeDependencyYield) {
+          db.run(
+            `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+             VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
+            [item.epicId, clock.now()],
+          );
+          saveTaskMode(db, "new-blocker", "answer");
+          bindWorkItemRepository(db, "new-blocker", {
+            owner: "acme",
+            repo: "fixture",
+            remoteUrl: origin,
+          });
+          saveSchedulingContext(db, {
+            itemId: "new-blocker",
+            projectId: "project",
+            paths: ["src/shared"],
+          });
+          db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
+            item.epicId,
+            "new-blocker",
+            item.linearIssueId,
+          ]);
+          const before = getLinearSession(db, "session")?.activeItemId;
+          assert.equal(before, item.id);
+          const deferred = await jobs.tick();
+          assert.equal(deferred?.queue, JOB_KIND.merge);
+          assert.equal(getWorkItem(db, item.id)?.state, "merge_queue");
+          assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+          observe("The owned merge defers and joins without releasing its session early", true, {
+            job: deferred?.id,
+            activeItemId: before,
+          });
+          orchestrator.reconcileExecution();
+          assert.equal(getLinearSession(db, "session")?.activeItemId, null);
+          const blocker = await jobs.tick();
+          assert(blocker);
+          assert.equal((blocker.payload as { itemId: string }).itemId, "new-blocker");
+          assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
+          assert.equal(getLinearSession(db, "session")?.activeItemId, "new-blocker");
+          observe(
+            "The same-session blocker acquires the shared footprint and delivers through the selected remote port",
+            true,
+            { job: blocker?.id, state: getWorkItem(db, "new-blocker")?.state },
+          );
+          assert(clock instanceof FakeClock);
+          clock.advance(30001);
+        }
         reverifying = true;
         const priorChecks = checks.length;
         const reverifyId =
           scenario === "merge" || scenario === "merge-lease"
-            ? listJobs(db).find((job) => job.queue === JOB_KIND.merge)!.id
+            ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!
+                .id
             : enqueueJob(db, {
                 queue: JOB_KIND.reverify,
                 priority: -100,
@@ -542,6 +649,17 @@ export async function probeRunnerOrchestration(
               assert.notEqual(verified.currentRunId, reviewRunId);
               assert.equal(getRun(db, verified.currentRunId!)?.status, "active");
             }
+          }
+          if (mergeDependencyYield) {
+            assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+            observe(
+              "The original merge reacquires its canonical session and completes a verified local squash merge",
+              true,
+              {
+                state: verified.state,
+                head: await git(["--git-dir", origin, "rev-parse", "main"]),
+              },
+            );
           }
           assert.equal(listRuns(db, item.id).length, scenario === "reassigned" ? 3 : 2);
           observe(
