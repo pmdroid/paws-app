@@ -36,6 +36,8 @@ import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 import { createRemoteCancellation } from "./cancel";
+import { RetryableRunnerError, runWithFailover } from "./failover";
+import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
 
@@ -92,26 +94,35 @@ export function createRemoteAgentRunner(options: {
   }): Promise<void>;
   now?: () => number;
   pollIntervalMs?: number;
+  placement?: RunnerPlacement;
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Set<string>();
-  function select(itemId: string, runnerId?: string) {
+  async function select(
+    itemId: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+    runnerId?: string,
+  ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
-    const candidates = db
-      .query<{ id: string; workspaceId: string }, []>(
-        `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
+    const candidates = options.placement
+      ? await options.placement.candidates(placement)
+      : db
+          .query<{ id: string; workspaceId: string }, []>(
+            `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
        AND r.last_seen_at>${now() - 60_000}
        AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>${now()})
        AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>${now()})
        ORDER BY r.last_seen_at DESC,r.id`,
-      )
-      .all();
+          )
+          .all();
+    placement.signal?.throwIfAborted();
     for (const runner of candidates) {
+      if (placement.excludeRunnerIds?.includes(runner.id)) continue;
       if (runnerId && runner.id !== runnerId) continue;
       if (reservations.has(runner.id)) continue;
       try {
@@ -127,8 +138,9 @@ export function createRemoteAgentRunner(options: {
       "No available paired runner can access this Linear task repository",
     );
   }
+  const cancelItem = createRemoteCancellation(options);
   return {
-    cancelItem: createRemoteCancellation(options),
+    cancelItem,
     closeoutForItem(itemId: string, signal?: AbortSignal) {
       const attempts = new Map<
         string,
@@ -156,7 +168,11 @@ export function createRemoteAgentRunner(options: {
                 work.scope(previous.runId, previous.workspaceId);
               }
               try {
-                return select(itemId, previous?.runnerId);
+                return await select(
+                  itemId,
+                  { itemId, role: "reviewer", purpose: "check", signal },
+                  previous?.runnerId,
+                );
               } catch (error) {
                 if (
                   !previous ||
@@ -184,11 +200,28 @@ export function createRemoteAgentRunner(options: {
               workspaceId: selected.workspaceId,
               fence: work.identity(selected.id).fence,
             };
-            const dispatched = checks.dispatch({
-              runnerId: selected.id,
-              runId: selected.runId,
-              verificationAttemptId: attempt.id,
-              ...request,
+            const dispatched = immediate(db, () => {
+              const execution = checks.dispatch({
+                runnerId: selected.id,
+                runId: selected.runId,
+                verificationAttemptId: attempt.id,
+                ...request,
+              });
+              const row = db
+                .query<{ commandId: string }, [string]>(
+                  "SELECT command_id AS commandId FROM runner_check_execution WHERE id=?",
+                )
+                .get(execution.input.executionId)!;
+              options.placement?.started({
+                commandId: row.commandId,
+                runnerId: selected.id,
+                itemId,
+                runId: selected.runId,
+                role: "reviewer",
+                purpose: "check",
+                startedAt: now(),
+              });
+              return execution;
             });
             attempts.set(request.candidateSha, attempt);
             executionId = dispatched.input.executionId;
@@ -213,6 +246,18 @@ export function createRemoteAgentRunner(options: {
               const receipt = checks.result(executionId);
               if (receipt) {
                 completed = true;
+                const row = db
+                  .query<{ commandId: string }, [string]>(
+                    "SELECT command_id AS commandId FROM runner_check_execution WHERE id=?",
+                  )
+                  .get(executionId)!;
+                immediate(db, () =>
+                  options.placement?.finished({
+                    commandId: row.commandId,
+                    runnerId: selected.id,
+                    finishedAt: now(),
+                  }),
+                );
                 return receipt;
               }
               work.current(selected.runId, assignment.generation);
@@ -230,7 +275,10 @@ export function createRemoteAgentRunner(options: {
       });
     },
     forItem(itemId: string) {
-      return async (input: RunAgentOptions): Promise<RunAgentResult> => {
+      const attempt = async (
+        input: RunAgentOptions,
+        excluded: readonly string[],
+      ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
         const mode = getTaskMode(db, itemId);
@@ -247,7 +295,14 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Read-only remote work requires the reviewer role");
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const selected = select(itemId);
+        const selected = await select(itemId, {
+          itemId,
+          profile,
+          role: input.role,
+          purpose: input.prepareOnly ? "prepare" : "work",
+          excludeRunnerIds: excluded,
+          signal: input.signal,
+        });
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -256,6 +311,7 @@ export function createRemoteAgentRunner(options: {
         let command: WorkCommand | undefined;
         let question: Promise<void> | undefined;
         let questionError: unknown;
+        let publishedEffects = false;
         let transcriptBytes = 0;
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
@@ -281,14 +337,26 @@ export function createRemoteAgentRunner(options: {
           if (input.prepareOnly) {
             const id = randomUUID();
             const issuedAt = now();
-            work.enqueue({
-              id,
-              runnerId: selected.id,
-              workspaceId: selected.workspaceId,
-              issuedAt,
-              expiresAt: issuedAt + 120_000,
-              type: "probe",
-              profile,
+            immediate(db, () => {
+              work.enqueue({
+                id,
+                runnerId: selected.id,
+                workspaceId: selected.workspaceId,
+                issuedAt,
+                expiresAt: issuedAt + 120_000,
+                type: "probe",
+                profile,
+              });
+              options.placement?.started({
+                commandId: id,
+                runnerId: selected.id,
+                itemId,
+                runId: selected.runId,
+                profile,
+                role: input.role,
+                purpose: "prepare",
+                startedAt: issuedAt,
+              });
             });
             while (now() < issuedAt + 120_000) {
               signal.throwIfAborted();
@@ -300,7 +368,30 @@ export function createRemoteAgentRunner(options: {
                 );
               else work.scope(selected.runId, selected.workspaceId);
               const result = health.read(selected.id, id);
-              if (result) return { ...result, role: input.role, transcriptPath: transcript };
+              if (result) {
+                const disposition = immediate(db, () =>
+                  options.placement?.finished({
+                    commandId: id,
+                    runnerId: selected.id,
+                    profile,
+                    result,
+                    finishedAt: now(),
+                  }),
+                );
+                if (
+                  disposition?.retryable &&
+                  result.agentExited &&
+                  !result.cancelled &&
+                  !result.timedOut
+                )
+                  throw new RetryableRunnerError(
+                    selected.id,
+                    result.authRequired
+                      ? "The runner agent requires sign-in."
+                      : "The runner agent exhausted its observed quota.",
+                  );
+                return { ...result, role: input.role, transcriptPath: transcript };
+              }
               await delay(interval, undefined, { signal });
             }
             throw new Error("Remote agent preparation timed out");
@@ -389,14 +480,43 @@ export function createRemoteAgentRunner(options: {
               .get(selected.id, now());
             if (occupied) throw new Error("Runner became busy before assignment");
             work.assign(assigned);
+            options.placement?.started({
+              commandId: assigned.id,
+              runnerId: selected.id,
+              itemId,
+              runId: selected.runId,
+              profile,
+              role: input.role,
+              purpose: "work",
+              startedAt: issuedAt,
+            });
           });
           command = assigned;
           let cursor = 0;
           let complete: RunnerResult | null = null;
+          let disposition: { retryable: boolean } | undefined;
           while (now() < deadline) {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
             if (questionError) throw questionError;
+            complete = results.read(assigned.runId, assigned.generation, assigned.id);
+            if (complete && !disposition)
+              disposition = immediate(db, () =>
+                options.placement?.finished({
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  profile,
+                  result: complete!,
+                  finishedAt: now(),
+                }),
+              );
+            if (complete && disposition?.retryable && input.role === "reviewer")
+              throw new RetryableRunnerError(
+                selected.id,
+                "The reviewer runner requires a fresh eligible agent.",
+                transcript,
+                publishedEffects,
+              );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = row.event;
@@ -433,6 +553,7 @@ export function createRemoteAgentRunner(options: {
                   role: input.role,
                   signal,
                 });
+                publishedEffects = true;
                 signal.throwIfAborted();
                 results.answer({
                   runId: assigned.runId,
@@ -444,6 +565,7 @@ export function createRemoteAgentRunner(options: {
               if (event.type === "question") {
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
+                publishedEffects = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
                 question = (async () => {
@@ -474,14 +596,79 @@ export function createRemoteAgentRunner(options: {
               }
               cursor = row.sequence;
             }
-            complete = results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && pendingEvents.length < 64) break;
+            if (pendingEvents.length === 64) continue;
+            if (!complete && results.read(assigned.runId, assigned.generation, assigned.id))
+              continue;
+            if (
+              options.placement &&
+              (db
+                .query<{ lastSeen: number | null }, [string]>(
+                  "SELECT last_seen_at AS lastSeen FROM runner WHERE id=?",
+                )
+                .get(selected.id)?.lastSeen ?? 0) <=
+                now() - 60_000
+            ) {
+              const lost = immediate(db, () =>
+                options.placement?.finished({
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  profile,
+                  failure: "heartbeat_lost",
+                  finishedAt: now(),
+                }),
+              );
+              if (!lost?.retryable) throw new Error("The runner stopped sending heartbeats.");
+              throw new RetryableRunnerError(
+                selected.id,
+                "The runner stopped sending heartbeats.",
+                transcript,
+                publishedEffects,
+              );
+            }
             await delay(interval, undefined, { signal });
           }
           if (!complete) throw new Error("Remote run timed out");
           if (question) throw new Error("Remote run completed with an unanswered question");
           if (assigned.type === "task" && (complete.candidateSha || complete.reviewText))
             throw new Error("Remote response task returned code work");
+          if (options.transcripts) {
+            work.current(assigned.runId, assigned.generation);
+            const bytes = await options.transcripts.download(
+              assigned.runId,
+              assigned.generation,
+              complete.executionId,
+            );
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
+            if (bytes.length > 16_777_216 || (bytes.length && bytes[bytes.length - 1] !== 10))
+              throw new Error("Remote transcript is incomplete");
+            const pending = `${transcript}.${randomUUID()}.pending`;
+            try {
+              writeFileSync(pending, Buffer.concat([previousTranscript, bytes]), {
+                flag: "wx",
+                mode: 0o600,
+              });
+              renameSync(pending, transcript);
+            } finally {
+              rmSync(pending, { force: true });
+            }
+          }
+          if (
+            disposition?.retryable &&
+            complete.agentExited &&
+            !complete.cancelled &&
+            !complete.timedOut &&
+            !complete.candidateSha
+          )
+            throw new RetryableRunnerError(
+              selected.id,
+              complete.authRequired
+                ? "The runner agent requires sign-in."
+                : "The runner agent exhausted its observed quota.",
+              transcript,
+              publishedEffects,
+            );
           if (complete.reviewText)
             await emit({
               type: "session_update",
@@ -531,28 +718,6 @@ export function createRemoteAgentRunner(options: {
               complete.candidateSha,
             ]);
           }
-          if (options.transcripts) {
-            work.current(assigned.runId, assigned.generation);
-            const bytes = await options.transcripts.download(
-              assigned.runId,
-              assigned.generation,
-              complete.executionId,
-            );
-            signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
-            if (bytes.length > 16_777_216 || (bytes.length && bytes[bytes.length - 1] !== 10))
-              throw new Error("Remote transcript is incomplete");
-            const pending = `${transcript}.${randomUUID()}.pending`;
-            try {
-              writeFileSync(pending, Buffer.concat([previousTranscript, bytes]), {
-                flag: "wx",
-                mode: 0o600,
-              });
-              renameSync(pending, transcript);
-            } finally {
-              rmSync(pending, { force: true });
-            }
-          }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
@@ -596,6 +761,8 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.id);
         }
       };
+      return (input: RunAgentOptions) =>
+        runWithFailover(input, attempt, async () => cancelItem(itemId, input.signal));
     },
   };
 }

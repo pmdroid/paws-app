@@ -44,6 +44,8 @@ import {
 } from "../../src/runner-transcripts";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
+import { createRunnerPlacement } from "../../src/runner-placement";
+import { createFakeLinearIssueLifecycle } from "../../src/linear";
 
 export async function probeRunnerBackend(
   root: string,
@@ -154,12 +156,12 @@ export async function probeRunnerBackend(
   };
   const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
-  async function next() {
+  async function next(selectedRunnerId = runnerId, acknowledge = true) {
     for (let i = 0; i < 500; i++) {
-      for (const envelope of work.commands(runnerId)) {
+      for (const envelope of work.commands(selectedRunnerId)) {
         const v = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
-          runnerId,
+          runnerId: selectedRunnerId,
           workspaceId: workspace.id,
           now,
           allowedRepositories: ["fixture/repository"],
@@ -170,7 +172,7 @@ export async function probeRunnerBackend(
           },
         });
         if (v.ok) {
-          work.acknowledge(runnerId, v.command.id);
+          if (acknowledge) work.acknowledge(selectedRunnerId, v.command.id);
           return v.command;
         }
       }
@@ -227,6 +229,8 @@ export async function probeRunnerBackend(
     agentExited: true,
     identity: { session: `session-${command.id}`, model: "model", provider: "fixture" },
   });
+  const failoverAbort = new AbortController();
+  let pendingFailover: Promise<unknown> | undefined;
   try {
     const denied = item();
     await assert.rejects(backend.forItem(denied.id)(input(denied)), /No available paired runner/);
@@ -1232,7 +1236,482 @@ export async function probeRunnerBackend(
       true,
       { leaseMs: 60000 },
     );
+    for (const envelope of work.commands(runnerId)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (command.type === "cancel") work.acknowledge(runnerId, command.id);
+    }
+    const hostIds = [runnerId];
+    for (const name of ["second", "third"]) {
+      const hostKey = await createRunnerKey(join(root, `client-${name}`));
+      const pairing = await control.beginPairing({ name, csr: hostKey.csr });
+      hostIds.push((await control.approvePairing(principal, pairing.code)).runnerId);
+    }
+    for (const hostId of hostIds) work.heartbeat(hostId);
+    const placements: string[] = [];
+    const observedFailures: string[] = [];
+    const failoverItem = item();
+    for (const [index, id] of hostIds.entries()) {
+      db.run("INSERT INTO runner_policy(runner_id,host_owner) VALUES(?,'member')", [id]);
+      db.run(
+        "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready,virtual_finish) VALUES(?,'codex','personal',1,?)",
+        [id, index * 10],
+      );
+    }
+    const placementLifecycle = createFakeLinearIssueLifecycle({
+      id: getWorkItem(db, failoverItem.id)!.linearIssueId,
+      teamId: "fixture-team",
+      assigneeId: "owner",
+      delegateId: "app-user",
+      stateType: "started",
+      projectId: "fixture-project",
+    });
+    const placement = createRunnerPlacement({
+      db,
+      now: () => now,
+      lifecycle: placementLifecycle,
+
+      tracker: {
+        async listProjectMembers() {
+          return ["owner"];
+        },
+      },
+    });
+    const placedBackend = createRemoteAgentRunner({
+      ...backendOptions,
+      placement: {
+        candidates: placement.candidates,
+        started(request) {
+          assert(db.inTransaction);
+          assert(
+            db
+              .query(
+                request.purpose === "work"
+                  ? "SELECT 1 FROM runner_work WHERE command_id=? AND runner_id=?"
+                  : "SELECT 1 FROM runner_command WHERE id=? AND runner_id=?",
+              )
+              .get(request.commandId, request.runnerId),
+          );
+          placement.started(request);
+          placements.push(request.runnerId);
+        },
+        finished(observation) {
+          assert(db.inTransaction);
+          const disposition = placement.finished(observation);
+          if (disposition.retryable)
+            observedFailures.push(
+              observation.failure ??
+                (observation.result?.authRequired ? "auth_expired" : "quota_exhausted"),
+            );
+          return disposition;
+        },
+      },
+    });
+    const beforeFailoverImports = fetched;
+    await git(["-C", source, "reset", "--hard", base]);
+    const failover = placedBackend.forItem(failoverItem.id)(
+      input(failoverItem, { signal: failoverAbort.signal }),
+    );
+    pendingFailover = failover;
+    void failover.catch(() => undefined);
+    const firstAttempt = await next(hostIds[0]!);
+    if (firstAttempt.type !== "run") throw new Error("Expected first failover work");
+    const firstToken = work.issueGrant({
+      runnerId: hostIds[0]!,
+      runId: firstAttempt.runId,
+      commandId: firstAttempt.id,
+      generation: firstAttempt.generation,
+    });
+    work.event({
+      runnerId: hostIds[0]!,
+      runId: firstAttempt.runId,
+      generation: firstAttempt.generation,
+      token: firstToken.token,
+      sequence: 1,
+      event: { type: "progress", text: "Retained work before heartbeat loss" },
+    });
+    for (
+      let index = 0;
+      index < 100 && !existsSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`);
+      index++
+    )
+      await delay(1);
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_000, hostIds[0]!]);
+    const firstStop = await next(hostIds[0]!, false);
+    assert.equal(firstStop.type, "cancel");
+    await delay(10);
+    assert.equal(work.commands(hostIds[1]!).length, 0);
+    assert.equal(fetched, beforeFailoverImports);
+    for (const envelope of work.commands(hostIds[0]!)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+    }
+    const secondAttempt = await next(hostIds[1]!);
+    if (secondAttempt.type !== "run") throw new Error("Expected second failover work");
+    assert.equal(secondAttempt.generation, firstAttempt.generation + 1);
+    assert.match(secondAttempt.prompt, /fresh agent session/);
+    assert.match(secondAttempt.prompt, /Retained work before heartbeat loss/);
+    assert.throws(
+      () =>
+        results.submit({
+          runnerId: hostIds[0]!,
+          runId: firstAttempt.runId,
+          generation: firstAttempt.generation,
+          token: firstToken.token,
+          result: { ...result(firstAttempt), candidateSha: head },
+        }),
+      /fenced|expired|unavailable/i,
+    );
+    const secondToken = work.issueGrant({
+      runnerId: hostIds[1]!,
+      runId: secondAttempt.runId,
+      commandId: secondAttempt.id,
+      generation: secondAttempt.generation,
+    });
+    results.submit({
+      runnerId: hostIds[1]!,
+      runId: secondAttempt.runId,
+      generation: secondAttempt.generation,
+      token: secondToken.token,
+      result: {
+        ...result(secondAttempt),
+        stopReason: "error",
+        errorMessage: "You've hit your session limit. Retry-After: 120",
+      },
+    });
+    const secondStop = await next(hostIds[1]!, false);
+    assert.equal(secondStop.type, "cancel");
+    await delay(10);
+    assert.equal(work.commands(hostIds[2]!).length, 0);
+    for (const envelope of work.commands(hostIds[1]!)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (command.type === "cancel") work.acknowledge(hostIds[1]!, command.id);
+    }
+    const thirdAttempt = await next(hostIds[2]!);
+    if (thirdAttempt.type !== "run") throw new Error("Expected third failover work");
+    assert.equal(thirdAttempt.generation, secondAttempt.generation + 1);
+    const thirdToken = work.issueGrant({
+      runnerId: hostIds[2]!,
+      runId: thirdAttempt.runId,
+      commandId: thirdAttempt.id,
+      generation: thirdAttempt.generation,
+    });
+    assert.match(thirdAttempt.prompt, /Retained work before heartbeat loss/);
+    for (let eventSequence = 1; eventSequence <= 130; eventSequence++)
+      work.event({
+        runnerId: hostIds[2]!,
+        runId: thirdAttempt.runId,
+        generation: thirdAttempt.generation,
+        token: thirdToken.token,
+        sequence: eventSequence,
+        event: { type: "progress", text: `Final event ${eventSequence}` },
+      });
+    results.submit({
+      runnerId: hostIds[2]!,
+      runId: thirdAttempt.runId,
+      generation: thirdAttempt.generation,
+      token: thirdToken.token,
+      result: { ...result(thirdAttempt), candidateSha: head },
+    });
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, hostIds[2]!]);
+    assert.equal((await failover).stopReason, "end_turn");
+    assert.match(
+      readFileSync(`${runDir(root, failoverItem.run.id)}/acp.jsonl`, "utf8"),
+      /Final event 130/,
+    );
+    assert.deepEqual(placements, hostIds);
+    assert.deepEqual(observedFailures, ["heartbeat_lost", "quota_exhausted"]);
+    assert.equal(fetched, beforeFailoverImports + 1);
+    assert.equal(getWorkItem(db, failoverItem.id)?.currentRunId, failoverItem.run.id);
+    observe(
+      "Three paired hosts join cancellation before fresh heartbeat and quota failover with one candidate import",
+      true,
+      {
+        hostIds,
+        generations: [firstAttempt.generation, secondAttempt.generation, thirdAttempt.generation],
+        observedFailures,
+        imports: fetched - beforeFailoverImports,
+        retainedHandoff: true,
+        completedCandidateHonoredAfterHeartbeatLoss: true,
+      },
+    );
+    work.heartbeat(hostIds[0]!);
+    work.heartbeat(hostIds[2]!);
+    const preparing = placedBackend.forItem(failoverItem.id)(
+      input(failoverItem, { prepareOnly: true, signal: failoverAbort.signal }),
+    );
+    pendingFailover = preparing;
+    const failoverProbe = await next(hostIds[0]!);
+    assert.equal(failoverProbe.type, "probe");
+    health.submit(hostIds[0]!, {
+      ...result(failoverProbe),
+      models: [{ id: "model", name: "Model" }],
+    });
+    await preparing;
+    const artifactItem = item();
+    placementLifecycle.issues.set(getWorkItem(db, artifactItem.id)!.linearIssueId, {
+      ...placementLifecycle.issue,
+      id: getWorkItem(db, artifactItem.id)!.linearIssueId,
+    });
+    await git(["-C", source, "reset", "--hard", base]);
+    const continuationState: { answer: string | null; questionId?: string } = { answer: null };
+    let publications = 0;
+    const artifactFailover = placedBackend.forItem(artifactItem.id)(
+      input(artifactItem, {
+        signal: failoverAbort.signal,
+        publishArtifact: {
+          async publish() {
+            publications++;
+            return { url: "https://linear.app/artifact/retained" };
+          },
+        },
+        askTeam: {
+          async ask(request, context) {
+            applyWorkItemEvent(db, artifactItem.id, "blocking_question");
+            const question = openQuestion(db, {
+              itemId: artifactItem.id,
+              runId: artifactItem.run.id,
+              sessionId: getWorkItem(db, artifactItem.id)!.sessionKey!,
+              body: request.question,
+              now,
+            });
+            continuationState.questionId = question.id;
+            while (continuationState.answer === null)
+              await delay(1, undefined, { signal: context.signal });
+            answerQuestion(db, question.id, {
+              answer: continuationState.answer,
+              answeredBy: "owner",
+              now,
+            });
+            applyWorkItemEvent(db, artifactItem.id, "answer_received");
+            return { answer: continuationState.answer };
+          },
+        },
+      }),
+    );
+    pendingFailover = artifactFailover;
+    void artifactFailover.catch(() => undefined);
+    const artifactCommand = await next(hostIds[0]!);
+    if (artifactCommand.type !== "run") throw new Error("Expected artifact failover work");
+    const artifactToken = work.issueGrant({
+      runnerId: hostIds[0]!,
+      runId: artifactCommand.runId,
+      commandId: artifactCommand.id,
+      generation: artifactCommand.generation,
+    });
+    const retainedBytes = Buffer.from("Retained artifact");
+    const retainedArtifact = {
+      id: randomUUID(),
+      path: "reports/retained.txt",
+      displayName: "Retained",
+      mimeType: "text/plain",
+      sizeBytes: retainedBytes.length,
+      sha256: createHash("sha256").update(retainedBytes).digest("hex"),
+      attachToIssue: true,
+    };
+    artifacts.upload({
+      runnerId: hostIds[0]!,
+      runId: artifactCommand.runId,
+      token: artifactToken.token,
+      chunk: {
+        generation: artifactCommand.generation,
+        artifact: retainedArtifact,
+        index: 0,
+        data: retainedBytes.toString("base64"),
+      },
+    });
+    work.event({
+      runnerId: hostIds[0]!,
+      runId: artifactCommand.runId,
+      generation: artifactCommand.generation,
+      token: artifactToken.token,
+      sequence: 1,
+      event: { type: "artifact", artifact: retainedArtifact },
+    });
+    results.submit({
+      runnerId: hostIds[0]!,
+      runId: artifactCommand.runId,
+      generation: artifactCommand.generation,
+      token: artifactToken.token,
+      result: {
+        ...result(artifactCommand),
+        stopReason: "error",
+        errorMessage: "You've hit your session limit. Retry-After: 120",
+      },
+    });
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, hostIds[0]!]);
+    const artifactStop = await next(hostIds[0]!, false);
+    assert.equal(artifactStop.type, "cancel");
+    for (const envelope of work.commands(hostIds[0]!)) {
+      const command = JSON.parse(
+        Buffer.from(envelope.payload, "base64url").toString(),
+      ) as RunnerCommand;
+      if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+    }
+    for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
+    assert(continuationState.questionId);
+    assert.equal(getWorkItem(db, artifactItem.id)?.state, "awaiting_input");
+    assert.equal(work.commands(hostIds[2]!).length, 0);
+    assert.equal(publications, 1);
+    continuationState.answer = "Keep the existing artifact and continue without republishing it.";
+    const approvedCommand = await next(hostIds[2]!);
+    if (approvedCommand.type !== "run") throw new Error("Expected approved continuation");
+    assert.match(approvedCommand.prompt, /Keep the existing artifact/);
+    const approvedToken = work.issueGrant({
+      runnerId: hostIds[2]!,
+      runId: approvedCommand.runId,
+      commandId: approvedCommand.id,
+      generation: approvedCommand.generation,
+    });
+    results.submit({
+      runnerId: hostIds[2]!,
+      runId: approvedCommand.runId,
+      generation: approvedCommand.generation,
+      token: approvedToken.token,
+      result: { ...result(approvedCommand), candidateSha: head },
+    });
+    await artifactFailover;
+    assert.equal(publications, 1);
+    observe(
+      "Published artifact failover pauses through a real persisted question before human continuation",
+      true,
+      {
+        questionId: continuationState.questionId,
+        publications,
+        continuation: continuationState.answer,
+        generation: approvedCommand.generation,
+      },
+    );
+    {
+      now += 120_001;
+      for (const id of hostIds) work.heartbeat(id);
+      const reviewEvents: string[] = [];
+      const independentReview = placedBackend.forItem(artifactItem.id)(
+        input(artifactItem, {
+          role: "reviewer",
+          readOnly: true,
+          profile: { agent: "codex", model: "review-model" },
+          signal: failoverAbort.signal,
+          onEvent(event) {
+            if (
+              event.type === "session_update" &&
+              (event.update.sessionUpdate === "agent_message_chunk" ||
+                event.update.sessionUpdate === "agent_thought_chunk") &&
+              event.update.content.type === "text"
+            )
+              reviewEvents.push(event.update.content.text);
+          },
+        }),
+      );
+      pendingFailover = independentReview;
+      void independentReview.catch(() => undefined);
+      const conflicting = await next(hostIds[0]!);
+      if (conflicting.type !== "review") throw new Error("Expected independent review command");
+      const conflictGrant = work.issueGrant({
+        runnerId: hostIds[0]!,
+        runId: conflicting.runId,
+        commandId: conflicting.id,
+        generation: conflicting.generation,
+      });
+      work.event({
+        runnerId: hostIds[0]!,
+        runId: conflicting.runId,
+        generation: conflicting.generation,
+        token: conflictGrant.token,
+        sequence: 1,
+        event: { type: "progress", text: "Conflicting review must remain unpublished" },
+      });
+      results.submit({
+        runnerId: hostIds[0]!,
+        runId: conflicting.runId,
+        generation: conflicting.generation,
+        token: conflictGrant.token,
+        result: {
+          ...result(conflicting, "reviewer"),
+          reviewText: "Conflicting review must remain unpublished",
+        },
+      });
+      assert.equal((await next(hostIds[0]!, false)).type, "cancel");
+      for (const envelope of work.commands(hostIds[0]!)) {
+        const command = JSON.parse(
+          Buffer.from(envelope.payload, "base64url").toString(),
+        ) as RunnerCommand;
+        if (command.type === "cancel") work.acknowledge(hostIds[0]!, command.id);
+      }
+      const independent = await next(hostIds[1]!);
+      if (independent.type !== "review") throw new Error("Expected fresh independent review");
+      const independentGrant = work.issueGrant({
+        runnerId: hostIds[1]!,
+        runId: independent.runId,
+        commandId: independent.id,
+        generation: independent.generation,
+      });
+      results.submit({
+        runnerId: hostIds[1]!,
+        runId: independent.runId,
+        generation: independent.generation,
+        token: independentGrant.token,
+        result: {
+          ...result(independent, "reviewer"),
+          identity: { ...result(independent, "reviewer").identity, model: "independent-model" },
+          reviewText: "Independent approval",
+        },
+      });
+      await independentReview;
+      assert(!reviewEvents.some((message) => message.includes("Conflicting review")));
+      assert(reviewEvents.includes("Independent approval"));
+      assert.equal(
+        db
+          .query<{ outcome: string }, [string]>(
+            "SELECT outcome FROM runner_execution_usage WHERE command_id=?",
+          )
+          .get(conflicting.id)!.outcome,
+        "model_conflict",
+      );
+      observe(
+        "Unexpected reviewer model reuse joins before fresh independent review without publishing conflicting output",
+        true,
+        { conflicting: conflicting.id, independent: independent.id, reviewEvents },
+      );
+    }
   } finally {
+    failoverAbort.abort();
+    await pendingFailover?.catch(() => undefined);
     db.close();
   }
+}
+
+if (import.meta.main) {
+  const root = process.argv[2];
+  if (!root) throw new Error("A disposable proof directory is required");
+  const files = [
+    "src/runner-backend/index.ts",
+    "src/runner-backend/helpers.ts",
+    "src/runner-backend/failover.ts",
+    "src/runner-backend/cancel.ts",
+    "src/runner-placement/index.ts",
+    "src/runner-placement/placement.ts",
+    "src/runner-placement/quota.ts",
+    "src/runner-work/control.ts",
+    "src/runner-helpers/index.ts",
+    "src/db/migrations.ts",
+    "test/local/runner-backend.ts",
+  ];
+  const hashes = Object.fromEntries(
+    files.map((file) => [file, createHash("sha256").update(readFileSync(file)).digest("hex")]),
+  );
+  const observations: unknown[] = [];
+  await probeRunnerBackend(root, (name, passed, value) =>
+    observations.push({ name, passed, value }),
+  );
+  for (const file of files)
+    assert.equal(createHash("sha256").update(readFileSync(file)).digest("hex"), hashes[file], file);
+  writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
+  writeFileSync(join(root, "source-hashes.json"), JSON.stringify(hashes, null, 2));
+  console.log(JSON.stringify({ root, passed: observations.length }));
 }
