@@ -26,6 +26,7 @@ import {
 import {
   readRunnerJob,
   runnerRepositoryBundlePath,
+  runnerTaskRepositoryPath,
   runnerResultDirectory,
   RunnerJobSchema,
   type RunnerJob,
@@ -43,6 +44,7 @@ import {
 export interface RunnerWorkerOptions {
   job: RunnerJob;
   repositoryBundle?: string;
+  repositorySnapshot?: string;
   outputDirectory: string;
   workRoot: string;
   home: string;
@@ -95,11 +97,13 @@ export async function executeRunnerCommand(
   const job = RunnerJobSchema.parse(options.job);
   const command = job.command;
   const repository = command.type === "run" || command.type === "review";
+  const task = command.type === "task";
   if (
     ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
     !Number.isSafeInteger(options.resultsGid) ||
     options.resultsGid < 0 ||
-    repository !== (options.repositoryBundle !== undefined)
+    repository !== (options.repositoryBundle !== undefined) ||
+    (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
   options.signal?.throwIfAborted();
@@ -151,8 +155,45 @@ export async function executeRunnerCommand(
     journalSize += length;
   }
   try {
-    mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
+    if (!task) mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
     const worktree = join(options.workRoot, job.executionId);
+    if (task) {
+      const directory = openSync(
+        worktree,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        const info = fstatSync(directory);
+        if (
+          info.uid !== process.getuid!() ||
+          info.gid !== process.getgid!() ||
+          (info.mode & 0o7777) !== 0o700
+        )
+          throw new Error("Unsafe runner task workspace");
+      } finally {
+        closeSync(directory);
+      }
+      if (options.repositorySnapshot) {
+        const mounted = openSync(
+          join(worktree, "repository"),
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        let source: number | undefined;
+        try {
+          source = openSync(
+            options.repositorySnapshot,
+            constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+          );
+          const target = fstatSync(mounted);
+          const expected = fstatSync(source);
+          if (target.dev !== expected.dev || target.ino !== expected.ino)
+            throw new Error("Runner task repository mount mismatch");
+        } finally {
+          closeSync(mounted);
+          if (source !== undefined) closeSync(source);
+        }
+      }
+    }
     const env = {
       PATH: "/usr/bin:/bin",
       HOME: options.home,
@@ -195,7 +236,7 @@ export async function executeRunnerCommand(
       await invokeGit(["-C", worktree, "config", "core.hooksPath", "/dev/null"]);
       await invokeGit(["-C", worktree, "checkout", "-b", `paws/${job.executionId}`, base]);
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
-    } else {
+    } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
     let reviewText = "";
@@ -212,14 +253,17 @@ export async function executeRunnerCommand(
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
-      readOnly: command.type !== "run",
+      readOnly: command.type === "task" ? command.purpose === "answer" : command.type !== "run",
       checkpoint: command.type === "run",
-      prepareOnly: !repository && command.type !== "helper",
-      itemId: repository ? command.itemId : job.executionId,
+      prepareOnly: !repository && command.type !== "helper" && !task,
+      itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt: repository || command.type === "helper" ? command.prompt : "Check agent connection.",
+      prompt:
+        repository || task || command.type === "helper"
+          ? command.prompt
+          : "Check agent connection.",
       worktreePath: worktree,
-      pawsRoot: join(options.workRoot, ".paws"),
+      pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
       home: options.home,
       signal: options.signal,
       onEvent(event) {
@@ -241,7 +285,7 @@ export async function executeRunnerCommand(
           throw error;
         }
       },
-      publishArtifact: repository
+      publishArtifact: (task ? command.purpose === "artifact" : repository)
         ? {
             async publish(snapshot, context) {
               if (!options.answer) throw new Error("Runner artifact publication is unavailable");
@@ -439,9 +483,11 @@ export async function runRunnerWorker(options: {
     job,
     ...(job.command.type === "run" || job.command.type === "review"
       ? { repositoryBundle: runnerRepositoryBundlePath(options.spool, options.executionId) }
-      : {}),
+      : job.command.type === "task" && job.command.repository
+        ? { repositorySnapshot: runnerTaskRepositoryPath(options.spool, options.executionId) }
+        : {}),
     outputDirectory: runnerResultDirectory(options.results, options.executionId),
-    workRoot: options.workRoot,
+    workRoot: job.command.type === "task" ? "/var/lib/paws-agent-tasks" : options.workRoot,
     home: options.home,
     resultsGid: options.results.resultsGid,
     signal: options.signal,

@@ -19,6 +19,7 @@ SPOOL = "/var/lib/paws-runner-spool"
 UNIT = "/etc/systemd/system/paws-agent@.service"
 RECEIPTS = "/var/lib/paws-runner-broker"
 RESULTS = "/var/lib/paws-agent-results"
+TASK_WORK = "/var/lib/paws-agent-tasks"
 
 
 def open_directory(path):
@@ -62,13 +63,20 @@ def validate_job(execution_id, runner_uid, agent_gid):
             if len(content) > 524288:
                 raise ValueError("Job file exceeds size limit")
             job = json.loads(content)
-        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check", "helper"):
+        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check", "helper", "task"):
             raise ValueError("Invalid job")
         if job["command"]["type"] in ("run", "review"):
             descriptor = os.open("repository.bundle", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             info = os.fstat(descriptor)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != runner_uid or info.st_gid != agent_gid or stat.S_IMODE(info.st_mode) != 0o640 or not 0 < info.st_size <= 536870912:
                 raise ValueError("Unsafe repository bundle")
+        if job["command"]["type"] == "task" and "repository" in job["command"]:
+            snapshot = os.open("repository", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                validate_directory(snapshot, runner_uid, agent_gid)
+            finally:
+                os.close(snapshot)
+        return job
     finally:
         for opened in (descriptor, directory, root):
             if opened is not None:
@@ -186,6 +194,27 @@ def prepare_results(execution_id, agent_uid, results_gid):
         os.close(root)
 
 
+def prepare_task_work(execution_id, agent_uid, agent_gid, repository):
+    root = open_directory(TASK_WORK)
+    directory = None
+    try:
+        info = os.fstat(root)
+        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o755:
+            raise ValueError("Unsafe task work root")
+        os.mkdir(execution_id, mode=0o700, dir_fd=root)
+        directory = os.open(execution_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        if repository:
+            os.mkdir("repository", mode=0o555, dir_fd=directory)
+        os.fchmod(directory, 0o700)
+        os.fchown(directory, agent_uid, agent_gid)
+        os.fsync(directory)
+        os.fsync(root)
+    finally:
+        if directory is not None:
+            os.close(directory)
+        os.close(root)
+
+
 def control_unit(operation, execution_id, template="paws-agent"):
     return subprocess.run(
         ["/usr/bin/systemctl", *({"kill": ["kill", "--kill-whom=all", "--signal=SIGKILL"], "show": ["show", "--property=ControlGroup", "--value"]}.get(operation, [operation])), "--", f"{template}@{execution_id}.service"],
@@ -272,11 +301,13 @@ def handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request=No
             return
         validate_unit()
         if request["operation"] == "start":
-            validate_job(request["executionId"], runner_uid, agent_gid)
+            job = validate_job(request["executionId"], runner_uid, agent_gid)
             if not admit_once(request["executionId"]):
                 connection.sendall(b'{"ok":true,"alreadyAdmitted":true}\n')
                 return
             prepare_results(request["executionId"], agent_uid, results_gid)
+            if job["command"]["type"] == "task":
+                prepare_task_work(request["executionId"], agent_uid, agent_gid, "repository" in job["command"])
         if request["operation"] == "stop":
             success = stop_unit(request["executionId"])
         else:

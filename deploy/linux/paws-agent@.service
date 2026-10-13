@@ -28,5 +28,6 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ReadOnlyPaths=/var/lib/paws-runner-spool
-ReadWritePaths=/var/lib/paws-agent-results /var/lib/paws-runner-broker
+ReadWritePaths=/var/lib/paws-agent-results /var/lib/paws-runner-broker -/var/lib/paws-agent-tasks/%i
+BindReadOnlyPaths=-/var/lib/paws-runner-spool/%i/repository:/var/lib/paws-agent-tasks/%i/repository
 InaccessiblePaths=-/var/lib/paws-runner -/run/user -/run/dbus
