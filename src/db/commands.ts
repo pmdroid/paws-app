@@ -77,7 +77,8 @@ export function applyLinearCommand(
 
     const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId) ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
-    const text = command.type === "stop" ? "Stopped from Linear." : "Cancelled from Linear.";
+    const origin = command.source === "dashboard" ? "Paws" : "Linear";
+    const text = command.type === "stop" ? `Stopped from ${origin}.` : `Cancelled from ${origin}.`;
     enqueueOutboxOnce(db, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,

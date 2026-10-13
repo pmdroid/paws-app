@@ -15,11 +15,13 @@ import { createAgentSettings } from "./agent-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
+import { createExecutionControls } from "./execution-controls";
 import { initializeWorkspaceAccess } from "./workspace";
 
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
+const executionControls = createExecutionControls(reload);
 
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
@@ -189,6 +191,8 @@ function paint(): void {
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot) sessionStart.mount(sessionRoot, currentEngine(), snapshot?.source);
+  const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
+  if (executionRoot) executionControls.mount(executionRoot, currentEngine(), snapshot?.source);
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot) runners.mount(runnerRoot, currentEngine(), snapshot?.source);
 }
@@ -199,8 +203,12 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
   const focus = selector === "#content" ? captureFocus(element) : null;
   const logs = selector === "#content" ? captureLogs(element) : [];
   const scroll = selector === "#content" ? element.scrollTop : 0;
+  const execution = element.querySelector<HTMLElement>("#execution-controls");
   painted.set(selector, html);
   element.innerHTML = html;
+  const nextExecution = element.querySelector<HTMLElement>("#execution-controls");
+  if (execution && nextExecution && execution.dataset["item"] === nextExecution.dataset["item"])
+    nextExecution.replaceWith(execution);
   if (selector !== "#content") return;
   element.scrollTop = scroll;
   restoreLogs(element, logs);
