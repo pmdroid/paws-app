@@ -15,13 +15,17 @@ import { recoverAcpConversation, type RunAgentOptions } from "../acp";
 import { createRunnerHelpers } from "../runner-helpers";
 import { workspaceId, workspaceTokenHash, issueWorkspaceBootstrap } from "../workspace";
 import { createRemoteSessionAgentRunner } from "./helpers";
+import { RetryableRunnerError, runWithFailover } from "./failover";
+import { quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const close of cleanup.splice(0)) close();
 });
 
-function fixture() {
+function fixture(
+  placement?: (db: ReturnType<typeof openDatabase>, now: () => number) => RunnerPlacement,
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-helper-backend-"));
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
@@ -63,6 +67,7 @@ function fixture() {
     helpers,
     now: () => now,
     pollIntervalMs: 1,
+    placement: placement?.(db, () => now),
   });
   const input: RunAgentOptions = {
     itemId: "not-an-item",
@@ -83,7 +88,7 @@ function fixture() {
     return helpers.current(row.id).command;
   }
   function reply(text = '{"mode":"answer"}') {
-    helpers.submit("runner", {
+    helpers.submit(current().runnerId, {
       executionId: "01J00000000000000000000000",
       commandId: current().id,
       role: "implementer",
@@ -208,4 +213,202 @@ test("session helpers reject executable-work and file/tool contracts before disp
       f.backend.forSession("session", "classify")({ ...f.input, ...override }),
     ).rejects.toThrow(/read-only prompt/);
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+});
+
+test("Placement selects a real helper host and records admission and outcome atomically", async () => {
+  const calls: string[] = [];
+  const f = fixture((db, now) => ({
+    async candidates(input) {
+      expect(input.sessionId).toBe("session");
+      expect(input.purpose).toBe("helper");
+      expect(input.profile).toEqual({ agent: "codex", model: null });
+      calls.push("candidates");
+      const runner = db
+        .query<{ workspaceId: string; userId: string }, []>(
+          "SELECT workspace_id AS workspaceId,owner_user_id AS userId FROM runner LIMIT 1",
+        )
+        .get()!;
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('selected',?,?,'Selected','active',?,?)",
+        [runner.workspaceId, runner.userId, now(), now()],
+      );
+      return [{ id: "selected", workspaceId: runner.workspaceId }];
+    },
+    started(input) {
+      expect(db.inTransaction).toBe(true);
+      expect(input.runnerId).toBe("selected");
+      expect(
+        db.query("SELECT 1 FROM runner_helper WHERE id=?").get(input.commandId),
+      ).not.toBeNull();
+      calls.push("started");
+    },
+    finished(input) {
+      expect(db.inTransaction).toBe(true);
+      expect(input.result?.agentExited).toBe(true);
+      calls.push("finished");
+      return { retryable: false };
+    },
+  }));
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  for (let attempt = 0; attempt < 1000 && calls.length < 2; attempt++) await Bun.sleep(1);
+  expect(calls.length).toBe(2);
+  expect(f.current().runnerId).toBe("selected");
+  f.reply();
+  await pending;
+  expect(calls).toEqual(["candidates", "started", "finished"]);
+});
+
+test("Rejected placement admission rolls back the signed helper command", async () => {
+  const f = fixture((db) => ({
+    async candidates() {
+      return [
+        {
+          id: "runner",
+          workspaceId: db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id,
+        },
+      ];
+    },
+    started() {
+      throw new Error("Shared host authorization changed");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
+    /No available paired runner/,
+  );
+  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+});
+
+test("An empty placement decision cannot fall back to another paired host", async () => {
+  const f = fixture(() => ({
+    async candidates() {
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
+    /No available paired runner/,
+  );
+  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
+});
+
+test("Three real helper assignments fail over after expired authentication and observed quota", async () => {
+  const attempts: string[] = [];
+  const f = fixture((db, now) => ({
+    async candidates(request) {
+      const owner = db
+        .query<{ workspaceId: string; userId: string }, []>(
+          "SELECT workspace_id AS workspaceId,owner_user_id AS userId FROM runner LIMIT 1",
+        )
+        .get()!;
+      for (const id of ["second", "third"])
+        db.run(
+          "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+          [id, owner.workspaceId, owner.userId, id, now(), now()],
+        );
+      return ["runner", "second", "third"]
+        .filter((id) => !request.excludeRunnerIds?.includes(id))
+        .map((id) => ({ id, workspaceId: owner.workspaceId }));
+    },
+    started(request) {
+      expect(db.inTransaction).toBe(true);
+      attempts.push(request.runnerId);
+    },
+    finished(observation) {
+      return {
+        retryable:
+          Boolean(observation.result?.authRequired) ||
+          quotaSignal(observation.result?.errorMessage ?? "", now())?.state === "exhausted",
+      };
+    },
+  }));
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  const waitAttempt = async (count: number) => {
+    for (let index = 0; index < 1000 && attempts.length < count; index++) await Bun.sleep(1);
+    expect(attempts.length).toBe(count);
+    return f.current();
+  };
+  const first = await waitAttempt(1);
+  const submit = (
+    command: ReturnType<typeof f.current>,
+    authRequired: boolean,
+    errorMessage?: string,
+  ) =>
+    f.helpers.submit(command.runnerId, {
+      executionId: workspaceId(),
+      commandId: command.id,
+      role: "implementer",
+      stopReason: "error",
+      cancelled: false,
+      timedOut: false,
+      authRequired,
+      agentExited: true,
+      text: "",
+      ...(errorMessage ? { errorMessage } : {}),
+    });
+  submit(first, true, "Agent login expired");
+  const second = await waitAttempt(2);
+  expect(second.id).not.toBe(first.id);
+  expect(second.prompt).toContain("fresh agent session");
+  expect(
+    f.db
+      .query<{ ended: number }, [string]>("SELECT ended_at AS ended FROM runner_helper WHERE id=?")
+      .get(first.id)!.ended,
+  ).toBeGreaterThan(0);
+  submit(second, false, "You've hit your session limit. Retry-After: 120");
+  const third = await waitAttempt(3);
+  expect(third.id).not.toBe(second.id);
+  f.reply();
+  const result = await pending;
+  expect(result.stopReason).toBe("end_turn");
+  expect(attempts).toEqual(["runner", "second", "third"]);
+  expect(
+    f.db
+      .query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM runner_helper WHERE ended_at IS NOT NULL",
+      )
+      .get()!.n,
+  ).toBe(3);
+  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(0);
+});
+
+test("Human continuation time does not exhaust the remote execution retry budget", async () => {
+  let attempts = 0;
+  const result = await runWithFailover(
+    {
+      ...fixture().input,
+      timeoutMs: 100,
+      askTeam: {
+        async ask() {
+          await Bun.sleep(150);
+          return { answer: "Keep the existing artifact" };
+        },
+      },
+    },
+    async (input) => {
+      if (++attempts === 1) throw new RetryableRunnerError("first", "Interrupted", undefined, true);
+      if (attempts === 2) throw new RetryableRunnerError("second", "Quota exhausted");
+      expect(input.prompt).toContain("Keep the existing artifact");
+      expect(input.timeoutMs).toBeGreaterThan(0);
+      return {
+        role: "implementer",
+        stopReason: "end_turn",
+        cancelled: false,
+        timedOut: false,
+        authRequired: false,
+        agentExited: true,
+        transcriptPath: "unused",
+      };
+    },
+    async () => {},
+  );
+  expect(attempts).toBe(3);
+  expect(result.stopReason).toBe("end_turn");
 });
