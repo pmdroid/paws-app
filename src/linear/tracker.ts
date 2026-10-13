@@ -1,3 +1,4 @@
+import { createLinearAttributionReads } from "./attribution";
 import { createLinearProjectMembers } from "./project-members";
 import { createLinearAttachmentMethods } from "./attachments";
 import type { createLinearSessionReads } from "./history";
@@ -62,12 +63,16 @@ const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]
 
 export function createLinearTracker(
   client: LinearClient,
-): LinearSessionAdapter & ReturnType<typeof createLinearSessionReads> & LinearRepositoryAdapter {
+): LinearSessionAdapter &
+  ReturnType<typeof createLinearSessionReads> &
+  LinearRepositoryAdapter &
+  ReturnType<typeof createLinearAttributionReads> {
   const sessions = createLinearSessionMethods(client);
   return {
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearProjectMembers(client),
+    ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
     ...createLinearAttachmentMethods(client),
     async loadEpic(linearIssueId) {
