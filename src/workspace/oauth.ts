@@ -15,7 +15,13 @@ export type LinearBrowserIdentity = {
 
 export function beginWorkspaceOAuth(
   db: Database,
-  options: { clientId: string; origin: string; now: number; bootstrap: string | null },
+  options: {
+    clientId: string;
+    origin: string;
+    now: number;
+    bootstrap: string | null;
+    assignmentHash?: string | null;
+  },
 ): Response {
   const state = workspaceSecret();
   const browser = workspaceSecret();
@@ -25,6 +31,7 @@ export function beginWorkspaceOAuth(
     browserHash: workspaceTokenHash(browser),
     bootstrapHash: options.bootstrap === null ? null : workspaceTokenHash(options.bootstrap),
     expiresAt: options.now + 10 * 60_000,
+    assignmentHash: options.assignmentHash,
   });
   const target = new URL("https://linear.app/oauth/authorize");
   target.search = new URLSearchParams({
@@ -52,7 +59,11 @@ export async function completeWorkspaceOAuth(
   db: Database,
   request: Request,
   options: { clientId: string; origin: string; now: number; fetch: typeof fetch },
-): Promise<{ identity: LinearBrowserIdentity; bootstrapHash: string | null }> {
+): Promise<{
+  identity: LinearBrowserIdentity;
+  bootstrapHash: string | null;
+  assignmentHash: string | null;
+}> {
   const url = new URL(request.url);
   const state = url.searchParams.get("state");
   const browser = cookieValue(request, LOGIN_COOKIE);
@@ -130,6 +141,7 @@ export async function completeWorkspaceOAuth(
       organizationName: text(organization, "name"),
     },
     bootstrapHash: pending.bootstrapHash,
+    assignmentHash: pending.assignmentHash ?? null,
   };
 }
 

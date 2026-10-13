@@ -11,14 +11,21 @@ export type WorkspaceOAuthRequest = {
   stateHash: string;
   browserHash: string;
   bootstrapHash: string | null;
+  assignmentHash?: string | null;
   expiresAt: number;
 };
 
 export function saveWorkspaceOAuthRequest(db: Database, input: WorkspaceOAuthRequest): void {
   db.run("DELETE FROM workspace_oauth_request WHERE expires_at<=?", [input.expiresAt - 600_000]);
   db.run(
-    "INSERT INTO workspace_oauth_request(state_hash,browser_hash,verifier,bootstrap_hash,expires_at) VALUES(?,?,'',?,?)",
-    [input.stateHash, input.browserHash, input.bootstrapHash, input.expiresAt],
+    "INSERT INTO workspace_oauth_request(state_hash,browser_hash,verifier,bootstrap_hash,expires_at,assignment_hash) VALUES(?,?,'',?,?,?)",
+    [
+      input.stateHash,
+      input.browserHash,
+      input.bootstrapHash,
+      input.expiresAt,
+      input.assignmentHash ?? null,
+    ],
   );
 }
 
@@ -31,7 +38,7 @@ export function consumeWorkspaceOAuthRequest(
   return db
     .query<WorkspaceOAuthRequest, [string, string, number]>(
       `DELETE FROM workspace_oauth_request WHERE state_hash=? AND browser_hash=? AND expires_at>?
-      RETURNING state_hash AS stateHash,browser_hash AS browserHash,bootstrap_hash AS bootstrapHash,expires_at AS expiresAt`,
+      RETURNING state_hash AS stateHash,browser_hash AS browserHash,bootstrap_hash AS bootstrapHash,assignment_hash AS assignmentHash,expires_at AS expiresAt`,
     )
     .get(stateHash, browserHash, now);
 }

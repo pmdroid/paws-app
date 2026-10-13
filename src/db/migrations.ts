@@ -1229,4 +1229,22 @@ CREATE TABLE linear_outbox_backoff (
 ) STRICT;
 `,
   },
+  {
+    id: "046_workspace_assignment_handoff",
+    sql: `
+ALTER TABLE workspace_oauth_request ADD COLUMN assignment_hash TEXT;
+CREATE TABLE workspace_assignment (
+ session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+ generation INTEGER NOT NULL,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ actor_id TEXT NOT NULL,
+ token_hash TEXT NOT NULL UNIQUE,
+ fingerprint TEXT NOT NULL,
+ event TEXT NOT NULL CHECK(json_valid(event)),
+ expires_at INTEGER NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','ready','accepted','continued','invalid')),
+ PRIMARY KEY(session_id,generation)
+) STRICT;
+`,
+  },
 ];

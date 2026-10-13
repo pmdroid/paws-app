@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { WorkspaceAssignments } from "./assignments";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import { createWorkspaceAccess } from "./access";
@@ -6,6 +7,7 @@ import { issueWorkspaceBootstrap } from "./session";
 
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
+  assignments?: WorkspaceAssignments;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;

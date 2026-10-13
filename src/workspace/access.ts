@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { WorkspaceAssignments } from "./assignments";
 import {
   auditWorkspaceAccess,
   consumeWorkspaceBootstrap,
@@ -28,6 +29,7 @@ import {
 
 export type WorkspaceAccessOptions = {
   db: Database;
+  assignments?: WorkspaceAssignments;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -165,11 +167,19 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         if (bootstrap !== null && !/^[A-Za-z0-9_-]{43}$/.test(bootstrap))
           return json({ error: "Invalid bootstrap grant" }, 400);
       }
+      const token = url.searchParams.get("assignment");
+      const assignmentHash = token === null ? null : options.assignments?.begin(token);
+      if (token !== null && !assignmentHash)
+        return json(
+          { error: "Assignment sign-in is unavailable. Use the latest Linear sign-in action." },
+          400,
+        );
       return beginWorkspaceOAuth(options.db, {
         clientId: options.clientId,
         origin,
         now: now(),
         bootstrap,
+        assignmentHash,
       });
     }
     if (path === "/auth/linear/callback") {
@@ -225,6 +235,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamIds: identity.teamIds,
           now: syncAt,
         });
+        if (result.assignmentHash !== null) {
+          if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
+          options.assignments.complete(result.assignmentHash, workspace.id, result.identity.userId);
+        }
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
         if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);

@@ -122,6 +122,7 @@ import {
 import { intakeDelegatedIssue, readyItems, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
+  EpicSnapshot,
   ProgressUpdate,
   TrackerAdapter,
   TrackerRequestOptions,
@@ -189,6 +190,7 @@ export type OrchestratorOptions = {
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
+  authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
@@ -624,14 +626,24 @@ export class Orchestrator {
               ),
           }
         : tracker;
-    let intakeTracker = progressTracker;
+    let authorizedSnapshot: EpicSnapshot | null = null;
+    const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
+        throw new Error("The Linear assignment changed before intake.");
+      authorizedSnapshot = snapshot;
+      return snapshot;
+    };
+    let intakeTracker = {
+      ...progressTracker,
+      loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
+    };
     const classification =
       this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
         ? await this.taskPlanner.plan({
             taskKey,
             sessionId,
             request: async (signal) => {
-              const snapshot = await tracker.loadEpic(issueId);
+              const snapshot = authorizeSnapshot(await tracker.loadEpic(issueId));
               signal.throwIfAborted();
               intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
               await this.hydrateLinearContext(sessionId, signal);
@@ -653,7 +665,11 @@ export class Orchestrator {
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
-      isCurrent,
+      isCurrent: () =>
+        isCurrent() &&
+        (!sessionId ||
+          authorizedSnapshot === null ||
+          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false),
       onAccepted: (accepted) => {
         immediate(this.db, () => {
           if (redirect) {
