@@ -15,6 +15,7 @@ export function startHost(input: {
   pollMs?: number;
   /** After a sleep longer than two hours, check out fresh main and keep the WIP branch. */
   restartFromMain?: (item: WorkItemRecord) => void;
+  restartFromMainBlocked?: (item: WorkItemRecord) => string | null;
 }): { stop: () => void; supervisor: HostSupervisor } {
   const clock = input.clock ?? systemClock;
   const supervisor = new HostSupervisor(
@@ -24,6 +25,7 @@ export function startHost(input: {
     input.agentAlive,
     input.pollMs,
     input.restartFromMain,
+    input.restartFromMainBlocked,
   );
   const task = supervisor.run(input.signal);
   void task.catch(() => undefined);
