@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  existsSync,
+  writeFileSync,
+} from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate, saveCheckpoint } from "../db";
@@ -10,6 +18,7 @@ import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import type { RunnerCommand, RunnerResult } from "../runner-protocol";
 import type { RunnerChecks } from "../runner-checks";
+import type { RunnerTranscripts } from "../runner-transcripts";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 
@@ -22,6 +31,7 @@ export function createRemoteAgentRunner(options: {
   health: RunnerHealth;
   artifacts?: RunnerArtifactStore;
   checks?: RunnerChecks;
+  transcripts?: Pick<RunnerTranscripts, "download">;
   fetchCandidate(input: {
     itemId: string;
     worktree: string;
@@ -141,6 +151,7 @@ export function createRemoteAgentRunner(options: {
         let question: Promise<void> | undefined;
         let questionError: unknown;
         let transcriptBytes = 0;
+        let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
         const emit = async (event: AcpEvent) => {
           const line = `${JSON.stringify({ event })}\n`;
@@ -152,6 +163,8 @@ export function createRemoteAgentRunner(options: {
         try {
           mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
           signal.throwIfAborted();
+          if (options.transcripts && existsSync(transcript))
+            previousTranscript = readFileSync(transcript);
           if (input.prepareOnly) {
             const id = randomUUID();
             const issuedAt = now();
@@ -224,7 +237,8 @@ export function createRemoteAgentRunner(options: {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
             if (questionError) throw questionError;
-            for (const row of results.events(assigned.runId, assigned.generation, cursor)) {
+            const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
+            for (const row of pendingEvents) {
               const event = row.event;
               if (event.type === "progress")
                 await emit({
@@ -299,7 +313,7 @@ export function createRemoteAgentRunner(options: {
               cursor = row.sequence;
             }
             complete = results.read(assigned.runId, assigned.generation, assigned.id);
-            if (complete) break;
+            if (complete && pendingEvents.length < 64) break;
             await delay(interval, undefined, { signal });
           }
           if (!complete) throw new Error("Remote run timed out");
@@ -352,6 +366,28 @@ export function createRemoteAgentRunner(options: {
               baseSha,
               complete.candidateSha,
             ]);
+          }
+          if (options.transcripts) {
+            work.current(assigned.runId, assigned.generation);
+            const bytes = await options.transcripts.download(
+              assigned.runId,
+              assigned.generation,
+              complete.executionId,
+            );
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
+            if (bytes.length > 16_777_216 || (bytes.length && bytes[bytes.length - 1] !== 10))
+              throw new Error("Remote transcript is incomplete");
+            const pending = `${transcript}.${randomUUID()}.pending`;
+            try {
+              writeFileSync(pending, Buffer.concat([previousTranscript, bytes]), {
+                flag: "wx",
+                mode: 0o600,
+              });
+              renameSync(pending, transcript);
+            } finally {
+              rmSync(pending, { force: true });
+            }
           }
           work.finish(assigned.runId, assigned.generation);
           command = undefined;

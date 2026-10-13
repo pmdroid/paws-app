@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -24,7 +24,12 @@ import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerArtifactStore } from "../../src/runner-artifacts";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
-import type { RunAgentOptions, AcpEvent } from "../../src/acp";
+import { recoverAcpConversation, runDir, type RunAgentOptions, type AcpEvent } from "../../src/acp";
+import {
+  createRunnerTranscripts,
+  createFakeRunnerTranscriptObjects,
+  RUNNER_TRANSCRIPT_CHUNK_BYTES,
+} from "../../src/runner-transcripts";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
 
@@ -117,7 +122,7 @@ export async function probeRunnerBackend(
   let importWrongHead = false;
   const artifacts = createRunnerArtifactStore({ root: join(root, "artifact-store"), work });
   let published = false;
-  const backend = createRemoteAgentRunner({
+  const backendOptions: Parameters<typeof createRemoteAgentRunner>[0] = {
     artifacts,
     db,
     work,
@@ -134,7 +139,8 @@ export async function probeRunnerBackend(
       fetched++;
       await git(["-C", candidate.worktree, "reset", "--hard", importWrongHead ? base : head]);
     },
-  });
+  };
+  const backend = createRemoteAgentRunner(backendOptions);
   const seen = new Set<string>();
   async function next() {
     for (let i = 0; i < 500; i++) {
@@ -402,6 +408,200 @@ export async function probeRunnerBackend(
       true,
       { reviewText: text, implementationFetches: fetched },
     );
+    const transcriptObjects = createFakeRunnerTranscriptObjects();
+    const transcripts = createRunnerTranscripts({ db, work, objects: transcriptObjects });
+    let cancelDuringDownload = false;
+    const sealedBackend = createRemoteAgentRunner({
+      ...backendOptions,
+      transcripts: {
+        async download(runId, generation, executionId) {
+          const bytes = await transcripts.download(runId, generation, executionId);
+          if (cancelDuringDownload) {
+            const current = db
+              .query<{ itemId: string }, [string]>("SELECT item_id AS itemId FROM run WHERE id=?")
+              .get(runId)!;
+            db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [current.itemId]);
+          }
+          return bytes;
+        },
+      },
+    });
+    async function seal(
+      command: Extract<RunnerCommand, { type: "run" | "review" }>,
+      token: string,
+      executionId: string,
+      bytes: Buffer,
+    ) {
+      const access = { runnerId, runId: command.runId, token };
+      for (let offset = 0; offset < bytes.length; offset += RUNNER_TRANSCRIPT_CHUNK_BYTES) {
+        const chunk = bytes.subarray(offset, offset + RUNNER_TRANSCRIPT_CHUNK_BYTES);
+        await transcripts.upload(access, {
+          generation: command.generation,
+          executionId,
+          offset,
+          sha256: createHash("sha256").update(chunk).digest("hex"),
+          data: chunk.toString("base64"),
+        });
+      }
+      await transcripts.finish(access, {
+        generation: command.generation,
+        executionId,
+        offset: bytes.length,
+        sizeBytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      });
+    }
+    const sealed = item();
+    const sealedPath = join(runDir(root, sealed.run.id), "acp.jsonl");
+    mkdirSync(runDir(root, sealed.run.id), { recursive: true });
+    const prefix = Buffer.from(
+      JSON.stringify({
+        event: {
+          type: "session_update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Prior turn" },
+          },
+        },
+      }) + "\n",
+    );
+    writeFileSync(sealedPath, prefix);
+    const fullText = "Complete history " + "z".repeat(10 * 1024 * 1024);
+    const raw = Buffer.from(
+      [
+        {
+          event: {
+            type: "session_update",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: fullText },
+            },
+          },
+        },
+        { type: "question", text: "Continue?" },
+        { type: "artifact", path: "report.txt" },
+        {
+          event: {
+            type: "session_update",
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "check",
+              status: "completed",
+              rawOutput: "Checked",
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row) + "\n")
+        .join(""),
+    );
+    const receivedProgress: string[] = [];
+    for (let turn = 0; turn < 2; turn++) {
+      const before = readFileSync(sealedPath);
+      const response = sealedBackend.forItem(sealed.id)(
+        input(sealed, {
+          role: "reviewer",
+          readOnly: true,
+          onEvent(event) {
+            if (
+              event.type === "session_update" &&
+              event.update.sessionUpdate === "agent_thought_chunk" &&
+              event.update.content.type === "text"
+            )
+              receivedProgress.push(event.update.content.text);
+          },
+        }),
+      );
+      const command = await next();
+      if (command.type !== "review") throw new Error("Unexpected sealed transcript command");
+      const transcriptGrant = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      });
+      const receipt = result(command, "reviewer");
+      await seal(command, transcriptGrant.token, receipt.executionId, raw);
+      for (let eventSequence = 1; eventSequence <= 130; eventSequence++) {
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: transcriptGrant.token,
+          sequence: eventSequence,
+          event: { type: "progress", text: `turn-${turn}-event-${eventSequence}` },
+        });
+      }
+      results.submit({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: transcriptGrant.token,
+        result: receipt,
+      });
+      const sealedResult = await response;
+      assert.equal(sealedResult.transcriptPath, sealedPath);
+      assert(receivedProgress.includes(`turn-${turn}-event-130`));
+      const mirrored = readFileSync(sealedPath);
+      assert.deepEqual(mirrored.subarray(0, before.length), before);
+      assert.deepEqual(mirrored.subarray(before.length, before.length + raw.length), raw);
+      const history = await recoverAcpConversation(sealedPath, before.length);
+      assert.equal(history[0]?.body, fullText);
+      assert.equal(JSON.parse(history[1]!.body).rawOutput, "Checked");
+    }
+    observe(
+      "sealed complete remote history replaces only the current turn and preserves previous turns",
+      true,
+      { rawBytes: raw.length, turns: 2, recoveredTool: "Checked" },
+    );
+    for (const failure of ["unsealed", "mismatched", "cancelled"] as const) {
+      const rejected = item();
+      const response = sealedBackend.forItem(rejected.id)(
+        input(rejected, { role: "reviewer", readOnly: true }),
+      );
+      const rejection = assert.rejects(
+        response,
+        failure === "unsealed"
+          ? /not complete/
+          : failure === "mismatched"
+            ? /execution changed/
+            : /no longer active/,
+      );
+      const command = await next();
+      if (command.type !== "review") throw new Error("Unexpected rejected transcript command");
+      const transcriptGrant = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      });
+      const receipt = result(command, "reviewer");
+      if (failure !== "unsealed")
+        await seal(
+          command,
+          transcriptGrant.token,
+          failure === "mismatched" ? workspaceId() : receipt.executionId,
+          Buffer.from("{}\n"),
+        );
+      cancelDuringDownload = failure === "cancelled";
+      results.submit({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: transcriptGrant.token,
+        result: receipt,
+      });
+      await rejection;
+      cancelDuringDownload = false;
+      const path = join(runDir(root, rejected.run.id), "acp.jsonl");
+      assert(!existsSync(path) || !readFileSync(path).includes(Buffer.from("{}\n")));
+      assert.equal((await next()).type, "cancel");
+      observe(
+        `remote transcript ${failure} cannot publish sealed history or complete the assignment`,
+        true,
+        { canonicalState: getWorkItem(db, rejected.id)?.state },
+      );
+    }
     const prepared = item();
     const preparation = backend.forItem(prepared.id)(
       input(prepared, {
