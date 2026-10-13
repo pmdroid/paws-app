@@ -191,6 +191,8 @@ For the root verifier identity and signer, run `bun --no-env-file test test/runn
 
 Run `bun test/local/runner-health-runtime.ts` to verify signed health commands, agent initialization without prompts, immutable mTLS receipts, and interrupted-worker recovery with real separate UIDs and the production Unix broker in a disposable container. The fixture writes its source hashes and native observations to its printed evidence directory.
 
+After broker lifecycle changes, run both `bun --no-env-file test/local/runner-health-runtime.ts` and `bun --no-env-file test/local/runner-broker.ts` in their disposable namespaces. The fixtures must create the production fixed root-only receipt directory, retain admission and stop receipts through the actual lifecycle lock, and assert that health worker control selects the agent service template. Product broker helpers remain unchanged. Preserve the health observations, broker namespace assertions and real user-systemd cgroup evidence.
+
 For worker artifact publication, run `bun --no-env-file test test/runner-worker.test.ts test/worker-publication.test.ts`. The real worker and scripted ACP publish run and read-only review evidence, snapshot bytes before the daemon answers, and validate their descriptor, digest, ownership and group-readable permissions. Inspect retained snapshots after the worktree changes, request-bound publication URLs, rejected malformed or non-HTTPS receipts, and cancellation that joins the ACP process without publishing a candidate.
 
 ## Runners dashboard
