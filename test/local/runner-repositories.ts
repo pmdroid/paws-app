@@ -19,6 +19,7 @@ import type { RunnerCommand } from "../../src/runner-protocol";
 export async function probeRunnerRepositories(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
+  privateInputs = false,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const home = join(root, "home");
@@ -80,11 +81,13 @@ export async function probeRunnerRepositories(
   ]);
   assert.equal(compiled, 0, compilationError);
   const calls: { operation: string; token: string; args: string[]; signal?: AbortSignal }[] = [];
+  const credentials: string[] = [];
   const options = {
     root: join(root, "cache"),
     home,
     async credential(job: RunnerCommand, access: "read" | "write") {
       assert.equal("runId" in job ? job.runId : null, command.runId);
+      credentials.push(access);
       return `fixture-${access}`;
     },
     async networkGit(input: {
@@ -223,6 +226,62 @@ export async function probeRunnerRepositories(
       replayedSha: sha,
     },
   );
+  if (privateInputs) {
+    const privatePath = "private-input.txt";
+    const privateCommand = {
+      ...command,
+      inputFiles: [
+        {
+          id: 0,
+          path: privatePath,
+          mimeType: "text/plain",
+          sizeBytes: 6,
+          sha256: createHash("sha256").update("secret").digest("hex"),
+        },
+      ],
+    };
+    await repositories.publish(privateCommand, candidate);
+    for (const variant of ["present", "removed", "renamed"]) {
+      await invoke(["-C", tree, "checkout", "-B", "private-case", baseSha]);
+      writeFileSync(join(tree, privatePath), "secret");
+      await invoke(["-C", tree, "add", "."]);
+      await invoke(["-C", tree, "commit", "-m", "private input"]);
+      if (variant !== "present") {
+        if (variant === "removed") await invoke(["-C", tree, "rm", privatePath]);
+        else await invoke(["-C", tree, "mv", privatePath, "renamed.txt"]);
+        await invoke(["-C", tree, "commit", "-m", "changed private input path"]);
+      }
+      const privateSha = (await invoke(["-C", tree, "rev-parse", "HEAD"])).trim();
+      const privateBundle = join(root, `${variant}.bundle`);
+      await invoke(["-C", tree, "bundle", "create", privateBundle, "HEAD", `^${baseSha}`]);
+      const priorCredentials = credentials.length;
+      const priorCalls = calls.length;
+      await assert.rejects(
+        repositories.publish(privateCommand, {
+          bundle: readFileSync(privateBundle),
+          sha: privateSha,
+          branch: `paws/private-${variant}`,
+        }),
+        /Private runner input/,
+      );
+      assert.equal(credentials.length, priorCredentials);
+      assert.equal(calls.length, priorCalls);
+      await assert.rejects(
+        invoke(["--git-dir", origin, "rev-parse", `refs/heads/paws/private-${variant}`]),
+      );
+    }
+    observe(
+      "private input paths in any candidate commit fail before write credentials or push",
+      true,
+      {
+        presentDenied: true,
+        removedEarlierCommitDenied: true,
+        renamedDenied: true,
+        ordinaryCandidateAllowed: true,
+        writeCredentialsUnchanged: true,
+      },
+    );
+  }
   const pushes = calls.filter((call) => call.operation === "push").length;
   await assert.rejects(
     repositories.publish(command, { ...candidate, sha: "f".repeat(40) }),
