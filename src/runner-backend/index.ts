@@ -13,11 +13,13 @@ import {
   constants,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
+import { relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, saveCheckpoint } from "../db";
 import {
   git,
   recoverAcpConversation,
+  snapshotAgentInputs,
   runDir,
   type AcpEvent,
   type RunAgentOptions,
@@ -30,6 +32,7 @@ import type { RunnerArtifactStore } from "../runner-artifacts";
 import type { RunnerCommand, RunnerResult } from "../runner-protocol";
 import type { RunnerChecks } from "../runner-checks";
 import type { RunnerTranscripts } from "../runner-transcripts";
+import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 
@@ -75,6 +78,7 @@ export function createRemoteAgentRunner(options: {
   artifacts?: RunnerArtifactStore;
   checks?: RunnerChecks;
   transcripts?: Pick<RunnerTranscripts, "download">;
+  inputs?: Pick<RunnerInputStore, "stage" | "stagePrompt">;
   fetchCandidate(input: {
     itemId: string;
     worktree: string;
@@ -239,6 +243,7 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Remote response task transcript is unavailable");
         if (!responseTask && !input.prepareOnly && input.readOnly && input.role !== "reviewer")
           throw new Error("Read-only remote work requires the reviewer role");
+        const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
         const selected = select(itemId);
         const controller = new AbortController();
@@ -305,8 +310,28 @@ export function createRemoteAgentRunner(options: {
                 signal,
               })
             : { prompt: input.prompt, inputFiles: [] };
-          const files = [...(input.inputFiles ?? []), ...prepared.inputFiles];
-          if (files.length) throw new Error("Remote agent input transfer is unavailable");
+          const files = snapshotAgentInputs(input.worktreePath, [
+            ...suppliedInputs,
+            ...prepared.inputFiles,
+          ]);
+          if (files.length && !options.inputs)
+            throw new Error("Remote agent input transfer is unavailable");
+          if (prepared.prompt.length > 65_536 && !options.inputs)
+            throw new Error("Remote conversation context transfer is unavailable");
+          const commandId = randomUUID();
+          const inputFiles = files.length
+            ? options.inputs!.stage(
+                commandId,
+                files.map((file) => ({
+                  ...file,
+                  path: relative(input.worktreePath, file.path).split(sep).join("/"),
+                })),
+              )
+            : undefined;
+          const promptContext =
+            prepared.prompt.length > 65_536
+              ? options.inputs!.stagePrompt(commandId, prepared.prompt)
+              : undefined;
           const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           const baseSha = taskScope
             ? taskScope.repository
@@ -324,7 +349,7 @@ export function createRemoteAgentRunner(options: {
           const issuedAt = now();
           const deadline = issuedAt + (input.timeoutMs ?? 2_700_000);
           const assigned: WorkCommand = {
-            id: randomUUID(),
+            id: commandId,
             runnerId: selected.id,
             workspaceId: selected.workspaceId,
             issuedAt,
@@ -333,7 +358,11 @@ export function createRemoteAgentRunner(options: {
             itemId,
             generation,
             profile,
-            prompt: prepared.prompt,
+            prompt: promptContext
+              ? "Use the complete supplied conversation context."
+              : prepared.prompt,
+            inputFiles,
+            promptContext,
             ...(taskScope
               ? {
                   type: "task" as const,
