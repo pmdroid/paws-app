@@ -2397,16 +2397,21 @@ export class Orchestrator {
     if (changes.parentCanceled) await this.stopTaskPlanning(changes.sessionId);
   }
 
-  async pauseItem(itemId: string): Promise<boolean> {
+  async pauseItem(
+    itemId: string,
+    canAct: () => boolean = () => true,
+    onCommitted?: () => void,
+  ): Promise<boolean> {
     const paused = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
-      if (item?.state !== "running" || item.cancelRequested) return false;
+      if (!canAct() || item?.state !== "running" || item.cancelRequested) return false;
       applyWorkItemEvent(this.db, itemId, "pause");
       cancelOpenJobs(this.db, { itemId, reason: "Paused by a workspace member", now: this.now() });
       this.db.run(
         "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
         [this.now(), itemId],
       );
+      onCommitted?.();
       return true;
     });
     if (!paused) return false;
@@ -2414,17 +2419,26 @@ export class Orchestrator {
     return true;
   }
 
-  async resumeItem(itemId: string): Promise<boolean> {
+  async resumeItem(
+    itemId: string,
+    canAct: () => boolean = () => true,
+    onCommitted?: () => void,
+  ): Promise<boolean> {
     if (getWorkItem(this.db, itemId)?.state !== "paused") return false;
     await this.joinChangedItems([itemId]);
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, itemId);
-      if (item?.state !== "paused" || item.cancelRequested) return false;
+      if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
       applyWorkItemEvent(this.db, itemId, "restart");
+      onCommitted?.();
       return true;
     });
     if (resumed) this.reconcileExecution({ humanEpicId: getWorkItem(this.db, itemId)!.epicId });
     return resumed;
+  }
+
+  async interruptItem(itemId: string): Promise<void> {
+    await this.joinChangedItems([itemId]);
   }
 
   private async joinChangedItems(itemIds: readonly string[]): Promise<void> {

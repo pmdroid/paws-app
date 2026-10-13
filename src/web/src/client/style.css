@@ -20,6 +20,16 @@
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", roboto, sans-serif;
   color-scheme: dark;
 }
+#execution-controls {
+  margin-block: 12px;
+}
+#execution-controls .row {
+  align-items: flex-start;
+}
+#execution-controls details p {
+  max-width: 36ch;
+  margin-block: 8px;
+}
 * {
   box-sizing: border-box;
 }

@@ -25,6 +25,11 @@ export type ServerOptions = {
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   runnerEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
+  executionControls?: (
+    request: Request,
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+  ) => Promise<Response | null>;
   hostname?: string;
   port?: number;
   linearWebhookSecret?: string | null;
@@ -91,6 +96,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
         ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
         ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
+        ...(options.executionControls ? { executionControls: options.executionControls } : {}),
         ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
         ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
         ...(options.agentSettings
@@ -118,6 +124,7 @@ type Secrets = {
   workspaceAccess?: WorkspaceAccess | null;
   runnerEnrollment?: ServerOptions["runnerEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
+  executionControls?: ServerOptions["executionControls"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
   githubWebhookSecret: string | null;
@@ -204,6 +211,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         access.principal.userId,
         workspace.clientId,
       );
+      if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
+        const response = await secrets.executionControls(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
       if (path.startsWith("/api/runners") && secrets.runnerControl !== undefined) {
         const response = await secrets.runnerControl(request, access.principal);
         if (response !== null) return response;

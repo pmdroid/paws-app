@@ -350,6 +350,7 @@ function viewRuns(
       <h1>${esc(title)}</h1>
       <p class="muted">${esc(selected.summary)}</p>
       ${phaseStrip(item, selected, verdict)}
+      <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
       <div class="log">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
       ${runCloseout(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>
