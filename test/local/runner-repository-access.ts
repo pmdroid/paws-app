@@ -88,6 +88,13 @@ export async function probeRunnerRepositoryAccess(
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Pairing was not approved");
   const certificate = identity.certificate;
+  const reviewPairing = await control.beginPairing({ name: "Review VM", csr: client.csr });
+  const reviewRunnerId = (await control.approvePairing(principal, reviewPairing.code)).runnerId;
+  now = Date.now();
+  const reviewIdentity = control.claimPairing(reviewPairing.id, reviewPairing.claim);
+  assert.equal(reviewIdentity.status, "approved");
+  if (reviewIdentity.status !== "approved") throw new Error("Review pairing was not approved");
+  const reviewCertificate = reviewIdentity.certificate;
   const work = createRunnerWork({
     db,
     keyId: "fixture",
@@ -114,7 +121,7 @@ export async function probeRunnerRepositoryAccess(
       return installation;
     },
   });
-  function assigned(type: "run" | "review" = "run") {
+  function assigned(type: "run" | "review" = "run", targetRunner = runnerId) {
     const sessionId = workspaceId();
     const item = insertQueuedItem(db, {
       id: workspaceId(),
@@ -140,7 +147,7 @@ export async function probeRunnerRepositoryAccess(
     bindWorkItemRepository(db, item.id, repository);
     const command: Extract<RunnerCommand, { type: "run" | "review" }> = {
       id: workspaceId(),
-      runnerId,
+      runnerId: targetRunner,
       workspaceId: workspace.id,
       issuedAt: now,
       expiresAt: now + 300_000,
@@ -154,7 +161,7 @@ export async function probeRunnerRepositoryAccess(
     };
     work.assign(command);
     const grant = work.issueGrant({
-      runnerId,
+      runnerId: targetRunner,
       runId: run.id,
       commandId: command.id,
       generation: 1,
@@ -192,7 +199,12 @@ export async function probeRunnerRepositoryAccess(
         `/v1/runs/${assignment.command.runId}/repository-credential`,
         {
           key: options.certificate === false ? undefined : readFileSync(client.keyPath, "utf8"),
-          cert: options.certificate === false ? undefined : certificate,
+          cert:
+            options.certificate === false
+              ? undefined
+              : assignment.command.runnerId === reviewRunnerId
+                ? reviewCertificate
+                : certificate,
           body: options.body ?? { generation: 1, access: mode },
           token: options.token ?? assignment.grant.token,
         },
@@ -237,7 +249,7 @@ export async function probeRunnerRepositoryAccess(
         cacheControl: read.cacheControl,
       },
     );
-    const review = assigned("review");
+    const review = assigned("review", reviewRunnerId);
     assert.equal((await exchange(review, "read")).status, 200);
     const mintedBefore = github.minted.length;
     assert.equal((await exchange(review, "write")).status, 403);
@@ -264,6 +276,7 @@ export async function probeRunnerRepositoryAccess(
     );
     await assert.rejects(exchange(first, "read", { certificate: false }));
     assert.equal(github.minted.length, mintedBefore);
+    work.finish(review.command.runId, review.command.generation);
     observe(
       "certificate, separate grant, generation and strict body fences run before minting; review is read-only",
       true,
@@ -325,6 +338,7 @@ export async function probeRunnerRepositoryAccess(
         missingInstallationDenied: true,
       },
     );
+    work.finish(first.command.runId, first.command.generation);
     const scenarios: [string, (entry: ReturnType<typeof assigned>) => void][] = [
       [
         "cancelled",
@@ -380,6 +394,12 @@ export async function probeRunnerRepositoryAccess(
       assert([403, 409].includes(response.status), `${name}: ${response.status}`);
       assert(!response.body.includes("fake-installation-token"));
       fenced.push(name);
+      const current = db
+        .query<{ generation: number }, [string]>(
+          "SELECT generation FROM runner_work WHERE run_id=?",
+        )
+        .get(entry.command.runId)!;
+      work.finish(entry.command.runId, current.generation);
     }
     observe(
       "authorization is rechecked after asynchronous token minting without releasing stale credentials",
