@@ -266,8 +266,8 @@ export function createRunnerWork(options: {
     scope(runId: string, workspaceId: string) {
       return task(runId, workspaceId);
     },
-    scopeTask(runId: string, workspaceId: string) {
-      return responseTask(runId, workspaceId);
+    scopeTask(runId: string, workspaceId: string, userId?: string) {
+      return responseTask(runId, workspaceId, false, userId);
     },
     current(runId: string, generation: number) {
       const assigned = assignment(runId);
