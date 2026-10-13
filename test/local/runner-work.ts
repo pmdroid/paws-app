@@ -20,6 +20,9 @@ import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-ide
 import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
 import { createRunnerWorkHttp, createRunnerWork } from "../../src/runner-work";
 import { createRunnerHelpers } from "../../src/runner-helpers";
+import { createRemoteAgentRunner } from "../../src/runner-backend";
+import { createRunnerHealth } from "../../src/runner-health";
+import { createRunnerResults } from "../../src/runner-results";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import {
   issueWorkspaceBootstrap,
@@ -353,8 +356,9 @@ export async function probeRunnerWork(
       generation: 2,
     };
     const currentGrant = work.issueGrant(current);
+    const previousCancellationId = workspaceId();
     work.enqueue({
-      id: workspaceId(),
+      id: previousCancellationId,
       type: "cancel",
       runnerId: secondRunner,
       workspaceId: workspace.id,
@@ -387,6 +391,7 @@ export async function probeRunnerWork(
         .get(item.id)!.state,
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
+    work.acknowledge(secondRunner, previousCancellationId);
     work.assign(third);
     const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
     control.setStatus(principal, secondRunner, "revoked");
@@ -567,8 +572,9 @@ export async function probeRunnerWork(
           }),
         /lease expired/,
       );
+      const cancellationId = workspaceId();
       work.enqueue({
-        id: workspaceId(),
+        id: cancellationId,
         type: "cancel",
         runnerId: firstRunner,
         workspaceId: workspace.id,
@@ -584,6 +590,29 @@ export async function probeRunnerWork(
         issuedAt: now,
         expiresAt: now + 60_000,
       };
+      const commandsBeforeTeardown = db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
+        .get()!.count;
+      assert.throws(() => work.assign(afterCancel), /cancellation/);
+      assert.throws(() => helpers.dispatch(helperInput), /cancellation/);
+      assert.equal(
+        db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
+          .count,
+        commandsBeforeTeardown,
+      );
+      const waitingForTeardown = openDatabase(path);
+      try {
+        const reconstructed = createRunnerWork({
+          db: waitingForTeardown,
+          keyId: "fixture",
+          privateKey: keys.privateKey,
+          now: () => now,
+        });
+        assert.throws(() => reconstructed.assign(afterCancel), /cancellation/);
+        reconstructed.acknowledge(firstRunner, cancellationId);
+      } finally {
+        waitingForTeardown.close();
+      }
       work.assign(afterCancel);
       work.finish(waiting.runId, 2);
       control.setStatus(principal, firstRunner, "paused");
@@ -630,6 +659,122 @@ export async function probeRunnerWork(
       work.finish(waiting.runId, 3);
       work.assign({ ...review, id: workspaceId(), generation: 4 });
       work.finish(waiting.runId, 4);
+      work.assign({ ...review, id: workspaceId(), generation: 5 });
+      const backend = createRemoteAgentRunner({
+        db,
+        work,
+        health: createRunnerHealth({ db, work, now: () => now }),
+        results: createRunnerResults({ db, work, now: () => now }),
+        now: () => now,
+        pollIntervalMs: 1,
+        async fetchCandidate() {
+          throw new Error("Cancellation cannot publish candidates");
+        },
+      });
+      let cancellationJoined = false;
+      const cancelTask = backend.cancelItem(waiting.itemId).then(() => {
+        cancellationJoined = true;
+      });
+      const repeatedCancelTask = backend.cancelItem(waiting.itemId);
+      assert.equal(
+        db
+          .query<{ count: number }, [string]>(
+            "SELECT COUNT(*) AS count FROM runner_command WHERE run_id=? AND generation=5 AND kind='cancel'",
+          )
+          .get(waiting.runId)!.count,
+        1,
+      );
+      const pendingCancellation = db
+        .query<{ id: string }, [string]>(
+          "SELECT id FROM runner_command WHERE run_id=? AND kind='cancel' AND acknowledged_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+        )
+        .get(waiting.runId)!;
+      try {
+        assert(pendingCancellation);
+        await delay(5);
+        assert.equal(cancellationJoined, false);
+        assert.throws(
+          () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
+          /cancellation/,
+        );
+      } finally {
+        work.acknowledge(firstRunner, pendingCancellation.id);
+        await Promise.all([cancelTask, repeatedCancelTask]);
+      }
+      assert.equal(cancellationJoined, true);
+      work.assign({ ...review, id: workspaceId(), generation: 6 });
+      work.finish(waiting.runId, 6);
+      work.assign({ ...review, id: workspaceId(), generation: 7 });
+      const unacknowledged = backend.cancelItem(waiting.itemId);
+      const rejected = assert.rejects(unacknowledged, /teardown is not acknowledged/);
+      const expiredCancel = db
+        .query<{ id: string; expiresAt: number }, [string]>(
+          "SELECT id,expires_at AS expiresAt FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
+        )
+        .get(waiting.runId)!;
+      now = expiredCancel.expiresAt + 1;
+      await rejected;
+      assert.throws(
+        () =>
+          work.assign({
+            ...review,
+            id: workspaceId(),
+            generation: 8,
+            issuedAt: now,
+            expiresAt: now + 60_000,
+          }),
+        /cancellation/,
+      );
+      assert.throws(() => helpers.dispatch(helperInput), /cancellation/);
+      const retriedCancel = backend.cancelItem(waiting.itemId);
+      const replacementCancellation = db
+        .query<{ id: string }, [string]>(
+          "SELECT id FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
+        )
+        .get(waiting.runId)!;
+      assert.notEqual(replacementCancellation.id, expiredCancel.id);
+      work.acknowledge(firstRunner, replacementCancellation.id);
+      await retriedCancel;
+      assert.equal(
+        db
+          .query<{ acknowledgedAt: number | null }, [string]>(
+            "SELECT acknowledged_at AS acknowledgedAt FROM runner_command WHERE id=?",
+          )
+          .get(expiredCancel.id)!.acknowledgedAt,
+        null,
+      );
+      await backend.cancelItem(waiting.itemId);
+      work.assign({
+        ...review,
+        id: workspaceId(),
+        generation: 8,
+        issuedAt: now,
+        expiresAt: now + 60_000,
+      });
+      work.finish(waiting.runId, 8);
+      const recoveredHelper = helpers.dispatch(helperInput);
+      helpers.finish(recoveredHelper.command.id);
+      observe(
+        "Expired cancellation recovery joins a fresh signed command without fabricating the older acknowledgement",
+        true,
+        {
+          oldAcknowledgement: null,
+          latestAcknowledged: true,
+          workAdmitted: true,
+          helperAdmitted: true,
+        },
+      );
+      observe(
+        "Expired unacknowledged teardown rejects cancellation and keeps admission closed",
+        true,
+        { acknowledgement: false, replacementDenied: true, helperDenied: true },
+      );
+      observe("Coordinator cancellation joins the persisted daemon teardown acknowledgment", true, {
+        commandId: pendingCancellation.id,
+        replacementDeniedBeforeAck: true,
+        joinedAfterAck: cancellationJoined,
+        repeatedCancellationUsesOneCommand: true,
+      });
       observe(
         "independent control planes atomically admit one run per runner and release finished, expired and cancelled slots",
         true,
@@ -641,6 +786,8 @@ export async function probeRunnerWork(
           expiryReleased: true,
           expiredGrantFenced: true,
           cancellationReleased: true,
+          cancellationTeardownAcknowledged: true,
+          cancellationRestartGuarded: true,
           pausedDenied: true,
           helperMutualExclusion: true,
           checkCapacityEnforced: true,

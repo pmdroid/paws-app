@@ -324,3 +324,8 @@ Run `bun --no-env-file test/local/runner-policy-browser.ts "$EVIDENCE/runner-pol
 ## Runner fixture certificate clock
 
 Run `bun --no-env-file test/local/runner-inputs-clock.ts` or `bun test test/runner-inputs-clock.test.ts test/runner-prompt-context.test.ts test/runner-inputs.test.ts`. The probe delays real certificate-authority initialization across a wall-clock second, then requires pairing and all four input observations to pass through the real mTLS fixture. Inspect `clock-observations.json` for the pre-authority timestamp, CA validity start and four successful observations. The fixture refreshes its scripted clock after authority initialization, preserving production certificate validity checks.
+Run `bun test test/runner-work.test.ts test/runner-session-helpers.test.ts test/runner-runtime.test.ts` for remote cancellation admission. The actual SQLite command queue rejects new repository work and session helpers while a cancellation awaits the daemon's teardown acknowledgment, preserves the guard after opening a second database connection, and joins the coordinator cancellation promise only after that acknowledgment. Inspect all ten runner-work observations and retain the baseline that admitted replacement work before teardown.
+
+The runner-work probe also advances the clock past an unacknowledged cancellation deadline. Cancellation must reject and both replacement work and helpers must remain blocked until the persisted teardown acknowledgement.
+
+After an expired cancellation, the runner-work probe retries with a new signed command. The actual acknowledgement covers earlier teardown requests for the same runner, run and generation. The earlier request retains its null acknowledgement, and both repository work and helpers can resume.
