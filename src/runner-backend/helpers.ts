@@ -3,7 +3,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
+import type { RunnerPlacement } from "../runner-placement";
+import { immediate } from "../db";
 import type { RunnerCommand } from "../runner-protocol";
+
+import { RetryableRunnerError, runWithFailover } from "./failover";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
@@ -12,11 +16,15 @@ export function createRemoteSessionAgentRunner(options: {
   helpers: RunnerHelpers;
   now?: () => number;
   pollIntervalMs?: number;
+  placement?: RunnerPlacement;
 }) {
   const now = options.now ?? Date.now;
   return {
     forSession(sessionId: string, purpose: HelperCommand["purpose"]) {
-      return async (input: RunAgentOptions): Promise<RunAgentResult> => {
+      const attempt = async (
+        input: RunAgentOptions,
+        excluded: readonly string[],
+      ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (
           input.role !== "implementer" ||
@@ -31,21 +39,44 @@ export function createRemoteSessionAgentRunner(options: {
           throw new Error(
             "Remote session helper requires a read-only prompt without tools or files",
           );
-        const runners = options.db
-          .query<{ id: string }, [number, number, number]>(
-            "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
-          )
-          .all(now() - 60_000, now(), now());
+        const profile = { ...input.profile, model: input.profile.model ?? null };
+        const runners = options.placement
+          ? await options.placement.candidates({
+              sessionId,
+              profile,
+              role: input.role,
+              purpose: "helper",
+              excludeRunnerIds: excluded,
+              signal: input.signal,
+            })
+          : options.db
+              .query<{ id: string }, [number, number, number]>(
+                "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+              )
+              .all(now() - 60_000, now(), now());
         let command: HelperCommand | undefined;
         for (const runner of runners) {
+          if (excluded.includes(runner.id)) continue;
           try {
-            command = options.helpers.dispatch({
-              runnerId: runner.id,
-              sessionId,
-              purpose,
-              profile: { ...input.profile, model: input.profile.model ?? null },
-              prompt: input.prompt,
-            }).command;
+            command = immediate(options.db, () => {
+              const dispatched = options.helpers.dispatch({
+                runnerId: runner.id,
+                sessionId,
+                purpose,
+                profile,
+                prompt: input.prompt,
+              }).command;
+              options.placement?.started({
+                commandId: dispatched.id,
+                runnerId: runner.id,
+                sessionId,
+                profile,
+                role: input.role,
+                purpose: "helper",
+                startedAt: now(),
+              });
+              return dispatched;
+            });
             break;
           } catch {}
         }
@@ -56,6 +87,27 @@ export function createRemoteSessionAgentRunner(options: {
             input.signal?.throwIfAborted();
             const result = options.helpers.result(command.id);
             if (result) {
+              const disposition = immediate(options.db, () =>
+                options.placement?.finished({
+                  commandId: command!.id,
+                  runnerId: command!.runnerId,
+                  profile,
+                  result,
+                  finishedAt: now(),
+                }),
+              );
+              if (
+                disposition?.retryable &&
+                result.agentExited &&
+                !result.cancelled &&
+                !result.timedOut
+              )
+                throw new RetryableRunnerError(
+                  command.runnerId,
+                  result.authRequired
+                    ? "The runner agent requires sign-in."
+                    : "The runner agent exhausted its observed quota.",
+                );
               const transcript = `${runDir(input.pawsRoot, command.id)}/acp.jsonl`;
               mkdirSync(runDir(input.pawsRoot, command.id), { recursive: true, mode: 0o700 });
               const events: AcpEvent[] = [
@@ -86,6 +138,12 @@ export function createRemoteSessionAgentRunner(options: {
           options.helpers.finish(command.id);
         }
       };
+      return (input: RunAgentOptions) =>
+        runWithFailover(
+          { ...input, timeoutMs: input.timeoutMs ?? 60_000 },
+          attempt,
+          async () => {},
+        );
     },
   };
 }
