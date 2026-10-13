@@ -20,8 +20,8 @@ const job: RunnerJob = {
     runnerId: "runner",
     workspaceId: "workspace",
     type: "probe",
-    issuedAt: 1,
-    expiresAt: 2,
+    issuedAt: Date.now(),
+    expiresAt: Date.now() + 120_000,
     profile: { agent: "codex", model: null },
   },
 };
