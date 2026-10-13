@@ -46,6 +46,7 @@ export async function probeRunnerInputs(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
   contextPrompt?: string,
+  initializeAuthority = initializeRunnerAuthority,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const path = join(root, "paws.sqlite");
@@ -68,7 +69,8 @@ export async function probeRunnerInputs(
     now,
   });
   const authorityRoot = join(root, "issuer");
-  const authority = await initializeRunnerAuthority(authorityRoot);
+  const authority = await initializeAuthority(authorityRoot);
+  now = Date.now();
   const control = createRunnerControl({
     db,
     authority,
