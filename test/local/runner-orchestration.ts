@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type RunAgentOptions } from "../../src/acp";
-import { JOB_KIND, systemClock } from "../../src/core";
+import { JOB_KIND, systemClock, FakeClock } from "../../src/core";
 import {
   JobLoop,
+  getJob,
+  beginImplementRun,
   OutboxDispatcher,
   getRun,
   enqueueJob,
@@ -99,6 +101,10 @@ export async function probeRunnerOrchestration(
     "unavailable",
     "crashed-implementation",
     "crashed-review",
+    "start-lease",
+    "resume-lease",
+    "reverify-lease",
+    "merge-lease",
   ]) {
     const unavailable = scenario === "unavailable";
     const home = join(root, scenario);
@@ -114,7 +120,10 @@ export async function probeRunnerOrchestration(
         subIssues: [],
       },
     ]);
-    const jobs = new JobLoop(db, systemClock);
+    const leaseScenario = scenario.endsWith("-lease");
+    const initialLease = scenario === "start-lease" || scenario === "resume-lease";
+    const clock = leaseScenario ? new FakeClock(Date.now()) : systemClock;
+    const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: { role: string; prepare: boolean; prompt: string }[] = [];
     const checks: { argv: string[]; active: boolean }[] = [];
@@ -124,18 +133,76 @@ export async function probeRunnerOrchestration(
     let originalRunId = "";
     let originalProfile = Buffer.alloc(0);
     let reviewRunId = "";
+    let replacementRunId = "";
+    let reclaimedJobId = 0;
+    let replacementTick: Promise<unknown> | undefined;
+    let releaseReplacement: (() => void) | undefined;
+    let leaseAborted = false;
+    async function reclaim(signal: AbortSignal | undefined) {
+      assert(signal);
+      const owned = listJobs(db).find(
+        (job) =>
+          job.status === "running" &&
+          (job.payload as { itemId?: string }).itemId === listWorkItems(db)[0]?.id,
+      )!;
+      assert(owned);
+      const other = new JobLoop(db, clock, { leaseMs: 300 });
+      let entered!: () => void;
+      const started = new Promise<void>((r) => (entered = r));
+      const blocked = new Promise<void>((r) => (releaseReplacement = r));
+      other.register(owned.queue, async () => {
+        const item = listWorkItems(db)[0]!;
+        replacementRunId = insertRun(db, {
+          itemId: item.id,
+          kind: initialLease ? "implement" : "review",
+          status: "active",
+          now: clock.now(),
+        }).id;
+        setCurrentRun(db, item.id, replacementRunId);
+        entered();
+        await blocked;
+      });
+      assert(clock instanceof FakeClock);
+      clock.advance(30001);
+      replacementTick = other.tick();
+      if (owned.queue === JOB_KIND.start) {
+        assert.equal(await replacementTick, null);
+        replacementRunId = listWorkItems(db)[0]!.currentRunId!;
+      } else {
+        await Promise.race([
+          started,
+          Bun.sleep(2000).then(() => {
+            throw new Error("Replacement could not claim job");
+          }),
+        ]);
+        assert.notEqual(getJob(db, owned.id)?.lockedBy, owned.lockedBy);
+      }
+      reclaimedJobId = owned.id;
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        }),
+        Bun.sleep(2000).then(() => {
+          throw new Error("Lease loss did not abort selected transport");
+        }),
+      ]);
+      leaseAborted = signal.aborted;
+      assert(leaseAborted);
+    }
     let changed = false;
     let laterDispatches = 0;
     const crashed = scenario.startsWith("crashed-");
     const orchestrator = attachOrchestrator({
       db,
+      clock,
       jobs,
       outbox,
       pawsRoot: home,
       home,
       tracker,
       repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
-      ...(scenario === "merge"
+      ...(scenario === "merge" || scenario === "merge-lease"
         ? {
             github: {
               appId: "",
@@ -199,6 +266,8 @@ export async function probeRunnerOrchestration(
               prompt: options.prompt,
             });
             if (unavailable) throw new Error("fixture remote transport unavailable");
+            if (initialLease && !options.prepareOnly && options.role === "implementer")
+              await reclaim(options.signal);
             const script = join(home, `agent-${calls.length}.json`);
             const reviewer = options.role === "reviewer";
             if (!reviewer && !options.prepareOnly) implementationCount++;
@@ -243,7 +312,7 @@ export async function probeRunnerOrchestration(
             });
           };
         },
-        closeoutForItem(itemId) {
+        closeoutForItem(itemId, signal) {
           return {
             async runLogged(request) {
               if (reverifying) laterDispatches++;
@@ -263,6 +332,8 @@ export async function probeRunnerOrchestration(
                   readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
                   originalProfile,
                 );
+                if (scenario === "reverify-lease" || scenario === "merge-lease")
+                  await reclaim(signal);
                 if (scenario === "error")
                   throw new Error("fixture remote verification unavailable");
                 if (!changed) {
@@ -273,7 +344,7 @@ export async function probeRunnerOrchestration(
                       itemId: item.id,
                       kind: "review",
                       status: "active",
-                      now: Date.now(),
+                      now: clock.now(),
                     });
                     setCurrentRun(db, item.id, replacement.id);
                   }
@@ -325,8 +396,36 @@ export async function probeRunnerOrchestration(
         updatedAtMs: Date.now(),
         payload: "{}",
       });
+      if (scenario === "resume-lease") {
+        const pending = listWorkItems(db)[0]!;
+        beginImplementRun(db, pending.id, clock.now(), {
+          phase: "running",
+          baseSha: await git(["-C", source, "rev-parse", "HEAD"]),
+        });
+        applyWorkItemEvent(db, pending.id, "lease_expired");
+        enqueueJob(db, {
+          queue: JOB_KIND.resume,
+          payload: { itemId: pending.id },
+          priority: -100,
+          now: clock.now(),
+        });
+      }
       await jobs.tick();
       const item = listWorkItems(db)[0]!;
+      if (initialLease) {
+        assert.equal(item.state, "running");
+        assert.equal(item.currentRunId, replacementRunId);
+        assert.equal(getRun(db, replacementRunId)?.status, "active");
+        assert.equal(getJob(db, reclaimedJobId)?.status, "running");
+        assert(leaseAborted);
+        assert.equal(checks.length, 0);
+        observe(
+          "selected initial transport aborts on lease loss without ending current run: " + scenario,
+          true,
+          { state: item.state, replacementRunId, job: getJob(db, reclaimedJobId), leaseAborted },
+        );
+        continue;
+      }
       if (unavailable) {
         assert.equal(item.state, "awaiting_input", JSON.stringify(item));
         assert.equal(calls.length, 1);
@@ -353,7 +452,7 @@ export async function probeRunnerOrchestration(
               itemId: item.id,
               kind: "review",
               status: "active",
-              now: Date.now(),
+              now: clock.now(),
             }).id;
             mkdirSync(join(home, "runs", foreignRunId), { mode: 0o700 });
             writeFileSync(join(home, "runs", foreignRunId, "agent-profile.json"), originalProfile, {
@@ -368,17 +467,36 @@ export async function probeRunnerOrchestration(
         reverifying = true;
         const priorChecks = checks.length;
         const reverifyId =
-          scenario === "merge"
+          scenario === "merge" || scenario === "merge-lease"
             ? listJobs(db).find((job) => job.queue === JOB_KIND.merge)!.id
             : enqueueJob(db, {
                 queue: JOB_KIND.reverify,
                 priority: -100,
                 payload: { itemId: item.id },
-                now: Date.now(),
+                now: clock.now(),
               });
         assert.equal((await jobs.tick())?.id, reverifyId);
         const verified = getWorkItem(db, item.id)!;
-        if (crashed) {
+        if (scenario === "reverify-lease" || scenario === "merge-lease") {
+          assert(leaseAborted);
+          assert.equal(verified.currentRunId, replacementRunId);
+          assert.equal(verified.state, "verifying");
+          assert.equal(getRun(db, replacementRunId)?.status, "active");
+          assert.equal(getRun(db, reviewRunId)?.status, "ended");
+          assert.equal(getJob(db, reclaimedJobId)?.status, "running");
+          observe(
+            "selected verification transport aborts on job reclaim without accepting stale result: " +
+              scenario,
+            true,
+            {
+              state: verified.state,
+              replacementRunId,
+              reviewRunId,
+              job: getJob(db, reclaimedJobId),
+              leaseAborted,
+            },
+          );
+        } else if (crashed) {
           assert.equal(laterDispatches, 0);
           assert.equal(reviewRunId, "");
           assert.equal(verified.currentRunId, foreignRunId);
@@ -401,13 +519,16 @@ export async function probeRunnerOrchestration(
           assert.notEqual(reviewRunId, "");
           assert.equal(getRun(db, reviewRunId)?.status, "ended");
           assert.equal(getRun(db, originalRunId)?.status, "ended");
-          if (scenario === "success" || scenario === "merge") {
+          if (scenario === "success" || scenario === "merge" || scenario === "merge-lease") {
             assert.equal(
               listJobs(db).find((job) => job.id === reverifyId)?.status,
               "done",
               JSON.stringify(listJobs(db).find((job) => job.id === reverifyId)),
             );
-            assert.equal(verified.state, scenario === "merge" ? "merged" : "merge_queue");
+            assert.equal(
+              verified.state,
+              scenario === "merge" || scenario === "merge-lease" ? "merged" : "merge_queue",
+            );
             assert(checks.length > priorChecks);
             assert.deepEqual(
               readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
@@ -451,6 +572,8 @@ export async function probeRunnerOrchestration(
         },
       );
     } finally {
+      releaseReplacement?.();
+      await replacementTick;
       await orchestrator.shutdown();
       db.close();
     }
