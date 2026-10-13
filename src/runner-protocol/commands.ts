@@ -84,6 +84,15 @@ export const RunnerCommandSchema = z
       cwd: checkDirectory,
       timeoutMs: z.number().int().min(1).max(900_000),
     }),
+    z.strictObject({
+      ...common,
+      type: z.literal("helper"),
+      sessionId: id,
+      sessionGeneration: generation,
+      purpose: z.enum(["classify", "select_repository"]),
+      profile: RunnerProfileSchema,
+      prompt: z.string().min(1).max(65_536),
+    }),
     z.strictObject({ ...common, type: z.literal("probe"), profile: RunnerProfileSchema }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
@@ -98,6 +107,7 @@ export const RunnerCommandSchema = z
     }),
   ])
   .refine((command) => command.expiresAt > command.issuedAt)
+  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)
   .refine(
     (command) => command.type !== "check" || command.repository.baseSha === command.candidateSha,
   );
