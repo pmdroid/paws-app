@@ -48,8 +48,10 @@ if args==["--version"]:
  loader=next(pathlib.Path("/proof/host-runtime").glob("ld-linux-*.so.*"))
  subprocess.run([str(loader),"--library-path","/proof/host-runtime","/proof/host-runtime/systemctl","--version"],check=True)
 elif args[0]=="list-unit-files":
- for name in args[3:]:
-  if pathlib.Path("/etc/systemd/system",name).exists(): print(name,"disabled")
+ names=args[3:] or [path.name for path in pathlib.Path("/etc/systemd/system").iterdir() if path.is_file()]
+ present=[name for name in names if pathlib.Path("/etc/systemd/system",name).exists()]
+ for name in present: print(name,"disabled")
+ if args[3:] and not present: sys.exit(1)
 elif args[0]=="list-units" and pathlib.Path("/proof/active-worker").exists(): print(pathlib.Path("/proof/active-worker").read_text()+" loaded active running")
 elif args[0] not in ("list-units","stop","daemon-reload","enable"): sys.exit(1)
 ''')

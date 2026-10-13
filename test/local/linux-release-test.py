@@ -66,6 +66,50 @@ class ReleaseVerification(unittest.TestCase):
         for directory in (destination / "app", destination / "app/src", destination / "app/node_modules", destination / "app/node_modules/.bin", destination / "deploy/linux", destination / "bin"):
             self.assertEqual(directory.stat().st_mode & 0o7777, 0o755)
 
+    def test_fresh_install_does_not_request_absent_unit_names(self):
+        specification = importlib.util.spec_from_file_location("installer", pathlib.Path(sys.argv[1]).with_name("install.py"))
+        installer = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(installer)
+        calls = []
+        def systemctl(arguments):
+            calls.append(arguments)
+            if arguments[1] == "list-unit-files" and len(arguments) > 4:
+                raise ValueError("Required command failed: /usr/bin/systemctl")
+            return b""
+        installer.release.command = systemctl
+        installer.stop_for_install()
+        self.assertEqual([arguments[1] for arguments in calls], ["list-units", "list-unit-files", "list-units"])
+
+    def test_update_stops_only_installed_exact_unit_names(self):
+        specification = importlib.util.spec_from_file_location("installer", pathlib.Path(sys.argv[1]).with_name("install.py"))
+        installer = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(installer)
+        calls = []
+        def systemctl(arguments):
+            calls.append(arguments)
+            if arguments[1] == "list-unit-files":
+                return b"unrelated.service enabled\npaws-runner.service disabled\npaws-runner-broker.socket enabled\npaws-runner-broker.service.backup enabled\n"
+            return b""
+        installer.release.command = systemctl
+        installer.stop_for_install()
+        self.assertEqual([arguments for arguments in calls if arguments[1] == "stop"], [["/usr/bin/systemctl", "stop", "--", "paws-runner.service", "paws-runner-broker.socket"]])
+        self.assertEqual(calls[-1][1], "list-units")
+
+    def test_unit_enumeration_failure_does_not_stop_services(self):
+        specification = importlib.util.spec_from_file_location("installer", pathlib.Path(sys.argv[1]).with_name("install.py"))
+        installer = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(installer)
+        calls = []
+        def systemctl(arguments):
+            calls.append(arguments)
+            if arguments[1] == "list-unit-files":
+                raise ValueError("Required command failed: /usr/bin/systemctl")
+            return b""
+        installer.release.command = systemctl
+        with self.assertRaisesRegex(ValueError, "Required command failed"):
+            installer.stop_for_install()
+        self.assertFalse(any(arguments[1] == "stop" for arguments in calls))
+
     def test_packaged_launcher_targets_are_validated_and_archived(self):
         specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
         packager = importlib.util.module_from_spec(specification)

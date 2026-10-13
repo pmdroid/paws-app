@@ -151,7 +151,7 @@ def refuse_active_executions():
 def stop_for_install():
     refuse_active_executions()
     units = ["paws-runner.service", "paws-runner-broker.socket", "paws-runner-broker.service"]
-    existing = release.command(["/usr/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager", *units]).decode()
+    existing = release.command(["/usr/bin/systemctl", "list-unit-files", "--no-legend", "--no-pager"]).decode()
     present = [unit for unit in units if any(line.split()[0] == unit for line in existing.splitlines() if line.split())]
     if present:
         release.command(["/usr/bin/systemctl", "stop", "--", *present])
