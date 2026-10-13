@@ -30,6 +30,7 @@ export {
 } from "./items";
 export {
   claimNextJob,
+  cancelOpenJobs,
   claimJobSql,
   completeJob,
   enqueueJob,

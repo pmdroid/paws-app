@@ -41,6 +41,7 @@ import {
 } from "../core";
 import {
   getTaskMode,
+  cancelOpenJobs,
   getLinearSessionAccess,
   recordConfirmedRemoteMerge,
   getConfirmedRemoteMerge,
@@ -206,6 +207,7 @@ export type OrchestratorOptions = {
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
   remoteExecution?: {
+    cancelItem?(itemId: string): Promise<void>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
     closeoutForItem(
@@ -219,6 +221,16 @@ export type OrchestratorOptions = {
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
+};
+
+export type ExecutionChanges = {
+  epicId: string;
+  sessionId: string;
+  addedItemIds: readonly string[];
+  removedItemIds: readonly string[];
+  specChangedItemIds: readonly string[];
+  canceledItemIds: readonly string[];
+  parentCanceled: boolean;
 };
 
 type AnswerWaiter = (answer: string) => void;
@@ -390,6 +402,9 @@ export class Orchestrator {
     const joined = await Promise.allSettled([
       this.stopTaskPlanning(sessionId),
       ...owned.map((live) => live.done),
+      ...items
+        .filter((item) => item.state !== "merged" && item.state !== "completed")
+        .map((item) => this.options.remoteExecution?.cancelItem?.(item.id)),
     ]);
     if (items.some((item) => getConversation(this.db, item.id).blocked))
       throw new Error("ACP process cleanup could not be verified");
@@ -2147,6 +2162,171 @@ export class Orchestrator {
     await this.flush();
   }
 
+  applyEpicChanges(changes: ExecutionChanges): void {
+    immediate(this.db, () => {
+      for (const itemId of changes.addedItemIds) {
+        const item = getWorkItem(this.db, itemId);
+        if (!item || item.epicId !== changes.epicId || item.sessionKey !== changes.sessionId)
+          throw new Error("Changed task ownership does not match the epic");
+        saveTaskMode(
+          this.db,
+          itemId,
+          "code",
+          getLinearSessionGeneration(this.db, changes.sessionId),
+          true,
+        );
+      }
+      const canceled = new Set([
+        ...changes.removedItemIds,
+        ...changes.canceledItemIds,
+        ...(changes.parentCanceled ? this.epicItems(changes.epicId).map((item) => item.id) : []),
+      ]);
+      for (const itemId of new Set([...canceled, ...changes.specChangedItemIds])) {
+        const item = getWorkItem(this.db, itemId);
+        if (!item || item.epicId !== changes.epicId || item.sessionKey !== changes.sessionId)
+          throw new Error("Changed task ownership does not match the epic");
+        if (["merged", "completed", "cancelled"].includes(item.state)) continue;
+        if (canceled.has(itemId)) {
+          applyLinearCommand(this.db, {
+            type: "cancel",
+            itemId,
+            source: "linear",
+            requestedAt: this.now(),
+          });
+          const dependents = this.db
+            .query<{ id: string; identifier: string }, [string, string]>(
+              `SELECT i.id,i.linear_identifier AS identifier FROM work_item_block b JOIN work_item i ON i.epic_id=b.epic_id AND i.linear_issue_id=b.blocked_linear_issue_id WHERE b.epic_id=? AND b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
+            )
+            .all(changes.epicId, item.linearIssueId);
+          if (dependents.length)
+            enqueueOutboxOnce(this.db, {
+              target: "linear",
+              op: "activity",
+              orderingKey: changes.sessionId,
+              idempotencyKey: `cancelled-blocker:${item.id}:${item.version}`,
+              payload: {
+                sessionId: changes.sessionId,
+                kind: "error",
+                body: `${item.linearIdentifier} was cancelled. Its dependents remain held until their dependencies change in Linear: ${dependents.map((dependent) => dependent.identifier).join(", ")}.`,
+              },
+              now: this.now(),
+            });
+          continue;
+        }
+        cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
+        this.db.run(
+          "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
+          [this.now(), itemId],
+        );
+        this.db.run(
+          "UPDATE question SET cancelled_at=? WHERE item_id=? AND status='open' AND cancelled_at IS NULL",
+          [this.now(), itemId],
+        );
+
+        saveCheckpoint(
+          this.db,
+          itemId,
+          item.state === "paused" && item.checkpoint
+            ? {
+                phase: "running",
+                ...(item.checkpoint.wipCommit ? { wipCommit: item.checkpoint.wipCommit } : {}),
+                ...(item.checkpoint.baseSha ? { baseSha: item.checkpoint.baseSha } : {}),
+              }
+            : null,
+        );
+        setCurrentRun(this.db, itemId, null);
+        if (item.state === "failed" || item.state === "exhausted") {
+          this.db.run(
+            "UPDATE work_item SET cancel_requested=0,awake_ms=0,last_mono_ms=NULL,turn_count=0,recovery_attempts=0 WHERE id=?",
+            [itemId],
+          );
+          applyWorkItemEvent(this.db, itemId, "requeue");
+        } else if (
+          [
+            "running",
+            "verifying",
+            "recovering",
+            "awaiting_input",
+            "awaiting_signoff",
+            "merge_queue",
+          ].includes(item.state)
+        )
+          applyWorkItemEvent(this.db, itemId, "restart");
+        else this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
+        enqueueOutboxOnce(this.db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: changes.sessionId,
+          idempotencyKey: `criteria-changed:${item.id}:${getWorkItem(this.db, item.id)!.version}`,
+          payload: {
+            sessionId: changes.sessionId,
+            kind: "thought",
+            body: `${item.linearIdentifier} changed in Linear. Its previous verification is invalidated and the updated criteria will be checked before publication.`,
+          },
+          now: this.now(),
+        });
+      }
+    });
+  }
+
+  async finishEpicChanges(changes: ExecutionChanges): Promise<void> {
+    const affected = new Set([
+      ...changes.removedItemIds,
+      ...changes.canceledItemIds,
+      ...changes.specChangedItemIds,
+      ...(changes.parentCanceled ? this.epicItems(changes.epicId).map((item) => item.id) : []),
+    ]);
+    await this.joinChangedItems([...affected]);
+    if (changes.parentCanceled) await this.stopTaskPlanning(changes.sessionId);
+  }
+
+  async pauseItem(itemId: string): Promise<boolean> {
+    const paused = immediate(this.db, () => {
+      const item = getWorkItem(this.db, itemId);
+      if (item?.state !== "running" || item.cancelRequested) return false;
+      applyWorkItemEvent(this.db, itemId, "pause");
+      cancelOpenJobs(this.db, { itemId, reason: "Paused by a workspace member", now: this.now() });
+      this.db.run(
+        "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
+        [this.now(), itemId],
+      );
+      return true;
+    });
+    if (!paused) return false;
+    await this.joinChangedItems([itemId]);
+    return true;
+  }
+
+  async resumeItem(itemId: string): Promise<boolean> {
+    if (getWorkItem(this.db, itemId)?.state !== "paused") return false;
+    await this.joinChangedItems([itemId]);
+    const resumed = immediate(this.db, () => {
+      const item = getWorkItem(this.db, itemId);
+      if (item?.state !== "paused" || item.cancelRequested) return false;
+      applyWorkItemEvent(this.db, itemId, "restart");
+      return true;
+    });
+    if (resumed) this.reconcileExecution({ humanEpicId: getWorkItem(this.db, itemId)!.epicId });
+    return resumed;
+  }
+
+  private async joinChangedItems(itemIds: readonly string[]): Promise<void> {
+    const affected = new Set(itemIds);
+    const owned = [...this.live.values()].filter((live) => affected.has(live.itemId));
+    for (const itemId of affected) {
+      this.githubAuth?.revoke(itemId);
+      this.abortItem(itemId);
+    }
+    const joined = await Promise.allSettled([
+      ...owned.map((live) => live.done),
+      ...[...affected].map((itemId) => this.options.remoteExecution?.cancelItem?.(itemId)),
+    ]);
+    if ([...affected].some((itemId) => getConversation(this.db, itemId).blocked))
+      throw new Error("ACP process cleanup could not be verified");
+    const failure = joined.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
+
   reconcileExecution(input: { humanEpicId?: string } = {}): void {
     if (input.humanEpicId) this.wakeEpic(input.humanEpicId, true);
     this.pump();
@@ -2168,7 +2348,13 @@ export class Orchestrator {
       const result = blocker.checkpoint ? JSON.parse(blocker.checkpoint)?.resultBody : null;
       return `${blocker.identifier}: ${typeof result === "string" && result.trim() ? result : "Completed."}`;
     });
-    return results.length ? `Completed dependencies:\n${results.join("\n\n")}` : undefined;
+    const resume = item.checkpoint
+      ? `Resume the existing branch ${item.branchName}. Preserve its previous work${item.checkpoint.wipCommit ? ` at commit ${item.checkpoint.wipCommit}` : ""} and continue the original conversation.`
+      : undefined;
+    const dependencies = results.length
+      ? `Completed dependencies:\n${results.join("\n\n")}`
+      : undefined;
+    return [resume, dependencies].filter(Boolean).join("\n\n") || undefined;
   }
 
   private pump(): void {
