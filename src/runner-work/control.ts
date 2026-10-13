@@ -19,7 +19,7 @@ import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestion } from "../questions";
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
-type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "check" }>;
 type Assignment = {
   runId: string;
   runnerId: string;
@@ -136,7 +136,7 @@ export function createRunnerWork(options: {
       JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")),
     );
     if (
-      (command.type !== "run" && command.type !== "review") ||
+      (command.type !== "run" && command.type !== "review" && command.type !== "check") ||
       command.runId !== work.runId ||
       command.runnerId !== work.runnerId ||
       command.workspaceId !== work.workspaceId ||
@@ -185,6 +185,9 @@ export function createRunnerWork(options: {
     return envelope;
   }
   return {
+    identity(runnerId: string) {
+      return runner(runnerId);
+    },
     scope(runId: string, workspaceId: string) {
       return task(runId, workspaceId);
     },
@@ -196,7 +199,7 @@ export function createRunnerWork(options: {
     },
     assign(input: WorkCommand) {
       const command = RunnerCommandSchema.parse(input);
-      if (command.type !== "run" && command.type !== "review")
+      if (command.type !== "run" && command.type !== "review" && command.type !== "check")
         throw new Error("Work command is required.");
       return immediate(db, () => {
         const at = now();
@@ -245,7 +248,7 @@ export function createRunnerWork(options: {
     },
     enqueue(input: RunnerCommand) {
       const command = RunnerCommandSchema.parse(input);
-      if (command.type === "run" || command.type === "review")
+      if (command.type === "run" || command.type === "review" || command.type === "check")
         throw new Error("Use work assignment for run commands.");
       return immediate(db, () => {
         const identity = runner(command.runnerId);
@@ -282,7 +285,7 @@ export function createRunnerWork(options: {
             `SELECT c.ordinal,c.envelope,c.run_id AS runId,c.generation FROM runner_command c
             LEFT JOIN runner_work w ON w.run_id=c.run_id
             WHERE c.runner_id=? AND c.acknowledged_at IS NULL AND c.expires_at>? AND c.ordinal>?
-            AND (c.kind NOT IN ('run','review') OR
+            AND (c.kind NOT IN ('run','review','check') OR
               (w.runner_id=c.runner_id AND w.generation=c.generation AND w.ended_at IS NULL AND w.lease_until>?))
             ORDER BY c.ordinal LIMIT 64`,
           )
@@ -293,7 +296,7 @@ export function createRunnerWork(options: {
           const payload = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
-          if (payload.type === "run" || payload.type === "review") {
+          if (payload.type === "run" || payload.type === "review" || payload.type === "check") {
             try {
               live(runnerId, row.runId!, row.generation!, now());
             } catch {

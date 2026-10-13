@@ -3,6 +3,7 @@ import { probeRunnerCloseout } from "./runner-closeout";
 import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
+import { probeRunnerBackend } from "./runner-backend";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
@@ -50,6 +51,7 @@ import { probeRunnerTls } from "./runner-tls";
 import { probeRunnerVerifier } from "./runner-verifier";
 import { probeRunnerCoordinatorData } from "./runner-coordinator-data";
 import { probeRunnerEvidenceRelays } from "./runner-evidence-relays";
+import { probeRunnerChecks } from "./runner-checks";
 import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
@@ -63,6 +65,7 @@ export async function probeBoundaries(
   await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
   await probeRunnerCloseout(join(root, "runner-closeout"), observe);
   await probeRunnerResults(join(root, "runner-results"), observe);
+  await probeRunnerBackend(join(root, "runner-backend"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerVerifierPairing(join(root, "runner-verifier-pairing"), observe);
@@ -76,6 +79,7 @@ export async function probeBoundaries(
   probeRunnerVerifier(observe);
   await probeRunnerCoordinatorData(join(root, "runner-coordinator-data"), observe);
   await probeRunnerEvidenceRelays(join(root, "runner-evidence-relays"), observe);
+  await probeRunnerChecks(join(root, "runner-checks"), observe);
   const release = Bun.spawn(
     [
       "/usr/bin/python3",

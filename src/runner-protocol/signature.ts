@@ -89,7 +89,7 @@ export function verifyRunnerCommand(
   }
   if (command.expiresAt <= context.now) return { ok: false, reason: "expired" };
   if (
-    (command.type === "run" || command.type === "review") &&
+    "repository" in command &&
     !context.allowedRepositories.some(
       (repository) =>
         repository.toLowerCase() ===

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerCheckResultSchema } from "../runner-check";
 import { RunnerEventSchema, RunnerResultSchema } from "../runner-protocol";
 import { identifier } from "./state";
 
@@ -22,6 +23,11 @@ export const RunnerEventDeliverySchema = z.strictObject({
   event: RunnerEventSchema,
 });
 export const RunnerEventReceiptSchema = z.strictObject({ duplicate: z.boolean() });
+export const RunnerCheckDeliverySchema = z.strictObject({
+  generation,
+  result: RunnerCheckResultSchema,
+  verifierSignature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/),
+});
 export const RunnerResultDeliverySchema = z.strictObject({
   generation,
   result: RunnerResultSchema,
