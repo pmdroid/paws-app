@@ -339,10 +339,15 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
   });
 }
 
-export function registerScheduler(jobs: JobLoop, options: () => SchedulerOptions): () => string[] {
+export function registerScheduler(
+  jobs: JobLoop,
+  options: () => SchedulerOptions,
+  onTick?: () => void,
+): () => string[] {
   const dispatch = () => dispatchReadyItems(jobs.db, options());
   jobs.register(TICK, () => {
-    dispatch();
+    if (onTick) onTick();
+    else dispatch();
   });
   enqueueJobOnce(jobs.db, {
     queue: TICK,
