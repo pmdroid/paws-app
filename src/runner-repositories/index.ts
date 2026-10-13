@@ -212,6 +212,36 @@ export function createRunnerRepositories(options: {
             ["--git-dir", mirror, "merge-base", "--is-ancestor", command.repository.baseSha, sha],
             signal,
           );
+          if (command.inputFiles?.length) {
+            const changed = (
+              await invoke(
+                [
+                  "--git-dir",
+                  mirror,
+                  "log",
+                  "--format=",
+                  "--name-only",
+                  "-z",
+                  "-m",
+                  "--no-renames",
+                  `${command.repository.baseSha}..${sha}`,
+                  "--",
+                ],
+                signal,
+              )
+            ).split("\0");
+            if (
+              changed.some((path) =>
+                command.inputFiles!.some(
+                  (file) =>
+                    path === file.path ||
+                    path.startsWith(`${file.path}/`) ||
+                    file.path.startsWith(`${path}/`),
+                ),
+              )
+            )
+              throw new Error("Private runner input cannot enter candidate history");
+          }
           const ref = `refs/heads/paws-candidate-${randomUUID()}`;
           try {
             await invoke(["--git-dir", mirror, "update-ref", ref, sha]);
