@@ -45,6 +45,17 @@ describe("transition", () => {
     expect(transition("merge_queue", "restart")).toMatchObject({ ok: true, to: "queued" });
   });
 
+  test("explicit reverify returns only queued merges to verification", () => {
+    expect(transition("merge_queue", "reverify_requested")).toMatchObject({
+      ok: true,
+      to: "verifying",
+    });
+    for (const state of WORK_ITEM_STATES.filter(
+      (candidateState) => candidateState !== "merge_queue",
+    ))
+      expect(transition(state, "reverify_requested").ok).toBe(false);
+  });
+
   test("rejects an edge the table does not list", () => {
     expect(transition("running", "closeout_accepted")).toEqual({
       ok: false,
