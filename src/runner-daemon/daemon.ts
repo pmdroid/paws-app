@@ -14,12 +14,14 @@ import {
   RunnerCommandSchema,
   RunnerArtifactChunkSchema,
   RunnerHealthResultSchema,
+  RunnerHelperResultSchema,
   SignedRunnerCommandSchema,
   verifyRunnerCommand,
   type RunnerCommand,
   type RunnerArtifactChunk,
   type RunnerCommandRejection,
   type RunnerHealthResult,
+  type RunnerHelperResult,
   type RunnerResult,
 } from "../runner-protocol";
 import {
@@ -45,7 +47,7 @@ import {
   type PairingChallenge,
   type PairedState,
 } from "./state";
-import { httpsOrigin, requestJson } from "./transport";
+import { httpsOrigin, requestJson, RunnerRequestError } from "./transport";
 import {
   RunnerCheckDeliverySchema,
   RunnerAnswersRequestSchema,
@@ -190,12 +192,83 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   async function acknowledgeCommand(id: string): Promise<void> {
     const identity = paired();
     identifier.parse(id);
-    if (!db.query("SELECT id FROM pending_command WHERE id=?").get(id))
-      throw new Error("Runner command is unknown.");
+    const row = db
+      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
+      .get(id);
+    if (!row) throw new Error("Runner command is unknown.");
+    const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
+    const queue = command.type === "helper" ? "helper-commands" : "commands";
     db.run("UPDATE pending_command SET acknowledged=1 WHERE id=? AND acknowledged=0", [id]);
-    await authenticated(`/v1/commands/${encodeURIComponent(id)}/ack`, "POST", {});
+    try {
+      const receipt = await authenticated(`/v1/${queue}/${encodeURIComponent(id)}/ack`, "POST", {});
+      if (command.type === "helper") z.strictObject({ ok: z.literal(true) }).parse(receipt);
+    } catch (error) {
+      if (
+        command.type !== "helper" ||
+        !(error instanceof RunnerRequestError) ||
+        error.status !== 409
+      )
+        throw error;
+    }
     unchangedIdentity(identity);
     db.run("UPDATE pending_command SET acknowledged=2 WHERE id=?", [id]);
+  }
+  function helperCommand(id: string) {
+    paired();
+    identifier.parse(id);
+    const row = db
+      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
+      .get(id);
+    const command = row ? RunnerCommandSchema.parse(JSON.parse(row.payload)) : null;
+    if (command?.type !== "helper" || command.expiresAt <= now())
+      throw new Error("Runner helper command is unavailable or expired.");
+    return command;
+  }
+  async function pollCommands(path: string) {
+    const identity = paired();
+    trustedSigningKeys(identity, pins);
+    for (const row of db
+      .query<{ id: string }, []>(
+        "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
+      )
+      .all())
+      await acknowledgeCommand(row.id);
+    const response = z
+      .strictObject({ commands: z.array(SignedRunnerCommandSchema).max(16) })
+      .parse(await authenticated(path, "GET"));
+    ensureOpen();
+    unchangedIdentity(identity);
+    const trustedKeys = trustedSigningKeys(paired(), pins);
+    const rejected: RunnerCommandRejection[] = [];
+    for (const envelope of response.commands) {
+      const result = immediate(db, () => {
+        const verified = verifyRunnerCommand(envelope, {
+          trustedKeys,
+          runnerId: identity.runnerId,
+          workspaceId: identity.workspaceId,
+          now: now(),
+          allowedRepositories: options.allowedRepositories,
+          claimCommand: (id, expiresAt) =>
+            db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
+              id,
+              expiresAt,
+            ]).changes === 1,
+        });
+        if (
+          verified.ok &&
+          (verified.command.type === "helper") !== (path === "/v1/helper-commands")
+        )
+          throw new Error("Runner command arrived through the wrong queue.");
+        if (verified.ok)
+          db.run("INSERT INTO pending_command (id,payload) VALUES (?,?)", [
+            verified.command.id,
+            JSON.stringify(verified.command),
+          ]);
+        return verified;
+      });
+      if (!result.ok) rejected.push(result.reason);
+    }
+    return { commands: pendingCommands(), rejected };
   }
   return {
     status,
@@ -489,46 +562,29 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner repository credential does not match the admitted work.");
       return credential;
     },
-    async pollCommands() {
-      const identity = paired();
-      trustedSigningKeys(identity, pins);
-      for (const row of db
-        .query<{ id: string }, []>(
-          "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
-        )
-        .all())
-        await acknowledgeCommand(row.id);
-      const response = z
-        .strictObject({ commands: z.array(SignedRunnerCommandSchema).max(16) })
-        .parse(await authenticated("/v1/commands", "GET"));
-      ensureOpen();
-      unchangedIdentity(identity);
-      const trustedKeys = trustedSigningKeys(paired(), pins);
-      const rejected: RunnerCommandRejection[] = [];
-      for (const envelope of response.commands) {
-        const result = immediate(db, () => {
-          const verified = verifyRunnerCommand(envelope, {
-            trustedKeys,
-            runnerId: identity.runnerId,
-            workspaceId: identity.workspaceId,
-            now: now(),
-            allowedRepositories: options.allowedRepositories,
-            claimCommand: (id, expiresAt) =>
-              db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
-                id,
-                expiresAt,
-              ]).changes === 1,
-          });
-          if (verified.ok)
-            db.run("INSERT INTO pending_command (id,payload) VALUES (?,?)", [
-              verified.command.id,
-              JSON.stringify(verified.command),
-            ]);
-          return verified;
-        });
-        if (!result.ok) rejected.push(result.reason);
-      }
-      return { commands: pendingCommands(), rejected };
+    pollCommands: () => pollCommands("/v1/commands"),
+    pollHelperCommands: () => pollCommands("/v1/helper-commands"),
+    async helperLease(id: string) {
+      const command = helperCommand(id);
+      const result = z
+        .strictObject({ expiresAt: z.number().int().nonnegative() })
+        .parse(
+          await authenticated(`/v1/helper-commands/${encodeURIComponent(id)}/lease`, "POST", {}),
+        );
+      if (result.expiresAt !== command.expiresAt || result.expiresAt <= now())
+        throw new Error("Runner helper lease differs from the admitted command.");
+      return result;
+    },
+    async postHelperResult(result: RunnerHelperResult) {
+      const body = RunnerHelperResultSchema.parse(result);
+      helperCommand(body.commandId);
+      return RunnerEventReceiptSchema.parse(
+        await authenticated(
+          `/v1/helper-commands/${encodeURIComponent(body.commandId)}/result`,
+          "POST",
+          body,
+        ),
+      );
     },
     acknowledgeCommand,
     async renewCertificate() {

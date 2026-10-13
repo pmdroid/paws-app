@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const repository = resolve(import.meta.dir, "../..");
+const helpers = process.argv.includes("--helpers");
 const root = mkdtempSync(join(tmpdir(), "paws-health-runtime-"));
 const input = join(root, "input");
 mkdirSync(input, { mode: 0o700 });
@@ -64,6 +65,7 @@ await run(
     "test/local/runner-health-runtime-process.ts",
     "prepare",
     input,
+    ...(helpers ? ["helpers"] : []),
   ],
   "prepare",
 );

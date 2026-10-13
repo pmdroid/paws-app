@@ -62,7 +62,7 @@ def validate_job(execution_id, runner_uid, agent_gid):
             if len(content) > 524288:
                 raise ValueError("Job file exceeds size limit")
             job = json.loads(content)
-        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check"):
+        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check", "helper"):
             raise ValueError("Invalid job")
         if job["command"]["type"] in ("run", "review"):
             descriptor = os.open("repository.bundle", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
