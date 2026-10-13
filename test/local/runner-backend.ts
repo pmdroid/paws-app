@@ -24,7 +24,12 @@ import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerArtifactStore } from "../../src/runner-artifacts";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
-import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
+import { createRunnerInputStore } from "../../src/runner-inputs";
+import {
+  verifyRunnerCommand,
+  type RunnerCommand,
+  type RunnerInputFile,
+} from "../../src/runner-protocol";
 import {
   prepareRepositorySnapshot,
   recoverAcpConversation,
@@ -683,6 +688,189 @@ export async function probeRunnerBackend(
     observe("remote response repository metadata must match the canonical selection", true, {
       commands: 0,
     });
+    const inputs = createRunnerInputStore({ root: join(root, "private-inputs"), work });
+    const inputBackend = createRemoteAgentRunner({ ...backendOptions, transcripts, inputs });
+    for (const kind of ["run", "review", "answer", "artifact"] as const) {
+      const record = item();
+      const isTask = kind === "answer" || kind === "artifact";
+      if (isTask) saveTaskMode(db, record.id, kind);
+      const directory = isTask ? join(root, `inputs-${record.id}`) : source;
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      if (!isTask) await git(["-C", source, "reset", "--hard", base]);
+      const supplied = Buffer.from("original caller input");
+      const preparedBytes = Buffer.from("prepared Linear attachment");
+      const fullPrompt =
+        kind === "artifact"
+          ? "Restored conversation 😺\n" + "h".repeat(20 * 1024 * 1024)
+          : `Prepared ${kind} prompt`;
+      const request = input(record, {
+        worktreePath: directory,
+        role: kind === "review" ? "reviewer" : "implementer",
+        readOnly: kind === "review" || kind === "answer",
+        inputFiles: [
+          { path: "private/supplied.bin", mimeType: "application/octet-stream", bytes: supplied },
+        ],
+        async prepareInputFiles() {
+          supplied.fill(0);
+          await delay(1);
+          return {
+            prompt: fullPrompt,
+            inputFiles: [
+              {
+                path: join(directory, "private/prepared.txt"),
+                mimeType: "text/plain",
+                bytes: preparedBytes,
+              },
+            ],
+          };
+        },
+      });
+      const pendingInput = inputBackend.forItem(record.id)(request);
+      const dispatched = await next();
+      if (dispatched.type !== "run" && dispatched.type !== "review" && dispatched.type !== "task")
+        throw new Error("Expected input-bearing command");
+      assert.equal(dispatched.type, isTask ? "task" : kind);
+      assert.equal(dispatched.inputFiles?.length, 2);
+      const expected = [
+        Buffer.from("original caller input"),
+        Buffer.from("prepared Linear attachment"),
+      ];
+      preparedBytes.fill(0);
+      const inputGrant = work.issueGrant({
+        runnerId,
+        runId: dispatched.runId,
+        commandId: dispatched.id,
+        generation: dispatched.generation,
+      });
+      for (const [fileId, bytes] of expected.entries()) {
+        const descriptor: RunnerInputFile = dispatched.inputFiles![fileId]!;
+        assert.equal(descriptor.sha256, createHash("sha256").update(bytes).digest("hex"));
+        assert.equal(
+          descriptor.path,
+          fileId === 0 ? "private/supplied.bin" : "private/prepared.txt",
+        );
+        const chunk = inputs.read(
+          { runnerId, runId: dispatched.runId, token: inputGrant.token },
+          { commandId: dispatched.id, generation: dispatched.generation, fileId, offset: 0 },
+        );
+        assert.deepEqual(Buffer.from(chunk.data, "base64"), bytes);
+        assert(!existsSync(join(directory, descriptor.path)));
+      }
+      if (kind === "artifact") {
+        assert(dispatched.promptContext);
+        assert.equal(dispatched.promptContext.sizeBytes, Buffer.byteLength(fullPrompt));
+        assert.equal(
+          dispatched.promptContext.sha256,
+          createHash("sha256").update(fullPrompt).digest("hex"),
+        );
+        assert(dispatched.prompt.length < 65536);
+        const chunks: Buffer[] = [];
+        let offset = 0;
+        while (offset < dispatched.promptContext.sizeBytes) {
+          const chunk = inputs.readContext(
+            { runnerId, runId: dispatched.runId, token: inputGrant.token },
+            { commandId: dispatched.id, generation: dispatched.generation, offset },
+          );
+          const bytes = Buffer.from(chunk.data, "base64");
+          assert.equal(chunk.sha256, createHash("sha256").update(bytes).digest("hex"));
+          assert(bytes.length > 0);
+          chunks.push(bytes);
+          offset += bytes.length;
+        }
+        assert.equal(Buffer.concat(chunks).toString("utf8"), fullPrompt);
+      } else {
+        assert.equal(dispatched.prompt, fullPrompt);
+        assert.equal(dispatched.promptContext, undefined);
+      }
+      const inputReceipt = result(dispatched, kind === "review" ? "reviewer" : "implementer");
+      await seal(
+        dispatched,
+        inputGrant.token,
+        inputReceipt.executionId,
+        Buffer.from(
+          JSON.stringify({
+            event: {
+              type: "session_update",
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Complete input response" },
+              },
+            },
+          }) + "\n",
+        ),
+      );
+      results.submit({
+        runnerId,
+        runId: dispatched.runId,
+        generation: dispatched.generation,
+        token: inputGrant.token,
+        result: {
+          ...inputReceipt,
+          ...(kind === "run" ? { candidateSha: head } : {}),
+          ...(kind === "review" ? { reviewText: "[]" } : {}),
+        },
+      });
+      await pendingInput;
+      assert.throws(() =>
+        inputs.read(
+          { runnerId, runId: dispatched.runId, token: inputGrant.token },
+          { commandId: dispatched.id, generation: dispatched.generation, fileId: 0, offset: 0 },
+        ),
+      );
+      observe(
+        `remote ${kind} snapshots supplied and prepared private files before signed dispatch`,
+        true,
+        {
+          files: 2,
+          callerMutationIgnored: true,
+          preparedMutationIgnored: true,
+          fullPromptBytes: Buffer.byteLength(fullPrompt),
+          context: kind === "artifact",
+          endedGrantDenied: true,
+        },
+      );
+    }
+    const badInputs = item();
+    await assert.rejects(
+      inputBackend.forItem(badInputs.id)(
+        input(badInputs, {
+          inputFiles: [
+            { path: join(root, "outside"), mimeType: "text/plain", bytes: Buffer.from("outside") },
+          ],
+        }),
+      ),
+      /inside the workspace/,
+    );
+    await assert.rejects(
+      inputBackend.forItem(badInputs.id)(
+        input(badInputs, {
+          inputFiles: Array.from({ length: 20 }, (_, i) => ({
+            path: `private/${i}.txt`,
+            mimeType: "text/plain",
+            bytes: Buffer.from("small"),
+          })),
+          async prepareInputFiles() {
+            return {
+              prompt: "Combined inputs",
+              inputFiles: [
+                { path: "private/extra.txt", mimeType: "text/plain", bytes: Buffer.from("extra") },
+              ],
+            };
+          },
+        }),
+      ),
+      /file limit/,
+    );
+    await assert.rejects(
+      backend.forItem(badInputs.id)(input(badInputs, { prompt: "h".repeat(65537) })),
+      /conversation context transfer is unavailable/,
+    );
+    assert.equal(work.commands(runnerId).length, 0);
+    observe(
+      "private input path and aggregate bounds and missing context transport reject before assignment",
+      true,
+      { commands: 0 },
+    );
     const sealed = item();
     const sealedPath = join(runDir(root, sealed.run.id), "acp.jsonl");
     mkdirSync(runDir(root, sealed.run.id), { recursive: true });

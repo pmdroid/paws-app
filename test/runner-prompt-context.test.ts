@@ -120,4 +120,4 @@ test("large restored prompts transfer exactly over mTLS and remain fenced after 
   );
   expect(proof.observations).toHaveLength(6);
   expect(proof.observations.every((value: { passed: boolean }) => value.passed)).toBe(true);
-});
+}, 120_000);
