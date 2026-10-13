@@ -20,13 +20,14 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
   }
 }`;
 
-const RELATIONS_QUERY = `query IssueRelations($id: String!, $relationsAfter: String, $inverseAfter: String) {
+const RELATIONS_QUERY = `query IssueRelations($id: String!, $relationsAfter: String, $inverseAfter: String, $includeRelations: Boolean!, $includeInverse: Boolean!) {
   issue(id: $id) {
-    relations(first: 50, after: $relationsAfter) {
+    id
+    relations(first: 50, after: $relationsAfter) @include(if: $includeRelations) {
       nodes { type issue { id } relatedIssue { id } }
       pageInfo { hasNextPage endCursor }
     }
-    inverseRelations(first: 50, after: $inverseAfter) {
+    inverseRelations(first: 50, after: $inverseAfter) @include(if: $includeInverse) {
       nodes { type issue { id } relatedIssue { id } }
       pageInfo { hasNextPage endCursor }
     }
@@ -45,6 +46,8 @@ const STATUS_MUTATION = `mutation IssueUpdate($id: String!, $input: IssueUpdateI
   issueUpdate(id: $id, input: $input) { success }
 }`;
 
+const MAX_GRAPH_PAGES = 1_000;
+
 const PREFERRED_STATE_NAMES: Record<StatusUpdate["stateType"], readonly string[]> = {
   started: ["In Progress"],
   completed: ["Done"],
@@ -61,13 +64,23 @@ export function createLinearTracker(
     ...createLinearRepositoryMethods(client),
     ...createLinearAttachmentMethods(client),
     async loadEpic(linearIssueId) {
-      const children: Array<LinearSubIssue & { sort: number | null }> = [];
+      const children = new Map<string, LinearSubIssue & { sort: number | null }>();
+      const cursors = new Set<string>();
       let after: string | null = null;
       let snapshot: EpicSnapshot | null = null;
-      for (let page = 0; page < 10; page++) {
+      for (let page = 0; ; page++) {
+        if (page >= MAX_GRAPH_PAGES)
+          throw new Error("Linear graph pagination exceeded its page limit");
         const data = await client.query(CHILDREN_QUERY, { id: linearIssueId, after });
         const issue = dig(data, ["issue"]);
-        if (issue === null) throw new Error(`Linear issue ${linearIssueId} was not found`);
+        if (
+          issue === null ||
+          readString(issue, "id") === null ||
+          (snapshot !== null && issue["id"] !== snapshot.linearIssueId)
+        )
+          throw new Error(
+            `Linear issue ${linearIssueId} was not found or changed during pagination`,
+          );
         if (snapshot === null) {
           const id = readString(issue, "id");
           const identifier = readString(issue, "identifier");
@@ -84,13 +97,15 @@ export function createLinearTracker(
             subIssues: [],
           };
         }
-        const connection = readConnection(issue["children"]);
+        const connection = readGraphConnection(issue["children"]);
         for (const node of connection.nodes) {
           const id = readString(node, "id");
           const identifier = readString(node, "identifier");
           const title = readString(node, "title");
-          if (id === null || identifier === null || title === null) continue;
-          children.push({
+          if (id === null || identifier === null || title === null)
+            throw new Error("Linear returned an invalid sub-issue");
+          if (children.has(id)) throw new Error("Linear repeated a sub-issue during pagination");
+          children.set(id, {
             linearIssueId: id,
             identifier,
             title,
@@ -98,42 +113,54 @@ export function createLinearTracker(
             sort: readNumber(node, "subIssueSortOrder"),
           });
         }
-        if (!connection.hasNextPage || connection.endCursor === null) break;
-        after = connection.endCursor;
+        after = nextGraphCursor(connection, cursors);
+        if (after === null) break;
       }
       if (snapshot === null) throw new Error(`Linear issue ${linearIssueId} was not found`);
-      children.sort(
+      const ordered = [...children.values()].sort(
         (left, right) =>
           (left.sort ?? Number.POSITIVE_INFINITY) - (right.sort ?? Number.POSITIVE_INFINITY),
       );
-      return { ...snapshot, subIssues: children.map(({ sort: _sort, ...child }) => child) };
+      return { ...snapshot, subIssues: ordered.map(({ sort: _sort, ...child }) => child) };
     },
     async listDeps(linearIssueId) {
       const edges: DependencyEdge[] = [];
       const seen = new Set<string>();
+      const relationCursors = new Set<string>();
+      const inverseCursors = new Set<string>();
       let relationsAfter: string | null = null;
       let inverseAfter: string | null = null;
+      let canonicalId: string | null = null;
       let relationsDone = false;
       let inverseDone = false;
-      for (let page = 0; page < 10 && (!relationsDone || !inverseDone); page++) {
+      for (let page = 0; !relationsDone || !inverseDone; page++) {
+        if (page >= MAX_GRAPH_PAGES)
+          throw new Error("Linear graph pagination exceeded its page limit");
         const data = await client.query(RELATIONS_QUERY, {
           id: linearIssueId,
           relationsAfter,
           inverseAfter,
+          includeRelations: !relationsDone,
+          includeInverse: !inverseDone,
         });
         const issue = dig(data, ["issue"]);
-        if (issue === null) break;
+        const id = issue === null ? null : readString(issue, "id");
+        if (issue === null || id === null || (canonicalId !== null && id !== canonicalId))
+          throw new Error(
+            `Linear issue ${linearIssueId} was not found or changed during pagination`,
+          );
+        canonicalId = id;
         if (!relationsDone) {
-          const connection = readConnection(issue["relations"]);
+          const connection = readGraphConnection(issue["relations"]);
           pushEdges(connection.nodes, edges, seen);
-          relationsDone = !connection.hasNextPage || connection.endCursor === null;
-          relationsAfter = connection.endCursor;
+          relationsAfter = nextGraphCursor(connection, relationCursors);
+          relationsDone = relationsAfter === null;
         }
         if (!inverseDone) {
-          const connection = readConnection(issue["inverseRelations"]);
+          const connection = readGraphConnection(issue["inverseRelations"]);
           pushEdges(connection.nodes, edges, seen);
-          inverseDone = !connection.hasNextPage || connection.endCursor === null;
-          inverseAfter = connection.endCursor;
+          inverseAfter = nextGraphCursor(connection, inverseCursors);
+          inverseDone = inverseAfter === null;
         }
       }
       return edges;
@@ -182,13 +209,17 @@ function pushEdges(
   seen: Set<string>,
 ): void {
   for (const node of nodes) {
-    if (readString(node, "type") !== "blocks") continue;
+    const type = readString(node, "type");
+    if (type === null) throw new Error("Linear returned an invalid relation");
+    if (type !== "blocks") continue;
     const issue = isRecord(node["issue"]) ? node["issue"] : null;
     const related = isRecord(node["relatedIssue"]) ? node["relatedIssue"] : null;
-    if (issue === null || related === null) continue;
+    if (issue === null || related === null)
+      throw new Error("Linear returned an invalid blocks relation");
     const blockerLinearIssueId = readString(issue, "id");
     const blockedLinearIssueId = readString(related, "id");
-    if (blockerLinearIssueId === null || blockedLinearIssueId === null) continue;
+    if (blockerLinearIssueId === null || blockedLinearIssueId === null)
+      throw new Error("Linear returned an invalid blocks relation");
     const key = `${blockerLinearIssueId}|${blockedLinearIssueId}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -218,4 +249,32 @@ function readConnection(value: unknown): {
     hasNextPage: pageInfo?.["hasNextPage"] === true,
     endCursor: pageInfo === null ? null : readString(pageInfo, "endCursor"),
   };
+}
+
+function readGraphConnection(value: unknown) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value["nodes"]) ||
+    !value["nodes"].every(isRecord) ||
+    !isRecord(value["pageInfo"]) ||
+    typeof value["pageInfo"]["hasNextPage"] !== "boolean"
+  )
+    throw new Error("Linear returned an invalid graph connection");
+  return {
+    nodes: value["nodes"],
+    hasNextPage: value["pageInfo"]["hasNextPage"],
+    endCursor: readString(value["pageInfo"], "endCursor"),
+  };
+}
+
+function nextGraphCursor(
+  connection: ReturnType<typeof readGraphConnection>,
+  seen: Set<string>,
+): string | null {
+  if (!connection.hasNextPage) return null;
+  const cursor = connection.endCursor;
+  if (cursor === null || seen.has(cursor))
+    throw new Error("Linear graph pagination did not advance");
+  seen.add(cursor);
+  return cursor;
 }
