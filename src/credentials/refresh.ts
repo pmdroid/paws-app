@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { claimNextJob, completeJob, enqueueJobOnce, failJob, getJob } from "../db";
+import { claimNextJob, completeJob, enqueueJobOnce, failJob, getJob, immediate } from "../db";
 
 type RotatingCredential = { accessToken: string; refreshToken: string | null };
 
@@ -36,17 +36,24 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
     }
     try {
       const next = await input.refresh(current, AbortSignal.timeout(Math.min(15_000, leaseMs / 2)));
-      const held = getJob(input.db, id);
-      if (held?.lockedBy !== job.lockedBy || (held.lockedUntil ?? 0) <= Date.now()) continue;
-      const latest = input.read();
-      if (latest === null) throw new Error("Integration credentials were removed.");
-      if (changed(original, latest)) {
-        completeJob(input.db, job);
-        return latest;
-      }
-      input.write(next);
-      completeJob(input.db, job);
-      return next;
+      const published = immediate(input.db, () => {
+        const held = getJob(input.db, id);
+        if (held?.lockedBy !== job.lockedBy || (held.lockedUntil ?? 0) <= Date.now()) return null;
+        const latest = input.read();
+        if (latest === null) throw new Error("Integration credentials were removed.");
+        const now = Date.now();
+        const latestClaim = getJob(input.db, id);
+        if (latestClaim?.lockedBy !== job.lockedBy || (latestClaim.lockedUntil ?? 0) <= now)
+          return null;
+        if (changed(original, latest)) {
+          completeJob(input.db, job, now);
+          return latest;
+        }
+        input.write(next);
+        completeJob(input.db, job, now);
+        return next;
+      });
+      if (published !== null) return published;
     } catch {
       failJob(input.db, job, new Error("Integration token refresh failed."), { baseMs: 100 });
       throw new Error("Integration token refresh failed. Retry or reconnect the integration.");
