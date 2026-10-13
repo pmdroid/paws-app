@@ -4,6 +4,7 @@ import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
 import { probeRunnerBackend } from "./runner-backend";
+import { probeRunnerTrustedCloseout } from "./runner-trusted-closeout";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
@@ -67,6 +68,7 @@ export async function probeBoundaries(
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerBackend(join(root, "runner-backend"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
+  await probeRunnerTrustedCloseout(join(root, "runner-trusted-closeout"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerVerifierPairing(join(root, "runner-verifier-pairing"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
