@@ -59,7 +59,7 @@ export function createRunnerTranscripts(options: {
   }
   function authorize(access: Access, generation: number) {
     const { command } = work.authorize({ ...access, generation });
-    if (command.type !== "run" && command.type !== "review") denied();
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task") denied();
     return command;
   }
   function read(runId: string, generation: number) {
