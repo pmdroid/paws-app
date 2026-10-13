@@ -193,6 +193,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-journal": ["db", "runner-protocol"],
   "runner-helpers": ["db", "runner-protocol", "workspace"],
   "runner-runtime": [
+    "acp",
     "runner-transcripts",
     "runner-artifacts",
     "runner-daemon",
