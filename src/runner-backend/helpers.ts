@@ -1,0 +1,91 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import type { Database } from "bun:sqlite";
+import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
+import type { RunnerHelpers } from "../runner-helpers";
+import type { RunnerCommand } from "../runner-protocol";
+
+type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
+
+export function createRemoteSessionAgentRunner(options: {
+  db: Database;
+  helpers: RunnerHelpers;
+  now?: () => number;
+  pollIntervalMs?: number;
+}) {
+  const now = options.now ?? Date.now;
+  return {
+    forSession(sessionId: string, purpose: HelperCommand["purpose"]) {
+      return async (input: RunAgentOptions): Promise<RunAgentResult> => {
+        input.signal?.throwIfAborted();
+        if (
+          input.role !== "implementer" ||
+          !input.profile ||
+          !input.readOnly ||
+          input.prepareOnly ||
+          input.prepareInputFiles ||
+          input.inputFiles?.length ||
+          input.askTeam ||
+          input.publishArtifact
+        )
+          throw new Error(
+            "Remote session helper requires a read-only prompt without tools or files",
+          );
+        const runners = options.db
+          .query<{ id: string }, [number, number, number]>(
+            "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+          )
+          .all(now() - 60_000, now(), now());
+        let command: HelperCommand | undefined;
+        for (const runner of runners) {
+          try {
+            command = options.helpers.dispatch({
+              runnerId: runner.id,
+              sessionId,
+              purpose,
+              profile: { ...input.profile, model: input.profile.model ?? null },
+              prompt: input.prompt,
+            }).command;
+            break;
+          } catch {}
+        }
+        if (!command) throw new Error("No available paired runner can access this Linear session");
+        try {
+          const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
+          while (now() < deadline) {
+            input.signal?.throwIfAborted();
+            const result = options.helpers.result(command.id);
+            if (result) {
+              const transcript = `${runDir(input.pawsRoot, command.id)}/acp.jsonl`;
+              mkdirSync(runDir(input.pawsRoot, command.id), { recursive: true, mode: 0o700 });
+              const events: AcpEvent[] = [
+                {
+                  type: "session_update",
+                  sessionId: result.sessionId ?? command.id,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: result.text },
+                  },
+                },
+                { type: "prompt_complete", stopReason: result.stopReason },
+              ];
+              for (const event of events) {
+                input.signal?.throwIfAborted();
+                options.helpers.current(command.id);
+                appendFileSync(transcript, `${JSON.stringify({ event })}\n`, { mode: 0o600 });
+                await input.onEvent?.(event);
+              }
+              input.signal?.throwIfAborted();
+              options.helpers.current(command.id);
+              return { ...result, transcriptPath: transcript };
+            }
+            await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
+          }
+          throw new Error("Remote session helper timed out");
+        } finally {
+          options.helpers.finish(command.id);
+        }
+      };
+    },
+  };
+}

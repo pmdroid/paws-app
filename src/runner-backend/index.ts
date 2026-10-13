@@ -13,6 +13,8 @@ import type { RunnerChecks } from "../runner-checks";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 
+export { createRemoteSessionAgentRunner } from "./helpers";
+
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 
 export function createRemoteAgentRunner(options: {
