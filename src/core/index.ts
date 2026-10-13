@@ -72,3 +72,10 @@ export {
   type StartupDecision,
   type WakeDecision,
 } from "./recovery";
+
+export {
+  appBotCommitIdentity,
+  commitIdentityEnv,
+  type AppBotIdentity,
+  type GitCommitIdentity,
+} from "./commit-identity";

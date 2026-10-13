@@ -12,6 +12,7 @@ export function createRunnerRepositoryAccess(options: {
   work: RunnerWork;
   github: GitHubApp;
   installationForRepository(repository: string): string | null;
+  checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -47,13 +48,29 @@ export function createRunnerRepositoryAccess(options: {
       const repository = `${initial.command.repository.owner}/${initial.command.repository.repo}`;
       const installationId = options.installationForRepository(repository);
       if (!installationId) return denied();
+      const expectedBot =
+        initial.command.type === "run" ? initial.command.checkpointBot : undefined;
+      const matchesBot = async () => {
+        if (!expectedBot) return input.access !== "write" || !options.checkpointBot;
+        const bot = await options.checkpointBot?.(repository);
+        return (
+          bot?.appId === expectedBot.appId &&
+          bot?.login === expectedBot.login &&
+          bot?.id === expectedBot.id
+        );
+      };
+      if (!(await matchesBot())) return denied();
+      options.work.authorize(access);
+      if (options.installationForRepository(repository) !== installationId) return denied();
       const credential = await options.github.mintInstallationToken({
         access: input.access,
         repository,
         installationId,
       });
+      if (!(await matchesBot())) return denied();
       const current = options.work.authorize(access);
       const checkedAt = now();
+      if (options.installationForRepository(repository) !== installationId) return denied();
       if (
         current.command.id !== initial.command.id ||
         !current.command.repository ||

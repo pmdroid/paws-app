@@ -241,7 +241,7 @@ function fixture(failure?: "client" | "installation" | "push" | "permissions") {
       }
       if (decodeURIComponent(url.pathname) === "/users/paws-test[bot]") {
         expect(token).toBe("Bearer fake-installation-token");
-        return Response.json({ login: "paws-test[bot]", id: 88 });
+        return Response.json({ login: "paws-test[bot]", id: 88, type: "Bot" });
       }
       throw new Error(`Unexpected fake GitHub request ${input}`);
     },

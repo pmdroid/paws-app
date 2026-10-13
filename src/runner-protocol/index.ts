@@ -1,6 +1,7 @@
 export {
   RunnerCommandSchema,
   RunnerRepositorySchema,
+  RunnerCheckpointBotSchema,
   RunnerProfileSchema,
   SignedRunnerCommandSchema,
   type RunnerCommand,

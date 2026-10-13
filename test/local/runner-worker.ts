@@ -122,6 +122,8 @@ export async function probeRunnerWorker(
     return path;
   }
   const first = job(1);
+  if (first.command.type === "run")
+    first.command.checkpointBot = { appId: "99", login: "paws-test[bot]", id: 88 };
   const privatePath = ".paws-linear-inputs/private [a]*!.txt";
   const privateBytes = Buffer.from([0, 255, 3, 0, 7]);
   const fullPrompt = "Restored context 日本語 " + "x".repeat(1_048_576) + " restored-tail";
@@ -241,6 +243,23 @@ export async function probeRunnerWorker(
     candidate.candidateSha,
   );
   await invoke(["-C", acquired, "merge-base", "--is-ancestor", baseSha, candidate.candidateSha]);
+  assert.equal(
+    (
+      await invoke([
+        "-C",
+        acquired,
+        "show",
+        "-s",
+        "--format=%an%n%ae%n%cn%n%ce",
+        candidate.candidateSha,
+      ])
+    ).trim(),
+    "paws-test[bot]\n88+paws-test[bot]@users.noreply.github.com\npaws-test[bot]\n88+paws-test[bot]@users.noreply.github.com",
+  );
+  assert.equal(
+    (await invoke(["-C", acquired, "show", "-s", "--format=%an", baseSha])).trim(),
+    "Fixture",
+  );
   assert.equal(
     await invoke(["-C", acquired, "show", `${candidate.candidateSha}:implemented.txt`]),
     "candidate\n",
