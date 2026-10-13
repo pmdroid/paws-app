@@ -242,3 +242,5 @@ For runner capacity between trusted Closeout commands, run `bun --no-env-file te
 ### Session helper backend
 
 Run `bun test src/runner-backend/helpers.test.ts test/runner-session-helpers.test.ts test/boundaries.test.ts`. The backend checks classify and repository-selection dispatch before an item or repository exists, canonical cancellation and generation fences, reply-to-transcript recovery, expiry, and rejection of file/tool contracts. The coordinator probe exercises the signed queue over real HTTPS and mTLS.
+
+For normal remote startup, run `bun --no-env-file test test/runner-control-startup.test.ts test/runner-transcript-config.test.ts test/agent-settings-api.test.ts`. The disposable normal Paws process verifies HTTPS pairing, workspace permissions, mutual-TLS health, renewal and revocation, explicit execution-mode validation, protected remote prerequisites, and agent settings probes dispatched to the runner. A local ACP launch sentinel must remain untouched when the remote health result supplies the advertised models. Preserve the 20 native observations and both listener shutdown checks.
