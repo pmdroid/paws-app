@@ -1,0 +1,931 @@
+@font-face {
+  font-family: "Bricolage";
+  src: url("/fonts/bricolage.woff2") format("woff2");
+  font-weight: 400 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Mono";
+  src: url("/fonts/dm-mono.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  --desktop: #c0b4f1;
+  --bar: #c0b4f1;
+  --paper: #fdfdfb;
+  --ink: #101317;
+  --muted: #57516c;
+  --orange: #ff793e;
+  --green: #258b47;
+  --mono: "DM Mono", monospace;
+  color: var(--ink);
+  background: var(--desktop);
+  font-family: "Bricolage", sans-serif;
+  font-synthesis: none;
+  scroll-behavior: smooth;
+  scroll-padding-top: 24px;
+  scrollbar-color: var(--muted) var(--desktop);
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+a {
+  color: inherit;
+  text-underline-offset: 5px;
+}
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+button {
+  font: inherit;
+}
+button,
+a,
+summary {
+  touch-action: manipulation;
+}
+button,
+.button {
+  cursor: pointer;
+}
+svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+.icon-definitions {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+::selection {
+  background: var(--orange);
+  color: var(--ink);
+}
+:focus-visible {
+  outline: 3px solid #5b3198;
+  outline-offset: 5px;
+}
+.skip-link {
+  position: fixed;
+  top: -100px;
+  left: 20px;
+  z-index: 5;
+  padding: 14px;
+  background: var(--paper);
+}
+.skip-link:focus {
+  top: 10px;
+}
+.desktop {
+  max-width: 1536px;
+  margin: 0 auto;
+  padding: 0 4.3%;
+}
+.navigation {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 8px 12px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 42px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  text-decoration: none;
+}
+.brand svg {
+  width: 43px;
+  height: 43px;
+  fill: currentColor;
+  stroke: none;
+}
+nav {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+  font-size: 17px;
+  font-weight: 650;
+}
+nav a {
+  text-decoration: none;
+  padding: 12px 0;
+}
+nav a:hover,
+footer a:hover {
+  text-decoration: underline;
+}
+.window {
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.titlebar {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 22px;
+  border-bottom: 2px solid var(--ink);
+  background: var(--bar);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.3;
+}
+.window-dots {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.window-dots i {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--orange);
+}
+.window-dots i:nth-child(2) {
+  background: #f5da73;
+}
+.window-dots i:nth-child(3) {
+  background: #54b76b;
+}
+.hero {
+  animation: window-open 550ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.hero-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 28px;
+  padding: 38px 3% 16px;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+h1 {
+  font-family: "Baloo 2", "Bricolage", sans-serif;
+  font-size: clamp(54px, 6.3vw, 96px);
+  line-height: 0.99;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+  margin: 1px 0 24px;
+}
+.intro {
+  font-size: clamp(20px, 1.75vw, 26px);
+  line-height: 1.28;
+  max-width: 38ch;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-top: 26px;
+}
+.button {
+  min-height: 60px;
+  padding: 14px 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 750;
+  text-decoration: none;
+  line-height: 1.2;
+}
+.actions .primary {
+  min-width: 38%;
+}
+.actions .secondary {
+  min-width: 35%;
+}
+.primary {
+  background: var(--orange);
+}
+.primary:hover {
+  background: #ff925d;
+}
+.secondary {
+  background: var(--paper);
+}
+.secondary:hover {
+  background: #eee8f9;
+}
+.button:active {
+  transform: translateY(1px);
+}
+.terminal {
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  margin-top: 28px;
+  overflow: hidden;
+  background: var(--ink);
+}
+.terminal .titlebar {
+  min-height: 35px;
+  padding: 6px 18px;
+  font-size: 13px;
+}
+.terminal .window-dots {
+  gap: 8px;
+}
+.terminal .window-dots i {
+  width: 14px;
+  height: 14px;
+}
+.terminal-content {
+  position: relative;
+  padding: 16px 20px;
+  min-height: 153px;
+  color: #f8f8f8;
+}
+.terminal-content code {
+  position: relative;
+  z-index: 1;
+  font: 16px/1.7 var(--mono);
+}
+.prompt {
+  color: #c0b4f1;
+}
+.terminal-note {
+  color: #e0dceb;
+}
+.terminal-content img {
+  position: absolute;
+  right: 7px;
+  bottom: 0;
+  width: 38%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+.local-note {
+  color: var(--muted);
+  font: 13px/1.5 var(--mono);
+  margin: 9px 5px 0;
+}
+.workflow-window {
+  align-self: start;
+  border: 2px solid var(--ink);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.workflow-window .titlebar {
+  padding: 10px 16px;
+}
+.workflow-content {
+  padding: 26px 28px 24px;
+}
+.example-issue {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 28px;
+}
+.example-issue > svg {
+  width: 43px;
+  height: 49px;
+  padding: 5px;
+  border: 2px solid #b2afbf;
+  border-radius: 5px;
+}
+.example-issue h2 {
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
+.example-issue p {
+  font: 12px/1.6 var(--mono);
+  color: var(--muted);
+  margin-top: 5px;
+}
+.workflow {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  position: relative;
+}
+.workflow::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 20px;
+  bottom: -38px;
+  width: 2px;
+  background: var(--ink);
+}
+.workflow li::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  flex-shrink: 0;
+}
+.workflow li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-height: 77px;
+}
+.stage-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  background: var(--ink);
+  color: white;
+  flex-shrink: 0;
+  z-index: 1;
+}
+.stage-0 {
+  background: #5b48c5;
+}
+.stage-1 {
+  background: var(--orange);
+  color: var(--ink);
+}
+.stage-0 svg,
+.stage-1 svg,
+.stage-3 svg,
+.tool-logo {
+  fill: currentColor;
+  stroke: none;
+}
+.claude-logo {
+  color: #b84b23;
+}
+.stage-icon svg {
+  width: 21px;
+  height: 21px;
+}
+.workflow h3 {
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+.workflow p,
+.workflow-end p {
+  color: var(--muted);
+  font: 12px/1.5 var(--mono);
+  margin-top: 4px;
+}
+.complete {
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.complete svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+.workflow-end {
+  display: flex;
+  gap: 22px;
+  align-items: center;
+  padding-top: 19px;
+  position: relative;
+}
+.end-dot {
+  width: 21px;
+  height: 21px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: #54b76b;
+  flex-shrink: 0;
+  margin-left: 0;
+}
+.workflow-end strong {
+  font-size: 17px;
+  font-weight: 750;
+}
+.tool-dock {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  gap: 0;
+  margin: 14px auto 18px;
+  padding: 12px 18px;
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: #e5ddf5;
+}
+.tool-dock span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 28px;
+  font-size: 15px;
+  font-weight: 700;
+  min-height: 38px;
+}
+.tool-dock span + span {
+  border-left: 1px solid var(--ink);
+}
+.tool-dock svg {
+  width: 26px;
+  height: 26px;
+}
+.section-content {
+  padding: 38px 6% 50px;
+}
+.section-content > h2 {
+  font-size: clamp(32px, 3.4vw, 52px);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  text-align: center;
+  text-wrap: balance;
+}
+.section-intro {
+  font-size: 21px;
+  line-height: 1.45;
+  text-align: center;
+  margin-top: 14px;
+  color: var(--muted);
+}
+.workflow-explorer {
+  display: grid;
+  grid-template-columns: 1fr 1.1fr;
+  gap: 48px;
+  margin-top: 40px;
+  align-items: center;
+}
+.stage-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stage-controls button {
+  background: transparent;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  gap: 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 13px 16px;
+  font-size: 19px;
+  font-weight: 650;
+  min-height: 58px;
+  color: var(--ink);
+}
+.stage-controls button[aria-pressed="true"] {
+  background: #e8e1f7;
+  border-color: var(--ink);
+}
+.stage-controls button:hover {
+  background: #f0ebf8;
+}
+.stage-controls button svg {
+  margin-left: auto;
+}
+.step-number {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ink);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+.stage-description {
+  min-height: 240px;
+}
+.stage-description h3 {
+  font-size: 30px;
+  letter-spacing: -0.03em;
+  margin: 16px 0 12px;
+}
+.stage-description p {
+  font-size: 19px;
+  line-height: 1.55;
+  max-width: 48ch;
+}
+.stage-description a,
+.local-copy > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  font-size: 17px;
+  margin-top: 20px;
+}
+.no-script-stages {
+  line-height: 1.6;
+}
+.local-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10%;
+  align-items: center;
+  padding: 90px 6%;
+}
+.local-copy h2 {
+  font-size: clamp(40px, 4vw, 60px);
+  font-weight: 800;
+  line-height: 1.03;
+  letter-spacing: -0.035em;
+}
+.local-copy p {
+  font-size: 20px;
+  line-height: 1.5;
+  max-width: 40ch;
+  margin-top: 24px;
+}
+.setup-content {
+  padding: 28px;
+}
+.setup-content h3 {
+  font-size: 30px;
+  letter-spacing: -0.03em;
+}
+.setup-content > p {
+  font-size: 17px;
+  line-height: 1.5;
+  margin: 14px 0;
+}
+.setup-content pre {
+  padding: 20px;
+  background: var(--ink);
+  color: #f8f8f8;
+  border-radius: 6px;
+  overflow-x: auto;
+  font: 14px/1.9 var(--mono);
+  margin: 22px 0;
+}
+.setup-content .button {
+  font-size: 17px;
+  min-height: 54px;
+  width: 100%;
+  padding-inline: 16px;
+  gap: 14px;
+}
+.setup-content .setup-note {
+  font: 12px/1.5 var(--mono);
+  text-align: center;
+  color: var(--muted);
+  margin-bottom: 0;
+}
+footer {
+  border-top: 1px solid var(--ink);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+  padding: 25px 12px 35px;
+  font-size: 15px;
+}
+footer .brand {
+  font-size: 30px;
+}
+footer .brand svg {
+  width: 32px;
+  height: 32px;
+}
+footer p {
+  margin-right: auto;
+}
+footer > a:not(.brand) {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 650;
+}
+footer > span {
+  font: 12px var(--mono);
+}
+@keyframes window-open {
+  from {
+    transform: translateY(8px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@media (min-width: 1536px) {
+  .desktop {
+    padding: 0 66px;
+  }
+}
+@media (max-width: 1100px) {
+  .hero-content {
+    gap: 22px;
+    padding-inline: 26px;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  }
+  h1 {
+    font-size: 6vw;
+  }
+  .workflow-content {
+    padding: 22px 16px;
+  }
+  .workflow-window .titlebar {
+    font-size: 11px;
+    padding-inline: 12px;
+  }
+  .window-dots {
+    gap: 6px;
+  }
+  .window-dots i {
+    width: 13px;
+    height: 13px;
+  }
+  .workflow h3 {
+    font-size: 16px;
+  }
+  .workflow p {
+    font-size: 11px;
+  }
+  .workflow li::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--ink);
+    border-radius: 50%;
+    background: var(--paper);
+    flex-shrink: 0;
+  }
+  .workflow li {
+    gap: 10px;
+  }
+  .button {
+    font-size: 17px;
+    padding: 14px 20px;
+    gap: 12px;
+  }
+  .actions {
+    gap: 12px;
+  }
+  .terminal-content code {
+    font-size: 13px;
+  }
+  .example-issue h2 {
+    font-size: 21px;
+  }
+  .example-issue {
+    gap: 10px;
+  }
+  .workflow-end strong {
+    font-size: 15px;
+  }
+  .local-section {
+    gap: 6%;
+    padding-inline: 3%;
+  }
+}
+@media (max-width: 780px) {
+  .desktop {
+    padding-inline: 18px;
+  }
+  .navigation {
+    min-height: 76px;
+    padding-inline: 4px;
+  }
+  .brand {
+    font-size: 34px;
+    gap: 7px;
+  }
+  .brand svg {
+    width: 35px;
+    height: 35px;
+  }
+  nav {
+    font-size: 13px;
+    gap: 18px;
+  }
+  nav a:nth-child(2) {
+    display: none;
+  }
+  .titlebar {
+    font-size: 11px;
+    padding: 10px 12px;
+    min-height: 36px;
+  }
+  .hero-content {
+    grid-template-columns: 1fr;
+    padding: 28px 24px 22px;
+    gap: 30px;
+  }
+  h1 {
+    font-size: clamp(41px, 8.4vw, 64px);
+    margin-bottom: 20px;
+  }
+  .intro {
+    font-size: 20px;
+    max-width: 45ch;
+  }
+  .actions {
+    margin-top: 24px;
+  }
+  .button {
+    min-height: 53px;
+    font-size: 16px;
+  }
+  .terminal {
+    margin-top: 25px;
+  }
+  .terminal-content {
+    min-height: 190px;
+    padding: 16px;
+  }
+  .terminal-content code {
+    font-size: 13px;
+  }
+  .terminal-content img {
+    width: 100px;
+    height: 70px;
+    right: 6px;
+    object-fit: contain;
+  }
+  .workflow-window {
+    width: 100%;
+  }
+  .workflow-window .titlebar {
+    font-size: 12px;
+  }
+  .workflow-content {
+    padding: 23px;
+  }
+  .workflow li::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--ink);
+    border-radius: 50%;
+    background: var(--paper);
+    flex-shrink: 0;
+  }
+  .workflow li {
+    min-height: 70px;
+    gap: 17px;
+  }
+  .workflow h3 {
+    font-size: 18px;
+  }
+  .workflow p {
+    font-size: 12px;
+  }
+  .workflow-end strong {
+    font-size: 17px;
+  }
+  .tool-dock {
+    padding: 10px 5px;
+    width: 100%;
+    margin-block: 16px;
+  }
+  .tool-dock span {
+    font-size: 12px;
+    padding: 0 12px;
+    gap: 6px;
+    flex: 1;
+  }
+  .tool-dock svg {
+    display: none;
+  }
+  .section-content {
+    padding: 30px 24px 34px;
+  }
+  .section-content > h2 {
+    font-size: 35px;
+  }
+  .section-intro {
+    font-size: 18px;
+  }
+  .workflow-explorer {
+    grid-template-columns: 1fr;
+    gap: 28px;
+    margin-top: 28px;
+  }
+  .stage-controls button {
+    font-size: 17px;
+    padding: 10px;
+    min-height: 52px;
+  }
+  .stage-description {
+    min-height: 242px;
+  }
+  .stage-description h3 {
+    font-size: 27px;
+  }
+  .stage-description p {
+    font-size: 18px;
+  }
+  .local-section {
+    grid-template-columns: 1fr;
+    padding: 52px 8px;
+    gap: 32px;
+  }
+  .local-copy h2 {
+    font-size: 48px;
+  }
+  .local-copy p {
+    font-size: 19px;
+  }
+  .setup-content {
+    padding: 24px;
+  }
+  footer {
+    gap: 16px;
+    padding-inline: 4px;
+  }
+  footer p {
+    width: calc(100% - 130px);
+    font-size: 13px;
+  }
+  footer > a:not(.brand) {
+    font-size: 14px;
+    margin-right: auto;
+  }
+}
+@media (max-width: 390px) {
+  .desktop {
+    padding-inline: 12px;
+  }
+  .hero-content {
+    padding-inline: 18px;
+  }
+  h1 {
+    font-size: 39px;
+  }
+  .intro {
+    font-size: 18px;
+  }
+  .actions {
+    gap: 10px;
+  }
+  .button {
+    font-size: 15px;
+    padding: 12px 14px;
+  }
+  .terminal-note {
+    font-size: 11px;
+  }
+  .titlebar {
+    gap: 8px;
+    font-size: 10px;
+  }
+  .tool-dock span {
+    padding-inline: 8px;
+    font-size: 11px;
+  }
+  .workflow-content {
+    padding-inline: 18px;
+  }
+  .workflow h3 {
+    font-size: 17px;
+  }
+  .section-content {
+    padding-inline: 18px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    scroll-behavior: auto;
+  }
+  .hero {
+    animation: none;
+  }
+}
