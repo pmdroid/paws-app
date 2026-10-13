@@ -535,12 +535,18 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       RunnerGrantTokenSchema.parse(grantToken);
       const stored = db
         .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','check') ORDER BY rowid DESC LIMIT 1",
+          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','check','task') ORDER BY rowid DESC LIMIT 1",
         )
         .get(runId, generation);
       if (!stored) throw new Error("Runner work command is unknown.");
       const command = RunnerCommandSchema.parse(JSON.parse(stored.payload));
-      if (command.type !== "run" && command.type !== "review" && command.type !== "check")
+      if (
+        (command.type !== "run" &&
+          command.type !== "review" &&
+          command.type !== "check" &&
+          command.type !== "task") ||
+        !command.repository
+      )
         throw new Error("Runner work command is invalid.");
       if (access === "write" && command.type !== "run")
         throw new Error("Review commands cannot request repository write access.");

@@ -41,6 +41,7 @@ export function createRunnerRepositoryAccess(options: {
         token: authorization.slice(7),
       };
       const initial = options.work.authorize(access);
+      if (!initial.command.repository) return denied();
       if (input.access === "write" && (initial.command.type !== "run" || !initial.branch))
         return denied();
       const repository = `${initial.command.repository.owner}/${initial.command.repository.repo}`;
@@ -55,6 +56,7 @@ export function createRunnerRepositoryAccess(options: {
       const checkedAt = now();
       if (
         current.command.id !== initial.command.id ||
+        !current.command.repository ||
         current.branch !== initial.branch ||
         credential.repository !== repository ||
         !/^[\x21-\x7e]{1,4096}$/.test(credential.token) ||
