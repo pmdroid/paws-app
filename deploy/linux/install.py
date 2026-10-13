@@ -122,7 +122,7 @@ def prerequisites():
     validate_identity_separation()
 
 
-def admitted_release(manifest, fingerprint):
+def admitted_release(manifest, fingerprint, reinstall=False):
     record = STATE / "release.json"
     accepted = {"version": manifest["version"], "artifactSha256": manifest["artifactSha256"], "releaseKeyFingerprint": fingerprint}
     try:
@@ -138,7 +138,7 @@ def admitted_release(manifest, fingerprint):
         raise ValueError("Release trust key does not match installed trust")
     incoming = tuple(map(int, manifest["version"].split(".")))
     installed = tuple(map(int, previous["version"].split(".")))
-    recovering = previous["status"] == "pending" and all(previous[key] == value for key, value in accepted.items())
+    recovering = (previous["status"] == "pending" or reinstall) and all(previous[key] == value for key, value in accepted.items())
     if previous["status"] == "pending" and not recovering:
         raise ValueError("Pending release must recover its exact artifact")
     if incoming <= installed and not recovering:
@@ -217,7 +217,7 @@ def verify_selected_release(destination, unpacked):
         raise ValueError("Selected pending release is incomplete")
 
 
-def install(manifest, artifact, fingerprint):
+def install(manifest, artifact, fingerprint, reinstall=False):
     prerequisites()
     root_directory(STATE, 0o700)
     lock = os.open(STATE / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -226,7 +226,7 @@ def install(manifest, artifact, fingerprint):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o7777 != 0o600:
             raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        accepted = admitted_release(manifest, fingerprint)
+        accepted = admitted_release(manifest, fingerprint, reinstall)
         pointers = {"bun": "../current/bin/bun", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
         for name, target in pointers.items():
             pointer = BASE / "bin" / name

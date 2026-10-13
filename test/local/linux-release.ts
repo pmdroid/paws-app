@@ -13,11 +13,14 @@ import { tmpdir } from "node:os";
 const repository = resolve(import.meta.dir, "../..");
 const selectedRecovery = process.argv.includes("--selected-recovery");
 const providerLogin = process.argv.includes("--provider-login");
-const proof = providerLogin
-  ? "test/local/linux-provider-login-proof.py"
-  : selectedRecovery
-    ? "test/local/linux-selected-recovery-proof.py"
-    : "test/local/linux-install-proof.py";
+const deb = process.argv.includes("--deb");
+const proof = deb
+  ? "test/local/linux-deb-proof.py"
+  : providerLogin
+    ? "test/local/linux-provider-login-proof.py"
+    : selectedRecovery
+      ? "test/local/linux-selected-recovery-proof.py"
+      : "test/local/linux-install-proof.py";
 const root = mkdtempSync(join(tmpdir(), "paws-release-verification-"));
 const source = resolve(process.env.PAWS_RELEASE_PROOF_SOURCE ?? repository);
 const node = resolve(process.env.PAWS_RELEASE_PROOF_NODE ?? "/usr/bin/node");
@@ -107,6 +110,12 @@ const observation = await run(
       [runtime, "/proof/host-runtime"],
       [artifactRoot, "/proof/package"],
       [node, "/proof/node"],
+      ...(deb
+        ? [
+            [join(repository, "deploy/linux/deb-package.py"), "/proof/deb-package.py"],
+            [join(repository, "deploy/linux/deb-control.py"), "/proof/deb-control.py"],
+          ]
+        : []),
     ].flatMap(([src, dst]) => ["--mount", `type=bind,src=${src},dst=${dst},readonly`]),
     "--entrypoint",
     "/usr/bin/python3",
@@ -129,6 +138,12 @@ writeFileSync(
       verifierSha256: digest(join(repository, "deploy/linux/release.py")),
       packagerSha256: digest(join(repository, "deploy/linux/package.py")),
       proofSha256: digest(join(repository, proof)),
+      ...(deb
+        ? {
+            debPackagerSha256: digest(join(repository, "deploy/linux/deb-package.py")),
+            debControlSha256: digest(join(repository, "deploy/linux/deb-control.py")),
+          }
+        : {}),
       fixtureSha256: digest(join(repository, "test/local/linux-install-proof.py")),
     },
     null,
@@ -136,5 +151,5 @@ writeFileSync(
   ),
 );
 console.log(
-  `VERIFIED ${providerLogin ? "bundled provider status and isolated operator login" : "signed Linux installation, dedicated identities, fixed paths and update fencing"}; evidence ${root}`,
+  `VERIFIED ${deb ? "real Debian install, reinstall, upgrade, active-work fencing and removal" : providerLogin ? "bundled provider status and isolated operator login" : "signed Linux installation, dedicated identities, fixed paths and update fencing"}; evidence ${root}`,
 );
