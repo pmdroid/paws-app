@@ -1112,4 +1112,27 @@ CREATE TABLE external_dep (
 CREATE INDEX external_dep_blocker ON external_dep(blocker_linear_issue_id,epic_id);
 `,
   },
+  {
+    id: "040_scheduler_admission",
+    sql: `
+CREATE TABLE work_item_scheduling (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  project_id TEXT,
+  project_known INTEGER NOT NULL CHECK(project_known IN (0,1)),
+  priority INTEGER NOT NULL DEFAULT 0 CHECK(priority BETWEEN 0 AND 4),
+  paths TEXT CHECK(paths IS NULL OR json_valid(paths))
+) STRICT;
+CREATE TABLE scheduler_admission (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  job_id INTEGER NOT NULL UNIQUE REFERENCES job(id),
+  project_key TEXT NOT NULL,
+  repository_key TEXT NOT NULL,
+  session_id TEXT REFERENCES linear_session(session_id),
+  paths TEXT NOT NULL CHECK(json_valid(paths)),
+  hot INTEGER NOT NULL CHECK(hot IN (0,1)),
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX scheduler_project ON scheduler_admission(project_key);
+`,
+  },
 ];

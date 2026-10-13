@@ -21,6 +21,7 @@ export class JobLoop {
       leaseMs?: number;
       pollMs?: number;
       backoffBaseMs?: number;
+      concurrency?: number;
     } = {},
   ) {}
 
@@ -87,10 +88,16 @@ export class JobLoop {
     signal: AbortSignal,
     sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
   ): Promise<void> {
-    while (!signal.aborted) {
-      const job = await this.tick();
-      if (signal.aborted) break;
-      if (job === null) await sleeper(this.pollMs, signal);
-    }
+    const concurrency = this.options.concurrency ?? 1;
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+      throw new Error("Invalid job concurrency");
+    const worker = async () => {
+      while (!signal.aborted) {
+        const job = await this.tick();
+        if (signal.aborted) break;
+        if (job === null) await sleeper(this.pollMs, signal);
+      }
+    };
+    await Promise.all(Array.from({ length: concurrency }, worker));
   }
 }

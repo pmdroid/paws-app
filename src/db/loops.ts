@@ -8,6 +8,7 @@ export function startLoops(input: {
   db: Database;
   signal: AbortSignal;
   clock?: Clock;
+  concurrency?: number;
   prepare?: (loops: { jobs: JobLoop; outbox: OutboxDispatcher }) => void;
 }): {
   stop: () => Promise<void>;
@@ -15,7 +16,7 @@ export function startLoops(input: {
   outbox: OutboxDispatcher;
 } {
   const clock = input.clock ?? systemClock;
-  const jobs = new JobLoop(input.db, clock);
+  const jobs = new JobLoop(input.db, clock, { concurrency: input.concurrency });
   const outbox = new OutboxDispatcher(input.db, clock);
   input.prepare?.({ jobs, outbox });
   const task = Promise.all([jobs.run(input.signal), outbox.run(input.signal)]);

@@ -111,19 +111,42 @@ export function claimJobSql(queueCount: number): string {
       : "";
   const itemId = "COALESCE(json_extract(candidate.payload, '$.itemId'), '')";
   const heldExclusive = EXCLUSIVE_SQL.replaceAll("candidate.", "held.");
+  const reservation = `EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = ${itemId}
+    AND (candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR a.job_id = candidate.id))`;
+  const parallel = `(candidate.queue != ${sqlLiteral(JOB_KIND.start)} OR EXISTS
+    (SELECT 1 FROM work_item mine WHERE mine.id = ${itemId} AND mine.state = 'queued' AND mine.cancel_requested = 0
+      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))
+    AND candidate.queue IN (${[JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify].map(sqlLiteral).join(",")})
+    AND ${reservation}`;
+  const sameItem = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
+    AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId})`;
+  const unreserved = `EXISTS (SELECT 1 FROM work_item other WHERE other.state IN (${IN_FLIGHT_SQL})
+      AND other.id != ${itemId} AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = other.id))
+    OR EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+      AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
+      AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = json_extract(held.payload,'$.itemId')))`;
+  const heldMerge = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND
+    (held.queue = ${sqlLiteral(JOB_KIND.merge)} OR held.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)}
+      OR held.lane = ${sqlLiteral(MERGE_LANE)}))`;
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
     "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
     queueFilter +
+    ` AND NOT (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND ${reservation} AND NOT EXISTS
+      (SELECT 1 FROM work_item mine WHERE mine.id = ${itemId} AND mine.state = 'queued' AND mine.cancel_requested = 0
+      AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))` +
     " AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?))) " +
-    `AND NOT (${EXCLUSIVE_SQL} AND (` +
+    `AND NOT (${EXCLUSIVE_SQL} AND NOT (${parallel}) AND (` +
     "EXISTS (SELECT 1 FROM job AS held WHERE held.id != candidate.id AND held.status = 'running' " +
     `AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}) ` +
     `OR (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND EXISTS (SELECT 1 FROM work_item AS active WHERE active.state IN (${IN_FLIGHT_SQL}))) ` +
     `OR (EXISTS (SELECT 1 FROM work_item AS other WHERE other.state IN (${IN_FLIGHT_SQL}) AND other.id != ${itemId}) ` +
     `AND NOT EXISTS (SELECT 1 FROM work_item AS mine WHERE mine.state IN (${IN_FLIGHT_SQL}) AND mine.id = ${itemId}))` +
-    ")) ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
+    `)) AND NOT ((${parallel}) AND (${sameItem} OR ${heldMerge} OR ${unreserved})) ` +
+    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
 }
 
@@ -197,7 +220,7 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const binds: (string | number)[] = [workerId, now + leaseMs, now];
   if (queues !== undefined) binds.push(...queues);
   // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
-  binds.push(now, now);
+  binds.push(now, now, now, now, now);
   const row = db.query<JobRow, Array<string | number>>(sql).get(...binds);
   return row === null ? null : mapJob(row);
 }
