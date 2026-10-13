@@ -87,6 +87,34 @@ input {
 .workspace-member > span {
   min-width: 140px;
 }
+.workspace-audit {
+  max-width: 66rem;
+  margin-top: 16px;
+}
+.workspace-audit ol {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  max-height: 32rem;
+  overflow: auto;
+}
+.workspace-audit li {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(10rem, 1fr) minmax(8rem, 1fr) minmax(0, 2fr);
+  gap: 8px 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.workspace-audit time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 700px) {
+  .workspace-audit li {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
 body:not([data-area="settings"]) .workspace-access details,
 body:not([data-area="settings"]) .github-auth {
   display: none;

@@ -13,7 +13,7 @@ test("remote work has durable signed commands, scoped grants and fenced leases",
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 8);
+    assert.equal(observations.length, 9);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

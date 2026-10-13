@@ -302,6 +302,14 @@ export function createRunnerWork(options: {
             .get(command.runnerId, at)
         )
           throw new Error("Runner is occupied by session helper work.");
+        if (
+          db
+            .query(
+              "SELECT 1 FROM runner_work WHERE runner_id=? AND run_id<>? AND ended_at IS NULL AND lease_until>?",
+            )
+            .get(command.runnerId, command.runId, at)
+        )
+          throw new Error("Runner is occupied by active work.");
         if (command.type === "task")
           bindTask(
             command,

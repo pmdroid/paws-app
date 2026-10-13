@@ -230,6 +230,7 @@ export { prepareLinearActivity } from "./linear-delivery";
 
 export {
   auditWorkspaceAccess,
+  listWorkspaceAudit,
   consumeWorkspaceBootstrap,
   createWorkspaceBootstrap,
   deleteWorkspaceSession,

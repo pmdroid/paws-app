@@ -548,7 +548,26 @@ test("a cooperative timeout returns cancelled without publishing a checkpoint", 
     ],
   });
   const events: AcpEvent[] = [];
-  const result = await runAgent({
+  const controller = new AbortController();
+  const schedule = globalThis.setTimeout;
+  const watchdog = schedule(() => controller.abort(), 10_000);
+  let expire: (() => void) | undefined;
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
+    handler: (...args: unknown[]) => void,
+    milliseconds?: number,
+    ...args: unknown[]
+  ) => {
+    if (milliseconds === 100 && expire === undefined) {
+      const scheduled = schedule(handler, 10_000, ...args);
+      expire = () => {
+        clearTimeout(scheduled);
+        handler(...args);
+      };
+      return scheduled;
+    }
+    return schedule(handler, milliseconds, ...args);
+  }) as typeof setTimeout);
+  const completion = runAgent({
     role: "implementer",
     itemId: "ENG-1",
     runId: "run-cooperative-timeout",
@@ -560,22 +579,66 @@ test("a cooperative timeout returns cancelled without publishing a checkpoint", 
     args: fakeAgentArgs(files),
     env: agentEnv(),
     timeoutMs: 100,
+    signal: controller.signal,
     cancelGraceMs: 200,
     onEvent: (event) => {
       events.push(event);
     },
+  }).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let finished = false;
+  void completion.then(() => {
+    finished = true;
   });
-  expect(result).toMatchObject({
-    timedOut: true,
-    cancelled: true,
-    acpStopReason: "cancelled",
-    agentExited: true,
-  });
-  expect(result.checkpoint).toBeUndefined();
-  expect(events.some((event) => event.type === "checkpoint")).toBe(false);
-  expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
-  expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
-});
+  try {
+    const deadline = performance.now() + 5_000;
+    while (true) {
+      const trace = await readResult(files.resultPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (
+        trace?.fs.some(
+          (entry) =>
+            entry.op === "write" && entry.path === join(layout.worktree, "partial.txt") && entry.ok,
+        )
+      )
+        break;
+      if (finished) {
+        const completed = await completion;
+        if (!completed.ok) throw completed.error;
+        throw new Error("ACP finished before the timeout write precondition");
+      }
+      expect(performance.now()).toBeLessThan(deadline);
+      await Bun.sleep(5);
+    }
+    expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
+    expect(expire).toBeDefined();
+    expire!();
+    const completed = await completion;
+    if (!completed.ok) throw completed.error;
+    const result = completed.result;
+    expect(result).toMatchObject({
+      timedOut: true,
+      cancelled: true,
+      acpStopReason: "cancelled",
+      agentExited: true,
+    });
+    expect(result.checkpoint).toBeUndefined();
+    expect(events.some((event) => event.type === "checkpoint")).toBe(false);
+    expect((await git(["-C", layout.worktree, "log", "-1", "--format=%s"])).trim()).toBe("init");
+    expect(await readFile(join(layout.worktree, "partial.txt"), "utf8")).toBe("partial\n");
+    expect(result.pid).toBeDefined();
+    expect(alive(result.pid)).toBe(false);
+  } finally {
+    timer.mockRestore();
+    clearTimeout(watchdog);
+    controller.abort();
+    await completion;
+  }
+}, 20_000);
 
 test("cancel leaves no agent process", async () => {
   const layout = await layoutRepo();
