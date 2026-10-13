@@ -117,15 +117,15 @@ async function readConversation(path: string, offset: number): Promise<AcpConver
   const lines = (await readFile(path)).subarray(offset).toString("utf8").split("\n");
   for (const [index, line] of lines.entries()) {
     if (!line) continue;
-    let parsed: { event: AcpEvent };
+    let parsed: { event?: AcpEvent } | null;
     try {
-      parsed = JSON.parse(line) as { event: AcpEvent };
+      parsed = JSON.parse(line) as { event?: AcpEvent } | null;
     } catch (error) {
       if (index === lines.length - 1) break;
       throw error;
     }
-    const { event } = parsed;
-    if (event.type !== "session_update") continue;
+    const event = parsed?.event;
+    if (event?.type !== "session_update") continue;
     const update = event.update;
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       response += update.content.text;
