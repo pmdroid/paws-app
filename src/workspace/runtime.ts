@@ -12,6 +12,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   clientId: string;
   memberships: LinearMembershipReads;
   slackIdentities?: SlackIdentityReads | null;
+  githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
 }) {
   const installedOrganization = await options.memberships.installation(AbortSignal.timeout(10_000));
