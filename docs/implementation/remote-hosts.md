@@ -2,6 +2,8 @@
 
 A remote host runs a small Paws daemon and the agent software installed for its Linux accounts. The daemon connects outward to the Paws control plane. Pairing gives the host a workspace identity; agent login gives a local agent access to its provider account.
 
+Follow [Pair a remote Linux runner](../runner-pairing.md) for host configuration, provider login, fingerprint approval and service startup.
+
 ## Install a signed release
 
 Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages. Download `paws-runner_X.Y.Z_amd64.deb` or `paws-runner_X.Y.Z_arm64.deb` and its `.deb.sha256` file from that release's assets. The host needs systemd and Node.js 22 or later installed as the `nodejs` package, with its executable at `/usr/bin/node`.
