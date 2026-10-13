@@ -45,3 +45,19 @@ export const RunnerResultSchema = z.strictObject({
 });
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;
+
+export const RunnerHelperResultSchema = RunnerResultSchema.omit({
+  candidateSha: true,
+  reviewText: true,
+}).extend({
+  role: z.literal("implementer"),
+  text: z
+    .string()
+    .max(524_288)
+    .refine(
+      (text) =>
+        Buffer.byteLength(JSON.stringify(text)) <= RUNNER_RESULT_BODY_LIMIT - resultMetadataBudget,
+    ),
+});
+
+export type RunnerHelperResult = z.infer<typeof RunnerHelperResultSchema>;
