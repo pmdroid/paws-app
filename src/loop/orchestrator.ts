@@ -104,6 +104,7 @@ import {
   setCurrentRun,
   applyLinearCommand,
   type JobLoop,
+  type JobContext,
   type OutboxDispatcher,
   type WorkItemRecord,
 } from "../db";
@@ -245,6 +246,7 @@ export class Orchestrator {
     string,
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
+  private readonly jobContexts = new Map<string, JobContext>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -687,23 +689,21 @@ export class Orchestrator {
       });
     });
     jobs.register(JOB_KIND.start, (job, context) =>
-      this.executeQueued(job.payload, context.extendLease),
+      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
     );
     jobs.register(JOB_KIND.resume, (job, context) =>
-      this.executeQueued(job.payload, context.extendLease),
+      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
     );
-    jobs.register(JOB_KIND.reverify, (job) =>
-      this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+    jobs.register(JOB_KIND.reverify, (job, context) =>
+      this.runLeasedJob(job.payload, context, () =>
+        this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+      ),
     );
-    jobs.register(JOB_KIND.merge, async (job, context) => {
-      const lease = setInterval(() => context.extendLease(60_000), 10_000);
-      lease.unref?.();
-      try {
-        await this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id));
-      } finally {
-        clearInterval(lease);
-      }
-    });
+    jobs.register(JOB_KIND.merge, (job, context) =>
+      this.runLeasedJob(job.payload, context, () =>
+        this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id)),
+      ),
+    );
     this.options.outbox.setHandler(async (message, context) => {
       if (message.target !== "linear") return;
       const requestSignal = this.activityRequests.get(message.id);
@@ -743,10 +743,7 @@ export class Orchestrator {
     });
   }
 
-  private async executeQueued(
-    payload: unknown,
-    extendLease: (leaseMs?: number) => boolean,
-  ): Promise<void> {
+  private async executeQueued(payload: unknown): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
@@ -761,9 +758,7 @@ export class Orchestrator {
     const item = getWorkItem(this.db, loaded.id);
     if (item === null || item.state !== "running") return;
 
-    const lease = setInterval(() => extendLease(60_000), 10_000);
-    lease.unref?.();
-    try {
+    {
       const handoff = readString(payload, "handoff") ?? undefined;
       if (this.options.linearTaskModes && item.sessionKey && this.options.channel !== "comments") {
         if (!(await this.resolveTaskMode(item, handoff))) return;
@@ -780,8 +775,6 @@ export class Orchestrator {
       }
       if (!(await this.selectRepository(item))) return;
       await this.runItem(item, handoff);
-    } finally {
-      clearInterval(lease);
     }
   }
 
@@ -1202,6 +1195,7 @@ export class Orchestrator {
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
         ...(launched.env ? { env: launched.env } : {}),
       });
+      this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
       const finished = getWorkItem(this.db, item.id);
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
@@ -1248,7 +1242,8 @@ export class Orchestrator {
       activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
-      if (this.options.remoteExecution) markRunEnded(this.db, run.id, this.now());
+      if (this.options.remoteExecution && (this.jobContexts.get(item.id)?.isCurrent() ?? true))
+        markRunEnded(this.db, run.id, this.now());
       this.conversations.delete(item.id);
       try {
         await this.flush();
@@ -1302,8 +1297,14 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
   ): Promise<CloseoutVerdict> {
-    if (!this.options.remoteExecution)
-      return this.verifyCandidate(item, worktree, base, head, candidate);
+    if (!this.options.remoteExecution) {
+      this.assertJobCurrent(item.id);
+      const verdict = await this.verifyCandidate(item, worktree, base, head, candidate, () =>
+        this.assertJobCurrent(item.id),
+      );
+      this.assertJobCurrent(item.id);
+      return verdict;
+    }
     const priorRunId = item.currentRunId;
     let ownedRunId: string | null = null;
     let enteredFromQueue = false;
@@ -2213,6 +2214,7 @@ export class Orchestrator {
   }
 
   private fail(item: WorkItemRecord, reason: string, text: string): void {
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id) ?? item;
     if (
       current.state === "running" ||
@@ -2248,6 +2250,7 @@ export class Orchestrator {
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
   ): void {
+    if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
     if (current === null || current.state === "cancelled") return;
     if ((kind === "thought" || kind === "action") && !this.canReportProgress(item.id)) return;
@@ -2264,6 +2267,7 @@ export class Orchestrator {
   }
 
   private canReportProgress(itemId: string): boolean {
+    if (!(this.jobContexts.get(itemId)?.isCurrent() ?? true)) return false;
     const item = getWorkItem(this.db, itemId);
     if (item === null || item.cancelRequested) return false;
     if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
@@ -2301,6 +2305,40 @@ export class Orchestrator {
     if (item) activateLinearItem(this.db, sessionId, item.id);
   }
 
+  private assertJobCurrent(itemId: string): void {
+    const context = this.jobContexts.get(itemId);
+    if (context && !context.isCurrent()) throw context.signal.reason;
+  }
+
+  private remoteAgentForItem(itemId: string) {
+    const runner = this.options.remoteExecution?.agentForItem(itemId);
+    if (!runner) return undefined;
+    return async (options: RunAgentOptions) => {
+      this.assertJobCurrent(itemId);
+      const result = await runner(options);
+      this.assertJobCurrent(itemId);
+      return result;
+    };
+  }
+
+  private async runLeasedJob(
+    payload: unknown,
+    context: JobContext,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const itemId = readString(payload, "itemId");
+    if (!itemId) return;
+    if (this.jobContexts.has(itemId)) throw new Error("Task already has an owned job operation");
+    if (!context.isCurrent()) throw context.signal.reason;
+    this.jobContexts.set(itemId, context);
+    try {
+      await operation();
+      if (!context.isCurrent()) throw context.signal.reason;
+    } finally {
+      if (this.jobContexts.get(itemId) === context) this.jobContexts.delete(itemId);
+    }
+  }
+
   private async runOwnedJob(payload: unknown, operation: () => Promise<void>): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (!itemId) return;
@@ -2310,12 +2348,9 @@ export class Orchestrator {
     try {
       this.conversations.set(
         itemId,
-        await durableConversation(
-          this.db,
-          itemId,
-          this.options.remoteExecution?.agentForItem(itemId),
-        ),
+        await durableConversation(this.db, itemId, this.remoteAgentForItem(itemId)),
       );
+      this.assertJobCurrent(itemId);
       await operation();
     } catch (error) {
       if (!live.controller.signal.aborted) throw error;
@@ -2327,6 +2362,12 @@ export class Orchestrator {
   }
 
   private beginLive(itemId: string, key: string) {
+    if (this.live.has(key)) throw new Error("Run already has an owned live operation");
+    const authority = this.jobContexts.get(itemId);
+    const controller = new AbortController();
+    const abort = () => controller.abort(authority?.signal.reason);
+    authority?.signal.addEventListener("abort", abort, { once: true });
+    if (authority && !authority.isCurrent()) abort();
     let finish!: () => void;
     const item = getWorkItem(this.db, itemId);
     const sessionId = item === null ? null : this.activitySession(item);
@@ -2334,12 +2375,15 @@ export class Orchestrator {
       itemId,
       sessionId,
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
-      controller: new AbortController(),
+      controller,
       progress: null as string | null,
       done: new Promise<void>((resolve) => {
         finish = resolve;
       }),
-      finish: () => finish(),
+      finish: () => {
+        authority?.signal.removeEventListener("abort", abort);
+        finish();
+      },
     };
     this.live.set(key, live);
     return live;
@@ -2386,7 +2430,12 @@ export class Orchestrator {
   }
 
   private signalForItem(itemId: string): AbortSignal | undefined {
-    return [...this.live.values()].find((live) => live.itemId === itemId)?.controller.signal;
+    const authority = this.jobContexts.get(itemId);
+    authority?.isCurrent();
+    return (
+      [...this.live.values()].find((live) => live.itemId === itemId)?.controller.signal ??
+      authority?.signal
+    );
   }
 
   private async resumeLinearSession(sessionId: string): Promise<void> {
@@ -2649,11 +2698,7 @@ export class Orchestrator {
       await durableConversation(this.db, sourceItemId);
       saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
     }
-    const runner = await durableConversation(
-      this.db,
-      item.id,
-      this.options.remoteExecution?.agentForItem(item.id),
-    );
+    const runner = await durableConversation(this.db, item.id, this.remoteAgentForItem(item.id));
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
       applyLinearTurns(
@@ -2681,7 +2726,7 @@ export class Orchestrator {
       },
       signal: this.signalForItem(item.id),
       promptRunner: this.conversations.get(item.id),
-      agentRunner: this.options.remoteExecution?.agentForItem(item.id),
+      agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),
       brief: this.workContext(item),
@@ -2819,7 +2864,7 @@ export class Orchestrator {
         worktree: worktree.path,
         prompt: "",
       });
-      const result = await (this.options.remoteExecution?.agentForItem(item.id) ?? runAgent)({
+      const result = await (this.remoteAgentForItem(item.id) ?? runAgent)({
         ...launched,
         profile,
         role,

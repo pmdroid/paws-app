@@ -37,7 +37,7 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
     try {
       const next = await input.refresh(current, AbortSignal.timeout(Math.min(15_000, leaseMs / 2)));
       const held = getJob(input.db, id);
-      if (held?.lockedBy !== workerId || (held.lockedUntil ?? 0) <= Date.now()) continue;
+      if (held?.lockedBy !== job.lockedBy || (held.lockedUntil ?? 0) <= Date.now()) continue;
       const latest = input.read();
       if (latest === null) throw new Error("Integration credentials were removed.");
       if (changed(original, latest)) {
