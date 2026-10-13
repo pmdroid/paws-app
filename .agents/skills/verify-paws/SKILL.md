@@ -211,4 +211,6 @@ Run `PAWS_BROKER_VM_BASE=/path/to/pinned.qcow2 PAWS_BROKER_VM_SHA512=<trusted-sh
 
 Run `bun --no-env-file test test/runner-check-broker.test.ts` for actual Unix socket framing, admission receipts, joined stop and strict malformed acknowledgement refusal through the public check broker client.
 
+For the remote agent bridge, run `bun --no-env-file test test/runner-backend.test.ts`. The native probe uses real SQLite, paired runner identities and Git commits with the public signed command, grant and result adapters. It verifies repository access before dispatch, exact candidate import, read-only review findings, signed profile preparation, Linear question receipts, artifact publication, cancellation and expired-lease fencing. Both `check` and `audit` run the probe.
+
 For remote Closeout evidence, run `bun --no-env-file test test/runner-closeout.test.ts`. The native Closeout engine evaluates real Git candidates through the remote command adapter. Setup and checks share the candidate and attempt binding, local command sentinels stay absent, and dirty workspaces, moved HEAD, timeouts, failed setup and nonzero exits produce the corresponding rejected verdicts. `check` and `audit` run the probe.

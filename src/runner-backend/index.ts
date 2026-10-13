@@ -1,0 +1,311 @@
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import type { Database } from "bun:sqlite";
+import { getWorkItem, immediate, saveCheckpoint } from "../db";
+import { git, runDir, type AcpEvent, type RunAgentOptions, type RunAgentResult } from "../acp";
+import type { RunnerWork } from "../runner-work";
+import type { RunnerResults } from "../runner-results";
+import type { RunnerHealth } from "../runner-health";
+import type { RunnerArtifactStore } from "../runner-artifacts";
+import type { RunnerCommand, RunnerResult } from "../runner-protocol";
+
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
+
+export function createRemoteAgentRunner(options: {
+  db: Database;
+  work: RunnerWork;
+  results: RunnerResults;
+  health: RunnerHealth;
+  artifacts?: RunnerArtifactStore;
+  fetchCandidate(input: {
+    itemId: string;
+    worktree: string;
+    baseSha: string;
+    candidateSha: string;
+    signal: AbortSignal;
+  }): Promise<void>;
+  now?: () => number;
+  pollIntervalMs?: number;
+}) {
+  const { db, work, results, health } = options;
+  const now = options.now ?? Date.now;
+  const interval = options.pollIntervalMs ?? 250;
+  const reservations = new Set<string>();
+  function select(itemId: string) {
+    const item = getWorkItem(db, itemId);
+    if (!item?.currentRunId) throw new Error("Remote task has no current run");
+    const candidates = db
+      .query<{ id: string; workspaceId: string }, []>(
+        `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
+       JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
+       WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
+       AND r.last_seen_at>${now() - 60_000}
+       AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>${now()})
+       ORDER BY r.last_seen_at DESC,r.id`,
+      )
+      .all();
+    for (const runner of candidates) {
+      if (reservations.has(runner.id)) continue;
+      try {
+        work.scope(item.currentRunId, runner.workspaceId);
+        reservations.add(runner.id);
+        return { ...runner, runId: item.currentRunId };
+      } catch {}
+    }
+    throw new Error("No available paired runner can access this Linear task repository");
+  }
+  return {
+    forItem(itemId: string) {
+      return async (input: RunAgentOptions): Promise<RunAgentResult> => {
+        input.signal?.throwIfAborted();
+        if (!input.profile) throw new Error("Remote agent profile is required");
+        if (!input.prepareOnly && input.readOnly && input.role !== "reviewer")
+          throw new Error("Read-only remote work requires the reviewer role");
+        const profile = { ...input.profile, model: input.profile.model ?? null };
+        const selected = select(itemId);
+        const controller = new AbortController();
+        const abort = () => controller.abort(input.signal?.reason);
+        input.signal?.addEventListener("abort", abort, { once: true });
+        if (input.signal?.aborted) abort();
+        const signal = controller.signal;
+        let command: WorkCommand | undefined;
+        let question: Promise<void> | undefined;
+        let questionError: unknown;
+        let transcriptBytes = 0;
+        const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
+        const emit = async (event: AcpEvent) => {
+          const line = `${JSON.stringify({ event })}\n`;
+          transcriptBytes += Buffer.byteLength(line);
+          if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
+          appendFileSync(transcript, line, { mode: 0o600 });
+          await input.onEvent?.(event);
+        };
+        try {
+          mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
+          signal.throwIfAborted();
+          if (input.prepareOnly) {
+            const id = randomUUID();
+            const issuedAt = now();
+            work.enqueue({
+              id,
+              runnerId: selected.id,
+              workspaceId: selected.workspaceId,
+              issuedAt,
+              expiresAt: issuedAt + 120_000,
+              type: "probe",
+              profile,
+            });
+            while (now() < issuedAt + 120_000) {
+              signal.throwIfAborted();
+              work.scope(selected.runId, selected.workspaceId);
+              const result = health.read(selected.id, id);
+              if (result) return { ...result, role: input.role, transcriptPath: transcript };
+              await delay(interval, undefined, { signal });
+            }
+            throw new Error("Remote agent preparation timed out");
+          }
+          const prepared = input.prepareInputFiles
+            ? await input.prepareInputFiles({
+                workspace: input.worktreePath,
+                prompt: input.prompt,
+                signal,
+              })
+            : { prompt: input.prompt, inputFiles: [] };
+          const files = [...(input.inputFiles ?? []), ...prepared.inputFiles];
+          if (files.length) throw new Error("Remote agent input transfer is unavailable");
+          const baseSha = (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+          const scoped = work.scope(selected.runId, selected.workspaceId);
+          if (!scoped.item.checkpoint && input.role === "implementer")
+            saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
+          const generation =
+            (db
+              .query<{ generation: number }, [string]>(
+                "SELECT generation FROM runner_work WHERE run_id=?",
+              )
+              .get(selected.runId)?.generation ?? 0) + 1;
+          const issuedAt = now();
+          const deadline = issuedAt + (input.timeoutMs ?? 2_700_000);
+          const assigned: WorkCommand = {
+            id: randomUUID(),
+            runnerId: selected.id,
+            workspaceId: selected.workspaceId,
+            issuedAt,
+            expiresAt: deadline,
+            type: input.role === "reviewer" ? "review" : "run",
+            runId: selected.runId,
+            itemId,
+            generation,
+            repository: { ...scoped.repository, baseSha },
+            profile,
+            prompt: prepared.prompt,
+          };
+          immediate(db, () => {
+            const occupied = db
+              .query(
+                "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>?",
+              )
+              .get(selected.id, now());
+            if (occupied) throw new Error("Runner became busy before assignment");
+            work.assign(assigned);
+          });
+          command = assigned;
+          let cursor = 0;
+          let complete: RunnerResult | null = null;
+          while (now() < deadline) {
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
+            if (questionError) throw questionError;
+            for (const row of results.events(assigned.runId, assigned.generation, cursor)) {
+              const event = row.event;
+              if (event.type === "progress")
+                await emit({
+                  type: "session_update",
+                  sessionId: assigned.id,
+                  update: {
+                    sessionUpdate:
+                      input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
+                    content: { type: "text", text: event.text },
+                  },
+                });
+              if (event.type === "artifact") {
+                if (!input.publishArtifact || !options.artifacts)
+                  throw new Error("Remote artifact publication is unavailable");
+                const snapshot = options.artifacts.snapshot(
+                  assigned.runId,
+                  assigned.generation,
+                  event.artifact,
+                );
+                const publication = await input.publishArtifact.publish(snapshot, {
+                  request: {
+                    path: snapshot.path,
+                    displayName: snapshot.displayName,
+                    mimeType: snapshot.mimeType,
+                    attachToIssue: event.artifact.attachToIssue,
+                  },
+                  itemId: input.itemId,
+                  runId: selected.runId,
+                  worktreePath: input.worktreePath,
+                  role: input.role,
+                  signal,
+                });
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: JSON.stringify(publication),
+                });
+              }
+              if (event.type === "question") {
+                if (question) throw new Error("Remote runner sent overlapping questions");
+                if (!input.askTeam) throw new Error("Remote question channel is unavailable");
+                await emit({ type: "ask_team", question: event.text, phase: "asked" });
+                const currentCommand = assigned;
+                question = (async () => {
+                  const answer = await input.askTeam!.ask(
+                    { question: event.text, options: event.options },
+                    { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+                  );
+                  signal.throwIfAborted();
+                  results.answer({
+                    runId: currentCommand.runId,
+                    generation: currentCommand.generation,
+                    sequence: row.sequence,
+                    answer: answer.answer,
+                  });
+                  await emit({
+                    type: "ask_team",
+                    question: event.text,
+                    phase: "answered",
+                    answer: answer.answer,
+                  });
+                })()
+                  .catch((error) => {
+                    questionError = error;
+                  })
+                  .finally(() => {
+                    question = undefined;
+                  });
+              }
+              cursor = row.sequence;
+            }
+            complete = results.read(assigned.runId, assigned.generation, assigned.id);
+            if (complete) break;
+            await delay(interval, undefined, { signal });
+          }
+          if (!complete) throw new Error("Remote run timed out");
+          if (question) throw new Error("Remote run completed with an unanswered question");
+          if (complete.reviewText)
+            await emit({
+              type: "session_update",
+              sessionId: complete.sessionId ?? assigned.id,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: complete.reviewText },
+              },
+            });
+          if (
+            assigned.type === "run" &&
+            complete.stopReason === "end_turn" &&
+            !complete.cancelled &&
+            !complete.timedOut &&
+            !complete.authRequired &&
+            complete.agentExited &&
+            !complete.errorMessage &&
+            !complete.candidateSha
+          )
+            throw new Error("Remote implementation has no candidate commit");
+          if (complete.candidateSha) {
+            await options.fetchCandidate({
+              itemId,
+              worktree: input.worktreePath,
+              baseSha,
+              candidateSha: complete.candidateSha,
+              signal,
+            });
+            signal.throwIfAborted();
+            work.current(assigned.runId, assigned.generation);
+            if (
+              (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim() !==
+              complete.candidateSha
+            )
+              throw new Error("Fetched runner candidate HEAD does not match");
+            await git([
+              "-C",
+              input.worktreePath,
+              "merge-base",
+              "--is-ancestor",
+              baseSha,
+              complete.candidateSha,
+            ]);
+          }
+          work.finish(assigned.runId, assigned.generation);
+          command = undefined;
+          await emit({ type: "prompt_complete", stopReason: complete.stopReason });
+          return { ...complete, transcriptPath: transcript };
+        } finally {
+          if (command) {
+            try {
+              const issuedAt = now();
+              work.enqueue({
+                id: randomUUID(),
+                runnerId: selected.id,
+                workspaceId: selected.workspaceId,
+                issuedAt,
+                expiresAt: issuedAt + 60_000,
+                type: "cancel",
+                runId: command.runId,
+                generation: command.generation,
+              });
+            } catch {}
+          }
+          controller.abort();
+          await question;
+          input.signal?.removeEventListener("abort", abort);
+          reservations.delete(selected.id);
+        }
+      };
+    },
+  };
+}
