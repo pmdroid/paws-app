@@ -112,7 +112,10 @@ export async function probeRunnerRepositoryAccess(
     return { ...minted, repository: returnedRepository, expiresAt: now + tokenLifetime };
   };
   let installation: string | null = "fixture-installation";
+  const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
+  let currentBot = bot;
   const endpoint = createRunnerRepositoryAccess({
+    checkpointBot: async () => currentBot,
     work,
     github,
     now: () => now,
@@ -121,7 +124,7 @@ export async function probeRunnerRepositoryAccess(
       return installation;
     },
   });
-  function assigned(type: "run" | "review" = "run", targetRunner = runnerId) {
+  function assigned(type: "run" | "review" = "run", targetRunner = runnerId, bindBot = true) {
     const sessionId = workspaceId();
     const item = insertQueuedItem(db, {
       id: workspaceId(),
@@ -152,6 +155,7 @@ export async function probeRunnerRepositoryAccess(
       issuedAt: now,
       expiresAt: now + 300_000,
       type,
+      ...(type === "run" && bindBot ? { checkpointBot: bot } : {}),
       runId: run.id,
       itemId: item.id,
       generation: 1,
@@ -249,6 +253,25 @@ export async function probeRunnerRepositoryAccess(
         cacheControl: read.cacheControl,
       },
     );
+    for (const changed of [
+      { ...bot, appId: "100" },
+      { ...bot, id: 89 },
+      { ...bot, login: "another[bot]" },
+    ]) {
+      currentBot = changed;
+      const before = github.minted.length;
+      assert.equal((await exchange(first, "write")).status, 403);
+      assert.equal(github.minted.length, before);
+    }
+    currentBot = bot;
+    beforeMint = () => {
+      currentBot = { ...bot, id: 89 };
+    };
+    const changedBot = await exchange(first, "write");
+    assert.equal(changedBot.status, 403);
+    assert(!changedBot.body.includes("fake-installation-token"));
+    beforeMint = undefined;
+    currentBot = bot;
     const review = assigned("review", reviewRunnerId);
     assert.equal((await exchange(review, "read")).status, 200);
     const mintedBefore = github.minted.length;
@@ -339,6 +362,18 @@ export async function probeRunnerRepositoryAccess(
       },
     );
     work.finish(first.command.runId, first.command.generation);
+    const unbound = assigned("run", runnerId, false);
+    assert.equal((await exchange(unbound, "read")).status, 200);
+    assert.equal((await exchange(unbound, "write")).status, 403);
+    work.finish(unbound.command.runId, unbound.command.generation);
+    const changedInstallation = assigned();
+    beforeMint = () => {
+      installation = "different-installation";
+    };
+    assert.equal((await exchange(changedInstallation, "write")).status, 403);
+    beforeMint = undefined;
+    installation = "fixture-installation";
+    work.finish(changedInstallation.command.runId, changedInstallation.command.generation);
     const scenarios: [string, (entry: ReturnType<typeof assigned>) => void][] = [
       [
         "cancelled",

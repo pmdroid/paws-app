@@ -1,3 +1,4 @@
+import type { AppBotIdentity } from "../core";
 import { join } from "node:path";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import {
@@ -130,7 +131,7 @@ export async function gitHubAppBot(input: {
   appId: string;
   privateKeyPem: string;
   token: string;
-}): Promise<{ login: string; id: number }> {
+}): Promise<AppBotIdentity> {
   const app = await input.client.request({
     method: "GET",
     path: "/app",
@@ -139,6 +140,10 @@ export async function gitHubAppBot(input: {
   if (
     app.status !== 200 ||
     !isRecord(app.body) ||
+    typeof app.body.id !== "number" ||
+    !Number.isSafeInteger(app.body.id) ||
+    app.body.id <= 0 ||
+    String(app.body.id) !== input.appId ||
     typeof app.body.slug !== "string" ||
     !/^[a-z0-9-]+$/.test(app.body.slug)
   )
@@ -153,12 +158,13 @@ export async function gitHubAppBot(input: {
     user.status !== 200 ||
     !isRecord(user.body) ||
     user.body.login !== login ||
+    user.body.type !== "Bot" ||
     typeof user.body.id !== "number" ||
     !Number.isSafeInteger(user.body.id) ||
     user.body.id <= 0
   )
     throw new Error("Could not read the GitHub App bot account.");
-  return { login, id: user.body.id };
+  return { appId: input.appId, login, id: user.body.id };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

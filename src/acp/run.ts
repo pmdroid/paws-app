@@ -500,6 +500,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           () => options.signal?.removeEventListener("abort", onAbort),
           options.checkpointEnv,
           options.checkpointExcludePaths,
+          options.checkpointIdentity,
         );
         if (checkpoint.committed || (!state.cancelling && !options.signal?.aborted)) {
           result.checkpoint = checkpoint;

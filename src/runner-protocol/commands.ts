@@ -23,6 +23,15 @@ export const RunnerRepositorySchema = z
       repository.remoteUrl === `https://github.com/${repository.owner}/${repository.repo}.git`,
   );
 
+export const RunnerCheckpointBotSchema = z.strictObject({
+  appId: z.string().regex(/^[1-9][0-9]*$/),
+  login: z
+    .string()
+    .regex(/^[a-z0-9-]+\[bot\]$/)
+    .max(128),
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
 export const RunnerProfileSchema = z.strictObject({
   agent,
   model: z.string().trim().min(1).max(256).nullable(),
@@ -67,7 +76,12 @@ const work = {
 
 export const RunnerCommandSchema = z
   .discriminatedUnion("type", [
-    z.strictObject({ ...common, type: z.literal("run"), ...work }),
+    z.strictObject({
+      ...common,
+      type: z.literal("run"),
+      ...work,
+      checkpointBot: RunnerCheckpointBotSchema.optional(),
+    }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({
       ...common,

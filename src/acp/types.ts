@@ -1,3 +1,4 @@
+import type { GitCommitIdentity } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
@@ -93,6 +94,7 @@ export interface RunAgentOptions {
   args?: string[];
   env?: NodeJS.ProcessEnv;
   checkpointEnv?: NodeJS.ProcessEnv;
+  checkpointIdentity?: GitCommitIdentity;
   checkpointExcludePaths?: readonly string[];
   timeoutMs?: number;
   cancelGraceMs?: number;

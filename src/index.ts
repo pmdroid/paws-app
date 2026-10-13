@@ -435,6 +435,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               db,
               ...coordinator,
               fetchCandidate: fetchRunnerCandidate,
+              checkpointBot: repositoryAccess?.checkpointBot,
               placement,
             }),
             sessions: createRemoteSessionAgentRunner({
@@ -1064,6 +1065,16 @@ function runnerRepositoryAccess(runtime: RuntimeConfig): RunnerRepositoryAccessO
       },
     },
     installationForRepository: () => githubAppInstallationId,
+    async checkpointBot(repository) {
+      const [owner, repo] = repository.split("/") as [string, string];
+      const provider = authProvider(
+        runtime,
+        { owner, repo, remoteUrl: `https://github.com/${repository}.git` },
+        "read",
+      );
+      if (!provider?.botIdentity) throw new Error("GitHub App bot authority is unavailable.");
+      return provider.botIdentity();
+    },
   };
 }
 

@@ -16,6 +16,7 @@ import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  appBotCommitIdentity,
   git,
   runAgent,
   minimalAgentEnv,
@@ -292,6 +293,10 @@ export async function executeRunnerCommand(
       ...options.launch,
       env: agentEnv,
       checkpointEnv: env,
+      checkpointIdentity:
+        command.type === "run" && command.checkpointBot
+          ? appBotCommitIdentity(command.checkpointBot)
+          : undefined,
       checkpointExcludePaths: inputFiles.map((file) => file.path),
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,

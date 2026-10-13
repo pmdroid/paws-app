@@ -219,9 +219,24 @@ test("a long sleep checks out fresh main and keeps the WIP branch", async () => 
     repo: "demo",
     itemId: "ENG-21",
     wipBranch: "paws/eng-21",
+    commitIdentity: { name: "paws-test[bot]", email: "88+paws-test[bot]@users.noreply.github.com" },
   });
 
   expect(checkout.restarted).toBe(true);
+  expect(
+    (
+      await git([
+        "--git-dir",
+        layout.mirror.path,
+        "show",
+        "-s",
+        "--format=%an%n%ae%n%cn%n%ce",
+        "paws/eng-21",
+      ])
+    ).trim(),
+  ).toBe(
+    "paws-test[bot]\n88+paws-test[bot]@users.noreply.github.com\npaws-test[bot]\n88+paws-test[bot]@users.noreply.github.com",
+  );
   expect(checkout.wipBranch).toBe("paws/eng-21");
   expect(checkout.startRef).toBe("origin/main");
   expect(checkout.branch).toBe("paws/eng-21-fresh");

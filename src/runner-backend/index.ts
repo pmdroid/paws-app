@@ -92,6 +92,9 @@ export function createRemoteAgentRunner(options: {
     networkGit: (args: string[]) => Promise<string>;
     signal: AbortSignal;
   }): Promise<void>;
+  checkpointBot?: (
+    repository: string,
+  ) => Promise<NonNullable<Extract<RunnerCommand, { type: "run" }>["checkpointBot"]>>;
   now?: () => number;
   pollIntervalMs?: number;
   placement?: RunnerPlacement;
@@ -441,6 +444,13 @@ export function createRemoteAgentRunner(options: {
               .get(selected.runId)?.generation ?? 0) + 1;
           const issuedAt = now();
           const deadline = issuedAt + (input.timeoutMs ?? 2_700_000);
+          const checkpointBot =
+            !taskScope && input.role === "implementer"
+              ? await options.checkpointBot?.(
+                  `${scoped.repository!.owner}/${scoped.repository!.repo}`,
+                )
+              : undefined;
+          signal.throwIfAborted();
           const assigned: WorkCommand = {
             id: commandId,
             runnerId: selected.id,
@@ -470,6 +480,7 @@ export function createRemoteAgentRunner(options: {
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                   repository: { ...scoped.repository!, baseSha: baseSha! },
+                  ...(checkpointBot ? { checkpointBot } : {}),
                 }),
           };
           immediate(db, () => {
