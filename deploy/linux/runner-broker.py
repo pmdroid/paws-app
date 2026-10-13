@@ -1,4 +1,5 @@
 import json
+import hashlib
 import fcntl
 import importlib.util
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 
 EXECUTION_ID = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}\Z")
@@ -147,9 +149,91 @@ def stopped(directory, execution_id):
         os.close(descriptor)
 
 
-def admit_once(execution_id):
+def expiry_receipt(directory, execution_id):
+    descriptor = os.open(execution_id + ".expiry", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        validate_receipt(descriptor)
+        if os.fstat(descriptor).st_size > 256:
+            raise ValueError("Expiry receipt exceeds size limit")
+        receipt = json.loads(os.read(descriptor, 257))
+        if not isinstance(receipt, dict) or set(receipt) != {"expiresAt", "commandDigest"} or type(receipt["expiresAt"]) is not int or not 0 < receipt["expiresAt"] <= 9007199254740991 or not isinstance(receipt["commandDigest"], str) or not re.fullmatch(r"[0-9a-f]{64}", receipt["commandDigest"]):
+            raise ValueError("Invalid expiry receipt")
+        return receipt
+    finally:
+        os.close(descriptor)
+
+
+def admit_once(execution_id, command):
+    expires_at = command.get("expiresAt")
+    if type(expires_at) is not int or not 0 < expires_at <= 9007199254740991:
+        raise ValueError("Invalid command expiry")
+    digest = hashlib.sha256(json.dumps(command, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with lifecycle(execution_id) as directory:
+        if stopped(directory, execution_id):
+            return False
+        try:
+            descriptor = os.open(execution_id, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            descriptor = None
+        if descriptor is not None:
+            try:
+                validate_receipt(descriptor)
+                if expiry_receipt(directory, execution_id)["commandDigest"] != digest:
+                    raise ValueError("Command changed after admission")
+                return False
+            finally:
+                os.close(descriptor)
+        if expires_at <= time.time_ns() // 1000000:
+            raise ValueError("Command expired")
+        expected = {"expiresAt": expires_at, "commandDigest": digest}
+        try:
+            existing = expiry_receipt(directory, execution_id)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if existing != expected:
+                raise ValueError("Command changed before admission")
+        else:
+            pending = execution_id + ".expiry-" + os.urandom(16).hex()
+            descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(json.dumps(expected).encode())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.rename(pending, execution_id + ".expiry", src_dir_fd=directory, dst_dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                try:
+                    os.unlink(pending, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
         return mark_once(directory, execution_id)
+
+
+def arm_deadline(directory, execution_id):
+    expiry = expiry_receipt(directory, execution_id)["expiresAt"]
+    if expiry <= time.time_ns() // 1000000:
+        mark_once(directory, execution_id + ".stopped")
+        return False
+    timer = "paws-agent-expiry-" + execution_id + ".timer"
+    active = subprocess.run(["/usr/bin/systemctl", "is-active", "--quiet", "--", timer],
+                            check=False, timeout=5, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if active.returncode != 0:
+        subprocess.run(["/usr/bin/systemd-run", "--unit=paws-agent-expiry-" + execution_id,
+                        "--on-calendar=" + time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(expiry // 1000)) + "." + str(expiry % 1000).zfill(3) + " UTC",
+                        "--timer-property=AccuracySec=1ms", "--timer-property=Persistent=yes",
+                        "--timer-property=RemainAfterElapse=no", "--collect", "--property=Type=exec",
+                        "--property=CapabilityBoundingSet=", "--property=NoNewPrivileges=yes",
+                        "--property=ProtectSystem=strict", "--property=ReadWritePaths=" + RECEIPTS,
+                        "/usr/bin/python3", "-I", "-B", "/opt/paws-runner/current/deploy/linux/runner-broker.py",
+                        "expire", execution_id], check=True, timeout=4, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if expiry <= time.time_ns() // 1000000:
+        mark_once(directory, execution_id + ".stopped")
+        return False
+    return True
 
 
 def fence(execution_id):
@@ -172,6 +256,8 @@ def guard(execution_id):
             validate_receipt(descriptor)
         finally:
             os.close(descriptor)
+        if not arm_deadline(directory, execution_id):
+            return False
         return mark_once(directory, execution_id + ".launched")
 
 
@@ -302,7 +388,7 @@ def handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request=No
         validate_unit()
         if request["operation"] == "start":
             job = validate_job(request["executionId"], runner_uid, agent_gid)
-            if not admit_once(request["executionId"]):
+            if not admit_once(request["executionId"], job["command"]):
                 connection.sendall(b'{"ok":true,"alreadyAdmitted":true}\n')
                 return
             prepare_results(request["executionId"], agent_uid, results_gid)
@@ -377,7 +463,12 @@ if __name__ == "__main__":
     elif len(sys.argv) == 3 and sys.argv[1] == "guard":
         try:
             sys.exit(0 if guard(sys.argv[2]) else 1)
-        except (OSError, ValueError, StopIteration):
+        except (OSError, ValueError, StopIteration, subprocess.SubprocessError):
+            sys.exit(255)
+    elif len(sys.argv) == 3 and sys.argv[1] == "expire":
+        try:
+            sys.exit(0 if os.getuid() == 0 and EXECUTION_ID.fullmatch(sys.argv[2]) and stop_unit(sys.argv[2]) else 1)
+        except (OSError, ValueError, subprocess.SubprocessError):
             sys.exit(1)
     elif len(sys.argv) == 1:
         main()

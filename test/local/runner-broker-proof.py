@@ -36,7 +36,7 @@ class BrokerProof(unittest.TestCase):
         os.chown(self.directory, 1001, 1002)
         self.directory.chmod(0o750)
         self.job = self.directory / "job.json"
-        self.job.write_text(json.dumps({"executionId": EXECUTION_ID, "command": {"type": "probe"}}))
+        self.job.write_text(json.dumps({"executionId": EXECUTION_ID, "command": {"type": "probe", "expiresAt": int(time.time() * 1000) + 120000}}))
         os.chown(self.job, 1001, 1002)
         self.job.chmod(0o640)
         self.calls = []
@@ -45,6 +45,7 @@ class BrokerProof(unittest.TestCase):
         self.stop_timeout = False
         self.kill_timeout = False
         self.group = b""
+        self.timer_active = False
         private = self.root / "private"
         private.mkdir(mode=0o700)
         (private / "identity").write_text("synthetic identity")
@@ -61,6 +62,10 @@ class BrokerProof(unittest.TestCase):
                 raise subprocess.TimeoutExpired(arguments, options["timeout"])
             if self.stop_timeout and arguments[1] == "stop":
                 raise subprocess.TimeoutExpired(arguments, options["timeout"])
+            if arguments[0] == "/usr/bin/systemd-run":
+                self.timer_active = True
+            if arguments[1] == "is-active":
+                return subprocess.CompletedProcess(arguments, 0 if self.timer_active else 3)
             return subprocess.CompletedProcess(arguments, 0, stdout=self.group)
         broker.subprocess.run = run
 
@@ -189,8 +194,51 @@ class BrokerProof(unittest.TestCase):
         self.assertEqual(self.command("stop"), {"ok": False})
         self.assertTrue((pathlib.Path(broker.RECEIPTS) / (EXECUTION_ID + ".stopped")).is_file())
 
+    def test_expiry_binds_the_admitted_command_and_arms_a_fixed_timer(self):
+        command = json.loads(self.job.read_text())["command"]
+        self.assertTrue(broker.admit_once(EXECUTION_ID, command))
+        self.assertFalse(broker.admit_once(EXECUTION_ID, command))
+        with self.assertRaises(ValueError):
+            broker.admit_once(EXECUTION_ID, {**command, "expiresAt": command["expiresAt"] + 1000})
+        with broker.lifecycle(EXECUTION_ID) as directory:
+            self.assertEqual(broker.expiry_receipt(directory, EXECUTION_ID)["expiresAt"], command["expiresAt"])
+            self.assertTrue(broker.arm_deadline(directory, EXECUTION_ID))
+            self.assertTrue(broker.arm_deadline(directory, EXECUTION_ID))
+        self.assertEqual(sum(call[0][0] == "/usr/bin/systemd-run" for call in self.calls), 1)
+        arguments, options = next(call for call in self.calls if call[0][0] == "/usr/bin/systemd-run")
+        self.assertEqual(arguments[:2], ["/usr/bin/systemd-run", "--unit=paws-agent-expiry-" + EXECUTION_ID])
+        self.assertEqual(arguments[-3:], ["/opt/paws-runner/current/deploy/linux/runner-broker.py", "expire", EXECUTION_ID])
+        self.assertIn("--timer-property=AccuracySec=1ms", arguments)
+        self.assertEqual(options["timeout"], 4)
+
+    def test_restart_reuses_only_matching_atomic_expiry_before_admission(self):
+        command = json.loads(self.job.read_text())["command"]
+        original_mark = broker.mark_once
+        def interrupted(directory, name):
+            if name == EXECUTION_ID:
+                raise RuntimeError("Crash before admission")
+            return original_mark(directory, name)
+        broker.mark_once = interrupted
+        try:
+            with self.assertRaises(RuntimeError):
+                broker.admit_once(EXECUTION_ID, command)
+        finally:
+            broker.mark_once = original_mark
+        self.assertFalse((pathlib.Path(broker.RECEIPTS) / EXECUTION_ID).exists())
+        with self.assertRaises(ValueError):
+            broker.admit_once(EXECUTION_ID, {**command, "expiresAt": command["expiresAt"] + 1000})
+        self.assertTrue(broker.admit_once(EXECUTION_ID, command))
+        self.assertFalse(broker.admit_once(EXECUTION_ID, command))
+
+    def test_invalid_expiry_never_admits_or_arms_a_worker(self):
+        for expiry in (None, True, "123", -1, 9007199254740992, int(time.time() * 1000) - 1):
+            with self.assertRaises(ValueError):
+                broker.admit_once(EXECUTION_ID, {"type": "probe", "expiresAt": expiry})
+        self.assertFalse((pathlib.Path(broker.RECEIPTS) / EXECUTION_ID).exists())
+        self.assertEqual(self.calls, [])
+
     def test_crash_after_durable_receipt_never_starts_again(self):
-        self.assertTrue(broker.admit_once(EXECUTION_ID))
+        self.assertTrue(broker.admit_once(EXECUTION_ID, json.loads(self.job.read_text())["command"]))
         self.assertEqual(self.command(), {"ok": True, "alreadyAdmitted": True})
         self.assertEqual(self.calls, [])
 
