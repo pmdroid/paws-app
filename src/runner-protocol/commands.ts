@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RunnerInputFilesSchema } from "./inputs";
+import { RunnerInputFilesSchema, RunnerPromptContextSchema } from "./inputs";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -62,6 +62,7 @@ const work = {
   profile: RunnerProfileSchema,
   prompt: z.string().min(1).max(65_536),
   inputFiles: RunnerInputFilesSchema.optional(),
+  promptContext: RunnerPromptContextSchema.optional(),
 };
 
 export const RunnerCommandSchema = z
@@ -81,6 +82,8 @@ export const RunnerCommandSchema = z
       repository: RunnerRepositorySchema.optional(),
       profile: RunnerProfileSchema,
       prompt: work.prompt,
+      inputFiles: work.inputFiles,
+      promptContext: work.promptContext,
     }),
     z.strictObject({
       ...common,

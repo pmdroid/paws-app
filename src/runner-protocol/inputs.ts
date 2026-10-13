@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+export const RUNNER_PROMPT_CONTEXT_MAX_BYTES = 64 * 1024 * 1024;
+export const RunnerPromptContextSchema = z.strictObject({
+  sizeBytes: z.number().int().min(0).max(RUNNER_PROMPT_CONTEXT_MAX_BYTES),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type RunnerPromptContext = z.infer<typeof RunnerPromptContextSchema>;
+
 export const RUNNER_INPUT_MAX_BYTES = 20 * 1024 * 1024;
 export const RUNNER_INPUT_CHUNK_BYTES = 524288;
 export const RunnerInputFileSchema = z.strictObject({

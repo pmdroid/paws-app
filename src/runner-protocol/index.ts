@@ -36,6 +36,9 @@ export {
 } from "./artifacts";
 
 export {
+  RunnerPromptContextSchema,
+  RUNNER_PROMPT_CONTEXT_MAX_BYTES,
+  type RunnerPromptContext,
   RunnerInputFileSchema,
   RunnerInputFilesSchema,
   RUNNER_INPUT_MAX_BYTES,
