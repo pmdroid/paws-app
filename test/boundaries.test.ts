@@ -54,6 +54,7 @@ const MODULES = [
   "runner-transcripts",
   "runner-transcript-config",
   "runner-artifacts",
+  "runner-inputs",
   "runner-closeout",
 ] as const;
 
@@ -122,6 +123,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-repository-access": ["github", "runner-work"],
   "runner-transcript-config": ["credentials", "runner-transcripts"],
   "runner-transcripts": ["db", "runner-work"],
+  "runner-inputs": ["runner-protocol", "runner-work"],
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
@@ -180,6 +182,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
   "runner-coordinator": [
+    "runner-inputs",
     "runner-checks",
     "github",
     "runner-repository-access",
