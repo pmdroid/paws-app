@@ -85,6 +85,48 @@ try:
         baseline = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
         assert line(baseline)["phase"] == "pending"
         raise AssertionError("Baseline unexpectedly supported runner pairing")
+    if len(sys.argv) > 1 and sys.argv[1] == "verifier-baseline":
+        baseline = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
+        assert line(baseline)["phase"] == "pending"
+        raise AssertionError("Baseline enrolled without an installed verifier identity")
+    command(arguments, 17001)
+    public = pathlib.Path("/var/lib/paws-check-verifier-public.pem")
+    identity = json.loads(subprocess.run(["/usr/bin/python3", "-I", "-B", "/proof/check-verifier.py", "initialize"], check=True, capture_output=True).stdout)
+    repeated = json.loads(subprocess.run(["/usr/bin/python3", "-I", "-B", "/proof/check-verifier.py", "initialize"], check=True, capture_output=True).stdout)
+    assert repeated == identity
+    original_public = public.read_bytes()
+    for uid in (17001, 17002):
+        denied = actor(["/bin/cat", "/var/lib/paws-check-verifier/key.pem"], uid)
+        denied.communicate(timeout=5)
+        assert denied.returncode != 0
+    for invalid in ("owner", "group", "mode", "oversized", "malformed", "symlink", "hardlink", "fifo"):
+        public.unlink()
+        public.write_bytes(original_public)
+        os.chown(public, 0, 0)
+        public.chmod(0o644)
+        if invalid == "owner":
+            os.chown(public, 17001, 0)
+        elif invalid == "group":
+            os.chown(public, 0, 17001)
+        elif invalid == "mode":
+            public.chmod(0o666)
+        elif invalid == "oversized":
+            public.write_bytes(b"x" * 257)
+        elif invalid == "malformed":
+            public.write_bytes(original_public + b"\n")
+        elif invalid == "symlink":
+            public.unlink()
+            public.symlink_to(ready)
+        elif invalid == "hardlink":
+            os.link(public, root / "linked-public.pem")
+        else:
+            public.unlink()
+            os.mkfifo(public, 0o644)
+        command(arguments, 17001)
+    public.unlink()
+    public.write_bytes(original_public)
+    public.chmod(0o644)
+    observe("privileged installed verifier identity is stable and unsafe or missing public identities cannot enroll")
     command(arguments, 0)
     command(["worker", "--execution-id", "01J00000000000000000000001"], 17001)
     observe("pairing and worker reject the wrong real service UIDs")
@@ -128,19 +170,33 @@ try:
     pending = line(pair)
     assert pending["phase"] == "pending" and len(pending["code"]) == 16
     assert "claim" not in pending and "certificate" not in pending
+    assert pending["verifierFingerprint"] == identity["fingerprint"]
     pair.send_signal(signal.SIGTERM)
     output, errors = pair.communicate(timeout=15)
     assert pair.returncode == 130, (pair.returncode, errors)
+    replacement = subprocess.run(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519"], check=True, capture_output=True).stdout
+    public.write_bytes(subprocess.run(["/usr/bin/openssl", "pkey", "-pubout"], input=replacement, check=True, capture_output=True).stdout)
+    command(arguments, 17001)
+    public.write_bytes(original_public)
     restarted = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
     assert line(restarted) == pending
     inspected = http("/api/runners/pairings/inspect", {"code": pending["code"]})
     assert inspected["requestFingerprint"] == pending["requestFingerprint"]
-    http("/api/runners/pairings/approve", {"code": pending["code"]})
+    assert inspected["verifierFingerprint"] == identity["fingerprint"]
+    for wrong in (None, "0" * 64):
+        try:
+            http("/api/runners/pairings/approve", {"code": pending["code"], **({"verifierFingerprint": wrong} if wrong else {})})
+        except urllib.error.HTTPError as failure:
+            assert failure.code == 403
+        else:
+            raise AssertionError("Pairing approved a different verifier fingerprint")
+    http("/api/runners/pairings/approve", {"code": pending["code"], "verifierFingerprint": identity["fingerprint"]})
     paired = line(restarted)
-    assert paired["paired"] is True
+    assert paired["paired"] is True and paired["verifierFingerprint"] == identity["fingerprint"]
     output, errors = restarted.communicate(timeout=15)
     assert restarted.returncode == 0, errors
     observe("real CLI pairing survives process interruption and claims only after administrator approval")
+    observe("actual HTTPS enrollment pins the installed verifier and rejects changed keys or mismatched approval")
     private_key = pathlib.Path("/var/lib/paws-runner/identity/runner-key.pem")
     assert private_key.is_file() and private_key.stat().st_size > 0
     denied = actor(["/bin/cat", str(private_key)], 17002)
