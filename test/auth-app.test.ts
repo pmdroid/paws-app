@@ -74,7 +74,7 @@ test("GitHub App sign-in persists private credentials and repository work uses o
   expect(await provider.user()).toEqual({ login: "paws-test[bot]", id: 88 });
   const before = scene.calls.length;
   expect(await provider.user()).toEqual({ login: "paws-test[bot]", id: 88 });
-  expect(scene.calls.length).toBe(before);
+  expect(scene.calls.length).toBeGreaterThan(before);
   expect(scene.calls.filter((call) => call.path === "/user").map((call) => call.token)).toEqual([
     "Bearer fake-user-token",
   ]);

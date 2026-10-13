@@ -65,6 +65,46 @@ describe("pull requests and serial merge", () => {
     });
   }
 
+  test("Paws-controlled squash preserves both human trailers without claiming GitHub committer control", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "candidate.txt", "candidate\n");
+      const client = mergingClient(repo.bare, []);
+      let message = "";
+      const result = await serialMerge({
+        ...creds({
+          async request(request) {
+            if (request.path.endsWith("/merge"))
+              message = (request.body as { commit_message: string }).commit_message;
+            return client.request(request);
+          },
+        }),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        commitMessage:
+          "accepted\n\nCo-authored-by: Lead <7+lead@users.noreply.github.com>\nCo-authored-by: Steerer <8+steerer@users.noreply.github.com>\n",
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(result.merged).toBe(true);
+      expect(message).toContain("Co-authored-by: Lead <7+lead@users.noreply.github.com>");
+      expect(message).toContain("Co-authored-by: Steerer <8+steerer@users.noreply.github.com>");
+      const actual = await exec("git", [
+        "--git-dir",
+        repo.bare,
+        "show",
+        "-s",
+        "--format=%B",
+        "main",
+      ]);
+      expect(actual.stdout).toContain("Co-authored-by: Lead");
+      expect(actual.stdout).toContain("Co-authored-by: Steerer");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("branch names and the Fixes line keep the issue key", () => {
     expect(branchForIssue("ENG-123")).toBe("paws/ENG-123");
     expect(fixesLine("ENG-123")).toBe("Fixes ENG-123");

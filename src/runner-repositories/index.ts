@@ -1,3 +1,4 @@
+import { commitCoauthorTrailers, validateCommitAttribution } from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -212,6 +213,50 @@ export function createRunnerRepositories(options: {
             ["--git-dir", mirror, "merge-base", "--is-ancestor", command.repository.baseSha, sha],
             signal,
           );
+          if (command.commitPolicy) {
+            const commits = (
+              await invoke(
+                [
+                  "--git-dir",
+                  mirror,
+                  "--no-replace-objects",
+                  "rev-list",
+                  `${command.repository.baseSha}..${sha}`,
+                ],
+                signal,
+              )
+            )
+              .trim()
+              .split("\n")
+              .filter(Boolean);
+            for (const commit of commits) {
+              const metadata = (
+                await invoke(
+                  [
+                    "--git-dir",
+                    mirror,
+                    "--no-replace-objects",
+                    "show",
+                    "-s",
+                    "--format=%an%n%ae%n%cn%n%ce",
+                    commit,
+                  ],
+                  signal,
+                )
+              )
+                .trimEnd()
+                .split("\n");
+              const message = await invoke(
+                ["--git-dir", mirror, "--no-replace-objects", "show", "-s", "--format=%B", commit],
+                signal,
+              );
+              validateCommitAttribution(
+                command.commitPolicy,
+                metadata,
+                commitCoauthorTrailers(message),
+              );
+            }
+          }
           if (command.inputFiles?.length) {
             const changed = (
               await invoke(

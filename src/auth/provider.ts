@@ -195,14 +195,12 @@ function appProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
       privateKeyPem: config.privateKeyPem!,
       token: await app.tokenFor("pr"),
     });
-  let bot: AppBotIdentity | null = null;
   return {
     source: "app",
     botIdentity: resolveBot,
     token: () => app.tokenFor("push"),
     user: async () => {
-      if (bot !== null) return { login: bot.login, id: bot.id };
-      bot = await resolveBot();
+      const bot = await resolveBot();
       return { login: bot.login, id: bot.id };
     },
   };

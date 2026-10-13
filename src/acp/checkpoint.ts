@@ -11,7 +11,13 @@ import {
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { commitIdentityEnv, type GitCommitIdentity } from "../core";
+import {
+  appBotCommitIdentity,
+  commitPolicyMessage,
+  commitIdentityEnv,
+  type GitCommitIdentity,
+  type GitCommitPolicy,
+} from "../core";
 import { git } from "./git";
 import { mirrorPath, worktreePath } from "./paths";
 
@@ -174,7 +180,12 @@ export function commitCheckpointSync(
   tree: string,
   message = "wip: shutdown",
   identity: GitCommitIdentity = DEFAULT_IDENTITY,
+  policy?: GitCommitPolicy,
 ): CheckpointResult {
+  if (policy) {
+    identity = appBotCommitIdentity(policy.bot);
+    message = commitPolicyMessage(message, policy);
+  }
   const commitEnv = commitIdentityEnv(identity);
   if (!existsSync(tree)) return { committed: false, message };
   let status: string;
@@ -202,6 +213,7 @@ export function restartFromFreshMain(options: {
   itemId: string;
   wipBranch: string;
   commitIdentity?: GitCommitIdentity;
+  commitPolicy?: GitCommitPolicy;
 }): FreshMainCheckout {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const tree = worktreePath(options.pawsRoot, options.itemId);
@@ -215,7 +227,12 @@ export function restartFromFreshMain(options: {
 
   let wipSha: string | undefined;
   if (isRegisteredWorktree(gitDir, tree)) {
-    const committed = commitCheckpointSync(tree, "wip: paused", options.commitIdentity);
+    const committed = commitCheckpointSync(
+      tree,
+      "wip: paused",
+      options.commitIdentity,
+      options.commitPolicy,
+    );
     wipSha = committed.sha ?? gitSyncOrEmpty(["-C", tree, "rev-parse", "HEAD"]);
     gitSync(["--git-dir", gitDir, "worktree", "remove", "--force", tree]);
     gitSync(["--git-dir", gitDir, "worktree", "prune"]);

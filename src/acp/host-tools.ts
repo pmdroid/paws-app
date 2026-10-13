@@ -42,6 +42,7 @@ export class TerminalRegistry {
   constructor(
     private readonly guard: GuardContext,
     private readonly baseEnv: NodeJS.ProcessEnv,
+    private readonly attributionEnv: Record<string, string> = {},
   ) {}
 
   create(params: CreateTerminalRequest): CreateTerminalResponse {
@@ -67,6 +68,7 @@ export class TerminalRegistry {
         Object.fromEntries((params.env ?? []).map(({ name, value }) => [name, value])),
       ),
     };
+    Object.assign(env, this.attributionEnv);
     const child = spawnAgent(params.command, params.args ?? [], env, {
       cwd: params.cwd ? resolveInsideWorktree(params.cwd, this.guard) : this.guard.worktree,
     });
