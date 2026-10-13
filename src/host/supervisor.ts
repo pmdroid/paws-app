@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import {
   accrueAwake,
+  cancelOpenJobs,
+  enqueueOutboxOnce,
+  failWorkItem,
+  markRun,
   applyDecision,
   enqueueJobOnce,
   immediate,
@@ -8,7 +12,7 @@ import {
   postPauseNote,
 } from "../db";
 import type { WorkItemRecord } from "../db";
-import { decideWake, JOB_KIND, pauseOutcome, sleep, type Clock } from "../core";
+import { decideWake, JOB_KIND, OUTBOX_ACTIVITY, pauseOutcome, sleep, type Clock } from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
 export type AgentAlive = (runId: string) => boolean;
@@ -25,6 +29,7 @@ export class HostSupervisor {
     readonly agentAlive: AgentAlive = () => true,
     readonly pollMs = 250,
     restartFromMain: (item: WorkItemRecord) => void = () => {},
+    readonly restartFromMainBlocked?: (item: WorkItemRecord) => string | null,
   ) {
     this.restartFromMain = restartFromMain;
   }
@@ -83,6 +88,23 @@ export class HostSupervisor {
           agentAlive: item.currentRunId !== null ? this.agentAlive(item.currentRunId) : false,
           checkpoint: item.checkpoint,
         });
+        const blocked =
+          decision.type === "restart_from_main" ? this.restartFromMainBlocked?.(item) : null;
+        if (blocked) {
+          if (item.state === "paused" || item.state === "awaiting_input") {
+            if (item.currentRunId) markRun(this.db, item.currentRunId, "lost", now);
+            cancelOpenJobs(this.db, { itemId: item.id, reason: "restart_blocked", now });
+            enqueueOutboxOnce(this.db, {
+              target: OUTBOX_ACTIVITY.target,
+              op: OUTBOX_ACTIVITY.op,
+              orderingKey: item.sessionKey ?? item.id,
+              idempotencyKey: `restart-blocked:${item.id}:${sample.fromWall}`,
+              payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: blocked },
+              now,
+            });
+          } else failWorkItem(this.db, item, "restart_blocked", blocked, now);
+          continue;
+        }
         applyDecision(this.db, item, decision, now, stamp);
         if (decision.type === "restart_from_main") restarts.push(item);
         const outcome = pauseOutcome(decision);

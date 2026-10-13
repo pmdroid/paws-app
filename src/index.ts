@@ -23,7 +23,13 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
-import { WORK_ITEM_STATES, type LinearCommand, type GitCommitPolicy } from "./core";
+import {
+  WORK_ITEM_STATES,
+  type LinearCommand,
+  type GitCommitPolicy,
+  type Clock,
+  policyCoauthors,
+} from "./core";
 import {
   assertLinearQueue,
   enqueueCommand,
@@ -149,6 +155,7 @@ export type PawsProcess = {
 
 export type StartOptions = {
   noTunnel?: boolean;
+  hostClock?: Clock;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
@@ -878,8 +885,22 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   const host = startHost({
     db,
+    clock: options?.hostClock,
     signal: abort.signal,
     agentAlive: (runId) => orchestrator?.agentAlive(runId) ?? false,
+    restartFromMainBlocked:
+      runtime.githubAuth === "app"
+        ? (item) => {
+            const policy = getItemRunCommitPolicy(db, item.id);
+            try {
+              if (policy) {
+                policyCoauthors(policy);
+                return null;
+              }
+            } catch {}
+            return "Restart stopped: verified GitHub attribution for the project lead and task steerer is missing. WIP is preserved. Restore the attribution links before retrying.";
+          }
+        : undefined,
     restartFromMain: (item) => {
       const selected = getWorkItemRepository(db, item.id) ?? repository;
       if (selected === null) return;
