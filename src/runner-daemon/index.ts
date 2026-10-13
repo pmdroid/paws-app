@@ -9,3 +9,5 @@ export type {
   RunnerRepositoryCredential,
   RunnerAnswers,
 } from "./work";
+
+export type { RunnerDownloadedInputs } from "./inputs";

@@ -28,6 +28,7 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../
 export async function probeRunnerTaskAuthority(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
+  downloadInputs = false,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.sqlite"));
@@ -238,10 +239,10 @@ export async function probeRunnerTaskAuthority(
             bytes: Buffer.from("Private task attachment"),
           },
         ]);
-        command.promptContext = coordinator.inputs.stagePrompt(
-          command.id,
-          "Full prepared task prompt 日本語",
-        );
+        const preparedTaskPrompt =
+          "Full prepared task prompt 日本語" +
+          (downloadInputs && purpose === "answer" && !withRepository ? "x".repeat(20_972_002) : "");
+        command.promptContext = coordinator.inputs.stagePrompt(command.id, preparedTaskPrompt);
         assert.equal(scope.purpose, purpose);
         assert.equal(scope.repository !== undefined, withRepository);
         assert.throws(() =>
@@ -277,6 +278,63 @@ export async function probeRunnerTaskAuthority(
         const grant = await daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
         const access = { runnerId, runId: run.id, generation: 1, token: grant.token };
         assert.equal(coordinator.work.authorize(access).branch, null);
+        if (downloadInputs) {
+          let grantReads = 0;
+          const downloaded = await daemon.readInputs(
+            command,
+            async () => {
+              grantReads++;
+              return grant.token;
+            },
+            new AbortController().signal,
+          );
+          assert.equal(
+            Buffer.from(downloaded.inputFiles[0]!).toString("utf8"),
+            "Private task attachment",
+          );
+          assert.equal(Buffer.from(downloaded.promptContext!).toString("utf8"), preparedTaskPrompt);
+          assert.equal(grantReads, 1 + Math.ceil(Buffer.byteLength(preparedTaskPrompt) / 524_288));
+          await assert.rejects(
+            daemon.readInputs(
+              { ...command, prompt: "forged" },
+              async () => grant.token,
+              new AbortController().signal,
+            ),
+          );
+          const readContext = coordinator.inputs.readContext;
+          try {
+            for (const alter of [
+              (value: ReturnType<typeof readContext>) => ({ ...value, commandId: "other-command" }),
+              (value: ReturnType<typeof readContext>) => ({ ...value, offset: value.offset + 1 }),
+              (value: ReturnType<typeof readContext>) => ({ ...value, data: "AAAA" }),
+              (value: ReturnType<typeof readContext>) => {
+                const bytes = Buffer.alloc(Buffer.from(value.data, "base64").length, 120);
+                return { ...value, data: bytes.toString("base64"), sha256: hash(bytes) };
+              },
+            ]) {
+              coordinator.inputs.readContext = (...args) => alter(readContext(...args));
+              await assert.rejects(
+                daemon.readInputs(command, async () => grant.token, new AbortController().signal),
+              );
+            }
+          } finally {
+            coordinator.inputs.readContext = readContext;
+          }
+          const interrupted = new AbortController();
+          await assert.rejects(
+            daemon.readInputs(
+              command,
+              async () => {
+                interrupted.abort();
+                return grant.token;
+              },
+              interrupted.signal,
+            ),
+          );
+          const stopped = new AbortController();
+          stopped.abort();
+          await assert.rejects(daemon.readInputs(command, async () => grant.token, stopped.signal));
+        }
         const inputRequest = { commandId: command.id, generation: 1, offset: 0 };
         assert.equal(
           Buffer.from(
@@ -289,7 +347,7 @@ export async function probeRunnerTaskAuthority(
           Buffer.from(coordinator.inputs.readContext(access, inputRequest).data, "base64").toString(
             "utf8",
           ),
-          "Full prepared task prompt 日本語",
+          Buffer.from(preparedTaskPrompt).subarray(0, 524_288).toString("utf8"),
         );
         const minted = mints.length;
         if (withRepository)
@@ -506,6 +564,18 @@ export async function probeRunnerTaskAuthority(
       restoredMembershipDoesNotReviveIdentity: true,
     });
     assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
+    if (downloadInputs)
+      observe(
+        "daemon downloads complete signed input and prompt bytes over current mTLS grants",
+        true,
+        {
+          largestPromptBytes: Buffer.byteLength("Full prepared task prompt 日本語") + 20_972_002,
+          repositoryVariants: 4,
+          forgedCommandDenied: true,
+          chunkAndFullDigestDenied: true,
+          cancellationDenied: true,
+        },
+      );
   } finally {
     daemon.close();
     await enrollment.stop(true);
