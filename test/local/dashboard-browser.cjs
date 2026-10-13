@@ -40,7 +40,8 @@ async function inspect(page, name) {
     );
     await page.goto(`${origin}/status`);
     await page.locator(".live-bar").waitFor();
-    assert.equal(await page.locator("#side .nav").count(), 2);
+    assert.equal(await page.locator('#side a[href="#/"]').count(), 1);
+    assert.equal(await page.locator('#side a[href="#/settings"]').count(), 1);
     const snapshot = await page.evaluate(async () => (await fetch("/api/status")).json());
     for (const view of ["runs", "questions", "verdicts", "queue", "sessions", "epics"]) {
       await page.locator(`.work-navigation a[href="#/${view}"]`).click();
