@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
@@ -44,6 +45,7 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../
 export async function probeRunnerInputs(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
+  contextPrompt?: string,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const path = join(root, "paws.sqlite");
@@ -146,6 +148,11 @@ export async function probeRunnerInputs(
     { path: "empty.txt", mimeType: "text/plain", bytes: Buffer.alloc(0) },
   ];
   command.inputFiles = inputs.stage(command.id, supplied);
+  if (contextPrompt !== undefined) {
+    command.promptContext = inputs.stagePrompt(command.id, contextPrompt);
+    assert.deepEqual(inputs.stagePrompt(command.id, contextPrompt), command.promptContext);
+    assert.throws(() => inputs.stagePrompt(command.id, contextPrompt + "changed"));
+  }
   bytes.fill(0);
   assert.deepEqual(
     inputs.stage(command.id, [{ ...supplied[0]!, bytes: original }, supplied[1]!]),
@@ -211,14 +218,17 @@ export async function probeRunnerInputs(
     },
   });
   const payload = { commandId: command.id, generation: 1, fileId: 0, offset: 0 };
-  const send = (body: unknown, override: { token?: string; runId?: string } = {}) =>
+  const send = (
+    body: unknown,
+    override: { token?: string; runId?: string; channel?: "context" } = {},
+  ) =>
     new Promise<{ status: number; body: { data: string; sha256: string } }>((resolve, reject) => {
       const raw = JSON.stringify(body);
       const outgoing = request(
         {
           hostname: "localhost",
           port: listener.port,
-          path: `/v1/runs/${override.runId ?? run.id}/inputs/read`,
+          path: `/v1/runs/${override.runId ?? run.id}/${override.channel ?? "inputs"}/read`,
           ca: tls.cert,
           cert: identity.certificate,
           key: readFileSync(client.keyPath, "utf8"),
@@ -233,12 +243,16 @@ export async function probeRunnerInputs(
         (incoming) => {
           const chunks: Buffer[] = [];
           incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-          incoming.on("end", () =>
-            resolve({
-              status: incoming.statusCode ?? 0,
-              body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-            }),
-          );
+          incoming.on("end", () => {
+            try {
+              resolve({
+                status: incoming.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"),
+              });
+            } catch (error) {
+              reject(error);
+            }
+          });
           incoming.on("error", reject);
         },
       );
@@ -317,7 +331,7 @@ export async function probeRunnerInputs(
     const directory = join(storageRoot, createHash("sha256").update(command.id).digest("hex"));
     const file = join(directory, "0.bytes");
     assert.equal(readFileSync(file).equals(original), true);
-    assert.equal(readdirSync(directory).length, 3);
+    assert.equal(readdirSync(directory).length, contextPrompt === undefined ? 3 : 5);
     const saved = join(directory, "saved");
     renameSync(file, saved);
     symlinkSync(saved, file);
@@ -336,6 +350,85 @@ export async function probeRunnerInputs(
       true,
       { symlink: 403, mode: 403, corruption: 503, repaired: 200 },
     );
+    if (contextPrompt !== undefined) {
+      const contextPayload = { commandId: command.id, generation: 1, offset: 0 };
+      const expected = Buffer.from(contextPrompt, "utf8");
+      const contextChunks: Buffer[] = [];
+      for (let offset = 0; offset < expected.length; offset += RUNNER_INPUT_CHUNK_BYTES) {
+        const response = await send({ ...contextPayload, offset }, { channel: "context" });
+        assert.equal(response.status, 200);
+        assert.deepEqual(
+          await send({ ...contextPayload, offset }, { channel: "context" }),
+          response,
+        );
+        const part = Buffer.from(response.body.data, "base64");
+        assert.equal(createHash("sha256").update(part).digest("hex"), response.body.sha256);
+        contextChunks.push(part);
+      }
+      assert.deepEqual(Buffer.concat(contextChunks), expected);
+      const restarted = JSON.parse(
+        execFileSync(
+          process.execPath,
+          ["--no-env-file", "test/local/runner-prompt-context-restart.ts"],
+          {
+            input: JSON.stringify({
+              dbPath: path,
+              root: storageRoot,
+              runnerId,
+              runId: run.id,
+              token,
+              commandId: command.id,
+              generation: 1,
+              now,
+              sizeBytes: expected.length,
+            }),
+            encoding: "utf8",
+          },
+        ),
+      );
+      assert.deepEqual(restarted, command.promptContext);
+      observe(
+        "restored large UTF-8 prompt transfers exactly over real mTLS and survives fresh-process store/database reopen",
+        true,
+        { ...restarted, characters: contextPrompt.length, chunks: contextChunks.length },
+      );
+      for (const changed of [
+        { ...contextPayload, fileId: 0 },
+        { ...contextPayload, generation: 2 },
+        { ...contextPayload, commandId: "wrong" },
+        { ...contextPayload, offset: 1 },
+      ])
+        assert.notEqual((await send(changed, { channel: "context" })).status, 200);
+      assert.notEqual(
+        (await send(contextPayload, { channel: "context", token: "A".repeat(43) })).status,
+        200,
+      );
+      const promptFile = join(directory, "prompt.bytes");
+      writeFileSync(promptFile, "corrupt");
+      assert.equal((await send(contextPayload, { channel: "context" })).status, 503);
+      writeFileSync(promptFile, expected);
+      assert.equal((await send(contextPayload, { channel: "context" })).status, 200);
+      const savedPrompt = join(directory, "saved-prompt");
+      renameSync(promptFile, savedPrompt);
+      symlinkSync(savedPrompt, promptFile);
+      assert.equal((await send(contextPayload, { channel: "context" })).status, 403);
+      unlinkSync(promptFile);
+      renameSync(savedPrompt, promptFile);
+      assert.throws(() => inputs.stagePrompt(workspaceId(), "\uD800"));
+      assert.throws(() => inputs.stagePrompt(workspaceId(), "x".repeat(64 * 1024 * 1024 + 1)));
+      assert.throws(() => RunnerCommandSchema.parse({ ...command, prompt: contextPrompt }));
+      observe(
+        "prompt context enforces signed command/range/grant, UTF-8 and separate byte limits while repaired storage retries exactly",
+        true,
+        {
+          corruption: 503,
+          repaired: 200,
+          symlink: 403,
+          maximumBytes: 64 * 1024 * 1024,
+          inlineMaximumCharacters: 65536,
+        },
+      );
+    }
     now += 60001;
     assert.notEqual((await send(payload)).status, 200);
     now -= 60001;
@@ -361,6 +454,13 @@ export async function probeRunnerInputs(
       workspace.id,
       userId,
     ]);
+    if (contextPrompt !== undefined) {
+      const deniedContext = await send(
+        { commandId: command.id, generation: 1, offset: 0 },
+        { channel: "context" },
+      );
+      assert.notEqual(deniedContext.status, 200);
+    }
     releaseBody();
     const denied = await pendingRead;
     assert.notEqual(denied!.status, 200);

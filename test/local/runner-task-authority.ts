@@ -231,6 +231,17 @@ export async function probeRunnerTaskAuthority(
           prompt: "Respond in Linear",
           ...(withRepository ? { repository } : {}),
         };
+        command.inputFiles = coordinator.inputs.stage(command.id, [
+          {
+            path: ".paws-linear-inputs/task/data.txt",
+            mimeType: "text/plain",
+            bytes: Buffer.from("Private task attachment"),
+          },
+        ]);
+        command.promptContext = coordinator.inputs.stagePrompt(
+          command.id,
+          "Full prepared task prompt 日本語",
+        );
         assert.equal(scope.purpose, purpose);
         assert.equal(scope.repository !== undefined, withRepository);
         assert.throws(() =>
@@ -266,6 +277,20 @@ export async function probeRunnerTaskAuthority(
         const grant = await daemon.issueRunGrant(run.id, { commandId: command.id, generation: 1 });
         const access = { runnerId, runId: run.id, generation: 1, token: grant.token };
         assert.equal(coordinator.work.authorize(access).branch, null);
+        const inputRequest = { commandId: command.id, generation: 1, offset: 0 };
+        assert.equal(
+          Buffer.from(
+            coordinator.inputs.read(access, { ...inputRequest, fileId: 0 }).data,
+            "base64",
+          ).toString("utf8"),
+          "Private task attachment",
+        );
+        assert.equal(
+          Buffer.from(coordinator.inputs.readContext(access, inputRequest).data, "base64").toString(
+            "utf8",
+          ),
+          "Full prepared task prompt 日本語",
+        );
         const minted = mints.length;
         if (withRepository)
           assert.equal(
