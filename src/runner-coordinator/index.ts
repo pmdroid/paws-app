@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
@@ -80,6 +81,7 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const workHttp = createRunnerWorkHttp(work);
+  const inputs = createRunnerInputStore({ root: join(options.root, "inputs"), work });
   const helpers = createRunnerHelpers({
     db: options.db,
     keyId: signing.signingKeys[0].keyId,
@@ -123,6 +125,7 @@ export async function openRunnerCoordinator(options: {
         (await checksHttp(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
+        (await inputs.fetch(request, runnerId)) ??
         (await transcriptsHttp?.(request, runnerId)) ??
         new Response(null, { status: 404 })
       );
@@ -147,6 +150,7 @@ export async function openRunnerCoordinator(options: {
     helpers,
     checks,
     artifacts,
+    inputs,
     transcripts,
     async browser(request: Request, principal: WorkspacePrincipal) {
       return (await http.browser(request, principal)) ?? health.browser(request, principal);

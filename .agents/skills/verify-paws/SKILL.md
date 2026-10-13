@@ -11,6 +11,8 @@ State the claim before testing: given a particular epic, agent script and failur
 
 Read `AGENTS.md`, `package.json`, `scripts/verify-local.ts`, `test/local/instance.ts` and `test/local/probes.ts`. Inspect the diff and source commit. Install locked dependencies if needed, using an isolated temporary HOME and KYOTOAGENT_ROOT together.
 
+Run `TMPDIR=/tmp bun --no-env-file test/local/runner-inputs.ts` to exercise the control plane’s immutable private input store over real local mTLS with SQLite, signed work commands and current run grants. The proof transfers a binary file larger than ten MiB and an empty file, checks chunk hashes and exact retry, rejects unsafe or overlapping paths, enforces twenty-file/twenty-MiB limits, denies wrong run/peer/command/generation/grant and malformed ranges, denies symlinks and unsafe file modes, retries repaired corrupt storage, and prevents disclosure after membership invalidation or lease expiry. Inspect the emitted `observations.json` and require all four observations to pass. Run `bun --no-env-file test/local/runner-input-faults.ts` for schema-maximum Unicode manifest reads, repeated injected directory-stat and parent-sync faults with zero leaked descriptors, and exact recovery of an interrupted hard-link publication. Require all four emitted observations to pass.
+
 ## Run
 
 Use Linux with Bun 1.4.2+, Git, Python 3, OpenSSL 3 and GNU `timeout` available. From the repository root, use a tracked background task:

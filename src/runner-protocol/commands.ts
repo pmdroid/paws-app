@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerInputFilesSchema } from "./inputs";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const time = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -60,6 +61,7 @@ const work = {
   repository: RunnerRepositorySchema,
   profile: RunnerProfileSchema,
   prompt: z.string().min(1).max(65_536),
+  inputFiles: RunnerInputFilesSchema.optional(),
 };
 
 export const RunnerCommandSchema = z
