@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -136,6 +137,115 @@ function openBundleSource(path: string, spool: RunnerSpool): number {
   return source;
 }
 
+function snapshotTree(
+  directory: number,
+  spool: RunnerSpool,
+  stored: boolean,
+  destination?: number,
+): string {
+  const hash = createHash("sha256");
+  let total = 0;
+  function visit(fd: number, target: number | undefined, prefix: string) {
+    const info = fstatSync(fd);
+    if (
+      !info.isDirectory() ||
+      info.uid !== spool.runnerUid ||
+      (stored
+        ? info.gid !== spool.agentGid || (info.mode & 0o7777) !== 0o750
+        : (info.mode & 0o7022) !== 0)
+    )
+      throw new Error("Unsafe task repository directory");
+    for (const name of readdirSync(`/proc/self/fd/${fd}`).sort()) {
+      const relative = `${prefix}${name}`;
+      total += 512 + Buffer.byteLength(name);
+      if (name.toLowerCase() === ".git" || Buffer.byteLength(relative) > 4096)
+        throw new Error("Unsafe task repository path");
+      if (total > 536_870_912) throw new Error("Task repository exceeds size limit");
+      const source = openSync(
+        `/proc/self/fd/${fd}/${name}`,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      let output: number | undefined;
+      try {
+        const stat = fstatSync(source);
+        if (stat.isDirectory()) {
+          hash.update(JSON.stringify([relative, "directory"]));
+          if (target !== undefined) {
+            const path = `/proc/self/fd/${target}/${name}`;
+            mkdirSync(path, { mode: 0o750 });
+            output = openDirectory(path);
+            fchownSync(output, spool.runnerUid, spool.agentGid);
+            fchmodSync(output, 0o750);
+          }
+          visit(source, output, `${relative}/`);
+        } else {
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            stat.uid !== spool.runnerUid ||
+            (stored
+              ? stat.gid !== spool.agentGid || (stat.mode & 0o7777) !== 0o640
+              : (stat.mode & 0o7022) !== 0)
+          )
+            throw new Error("Unsafe task repository file");
+          total += stat.size;
+          if (total > 536_870_912) throw new Error("Task repository exceeds size limit");
+          hash.update(JSON.stringify([relative, "file", stat.size]));
+          if (target !== undefined) {
+            output = openSync(
+              `/proc/self/fd/${target}/${name}`,
+              constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+              0o600,
+            );
+            fchownSync(output, spool.runnerUid, spool.agentGid);
+            fchmodSync(output, 0o640);
+          }
+          const chunk = Buffer.alloc(65_536);
+          let offset = 0;
+          while (offset < stat.size) {
+            const count = readSync(
+              source,
+              chunk,
+              0,
+              Math.min(chunk.length, stat.size - offset),
+              offset,
+            );
+            if (count === 0) throw new Error("Task repository file changed");
+            hash.update(chunk.subarray(0, count));
+            if (output !== undefined) {
+              let written = 0;
+              while (written < count) written += writeSync(output, chunk, written, count - written);
+            }
+            offset += count;
+          }
+          const after = fstatSync(source);
+          if (
+            after.size !== stat.size ||
+            after.mtimeMs !== stat.mtimeMs ||
+            after.ctimeMs !== stat.ctimeMs
+          )
+            throw new Error("Task repository file changed");
+        }
+        if (output !== undefined) fsyncSync(output);
+      } finally {
+        closeSync(source);
+        if (output !== undefined) closeSync(output);
+      }
+    }
+  }
+  visit(directory, destination, "");
+  return hash.digest("hex");
+}
+
+function taskRepository(directory: number, spool: RunnerSpool): string {
+  const fd = openDirectory(`/proc/self/fd/${directory}/repository`);
+  try {
+    return snapshotTree(fd, spool, true);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob {
   const file = openSync(
     `/proc/self/fd/${fd}/job.json`,
@@ -165,6 +275,7 @@ function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob
         closeSync(bundle);
       }
     }
+    if (job.command.type === "task" && job.command.repository) taskRepository(fd, spool);
     return job;
   } finally {
     closeSync(file);
@@ -206,6 +317,13 @@ export function runnerRepositoryBundlePath(spool: RunnerSpool, executionId: stri
   return join(spool.root, executionId, "repository.bundle");
 }
 
+export function runnerTaskRepositoryPath(spool: RunnerSpool, executionId: string): string {
+  const job = readRunnerJob(spool, executionId);
+  if (job.command.type !== "task" || !job.command.repository)
+    throw new Error("Job has no task repository");
+  return join(spool.root, executionId, "repository");
+}
+
 export function runnerJobDirectory(spool: RunnerSpool, executionId: string): string {
   readRunnerJob(spool, executionId);
   return join(spool.root, executionId);
@@ -214,12 +332,15 @@ export function runnerJobDirectory(spool: RunnerSpool, executionId: string): str
 export function publishRunnerJob(
   spool: RunnerSpool,
   input: RunnerJob,
-  options: { repositoryBundle?: string } = {},
+  options: { repositoryBundle?: string; repositorySnapshot?: string } = {},
 ): RunnerJob {
   const job = RunnerJobSchema.parse(input);
   const needsBundle = job.command.type === "run" || job.command.type === "review";
   if (needsBundle !== (options.repositoryBundle !== undefined))
     throw new Error("Repository bundle must match job type");
+  const needsSnapshot = job.command.type === "task" && job.command.repository !== undefined;
+  if (needsSnapshot !== (options.repositorySnapshot !== undefined))
+    throw new Error("Repository snapshot must match task context");
   if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may publish jobs");
   const root = openRoot(spool);
   let directory: number | undefined;
@@ -254,17 +375,25 @@ export function publishRunnerJob(
             if (stored !== undefined) closeSync(stored);
           }
         }
+        if (options.repositorySnapshot !== undefined) {
+          const source = openAbsoluteDirectory(options.repositorySnapshot);
+          try {
+            if (snapshotTree(source, spool, false) !== taskRepository(existingDirectory, spool))
+              throw new Error("Task repository already exists with different content");
+          } finally {
+            closeSync(source);
+          }
+        }
         return existing;
       } finally {
         closeSync(existingDirectory);
       }
     }
     staging = `/proc/self/fd/${root}/.${job.executionId}.${randomUUID()}`;
-    mkdirSync(staging, { mode: 0o750 });
+    mkdirSync(staging, { mode: 0o700 });
     directory = openDirectory(staging);
     fchownSync(directory, spool.runnerUid, spool.agentGid);
-    fchmodSync(directory, 0o750);
-    validateDirectory(directory, spool);
+    fchmodSync(directory, 0o700);
     if (options.repositoryBundle !== undefined) {
       const source = openBundleSource(options.repositoryBundle, spool);
       try {
@@ -296,6 +425,22 @@ export function publishRunnerJob(
         closeSync(source);
       }
     }
+    if (options.repositorySnapshot !== undefined) {
+      const source = openAbsoluteDirectory(options.repositorySnapshot);
+      let target: number | undefined;
+      try {
+        const snapshotPath = `/proc/self/fd/${directory}/repository`;
+        mkdirSync(snapshotPath, { mode: 0o750 });
+        target = openDirectory(snapshotPath);
+        fchownSync(target, spool.runnerUid, spool.agentGid);
+        fchmodSync(target, 0o750);
+        snapshotTree(source, spool, false, target);
+        fsyncSync(target);
+      } finally {
+        closeSync(source);
+        if (target !== undefined) closeSync(target);
+      }
+    }
     const file = openSync(
       `/proc/self/fd/${directory}/job.json`,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -309,6 +454,9 @@ export function publishRunnerJob(
     } finally {
       closeSync(file);
     }
+    fsyncSync(directory);
+    fchmodSync(directory, 0o750);
+    validateDirectory(directory, spool);
     fsyncSync(directory);
     renameSync(staging, path);
     staging = undefined;
