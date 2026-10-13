@@ -95,7 +95,11 @@ for (const [index, args] of commands.entries()) {
   process.on("SIGTERM", stop);
   const deadline = setTimeout(
     stop,
-    mode === "serve" || mode === "workspace-serve" ? 360_000 : 300_000,
+    mode === "check" && args[0] === "test"
+      ? 600_000
+      : mode === "serve" || mode === "workspace-serve"
+        ? 360_000
+        : 300_000,
   );
   async function copy(stream: ReadableStream<Uint8Array>) {
     for await (const chunk of stream) {
