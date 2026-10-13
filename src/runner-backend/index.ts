@@ -13,6 +13,8 @@ import type { RunnerChecks } from "../runner-checks";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 
+class RunnerUnavailableError extends Error {}
+
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 
 export function createRemoteAgentRunner(options: {
@@ -61,11 +63,16 @@ export function createRemoteAgentRunner(options: {
         return { ...runner, runId: item.currentRunId };
       } catch {}
     }
-    throw new Error("No available paired runner can access this Linear task repository");
+    throw new RunnerUnavailableError(
+      "No available paired runner can access this Linear task repository",
+    );
   }
   return {
     closeoutForItem(itemId: string, signal?: AbortSignal) {
-      const attempts = new Map<string, { id: string; runnerId: string }>();
+      const attempts = new Map<
+        string,
+        { id: string; runnerId: string; runId: string; workspaceId: string; fence: number }
+      >();
       return createRemoteCloseoutCommandRunner({
         signal,
         async execute(request) {
@@ -73,12 +80,49 @@ export function createRemoteAgentRunner(options: {
           if (!options.checks) throw new Error("Trusted runner verification is unavailable");
           const checks = options.checks;
           const previous = attempts.get(request.candidateSha);
-          const selected = select(itemId, previous?.runnerId);
+          const waitingDeadline = performance.now() + Math.min(request.timeoutMs, 60_000);
+          const selectRunner = async () => {
+            while (true) {
+              signal?.throwIfAborted();
+              if (previous) {
+                const identity = work.identity(previous.runnerId);
+                if (
+                  identity.fence !== previous.fence ||
+                  identity.status !== "active" ||
+                  getWorkItem(db, itemId)?.currentRunId !== previous.runId
+                )
+                  throw new RunnerWorkFencedError("Runner verification authority changed");
+                work.scope(previous.runId, previous.workspaceId);
+              }
+              try {
+                return select(itemId, previous?.runnerId);
+              } catch (error) {
+                if (
+                  !previous ||
+                  !(error instanceof RunnerUnavailableError) ||
+                  performance.now() >= waitingDeadline
+                )
+                  throw error;
+                await delay(
+                  Math.min(interval, Math.max(1, waitingDeadline - performance.now())),
+                  undefined,
+                  { signal },
+                );
+              }
+            }
+          };
+          const selected = await selectRunner();
           let executionId: string | undefined;
           let completed = false;
           try {
             signal?.throwIfAborted();
-            const attempt = previous ?? { id: workspaceId(now()), runnerId: selected.id };
+            const attempt = previous ?? {
+              id: workspaceId(now()),
+              runnerId: selected.id,
+              runId: selected.runId,
+              workspaceId: selected.workspaceId,
+              fence: work.identity(selected.id).fence,
+            };
             const dispatched = checks.dispatch({
               runnerId: selected.id,
               runId: selected.runId,
