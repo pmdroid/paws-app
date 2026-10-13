@@ -47,6 +47,7 @@ import {
   type PairingChallenge,
   type PairedState,
 } from "./state";
+import { downloadRunnerInputs } from "./inputs";
 import { httpsOrigin, requestJson, RunnerRequestError } from "./transport";
 import {
   RunnerCheckDeliverySchema,
@@ -433,6 +434,35 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             grantToken,
           ),
         );
+    },
+    async readInputs(command: RunnerCommand, getGrant: () => Promise<string>, signal: AbortSignal) {
+      ensureOpen();
+      const input = RunnerCommandSchema.parse(command);
+      if (input.type !== "run" && input.type !== "review" && input.type !== "task")
+        throw new Error("Runner input command is invalid");
+      const stored = db
+        .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
+        .get(input.id);
+      if (
+        !stored ||
+        JSON.stringify(RunnerCommandSchema.parse(JSON.parse(stored.payload))) !==
+          JSON.stringify(input)
+      )
+        throw new Error("Runner input command is unknown");
+      return downloadRunnerInputs(
+        input,
+        getGrant,
+        (channel, body, token) => {
+          RunnerGrantTokenSchema.parse(token);
+          return authenticated(
+            `/v1/runs/${encodeURIComponent(input.runId)}/${channel}/read`,
+            "POST",
+            body,
+            token,
+          );
+        },
+        signal,
+      );
     },
     async issueRunGrant(runId: string, request: RunnerGrantRequest) {
       identifier.parse(runId);

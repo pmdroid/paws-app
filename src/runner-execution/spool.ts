@@ -246,6 +246,58 @@ function taskRepository(directory: number, spool: RunnerSpool): string {
   }
 }
 
+export type RunnerJobInputs = {
+  inputFiles: { path: string; mimeType: string; bytes: Uint8Array }[];
+  prompt?: string;
+};
+function inputDescriptors(job: RunnerJob) {
+  return job.command.type === "run" || job.command.type === "review" || job.command.type === "task"
+    ? { files: job.command.inputFiles ?? [], context: job.command.promptContext }
+    : { files: [], context: undefined };
+}
+function inputHash(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+function readInputContents(directory: number, spool: RunnerSpool, job: RunnerJob): RunnerJobInputs {
+  function read(name: string, descriptor: { sizeBytes: number; sha256: string }) {
+    const fd = openSync(
+      `/proc/self/fd/${directory}/${name}`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const info = fstatSync(fd);
+      if (
+        !info.isFile() ||
+        info.nlink !== 1 ||
+        info.uid !== spool.runnerUid ||
+        info.gid !== spool.agentGid ||
+        (info.mode & 0o7777) !== 0o640 ||
+        info.size !== descriptor.sizeBytes
+      )
+        throw new Error("Unsafe runner input contents");
+      const bytes = readBounded(fd, descriptor.sizeBytes);
+      if (bytes.length !== descriptor.sizeBytes || inputHash(bytes) !== descriptor.sha256)
+        throw new Error("Runner input content integrity failed");
+      return bytes;
+    } finally {
+      closeSync(fd);
+    }
+  }
+  const { files, context } = inputDescriptors(job);
+  const inputFiles = files.map((file) => ({
+    path: file.path,
+    mimeType: file.mimeType,
+    bytes: read(`input-${file.id}.bytes`, file),
+  }));
+  let prompt = "prompt" in job.command ? job.command.prompt : undefined;
+  if (context) {
+    const bytes = read("prompt.bytes", context);
+    prompt = bytes.toString("utf8");
+    if (!Buffer.from(prompt, "utf8").equals(bytes))
+      throw new Error("Runner prompt context is not UTF-8");
+  }
+  return { inputFiles, ...(prompt === undefined ? {} : { prompt }) };
+}
 function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob {
   const file = openSync(
     `/proc/self/fd/${fd}/job.json`,
@@ -276,6 +328,7 @@ function readJob(fd: number, spool: RunnerSpool, executionId: string): RunnerJob
       }
     }
     if (job.command.type === "task" && job.command.repository) taskRepository(fd, spool);
+    readInputContents(fd, spool, job);
     return job;
   } finally {
     closeSync(file);
@@ -296,6 +349,20 @@ export function readRunnerJob(spool: RunnerSpool, executionId: string): RunnerJo
   }
 }
 
+export function readRunnerJobInputs(spool: RunnerSpool, executionId: string): RunnerJobInputs {
+  ExecutionIdSchema.parse(executionId);
+  const root = openRoot(spool);
+  let directory: number | undefined;
+  try {
+    directory = openDirectory(`/proc/self/fd/${root}/${executionId}`);
+    validateDirectory(directory, spool);
+    const job = readJob(directory, spool, executionId);
+    return readInputContents(directory, spool, job);
+  } finally {
+    if (directory !== undefined) closeSync(directory);
+    closeSync(root);
+  }
+}
 function validateBundle(file: number, spool: RunnerSpool): void {
   const info = fstatSync(file);
   if (
@@ -332,9 +399,36 @@ export function runnerJobDirectory(spool: RunnerSpool, executionId: string): str
 export function publishRunnerJob(
   spool: RunnerSpool,
   input: RunnerJob,
-  options: { repositoryBundle?: string; repositorySnapshot?: string } = {},
+  options: {
+    repositoryBundle?: string;
+    repositorySnapshot?: string;
+    inputFiles?: readonly Uint8Array[];
+    promptContext?: Uint8Array;
+  } = {},
 ): RunnerJob {
   const job = RunnerJobSchema.parse(input);
+  const descriptors = inputDescriptors(job);
+  const inputFiles = (options.inputFiles ?? []).map((bytes) => Buffer.from(bytes));
+  const promptContext =
+    options.promptContext === undefined ? undefined : Buffer.from(options.promptContext);
+  if (
+    inputFiles.length !== descriptors.files.length ||
+    inputFiles.some(
+      (bytes, index) =>
+        bytes.length !== descriptors.files[index]!.sizeBytes ||
+        inputHash(bytes) !== descriptors.files[index]!.sha256,
+    )
+  )
+    throw new Error("Runner input files must match signed job");
+  if (
+    Boolean(descriptors.context) !== (promptContext !== undefined) ||
+    (descriptors.context &&
+      promptContext &&
+      (promptContext.length !== descriptors.context.sizeBytes ||
+        inputHash(promptContext) !== descriptors.context.sha256 ||
+        !Buffer.from(promptContext.toString("utf8"), "utf8").equals(promptContext)))
+  )
+    throw new Error("Runner prompt context must match signed job");
   const needsBundle = job.command.type === "run" || job.command.type === "review";
   if (needsBundle !== (options.repositoryBundle !== undefined))
     throw new Error("Repository bundle must match job type");
@@ -439,6 +533,23 @@ export function publishRunnerJob(
       } finally {
         closeSync(source);
         if (target !== undefined) closeSync(target);
+      }
+    }
+    const blobs = inputFiles.map((bytes, id) => ({ name: `input-${id}.bytes`, bytes }));
+    if (promptContext !== undefined) blobs.push({ name: "prompt.bytes", bytes: promptContext });
+    for (const blob of blobs) {
+      const fd = openSync(
+        `/proc/self/fd/${directory}/${blob.name}`,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        fchownSync(fd, spool.runnerUid, spool.agentGid);
+        fchmodSync(fd, 0o640);
+        writeFileSync(fd, blob.bytes);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
       }
     }
     const file = openSync(

@@ -2,6 +2,8 @@ export { ExecutionIdSchema, RunnerJobSchema, type RunnerJob } from "./jobs";
 export {
   publishRunnerJob,
   readRunnerJob,
+  readRunnerJobInputs,
+  type RunnerJobInputs,
   runnerRepositoryBundlePath,
   runnerTaskRepositoryPath,
   runnerJobDirectory,
