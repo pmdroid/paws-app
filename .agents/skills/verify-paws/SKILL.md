@@ -179,6 +179,8 @@ Run `bun --no-env-file test/local/runner-journal.ts` for actual SIGKILL recovery
 
 For trusted Closeout dispatch, run `bun --no-env-file test test/runner-trusted-closeout.test.ts`. The native probe enrolls and approves a real Ed25519 verifier identity over HTTPS, sends signed check results through the production coordinator mTLS listener, and writes evidence through the remote Closeout adapter. Setup and checks reuse their candidate attempt. Invalid signatures, cancellation, reassignment and revoked hosts cannot publish evidence. `check` and `audit` run the probe.
 
+Run `bun --no-env-file test/local/runner-runtime.ts` and `PAWS_RUNTIME_PROOF_FAILURE=permanent bun --no-env-file test/local/runner-runtime.ts` for a complete remote run and read-only review through actual HTTPS enrollment, mTLS grants, protected repository snapshots, immutable job and answer spools, the Unix broker, scripted ACP and Git candidate publication. The disposable network-none proof uses separate coordinator, daemon and worker identities. Inspect retained evidence for ordered question and artifact answers, lost receipt retries, protected artifact-file rejection, a hung-network lease stop and actual daemon SIGKILL recovery without relaunch.
+
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
