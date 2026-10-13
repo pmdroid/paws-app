@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { handleStatusRequest } from "../src/web";
-import { renderGitHubSignIn } from "../src/web/src/client/github-auth";
+import { loadGitHubAccess, renderGitHubSignIn } from "../src/web/src/client/github-auth";
 
 describe("dashboard github sign-in", () => {
   test("shows the signed-in login or the device code", () => {
@@ -46,6 +46,15 @@ describe("dashboard github sign-in", () => {
       csrfToken: "csrf-token",
     });
     expect(await none?.json()).toEqual({ user: null });
+    const loadAccess = () =>
+      loadGitHubAccess(
+        (async (input) =>
+          (await handleStatusRequest(new Request(`http://127.0.0.1${input}`), {
+            githubAuth,
+            csrfToken: "csrf-token",
+          }))!) as typeof fetch,
+      );
+    expect(await loadAccess()).toEqual({ allowed: true, user: null });
 
     const page = await handleStatusRequest(new Request("http://127.0.0.1/status"), {
       staticDir: null,
@@ -74,6 +83,7 @@ describe("dashboard github sign-in", () => {
       csrfToken: "csrf-token",
     });
     expect(await signedIn?.json()).toEqual({ user: { login: "octocat", id: 7 } });
+    expect(await loadAccess()).toEqual({ allowed: true, user: { login: "octocat", id: 7 } });
   });
 
   test("rejects a non-loopback origin and a missing CSRF token", async () => {

@@ -45,6 +45,7 @@ export async function settingsRequest<T>(
   if (!response.ok)
     throw new Error(
       typeof data.error === "string" ? data.error : `Request failed (${response.status}).`,
+      { cause: response.status },
     );
   return data as T;
 }
@@ -55,9 +56,11 @@ type SettingsView = {
   error: string | null;
   saved: boolean;
   connections: Map<string, AgentConnection>;
+  denied?: boolean;
 };
 
 export function renderAgentSettings(view: SettingsView): string {
+  if (view.denied) return "<h1>Settings</h1>";
   const intro = `<h1>Agent settings</h1><p class="sub">Choose who implements and independently reviews new work. Agents use their own CLI sign-ins on this machine.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
@@ -192,8 +195,21 @@ export function createAgentSettings(invalidate: () => void): {
   const load = () =>
     request("Loading agent settings…", async () => {
       const started = generation;
-      const data = await settingsRequest<AgentSettings>(engine!, "GET");
+      let data: AgentSettings;
+      try {
+        data = await settingsRequest<AgentSettings>(engine!, "GET");
+      } catch (error) {
+        if (started === generation && error instanceof Error && error.cause === 403) {
+          view.denied = true;
+          view.data = null;
+          view.error = null;
+          view.connections.clear();
+          return;
+        }
+        throw error;
+      }
       if (started !== generation) return;
+      view.denied = false;
       view.data = data;
       view.saved = false;
       view.connections.clear();
@@ -327,7 +343,7 @@ export function createAgentSettings(invalidate: () => void): {
           button.dataset.action = "source";
           button.textContent = "Connect engine";
         }
-      } else if (!view.data && !view.busy) void load();
+      } else if (!view.data && !view.busy && !view.denied) void load();
       else paint();
     },
   };
