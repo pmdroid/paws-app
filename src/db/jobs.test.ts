@@ -12,6 +12,7 @@ import {
   enqueueJob,
   enqueueJobOnce,
   failJob,
+  extendJobLease,
   getJob,
   insertQueuedItem,
   listJobs,
@@ -235,3 +236,43 @@ describe("job queue", () => {
     expect(listJobs(db)).toHaveLength(1);
   });
 });
+
+for (const operation of ["complete", "fail", "extend"] as const) {
+  for (const scenario of ["expired", "reclaimed", "recurring-failure", "cancelled"] as const) {
+    test(`stale ${operation} cannot change a ${scenario} claim with a reused worker identity`, () => {
+      const { db, clock } = queue();
+      const id = enqueueJob(db, {
+        queue: "work",
+        now: clock.now(),
+        ...(scenario === "recurring-failure" ? { recurringEveryMs: 1, maxAttempts: 1 } : {}),
+      });
+      const first = claim(db, clock, ["work"])!;
+      if (scenario === "expired" || scenario === "reclaimed") clock.advance(5_000);
+      if (scenario === "recurring-failure") {
+        expect(
+          failJob(db, first, new Error("first fire failed"), { now: clock.now() }),
+        ).not.toBeNull();
+        clock.advance(1);
+      }
+      if (scenario === "cancelled")
+        db.run(
+          "UPDATE job SET status = 'cancelled', locked_by = NULL, locked_until = NULL WHERE id = ?",
+          [id],
+        );
+      if (scenario === "reclaimed" || scenario === "recurring-failure") {
+        const replacement = claim(db, clock, ["work"])!;
+        expect(replacement).not.toBeNull();
+      }
+      const before = getJob(db, id);
+      const changed =
+        operation === "complete"
+          ? completeJob(db, first, clock.now())
+          : operation === "fail"
+            ? failJob(db, first, new Error("stale failure"), { now: clock.now() })
+            : extendJobLease(db, first, clock.now(), 60_000);
+      expect(changed).toBe(operation === "fail" ? null : false);
+      expect(getJob(db, id)).toEqual(before);
+      db.close();
+    });
+  }
+}

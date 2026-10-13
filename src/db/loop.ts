@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, DEFAULT_POLL_MS, sleep, type Clock } from "../core";
-import { claimNextJob, completeJob, extendJobLease, failJob, type Job } from "./jobs";
+import { claimNextJob, completeJob, extendJobLease, failJob, isJobCurrent, type Job } from "./jobs";
 
 export type JobContext = {
+  signal: AbortSignal;
+  isCurrent(): boolean;
   extendLease: (leaseMs?: number) => boolean;
 };
 
@@ -47,19 +49,36 @@ export class JobLoop {
       });
       return job;
     }
+    const controller = new AbortController();
+    const current = () => {
+      if (!controller.signal.aborted && !isJobCurrent(this.db, job, this.clock.now()))
+        controller.abort(new Error("Job claim is no longer current"));
+      return !controller.signal.aborted;
+    };
+    const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
+    const context: JobContext = {
+      signal: controller.signal,
+      isCurrent: current,
+      extendLease: (duration = leaseMs) => {
+        if (!current()) return false;
+        if (extendJobLease(this.db, job, this.clock.now(), duration)) return true;
+        controller.abort(new Error("Job claim renewal failed"));
+        return false;
+      },
+    };
+    const renewal = setInterval(
+      () => context.extendLease(),
+      Math.max(1, Math.min(10_000, leaseMs / 3)),
+    );
+    renewal.unref?.();
     try {
-      await handler(job, {
-        extendLease: (leaseMs) =>
-          extendJobLease(
-            this.db,
-            job,
-            this.clock.now(),
-            leaseMs ?? this.options.leaseMs ?? DEFAULT_LEASE_MS,
-          ),
-      });
-      completeJob(this.db, job, this.clock.now());
+      await handler(job, context);
+      if (current()) completeJob(this.db, job, this.clock.now());
     } catch (error) {
-      failJob(this.db, job, error, { now: this.clock.now(), baseMs: this.options.backoffBaseMs });
+      if (current())
+        failJob(this.db, job, error, { now: this.clock.now(), baseMs: this.options.backoffBaseMs });
+    } finally {
+      clearInterval(renewal);
     }
     return job;
   }
