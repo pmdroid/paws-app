@@ -1,3 +1,4 @@
+import type { LinearAttributionContext } from "./attribution";
 import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionSnapshot, LinearActivitySnapshot } from "./history";
 import type {
@@ -23,6 +24,10 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  getIssueAttribution?(
+    id: string,
+    options?: TrackerRequestOptions,
+  ): Promise<LinearAttributionContext>;
   listProjectMembers?(id: string, options?: TrackerRequestOptions): Promise<readonly string[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
