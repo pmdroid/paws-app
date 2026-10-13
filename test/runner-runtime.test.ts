@@ -114,6 +114,12 @@ test("shutdown during a cancellation acknowledgment cannot admit another pending
       async renewCertificate() {
         return paired;
       },
+      async uploadTranscript() {
+        throw new Error("Transcript upload must not begin after shutdown");
+      },
+      async finishTranscript() {
+        throw new Error("Transcript sealing must not begin after shutdown");
+      },
       async uploadArtifact() {
         return { ok: true };
       },

@@ -60,6 +60,13 @@ export function openExecutionJournal(root: string) {
   db.run(
     "CREATE TABLE IF NOT EXISTS delivery (execution_id TEXT NOT NULL REFERENCES execution(id), sequence INTEGER NOT NULL, payload TEXT NOT NULL, request_id TEXT, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(execution_id,sequence)) STRICT",
   );
+  if (
+    !db
+      .query<{ name: string }, []>("PRAGMA table_info(execution)")
+      .all()
+      .some((column) => column.name === "transcript_offset")
+  )
+    db.run("ALTER TABLE execution ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0");
   function executions(active: boolean): Execution[] {
     return db
       .query<{ id: string; payload: string; phase: string }, [number]>(
@@ -162,7 +169,7 @@ export function openExecutionJournal(root: string) {
                 }),
               })
               .safeParse(raw);
-            if (progress.success && sequence < 200)
+            if (progress.success && sequence < 128)
               event = { type: "progress", text: progress.data.event.update.content.text };
           }
           if (event) {
@@ -191,6 +198,24 @@ export function openExecutionJournal(root: string) {
           sequence: row.sequence,
           event: RunnerEventSchema.parse(JSON.parse(row.payload)),
         }));
+    },
+    transcriptCursor(id: string) {
+      const row = db
+        .query<{ offset: number; consumed: number }, [string]>(
+          "SELECT transcript_offset AS offset,consumed FROM execution WHERE id=?",
+        )
+        .get(id);
+      if (!row) throw new Error("Runner transcript execution is missing");
+      return row;
+    },
+    transcriptUploaded(id: string, previous: number, offset: number) {
+      if (!Number.isSafeInteger(offset) || offset <= previous)
+        throw new Error("Runner transcript offset is invalid");
+      const changed = db.run(
+        "UPDATE execution SET transcript_offset=? WHERE id=? AND transcript_offset=? AND consumed>=?",
+        [offset, id, previous, offset],
+      );
+      if (changed.changes !== 1) throw new Error("Runner transcript offset changed");
     },
     sent(id: string, sequence: number) {
       db.run("UPDATE delivery SET sent=1 WHERE execution_id=? AND sequence=?", [id, sequence]);

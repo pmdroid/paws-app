@@ -61,6 +61,12 @@ export function probeRunnerJournal(root: string, observe: Observe) {
       options: [{ label: "Existing API", value: "existing_api" }],
     });
     assert.equal(journal.requestId(id, 1), requestId);
+    assert.deepEqual(journal.transcriptCursor(id), {
+      offset: prefix.length,
+      consumed: prefix.length,
+    });
+    assert.throws(() => journal.transcriptUploaded(id, 0, prefix.length));
+    assert.throws(() => journal.transcriptUploaded(id, prefix.length, prefix.length + 1));
     observe("SIGKILL recovery retains one execution and its typed question", true, {
       signal: child.signalCode,
       execution: id,
@@ -157,6 +163,7 @@ if (import.meta.main) {
     const journal = openExecutionJournal(root);
     const execution = journal.admit(command, 1000)!;
     journal.ingest(execution.id, Buffer.concat([prefix, Buffer.from('{"type":')]));
+    journal.transcriptUploaded(execution.id, 0, prefix.length);
     writeFileSync(join(root, "execution"), execution.id);
     process.kill(process.pid, "SIGKILL");
   } else {
