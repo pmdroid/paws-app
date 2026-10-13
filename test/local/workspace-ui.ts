@@ -34,6 +34,16 @@ const server = startServer({
   webhooks: false,
   statusEnv: {},
   workspaceAccess: ready.promise,
+  agentSettings: {
+    configPath: join(root, "config.toml"),
+    probe: async (profile) => ({
+      ok: true,
+      agent: profile.agent,
+      model: profile.model,
+      models: [],
+      message: "Scripted browser verification",
+    }),
+  },
 });
 const origin = `http://127.0.0.1:${server.port}`;
 ready.resolve(

@@ -1,4 +1,5 @@
 import { initializeWorkspaceIdentities } from "./workspace-identities";
+import { initializeWorkspaceAudit } from "./workspace-audit";
 
 type BrowserSession = {
   role: string;
@@ -151,8 +152,10 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
         feedback.textContent = "Workspace settings could not be loaded. Reload to try again.";
     }
   }
-  if (["owner", "admin"].includes(session.role))
+  if (["owner", "admin"].includes(session.role)) {
     await initializeWorkspaceIdentities(root, session.csrfToken);
+    initializeWorkspaceAudit(root);
+  }
   return true;
 }
 

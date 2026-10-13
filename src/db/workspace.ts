@@ -258,3 +258,26 @@ export function auditWorkspaceAccess(
     [input.workspaceId, input.userId, input.action, input.subject, input.now],
   );
 }
+
+export function listWorkspaceAudit(db: Database, workspaceId: string, before: number) {
+  const rows = db
+    .query<
+      {
+        id: number;
+        actorId: string | null;
+        actorName: string | null;
+        action: string;
+        subject: string;
+        createdAt: number;
+      },
+      [string, number]
+    >(
+      `SELECT a.id,a.user_id AS actorId,u.name AS actorName,a.action,a.subject,
+      a.created_at AS createdAt FROM workspace_access_audit a
+      LEFT JOIN workspace_user u ON u.id=a.user_id
+      WHERE a.workspace_id=? AND a.id<? ORDER BY a.id DESC LIMIT 51`,
+    )
+    .all(workspaceId, before);
+  const entries = rows.slice(0, 50);
+  return { entries, nextBefore: rows.length > 50 ? entries.at(-1)!.id : null };
+}
