@@ -182,7 +182,19 @@ test.each([false, true, "cap"] as const)(
       running = jobs.tick();
       for (let i = 0; i < 1_000 && !existsSync(entered); i++) await Bun.sleep(10);
       expect(existsSync(entered), debug(layout, db)).toBe(true);
-      while (outbox.tick().length > 0) await outbox.idle();
+      const progressDeadline = performance.now() + 10_000;
+      while (
+        performance.now() < progressDeadline &&
+        (!tracker.progress.some((update) => update.body === "Fixing the missing output.") ||
+          !tracker.progress.some((update) => update.body === "Write repaired output") ||
+          !tracker.sessionUpdates.some(
+            (update) => update.summary === "ENG-302: fixing Closeout findings",
+          ) ||
+          !tracker.sessionUpdates.some((update) => update.plan?.[0]?.status === "inProgress"))
+      ) {
+        while (outbox.tick().length > 0) await outbox.idle();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       expect(tracker.progress.map((update) => update.body)).toContain("Fixing the missing output.");
       expect(tracker.progress.map((update) => update.body)).toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
