@@ -16,6 +16,7 @@ import uuid
 root = pathlib.Path("/state")
 shutil.copytree("/input", root)
 root.chmod(0o755)
+permanent = (root / "failure-case").read_text() == "permanent"
 assert (root / "daemon" / "identity" / "state.json").is_file()
 for directory, uid, gid, mode in (("server", 1004, 1004, 0o700), ("daemon", 1001, 1001, 0o700), ("runtime", 1001, 1001, 0o700), ("repositories", 1001, 1001, 0o700), ("origin.git", 1001, 1001, 0o700), ("spool", 1001, 1002, 0o2750), ("agent", 1002, 1002, 0o700), ("results", 0, 1003, 0o750), ("receipts", 0, 0, 0o700)):
     target = root / directory
@@ -105,7 +106,7 @@ try:
     assert expired["phase"] == "interrupted"
     assert expired["executionId"] in stopped
     assert workers[expired["executionId"]].poll() is not None
-    for execution_id in started[:2]:
+    for execution_id in started[1:2] if permanent else started[:2]:
         assert workers[execution_id].returncode in (0, -signal.SIGKILL)
         calls = json.loads((root / "agent" / (execution_id + "-agent.json")).read_text())
         assert "session/prompt" in calls["methods"]
@@ -117,16 +118,19 @@ try:
     events = db.execute("SELECT payload FROM runner_event ORDER BY rowid").fetchall()
     answers = db.execute("SELECT answer FROM runner_question_answer ORDER BY rowid").fetchall()
     db.close()
-    assert len(rows) == 2
+    assert len(rows) == (1 if permanent else 2)
     results = [json.loads(row[0]) for row in rows]
-    assert results[0]["role"] == "implementer" and results[0]["candidateSha"]
-    assert results[1]["role"] == "reviewer" and results[1]["reviewText"] == "[]" and "candidateSha" not in results[1]
+    if not permanent:
+        assert results[0]["role"] == "implementer" and results[0]["candidateSha"]
+    review = results[-1]
+    assert review["role"] == "reviewer" and review["reviewText"] == "[]" and "candidateSha" not in review
     kinds = [json.loads(row[0])["type"] for row in events]
-    assert kinds.count("question") == kinds.count("artifact") == 2
-    assert len(answers) == 4
-    branch = subprocess.run(["/usr/bin/git", "-c", "safe.directory=*", "--git-dir", str(root / "origin.git"), "show-ref"], check=True, capture_output=True, text=True).stdout
-    assert results[0]["candidateSha"] in branch and "refs/heads/paws/" in branch
-    directory = root / "results" / started[0]
+    assert kinds.count("question") == kinds.count("artifact") == (1 if permanent else 2)
+    assert len(answers) == (2 if permanent else 4)
+    branch = subprocess.run(["/usr/bin/git", "-c", "safe.directory=*", "--git-dir", str(root / "origin.git"), "show-ref"], check=not permanent, capture_output=True, text=True).stdout
+    if not permanent:
+        assert results[0]["candidateSha"] in branch and "refs/heads/paws/" in branch
+    directory = root / "results" / started[1 if permanent else 0]
     valid = next(directory.glob("artifact-*.bytes"))
     rejected = []
     def invalid_file(kind):
@@ -150,11 +154,16 @@ try:
     for kind in ("symlink", "hardlink", "owner", "group", "mode", "size"):
         invalid_file(kind)
     rejected += ["artifact-invalid.bytes", "artifact-../../server/server.key.bytes"]
-    (root / "reader-cases.json").write_text(json.dumps({"executionId": started[0], "valid": valid.name, "rejected": rejected}))
+    (root / "reader-cases.json").write_text(json.dumps({"executionId": started[1 if permanent else 0], "valid": valid.name, "rejected": rejected}))
     reader = actor("reader", 1001)
     assert reader.wait(timeout=5) == 0
-    print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedWorkCommands": 4, "mTlsResults": 2, "questionsAnswered": 2, "artifactsUploaded": 2, "canonicalCandidatePublished": True, "lostReceiptsRetriedWithoutDuplicates": True, "protectedArtifactReaderRejections": len(rejected), "readOnlyReview": True, "hungNetworkLeaseStoppedWorker": True, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": 4, "relaunches": 0}))
+    print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedWorkCommands": 4, "mTlsResults": len(results), "questionsAnswered": len(results), "artifactsUploaded": len(results), "canonicalCandidatePublished": not permanent, "failureCase": (root / "failure-case").read_text(), "transientPreparationAndPublicationRetried": (root / "failure-case").read_text() == "all", "permanentClientErrorReleasesSlot": permanent, "lostReceiptsRetriedWithoutDuplicates": True, "protectedArtifactReaderRejections": len(rejected), "readOnlyReview": True, "hungNetworkLeaseStoppedWorker": True, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": 4, "relaunches": 0}))
 finally:
+    journal_path = root / "runtime" / "executions.db"
+    if journal_path.exists():
+        journal = sqlite3.connect(journal_path)
+        print("FINAL_PHASES " + json.dumps(journal.execute("SELECT phase FROM execution ORDER BY rowid").fetchall()), file=sys.stderr)
+        journal.close()
     print(json.dumps({"started": started, "stopped": stopped, "results": [str(p) for p in (root / "results").rglob("*")]}), file=sys.stderr)
     for event_path in (root / "results").glob("*/events.jsonl"):
         print(event_path.read_text()[-12000:], file=sys.stderr)

@@ -8,6 +8,7 @@ const repository = resolve(import.meta.dir, "../..");
 const root = mkdtempSync(join(tmpdir(), "paws-run-review-runtime-"));
 const input = join(root, "input");
 mkdirSync(input, { mode: 0o700 });
+writeFileSync(join(input, "failure-case"), process.env.PAWS_RUNTIME_PROOF_FAILURE ?? "all");
 const env = {
   PATH: "/usr/bin:/bin",
   HOME: root,

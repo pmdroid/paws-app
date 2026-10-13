@@ -14,7 +14,7 @@ import {
 } from "../../src/db";
 import { createFakeGitHub } from "../../src/github";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
-import { openRunnerDaemon } from "../../src/runner-daemon";
+import { RunnerRequestError, openRunnerDaemon } from "../../src/runner-daemon";
 import {
   createRunnerBrokerClient,
   readRunnerJob,
@@ -342,11 +342,38 @@ if (mode === "prepare") {
     release = resolve;
   });
   const lost = { event: false, artifact: false, result: false };
+  const failureCase = readFileSync(join(root, "failure-case"), "utf8");
+  const failed = { grant: false, credential: false, push: false };
   const runtime = await openRunnerRuntime({
     root: join(root, "runtime"),
     daemon: {
       ...daemon,
+      async issueRunGrant(...input) {
+        const value = await daemon.issueRunGrant(...input);
+        if (["all", "grant"].includes(failureCase) && !failed.grant) {
+          failed.grant = true;
+          console.error("Injected real grant receipt loss");
+          throw new RunnerRequestError(503);
+        }
+        return value;
+      },
+      async repositoryCredential(...input) {
+        const value = await daemon.repositoryCredential(...input);
+        if (
+          ["all", "credential"].includes(failureCase) &&
+          input[2] === "write" &&
+          !failed.credential
+        ) {
+          failed.credential = true;
+          console.error("Injected real write credential receipt loss");
+          throw new RunnerRequestError(503);
+        }
+        return value;
+      },
       async sendEvent(input, token) {
+        if (failureCase === "permanent" && input.runId === config.commands[0]!.runId) {
+          throw new RunnerRequestError(404);
+        }
         const receipt = await daemon.sendEvent(input, token);
         if (!lost.event) {
           lost.event = true;
@@ -404,6 +431,11 @@ if (mode === "prepare") {
       else {
         assert.match(input.refspec!, /^[a-f0-9]{40}:refs\/heads\/paws\//);
         git(["push", join(root, "origin.git"), input.refspec!], input.cwd);
+        if (["all", "push"].includes(failureCase) && !failed.push) {
+          failed.push = true;
+          console.error("Injected real candidate push receipt loss");
+          throw new Error("Fixture Git connection lost after push");
+        }
       }
     },
   });
@@ -451,7 +483,12 @@ if (mode === "prepare") {
     .all()
     .map((row) => row.phase);
   journal.close();
-  assert.deepEqual(phases, ["complete", "complete", "interrupted", "interrupted"]);
+  assert.deepEqual(phases, [
+    failureCase === "permanent" ? "interrupted" : "complete",
+    "complete",
+    "interrupted",
+    "interrupted",
+  ]);
   console.log(JSON.stringify({ phases, recovered: true }));
 }
 function readable(path: string) {

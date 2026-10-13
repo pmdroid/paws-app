@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { runGitHubGit } from "../github";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
@@ -22,7 +23,13 @@ async function remote<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) throw error;
+    if (
+      error instanceof RunnerRequestError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      ![408, 429].includes(error.status)
+    )
+      throw error;
     throw new RemoteFailure("Runner control plane is unavailable");
   }
 }
@@ -139,17 +146,15 @@ export async function openRunnerRuntime(options: {
   const repositories = createRunnerRepositories({
     root: options.repositoryRoot,
     home: options.home,
-    networkGit: options.networkGit,
+    networkGit: (input) => remote(() => (options.networkGit ?? runGitHubGit)(input)),
     async credential(command, access) {
       const entry = active;
       if (!entry || entry.execution.command.id !== command.id)
         throw new Error("Runner command is not active");
       check(entry);
-      const credential = await options.daemon.repositoryCredential(
-        command.runId,
-        command.generation,
-        access,
-        await grant(entry),
+      const token = await grant(entry);
+      const credential = await remote(() =>
+        options.daemon.repositoryCredential(command.runId, command.generation, access, token),
       );
       check(entry);
       if (access === "write" && credential.branch !== entry.publicationBranch)
@@ -223,12 +228,20 @@ export async function openRunnerRuntime(options: {
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
       journal.phase(entry.execution.id, "running");
-    } catch {
-      await interrupt(entry);
+      entry.execution.phase = "running";
+    } catch (error) {
+      if (!(error instanceof RemoteFailure)) await interrupt(entry);
       report();
     } finally {
       if (bundle) rmSync(bundle, { force: true });
     }
+  }
+  function prepare(entry: Active) {
+    entry.task = launch(entry)
+      .catch(report)
+      .finally(() => {
+        entry.task = undefined;
+      });
   }
   async function deliver(entry: Active) {
     check(entry);
@@ -350,11 +363,14 @@ export async function openRunnerRuntime(options: {
         result.errorMessage
       )
         throw new Error("Unsafe runner candidate result");
-      const credential = await options.daemon.repositoryCredential(
-        entry.execution.command.runId,
-        entry.execution.command.generation,
-        "write",
-        await grant(entry),
+      const token = await grant(entry);
+      const credential = await remote(() =>
+        options.daemon.repositoryCredential(
+          entry.execution.command.runId,
+          entry.execution.command.generation,
+          "write",
+          token,
+        ),
       );
       check(entry);
       if (!credential.branch) throw new Error("Runner publication branch is missing");
@@ -405,8 +421,9 @@ export async function openRunnerRuntime(options: {
         await entry.stopped;
         await entry.task;
         if (active === entry) active = undefined;
-      } else if (entry.task) {
-        if (entry.execution.phase === "preparing") return;
+      } else if (entry.execution.phase === "preparing") {
+        if (!entry.task) prepare(entry);
+        return;
       }
     }
     if (!active) {
@@ -426,11 +443,7 @@ export async function openRunnerRuntime(options: {
         }
         const entry: Active = { execution, abort: new AbortController(), deadline };
         active = entry;
-        entry.task = launch(entry)
-          .then(() => {
-            entry.execution.phase = entry.abort.signal.aborted ? "interrupted" : "running";
-          })
-          .catch(report);
+        prepare(entry);
         await options.daemon.acknowledgeCommand(command.id).catch(report);
         return;
       }
