@@ -52,6 +52,7 @@ const MODULES = [
   "runner-journal",
   "runner-coordinator",
   "runner-transcripts",
+  "runner-transcript-config",
   "runner-artifacts",
   "runner-closeout",
 ] as const;
@@ -119,6 +120,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   workspace: ["db", "linear", "slack"],
   "runner-identity": ["credentials"],
   "runner-repository-access": ["github", "runner-work"],
+  "runner-transcript-config": ["credentials", "runner-transcripts"],
   "runner-transcripts": ["db", "runner-work"],
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
