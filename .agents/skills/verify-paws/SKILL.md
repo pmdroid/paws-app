@@ -329,3 +329,5 @@ Run `bun test test/runner-work.test.ts test/runner-session-helpers.test.ts test/
 The runner-work probe also advances the clock past an unacknowledged cancellation deadline. Cancellation must reject and both replacement work and helpers must remain blocked until the persisted teardown acknowledgement.
 
 After an expired cancellation, the runner-work probe retries with a new signed command. The actual acknowledgement covers earlier teardown requests for the same runner, run and generation. The earlier request retains its null acknowledgement, and both repository work and helpers can resume.
+
+Scheduler proof also exercises a newly introduced blocker in the same epic and Linear session after the verified item enters the merge queue. It proves live claimed merge/start jobs and active or provisioning runs retain capacity and overlapping path locks, then claims the blocker after the merge job joins.

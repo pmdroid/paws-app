@@ -121,8 +121,13 @@ export function claimJobSql(queueCount: number): string {
   const sameItem = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
     AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
     AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId})`;
+  const holdsExecution = `(other.state != 'merge_queue'
+    OR EXISTS (SELECT 1 FROM run live WHERE live.item_id=other.id AND live.status IN ('active','provisioning'))
+    OR EXISTS (SELECT 1 FROM job held WHERE held.status='running'
+      AND (held.locked_until IS NULL OR held.locked_until>?) AND ${heldExclusive}
+      AND json_extract(held.payload,'$.itemId')=other.id))`;
   const unreserved = `EXISTS (SELECT 1 FROM work_item other WHERE other.state IN (${IN_FLIGHT_SQL})
-      AND other.id != ${itemId} AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = other.id))
+      AND other.id != ${itemId} AND ${holdsExecution} AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = other.id))
     OR EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
       AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
       AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = json_extract(held.payload,'$.itemId')))`;
@@ -220,7 +225,7 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const binds: (string | number)[] = [workerId, now + leaseMs, now];
   if (queues !== undefined) binds.push(...queues);
   // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
-  binds.push(now, now, now, now, now);
+  binds.push(now, now, now, now, now, now);
   const row = db.query<JobRow, Array<string | number>>(sql).get(...binds);
   return row === null ? null : mapJob(row);
 }
