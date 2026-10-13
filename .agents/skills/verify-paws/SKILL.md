@@ -155,6 +155,8 @@ Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initializ
 
 Run `bun test test/runner-control-startup.test.ts` for production `startPaws` monitoring enabled by `PAWS_RUNNER_HOST`, with the existing execution path preserved. Five owned processes prove default-disabled behavior, explicit protected authority initialization, invalid hostname and missing identity rejection, actual HTTPS session/Origin/CSRF checks, administrator pairing and health requests, mTLS heartbeat/renewal/revocation, and joined readiness and listener shutdown. Linear membership responses and agent health results are scripted; TLS, subprocesses, SQLite and production routes are real. The same probe runs through `check` and `audit`.
 
+For normal remote startup, run `bun --no-env-file test test/runner-control-startup.test.ts test/runner-transcript-config.test.ts test/agent-settings-api.test.ts`. The disposable normal Paws process verifies HTTPS pairing, workspace permissions, mutual-TLS health, renewal and revocation, explicit execution-mode validation, protected remote prerequisites, and agent settings probes dispatched to the runner. A local ACP launch sentinel must remain untouched when the remote health result supplies the advertised models. Preserve the 20 native observations and both listener shutdown checks.
+
 Run the daemon, work and result probes together to verify their published modules coexist in one checkout:
 
 ```sh

@@ -1,5 +1,6 @@
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -87,6 +88,7 @@ import {
   handleLinearAdministration,
   refreshLinearNotificationContext,
   type Orchestrator,
+  type OrchestratorOptions,
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
@@ -111,6 +113,11 @@ import {
   loadRunnerTranscriptObjects,
   runRunnerTranscriptStorageCli,
 } from "./runner-transcript-config";
+import {
+  createRemoteAgentRunner,
+  createRemoteSessionAgentRunner,
+  fetchRunnerCandidate,
+} from "./runner-backend";
 
 export type PawsProcess = {
   env: PawsEnv;
@@ -136,16 +143,20 @@ const LOOPBACK = "127.0.0.1";
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
   const envSource = source ?? process.env;
+  const execution = envSource.PAWS_EXECUTION ?? "local";
+  if (execution !== "local" && execution !== "remote")
+    throw new Error("PAWS_EXECUTION must be local or remote.");
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
   const transcriptObjects =
     options?.runnerTranscriptObjects ??
-    (envSource.PAWS_EXECUTION === "remote"
-      ? loadRunnerTranscriptObjects(runtime.env.home)
-      : undefined);
+    (execution === "remote" ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
+  const repositoryAccess = options?.runnerRepositoryAccess ?? runnerRepositoryAccess(runtime);
+  if (execution === "remote" && (runnerConfig === null || repositoryAccess === undefined))
+    throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
   if (runnerConfig !== null && (!publicDashboard || tls === undefined))
     throw new Error("Runner control requires the public HTTPS dashboard.");
   if (publicDashboard) {
@@ -316,7 +327,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
           tls: tls!,
-          repositoryAccess: options?.runnerRepositoryAccess ?? runnerRepositoryAccess(runtime),
+          repositoryAccess,
           transcriptObjects,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
@@ -329,12 +340,59 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
+  const remote =
+    execution === "remote"
+      ? runnerReady.then((coordinator) => {
+          if (!coordinator?.transcripts)
+            throw new Error("Remote transcript storage is unavailable.");
+          return {
+            agents: createRemoteAgentRunner({
+              db,
+              ...coordinator,
+              fetchCandidate: fetchRunnerCandidate,
+            }),
+            sessions: createRemoteSessionAgentRunner({ db, helpers: coordinator.helpers }),
+          };
+        })
+      : undefined;
+  void remote?.catch(() => {});
+  const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
+    ? {
+        agentForItem: (itemId) => async (input) => {
+          input.signal?.throwIfAborted();
+          await ready;
+          const backend = await remote;
+          input.signal?.throwIfAborted();
+          return backend.agents.forItem(itemId)(input);
+        },
+        agentForSession: (sessionId, purpose) => async (input) => {
+          input.signal?.throwIfAborted();
+          await ready;
+          const backend = await remote;
+          input.signal?.throwIfAborted();
+          return backend.sessions.forSession(sessionId, purpose)(input);
+        },
+        closeoutForItem: (itemId, signal) => {
+          let commands: ReturnType<Awaited<typeof remote>["agents"]["closeoutForItem"]>;
+          return {
+            async runLogged(request) {
+              signal?.throwIfAborted();
+              await ready;
+              const backend = await remote;
+              signal?.throwIfAborted();
+              commands ??= backend.agents.closeoutForItem(itemId, signal);
+              return commands.runLogged(request);
+            },
+          };
+        },
+      }
+    : undefined;
   async function stopRunner() {
     runnerStopping = true;
     await runnerReady.catch(() => {});
     await runner?.stop();
   }
-  const ready = Promise.all([workspace?.access, runnerReady]).then(() => {
+  const ready = Promise.all([workspace?.access, runnerReady, remote]).then(() => {
     if (runnerStopping) throw new Error("Paws is stopping.");
   });
   void ready.catch(() => {});
@@ -383,13 +441,58 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
-        probe: (profile) =>
-          probeAgentProfile({
-            profile,
-            pawsRoot: paths.home,
-            worktree: paths.home,
-            signal: abort.signal,
-          }),
+        probe: async (profile, request) => {
+          if (execution === "local")
+            return probeAgentProfile({
+              profile,
+              pawsRoot: paths.home,
+              worktree: paths.home,
+              signal: abort.signal,
+            });
+          await ready;
+          const access = await workspace!.access;
+          const principal = (await access.authenticate(request))?.principal;
+          if (!principal || !runner) throw new Error("Runner workspace access is unavailable.");
+          const selected = db
+            .query<{ id: string }, [string, number]>(
+              "SELECT id FROM runner WHERE workspace_id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>? ORDER BY last_seen_at DESC,id LIMIT 1",
+            )
+            .get(principal.workspaceId, Date.now() - 60_000);
+          if (!selected) throw new Error("No paired runner is ready.");
+          const command = runner.health.request(principal, selected.id, {
+            type: "probe",
+            profile: { ...profile, model: profile.model ?? null },
+          });
+          while (Date.now() < command.expiresAt) {
+            abort.signal.throwIfAborted();
+            request.signal.throwIfAborted();
+            const result = runner.health.read(selected.id, command.commandId);
+            if (result) {
+              if (!(await access.authenticate(request)))
+                throw new Error("Runner workspace access changed.");
+              const ok =
+                result.stopReason === "end_turn" &&
+                result.agentExited &&
+                !result.timedOut &&
+                !result.cancelled &&
+                !result.authRequired &&
+                !result.errorMessage;
+              return {
+                ok,
+                agent: profile.agent,
+                model: profile.model,
+                models: result.models ?? [],
+                effort: result.effort,
+                efforts: result.efforts,
+                message: ok
+                  ? "Agent connection is ready."
+                  : "Check the agent login on your runner.",
+              };
+            }
+            await delay(250, undefined, { signal: abort.signal });
+          }
+          throw new Error("Runner agent check timed out.");
+        },
       },
     });
   } catch (error) {
@@ -419,6 +522,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         pawsRoot: paths.home,
         tracker,
         linearTaskModes: true,
+        remoteExecution,
         linearAccess: linearTaskAccess ?? undefined,
         ...(workspace
           ? {

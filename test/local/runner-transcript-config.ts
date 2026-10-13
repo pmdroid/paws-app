@@ -275,21 +275,24 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   } finally {
     await local.stop();
   }
-  const injected = startPaws(
-    {
-      PAWS_HOME: join(root, "startup-injected"),
-      PAWS_PORT: "0",
-      PAWS_NO_TUNNEL: "1",
-      PAWS_EXECUTION: "remote",
-    },
-    { runnerTranscriptObjects: createFakeRunnerTranscriptObjects() },
+  assert.throws(
+    () =>
+      startPaws(
+        {
+          PAWS_HOME: join(root, "startup-injected"),
+          PAWS_PORT: "0",
+          PAWS_NO_TUNNEL: "1",
+          PAWS_EXECUTION: "remote",
+        },
+        { runnerTranscriptObjects: createFakeRunnerTranscriptObjects() },
+      ),
+    /Remote execution requires runner HTTPS/,
   );
-  await injected.ready;
-  await injected.stop();
+  assert(!existsSync(join(root, "startup-injected")));
   observe(
-    "explicit remote storage fails before opening files; local default and explicit fake injection remain usable",
+    "explicit remote storage and runner prerequisites fail before opening files; local startup remains usable",
     true,
-    { missingHomeUnchanged: true, localHealth: 200, fakeReady: true },
+    { missingHomeUnchanged: true, localHealth: 200, injectedRemotePrerequisitesRejected: true },
   );
   const objects = new Map<string, Uint8Array>();
   const nativeFile = S3Client.prototype.file;
