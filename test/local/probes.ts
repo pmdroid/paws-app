@@ -1,3 +1,18 @@
+import { probeRunnerInputsClock } from "./runner-inputs-clock";
+import { probeSchedulerRuntime } from "./scheduler-runtime";
+import { probeScheduler } from "./scheduler";
+import { probeEpicReconciliation } from "./intake-reconciliation";
+import { probePublicationReadiness } from "./publication-readiness";
+import { probeExecutionLifecycle } from "./execution-lifecycle";
+import { probeExecutionChanges } from "./execution-changes";
+import { probePublicationStop } from "./publication-stop";
+import { probeMergeDependencyYield } from "./merge-dependency-yield";
+import { probeRunnerPlacement } from "./runner-placement";
+import { probeRunnerPolicyBrowser } from "./runner-policy-browser";
+import { probeExecutionControls } from "./execution-controls";
+import { probeExecutionStopStates } from "./execution-stop-states";
+import { probeLinearActivityBudget } from "./linear-activity-budget";
+import { probeLinearProjectMembers } from "./linear-project-members";
 import { probeRunnerVerifierPairing } from "./runner-verifier-pairing";
 import { probeRunnerCloseout } from "./runner-closeout";
 import { probeRunnerJournal } from "./runner-journal";
@@ -59,6 +74,27 @@ export async function probeBoundaries(
   root: string,
   observe: (name: string, passed: boolean, observed: unknown) => void,
 ) {
+  await probeScheduler(join(root, "scheduler"), observe);
+  await probeSchedulerRuntime(join(root, "scheduler-runtime"), observe);
+  for (const result of (await probeRunnerInputsClock(join(root, "runner-inputs-clock")))
+    .observations)
+    observe(result.name, result.passed, result.observed);
+  for (const result of await probeEpicReconciliation(join(root, "epic-reconciliation")))
+    observe(result.name, result.passed, result.observed);
+  for (const result of await probePublicationReadiness(join(root, "publication-readiness")))
+    observe(result.name, result.passed, result.observed);
+  await probeExecutionLifecycle(join(root, "execution-lifecycle"), observe);
+  await probeExecutionChanges(join(root, "execution-changes"), observe);
+  await probePublicationStop(join(root, "publication-stop"), observe);
+  await probeMergeDependencyYield(join(root, "merge-dependency-yield"), observe);
+  await probeRunnerPlacement(join(root, "runner-placement"), observe);
+  await probeRunnerPolicyBrowser(join(root, "runner-policy-browser"), observe);
+  for (const result of await probeExecutionControls(join(root, "execution-controls")))
+    observe(result.name, result.passed, result.observed);
+  for (const result of await probeExecutionStopStates(join(root, "execution-stop-states")))
+    observe(result.name, result.passed, result.observed);
+  await probeLinearActivityBudget(join(root, "linear-activity-budget"), observe);
+  await probeLinearProjectMembers(observe);
   await probeRunnerOrchestration(join(root, "runner-orchestration"), observe);
   await probeHostAcp(root, observe);
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);

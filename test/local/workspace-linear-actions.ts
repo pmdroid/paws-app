@@ -406,6 +406,61 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         variables: { id?: string };
       };
       reads.push(query.split(" {")[0]!);
+      const connection = (nodes: unknown[]) => ({
+        nodes,
+        pageInfo: { hasNextPage: false, endCursor: null },
+      });
+      const metadata = { team: { id: "team" }, project: null, assignee: null, priority: 0 };
+      if (query.includes("IssueSnapshot")) {
+        const epic = db
+          .query<{ id: string; identifier: string; title: string }, [string]>(
+            "SELECT id,linear_identifier AS identifier,title FROM epic WHERE linear_issue_id=?",
+          )
+          .get(variables.id!);
+        const children = epic
+          ? db
+              .query<
+                { id: string; identifier: string; title: string; description: string | null },
+                [string]
+              >(
+                "SELECT linear_issue_id AS id,linear_identifier AS identifier,title,brief AS description FROM work_item WHERE epic_id=? ORDER BY position",
+              )
+              .all(epic.id)
+          : [];
+        return Response.json({
+          data: {
+            issue: {
+              id: variables.id,
+              identifier: epic?.identifier ?? variables.id,
+              title: epic?.title ?? "Export rows",
+              description: null,
+              ...metadata,
+              children: connection(children.map((child) => ({ ...child, ...metadata }))),
+            },
+          },
+        });
+      }
+      if (query.includes("IssueRelations"))
+        return Response.json({
+          data: {
+            issue: {
+              id: variables.id,
+              relations: connection([]),
+              inverseRelations: connection([]),
+            },
+          },
+        });
+      if (query.includes("IssueOwnership"))
+        return Response.json({
+          data: {
+            issue: {
+              id: variables.id,
+              ...metadata,
+              state: { type: "started" },
+              delegate: { id: "app" },
+            },
+          },
+        });
       const viewer = { id: "app", app: true, organization: { id: "org", name: "Workspace" } };
       if (query.includes("PawsBrowserInstallation")) return Response.json({ data: { viewer } });
       if (query.includes("PawsBrowserMembership"))
@@ -439,10 +494,6 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       if (query.includes("PawsTeamAccess"))
         return Response.json({ data: { team: { id: "team" } } });
       if (query.includes("IntakePoll")) {
-        const connection = (nodes: unknown[]) => ({
-          nodes,
-          pageInfo: { hasNextPage: false, endCursor: null },
-        });
         const activities = polled;
         polled = [];
         return Response.json({

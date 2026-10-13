@@ -28,6 +28,10 @@ import {
   assertLinearQueue,
   enqueueCommand,
   enqueueJob,
+  enqueueJobOnce,
+  getLinearSession,
+  getWorkItem,
+  workspaceLinearMember,
   isLinearAppRevoked,
   getLinearSessionAccess,
   getTaskLinearActor,
@@ -92,6 +96,15 @@ import {
   type RepositoryBinding,
   type HostGitHubAuth,
 } from "./loop";
+import {
+  createEpicReconciler,
+  createPublicationReadiness,
+  hasPendingEpicChanges,
+  canAdvanceItem,
+} from "./intake";
+import { createExecutionControls } from "./execution-controls";
+import { registerScheduler, saveSchedulingContext } from "./scheduler";
+import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
@@ -183,6 +196,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
+  let reconciler: ReturnType<typeof createEpicReconciler> | null = null;
+  let publication: ReturnType<typeof createPublicationReadiness> | null = null;
+  let dispatch: (() => readonly string[]) | null = null;
+  let legacyReadyItemIds: readonly string[] = [];
+  let executionControls: ReturnType<typeof createExecutionControls> | null = null;
+  const managedEpicReady = (epicId: string): boolean =>
+    !hasPendingEpicChanges(db, epicId) &&
+    db.query("SELECT 1 FROM epic_dependency_snapshot WHERE epic_id=?").get(epicId) !== null;
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -196,7 +217,25 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
-    return orchestrator.onLinearEvent(event);
+    const accepted = await orchestrator.onLinearEvent(event);
+    if (accepted !== false && reconciler && event.sessionId) {
+      const session = getLinearSession(db, event.sessionId);
+      if (session?.epicId && session.organizationId) {
+        const workspace = db
+          .query<{ id: string }, [string]>(
+            "SELECT id FROM workspace WHERE linear_organization_id=?",
+          )
+          .get(session.organizationId);
+        if (workspace)
+          await reconciler.reconcile({
+            epicId: session.epicId,
+            workspaceId: workspace.id,
+            signal: abort.signal,
+          });
+        orchestrator.reconcileExecution();
+      }
+    }
+    return accepted;
   };
   const submit = (command: LinearCommand): void => {
     if (orchestrator === null) {
@@ -226,6 +265,23 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               appUserId: runtime.linearViewerId,
             }),
           beforeEvent: async (event, request) => {
+            const issueEvent = acceptedIssueChange(event);
+            if (issueEvent && reconciler) {
+              const targets = await reconciler.issueChanged(issueEvent);
+              for (const target of targets) {
+                const actor = issueEvent.actorId
+                  ? workspaceLinearMember(db, target.workspaceId, issueEvent.actorId)
+                  : null;
+                orchestrator?.reconcileExecution(
+                  actor?.active &&
+                    actor.role !== "observer" &&
+                    issueEvent.actorId !== runtime.linearViewerId
+                    ? { humanEpicId: target.epicId }
+                    : {},
+                );
+              }
+              return false;
+            }
             if (
               await handleLinearAdministration(db, event, {
                 oauthClientId: runtime.linearClientId,
@@ -240,7 +296,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 },
                 reconcile: async (notification) => {
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  if (reconciler)
+                    await reconciler.issueChanged({
+                      issueId: notification.issueId,
+                      organizationId: notification.organizationId,
+                    });
                   await linearTaskAccess.reconcile(notification.issueId);
+                  orchestrator?.reconcileExecution();
                   await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
                 },
                 notify: (command) => {
@@ -340,24 +402,39 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         });
   if (runnerConfig !== null)
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
+  const placement =
+    linear?.tracker && linear.issueLifecycle
+      ? createRunnerPlacement({ db, tracker: linear.tracker, lifecycle: linear.issueLifecycle })
+      : undefined;
+  const placementBrowser = createRunnerPlacementBrowser({ db });
   const remote =
     execution === "remote"
       ? runnerReady.then((coordinator) => {
           if (!coordinator?.transcripts)
             throw new Error("Remote transcript storage is unavailable.");
+          if (!placement) throw new Error("Remote execution requires current Linear ownership.");
           return {
             agents: createRemoteAgentRunner({
               db,
               ...coordinator,
               fetchCandidate: fetchRunnerCandidate,
+              placement,
             }),
-            sessions: createRemoteSessionAgentRunner({ db, helpers: coordinator.helpers }),
+            sessions: createRemoteSessionAgentRunner({
+              db,
+              helpers: coordinator.helpers,
+              placement,
+            }),
           };
         })
       : undefined;
   void remote?.catch(() => {});
   const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
     ? {
+        cancelItem: async (itemId) => {
+          const backend = await remote;
+          await backend.agents.cancelItem(itemId);
+        },
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
@@ -400,6 +477,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   try {
     server = startServer({
       hostname: env.host,
+      executionControls: async (...args) =>
+        executionControls?.handle(...args) ??
+        Response.json({ error: "Execution controls are starting." }, { status: 503 }),
       ...(tls ? { tls } : {}),
       ...(workspace
         ? {
@@ -418,12 +498,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 : Promise.resolve(
                     Response.json({ error: "Runner control is starting." }, { status: 503 }),
                   ),
-            runnerControl: (request: Request, principal: WorkspacePrincipal) =>
-              runner
-                ? runner.browser(request, principal)
-                : Promise.resolve(
-                    Response.json({ error: "Runner control is starting." }, { status: 503 }),
-                  ),
+            runnerControl: async (request: Request, principal: WorkspacePrincipal) =>
+              (await placementBrowser(request, principal)) ??
+              (runner
+                ? await runner.browser(request, principal)
+                : Response.json({ error: "Runner control is starting." }, { status: 503 })),
           }),
       port: env.port,
       linearWebhookSecret: env.linearWebhookSecret,
@@ -514,6 +593,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const loops = startLoops({
     db,
     signal: abort.signal,
+    concurrency: workspace && linear?.tracker && linear.issueLifecycle ? 4 : 1,
     prepare(created) {
       const attached = attachOrchestrator({
         db,
@@ -524,6 +604,40 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearTaskModes: true,
         remoteExecution,
         linearAccess: linearTaskAccess ?? undefined,
+        ...(workspace && linear?.tracker && linear.issueLifecycle
+          ? {
+              canDispatchEpic: managedEpicReady,
+              canAdvanceItem: (itemId: string) => {
+                const item = getWorkItem(db, itemId);
+                const sessionId =
+                  item?.sessionKey ?? (item ? linearSessionForEpic(db, item.epicId) : null);
+                const session = sessionId ? getLinearSession(db, sessionId) : null;
+                const currentWorkspace = session?.organizationId
+                  ? db
+                      .query<{ id: string }, [string]>(
+                        "SELECT id FROM workspace WHERE linear_organization_id=?",
+                      )
+                      .get(session.organizationId)
+                  : null;
+                return (
+                  item !== null &&
+                  currentWorkspace !== null &&
+                  canAdvanceItem(db, {
+                    itemId,
+                    epicId: item.epicId,
+                    workspaceId: currentWorkspace.id,
+                  })
+                );
+              },
+              dispatchReady: (input: { legacyReadyItemIds: readonly string[] }) => {
+                legacyReadyItemIds = input.legacyReadyItemIds;
+                dispatch?.();
+              },
+              publicationReady: (
+                ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
+              ) => publication?.publicationReady(...args) ?? Promise.resolve(false),
+            }
+          : {}),
         ...(workspace
           ? {
               authorizeLinearEvent: async (event) =>
@@ -603,6 +717,86 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
       });
       orchestrator = attached;
+      executionControls = createExecutionControls({
+        db,
+        bus: attached.bus,
+        getPort: () => attached,
+      });
+      if (workspace && linear?.tracker && linear.issueLifecycle) {
+        reconciler = createEpicReconciler({
+          db,
+          tracker: linear.tracker,
+          lifecycle: linear.issueLifecycle,
+          onChanges: (changes) => {
+            for (const { itemId, issue } of changes.issues)
+              saveSchedulingContext(db, {
+                itemId,
+                ...("projectId" in issue ? { projectId: issue.projectId } : {}),
+                priority: issue.priority,
+              });
+            attached.applyEpicChanges(changes);
+          },
+          afterChanges: (changes) => attached.finishEpicChanges(changes),
+        });
+        publication = createPublicationReadiness({ db, reconciler });
+        const enqueueMissingSnapshots = () => {
+          const targets = db
+            .query<
+              { epicId: string; workspaceId: string },
+              []
+            >(`SELECT e.id AS epicId,w.id AS workspaceId FROM epic e
+            JOIN linear_session_task t ON t.epic_id=e.id JOIN linear_session s ON s.session_id=t.session_id AND s.current_epic_id=e.id
+            JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
+            AND NOT EXISTS(SELECT 1 FROM epic_dependency_snapshot p WHERE p.epic_id=e.id)`)
+            .all();
+          for (const target of targets)
+            enqueueJobOnce(db, {
+              queue: "linear.epic.reconcile",
+              jobKey: `linear.epic.reconcile:${target.epicId}`,
+              payload: target,
+              now: Date.now(),
+            });
+        };
+        created.jobs.register("linear.epic.reconcile", async (job) => {
+          const target = job.payload as { epicId: string; workspaceId: string };
+          await reconciler?.reconcile({ ...target, signal: abort.signal });
+          attached.reconcileExecution();
+        });
+        dispatch = registerScheduler(
+          created.jobs,
+          () => {
+            enqueueMissingSnapshots();
+            return {
+              now: Date.now(),
+              concurrency: 2,
+              defaultRepository: repository,
+              legacyReadyItemIds,
+              canDispatchEpic: managedEpicReady,
+              handoffForItem: (itemId) => attached.dependencyHandoff(itemId),
+            };
+          },
+          () => attached.reconcileExecution(),
+        );
+        created.jobs.register("execution.reconcile", () => {
+          attached.reconcileExecution();
+        });
+        enqueueJobOnce(db, {
+          queue: "execution.reconcile",
+          jobKey: "execution.reconcile",
+          recurringEveryMs: 30_000,
+          now: Date.now(),
+        });
+        created.jobs.register("linear.epics.reconcile", async () => {
+          await reconciler?.sweep({ signal: abort.signal });
+          attached.reconcileExecution();
+        });
+        enqueueJobOnce(db, {
+          queue: "linear.epics.reconcile",
+          jobKey: "linear.epics.reconcile",
+          recurringEveryMs: 300_000,
+          now: Date.now(),
+        });
+      }
       if (channel === "agent-session") {
         created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
         enqueueJob(db, { queue: "github.auth.recover", priority: 0, now: Date.now() });
@@ -678,7 +872,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         host.stop();
         const linearStopped = running.stop();
         const serverStopped = server.stop(true);
+        const reconciliationStopped = reconciler?.close();
         await orchestrator?.shutdown();
+        await reconciliationStopped;
         await Promise.all([loops.stop(), linearStopped, serverStopped]);
         await workspace?.stop();
         await stopRunner();
@@ -1140,4 +1336,41 @@ async function logoutGitHubCommand(): Promise<number> {
     console.error(error instanceof Error ? error.message : "GitHub logout failed");
     return 1;
   }
+}
+
+function acceptedIssueChange(event: AcceptedLinearEvent): {
+  issueId: string;
+  organizationId: string;
+  parentIssueId?: string | null;
+  actorId: string | null;
+} | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(event.payload);
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>;
+  if (value["type"] !== "Issue" || typeof value["organizationId"] !== "string") return null;
+  const data = value["data"];
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const issue = data as Record<string, unknown>;
+  if (typeof issue["id"] !== "string" || !issue["id"].trim()) return null;
+  const actor = value["actor"];
+  const actorId =
+    actor &&
+    typeof actor === "object" &&
+    !Array.isArray(actor) &&
+    typeof (actor as Record<string, unknown>)["id"] === "string"
+      ? (actor as { id: string }).id
+      : null;
+  return {
+    issueId: issue["id"],
+    organizationId: value["organizationId"],
+    ...(typeof issue["parentId"] === "string" || issue["parentId"] === null
+      ? { parentIssueId: issue["parentId"] }
+      : {}),
+    actorId,
+  };
 }
