@@ -172,6 +172,27 @@ export async function probeRunnerRepositories(
     true,
     { baseSha, bundleMode: "0600", operation: calls[0]?.operation },
   );
+  const check: Extract<RunnerCommand, { type: "check" }> = {
+    id: randomUUID(),
+    type: "check",
+    runnerId: command.runnerId,
+    workspaceId: command.workspaceId,
+    issuedAt: now,
+    expiresAt: now + 60_000,
+    runId: command.runId,
+    itemId: command.itemId,
+    generation: 1,
+    repository: command.repository,
+    executionId: "01K00000000000000000000001",
+    verificationAttemptId: "01K00000000000000000000002",
+    candidateSha: baseSha,
+    argv: ["/usr/bin/true"],
+    cwd: ".",
+    timeoutMs: 10_000,
+  };
+  const checkSnapshot = await repositories.prepare(check);
+  assert((await invoke(["bundle", "list-heads", checkSnapshot.bundle])).startsWith(baseSha));
+  assert.equal(calls.at(-1)?.token, "fixture-read");
   writeFileSync(join(tree, "candidate.txt"), "change\n");
   await invoke(["-C", tree, "add", "."]);
   await invoke(["-C", tree, "commit", "-m", "candidate"]);
@@ -208,12 +229,16 @@ export async function probeRunnerRepositories(
     /does not match/,
   );
   await assert.rejects(repositories.publish(command, { ...candidate, branch: "main" }), /Invalid/);
-  await assert.rejects(repositories.publish({ ...command, type: "review" }, candidate), /Review/);
+  await assert.rejects(
+    repositories.publish({ ...command, type: "review" }, candidate),
+    /Only a run/,
+  );
+  await assert.rejects(repositories.publish(check, candidate), /Only a run/);
   assert.equal(calls.filter((call) => call.operation === "push").length, pushes);
   observe(
-    "mismatched candidate identity, protected branches and reviewer publication fail before push",
+    "mismatched candidates, protected branches, reviewers and checks fail before push",
     true,
-    { rejected: 3, pushes },
+    { rejected: 4, pushes, checkSnapshotExactCandidate: true },
   );
   const headerEnd = candidate.bundle.indexOf("\n\n");
   assert(headerEnd > 0);
