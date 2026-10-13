@@ -1,4 +1,6 @@
 import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { prepareRepositorySnapshot } from "../acp";
 import { runGitHubGit } from "../github";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -207,20 +209,65 @@ export async function openRunnerRuntime(options: {
   }
   async function launch(entry: Active) {
     let bundle: string | undefined;
+    let snapshotWorkspace: string | undefined;
     try {
       await grant(entry);
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
-      const prepared = await repositories.prepare(entry.execution.command, entry.abort.signal);
-      bundle = prepared.bundle;
+      const command = entry.execution.command;
+      let repositorySnapshot: string | undefined;
+      if (command.type === "task") {
+        if (command.repository) {
+          const repository = command.repository;
+          const env = {
+            PATH: "/usr/bin:/bin",
+            HOME: options.home,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_TERMINAL_PROMPT: "0",
+          };
+          const token = await grant(entry);
+          const credential = await remote(() =>
+            options.daemon.repositoryCredential(command.runId, command.generation, "read", token),
+          );
+          check(entry);
+          snapshotWorkspace = join(options.repositoryRoot, `task-${entry.execution.id}`);
+          const prepared = await prepareRepositorySnapshot({
+            ...repository,
+            workspace: snapshotWorkspace,
+            commit: repository.baseSha,
+            maxArchiveBytes: 536_870_912,
+            signal: entry.abort.signal,
+            env,
+            async networkGit(args) {
+              await remote(() =>
+                (options.networkGit ?? runGitHubGit)({
+                  operation: "clone",
+                  remoteUrl: repository.remoteUrl,
+                  token: credential.token,
+                  cwd: options.repositoryRoot,
+                  dest: args.at(-1)!,
+                  env,
+                  signal: entry.abort.signal,
+                }),
+              );
+              return "";
+            },
+          });
+          repositorySnapshot = prepared.path;
+        }
+      } else {
+        const prepared = await repositories.prepare(command, entry.abort.signal);
+        bundle = prepared.bundle;
+      }
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
       publishRunnerJob(
         options.spool,
         { executionId: entry.execution.id, command: entry.execution.command },
-        { repositoryBundle: bundle },
+        { repositoryBundle: bundle, repositorySnapshot },
       );
       check(entry);
       if (entry.execution.command.expiresAt <= now())
@@ -238,6 +285,10 @@ export async function openRunnerRuntime(options: {
       report();
     } finally {
       if (bundle) rmSync(bundle, { force: true });
+      if (snapshotWorkspace) {
+        rmSync(snapshotWorkspace, { recursive: true, force: true });
+        rmSync(`${snapshotWorkspace}.repository.json`, { force: true });
+      }
     }
   }
   function prepare(entry: Active) {
@@ -392,7 +443,10 @@ export async function openRunnerRuntime(options: {
     if (
       worker.executionId !== entry.execution.id ||
       worker.commandId !== entry.execution.command.id ||
-      worker.run.role !== (entry.execution.command.type === "review" ? "reviewer" : "implementer")
+      worker.run.role !==
+        (entry.execution.command.type === "review" ? "reviewer" : "implementer") ||
+      (entry.execution.command.type === "task" &&
+        (worker.candidateSha !== undefined || worker.reviewText !== undefined))
     )
       throw new Error("Runner result identity mismatch");
     const result: RunnerResult = RunnerResultSchema.parse({
@@ -404,7 +458,11 @@ export async function openRunnerRuntime(options: {
     });
     journal.phase(entry.execution.id, "publishing");
     entry.execution.phase = "publishing";
-    if (result.candidateSha && result.candidateSha !== entry.execution.command.repository.baseSha) {
+    if (
+      result.candidateSha &&
+      entry.execution.command.type !== "task" &&
+      result.candidateSha !== entry.execution.command.repository.baseSha
+    ) {
       if (
         entry.execution.command.type !== "run" ||
         result.stopReason !== "end_turn" ||
@@ -481,7 +539,8 @@ export async function openRunnerRuntime(options: {
     }
     if (!active) {
       for (const command of commands) {
-        if (command.type !== "run" && command.type !== "review") continue;
+        if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+          continue;
         if (command.expiresAt <= now()) {
           await options.daemon.acknowledgeCommand(command.id);
           continue;

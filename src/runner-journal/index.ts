@@ -10,7 +10,7 @@ import {
   type RunnerCommand,
 } from "../runner-protocol";
 
-export type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
+export type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 export type Execution = { id: string; command: WorkCommand; phase: string };
 const artifact = z.strictObject({
   type: z.literal("artifact"),
@@ -75,7 +75,7 @@ export function openExecutionJournal(root: string) {
       .all(Number(active))
       .map((row) => {
         const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-        if (command.type !== "run" && command.type !== "review")
+        if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           throw new Error("Invalid persisted work command");
         return { id: row.id, command, phase: row.phase };
       });
@@ -84,7 +84,7 @@ export function openExecutionJournal(root: string) {
     executions,
     admit(command: WorkCommand, now: number): Execution | null {
       const parsed = RunnerCommandSchema.parse(command);
-      if (parsed.type !== "run" && parsed.type !== "review")
+      if (parsed.type !== "run" && parsed.type !== "review" && parsed.type !== "task")
         throw new Error("Work command is required");
       const existing = db
         .query<{ payload: string }, [string]>("SELECT payload FROM execution WHERE command_id=?")

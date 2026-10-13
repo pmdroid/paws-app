@@ -182,3 +182,66 @@ test.skipIf(process.platform !== "linux")(
   },
   10_000,
 );
+
+test("remote task snapshots pin a historical commit under a clean Git environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-pinned-task-"));
+  const source = join(root, "source");
+  const workspace = join(root, "task");
+  try {
+    await git(["init", "-b", "main", source]);
+    writeFileSync(join(source, "source.txt"), "authorized source");
+    await git(["-C", source, "add", "."]);
+    await git([
+      "-C",
+      source,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "Authorized",
+    ]);
+    const commit = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+    writeFileSync(join(source, "source.txt"), "newer source");
+    await git([
+      "-C",
+      source,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-am",
+      "Newer",
+    ]);
+    const input = {
+      owner: "fixture",
+      repo: "repository",
+      remoteUrl: source,
+      workspace,
+      commit,
+      signal: new AbortController().signal,
+      env: {
+        PATH: "/usr/bin:/bin",
+        HOME: root,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+      },
+      maxArchiveBytes: 536_870_912,
+    };
+    const snapshot = await prepareRepositorySnapshot(input);
+    expect(snapshot.commit).toBe(commit);
+    expect(readFileSync(join(snapshot.path, "source.txt"), "utf8")).toBe("authorized source");
+    expect(existsSync(join(snapshot.path, ".git"))).toBe(false);
+    await expect(prepareRepositorySnapshot({ ...input, commit: "a".repeat(40) })).rejects.toThrow(
+      "ownership changed",
+    );
+    await expect(
+      prepareRepositorySnapshot({ ...input, workspace: join(root, "bounded"), maxArchiveBytes: 1 }),
+    ).rejects.toThrow("archive exceeds");
+    expect(existsSync(join(root, "bounded", "repository"))).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
