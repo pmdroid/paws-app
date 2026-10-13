@@ -1,3 +1,4 @@
+import { createGitHubAttributionLink } from "./github-attribution";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import {
@@ -37,6 +38,7 @@ export type WorkspaceAccessOptions = {
   fetch?: typeof fetch;
   now?: () => number;
   slackIdentities?: SlackIdentityReads | null;
+  githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
 };
 
@@ -67,7 +69,12 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     now,
   });
   const pending = new Map<string, Promise<void>>();
-  async function refresh(workspaceKey: string, userId: string, force = false): Promise<void> {
+  async function refresh(
+    workspaceKey: string,
+    userId: string,
+    force = false,
+    permitted = false,
+  ): Promise<void> {
     const member = workspaceMember(options.db, workspaceKey, userId);
     const workspace = getWorkspace(options.db, workspaceKey);
     if (
@@ -83,7 +90,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     let operation = pending.get(key);
     if (force && operation !== undefined) {
       await operation.catch(() => {});
-      return refresh(workspaceKey, userId, true);
+      return refresh(workspaceKey, userId, true, permitted);
     }
     if (operation === undefined) {
       operation = options.memberships
@@ -94,7 +101,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             identity.organizationId !== workspace.organizationId
           )
             throw new Error("Linear returned another member.");
-          syncWorkspaceMember(options.db, {
+          const applied = syncWorkspaceMember(options.db, {
             workspaceId: workspaceKey,
             userId,
             active: identity.active,
@@ -102,6 +109,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             teamIds: identity.teamIds,
             now: observedAt,
           });
+          if (permitted && (!applied || !identity.active || identity.guest))
+            throw new Error("Current permitted Linear membership is required for attribution.");
         });
       pending.set(key, operation);
     }
@@ -111,6 +120,16 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       if (pending.get(key) === operation) pending.delete(key);
     }
   }
+  const attribution = options.githubAttributionClient
+    ? createGitHubAttributionLink({
+        db: options.db,
+        origin,
+        client: options.githubAttributionClient,
+        refresh: (workspaceKey, userId) => refresh(workspaceKey, userId, true, true),
+        fetch: options.fetch,
+        now,
+      })
+    : null;
   async function refreshMemberships() {
     const workspace = workspaceForOrganization(options.db, options.installedOrganization.id);
     if (workspace === null) return;
@@ -128,6 +147,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   async function handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const identityResponse = await attribution?.handle(request);
+    if (identityResponse) return identityResponse;
     if (
       ![
         "/auth/linear",

@@ -23,3 +23,4 @@ export { createWorkspaceIdentityLinks } from "./identity-links";
 
 export { createWorkspaceAssignments } from "./assignments";
 export type { WorkspaceAssignments } from "./assignments";
+export { createGitHubAttributionLink } from "./github-attribution";

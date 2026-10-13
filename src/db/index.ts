@@ -284,3 +284,14 @@ export {
 export type { WorkspaceIdentityLink } from "./workspace-links";
 
 export { getRunnerVerifier } from "./runners";
+
+export {
+  requireAttributionSession,
+  beginGitHubAttribution,
+  consumeGitHubAttribution,
+  saveGitHubAttribution,
+  revokeGitHubAttribution,
+  githubAttribution,
+  attributionItemScope,
+} from "./github-attribution";
+export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
