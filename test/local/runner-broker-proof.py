@@ -24,7 +24,6 @@ class BrokerProof(unittest.TestCase):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="paws-broker-proof-"))
         self.root.chmod(0o755)
         broker.SPOOL = str(self.root / "spool")
-        broker.RECEIPTS = str(self.root / "receipts")
         broker.RESULTS = str(self.root / "results")
         broker.UNIT = str(self.root / "worker.service")
         for path, uid, gid, mode in ((broker.SPOOL, 1001, 1002, 0o2750), (broker.RECEIPTS, 0, 0, 0o700), (broker.RESULTS, 0, 1003, 0o750)):
@@ -68,6 +67,7 @@ class BrokerProof(unittest.TestCase):
     def tearDown(self):
         broker.subprocess.run = self.original_run
         shutil.rmtree(self.root)
+        shutil.rmtree(broker.RECEIPTS)
 
     def request(self, payload, uid=1001):
         path = str(self.root / "broker.sock")

@@ -996,4 +996,56 @@ BEGIN
 END;
 `,
   },
+  {
+    id: "035_runner_check_commands",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE runner_command_with_checks (
+  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  run_id TEXT REFERENCES run(id),
+  generation INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('run','review','check','cancel','probe','login_check','upgrade')),
+  envelope TEXT NOT NULL CHECK(json_valid(envelope)),
+  expires_at INTEGER NOT NULL,
+  acknowledged_at INTEGER
+) STRICT;
+INSERT INTO runner_command_with_checks SELECT * FROM runner_command;
+INSERT INTO sqlite_sequence(name,seq)
+SELECT 'runner_command_with_checks',seq FROM sqlite_sequence WHERE name='runner_command'
+AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='runner_command_with_checks');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='runner_command'),0))
+WHERE name='runner_command_with_checks';
+DROP TABLE runner_command;
+ALTER TABLE runner_command_with_checks RENAME TO runner_command;
+CREATE INDEX runner_command_pending ON runner_command(runner_id,acknowledged_at,ordinal);
+`,
+  },
+  {
+    id: "036_runner_checks",
+    sql: `
+CREATE TABLE runner_check_attempt (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES run(id),
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  runner_fence INTEGER NOT NULL,
+  candidate_sha TEXT NOT NULL
+) STRICT;
+CREATE TABLE runner_check_execution (
+  id TEXT PRIMARY KEY,
+  attempt_id TEXT NOT NULL REFERENCES runner_check_attempt(id),
+  command_id TEXT NOT NULL UNIQUE REFERENCES runner_command(id),
+  generation INTEGER NOT NULL,
+  input TEXT NOT NULL CHECK(json_valid(input)),
+  input_sha256 TEXT NOT NULL,
+  result TEXT CHECK(result IS NULL OR json_valid(result)),
+  grant_hash TEXT,
+  receipt_until INTEGER,
+  cancelled_at INTEGER
+) STRICT;
+CREATE INDEX runner_check_attempt_execution ON runner_check_execution(attempt_id,generation);
+`,
+  },
 ];
