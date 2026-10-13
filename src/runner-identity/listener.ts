@@ -80,12 +80,18 @@ export async function startRunnerListener(options: {
       if (stopped) return reject(response, 503);
       if (request.httpVersion !== "1.1") return reject(response, 505);
       const peer = await authorize(request.socket as TLSSocket);
+      const url = new URL(request.url, "https://paws-runner.invalid");
+      if (url.origin !== "https://paws-runner.invalid") return reject(response, 400);
+      const limit =
+        request.method === "POST" && /^\/v1\/runs\/[^/]+\/check-result$/.test(url.pathname)
+          ? 13 * 1024 * 1024
+          : 1024 * 1024;
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of request) {
         const data = Buffer.from(chunk);
         size += data.byteLength;
-        if (size > 1024 * 1024) return reject(response, 413);
+        if (size > limit) return reject(response, 413);
         chunks.push(data);
       }
       await authorize(request.socket as TLSSocket);
@@ -93,8 +99,6 @@ export async function startRunnerListener(options: {
       for (const [name, value] of Object.entries(request.headers)) {
         if (typeof value === "string" && !name.startsWith(":")) headers.set(name, value);
       }
-      const url = new URL(request.url, "https://paws-runner.invalid");
-      if (url.origin !== "https://paws-runner.invalid") return reject(response, 400);
       const input = new Request(url.href, {
         method: request.method,
         headers,
