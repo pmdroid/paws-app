@@ -1,0 +1,366 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-13T21:00:36.534Z",
+  "title": "Design System: Paws Landing",
+  "extensions": {
+    "colorMeta": {
+      "desktop": {
+        "role": "primary",
+        "displayName": "Desktop Lavender",
+        "tonalRamp": [
+          "oklch(15.00% 0.08612 293.38)",
+          "oklch(26.43% 0.08612 293.38)",
+          "oklch(37.86% 0.08612 293.38)",
+          "oklch(49.29% 0.08612 293.38)",
+          "oklch(60.71% 0.08612 293.38)",
+          "oklch(72.14% 0.08612 293.38)",
+          "oklch(83.57% 0.08612 293.38)",
+          "oklch(95.00% 0.08612 293.38)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15.00% 0.00263 106.45)",
+          "oklch(26.43% 0.00263 106.45)",
+          "oklch(37.86% 0.00263 106.45)",
+          "oklch(49.29% 0.00263 106.45)",
+          "oklch(60.71% 0.00263 106.45)",
+          "oklch(72.14% 0.00263 106.45)",
+          "oklch(83.57% 0.00263 106.45)",
+          "oklch(95.00% 0.00263 106.45)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.00947 255.64)",
+          "oklch(26.43% 0.00947 255.64)",
+          "oklch(37.86% 0.00947 255.64)",
+          "oklch(49.29% 0.00947 255.64)",
+          "oklch(60.71% 0.00947 255.64)",
+          "oklch(72.14% 0.00947 255.64)",
+          "oklch(83.57% 0.00947 255.64)",
+          "oklch(95.00% 0.00947 255.64)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.04412 294.76)",
+          "oklch(26.43% 0.04412 294.76)",
+          "oklch(37.86% 0.04412 294.76)",
+          "oklch(49.29% 0.04412 294.76)",
+          "oklch(60.71% 0.04412 294.76)",
+          "oklch(72.14% 0.04412 294.76)",
+          "oklch(83.57% 0.04412 294.76)",
+          "oklch(95.00% 0.04412 294.76)"
+        ]
+      },
+      "orange": {
+        "role": "primary",
+        "displayName": "Orange",
+        "tonalRamp": [
+          "oklch(15.00% 0.17868 42.54)",
+          "oklch(26.43% 0.17868 42.54)",
+          "oklch(37.86% 0.17868 42.54)",
+          "oklch(49.29% 0.17868 42.54)",
+          "oklch(60.71% 0.17868 42.54)",
+          "oklch(72.14% 0.17868 42.54)",
+          "oklch(83.57% 0.17868 42.54)",
+          "oklch(95.00% 0.17868 42.54)"
+        ]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Green",
+        "tonalRamp": [
+          "oklch(15.00% 0.13780 150.08)",
+          "oklch(26.43% 0.13780 150.08)",
+          "oklch(37.86% 0.13780 150.08)",
+          "oklch(49.29% 0.13780 150.08)",
+          "oklch(60.71% 0.13780 150.08)",
+          "oklch(72.14% 0.13780 150.08)",
+          "oklch(83.57% 0.13780 150.08)",
+          "oklch(95.00% 0.13780 150.08)"
+        ]
+      },
+      "orange-hover": {
+        "role": "primary",
+        "displayName": "Orange Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.14823 45.70)",
+          "oklch(26.43% 0.14823 45.70)",
+          "oklch(37.86% 0.14823 45.70)",
+          "oklch(49.29% 0.14823 45.70)",
+          "oklch(60.71% 0.14823 45.70)",
+          "oklch(72.14% 0.14823 45.70)",
+          "oklch(83.57% 0.14823 45.70)",
+          "oklch(95.00% 0.14823 45.70)"
+        ]
+      },
+      "paper-hover": {
+        "role": "neutral",
+        "displayName": "Paper Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.02356 301.95)",
+          "oklch(26.43% 0.02356 301.95)",
+          "oklch(37.86% 0.02356 301.95)",
+          "oklch(49.29% 0.02356 301.95)",
+          "oklch(60.71% 0.02356 301.95)",
+          "oklch(72.14% 0.02356 301.95)",
+          "oklch(83.57% 0.02356 301.95)",
+          "oklch(95.00% 0.02356 301.95)"
+        ]
+      },
+      "dock": {
+        "role": "neutral",
+        "displayName": "Dock",
+        "tonalRamp": [
+          "oklch(15.00% 0.03342 300.90)",
+          "oklch(26.43% 0.03342 300.90)",
+          "oklch(37.86% 0.03342 300.90)",
+          "oklch(49.29% 0.03342 300.90)",
+          "oklch(60.71% 0.03342 300.90)",
+          "oklch(72.14% 0.03342 300.90)",
+          "oklch(83.57% 0.03342 300.90)",
+          "oklch(95.00% 0.03342 300.90)"
+        ]
+      },
+      "stage-selected": {
+        "role": "neutral",
+        "displayName": "Stage Selected",
+        "tonalRamp": [
+          "oklch(15.00% 0.03046 300.29)",
+          "oklch(26.43% 0.03046 300.29)",
+          "oklch(37.86% 0.03046 300.29)",
+          "oklch(49.29% 0.03046 300.29)",
+          "oklch(60.71% 0.03046 300.29)",
+          "oklch(72.14% 0.03046 300.29)",
+          "oklch(83.57% 0.03046 300.29)",
+          "oklch(95.00% 0.03046 300.29)"
+        ]
+      },
+      "stage-hover": {
+        "role": "neutral",
+        "displayName": "Stage Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.01809 303.41)",
+          "oklch(26.43% 0.01809 303.41)",
+          "oklch(37.86% 0.01809 303.41)",
+          "oklch(49.29% 0.01809 303.41)",
+          "oklch(60.71% 0.01809 303.41)",
+          "oklch(72.14% 0.01809 303.41)",
+          "oklch(83.57% 0.01809 303.41)",
+          "oklch(95.00% 0.01809 303.41)"
+        ]
+      },
+      "terminal-text": {
+        "role": "neutral",
+        "displayName": "Terminal Text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "terminal-muted": {
+        "role": "neutral",
+        "displayName": "Terminal Muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.02070 298.17)",
+          "oklch(26.43% 0.02070 298.17)",
+          "oklch(37.86% 0.02070 298.17)",
+          "oklch(49.29% 0.02070 298.17)",
+          "oklch(60.71% 0.02070 298.17)",
+          "oklch(72.14% 0.02070 298.17)",
+          "oklch(83.57% 0.02070 298.17)",
+          "oklch(95.00% 0.02070 298.17)"
+        ]
+      },
+      "decoration-green": {
+        "role": "secondary",
+        "displayName": "Decoration Green",
+        "tonalRamp": [
+          "oklch(15.00% 0.14438 149.01)",
+          "oklch(26.43% 0.14438 149.01)",
+          "oklch(37.86% 0.14438 149.01)",
+          "oklch(49.29% 0.14438 149.01)",
+          "oklch(60.71% 0.14438 149.01)",
+          "oklch(72.14% 0.14438 149.01)",
+          "oklch(83.57% 0.14438 149.01)",
+          "oklch(95.00% 0.14438 149.01)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Baloo 2 Hero",
+        "purpose": "Self-hosted Latin weight 800 from @fontsource/baloo-2; hero headline only."
+      },
+      "label": {
+        "displayName": "Window Caption",
+        "purpose": "Monospaced software captions."
+      },
+      "terminal": {
+        "displayName": "Terminal Command",
+        "purpose": "Readable commands on dark surfaces."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "window-open",
+        "value": "550ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Hero entrance from translateY(8px) to translateY(0); disabled for reduced motion."
+      },
+      {
+        "name": "action-press",
+        "value": "translateY(1px)",
+        "purpose": "Immediate active action-link displacement."
+      },
+      {
+        "name": "anchor-scroll",
+        "value": "smooth",
+        "purpose": "In-page navigation; auto under prefers-reduced-motion: reduce."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "desktop-cap-min",
+        "value": "1536px"
+      },
+      {
+        "name": "compact-max",
+        "value": "1100px"
+      },
+      {
+        "name": "stacked-max",
+        "value": "780px"
+      },
+      {
+        "name": "narrow-max",
+        "value": "390px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Orange setup action with a tactile outlined edge.",
+      "html": "<a class=\"ds-button ds-primary\" href=\"https://github.com/pmdroid/paws-app#setup\">Get started <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 12h15m-6-6 6 6-6 6\"/></svg></a>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:20px;min-height:60px;padding:14px 28px;border:2px solid var(--ink,#101317);border-radius:8px;color:var(--ink,#101317);font:750 20px/1.2 Bricolage,sans-serif;text-decoration:none;cursor:pointer}.ds-button:active{transform:translateY(1px)}.ds-button:focus-visible{outline:3px solid #5b3198;outline-offset:5px}svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}.ds-primary{background:var(--orange,#ff793e)}.ds-primary:hover{background:#ff925d}"
+    },
+    {
+      "name": "Secondary Action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Paper action for exploring the workflow.",
+      "html": "<a class=\"ds-button ds-secondary\" href=\"#how-it-works\">See how it works</a>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:20px;min-height:60px;padding:14px 28px;border:2px solid var(--ink,#101317);border-radius:8px;color:var(--ink,#101317);font:750 20px/1.2 Bricolage,sans-serif;text-decoration:none;cursor:pointer}.ds-button:active{transform:translateY(1px)}.ds-button:focus-visible{outline:3px solid #5b3198;outline-offset:5px}svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}.ds-secondary{background:var(--paper,#fdfdfb)}.ds-secondary:hover{background:#eee8f9}"
+    },
+    {
+      "name": "Software Window",
+      "kind": "card",
+      "refersTo": "window",
+      "description": "Paper window with lavender caption and decorative dots.",
+      "html": "<section class=\"ds-window\"><div class=\"ds-titlebar\"><span>getting-started.txt</span><div class=\"ds-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></div></div><div class=\"ds-content\"><h3>Make yourself at home.</h3><p>Install Bun 1.4 or newer, clone the repo, then connect your tools.</p></div></section>",
+      "css": ".ds-window{border:2px solid var(--ink,#101317);border-radius:12px;background:var(--paper,#fdfdfb);color:var(--ink,#101317);overflow:hidden;font-family:Bricolage,sans-serif}.ds-titlebar{min-height:40px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 22px;border-bottom:2px solid var(--ink,#101317);background:var(--bar,#c0b4f1);font:14px/1.3 var(--mono,\"DM Mono\",monospace)}.ds-dots{display:flex;gap:10px;flex-shrink:0}.ds-dots i{width:16px;height:16px;border:2px solid var(--ink,#101317);border-radius:50%;background:var(--orange,#ff793e)}.ds-dots i:nth-child(2){background:#f5da73}.ds-dots i:nth-child(3){background:#54b76b}.ds-content{padding:28px}.ds-content h3{margin:0;font-size:30px;letter-spacing:-.03em}.ds-content p{font-size:17px;line-height:1.5;margin:14px 0}"
+    },
+    {
+      "name": "Workflow Control",
+      "kind": "button",
+      "refersTo": "stage-control",
+      "description": "Pressed row exposes selected workflow state.",
+      "html": "<button class=\"ds-stage\" type=\"button\" aria-pressed=\"true\"><span class=\"ds-step\">1</span>Linear issue <svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 12h15m-6-6 6 6-6 6\"/></svg></button>",
+      "css": ".ds-stage{display:flex;align-items:center;text-align:left;gap:14px;border:1px solid transparent;border-radius:6px;padding:13px 16px;font:650 19px Bricolage,sans-serif;min-height:58px;color:var(--ink,#101317);background:transparent;cursor:pointer}.ds-stage[aria-pressed=\"true\"]{background:#e8e1f7;border-color:var(--ink,#101317)}.ds-stage:hover{background:#f0ebf8}.ds-stage:focus-visible{outline:3px solid #5b3198;outline-offset:5px}.ds-step{display:grid;place-items:center;border:1px solid var(--ink,#101317);width:28px;height:28px;border-radius:50%;font-size:15px;flex-shrink:0}.ds-stage svg{margin-left:auto}svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}"
+    },
+    {
+      "name": "Completion Badge",
+      "kind": "custom",
+      "refersTo": "completion-badge",
+      "description": "Green status marker with an explicit SVG checkmark.",
+      "html": "<span class=\"ds-complete\"><svg viewBox=\"0 0 24 24\" role=\"img\" aria-label=\"Complete\"><path d=\"m5 12 5 5L20 6\"/></svg></span>",
+      "css": ".ds-complete{width:21px;height:21px;display:grid;place-items:center;border-radius:50%;background:var(--green,#258b47);color:white}svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}.ds-complete svg{width:16px;height:16px;stroke-width:2}"
+    },
+    {
+      "name": "Tool Dock",
+      "kind": "custom",
+      "refersTo": "tool-dock",
+      "description": "Labeled tray with official Linear, Claude, and GitHub symbols; text remains on mobile.",
+      "html": "<div class=\"ds-dock\" aria-label=\"Works with your tools\"><span><svg class=\"ds-logo\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z\"/></svg>Linear</span><span><svg class=\"ds-logo ds-claude\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z\"/></svg>Claude Code /<br>Codex / Grok</span><span><svg class=\"ds-check\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m5 12 5 5L20 6\"/></svg>Closeout</span><span><svg class=\"ds-logo\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12\"/></svg>GitHub</span></div>",
+      "css": ".ds-dock{display:flex;justify-content:center;align-items:center;width:fit-content;max-width:100%;margin:14px auto 18px;padding:12px 18px;border:2px solid var(--ink,#101317);border-radius:10px;background:#e5ddf5;color:var(--ink,#101317);font-family:Bricolage,sans-serif}.ds-dock span{display:flex;align-items:center;justify-content:center;gap:10px;padding:0 28px;font-size:15px;font-weight:700;min-height:38px}.ds-dock span+span{border-left:1px solid var(--ink,#101317)}.ds-dock svg{width:26px;height:26px;flex-shrink:0}.ds-logo{fill:currentColor;stroke:none}.ds-claude{color:#b84b23}.ds-check{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}@media(max-width:780px){.ds-dock{padding:10px 5px;width:100%;margin-block:16px}.ds-dock span{font-size:12px;padding:0 12px;gap:6px;flex:1}.ds-dock svg{display:none}}@media(max-width:390px){.ds-dock span{padding-inline:8px;font-size:11px}}"
+    },
+    {
+      "name": "Desktop Navigation",
+      "kind": "nav",
+      "refersTo": "navigation",
+      "description": "Readable text menu with underlined hover and visible focus.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#how-it-works\">How it works</a><a href=\"https://github.com/pmdroid/paws-app#setup\">Get started</a><a href=\"https://github.com/pmdroid/paws-app\">GitHub</a></nav>",
+      "css": ".ds-nav{display:flex;align-items:center;gap:36px;color:var(--ink,#101317);font:650 17px Bricolage,sans-serif}.ds-nav a{color:inherit;text-decoration:none;padding:12px 0;text-underline-offset:5px}.ds-nav a:hover{text-decoration:underline}.ds-nav a:focus-visible{outline:3px solid #5b3198;outline-offset:5px}@media(max-width:780px){.ds-nav{font-size:13px;gap:18px}.ds-nav a:nth-child(2){display:none}}"
+    },
+    {
+      "name": "Workflow Timeline",
+      "kind": "custom",
+      "description": "Separate rail and paper nodes beside official tool badges and explicit completion checks.",
+      "html": "<ol class=\"ds-timeline\"><li><span class=\"ds-tool ds-tool-0\"><svg class=\"ds-logo\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z\"/></svg></span><div><h3>Linear issue</h3><p>Issue received</p></div><span class=\"ds-complete\"><svg viewBox=\"0 0 24 24\" role=\"img\" aria-label=\"Complete\"><path d=\"m5 12 5 5L20 6\"/></svg></span></li><li><span class=\"ds-tool ds-tool-1\"><svg class=\"ds-logo\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z\"/></svg></span><div><h3>Coding agent</h3><p>Implements the changes</p></div><span class=\"ds-complete\"><svg viewBox=\"0 0 24 24\" role=\"img\" aria-label=\"Complete\"><path d=\"m5 12 5 5L20 6\"/></svg></span></li><li><span class=\"ds-tool ds-tool-2\"><svg class=\"ds-check\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m5 12 5 5L20 6\"/></svg></span><div><h3>Closeout checks</h3><p>Checks the work</p></div><span class=\"ds-complete\"><svg viewBox=\"0 0 24 24\" role=\"img\" aria-label=\"Complete\"><path d=\"m5 12 5 5L20 6\"/></svg></span></li><li><span class=\"ds-tool ds-tool-3\"><svg class=\"ds-logo\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12\"/></svg></span><div><h3>GitHub pull request</h3><p>Ready for review</p></div><span class=\"ds-complete\"><svg viewBox=\"0 0 24 24\" role=\"img\" aria-label=\"Complete\"><path d=\"m5 12 5 5L20 6\"/></svg></span></li></ol><div class=\"ds-end\"><span></span><strong>Good work. Ready to review.</strong></div>",
+      "css": ".ds-timeline{list-style:none;padding:0;margin:0;position:relative;color:var(--ink,#101317);font-family:Bricolage,sans-serif}.ds-timeline:before{content:\"\";position:absolute;left:8px;top:20px;bottom:-38px;width:2px;background:var(--ink,#101317)}.ds-timeline li{position:relative;display:flex;align-items:center;gap:15px;min-height:77px}.ds-timeline li:before{content:\"\";width:14px;height:14px;border:2px solid var(--ink,#101317);border-radius:50%;background:var(--paper,#fdfdfb);flex-shrink:0}.ds-tool{display:grid;place-items:center;width:38px;height:38px;border:2px solid var(--paper,#fdfdfb);border-radius:50%;background:var(--ink,#101317);color:white;flex-shrink:0;z-index:1}.ds-tool-0{background:#5b48c5}.ds-tool-1{background:var(--orange,#ff793e);color:var(--ink,#101317)}.ds-tool svg{width:21px;height:21px}.ds-logo{fill:currentColor;stroke:none}.ds-check,.ds-complete svg{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-timeline h3{margin:0;font-size:18px;font-weight:750;line-height:1.25}.ds-timeline p{margin:4px 0 0;color:var(--muted,#57516c);font:12px/1.5 var(--mono,\"DM Mono\",monospace)}.ds-complete{width:21px;height:21px;display:grid;place-items:center;border-radius:50%;background:var(--green,#258b47);color:white;margin-left:auto;flex-shrink:0}.ds-complete svg{width:16px;height:16px;stroke-width:2}.ds-end{display:flex;gap:22px;align-items:center;padding-top:19px;position:relative;color:var(--ink,#101317);font:750 17px Bricolage,sans-serif}.ds-end span{width:21px;height:21px;border:2px solid var(--ink,#101317);border-radius:50%;background:#54b76b;flex-shrink:0}@media(max-width:780px){.ds-timeline li{min-height:70px;gap:17px}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lavender Desktop",
+    "overview": "A familiar personal-computer desktop becomes a warm home for Paws. Cool lavender surrounds near-white software windows with crisp near-black outlines. Baloo 2 gives the hero a rounded, friendly voice; Bricolage carries the remaining headings, prose, and actions, while DM Mono supplies software captions and commands.\n\nSpacious copy sits beside compact window furniture. Orange actions feel tactile, green checkmarks communicate completion, and a sleeping pixel puppy warms the dark terminal. Containment and contrasting surfaces create depth without shadows.",
+    "keyCharacteristics": [
+      "Cool lavender desktop and caption bars surrounding near-white content.",
+      "Rounded Baloo 2 hero, Bricolage supporting type, and DM Mono software details.",
+      "Crisp outlines, modest rounded corners, and circular status marks.",
+      "A separate timeline rail beside recognizable tool symbols.",
+      "Orange actions, visible keyboard focus, and reduced-motion support."
+    ],
+    "rules": [
+      {
+        "name": "The Shared Desktop Rule",
+        "body": "Window caption bars repeat the desktop lavender so nested windows belong to the same workspace.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Has a Shape Rule",
+        "body": "Completion uses a checkmark as well as green; selected workflow controls use a border as well as a changed fill.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Voices Rule",
+        "body": "Use Baloo 2 for the hero headline, Bricolage for other headings, prose, and actions, and DM Mono for window captions, commands, and compact status details.",
+        "section": "typography"
+      },
+      {
+        "name": "The Outlined Window Rule",
+        "body": "Define window edges with ink borders and contrasting caption bars; keep their rounded silhouettes intact through clipped overflow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do repeat desktop lavender in window captions and use paper for readable content.",
+      "Do reserve Baloo 2 for the hero and pair Bricolage supporting type with DM Mono software details.",
+      "Do preserve outlined rounded windows, separate timeline nodes, and recognizable official tool symbols.",
+      "Do keep keyboard focus visible and expose selected workflow state with aria-pressed.",
+      "Do retain tool names and give terminal copy and the puppy separate space on mobile.",
+      "Do honor reduced-motion preferences for entrance and anchor scrolling."
+    ],
+    "donts": [
+      "Don't turn decorative window dots into fake interactive controls.",
+      "Don't use color alone to communicate completion or workflow selection.",
+      "Don't substitute shadows for the outlined, tonally layered window structure."
+    ]
+  }
+}
