@@ -450,6 +450,14 @@ export function createRemoteAgentRunner(options: {
                   `${scoped.repository!.owner}/${scoped.repository!.repo}`,
                 )
               : undefined;
+          if (
+            input.commitPolicy &&
+            checkpointBot &&
+            (input.commitPolicy.bot.appId !== checkpointBot.appId ||
+              input.commitPolicy.bot.id !== checkpointBot.id ||
+              input.commitPolicy.bot.login !== checkpointBot.login)
+          )
+            throw new Error("Run attribution App bot authority changed");
           signal.throwIfAborted();
           const assigned: WorkCommand = {
             id: commandId,
@@ -481,6 +489,9 @@ export function createRemoteAgentRunner(options: {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                   repository: { ...scoped.repository!, baseSha: baseSha! },
                   ...(checkpointBot ? { checkpointBot } : {}),
+                  ...(input.commitPolicy
+                    ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }
+                    : {}),
                 }),
           };
           immediate(db, () => {

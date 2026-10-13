@@ -23,7 +23,7 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
-import { WORK_ITEM_STATES, type LinearCommand } from "./core";
+import { WORK_ITEM_STATES, type LinearCommand, type GitCommitPolicy } from "./core";
 import {
   assertLinearQueue,
   enqueueCommand,
@@ -31,6 +31,7 @@ import {
   enqueueJobOnce,
   getLinearSession,
   getWorkItem,
+  getItemRunCommitPolicy,
   workspaceLinearMember,
   isLinearAppRevoked,
   getLinearSessionAccess,
@@ -148,6 +149,7 @@ export type PawsProcess = {
 
 export type StartOptions = {
   noTunnel?: boolean;
+  commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
 };
@@ -702,6 +704,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 actorForItem: (item) => getTaskLinearActor(db, item.id),
               })
             : undefined,
+        commitPolicyForItem:
+          runtime.githubAuth === "app"
+            ? async (item) => {
+                if (!options?.commitPolicyForItem)
+                  throw new Error(
+                    "Link consenting verified GitHub identities for the configured project lead and task steerer before App-backed work. Attribution identity provider is unavailable.",
+                  );
+                const policy = await options.commitPolicyForItem(item);
+                const selected = getWorkItemRepository(db, item.id) ?? repository;
+                if (!selected) throw new Error("Attribution repository is missing");
+                const bot = await authProvider(runtime, selected, "read")?.botIdentity?.();
+                if (
+                  !bot ||
+                  bot.appId !== policy.bot.appId ||
+                  bot.id !== policy.bot.id ||
+                  bot.login !== policy.bot.login
+                )
+                  throw new Error("Attribution App bot authority changed");
+                return policy;
+              }
+            : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
         catchUp: async () => {
@@ -860,12 +883,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     restartFromMain: (item) => {
       const selected = getWorkItemRepository(db, item.id) ?? repository;
       if (selected === null) return;
+      const policy = getItemRunCommitPolicy(db, item.id);
+      if (runtime.githubAuth === "app" && !policy) return;
       restartFromFreshMain({
         pawsRoot: paths.home,
         owner: selected.owner,
         repo: selected.repo,
         itemId: itemPathId(item),
         wipBranch: worktreeBranch(item),
+        commitPolicy: policy,
       });
     },
   });
@@ -901,7 +927,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await workspace?.stop();
         await stopRunner();
         prepareShutdown(db, Date.now(), (item) => {
-          commitCheckpointSync(worktreePath(paths.home, itemPathId(item)));
+          const policy = getItemRunCommitPolicy(db, item.id);
+          if (runtime.githubAuth !== "app" || policy)
+            commitCheckpointSync(
+              worktreePath(paths.home, itemPathId(item)),
+              "wip: shutdown",
+              undefined,
+              policy,
+            );
         });
         db.close();
       })();

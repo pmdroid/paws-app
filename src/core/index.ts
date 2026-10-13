@@ -79,3 +79,13 @@ export {
   type AppBotIdentity,
   type GitCommitIdentity,
 } from "./commit-identity";
+
+export {
+  commitCoauthorTrailers,
+  commitPolicyMessage,
+  policyCoauthors,
+  policyPullRequestCredit,
+  validateCommitAttribution,
+  type GitCommitPolicy,
+  type VerifiedGitHubCoauthor,
+} from "./commit-policy";

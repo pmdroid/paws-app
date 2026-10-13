@@ -49,7 +49,9 @@ export function createRunnerRepositoryAccess(options: {
       const installationId = options.installationForRepository(repository);
       if (!installationId) return denied();
       const expectedBot =
-        initial.command.type === "run" ? initial.command.checkpointBot : undefined;
+        initial.command.type === "run"
+          ? (initial.command.commitPolicy?.bot ?? initial.command.checkpointBot)
+          : undefined;
       const matchesBot = async () => {
         if (!expectedBot) return input.access !== "write" || !options.checkpointBot;
         const bot = await options.checkpointBot?.(repository);

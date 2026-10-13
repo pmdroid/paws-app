@@ -166,7 +166,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
     "github",
   ],
-  "runner-repositories": ["github", "runner-protocol"],
+  "runner-repositories": ["github", "runner-protocol", "core"],
   process: [],
   "runner-cli": [
     "runner-daemon",

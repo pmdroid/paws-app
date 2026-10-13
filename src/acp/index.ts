@@ -115,3 +115,5 @@ export { snapshotAgentInputs, buildAgentPrompt, type AgentInputFile } from "./in
 export { assertNonSecretArtifactPath } from "./artifacts";
 
 export { appBotCommitIdentity } from "../core";
+
+export { validateCandidateAttribution } from "./commit-policy";

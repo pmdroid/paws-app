@@ -19,6 +19,14 @@ import {
 import { loadConfigFile, resolveAgentProfiles } from "../config";
 import { buildAgentPrompt, snapshotAgentInputs } from "./input-files";
 import { commitCheckpoint } from "./checkpoint";
+import { validateCandidateAttribution } from "./commit-policy";
+import {
+  appBotCommitIdentity,
+  commitIdentityEnv,
+  policyCoauthors,
+  commitPolicyMessage,
+} from "../core";
+import { git } from "./git";
 import { assertSafeSegment, runDir } from "./paths";
 import {
   GROK_LOGIN_MESSAGE,
@@ -143,6 +151,21 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const profile = options.profile ?? resolveAgentProfiles(config)[options.role];
   const grok = profile.agent === "grok";
   const sourceEnv = options.env ?? process.env;
+  const commitPolicy = !options.readOnly && !options.prepareOnly ? options.commitPolicy : undefined;
+  const commitBase = commitPolicy
+    ? (
+        await git(["-C", options.worktreePath, "rev-parse", "HEAD"], {
+          env: options.checkpointEnv ?? sourceEnv,
+          signal: options.signal,
+        })
+      ).trim()
+    : undefined;
+  if (commitPolicy) policyCoauthors(commitPolicy);
+  const attributionEnv = commitPolicy
+    ? commitIdentityEnv(appBotCommitIdentity(commitPolicy.bot))
+    : {};
+  if (commitPolicy)
+    preparedInput.prompt += `\n\nUse the configured App bot author and committer for every new commit. Include these exact human attribution trailers in every new commit message:\n${commitPolicyMessage("", commitPolicy).trim()}`;
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents, profile.agent);
@@ -153,7 +176,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const child = spawnAgent(
     adapter.command,
     adapter.args,
-    minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+    {
+      ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
+      ...attributionEnv,
+    },
     {
       ...(grok ? { cwd: options.worktreePath } : {}),
     },
@@ -204,7 +230,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     return emitQueue;
   };
 
-  const terminals = new TerminalRegistry(guard, options.env ?? process.env);
+  const terminals = new TerminalRegistry(guard, options.env ?? process.env, attributionEnv);
   runAbort.signal.addEventListener("abort", () => void terminals.close(graceMs), { once: true });
   const assertRunning = () => {
     if (state.cancelling) throw RequestError.invalidParams({}, "run cancelled");
@@ -495,12 +521,14 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       try {
         const checkpoint = await commitCheckpoint(
           options.worktreePath,
-          `wip: ${options.itemId} ${reason}`,
+          commitPolicy
+            ? commitPolicyMessage(`wip: ${options.itemId} ${reason}`, commitPolicy)
+            : `wip: ${options.itemId} ${reason}`,
           options.signal,
           () => options.signal?.removeEventListener("abort", onAbort),
           options.checkpointEnv,
           options.checkpointExcludePaths,
-          options.checkpointIdentity,
+          commitPolicy ? appBotCommitIdentity(commitPolicy.bot) : options.checkpointIdentity,
         );
         if (checkpoint.committed || (!state.cancelling && !options.signal?.aborted)) {
           result.checkpoint = checkpoint;
@@ -522,6 +550,26 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       result.interrupted = state.kind === FOLLOW_UP_INTERRUPTION;
       result.stopReason = state.kind === "timeout" ? "timeout" : "cancelled";
       result.authRequired = false;
+    }
+  }
+  if (commitPolicy && result.agentExited && !result.cancelled && !options.signal?.aborted) {
+    try {
+      const head = (
+        await git(["-C", options.worktreePath, "rev-parse", "HEAD"], {
+          env: options.checkpointEnv ?? sourceEnv,
+        })
+      ).trim();
+      await validateCandidateAttribution(
+        options.worktreePath,
+        commitBase!,
+        head,
+        commitPolicy,
+        options.checkpointEnv ?? sourceEnv,
+        options.signal,
+      );
+    } catch (error) {
+      result.stopReason = "error";
+      result.errorMessage = error instanceof Error ? error.message : String(error);
     }
   }
   return result;
