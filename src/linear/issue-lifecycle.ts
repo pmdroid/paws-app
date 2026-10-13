@@ -1,12 +1,14 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { isRecord, readNumber, readString } from "./read";
+import { schedulingMetadata } from "./scheduling";
 
 export type LinearIssueOwnership = {
   id: string;
   teamId: string;
   assigneeId: string | null;
   delegateId: string | null;
+  projectId?: string | null;
   stateType: string;
 };
 
@@ -29,7 +31,7 @@ export interface LinearIssueLifecycle {
 }
 
 const ISSUE = `query IssueOwnership($id: String!) {
-  issue(id: $id) { id team { id } state { type } assignee { id } delegate { id } }
+  issue(id: $id) { id team { id } state { type } assignee { id } delegate { id } project { id } }
 }`;
 
 const ACTOR = `query CodeTaskActor($id: String!) {
@@ -61,6 +63,7 @@ export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLif
     if (issue === null || id !== issueId || teamId === null || stateType === null)
       throw new Error("Linear returned incomplete issue ownership.");
     return {
+      ...schedulingMetadata(issue),
       id,
       teamId,
       stateType,

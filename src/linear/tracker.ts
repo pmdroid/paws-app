@@ -1,3 +1,4 @@
+import { createLinearProjectMembers } from "./project-members";
 import { createLinearAttachmentMethods } from "./attachments";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
@@ -66,6 +67,7 @@ export function createLinearTracker(
   return {
     supportsActivityReconciliation: true,
     ...sessions,
+    ...createLinearProjectMembers(client),
     ...createLinearRepositoryMethods(client),
     ...createLinearAttachmentMethods(client),
     async loadEpic(linearIssueId) {
