@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  auditWorkspaceAccess,
   consumeWorkspaceBootstrap,
   changeLinearTeamAccess,
   bindWorkItemRepository,
@@ -46,6 +47,12 @@ export async function probeWorkspaceAuthorization(
     name: "Member",
     email: "member@example.invalid",
   });
+  const adminId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "administrator",
+    name: "Workspace administrator",
+    email: "administrator@example.invalid",
+  });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
   consumeWorkspaceBootstrap(db, {
     ...workspace,
@@ -61,8 +68,17 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
+  syncWorkspaceMember(db, {
+    workspaceId: workspace.id,
+    userId: adminId,
+    role: "admin",
+    active: true,
+    teamIds: ["team-a"],
+    now,
+  });
   const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ownerId, now });
   const member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
+  const admin = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: adminId, now });
   const oldOwner = issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: ownerId,
@@ -214,6 +230,77 @@ export async function probeWorkspaceAuthorization(
     "content-type": "application/json",
   });
   try {
+    for (let index = 0; index < 105; index++)
+      auditWorkspaceAccess(db, {
+        workspaceId: workspace.id,
+        userId: ownerId,
+        action: "fixture.changed",
+        subject: `record-${index}`,
+        now,
+      });
+    auditWorkspaceAccess(db, {
+      workspaceId: null,
+      userId: null,
+      action: "fixture.changed",
+      subject: "outside-workspace",
+      now,
+    });
+    const auditResponse = await fetch(`${origin}/api/workspaces/audit`, {
+      headers: headers(owner),
+    });
+    const history = (await auditResponse.json().catch(() => ({}))) as {
+      entries?: { id: number; actorId: string | null; actorName: string | null; subject: string }[];
+      nextBefore?: number | null;
+    };
+    const entries = history.entries ?? [];
+    observe(
+      "owners read bounded workspace audit history with actors and a stable older cursor",
+      auditResponse.status === 200 &&
+        auditResponse.headers.get("cache-control") === "no-store" &&
+        entries.length === 50 &&
+        entries.every((entry) => entry.actorId === ownerId && entry.actorName === "Owner") &&
+        entries[0]?.subject === "record-104" &&
+        history.nextBefore === entries.at(-1)?.id,
+      { status: auditResponse.status, entries: entries.length, nextBefore: history.nextBefore },
+    );
+    if (history.nextBefore !== undefined && history.nextBefore !== null) {
+      auditWorkspaceAccess(db, {
+        workspaceId: workspace.id,
+        userId: ownerId,
+        action: "fixture.changed",
+        subject: "newer-than-first-page",
+        now,
+      });
+      const older = (await (
+        await fetch(`${origin}/api/workspaces/audit?before=${history.nextBefore}`, {
+          headers: headers(owner),
+        })
+      ).json()) as typeof history;
+      observe(
+        "audit pagination excludes concurrent newer entries without repeating a row",
+        older.entries?.length === 50 &&
+          older.entries.every((entry) => entry.id < history.nextBefore!) &&
+          older.entries[0]?.subject === "record-54",
+        { first: older.entries?.[0], count: older.entries?.length },
+      );
+    }
+    const auditStatuses = await Promise.all(
+      [
+        fetch(`${origin}/api/workspaces/audit`, { headers: headers(admin) }),
+        fetch(`${origin}/api/workspaces/audit`, { headers: headers(member) }),
+        fetch(`${origin}/api/workspaces/audit`),
+        fetch(`${origin}/api/workspaces/audit?workspaceId=another-workspace`, {
+          headers: headers(owner),
+        }),
+        fetch(`${origin}/api/workspaces/audit?before=1e3`, { headers: headers(owner) }),
+        fetch(`${origin}/api/workspaces/audit`, { method: "PUT", headers: headers(owner) }),
+      ].map(async (response) => (await response).status),
+    );
+    observe(
+      "audit reads admit administrators and reject members, anonymous, cross-workspace and invalid requests",
+      auditStatuses.join() === "200,403,401,403,400,405",
+      auditStatuses,
+    );
     const anonymous = await fetch(`${origin}/api/status`);
     const ownerResponse = await fetch(`${origin}/api/status`, { headers: headers(owner) });
     const ownerSnapshot = (await ownerResponse.json()) as { items: { id: string }[] };

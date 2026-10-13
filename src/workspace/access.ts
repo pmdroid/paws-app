@@ -132,6 +132,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/auth/linear/callback",
         "/api/auth/session",
         "/api/workspaces/identity-links",
+        "/api/workspaces/audit",
         "/api/auth/logout",
         "/api/workspaces",
         "/api/workspaces/members",
