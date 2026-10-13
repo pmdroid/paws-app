@@ -26,7 +26,7 @@ import {
   type TrackerRequestOptions,
 } from "../linear";
 
-class LinearAccessRemovedError extends Error {}
+export class LinearAccessRemovedError extends Error {}
 
 export class LinearTaskAccess {
   constructor(
@@ -333,5 +333,19 @@ export class LinearTaskAccess {
       ...access,
       observedAtMs: (this.options.now ?? Date.now)(),
     });
+  }
+}
+
+export async function authorizeLinearTask(
+  access: LinearTaskAccess,
+  item: WorkItemRecord,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    await access.assert(item, signal);
+    return true;
+  } catch (error) {
+    if (error instanceof LinearAccessRemovedError) return false;
+    throw error;
   }
 }
