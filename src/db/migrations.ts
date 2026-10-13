@@ -1218,4 +1218,15 @@ CREATE TABLE epic_execution_control (
 ) STRICT;
 `,
   },
+  {
+    id: "045_linear_activity_budget",
+    sql: `
+ALTER TABLE outbox ADD COLUMN activity_run_id TEXT REFERENCES run(id);
+CREATE INDEX outbox_activity_run ON outbox(activity_run_id,sent_at);
+CREATE TABLE linear_outbox_backoff (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ not_before INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
