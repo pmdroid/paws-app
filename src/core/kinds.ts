@@ -5,6 +5,7 @@ export const JOB_KIND = {
   start: "item.start",
   reverify: "run.reverify",
   merge: "github.merge",
+  closeStoppedPull: "github.close_stopped",
   catchup: "linear.catchup",
 } as const;
 

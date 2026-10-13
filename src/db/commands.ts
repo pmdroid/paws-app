@@ -12,6 +12,7 @@ import {
   claimNextJob,
   completeJob,
   enqueueJob,
+  enqueueJobOnce,
   errorText,
   noteJobError,
 } from "./jobs";
@@ -59,6 +60,21 @@ export function applyLinearCommand(
     );
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     cancelOpenJobs(db, { itemId: item.id, reason: command.type, now });
+    if (
+      item.state === "merge_queue" ||
+      db
+        .query(
+          "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
+        )
+        .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id)
+    )
+      enqueueJobOnce(db, {
+        queue: JOB_KIND.closeStoppedPull,
+        jobKey: `close-stopped:${item.id}:${getWorkItem(db, item.id)!.version}`,
+        payload: { itemId: item.id },
+        now,
+      });
+
     const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId) ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const text = command.type === "stop" ? "Stopped from Linear." : "Cancelled from Linear.";

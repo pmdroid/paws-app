@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
@@ -112,6 +113,8 @@ import {
 } from "../db";
 import {
   publishAccepted,
+  closeStoppedPull,
+  branchForIssue,
   serialMerge,
   type GitHubClient,
   type GitHubTokenProvider,
@@ -215,6 +218,12 @@ export type OrchestratorOptions = {
       signal?: AbortSignal,
     ): NonNullable<CloseoutGateOptions["commandRunner"]>;
   };
+  publicationReady?: (
+    itemId: string,
+    phase: "publish" | "merge",
+    signal?: AbortSignal,
+    candidate?: { sha: string; baseSha: string },
+  ) => boolean | Promise<boolean>;
   canDispatchEpic?: (epicId: string) => boolean;
   dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void;
   clock?: Clock;
@@ -232,6 +241,8 @@ export type ExecutionChanges = {
   canceledItemIds: readonly string[];
   parentCanceled: boolean;
 };
+
+class LinearReconciliationPendingError extends Error {}
 
 type AnswerWaiter = (answer: string) => void;
 
@@ -372,7 +383,9 @@ export class Orchestrator {
             discardLinearTurns(this.db, event.sessionId, [turnEventKey]);
           return false;
         }
-        const questionId = event.sessionId ? findOpenQuestion(this.db, event.sessionId)?.id : null;
+        const open = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
+        const questionId = open?.id;
+        const questionEpicId = open ? getWorkItem(this.db, open.itemId)?.epicId : null;
         const stallReply =
           questionId &&
           this.db
@@ -380,7 +393,7 @@ export class Orchestrator {
             .get(questionId);
         await this.handleLinearEvent(event);
         if (!stallReply && event.action === "prompted" && event.sessionId) {
-          const epicId = getLinearSession(this.db, event.sessionId)?.epicId;
+          const epicId = getLinearSession(this.db, event.sessionId)?.epicId ?? questionEpicId;
           if (epicId) this.reconcileExecution({ humanEpicId: epicId });
         }
       });
@@ -424,7 +437,7 @@ export class Orchestrator {
       ...owned.map((live) => live.done),
     ]);
     await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
-    if (this.allItems().some((item) => getConversation(this.db, item.id).blocked))
+    if (this.allItems(true).some((item) => getConversation(this.db, item.id).blocked))
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
@@ -732,10 +745,47 @@ export class Orchestrator {
       ),
     );
     jobs.register(JOB_KIND.merge, (job, context) =>
-      this.runLeasedJob(job.payload, context, () =>
-        this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id)),
-      ),
+      this.runLeasedJob(job.payload, context, async () => {
+        try {
+          await this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id));
+        } catch (error) {
+          if (!(error instanceof LinearReconciliationPendingError)) throw error;
+          immediate(this.db, () => {
+            if (!context.isCurrent()) throw context.signal.reason;
+            enqueueJobOnce(this.db, {
+              queue:
+                getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
+                  ? JOB_KIND.reverify
+                  : job.queue,
+              lane: job.lane,
+              priority: job.priority,
+              payload: job.payload,
+              jobKey: `merge-reconciliation:${job.id}`,
+              now: this.now(),
+              runAt: this.now() + 30000,
+            });
+          });
+        }
+      }),
     );
+    jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId ? getWorkItem(this.db, itemId) : null;
+      if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
+      await this.joinChangedItems([item.id]);
+      const repository = this.repositoryForItem(item);
+      const github = repository ? this.githubForRepository(repository) : null;
+      if (!repository || !github) return;
+      context.signal.throwIfAborted();
+      await closeStoppedPull({
+        client: github.client,
+        owner: repository.owner,
+        repo: repository.repo,
+        branch: branchForIssue(itemPathId(item)),
+        ...this.gitHubCredentials(github),
+        signal: context.signal,
+      });
+    });
     this.options.outbox.setHandler(async (message, context) => {
       if (message.target !== "linear") return;
       const requestSignal = this.activityRequests.get(message.id);
@@ -1689,6 +1739,7 @@ export class Orchestrator {
       }
       return;
     }
+    this.assertReconciled(item);
     const repository = this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
     if (
@@ -1703,6 +1754,10 @@ export class Orchestrator {
     if (item.state !== "merge_queue") return;
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
+    let publicationCandidate =
+      item.checkpoint?.wipCommit && item.checkpoint.baseSha
+        ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
+        : undefined;
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -1715,7 +1770,13 @@ export class Orchestrator {
         !this.stopped(item.id) &&
         (live.sessionId === null ||
           getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
-      assert: async () => {
+      assert: async (purpose) => {
+        await this.assertPublicationReady(
+          item,
+          purpose === "merge" ? "merge" : "publish",
+          live.controller.signal,
+          publicationCandidate,
+        );
         await this.taskAccess()?.assert(item, live.controller.signal);
         const auth = this.authorization(item);
         if (auth && !(await auth.ensure(item, "publication", live.controller.signal)))
@@ -1750,6 +1811,12 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
+    await this.assertPublicationReady(
+      item,
+      "publish",
+      live.controller.signal,
+      publicationCandidate,
+    );
     if (this.stopped(item.id)) return;
     if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!published.published) {
@@ -1793,6 +1860,8 @@ export class Orchestrator {
           input.head,
           candidate,
         );
+        if (verdict.decision === "accepted")
+          publicationCandidate = { sha: input.head, baseSha: input.base };
         if (verdict.decision !== "accepted") closeoutFailure = verdict;
         const filesReady = artifactPublicationReady(this.db, item.id);
         return {
@@ -1824,6 +1893,13 @@ export class Orchestrator {
         applyWorkItemEvent(this.db, item.id, "merge_accepted");
       return;
     }
+    if (!merged.merged)
+      await this.assertPublicationReady(
+        item,
+        "merge",
+        live.controller.signal,
+        publicationCandidate,
+      );
     if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!merged.merged) {
       if (closeoutFailure !== null) {
@@ -2064,6 +2140,7 @@ export class Orchestrator {
         return true;
       });
       if (!accepted) return "rejected";
+      discardLinearTurns(this.db, sessionId, [event.dedupeKey]);
       if (answer.trim().toLowerCase() === "retry")
         this.reconcileExecution({ humanEpicId: stalled.epic_id });
       await this.flush();
@@ -2160,6 +2237,27 @@ export class Orchestrator {
       await this.interruptLinearSession(sessionId);
     }
     await this.flush();
+  }
+
+  private assertReconciled(item: WorkItemRecord): void {
+    if (this.options.canDispatchEpic?.(item.epicId) === false)
+      throw new LinearReconciliationPendingError(
+        "Linear execution changes are still being reconciled",
+      );
+  }
+
+  private async assertPublicationReady(
+    item: WorkItemRecord,
+    phase: "publish" | "merge",
+    signal: AbortSignal,
+    candidate?: { sha: string; baseSha: string },
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const ready = await this.options.publicationReady?.(item.id, phase, signal, candidate);
+    signal.throwIfAborted();
+    if (ready === false)
+      throw new LinearReconciliationPendingError("Linear publication freshness is pending");
+    this.assertReconciled(item);
   }
 
   applyEpicChanges(changes: ExecutionChanges): void {
@@ -2336,18 +2434,21 @@ export class Orchestrator {
     const item = getWorkItem(this.db, itemId);
     if (!item) return undefined;
     const blockers = this.db
-      .query<{ identifier: string; checkpoint: string | null }, [string, string]>(
-        `SELECT i.linear_identifier AS identifier,r.checkpoint FROM work_item_block b
+      .query<{ id: string; identifier: string; checkpoint: string | null }, [string, string]>(
+        `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM work_item_block b
          JOIN work_item i ON i.epic_id=b.epic_id AND i.linear_issue_id=b.blocker_linear_issue_id
          LEFT JOIN run r ON r.id=i.current_run_id
          WHERE b.epic_id=? AND b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
          ORDER BY i.position,i.id`,
       )
       .all(item.epicId, item.linearIssueId);
-    const results = blockers.map((blocker) => {
-      const result = blocker.checkpoint ? JSON.parse(blocker.checkpoint)?.resultBody : null;
-      return `${blocker.identifier}: ${typeof result === "string" && result.trim() ? result : "Completed."}`;
-    });
+    const active = new Set(this.epicItems(item.epicId).map((entry) => entry.id));
+    const results = blockers
+      .filter((blocker) => active.has(blocker.id))
+      .map((blocker) => {
+        const result = blocker.checkpoint ? JSON.parse(blocker.checkpoint)?.resultBody : null;
+        return `${blocker.identifier}: ${typeof result === "string" && result.trim() ? result : "Completed."}`;
+      });
     const resume = item.checkpoint
       ? `Resume the existing branch ${item.branchName}. Preserve its previous work${item.checkpoint.wipCommit ? ` at commit ${item.checkpoint.wipCommit}` : ""} and continue the original conversation.`
       : undefined;
@@ -2359,8 +2460,16 @@ export class Orchestrator {
 
   private pump(): void {
     const items = this.allItems();
-    const epicIds = new Set(items.map((item) => item.epicId));
-    for (const epicId of epicIds) this.finishEpic(epicId);
+    const epicIds = new Set(
+      this.db
+        .query<{ id: string }, []>("SELECT id FROM epic WHERE state IN ('running','stalled')")
+        .all()
+        .map((epic) => epic.id),
+    );
+    for (const epicId of epicIds) {
+      this.questionDependencyCycle(epicId);
+      this.finishEpic(epicId);
+    }
     const queued = items.filter((item) => item.state === "queued" && !item.cancelRequested);
     queued.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
     const ready = queued.filter(
@@ -2391,8 +2500,72 @@ export class Orchestrator {
     });
   }
 
+  private questionDependencyCycle(epicId: string): void {
+    if (!["running", "stalled"].includes(this.epicRow(epicId)?.state ?? "")) return;
+    const workspace = this.workspaceForEpic(epicId);
+    if (!workspace || this.options.canDispatchEpic?.(epicId) === false) return;
+    let ids: string[];
+    try {
+      ids = readyItems(this.db, { epicId, workspaceId: workspace }).cycleHeldItemIds;
+    } catch {
+      return;
+    }
+    if (!ids.length) return;
+    const items = ids
+      .map((id) => getWorkItem(this.db, id))
+      .filter((item): item is WorkItemRecord => item !== null);
+    const session = this.epicSession(items);
+    if (!session || findOpenQuestion(this.db, session)) return;
+    const digest = createHash("sha256")
+      .update(JSON.stringify([...ids].sort()))
+      .digest("hex");
+    const key = `dependency-cycle:${epicId}:${digest}`;
+    if (this.db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
+    immediate(this.db, () => {
+      const body = `Linear dependencies contain a cycle. Update the dependencies in Linear to release this work: ${items.map((item) => item.linearIdentifier).join(", ")}. Unaffected work can continue.`;
+      const question = openQuestion(this.db, {
+        itemId: items[0]!.id,
+        sessionId: session,
+        body,
+        options: ["Updated dependencies", "Keep paused"],
+        now: this.now(),
+      });
+      this.db.run(
+        `INSERT INTO epic_execution_control(epic_id,stalled_question_id) VALUES(?,?) ON CONFLICT(epic_id) DO UPDATE SET stalled_question_id=excluded.stalled_question_id`,
+        [epicId, question.id],
+      );
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: session,
+        idempotencyKey: key,
+        payload: {
+          id: question.id,
+          questionId: question.id,
+          sessionId: session,
+          body,
+          options: question.options,
+        },
+        now: this.now(),
+      });
+    });
+  }
+
+  private workspaceForEpic(epicId: string): string | null {
+    return (
+      this.db
+        .query<{ id: string }, [string]>(
+          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN linear_session_task t ON t.session_id=s.session_id WHERE t.epic_id=? LIMIT 1`,
+        )
+        .get(epicId)?.id ?? null
+    );
+  }
+
   private finishEpic(epicId: string): void {
-    const items = this.epicItems(epicId);
+    if (this.options.canDispatchEpic?.(epicId) === false) return;
+    const activeItems = this.epicItems(epicId);
+    const history = this.allItems(true).filter((item) => item.epicId === epicId);
+    const items = activeItems.length ? activeItems : history;
     if (items.length === 0) return;
     if (
       items.some(
@@ -2416,7 +2589,9 @@ export class Orchestrator {
     immediate(this.db, () => {
       const row = this.epicRow(epicId);
       if (row === null || (row.state !== "running" && row.state !== "stalled")) return;
-      const abandoned = items.every((item) => item.state === "cancelled");
+      const abandoned = !history.some(
+        (item) => item.state === "merged" || item.state === "completed",
+      );
       const result = transitionEpic(row.state, "completed");
       if (!result.ok) return;
       this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state = ?", [
@@ -2443,18 +2618,23 @@ export class Orchestrator {
         this.postStatus(items.at(-1)!, "completed", epicIssueId);
       const session = this.epicSession(items);
       if (session === null) return;
-      const identifiers = items
-        .filter((item) => item.state !== "cancelled")
-        .map((item) => item.linearIdentifier)
-        .join(", ");
+      const identifiers = [
+        ...new Set(
+          history
+            .filter((item) => item.state === "merged" || item.state === "completed")
+            .map((item) => item.linearIdentifier),
+        ),
+      ].join(", ");
       const cancelled = items
         .filter((item) => item.state === "cancelled")
         .map((item) => item.linearIdentifier);
-      const results = items.flatMap((item) => {
-        const finalText =
-          item.currentRunId && getRun(this.db, item.currentRunId)?.checkpoint?.resultBody;
-        return finalText ? [`${item.linearIdentifier}: ${finalText}`] : [];
-      });
+      const results = history
+        .filter((item) => item.state === "merged" || item.state === "completed")
+        .flatMap((item) => {
+          const finalText =
+            item.currentRunId && getRun(this.db, item.currentRunId)?.checkpoint?.resultBody;
+          return finalText ? [`${item.linearIdentifier}: ${finalText}`] : [];
+        });
       enqueueOutboxOnce(this.db, {
         target: "linear",
         op: "activity",
@@ -2494,8 +2674,10 @@ export class Orchestrator {
        AND i.linear_issue_id=b.blocker_linear_issue_id WHERE b.epic_id=? AND b.blocked_linear_issue_id=?`,
       )
       .all(item.epicId, item.linearIssueId);
+    const active = new Set(this.epicItems(item.epicId).map((entry) => entry.id));
     if (
       blockers.some((blocker) => {
+        if (!active.has(blocker.id)) return false;
         const row = getWorkItem(this.db, blocker.id);
         return (
           row &&
@@ -2533,14 +2715,19 @@ export class Orchestrator {
         )
       )
         return;
-      this.db.run(
-        "UPDATE question SET cancelled_at=? WHERE id=(SELECT stalled_question_id FROM epic_execution_control WHERE epic_id=?) AND status='open' AND cancelled_at IS NULL",
-        [this.now(), epicId],
-      );
-      this.db.run(
-        "UPDATE epic_execution_control SET blocked_since=NULL,stalled_question_id=NULL WHERE epic_id=?",
-        [epicId],
-      );
+      if (human) {
+        this.db.run(
+          "UPDATE question SET cancelled_at=? WHERE id=(SELECT stalled_question_id FROM epic_execution_control WHERE epic_id=?) AND status='open' AND cancelled_at IS NULL",
+          [this.now(), epicId],
+        );
+        this.db.run(
+          "UPDATE epic_execution_control SET blocked_since=NULL,stalled_question_id=NULL WHERE epic_id=?",
+          [epicId],
+        );
+      } else
+        this.db.run("UPDATE epic_execution_control SET blocked_since=NULL WHERE epic_id=?", [
+          epicId,
+        ]);
       const row = this.epicRow(epicId);
       if (row?.state !== "stalled") return;
       const result = transitionEpic(row.state, "resumed");
@@ -2619,17 +2806,12 @@ export class Orchestrator {
 
   private blockersClear(item: WorkItemRecord): boolean {
     if (item.cancelRequested) return false;
-    const workspace = this.db
-      .query<{ id: string }, [string]>(
-        `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id
-       JOIN linear_session_task t ON t.session_id=s.session_id WHERE t.epic_id=? LIMIT 1`,
-      )
-      .get(item.epicId);
+    const workspace = this.workspaceForEpic(item.epicId);
     if (workspace) {
       try {
         return readyItems(this.db, {
           epicId: item.epicId,
-          workspaceId: workspace.id,
+          workspaceId: workspace,
         }).readyItemIds.includes(item.id);
       } catch {
         return false;
@@ -2641,12 +2823,11 @@ export class Orchestrator {
          WHERE epic_id = ? AND blocked_linear_issue_id = ?`,
       )
       .all(item.epicId, item.linearIssueId);
+    const active = new Map(
+      this.epicItems(item.epicId).map((entry) => [entry.linearIssueId, entry]),
+    );
     for (const row of rows) {
-      const blocker = this.db
-        .query<{ state: string }, [string, string]>(
-          `SELECT state FROM work_item WHERE epic_id = ? AND linear_issue_id = ?`,
-        )
-        .get(item.epicId, row.blocker_linear_issue_id);
+      const blocker = active.get(row.blocker_linear_issue_id);
       if (blocker?.state !== "merged" && blocker?.state !== "completed") return false;
     }
     return true;
@@ -2993,8 +3174,19 @@ export class Orchestrator {
     );
   }
 
-  private allItems(): WorkItemRecord[] {
-    const rows = this.db.query<{ id: string }, []>("SELECT id FROM work_item").all();
+  private allItems(includeArchived = false): WorkItemRecord[] {
+    const specification =
+      !includeArchived &&
+      this.db
+        .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_specification'")
+        .get();
+    const rows = this.db
+      .query<{ id: string }, []>(
+        specification
+          ? "SELECT id FROM work_item i WHERE NOT EXISTS(SELECT 1 FROM work_item_specification s WHERE s.item_id=i.id AND s.present=0)"
+          : "SELECT id FROM work_item",
+      )
+      .all();
     const items: WorkItemRecord[] = [];
     for (const row of rows) {
       const item = getWorkItem(this.db, row.id);
