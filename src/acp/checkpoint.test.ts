@@ -33,6 +33,52 @@ test("shutdown commits dirty files onto the item branch", async () => {
   expect(commitCheckpointSync(join(layout.root, "missing")).committed).toBe(false);
 }, 20_000);
 
+test("checkpoint excludes exact private paths despite ignore negation and force-added index entries", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  const privatePath = "private [a]*?.txt";
+  await writeFile(join(tree, privatePath), "private bytes\n");
+  await writeFile(join(tree, "private ax.txt"), "ordinary change\n");
+  await writeFile(join(tree, ".gitignore"), "!*\n");
+  await git(["-C", tree, "add", "-f", "--", `:(literal)${privatePath}`]);
+  const checkpoint = await commitCheckpoint(
+    tree,
+    "wip: safe inputs",
+    undefined,
+    undefined,
+    undefined,
+    [privatePath],
+  );
+  expect(checkpoint.committed).toBe(true);
+  await expect(
+    git(["-C", tree, "cat-file", "-e", `${checkpoint.sha}:${privatePath}`]),
+  ).rejects.toThrow();
+  expect(await git(["-C", tree, "show", `${checkpoint.sha}:private ax.txt`])).toBe(
+    "ordinary change\n",
+  );
+  expect(await readFile(join(tree, privatePath), "utf8")).toBe("private bytes\n");
+  expect(await git(["-C", tree, "ls-files", "--", `:(literal)${privatePath}`])).toBe("");
+});
+
+test("only excluded private inputs do not create an empty checkpoint", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  const before = await git(["-C", tree, "rev-parse", "HEAD"]);
+  await writeFile(join(tree, "private.txt"), "private bytes\n");
+  await git(["-C", tree, "add", "-f", "private.txt"]);
+  const checkpoint = await commitCheckpoint(
+    tree,
+    "wip: private only",
+    undefined,
+    undefined,
+    undefined,
+    ["private.txt"],
+  );
+  expect(checkpoint.committed).toBe(false);
+  expect(await git(["-C", tree, "rev-parse", "HEAD"])).toBe(before);
+  expect(await readFile(join(tree, "private.txt"), "utf8")).toBe("private bytes\n");
+});
+
 for (const phase of ["add", "commit"] as const) {
   test(`abort during checkpoint ${phase} preserves the branch, staged entries and dirty files`, async () => {
     const layout = await itemWorktree("ENG-21");
