@@ -2,10 +2,15 @@ import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   getLinearSessionAccess,
+  getLinearSession,
+  getTaskMode,
+  getTaskModeGeneration,
   getWorkItem,
   getWorkItemRepository,
   immediate,
   linearSessionForEpic,
+  taskRequiresRepository,
+  workspaceSessionIds,
 } from "../db";
 import {
   RunnerCommandSchema,
@@ -19,7 +24,7 @@ import { workspaceSecret, workspaceTokenHash } from "../workspace";
 import { findOpenQuestion } from "../questions";
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
-type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "check" }>;
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "check" | "task" }>;
 type Assignment = {
   runId: string;
   runnerId: string;
@@ -51,8 +56,8 @@ export function createRunnerWork(options: {
   }
   function availableIdentity(id: string) {
     return db
-      .query<{ workspaceId: string; fence: number; status: string }, [string]>(
-        `SELECT r.workspace_id AS workspaceId,r.fence,r.status FROM runner r
+      .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>(
+        `SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r
       JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
       WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1`,
       )
@@ -63,7 +68,7 @@ export function createRunnerWork(options: {
     if (!row) throw new Error("Runner identity is unavailable.");
     return row;
   }
-  function task(runId: string, workspaceId: string, allowPendingQuestion = false) {
+  function activeTask(runId: string, allowPendingQuestion = false) {
     const execution = db
       .query<{ itemId: string }, [string]>(
         "SELECT item_id AS itemId FROM run WHERE id=? AND status IN ('provisioning','active')",
@@ -85,6 +90,10 @@ export function createRunnerWork(options: {
       if (question?.itemId !== item.id || question.runId !== runId)
         throw new Error("Run has no matching open question.");
     }
+    return { item, sessionId };
+  }
+  function task(runId: string, workspaceId: string, allowPendingQuestion = false) {
+    const { item, sessionId } = activeTask(runId, allowPendingQuestion);
     const repository = getWorkItemRepository(db, item.id);
     if (!repository) throw new Error("Run repository is not bound.");
     const mapped = db
@@ -94,6 +103,62 @@ export function createRunnerWork(options: {
       .get(workspaceId, sessionId, `${repository.owner}/${repository.repo}`);
     if (!mapped) throw new Error("Run is outside the runner workspace repository access.");
     return { item, repository };
+  }
+  function responseTask(
+    runId: string,
+    workspaceId: string,
+    allowPendingQuestion = false,
+    userId?: string,
+  ) {
+    const { item, sessionId } = activeTask(runId, allowPendingQuestion);
+    const session = getLinearSession(db, sessionId);
+    const purpose = getTaskMode(db, item.id);
+    const installation = db
+      .query<{ clientId: string | null }, [string]>(
+        "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
+      )
+      .get(sessionId);
+    if (
+      !session ||
+      session.stoppedAt !== null ||
+      !installation?.clientId ||
+      (purpose !== "answer" && purpose !== "artifact") ||
+      !db
+        .query("SELECT 1 FROM workspace WHERE id=? AND linear_organization_id=?")
+        .get(workspaceId, session.organizationId) ||
+      (userId !== undefined &&
+        !workspaceSessionIds(db, workspaceId, userId, installation.clientId).includes(sessionId))
+    )
+      throw new RunnerWorkFencedError("Linear response task authority changed");
+    return {
+      item,
+      sessionId,
+      sessionGeneration: session.generation,
+      taskModeGeneration: getTaskModeGeneration(db, item.id),
+      purpose,
+      repository: taskRequiresRepository(db, item.id)
+        ? task(runId, workspaceId, allowPendingQuestion).repository
+        : undefined,
+    };
+  }
+  function bindTask(
+    command: Extract<WorkCommand, { type: "task" }>,
+    current: ReturnType<typeof responseTask>,
+  ) {
+    if (
+      command.itemId !== current.item.id ||
+      command.sessionId !== current.sessionId ||
+      command.sessionGeneration !== current.sessionGeneration ||
+      command.taskModeGeneration !== current.taskModeGeneration ||
+      command.purpose !== current.purpose ||
+      (command.repository === undefined) !== (current.repository === undefined) ||
+      (command.repository &&
+        (!current.repository ||
+          command.repository.owner !== current.repository.owner ||
+          command.repository.repo !== current.repository.repo ||
+          command.repository.remoteUrl !== current.repository.remoteUrl))
+    )
+      throw new RunnerWorkFencedError("Linear response task binding changed");
   }
   function live(
     runnerId: string,
@@ -114,9 +179,16 @@ export function createRunnerWork(options: {
       work.leaseUntil <= at
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
-    const current = task(runId, work.workspaceId, allowPendingQuestion);
     const command = workCommand(work);
     if (command.expiresAt <= at) throw new RunnerWorkFencedError("Runner command expired.");
+    if (command.type === "task") {
+      bindTask(
+        command,
+        responseTask(runId, work.workspaceId, allowPendingQuestion, identity.userId),
+      );
+      return work;
+    }
+    const current = task(runId, work.workspaceId, allowPendingQuestion);
     if (
       current.item.id !== command.itemId ||
       current.repository.owner !== command.repository.owner ||
@@ -136,7 +208,10 @@ export function createRunnerWork(options: {
       JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")),
     );
     if (
-      (command.type !== "run" && command.type !== "review" && command.type !== "check") ||
+      (command.type !== "run" &&
+        command.type !== "review" &&
+        command.type !== "check" &&
+        command.type !== "task") ||
       command.runId !== work.runId ||
       command.runnerId !== work.runnerId ||
       command.workspaceId !== work.workspaceId ||
@@ -191,6 +266,9 @@ export function createRunnerWork(options: {
     scope(runId: string, workspaceId: string) {
       return task(runId, workspaceId);
     },
+    scopeTask(runId: string, workspaceId: string) {
+      return responseTask(runId, workspaceId);
+    },
     current(runId: string, generation: number) {
       const assigned = assignment(runId);
       if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
@@ -199,7 +277,12 @@ export function createRunnerWork(options: {
     },
     assign(input: WorkCommand) {
       const command = RunnerCommandSchema.parse(input);
-      if (command.type !== "run" && command.type !== "review" && command.type !== "check")
+      if (
+        command.type !== "run" &&
+        command.type !== "review" &&
+        command.type !== "check" &&
+        command.type !== "task"
+      )
         throw new Error("Work command is required.");
       return immediate(db, () => {
         const at = now();
@@ -219,14 +302,21 @@ export function createRunnerWork(options: {
             .get(command.runnerId, at)
         )
           throw new Error("Runner is occupied by session helper work.");
-        const { item, repository } = task(command.runId, command.workspaceId);
-        if (
-          item.id !== command.itemId ||
-          repository.owner !== command.repository.owner ||
-          repository.repo !== command.repository.repo ||
-          repository.remoteUrl !== command.repository.remoteUrl
-        )
-          throw new Error("Run assignment repository or task changed.");
+        if (command.type === "task")
+          bindTask(
+            command,
+            responseTask(command.runId, command.workspaceId, false, accepting.userId),
+          );
+        else {
+          const { item, repository } = task(command.runId, command.workspaceId);
+          if (
+            item.id !== command.itemId ||
+            repository.owner !== command.repository.owner ||
+            repository.repo !== command.repository.repo ||
+            repository.remoteUrl !== command.repository.remoteUrl
+          )
+            throw new Error("Run assignment repository or task changed.");
+        }
         const previous = assignment(command.runId);
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
@@ -256,7 +346,12 @@ export function createRunnerWork(options: {
     },
     enqueue(input: RunnerCommand) {
       const command = RunnerCommandSchema.parse(input);
-      if (command.type === "run" || command.type === "review" || command.type === "check")
+      if (
+        command.type === "run" ||
+        command.type === "review" ||
+        command.type === "check" ||
+        command.type === "task"
+      )
         throw new Error("Use work assignment for run commands.");
       if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
       return immediate(db, () => {
@@ -305,7 +400,12 @@ export function createRunnerWork(options: {
           const payload = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
-          if (payload.type === "run" || payload.type === "review" || payload.type === "check") {
+          if (
+            payload.type === "run" ||
+            payload.type === "review" ||
+            payload.type === "check" ||
+            payload.type === "task"
+          ) {
             try {
               live(runnerId, row.runId!, row.generation!, now());
             } catch {
@@ -391,6 +491,13 @@ export function createRunnerWork(options: {
           )
           .get(input.runId, input.generation, input.sequence);
         const work = authorized(input, saved !== null);
+        const command = workCommand(work);
+        if (
+          command.type === "task" &&
+          (input.event.type === "candidate" ||
+            (command.purpose === "answer" && input.event.type === "artifact"))
+        )
+          throw new Error("Response task event is not authorized");
         if (saved) {
           if (saved.payload !== event) throw new Error("Event replay changed its payload.");
           return { duplicate: true };
@@ -412,9 +519,10 @@ export function createRunnerWork(options: {
     },
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
       const work = authorized(input);
+      const command = workCommand(work);
       return {
-        command: workCommand(work),
-        branch: getWorkItem(db, workCommand(work).itemId)!.branchName,
+        command,
+        branch: command.type === "task" ? null : getWorkItem(db, command.itemId)!.branchName,
       };
     },
     finish(runId: string, generation: number) {

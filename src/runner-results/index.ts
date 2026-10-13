@@ -42,9 +42,11 @@ export function createRunnerResults(options: {
       return immediate(db, () => {
         const { command } = work.authorize(input);
         if (
-          (command.type !== "run" && command.type !== "review") ||
+          (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
           result.commandId !== command.id ||
-          result.role !== (command.type === "run" ? "implementer" : "reviewer") ||
+          result.role !== (command.type === "review" ? "reviewer" : "implementer") ||
+          (command.type === "task" &&
+            (result.candidateSha !== undefined || result.reviewText !== undefined)) ||
           (command.type === "run" && result.reviewText !== undefined) ||
           (command.type === "review" && result.candidateSha !== undefined) ||
           (result.candidateSha !== undefined &&
