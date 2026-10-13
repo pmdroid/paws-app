@@ -23,20 +23,24 @@ export function readCsrfToken(root: {
   return content ?? "";
 }
 
-export async function loadGitHubUser(
+export async function loadGitHubAccess(
   fetchImpl: typeof fetch = fetch,
-): Promise<{ login: string; id: number } | null> {
+): Promise<{ allowed: boolean; user: { login: string; id: number } | null }> {
   const response = await fetchImpl("/api/auth/github", {
     headers: { Accept: "application/json" },
     cache: "no-store",
   });
-  if (!response.ok) return null;
+  if (response.status === 403) return { allowed: false, user: null };
+  if (!response.ok) throw new Error("GitHub access could not be checked.");
   const body: unknown = await response.json();
-  if (!isRecord(body)) return null;
-  const user = body.user;
-  if (user === null) return null;
-  if (!isRecord(user) || typeof user.login !== "string" || typeof user.id !== "number") return null;
-  return { login: user.login, id: user.id };
+  const user = isRecord(body) ? body.user : null;
+  return {
+    allowed: true,
+    user:
+      isRecord(user) && typeof user.login === "string" && typeof user.id === "number"
+        ? { login: user.login, id: user.id }
+        : null,
+  };
 }
 
 export async function startGitHubDevice(
