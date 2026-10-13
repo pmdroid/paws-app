@@ -226,7 +226,9 @@ test.skipIf(process.platform !== "linux")(
       expect(await pending).toMatchObject({ name: "AbortError" });
       const running = () => {
         try {
-          return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0] !== "Z";
+          return !["X", "Z"].includes(
+            readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0] ?? "",
+          );
         } catch {
           return false;
         }
