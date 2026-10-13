@@ -185,6 +185,9 @@ export async function probeRunnerOrchestration(
         return { command: "/forbidden-local-agent", args: [] };
       },
       remoteExecution: {
+        agentForSession() {
+          throw new Error("This fixture does not request a routing helper");
+        },
         agentForItem(itemId) {
           return async (options: RunAgentOptions) => {
             if (reverifying) laterDispatches++;
