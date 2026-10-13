@@ -1093,4 +1093,23 @@ ALTER TABLE runner_command_with_tasks RENAME TO runner_command;
 CREATE INDEX runner_command_pending ON runner_command(runner_id,acknowledged_at,ordinal);
 `,
   },
+  {
+    id: "039_epic_dependencies",
+    sql: `
+CREATE TABLE epic_dependency_snapshot (
+  epic_id TEXT PRIMARY KEY REFERENCES epic(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  scope TEXT NOT NULL CHECK(json_valid(scope)),
+  linear_states TEXT NOT NULL CHECK(json_valid(linear_states))
+) STRICT;
+CREATE TABLE external_dep (
+  epic_id TEXT NOT NULL REFERENCES epic(id),
+  blocker_linear_issue_id TEXT NOT NULL,
+  blocked_linear_issue_id TEXT NOT NULL,
+  PRIMARY KEY(epic_id,blocker_linear_issue_id,blocked_linear_issue_id)
+) STRICT;
+CREATE INDEX external_dep_blocker ON external_dep(blocker_linear_issue_id,epic_id);
+`,
+  },
 ];
