@@ -1048,4 +1048,23 @@ CREATE TABLE runner_check_execution (
 CREATE INDEX runner_check_attempt_execution ON runner_check_execution(attempt_id,generation);
 `,
   },
+  {
+    id: "037_runner_helpers",
+    sql: `
+CREATE TABLE runner_helper (
+  id TEXT PRIMARY KEY,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+  session_generation INTEGER NOT NULL,
+  runner_fence INTEGER NOT NULL,
+  envelope TEXT NOT NULL CHECK(json_valid(envelope)),
+  expires_at INTEGER NOT NULL,
+  acknowledged_at INTEGER,
+  ended_at INTEGER,
+  result TEXT CHECK(result IS NULL OR json_valid(result))
+) STRICT;
+CREATE INDEX runner_helper_pending ON runner_helper(runner_id,acknowledged_at,expires_at);
+`,
+  },
 ];
