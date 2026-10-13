@@ -23,5 +23,6 @@ export { createWorkspaceIdentityLinks } from "./identity-links";
 
 export { createWorkspaceAssignments } from "./assignments";
 export type { WorkspaceAssignments } from "./assignments";
+export { handleWorkspaceGitHubIntegration } from "./github-integration";
 export { createGitHubAttributionLink } from "./github-attribution";
 export { createCommitPolicyForItem, MissingCommitAttributionError } from "./commit-attribution";

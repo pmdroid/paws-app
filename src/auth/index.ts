@@ -20,6 +20,7 @@ export {
 export { PAWS_GITHUB_OAUTH_CLIENT_ID } from "../config";
 export { checkGitHubCliRepositoryAccess, createGitHubTokenProvider } from "./provider";
 export { createVerifiedGitHubLogin } from "./verified-login";
+export { createGitHubInstallationCheck } from "./installation";
 export type { GitHubAuthSource, GitHubTokenProvider, GitHubTokenProviderConfig } from "./provider";
 export { createTokenStore, githubOAuthPath, SecretServiceUnavailableError } from "./store";
 export type { GitHubTokenStore, StoredGitHubOAuth, TokenBackend } from "./store";
@@ -30,3 +31,10 @@ export {
   resolveGitHubOAuthClientId,
   scopesGrantRepoAndOrg,
 } from "./github-device";
+export { createWorkspaceGitHubActivation, type ActiveGitHubApp } from "./workspace-app";
+export {
+  githubAppAuthorization,
+  hash,
+  newGitHubOAuthSecret,
+  verifyHostedGitHubApp,
+} from "./hosted-app";

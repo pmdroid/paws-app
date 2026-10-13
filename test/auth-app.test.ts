@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createGitHubTokenProvider,
+  createGitHubInstallationCheck,
   createDashboardGitHubAuth,
   createVerifiedGitHubLogin,
   createTokenStore,
@@ -158,12 +159,43 @@ test("GitHub App login leaves configuration untouched when user access or bot pe
   for (const failure of ["push", "permissions"] as const) {
     const scene = fixture(failure);
     await expect(loginGitHub(scene.options)).rejects.toThrow(
-      failure === "push" ? "must have push access" : "issues permission must be write",
+      failure === "push" ? "must administer" : "issues permission must be write",
     );
     expect(await scene.store.load()).toBeNull();
     expect(existsSync(join(scene.home, "secrets/github-app.json"))).toBe(false);
     expect(existsSync(pawsPaths(scene.home).configFile)).toBe(false);
   }
+});
+
+test("installation checks use App authority without reading a saved human token", async () => {
+  const scene = fixture();
+  const check = createGitHubInstallationCheck({
+    home: scene.home,
+    env: { ...scene.options.env, GITHUB_APP_INSTALLATION_ID: "22" },
+    fetch: scene.options.fetch,
+  });
+  expect(await check("acme/widgets", "write", new AbortController().signal)).toBe(true);
+  expect(scene.calls.some((call) => call.path === "/user")).toBe(false);
+  expect(await scene.store.load()).toBeNull();
+});
+
+test("installation checks reject revoked, foreign and permission-reduced installations", async () => {
+  for (const failure of ["installation", "permissions"] as const) {
+    const scene = fixture(failure);
+    const check = createGitHubInstallationCheck({
+      home: scene.home,
+      env: { ...scene.options.env, GITHUB_APP_INSTALLATION_ID: "22" },
+      fetch: scene.options.fetch,
+    });
+    expect(await check("acme/widgets", "write", new AbortController().signal)).toBe(false);
+  }
+  const scene = fixture();
+  const check = createGitHubInstallationCheck({
+    home: scene.home,
+    env: { ...scene.options.env, GITHUB_APP_INSTALLATION_ID: "23" },
+    fetch: scene.options.fetch,
+  });
+  expect(await check("acme/widgets", "write", new AbortController().signal)).toBe(false);
 });
 
 function fixture(failure?: "client" | "installation" | "push" | "permissions") {
@@ -219,7 +251,10 @@ function fixture(failure?: "client" | "installation" | "push" | "permissions") {
         return Response.json({ login: "octocat", id: 7 });
       }
       if (url.pathname === "/repos/acme/widgets")
-        return Response.json({ permissions: { push: failure !== "push" } });
+        return Response.json({
+          owner: { type: "User", id: 7 },
+          permissions: { admin: failure !== "push", push: true },
+        });
       if (url.pathname === "/app/installations/22/access_tokens") {
         expect(JSON.parse(String(init?.body))).toEqual({
           repositories: ["widgets"],
