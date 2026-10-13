@@ -133,7 +133,7 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
   const workerId = options.workerId ?? "outbox";
   const limit = options.limit ?? 32;
   const rows = db
-    .query<OutboxSqlRow, [string, number, string, number, number, number, number]>(
+    .query<OutboxSqlRow, [string, number, string, number, number, number, number, number]>(
       `WITH ranked AS (
        SELECT o.id, ROW_NUMBER() OVER (
          PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
@@ -151,23 +151,60 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
              AND terminal.delivery_kind IN ('terminal', 'stop')
              AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
          ))
+     ), eligible AS (
+       SELECT o.*, ROW_NUMBER() OVER (
+         PARTITION BY CASE WHEN o.target='linear' AND o.delivery_kind='progress'
+           AND o.op IN ('activity','linear.activity')
+           AND json_extract(o.payload,'$.kind') IN ('thought','action')
+         THEN json_array(o.activity_run_id,
+           CASE WHEN o.activity_run_id IS NULL THEN o.ordering_key END,
+           CASE WHEN o.activity_run_id IS NULL THEN o.delivery_generation END)
+         ELSE CAST(o.id AS TEXT) END
+         ORDER BY o.priority,o.id
+       ) AS budget_position
+       FROM outbox o JOIN ranked r ON r.id=o.id AND r.position=1
+       WHERE o.status='pending' AND o.not_before<=?4
+         AND (o.locked_until IS NULL OR o.locked_until<=?5)
+         AND (o.target<>'linear' OR NOT EXISTS(
+           SELECT 1 FROM linear_outbox_backoff WHERE not_before>?4
+         ))
+         AND NOT EXISTS (
+           SELECT 1 FROM json_each(?3) WHERE value=o.target || ':' || o.ordering_key
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM outbox busy WHERE busy.target=o.target
+             AND busy.ordering_key=o.ordering_key AND busy.locked_until>?6
+         )
      )
-     UPDATE outbox SET locked_by = ?, locked_until = ?, attempts = attempts + 1
+     UPDATE outbox SET locked_by = ?1, locked_until = ?2, attempts = attempts + 1
      WHERE id IN (
-       SELECT o.id FROM outbox o JOIN ranked r ON r.id = o.id AND r.position = 1
-       WHERE o.status = 'pending' AND o.not_before <= ?4
-         AND (o.locked_until IS NULL OR o.locked_until <= ?5)
-         AND NOT EXISTS (
-           SELECT 1 FROM json_each(?3) WHERE value = o.target || ':' || o.ordering_key
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM outbox busy WHERE busy.target = o.target
-             AND busy.ordering_key = o.ordering_key AND busy.locked_until > ?6
-         )
+       SELECT o.id FROM eligible o
+       WHERE NOT (o.target='linear' AND o.delivery_kind='progress'
+         AND o.op IN ('activity','linear.activity')
+         AND COALESCE(json_extract(o.payload,'$.kind'),'') IN ('thought','action'))
+       OR o.budget_position+(
+         SELECT COUNT(*) FROM outbox b WHERE b.target='linear' AND b.delivery_kind='progress'
+           AND b.op IN ('activity','linear.activity')
+           AND json_extract(b.payload,'$.kind') IN ('thought','action')
+           AND b.activity_run_id IS o.activity_run_id
+           AND (o.activity_run_id IS NOT NULL OR (
+             b.ordering_key IS o.ordering_key AND b.delivery_generation=o.delivery_generation
+           ))
+           AND (b.sent_at>?8 OR (b.status='pending' AND b.locked_until>?4))
+       )<=60
        ORDER BY o.priority, o.id LIMIT ?7
      ) RETURNING *`,
     )
-    .all(workerId, now + leaseMs, JSON.stringify(options.blockedKeys ?? []), now, now, now, limit);
+    .all(
+      workerId,
+      now + leaseMs,
+      JSON.stringify(options.blockedKeys ?? []),
+      now,
+      now,
+      now,
+      limit,
+      now - 3_600_000,
+    );
   return rows.map(mapOutbox);
 }
 
@@ -255,28 +292,58 @@ export function retryOutbox(
   error: unknown,
   options: { now?: number; baseMs?: number; capMs?: number } = {},
 ): void {
-  const now = options.now ?? Date.now();
-  const delay = retryBackoffMs(
-    row.attempts,
-    options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
-    options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
-  );
-  db.run(
-    `UPDATE outbox
-     SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
-         not_before = CASE WHEN attempts >= max_attempts THEN not_before ELSE ? END,
-         locked_by = NULL,
-         locked_until = NULL,
-         error = ?
-     WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
-    [now + delay, errorText(error), row.id, row.lockedBy, row.attempts],
-  );
-  db.run(
-    `UPDATE outbox SET locked_by = NULL, locked_until = NULL,
-      error = COALESCE(error, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'
-    WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
-    [row.id, row.lockedBy, row.attempts],
-  );
+  immediate(db, () => {
+    const now = options.now ?? Date.now();
+    const retryAfter =
+      row.target === "linear" && error instanceof Error && error.name === "LinearRateLimitError"
+        ? (error as Error & { retryAfterMs?: number }).retryAfterMs
+        : undefined;
+    const rateLimited =
+      typeof retryAfter === "number" &&
+      Number.isSafeInteger(retryAfter) &&
+      retryAfter >= 0 &&
+      Number.isSafeInteger(now + retryAfter);
+    const delay = rateLimited
+      ? retryAfter
+      : retryBackoffMs(
+          row.attempts,
+          options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
+          options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
+        );
+    if (rateLimited) {
+      db.run(
+        `INSERT INTO linear_outbox_backoff(id,not_before) VALUES(1,?)
+         ON CONFLICT(id) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)`,
+        [now + delay],
+      );
+    }
+    db.run(
+      `UPDATE outbox
+       SET status = CASE WHEN ? THEN 'pending' WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
+           max_attempts=max_attempts+?,
+           not_before = CASE WHEN ? OR attempts < max_attempts THEN ? ELSE not_before END,
+           locked_by = NULL,
+           locked_until = NULL,
+           error = ?
+       WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ?`,
+      [
+        rateLimited ? 1 : 0,
+        rateLimited ? 1 : 0,
+        rateLimited ? 1 : 0,
+        now + delay,
+        errorText(error),
+        row.id,
+        row.lockedBy,
+        row.attempts,
+      ],
+    );
+    db.run(
+      `UPDATE outbox SET locked_by = NULL, locked_until = NULL,
+        error = COALESCE(error, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'
+      WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
+      [row.id, row.lockedBy, row.attempts],
+    );
+  });
 }
 
 export type DispatchOptions = OutboxClaimOptions & {
@@ -331,8 +398,9 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
     const inserted = db
       .query<{ id: number }, (string | number | null)[]>(
         `${verb} INTO outbox (target, op, ordering_key, idempotency_key, payload, priority,
-        not_before, created_at, max_attempts, delivery_kind, delivery_generation, status, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        not_before, created_at, max_attempts, delivery_kind, delivery_generation, status, error, activity_run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         (SELECT current_run_id FROM work_item WHERE id=?)) RETURNING id`,
       )
       .get(
         row.target,
@@ -348,7 +416,19 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         generation,
         blocked ? "dropped" : "pending",
         blocked ? "Rejected by the persisted session fence." : null,
+        (row.payload as { itemId?: string } | undefined)?.itemId ?? null,
       );
+    if (inserted && !blocked && row.target === "linear" && delivery === "progress") {
+      db.run(
+        `UPDATE outbox SET status='dropped',error='Superseded by a newer canonical run.'
+         WHERE target='linear' AND ordering_key=? AND status='pending' AND locked_by IS NULL
+           AND delivery_kind='progress' AND op IN ('activity','linear.activity')
+           AND activity_run_id IS NOT NULL AND activity_run_id<>(
+             SELECT activity_run_id FROM outbox WHERE id=?
+           )`,
+        [row.orderingKey ?? null, inserted.id],
+      );
+    }
     if (
       inserted &&
       !blocked &&

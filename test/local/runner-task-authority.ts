@@ -9,12 +9,12 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   migrate,
+  migrations,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   saveTaskMode,
 } from "../../src/db";
-import { migrations } from "../../src/db/migrations";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
 import {
@@ -33,17 +33,23 @@ export async function probeRunnerTaskAuthority(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.sqlite"));
   db.run("CREATE TABLE schema_migration(id TEXT PRIMARY KEY,applied_at INTEGER NOT NULL) STRICT");
-  for (const migration of migrations.slice(
-    0,
-    migrations.findIndex((value) => value.id === "038_runner_task_commands"),
-  )) {
+  const applyMigration = (migration: (typeof migrations)[number]) => {
     if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys=OFF");
-    db.transaction(() => {
-      db.run(migration.sql);
-      db.run("INSERT INTO schema_migration VALUES(?,?)", [migration.id, Date.now()]);
-    }).immediate();
-    db.run("PRAGMA foreign_keys=ON");
-  }
+    try {
+      db.transaction(() => {
+        db.run(migration.sql);
+        assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
+        db.run("INSERT INTO schema_migration VALUES(?,?)", [migration.id, Date.now()]);
+      }).immediate();
+    } finally {
+      db.run("PRAGMA foreign_keys=ON");
+    }
+  };
+  const taskMigrationIndex = migrations.findIndex(
+    (value) => value.id === "038_runner_task_commands",
+  );
+  assert(taskMigrationIndex > 0);
+  for (const migration of migrations.slice(0, taskMigrationIndex)) applyMigration(migration);
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
@@ -153,23 +159,49 @@ export async function probeRunnerTaskAuthority(
       runnerId,
       now,
     ]);
+    db.run(
+      "INSERT INTO outbox(target,op,ordering_key,idempotency_key,payload,created_at) VALUES('linear','activity','retained-session','retained-upgrade',?,?)",
+      [JSON.stringify({ body: "Preserve pending delivery" }), now],
+    );
+    const legacyOutbox = db
+      .query<Record<string, unknown>, []>("SELECT * FROM outbox ORDER BY id")
+      .all();
+    const legacyOutboxColumns = Object.keys(legacyOutbox[0]!)
+      .map((column) => `"${column.replaceAll('"', '""')}"`)
+      .join(",");
     const rows = db.query("SELECT * FROM runner_command").all();
     const catalog = () =>
       db
         .query(
-          "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name<>'runner_command' ORDER BY name",
+          "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
         )
         .all();
-    const before = catalog();
-    migrate(db);
+    const before = catalog().filter((row) => (row as { name: string }).name !== "runner_command");
+    applyMigration(migrations[taskMigrationIndex]!);
     const after = catalog();
     const retained = new Set(before.map((row) => (row as { name: string }).name));
     assert.deepEqual(
       after.filter((row) => retained.has((row as { name: string }).name)),
       before,
     );
+    assert.deepEqual(db.query("SELECT * FROM outbox ORDER BY id").all(), legacyOutbox);
     migrate(db);
-    assert.deepEqual(catalog(), after);
+    const fullCatalog = catalog();
+    const fullLedger = db.query("SELECT * FROM schema_migration ORDER BY id").all();
+    assert.equal(fullLedger.length, migrations.length);
+    migrate(db);
+    assert.deepEqual(catalog(), fullCatalog);
+    assert.deepEqual(db.query("SELECT * FROM schema_migration ORDER BY id").all(), fullLedger);
+    assert.deepEqual(
+      db.query(`SELECT ${legacyOutboxColumns} FROM outbox ORDER BY id`).all(),
+      legacyOutbox,
+    );
+    assert(
+      db
+        .query<{ activity_run_id: string | null }, []>("SELECT activity_run_id FROM outbox")
+        .all()
+        .every((row) => row.activity_run_id === null),
+    );
     assert.deepEqual(db.query("SELECT * FROM runner_command").all(), rows);
     assert.equal(
       db.query<{ command_id: string }, []>("SELECT command_id FROM runner_health_result").get()
@@ -184,9 +216,16 @@ export async function probeRunnerTaskAuthority(
     );
     assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
     observe(
-      "task migration preserves command rows, ordinal highwater, indexes, triggers and foreign keys",
+      "Migration038 preserves its existing catalog and full upgrade preserves legacy data with an idempotent complete catalog",
       true,
-      { rows: rows.length, highwater: 1000, objects: before.length },
+      {
+        rows: rows.length,
+        highwater: 1000,
+        objects: before.length,
+        fullObjects: fullCatalog.length,
+        fullMigrations: fullLedger.length,
+        pendingDeliveries: legacyOutbox.length,
+      },
     );
     const repository = {
       owner: "fixture",

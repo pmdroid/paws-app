@@ -1063,6 +1063,7 @@ export class Orchestrator {
           "Preparing the requested answer.",
           `${run.id}:keep:${this.now()}`,
           { ephemeral: true },
+          "critical",
         );
         void this.flush();
       }
@@ -1201,6 +1202,7 @@ export class Orchestrator {
         live.progress ?? `Still working on ${item.linearIdentifier}.`,
         `${run.id}:keep:${this.now()}`,
         { ephemeral: true },
+        "critical",
       );
       void this.flush();
     }, KEEPALIVE_MS);
@@ -2950,6 +2952,7 @@ export class Orchestrator {
     body: string,
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
+    delivery?: "critical",
   ): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
@@ -2962,6 +2965,7 @@ export class Orchestrator {
       op: "activity",
       orderingKey: sessionId,
       idempotencyKey: key,
+      delivery,
       payload: { ...details, sessionId, itemId: item.id, issueId: item.linearIssueId, kind, body },
       now: this.now(),
     });
