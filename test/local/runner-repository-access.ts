@@ -83,6 +83,7 @@ export async function probeRunnerRepositoryAccess(
   });
   const pending = await control.beginPairing({ name: "Repository VM", csr: client.csr });
   const { runnerId } = await control.approvePairing(principal, pending.code);
+  now = Date.now();
   const identity = control.claimPairing(pending.id, pending.claim);
   assert.equal(identity.status, "approved");
   if (identity.status !== "approved") throw new Error("Pairing was not approved");
