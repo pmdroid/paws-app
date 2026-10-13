@@ -1,8 +1,13 @@
+import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
 import type { PublicTls } from "../deployment";
-import { createDashboardGitHubAuth } from "../auth";
-import { DEFAULT_HOST, DEFAULT_PORT } from "../config";
+import {
+  createDashboardGitHubAuth,
+  createGitHubInstallationCheck,
+  createWorkspaceGitHubActivation,
+} from "../auth";
+import { DEFAULT_HOST, DEFAULT_PORT, loadRuntime } from "../config";
 import { handleGitHubWebhook, type GitHubWebhook } from "../github";
 import { handleLinearWebhook, webhookChecksNeeded, type LinearWebhookDeps } from "../linear";
 import {
@@ -14,6 +19,7 @@ import {
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
+  handleWorkspaceGitHubIntegration,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   type WorkspaceAccess,
@@ -164,6 +170,24 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const access = requestWorkspaceSession(secrets.db, request, Date.now());
       if (access !== null) csrfToken = access.session.csrfToken;
     }
+    if (
+      (path === "/api/workspaces/github-connect" || path === "/auth/github-app/callback") &&
+      secrets.db
+    ) {
+      try {
+        await workspace.authenticate(request);
+      } catch {
+        return Response.json({ error: "Workspace access could not be verified." }, { status: 503 });
+      }
+      const env = secrets.statusEnv ?? process.env;
+      const runtime = loadRuntime(env);
+      return (await createHostedGitHubConnect({
+        db: secrets.db,
+        home: runtime.env.home,
+        env,
+        origin: workspace.origin,
+      })(request))!;
+    }
     if (path.startsWith("/api/")) {
       let access;
       try {
@@ -176,8 +200,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       const selected =
         new URL(request.url).searchParams.get("workspaceId") ??
         request.headers.get("x-paws-workspace");
-      if (selected !== null && selected !== access.principal.workspaceId)
+      if (selected !== null && selected !== access.principal.workspaceId) {
+        auditWorkspaceAccess(secrets.db, {
+          workspaceId: access.principal.workspaceId,
+          userId: access.principal.userId,
+          action: "access.denied",
+          subject: path,
+          now: Date.now(),
+        });
         return Response.json({ error: "Workspace access denied." }, { status: 403 });
+      }
       const privileged =
         path.startsWith("/api/settings/") ||
         path.startsWith("/api/auth/github") ||
@@ -203,6 +235,27 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           { error: "Workspace ownership, recent sign-in and a valid CSRF token are required." },
           { status: 403 },
         );
+      }
+      if (path === "/api/workspaces/github-integration") {
+        const env = secrets.statusEnv ?? process.env;
+        const runtime = loadRuntime(env);
+        const activation = createWorkspaceGitHubActivation(secrets.db, runtime.env.home, env);
+        const check = createGitHubInstallationCheck({
+          home: runtime.env.home,
+          env,
+          resolve: (repository) => activation.resolve(repository),
+        });
+        return (await handleWorkspaceGitHubIntegration(request, {
+          db: secrets.db,
+          principal: access.principal,
+          session: access.session,
+          origin: workspace.origin,
+          now: Date.now,
+          check: (repository, signal) =>
+            runtime.githubAuth === "app"
+              ? check(repository, "write", signal)
+              : Promise.resolve(false),
+        }))!;
       }
       csrfToken = access.session.csrfToken;
       sessionIds = workspaceSessionIds(
