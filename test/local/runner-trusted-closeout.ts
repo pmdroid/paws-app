@@ -163,6 +163,18 @@ export async function probeRunnerTrustedCloseout(
     });
     const seen = new Set<string>();
     const executions: { attempt: string; candidate: string; generation: number }[] = [];
+    async function acknowledgeCancellation() {
+      const pending = (await daemon.pollCommands()).commands;
+      for (const cancellation of pending.filter((value) => value.type === "cancel")) {
+        await daemon.acknowledgeCommand(cancellation.id);
+        const receipt = db
+          .query<{ acknowledged: number | null }, [string]>(
+            "SELECT acknowledged_at AS acknowledged FROM runner_command WHERE id=?",
+          )
+          .get(cancellation.id);
+        assert.equal(typeof receipt?.acknowledged, "number");
+      }
+    }
     async function next() {
       for (let retry = 0; retry < 100; retry++) {
         const pending = (await daemon.pollCommands()).commands;
@@ -371,6 +383,7 @@ export async function probeRunnerTrustedCloseout(
       assert(!existsSync(deniedLog));
       blockerController.abort();
       await blockerStopped;
+      await acknowledgeCancellation();
       observe(
         `Preferred runner busy waiting rejects ${busyMode} without trusted evidence or capacity leakage`,
         true,
@@ -402,6 +415,7 @@ export async function probeRunnerTrustedCloseout(
         db.run("UPDATE runner_work SET generation=generation+1 WHERE run_id=?", [run.id]);
       else coordinator.control.setStatus(principal, runnerId, "revoked");
       await rejected;
+      if (mode !== "revoke") await acknowledgeCancellation();
       assert(!existsSync(join(root, mode + ".log")));
       const state = db
         .query<{ ended: number | null }, [string]>(
