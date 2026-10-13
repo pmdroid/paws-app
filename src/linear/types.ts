@@ -1,4 +1,11 @@
-export type LinearSubIssue = {
+export type LinearSchedulingMetadata = {
+  teamId?: string;
+  projectId?: string | null;
+  assigneeId?: string | null;
+  priority?: number;
+};
+
+export type LinearSubIssue = LinearSchedulingMetadata & {
   linearIssueId: string;
   identifier: string;
   title: string;
@@ -6,7 +13,7 @@ export type LinearSubIssue = {
   acceptanceCriteria?: string | null;
 };
 
-export type EpicSnapshot = {
+export type EpicSnapshot = LinearSchedulingMetadata & {
   linearIssueId: string;
   identifier: string;
   title: string;

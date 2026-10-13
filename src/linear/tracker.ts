@@ -5,6 +5,7 @@ import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
 import { createLinearRepositoryMethods, type LinearRepositoryAdapter } from "./repositories";
 import { isRecord, readNumber, readString } from "./read";
+import { schedulingMetadata } from "./scheduling";
 import type { DependencyEdge, EpicSnapshot, LinearSubIssue, StatusUpdate } from "./types";
 
 const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
@@ -13,8 +14,12 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     identifier
     title
     description
+    team { id }
+    project { id }
+    assignee { id }
+    priority
     children(first: 50, after: $after) {
-      nodes { id identifier title description subIssueSortOrder }
+      nodes { id identifier title description subIssueSortOrder team { id } project { id } assignee { id } priority }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -68,6 +73,7 @@ export function createLinearTracker(
       const cursors = new Set<string>();
       let after: string | null = null;
       let snapshot: EpicSnapshot | null = null;
+      let scheduling: string | undefined;
       for (let page = 0; ; page++) {
         if (page >= MAX_GRAPH_PAGES)
           throw new Error("Linear graph pagination exceeded its page limit");
@@ -95,8 +101,12 @@ export function createLinearTracker(
             title,
             description: typeof description === "string" ? description : null,
             subIssues: [],
+            ...schedulingMetadata(issue),
           };
+          scheduling = JSON.stringify(schedulingMetadata(issue));
         }
+        if (JSON.stringify(schedulingMetadata(issue)) !== scheduling)
+          throw new Error("Linear issue scheduling changed during pagination");
         const connection = readGraphConnection(issue["children"]);
         for (const node of connection.nodes) {
           const id = readString(node, "id");
@@ -111,6 +121,7 @@ export function createLinearTracker(
             title,
             description: readString(node, "description"),
             sort: readNumber(node, "subIssueSortOrder"),
+            ...schedulingMetadata(node),
           });
         }
         after = nextGraphCursor(connection, cursors);
