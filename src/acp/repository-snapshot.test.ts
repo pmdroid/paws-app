@@ -97,7 +97,7 @@ test("stopping a source Git command joins its shell and running descendant", asy
   try {
     writeFileSync(
       script,
-      `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);`,
+      `process.on("SIGTERM", () => {}); const fs=require("node:fs"); fs.writeFileSync(process.argv[2]+".tmp", String(process.pid)); fs.renameSync(process.argv[2]+".tmp", process.argv[2]); setInterval(() => {}, 1000);`,
     );
     const quote = (value: string) => '"' + value.replaceAll('"', '\\"') + '"';
     const pending = git(
@@ -147,7 +147,7 @@ test.skipIf(process.platform !== "linux")(
     let cleanupFailed = false;
     writeFileSync(
       script,
-      `const fs=require("node:fs"); process.on("SIGTERM", () => {}); let anchor=process.ppid; while(!fs.readFileSync("/proc/"+anchor+"/cmdline", "utf8").includes("process-anchor.ts")) { const stat=fs.readFileSync("/proc/"+anchor+"/stat", "utf8"); anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]); } fs.writeFileSync(process.argv[2], JSON.stringify({ pid:process.pid, anchor })); setInterval(() => {}, 1000);`,
+      `const fs=require("node:fs"); process.on("SIGTERM", () => {}); let anchor=process.ppid; while(!fs.readFileSync("/proc/"+anchor+"/cmdline", "utf8").includes("process-anchor.ts")) { const stat=fs.readFileSync("/proc/"+anchor+"/stat", "utf8"); anchor=Number(stat.slice(stat.lastIndexOf(")")+2).split(" ")[1]); } fs.writeFileSync(process.argv[2]+".tmp", JSON.stringify({ pid:process.pid, anchor })); fs.renameSync(process.argv[2]+".tmp", process.argv[2]); setInterval(() => {}, 1000);`,
     );
     const quote = (value: string) => '"' + value.replaceAll('"', '\\"') + '"';
     const pending = git(
