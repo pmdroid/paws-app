@@ -34,7 +34,11 @@ import {
 } from "../runner-execution";
 import { readRunnerAnswer } from "../runner-answers";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
-import { RunnerArtifactSchema, type RunnerArtifact } from "../runner-protocol";
+import {
+  RunnerArtifactSchema,
+  RunnerHelperResultSchema,
+  type RunnerArtifact,
+} from "../runner-protocol";
 
 export interface RunnerWorkerOptions {
   job: RunnerJob;
@@ -60,6 +64,7 @@ export interface RunnerWorkerResult {
   run: RunAgentResult;
   candidateSha?: string;
   reviewText?: string;
+  text?: string;
   login?: {
     agent: "claude" | "codex" | "grok";
     authenticated: boolean;
@@ -209,10 +214,10 @@ export async function executeRunnerCommand(
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type !== "run",
       checkpoint: command.type === "run",
-      prepareOnly: !repository,
+      prepareOnly: !repository && command.type !== "helper",
       itemId: repository ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt: repository ? command.prompt : "Check agent connection.",
+      prompt: repository || command.type === "helper" ? command.prompt : "Check agent connection.",
       worktreePath: worktree,
       pawsRoot: join(options.workRoot, ".paws"),
       home: options.home,
@@ -220,13 +225,14 @@ export async function executeRunnerCommand(
       onEvent(event) {
         try {
           if (
-            command.type === "review" &&
+            (command.type === "review" || command.type === "helper") &&
             event.type === "session_update" &&
             event.update.sessionUpdate === "agent_message_chunk" &&
             event.update.content.type === "text"
           ) {
             reviewText += event.update.content.text;
-            if (Buffer.byteLength(reviewText) > 524_288)
+            if (command.type === "helper") RunnerHelperResultSchema.shape.text.parse(reviewText);
+            else if (Buffer.byteLength(reviewText) > 524_288)
               throw new Error("Runner response exceeds size limit");
           }
           emit({ type: "acp", event });
@@ -276,24 +282,28 @@ export async function executeRunnerCommand(
             },
           }
         : undefined,
-      askTeam: {
-        async ask(request, context) {
-          if (!options.answer) throw new Error("Runner question channel is unavailable");
-          const requestId = randomUUID();
-          emit({
-            type: "question",
-            requestId,
-            question: request.question,
-            options: request.options ?? [],
-          });
-          return options.answer(requestId, context.signal);
-        },
-      },
+      askTeam:
+        command.type === "helper"
+          ? undefined
+          : {
+              async ask(request, context) {
+                if (!options.answer) throw new Error("Runner question channel is unavailable");
+                const requestId = randomUUID();
+                emit({
+                  type: "question",
+                  requestId,
+                  question: request.question,
+                  options: request.options ?? [],
+                });
+                return options.answer(requestId, context.signal);
+              },
+            },
     });
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
+    if (command.type === "helper") result.text = reviewText;
     if (command.type === "login_check") {
       const checked =
         command.agent === "grok"
@@ -366,7 +376,20 @@ export async function executeRunnerCommand(
         }
       } else result.reviewText = reviewText;
     }
-    const serialized = JSON.stringify(result);
+    const serialized = JSON.stringify(
+      command.type === "helper"
+        ? {
+            ...result,
+            run: RunnerHelperResultSchema.omit({
+              executionId: true,
+              commandId: true,
+              text: true,
+            })
+              .strip()
+              .parse(run),
+          }
+        : result,
+    );
     if (Buffer.byteLength(serialized) > 1_048_576)
       throw new Error("Runner result exceeds size limit");
     const stagingName = `.result-${randomUUID()}.tmp`;
