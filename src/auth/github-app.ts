@@ -88,9 +88,26 @@ export async function loginGitHubApp(options: LoginIO): Promise<{ login: string;
     accessible.status !== 200 ||
     !isRecord(accessible.body) ||
     !isRecord(accessible.body.permissions) ||
-    accessible.body.permissions.push !== true
+    accessible.body.permissions.admin !== true ||
+    !isRecord(accessible.body.owner)
   )
-    throw new Error(`The signed-in user must have push access to ${repo} through this GitHub App.`);
+    throw new Error(`The signed-in user must administer ${repo} through this GitHub App.`);
+  if (accessible.body.owner.type === "Organization") {
+    const membership = await client.request({
+      method: "GET",
+      path: `/user/memberships/orgs/${owner}`,
+      token: grant.accessToken,
+    });
+    if (
+      membership.status !== 200 ||
+      !isRecord(membership.body) ||
+      membership.body.state !== "active" ||
+      membership.body.role !== "admin"
+    )
+      throw new Error("GitHub organization installation authority is required.");
+  } else if (accessible.body.owner.type !== "User" || accessible.body.owner.id !== account.id) {
+    throw new Error("GitHub repository installation authority is required.");
+  }
   const installationId = String(installation.body.id);
   if (
     options.env?.GITHUB_APP_INSTALLATION_ID &&
