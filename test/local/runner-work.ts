@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import {
   beginImplementRun,
@@ -18,6 +19,7 @@ import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
 import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
 import { createRunnerWorkHttp, createRunnerWork } from "../../src/runner-work";
+import { createRunnerHelpers } from "../../src/runner-helpers";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import {
   issueWorkspaceBootstrap,
@@ -403,6 +405,7 @@ export async function probeRunnerWork(
     const replacement = { ...third, id: workspaceId(), runnerId: firstRunner, generation: 4 };
     work.assign(replacement);
     assert.equal(work.current(run.id, 4).command.id, replacement.id);
+    work.finish(run.id, 4);
     for (let index = 0; index < 64; index++) {
       const blocked = insertQueuedItem(db, {
         id: `blocked-${index}`,
@@ -418,6 +421,7 @@ export async function probeRunnerWork(
         runId: started.run.id,
         generation: 1,
       });
+      work.finish(started.run.id, 1);
       db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [blocked.id]);
     }
     const probeId = workspaceId();
@@ -443,6 +447,212 @@ export async function probeRunnerWork(
       true,
       { revokedRunnerDenied: true, completionDenied: true, heartbeatDenied: true },
     );
+    const contenders = Array.from({ length: 2 }, (_, index) => {
+      const queued = insertQueuedItem(db, {
+        id: `capacity-${index}`,
+        now,
+        sessionKey: "fixture-session",
+      });
+      const started = beginImplementRun(db, queued.id, now);
+      bindWorkItemRepository(db, queued.id, repository);
+      return {
+        ...replacement,
+        id: workspaceId(),
+        itemId: queued.id,
+        runId: started.run.id,
+        generation: 1,
+      };
+    });
+    const barrier = join(root, "capacity-start");
+    const children = contenders.map((value, index) => {
+      const commandPath = join(root, `capacity-${index}.json`);
+      writeFileSync(commandPath, JSON.stringify(value), { mode: 0o600 });
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "--no-env-file",
+          join(import.meta.dir, "../fixtures/runner-capacity-claim.ts"),
+          path,
+          keyPath,
+          commandPath,
+          barrier,
+          String(now),
+        ],
+        {
+          env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, TMPDIR: root },
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      return { child, commandPath };
+    });
+    const deadline = performance.now() + 10_000;
+    try {
+      while (!children.every(({ commandPath }) => existsSync(`${commandPath}.ready`))) {
+        assert(
+          performance.now() < deadline,
+          "Independent admission processes did not reach the barrier",
+        );
+        await delay(5);
+      }
+      writeFileSync(barrier, "start");
+      const claims = await Promise.all(
+        children.map(async ({ child }) => {
+          const [exit, output, error] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          assert.equal(exit, 0, error);
+          return JSON.parse(output) as { accepted: boolean; commandId: string; error?: string };
+        }),
+      );
+      writeFileSync(join(root, "capacity-claims.json"), JSON.stringify(claims, null, 2));
+      assert.equal(claims.filter((value) => value.accepted).length, 1, JSON.stringify(claims));
+      assert.match(claims.find((value) => !value.accepted)!.error!, /occupied/);
+      const winner = contenders.find((value) =>
+        claims.some((claim) => claim.accepted && claim.commandId === value.id),
+      )!;
+      const waiting = contenders.find((value) => value.id !== winner.id)!;
+      assert.equal(
+        db
+          .query<{ count: number }, [string, string]>(
+            "SELECT COUNT(*) AS count FROM runner_command WHERE id IN (?,?)",
+          )
+          .get(contenders[0]!.id, contenders[1]!.id)!.count,
+        1,
+      );
+      assert.equal(
+        db
+          .query<{ count: number }, [string, string]>(
+            "SELECT COUNT(*) AS count FROM runner_work WHERE run_id IN (?,?)",
+          )
+          .get(contenders[0]!.runId, contenders[1]!.runId)!.count,
+        1,
+      );
+      assert.throws(() => work.assign(waiting), /occupied/);
+      const helpers = createRunnerHelpers({
+        db,
+        keyId: "fixture",
+        privateKey: keys.privateKey,
+        now: () => now,
+      });
+      const helperInput = {
+        runnerId: firstRunner,
+        sessionId: "fixture-session",
+        purpose: "classify" as const,
+        profile: command.profile,
+        prompt: "Classify this request.",
+      };
+      assert.throws(() => helpers.dispatch(helperInput), /busy/);
+      work.finish(winner.runId, 1);
+      work.assign(waiting);
+      now += 60_000;
+      const released = {
+        ...winner,
+        id: workspaceId(),
+        generation: 2,
+        issuedAt: now,
+        expiresAt: now + 60_000,
+      };
+      work.assign(released);
+      assert.throws(
+        () =>
+          work.issueGrant({
+            runnerId: firstRunner,
+            runId: waiting.runId,
+            commandId: waiting.id,
+            generation: 1,
+          }),
+        /lease expired/,
+      );
+      work.enqueue({
+        id: workspaceId(),
+        type: "cancel",
+        runnerId: firstRunner,
+        workspaceId: workspace.id,
+        runId: released.runId,
+        generation: 2,
+        issuedAt: now,
+        expiresAt: now + 60_000,
+      });
+      const afterCancel = {
+        ...waiting,
+        id: workspaceId(),
+        generation: 2,
+        issuedAt: now,
+        expiresAt: now + 60_000,
+      };
+      work.assign(afterCancel);
+      work.finish(waiting.runId, 2);
+      control.setStatus(principal, firstRunner, "paused");
+      assert.throws(
+        () => work.assign({ ...afterCancel, id: workspaceId(), generation: 3 }),
+        /not accepting/,
+      );
+      control.setStatus(principal, firstRunner, "active");
+      const helper = helpers.dispatch(helperInput);
+      const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
+      assert.throws(() => work.assign(review), /occupied by session helper/);
+      helpers.finish(helper.command.id);
+      const check: Extract<RunnerCommand, { type: "check" }> = {
+        id: workspaceId(),
+        runnerId: firstRunner,
+        workspaceId: workspace.id,
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        type: "check",
+        runId: waiting.runId,
+        itemId: waiting.itemId,
+        generation: 3,
+        repository,
+        executionId: workspaceId(),
+        verificationAttemptId: workspaceId(),
+        candidateSha: repository.baseSha,
+        argv: ["bun", "test"],
+        cwd: ".",
+        timeoutMs: 30_000,
+      };
+      work.assign(check);
+      const commandCount = db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
+        .get()!.count;
+      assert.throws(
+        () => work.assign({ ...released, id: workspaceId(), generation: 3 }),
+        /occupied/,
+      );
+      assert.equal(
+        db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command").get()!
+          .count,
+        commandCount,
+      );
+      work.finish(waiting.runId, 3);
+      work.assign({ ...review, id: workspaceId(), generation: 4 });
+      work.finish(waiting.runId, 4);
+      observe(
+        "independent control planes atomically admit one run per runner and release finished, expired and cancelled slots",
+        true,
+        {
+          claims,
+          queuedCommands: 1,
+          assignments: 1,
+          finishReleased: true,
+          expiryReleased: true,
+          expiredGrantFenced: true,
+          cancellationReleased: true,
+          pausedDenied: true,
+          helperMutualExclusion: true,
+          checkCapacityEnforced: true,
+          reviewUsesReleasedSlot: true,
+        },
+      );
+    } finally {
+      for (const { child } of children) {
+        if (child.exitCode === null) child.kill("SIGKILL");
+        await child.exited;
+      }
+    }
   } finally {
     db.close();
   }
