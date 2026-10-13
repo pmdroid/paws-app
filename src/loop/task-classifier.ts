@@ -37,6 +37,7 @@ export async function classifyTask(options: {
   profile: AgentProfile;
   signal: AbortSignal;
   launch: AgentLaunch;
+  agentRunner?: typeof runAgent;
   onCleanupFailure?: () => void;
 }): Promise<TaskClassification> {
   assertSafeSegment(options.itemId, "item id");
@@ -59,16 +60,18 @@ export async function classifyTask(options: {
       ),
     }),
   ].join("\n\n");
-  const launched = options.launch({
-    role: "implementer",
-    profile: options.profile,
-    purpose: "classify",
-    itemId: options.itemId,
-    worktree: workspace,
-    prompt,
-  });
+  const launched = options.agentRunner
+    ? {}
+    : options.launch({
+        role: "implementer",
+        profile: options.profile,
+        purpose: "classify",
+        itemId: options.itemId,
+        worktree: workspace,
+        prompt,
+      });
   let text = "";
-  const result = await runAgent({
+  const result = await (options.agentRunner ?? runAgent)({
     ...launched,
     role: "implementer",
     profile: options.profile,

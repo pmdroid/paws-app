@@ -29,6 +29,9 @@ export function createRemoteAgentRunner(options: {
     worktree: string;
     baseSha: string;
     candidateSha: string;
+    branch: string;
+    remoteUrl: string;
+    networkGit: (args: string[]) => Promise<string>;
     signal: AbortSignal;
   }): Promise<void>;
   now?: () => number;
@@ -324,11 +327,16 @@ export function createRemoteAgentRunner(options: {
           )
             throw new Error("Remote implementation has no candidate commit");
           if (complete.candidateSha) {
+            if (assigned.type !== "run" || !input.networkGit)
+              throw new Error("Runner candidate requires an authorized implementation import.");
             await options.fetchCandidate({
               itemId,
               worktree: input.worktreePath,
               baseSha,
               candidateSha: complete.candidateSha,
+              branch: scoped.item.branchName,
+              remoteUrl: assigned.repository.remoteUrl,
+              networkGit: input.networkGit,
               signal,
             });
             signal.throwIfAborted();
@@ -376,3 +384,5 @@ export function createRemoteAgentRunner(options: {
     },
   };
 }
+
+export { fetchRunnerCandidate } from "./candidate";
