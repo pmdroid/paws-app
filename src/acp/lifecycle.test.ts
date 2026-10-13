@@ -172,3 +172,20 @@ test("recovery chooses one channel per update without removing repeated real chu
   expect(recovered).toHaveLength(1);
   expect(JSON.parse(recovered[0]!.body).terminalOutput).toBe("same\nsame\ndone");
 });
+
+test("recovery preserves complete ACP history among worker question and artifact records", async () => {
+  const { path } = await transcript([
+    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Full answer" } },
+    { sessionUpdate: "tool_call", toolCallId: "check", status: "completed", rawOutput: "done" },
+  ]);
+  const { appendFile } = await import("node:fs/promises");
+  await appendFile(path, JSON.stringify({ type: "question", text: "Continue?" }) + "\n");
+  await appendFile(path, JSON.stringify({ type: "artifact", path: "report.txt" }) + "\n");
+  expect(await recoverAcpConversation(path)).toEqual([
+    { kind: "response", body: "Full answer" },
+    {
+      kind: "tool_result",
+      body: JSON.stringify({ toolCallId: "check", status: "completed", rawOutput: "done" }),
+    },
+  ]);
+});

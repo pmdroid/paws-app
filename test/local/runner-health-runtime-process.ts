@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, migrate, openDatabase, putWorkspaceUser } from "../../src/db";
+import {
+  advanceLinearSessionGeneration,
+  consumeWorkspaceBootstrap,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  recordLinearInstallation,
+} from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon } from "../../src/runner-daemon";
 import { createRunnerBrokerClient, readRunnerJob } from "../../src/runner-execution";
@@ -17,7 +24,13 @@ const tls = () => ({
   key: readFileSync(join(server, "server.key"), "utf8"),
   cert: readFileSync(join(server, "server.pem"), "utf8"),
 });
-type Fixture = { browserPort: number; runnerPort: number; commandIds: string[] };
+type Fixture = {
+  browserPort: number;
+  runnerPort: number;
+  commandIds: string[];
+  helpers?: boolean;
+  runnerId?: string;
+};
 const configuration = () => JSON.parse(readFileSync(join(root, "fixture.json"), "utf8")) as Fixture;
 function daemonOptions(config: Fixture) {
   return {
@@ -109,24 +122,46 @@ if (mode === "prepare") {
     await coordinator.control.approvePairing(principal, pending.code);
     const paired = await daemon.pollPairing();
     assert(paired.phase === "paired");
-    config.commandIds.push(
-      coordinator.health.request(principal, paired.runnerId, {
-        type: "probe",
-        profile: { agent: "claude", model: "fixture-model" },
-      }).commandId,
-    );
-    config.commandIds.push(
-      coordinator.health.request(principal, paired.runnerId, {
-        type: "login_check",
-        agent: "claude",
-      }).commandId,
-    );
-    config.commandIds.push(
-      coordinator.health.request(principal, paired.runnerId, {
-        type: "probe",
-        profile: { agent: "claude", model: "hold" },
-      }).commandId,
-    );
+    if (process.argv[4] === "helpers") {
+      config.helpers = true;
+      config.runnerId = paired.runnerId;
+      recordLinearInstallation(db, {
+        organizationId: "org",
+        oauthClientId: "app",
+        appUserId: "app-user",
+        sessionId: "session",
+        teamId: "team",
+        observedAtMs: Date.now(),
+      });
+      config.commandIds.push(
+        coordinator.helpers.dispatch({
+          runnerId: paired.runnerId,
+          sessionId: "session",
+          purpose: "classify",
+          profile: { agent: "claude", model: "fixture-model" },
+          prompt: "Classify the fixture request",
+        }).command.id,
+      );
+    } else {
+      config.commandIds.push(
+        coordinator.health.request(principal, paired.runnerId, {
+          type: "probe",
+          profile: { agent: "claude", model: "fixture-model" },
+        }).commandId,
+      );
+      config.commandIds.push(
+        coordinator.health.request(principal, paired.runnerId, {
+          type: "login_check",
+          agent: "claude",
+        }).commandId,
+      );
+      config.commandIds.push(
+        coordinator.health.request(principal, paired.runnerId, {
+          type: "probe",
+          profile: { agent: "claude", model: "hold" },
+        }).commandId,
+      );
+    }
     writeFileSync(join(root, "fixture.json"), JSON.stringify(config));
   } finally {
     daemon.close();
@@ -145,10 +180,47 @@ if (mode === "prepare") {
     port: config.runnerPort,
     onError: () => process.exit(2),
   });
+  let nextHelper: string | undefined;
+  let fenced = false;
+  let resumed = false;
+  const advance = setInterval(() => {
+    if (nextHelper && existsSync(join(server, "fence")) && !fenced) {
+      advanceLinearSessionGeneration(db, "session");
+      fenced = true;
+      writeFileSync(join(server, "fenced"), "fenced");
+    }
+    if (nextHelper && fenced && existsSync(join(server, "resume")) && !resumed) {
+      coordinator.helpers.finish(nextHelper);
+      coordinator.helpers.dispatch({
+        runnerId: config.runnerId!,
+        sessionId: "session",
+        purpose: "select_repository",
+        profile: { agent: "claude", model: "hold" },
+        prompt: "Select the current repository",
+      });
+      resumed = true;
+    }
+    if (
+      !config.helpers ||
+      !existsSync(join(server, "advance")) ||
+      nextHelper ||
+      !coordinator.helpers.result(config.commandIds[0]!)
+    )
+      return;
+    coordinator.helpers.finish(config.commandIds[0]!);
+    nextHelper = coordinator.helpers.dispatch({
+      runnerId: config.runnerId!,
+      sessionId: "session",
+      purpose: "select_repository",
+      profile: { agent: "claude", model: "hold" },
+      prompt: "Select the fixture repository",
+    }).command.id;
+  }, 20);
   process.once(
     "SIGTERM",
     () =>
       void coordinator.stop().then(() => {
+        clearInterval(advance);
         db.close();
         process.exit(0);
       }),
@@ -158,13 +230,39 @@ if (mode === "prepare") {
   const id = process.argv[4]!;
   const job = readRunnerJob({ root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 }, id);
   assert.throws(() => readFileSync(join(root, "daemon", "identity", "state.json")));
-  if (job.command.type === "probe" && job.command.profile.model === "hold") {
+  if (
+    (job.command.type === "probe" || job.command.type === "helper") &&
+    job.command.profile.model === "hold"
+  ) {
     writeFileSync(join(root, "agent", "held"), String(process.pid));
     await new Promise(() => {});
   }
   const script = join(root, "agent", `${id}-script.json`);
   const agentLog = join(root, "agent", `${id}-agent.json`);
-  writeFileSync(script, JSON.stringify({ model: "fixture-model", steps: [{ type: "hang" }] }));
+  writeFileSync(
+    script,
+    JSON.stringify({
+      model: "fixture-model",
+      steps:
+        job.command.type === "helper"
+          ? [
+              {
+                type: "fs_write",
+                path: join(root, "agent", "forbidden-helper-write"),
+                content: "denied",
+              },
+              {
+                type: "update",
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  content: { type: "text", text: "fixture helper response" },
+                },
+              },
+              { type: "end" },
+            ]
+          : [{ type: "hang" }],
+    }),
+  );
   const result = await executeRunnerCommand({
     job,
     outputDirectory: join(root, "results", id),
@@ -190,29 +288,74 @@ if (mode === "prepare") {
   assert.equal(result.run.errorMessage, undefined, JSON.stringify(result.run));
   const calls = JSON.parse(readFileSync(agentLog, "utf8")).methods as string[];
   assert(calls.includes("initialize") && calls.includes("session/new"));
-  assert(!calls.includes("session/prompt"));
+  if (job.command.type === "helper") {
+    assert(calls.includes("session/prompt"));
+    const recorded = JSON.parse(readFileSync(agentLog, "utf8"));
+    assert.equal(recorded.fs[0].ok, false);
+    assert(JSON.stringify(recorded.prompts).includes(job.command.prompt));
+    assert.equal(result.text, "fixture helper response");
+  } else assert(!calls.includes("session/prompt"));
 } else {
-  assert(mode === "first" || mode === "recover");
+  assert(mode === "first" || mode === "fence" || mode === "recover" || mode === "recover-receipt");
   const config = configuration();
   const daemon = openRunnerDaemon(daemonOptions(config));
+  if (mode === "recover-receipt") {
+    await daemon.pollCommands();
+    const receipts = openDatabase(join(root, "daemon", "commands.db"));
+    assert.equal(
+      receipts
+        .query<{ acknowledged: number }, []>("SELECT acknowledged FROM pending_command")
+        .get()!.acknowledged,
+      2,
+    );
+    receipts.close();
+  }
   const errors: string[] = [];
   const health = await openRunnerHealthRuntime({
     root: join(root, "health"),
-    daemon,
+    daemon:
+      config.helpers && mode === "first"
+        ? {
+            ...daemon,
+            async postHelperResult(result) {
+              const receipt = await daemon.postHelperResult(result);
+              const journal = openDatabase(join(root, "health", "health.db"));
+              const saved = journal
+                .query<{ result: string }, [string]>(
+                  "SELECT result FROM health_execution WHERE command_id=? AND phase='publishing'",
+                )
+                .get(result.commandId);
+              journal.close();
+              assert.deepEqual(JSON.parse(saved!.result), result);
+              writeFileSync(join(root, "health", "receipt-ready.json"), JSON.stringify(receipt));
+              await new Promise(() => {});
+              return receipt;
+            },
+          }
+        : daemon,
     spool: { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 },
     results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
     broker: createRunnerBrokerClient({ socketPath: join(root, "broker.sock") }),
     onError: (error) => errors.push(error.message),
   });
-  if (mode === "first") {
+  if (mode === "first" || mode === "fence") {
     const deadline = Date.now() + 20_000;
-    while (health.status().active?.commandId !== config.commandIds[2]) {
+    while (
+      config.helpers
+        ? !health.status().active || health.status().active?.commandId === config.commandIds[0]
+        : health.status().active?.commandId !== config.commandIds[2]
+    ) {
       assert(Date.now() < deadline, JSON.stringify(errors));
       await health.tick();
       await Bun.sleep(20);
     }
     writeFileSync(join(root, "health", "crash-ready.json"), JSON.stringify(health.status().active));
-    await new Promise(() => {});
+    if (mode === "first") await new Promise(() => {});
+    while (health.status().active) {
+      assert(Date.now() < deadline, "Helper generation fence did not stop worker");
+      await health.tick(false);
+      await Bun.sleep(20);
+    }
   }
   for (let count = 0; count < 5; count++) await health.tick();
   assert.equal(health.status().active, null);
@@ -224,8 +367,17 @@ if (mode === "prepare") {
     .all()
     .map((row) => row.phase);
   journal.close();
-  assert.deepEqual(phases, ["complete", "complete", "interrupted"]);
-  assert.equal(errors.length, 0);
+  assert.deepEqual(
+    phases,
+    config.helpers
+      ? mode === "recover-receipt"
+        ? ["complete"]
+        : mode === "fence"
+          ? ["complete", "interrupted"]
+          : ["complete", "interrupted", "interrupted"]
+      : ["complete", "complete", "interrupted"],
+  );
+  assert.equal(errors.length, mode === "fence" ? 1 : 0);
   console.log(
     JSON.stringify({
       phases,

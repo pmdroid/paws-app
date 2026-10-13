@@ -18,7 +18,13 @@ export {
 
 export { RunnerEventSchema, type RunnerEvent } from "./events";
 
-export { RUNNER_RESULT_BODY_LIMIT, RunnerResultSchema, type RunnerResult } from "./results";
+export {
+  RUNNER_RESULT_BODY_LIMIT,
+  RunnerResultSchema,
+  RunnerHelperResultSchema,
+  type RunnerResult,
+  type RunnerHelperResult,
+} from "./results";
 
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
 
