@@ -121,6 +121,8 @@ class ReleaseVerification(unittest.TestCase):
                     path = source / name.removeprefix("app/")
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(b"synthetic package file")
+                    if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
+                        path.chmod(0o755)
                 executable = source / "node_modules" / target
                 executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_bytes(b"#!/usr/bin/env node\n")
@@ -134,10 +136,59 @@ class ReleaseVerification(unittest.TestCase):
                 with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")):
                     if index == 0:
                         packager.pack(arguments)
-                        self.assertIn("app/node_modules/" + target, release.inspect_archive(output / "artifact.tar"))
+                        members = release.inspect_archive(output / "artifact.tar")
+                        self.assertIn("app/node_modules/" + target, members)
+                        with tarfile.open(output / "artifact.tar") as archive:
+                            for provider in ("claude", "codex"):
+                                launcher = archive.extractfile("app/node_modules/.bin/" + provider).read().decode()
+                                self.assertIn("'/opt/paws-runner/current/node_modules/", launcher)
+                                self.assertEqual(members["app/node_modules/.bin/" + provider].mode, 0o755)
                     else:
                         with self.assertRaises(ValueError):
                             packager.pack(arguments)
+
+    def test_missing_bundled_provider_targets_reject_packaging(self):
+        specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
+        packager = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(packager)
+        for index, missing in enumerate(("node_modules/@openai/codex/bin/codex.js", *release.PROVIDER_EXECUTABLES.values(), release.CODEX_PLATFORM_PACKAGE)):
+            with self.subTest(missing=missing):
+                source = self.root / ("missing-provider-" + str(index))
+                for name in release.REQUIRED:
+                    path = source / name.removeprefix("app/")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"synthetic package file")
+                    if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
+                        path.chmod(0o755)
+                (source / missing).unlink()
+                runtime = self.root / ("missing-provider-bun-" + str(index))
+                runtime.write_bytes(b"synthetic Bun runtime")
+                arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / ("missing-provider-package-" + str(index)))
+                with self.assertRaises(FileNotFoundError):
+                    packager.pack(arguments)
+
+    def test_archive_missing_a_bundled_provider_target_is_rejected(self):
+        for missing in (name for name in release.REQUIRED if name.endswith(("/claude", "/codex", "/codex.js"))):
+            with self.subTest(missing=missing):
+                with tarfile.open(self.artifact, "w") as archive:
+                    for name in release.REQUIRED - {missing}:
+                        member = tarfile.TarInfo(name)
+                        member.mode = 0o644
+                        archive.addfile(member, io.BytesIO())
+                with self.assertRaisesRegex(ValueError, "missing required"):
+                    release.inspect_archive(self.artifact)
+
+    def test_nonexecutable_bundled_provider_target_is_rejected(self):
+        providers = {"app/" + target for target in release.PROVIDER_EXECUTABLES.values()} | {"app/node_modules/.bin/claude", "app/node_modules/.bin/codex"}
+        for target in providers:
+            with self.subTest(target=target):
+                with tarfile.open(self.artifact, "w") as archive:
+                    for name in release.REQUIRED:
+                        member = tarfile.TarInfo(name)
+                        member.mode = 0o644 if name == target else 0o755
+                        archive.addfile(member, io.BytesIO())
+                with self.assertRaisesRegex(ValueError, "must be executable"):
+                    release.inspect_archive(self.artifact)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -151,7 +202,7 @@ class ReleaseVerification(unittest.TestCase):
                 member = tarfile.TarInfo(name)
                 content = b"synthetic reviewed release file"
                 member.size = len(content)
-                member.mode = 0o755 if name == "bin/bun" else 0o644
+                member.mode = 0o755 if name == "bin/bun" or name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values() or name in ("app/node_modules/.bin/claude", "app/node_modules/.bin/codex") else 0o644
                 archive.addfile(member, io.BytesIO(content))
             if extra is not None:
                 archive.addfile(extra, io.BytesIO(b"x" * extra.size) if extra.isfile() else None)

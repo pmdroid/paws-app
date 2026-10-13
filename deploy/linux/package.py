@@ -47,6 +47,14 @@ def pack(arguments):
     if arguments.platform not in ("linux-x64", "linux-arm64"):
         raise ValueError("Invalid release platform")
     release.check_platform({"platform": arguments.platform})
+    provider_targets = {
+        "claude": release.PROVIDER_EXECUTABLES["claude"],
+        "codex": "node_modules/@openai/codex/bin/codex.js",
+    }
+    for target in {*provider_targets.values(), *release.PROVIDER_EXECUTABLES.values(), release.CODEX_PLATFORM_PACKAGE}:
+        read_package_file(source / target, 536_870_912)
+        if target in release.PROVIDER_EXECUTABLES.values() and not (source / target).stat().st_mode & 0o111:
+            raise ValueError("Bundled provider executable must be executable")
     output = pathlib.Path(arguments.output)
     output.mkdir(mode=0o700)
     runtime = read_package_file(bun, 536_870_912)
@@ -59,6 +67,10 @@ def pack(arguments):
         add_content(archive, "bin/bun", runtime, True)
         for name in ("package.json", "bun.lock"):
             add_content(archive, f"app/{name}", read_package_file(source / name, 16_777_216))
+        for name, target in provider_targets.items():
+            interpreter = "/usr/bin/node " if name == "codex" else ""
+            content = ("#!/bin/sh\nexec " + interpreter + "'/opt/paws-runner/current/" + target + "' \"$@\"\n").encode()
+            add_content(archive, f"app/node_modules/.bin/{name}", content, True)
         for directory in ("src", "node_modules"):
             base = source / directory
             if base.is_symlink() or not base.is_dir():
@@ -72,6 +84,8 @@ def pack(arguments):
                     if name.startswith("."):
                         continue
                     path = pathlib.Path(current) / name
+                    if path.parent == source / "node_modules/.bin" and name in provider_targets:
+                        continue
                     relative = path.relative_to(source).as_posix()
                     if path.is_symlink():
                         if path.parent != source / "node_modules/.bin" or not re.fullmatch(r"[A-Za-z0-9._+-]+", name):
