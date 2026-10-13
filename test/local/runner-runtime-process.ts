@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -59,6 +59,16 @@ function git(args: string[], cwd = root) {
   assert.equal(child.exitCode, 0, child.stderr.toString());
   return child.stdout.toString().trim();
 }
+const transcriptObjects = {
+  async write(key: string, bytes: Blob | ReadableStream<Uint8Array>) {
+    const path = join(server, "objects", key);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    await Bun.write(path, await new Response(bytes).arrayBuffer());
+    chmodSync(path, 0o600);
+  },
+  read: (key: string) => Bun.file(join(server, "objects", key)).stream(),
+  uri: (key: string) => `s3://fixture-transcripts/${key}`,
+};
 const repositoryAccess = {
   github: createFakeGitHub(),
   installationForRepository: () => "fixture-installation",
@@ -143,6 +153,7 @@ if (mode === "prepare") {
     hostname: "127.0.0.1",
     port: 0,
     repositoryAccess,
+    transcriptObjects,
     onError: () => {},
   });
   const browser = Bun.serve({
@@ -223,6 +234,7 @@ if (mode === "prepare") {
     hostname: "127.0.0.1",
     port: config.runnerPort,
     repositoryAccess,
+    transcriptObjects,
     onError: () => process.exit(2),
   });
   const answered = new Set<string>();
@@ -298,6 +310,15 @@ if (mode === "prepare") {
       type: "update",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
     },
+    ...(job.command.type === "run"
+      ? Array.from({ length: 350 }, (_, index) => ({
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "x".repeat(30_000) + `raw-tail-${index}` },
+          },
+        }))
+      : []),
     { type: "end" },
   ];
   writeFileSync(script, JSON.stringify({ model: "fixture-model", steps }));
@@ -341,9 +362,10 @@ if (mode === "prepare") {
   const disconnected = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const lost = { event: false, artifact: false, result: false };
+  const lost = { event: false, artifact: false, result: false, chunk: false, seal: false };
   const failureCase = readFileSync(join(root, "failure-case"), "utf8");
   const failed = { grant: false, credential: false, push: false };
+  const sealed = new Set<string>();
   const runtime = await openRunnerRuntime({
     root: join(root, "runtime"),
     daemon: {
@@ -389,7 +411,25 @@ if (mode === "prepare") {
         }
         return receipt;
       },
+      async uploadTranscript(runId, chunk, token) {
+        const receipt = await daemon.uploadTranscript(runId, chunk, token);
+        if (!lost.chunk) {
+          lost.chunk = true;
+          throw new RunnerRequestError(503);
+        }
+        return receipt;
+      },
+      async finishTranscript(runId, finish, token) {
+        const receipt = await daemon.finishTranscript(runId, finish, token);
+        sealed.add(runId);
+        if (!lost.seal) {
+          lost.seal = true;
+          throw new RunnerRequestError(503);
+        }
+        return receipt;
+      },
       async postResult(runId, generation, result, token) {
+        assert(sealed.has(runId), "Terminal result preceded sealed transcript");
         const receipt = await daemon.postResult(runId, generation, result, token);
         if (!lost.result) {
           lost.result = true;
@@ -448,7 +488,7 @@ if (mode === "prepare") {
     }
     while (!readable(join(root, "results", runtime.status().active!.executionId, "held")))
       await Bun.sleep(20);
-    assert.deepEqual(lost, { event: true, artifact: true, result: true });
+    assert.deepEqual(lost, { event: true, artifact: true, result: true, chunk: true, seal: true });
     outage = true;
     offset = 60_001;
     const hung = runtime.tick();
