@@ -1,6 +1,6 @@
 ---
 name: verify-paws
-description: Verify Paws locally in disposable instances with scripted ACP agents, fake trackers, real SQLite, Git worktrees, native Closeout and local squash merges. Use for setup, chat, orchestration, stop/recovery and verification-trust regressions.
+description: Verify the Paws dashboard, Linear work and questions, and workspace access in disposable local instances. Use for browser behavior, orchestration, stop/recovery and verification-trust regressions with scripted external adapters, real SQLite, Git and Closeout.
 ---
 
 # Verify Paws
@@ -11,9 +11,35 @@ State the claim before testing: given a particular epic, agent script and failur
 
 Read `AGENTS.md`, `package.json`, `scripts/verify-local.ts`, `test/local/instance.ts` and `test/local/probes.ts`. Inspect the diff and source commit. Install locked dependencies if needed, using an isolated temporary HOME and KYOTOAGENT_ROOT together.
 
-## Run
+Read the [feature map](features/README.md) before choosing a recipe. Record the feature ID and entry point with each proof. Exercise each listed entry point before claiming the whole feature verified.
 
-Use Linux with Bun 1.4.2+, Git, Python 3, OpenSSL 3 and GNU `timeout` available. From the repository root, use a tracked background task:
+## Launch
+
+The primary interactive entry point is the dashboard at `/status`. Linear issues and replies drive work; the operator also uses the Paws CLI. Normal startup is `bun run paws`, with data under `~/.paws` and port 8787. Use the disposable launcher below for verification.
+
+Use Linux with Bun 1.4.2+, installed locked dependencies, Git, Python 3, OpenSSL 3, GNU `timeout` and `ss` from iproute2. From the repository root, start this command in a tracked background task and retain its task handle:
+
+```sh
+bun --no-env-file scripts/verify-local.ts serve
+```
+
+Wait for `Throwaway dashboard: http://127.0.0.1:PORT/status`. Set `PAWS_VERIFY_EVIDENCE` to the exact directory printed after `Isolated Paws verification:`. The fixture has finished its question, check/fix and two local merges when that readiness line appears. Keep the printed PID and URL with the task handle. The inspection window lasts five minutes. Use the Cleanup section after success and after failed attempts.
+
+Each launch owns a new temporary home, database, local Git origins and ephemeral loopback ports. Separate launches can coexist. Start their dashboard builds sequentially because both write `src/web/dist`, and keep the checkout unchanged during proof. Browser workspace sign-in uses `bun --no-env-file scripts/verify-local.ts workspace-serve`; readiness is `Workspace browser fixture:` plus `workspace-ui.json` in its separate evidence directory.
+
+## Doctor
+
+Run this read-only check before driving either browser fixture and whenever the instance looks wrong:
+
+```sh
+python3 .agents/skills/verify-paws/scripts/doctor.py "$PAWS_VERIFY_EVIDENCE" > "$PAWS_VERIFY_EVIDENCE/doctor.json"
+```
+
+Require exit 0 and `ok: true`. It checks the checkout SHA and tracked diff, Bun version, listener PID, process command, isolated home and fixture responses. It connects directly to the loopback socket without using HTTP proxies. The dashboard fixture must match its saved items and fake issue journal. The workspace fixture must serve Paws health and require sign-in for a request without a cookie. Read `origin` and `pid` from `doctor.json`; set `PAWS_VERIFY_ORIGIN` to that origin. A failed check means inspect the launch log or relaunch before driving. Run this helper from the repository root. It does not invoke the operator's `paws doctor`.
+
+## Drive
+
+For repository checks followed by the behavioral audit, use a tracked background task:
 
 ```sh
 bun --no-env-file scripts/verify-local.ts check
@@ -99,7 +125,11 @@ The audit uses actual local Git origins to verify daemon mirror updates, immutab
 
 The audit runs the production credentialed Git adapter with a compiled Git stand-in that starts a real SIGTERM-resistant descendant. An AbortSignal must reject the operation and leave both processes stopped within three seconds. An already-aborted operation must fail before spawning. GitHub network behavior is scripted; process creation, group termination and credential cleanup use production code.
 
-## Safety and evidence
+## Evidence
+
+Capture the user action and its resulting state together. Browser proof includes the clicked entry point, screenshot and accessible state; CLI proof includes command, output and exit code. Confirm mutations through a second read of SQLite, the fake adapter journal or the local Git origin. Use the production page, route or command that owns the behavior. `/__fixture` is an observation endpoint; do not add fixture setters to make a desired result appear.
+
+Keep mocks at existing external adapter boundaries. The browser driver replays `happy-parked.json` for the question display and injects HTTP 503 for outage handling. Record those actions separately from the initial live response and the restored live response. Observe `network.json`, fake API requests and local Git refs when checking external side effects; the launcher performs real local writes and merges. Its name alone is not evidence of what ran.
 
 `test/local/runner-repository-access.ts` drives actual P256 pairing, HTTPS/mTLS and SQLite run grants with the public repository-credential handler. The GitHub App fake records repository-scoped read/write token requests. It verifies canonical publication branches, read-only review access, separate bearer grants, strict payloads, token expiry and repository binding, then changes cancellation, assignment, branch, repository, lease and runner revocation during asynchronous minting. It also accepts expiry skew admitted by the public GitHub validator while returning a conservative one-hour expiry to the runner. The `check` audit retains six observations under `runner-repository-access`.
 
@@ -108,6 +138,8 @@ Use synthetic requirements and tokens only. All scenario Git remotes are local p
 Never copy operator credentials, use the operator's Kyoto root, call real tracker/GitHub mutation APIs, or invoke `paws setup`, `doctor`, or login against the operator's environment. Setup/auth probes must inject fetch, token store, browser and command behavior. An EnvSource argument alone is insufficient because some modules read ambient process.env.
 
 Evidence remains in the printed directory: manifest with source SHA/diff digest, command logs/exits, observations, network journal, prompts, ACP scripts/results/transcripts, SQLite state, Closeout reports, fake API journal and local origin history. Temporary HOME and scratch files are removed by the launcher after commands exit. Inspect evidence before deleting that exact directory; never use broad process matching or wildcard cleanup.
+
+The manifest hashes tracked changes. Also retain `git status --short` and copies or hashes of untracked verification inputs with the proof when they affect the run. Keep evidence outside the checkout and outside the temporary `home` and `tmp` subdirectories.
 
 Runner TLS evidence includes `runner-tls/certificate-metadata.json` with certificate fingerprints, serials, validity, key extended usages and accepted peer observations. Certificates and keys in this fixture are synthetic. Publish the metadata and observations, keeping private key files out of PR artifacts. These probes use the real TLS stack and no provider accounts.
 
@@ -206,3 +238,33 @@ Run `PAWS_BROKER_VM_BASE=/path/to/pinned.qcow2 PAWS_BROKER_VM_SHA512=<trusted-sh
 Run `bun --no-env-file test test/runner-check-broker.test.ts` for actual Unix socket framing, admission receipts, joined stop and strict malformed acknowledgement refusal through the public check broker client.
 
 For remote Closeout evidence, run `bun --no-env-file test test/runner-closeout.test.ts`. The native Closeout engine evaluates real Git candidates through the remote command adapter. Setup and checks share the candidate and attempt binding, local command sentinels stay absent, and dirty workspaces, moved HEAD, timeouts, failed setup and nonzero exits produce the corresponding rejected verdicts. `check` and `audit` run the probe.
+
+## Cleanup
+
+After every attempt, signal only the launcher task you started with SIGINT or SIGTERM and wait for it to finish. For a ready browser fixture, rerun Doctor, read its current PID and send SIGTERM to that exact child; the launcher then joins it and cleans up. Never select a process by name. If readiness failed, use the retained launcher task handle. `serve` and `workspace-serve` also expire after five minutes. Preserve the launch output if a failed attempt ends before creating `commands.json`.
+
+The launcher removes its isolated `home` and `tmp`. Scenario repositories, SQLite databases and reports under the printed evidence root are proof artifacts and remain there. Confirm `Evidence retained:` appears, `commands.json` records the exits, and the owned listener no longer answers. For the dashboard recipe, also confirm these files still exist after teardown:
+
+```sh
+test -s "$PAWS_VERIFY_EVIDENCE/manifest.json"
+test -s "$PAWS_VERIFY_EVIDENCE/commands.json"
+test -s "$PAWS_VERIFY_EVIDENCE/observations.json"
+test -s "$PAWS_VERIFY_EVIDENCE/happy.json"
+test -s "$PAWS_VERIFY_EVIDENCE/dashboard-browser.json"
+test -s "$PAWS_VERIFY_EVIDENCE/overview-desktop.png"
+test -s "$PAWS_VERIFY_EVIDENCE/overview-mobile.png"
+test ! -e "$PAWS_VERIFY_EVIDENCE/home"
+test ! -e "$PAWS_VERIFY_EVIDENCE/tmp"
+```
+
+## Helpers
+
+The executable [doctor helper](scripts/doctor.py) is invoked with Python as shown above; `python3 .agents/skills/verify-paws/scripts/doctor.py --help` prints its arguments. The existing launcher is `bun --no-env-file scripts/verify-local.ts` with `check`, `audit`, `serve`, `workspace` or `workspace-serve`.
+
+The browser driver needs Playwright and its matching Chromium installed. Resolve an existing module with `bun -p 'require.resolve("playwright")'`, or set `PAWS_PLAYWRIGHT_MODULE` to an installed `playwright` or `playwright-core` module directory. Set `PLAYWRIGHT_BROWSERS_PATH` when that installation uses a separate browser cache. Run:
+
+```sh
+bun --no-env-file test/local/dashboard-browser.cjs "$PAWS_VERIFY_ORIGIN" "$PAWS_VERIFY_EVIDENCE"
+```
+
+To include workspace sign-in, set `PAWS_WORKSPACE_EVIDENCE` to the separate `workspace-serve` evidence directory and append it as the third argument. The feature map gives the full command. Preserve the browser command's exit status alongside its JSON report. Use `/maintain-verification-skill` when updating the map as Paws changes.
