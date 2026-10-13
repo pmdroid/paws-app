@@ -25,6 +25,20 @@ describe("server", () => {
       const missing = await fetch(`${base}/webhooks/linear`, { method: "POST" });
       expect(missing.status).toBe(404);
 
+      const runners = await fetch(`${base}/api/runners`);
+      expect(runners.status).toBe(200);
+      expect(await runners.json()).toEqual({
+        runners: [],
+        setupRequired: true,
+        workspaceReady: false,
+      });
+      const pairing = await fetch(`${base}/api/runners/pairings/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: "0123456789abcdef" }),
+      });
+      expect(pairing.status).toBe(404);
+
       const github = await fetch(`${base}/webhooks/github`, {
         method: "POST",
         headers: { "x-hub-signature-256": "sha256=abc" },

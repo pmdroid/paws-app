@@ -221,6 +221,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
     }
   }
+  if (path === "/api/runners" && request.method === "GET" && !secrets.runnerControl)
+    return Response.json({
+      runners: [],
+      setupRequired: true,
+      workspaceReady: workspace !== undefined,
+    });
   if (secrets.agentSettings) {
     const settings = await handleAgentSettingsRequest(request, {
       ...secrets.agentSettings,

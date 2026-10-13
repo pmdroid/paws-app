@@ -249,11 +249,16 @@ try {
     if (mode === "disabled") {
       assert(await closed(runnerPort));
       assert(!existsSync(join(root, "secrets", "runner-identity")));
-      assert.equal((await call(browserPort, "/api/runners", undefined, headers)).status, 404);
+      assert.equal((await call(browserPort, "/api/runners")).status, 401);
+      const setup = await call(browserPort, "/api/runners", undefined, headers);
+      assert.equal(setup.status, 200);
+      assert.deepEqual(setup.body, { runners: [], setupRequired: true, workspaceReady: true });
       observe("normal startup keeps runner control disabled when no hostname is configured", {
         authorityCreated: false,
         runnerListenerClosed: true,
-        apiStatus: 404,
+        apiStatus: 200,
+        setupRequired: true,
+        anonymousStatus: 401,
       });
     } else {
       assert.equal((await call(browserPort, "/api/runners")).status, 401);
