@@ -88,12 +88,11 @@ export function verifyRunnerCommand(
     return { ok: false, reason: "not_yet_valid" };
   }
   if (command.expiresAt <= context.now) return { ok: false, reason: "expired" };
+  const repository = "repository" in command ? command.repository : undefined;
   if (
-    "repository" in command &&
+    repository &&
     !context.allowedRepositories.some(
-      (repository) =>
-        repository.toLowerCase() ===
-        `${command.repository.owner}/${command.repository.repo}`.toLowerCase(),
+      (allowed) => allowed.toLowerCase() === `${repository.owner}/${repository.repo}`.toLowerCase(),
     )
   )
     return { ok: false, reason: "repository_denied" };
