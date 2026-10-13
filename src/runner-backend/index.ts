@@ -463,4 +463,6 @@ export function createRemoteAgentRunner(options: {
   };
 }
 
+export { createRemoteSessionAgentRunner } from "./helpers";
+
 export { fetchRunnerCandidate } from "./candidate";
