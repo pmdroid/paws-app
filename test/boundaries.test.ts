@@ -188,7 +188,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-check",
   ],
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
-  "runner-placement": ["db", "linear", "runner-protocol"],
+  "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "runner-inputs",
     "runner-transcripts",

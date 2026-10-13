@@ -1,8 +1,39 @@
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
-type Runner = { id: string; name: string; status: "active" | "paused" | "draining" | "revoked" };
-type Session = { role: string; authenticatedAt: number };
+type Runner = {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  status: "active" | "paused" | "draining" | "revoked";
+};
+type Session = { userId: string; role: string; authenticatedAt: number };
+type HostPolicy = {
+  ownerUserId: string;
+  hostOwner?: string;
+  sharing?: number;
+  fallback?: number;
+  agents: {
+    agent: string;
+    seat: string;
+    ready: number;
+    authExpired: number;
+    quotaState: string;
+    resetsAt: number | null;
+    cooldownUntil: number;
+  }[];
+};
+type WorkspacePolicy = { fallbackAllowed: boolean; personalOrganizationHost: boolean };
+type Usage = {
+  commandId: string;
+  runnerName: string;
+  agent: string | null;
+  resolvedModel: string | null;
+  purpose: string;
+  outcome: string | null;
+  startedAt: number;
+  endedAt: number | null;
+};
 type Inspection = {
   code: string;
   name: string;
@@ -37,6 +68,10 @@ export function createRunners() {
   let session: Session | null = null;
   let selected: string | null = null;
   let health: Health | null = null;
+  let hostPolicy: HostPolicy | null = null;
+  let workspacePolicy: WorkspacePolicy | null = null;
+  let usage: Usage[] = [];
+  let policyAgent = "claude";
   let inspection: Inspection | null = null;
   let code = "";
   let agent = "claude";
@@ -87,19 +122,29 @@ export function createRunners() {
     error = "";
     paint();
     try {
-      const [list, identity] = await Promise.all([
+      const [list, identity, policy, activity] = await Promise.all([
         api<{ runners: Runner[] }>("/api/runners"),
         api<Session>("/api/auth/session"),
+        api<WorkspacePolicy>("/api/runners/policy"),
+        api<{ usage: Usage[] }>("/api/runners/usage"),
       ]);
       if (current !== generation) return;
       runners = list.runners;
       session = identity;
+      workspacePolicy = policy;
+      usage = activity.usage;
       if (!manages()) inspection = null;
       const details =
         selected === null
           ? null
-          : await api<Health>(`/api/runners/${encodeURIComponent(selected)}/health`);
-      if (current === generation) health = details;
+          : await Promise.all([
+              api<Health>(`/api/runners/${encodeURIComponent(selected)}/health`),
+              api<HostPolicy>(`/api/runners/${encodeURIComponent(selected)}/policy`),
+            ]);
+      if (current === generation) {
+        health = details?.[0] ?? null;
+        hostPolicy = details?.[1] ?? null;
+      }
     } catch (caught) {
       if (current !== generation) return;
       error = caught instanceof Error ? caught.message : "Runners could not be loaded.";
@@ -118,10 +163,13 @@ export function createRunners() {
       }
     }
   }
-  async function change(action: () => Promise<void>) {
+  async function change(action: () => Promise<void>, administrator = true) {
     if (busy) return;
-    if (!manages() || !recent()) {
-      error = "Sign in again as a workspace administrator to manage runners.";
+    if (
+      (administrator ? !manages() : session === null || session.role === "observer") ||
+      !recent()
+    ) {
+      error = "Sign in again with permission to update these runner settings.";
       paint();
       return;
     }
@@ -193,6 +241,59 @@ export function createRunners() {
         .join("") ?? ""
     }</ul>${health && !health.checks.length ? '<p class="muted">No health checks yet.</p>' : ""}</section>`;
   }
+  function policyView() {
+    if (!selected || !hostPolicy) return "";
+    const own = session?.userId === hostPolicy.ownerUserId && session.role !== "observer";
+    const agentPolicy = hostPolicy.agents.find((value) => value.agent === policyAgent);
+    const disabled = !own || busy || !recent() ? " disabled" : "";
+    const options = (values: readonly [string, string][], current: string) =>
+      values
+        .map(
+          ([value, label]) =>
+            `<option value="${value}"${value === current ? " selected" : ""}>${label}</option>`,
+        )
+        .join("");
+    return `<details class="runner-section" id="runner-sharing"><summary>Work sharing and account type</summary><p>Choose how this host can accept work from your Linear projects.</p><form id="runner-policy"><fieldset${disabled}><label class="field"><span>Agent account</span><select name="agent">${options(
+      [
+        ["claude", "Claude"],
+        ["codex", "Codex"],
+        ["grok", "Grok"],
+      ],
+      policyAgent,
+    )}</select></label><label class="field"><span>Host owner</span><select name="hostOwner">${options(
+      [
+        ["unknown", "Not declared"],
+        ["member", "Me"],
+        ["workspace", "My workspace"],
+      ],
+      hostPolicy.hostOwner ?? "unknown",
+    )}</select></label><label class="field"><span>Account type</span><select name="seat">${options(
+      [
+        ["unknown", "Not declared"],
+        ["personal", "Personal subscription"],
+        ["organization", "Organization account"],
+        ["api", "API account"],
+      ],
+      agentPolicy?.seat ?? "unknown",
+    )}</select></label><label class="runner-consent"><input type="checkbox" name="sharing"${hostPolicy.sharing ? " checked" : ""}><span>Share this host with members of the same Linear project</span></label><label class="runner-consent"><input type="checkbox" name="fallback"${hostPolicy.fallback ? " checked" : ""}><span>Use this workspace API host as a fallback</span></label><button class="btn" type="submit">Save host settings</button></fieldset></form>${!own ? '<p class="muted">The host owner controls its sharing settings.</p>' : !recent() ? '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>' : ""}<p class="muted">${agentPolicy?.authExpired ? "Agent sign-in needs attention." : agentPolicy?.ready ? "Agent connection verified." : "Agent connection has not been checked."}${agentPolicy?.quotaState === "exhausted" ? ` Usage limit reached.${agentPolicy.resetsAt ? ` Resets ${esc(new Date(agentPolicy.resetsAt).toLocaleString())}.` : agentPolicy.cooldownUntil > Date.now() ? ` Next check ${esc(new Date(agentPolicy.cooldownUntil).toLocaleString())}.` : ""}` : agentPolicy?.quotaState === "low" ? " Remaining usage is low." : ""}</p></details>`;
+  }
+  function workspacePolicyView() {
+    if (session?.role !== "owner" || !workspacePolicy) return "";
+    return `<details class="runner-section"><summary>Workspace execution permission</summary><form id="workspace-runner-policy"><fieldset${busy || !recent() ? " disabled" : ""}><label class="runner-consent"><input name="fallbackAllowed" type="checkbox"${workspacePolicy.fallbackAllowed ? " checked" : ""}><span>Allow configured API hosts to take over when another account is unavailable</span></label><label class="runner-consent"><input name="personalOrganizationHost" type="checkbox"${workspacePolicy.personalOrganizationHost ? " checked" : ""}><span>Allow personal subscriptions on workspace hosts</span></label><button class="btn" type="submit">Save workspace permission</button></fieldset></form></details>`;
+  }
+  function usageView() {
+    return `<details class="runner-section"><summary>Recent execution</summary>${
+      usage.length
+        ? `<ul class="runner-checks">${usage
+            .slice(0, 30)
+            .map(
+              (entry) =>
+                `<li><b>${esc(entry.runnerName)} · ${esc(entry.purpose)}</b><p>${esc(entry.agent ?? "Checks")}${entry.resolvedModel ? ` · ${esc(entry.resolvedModel)}` : ""} · ${esc(entry.outcome?.replaceAll("_", " ") ?? "Running")}</p><p class="muted">${esc(new Date(entry.startedAt).toLocaleString())}${entry.endedAt === null ? "" : ` · ${Math.max(0, Math.round((entry.endedAt - entry.startedAt) / 1000))} seconds`}</p></li>`,
+            )
+            .join("")}</ul>`
+        : '<p class="muted">No execution has been recorded yet.</p>'
+    }</details>`;
+  }
   function paint() {
     if (!root?.isConnected) return;
     if (!available) {
@@ -200,10 +301,46 @@ export function createRunners() {
       return;
     }
     const disabled = busy || !recent() ? " disabled" : "";
-    root.innerHTML = `<div class="between"><h1>Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. Install the daemon on a Linux host and enter its pairing code.</p>" : ""}${healthView()}`;
+    root.innerHTML = `<div class="between"><h1>Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. Install the daemon on a Linux host and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`;
     bind();
   }
   function bind() {
+    root!
+      .querySelector<HTMLSelectElement>('#runner-policy select[name="agent"]')
+      ?.addEventListener("change", (event) => {
+        policyAgent = (event.target as HTMLSelectElement).value;
+        paint();
+        const details = root!.querySelector<HTMLDetailsElement>("#runner-sharing");
+        if (details) details.open = true;
+        root!.querySelector<HTMLSelectElement>('#runner-policy select[name="agent"]')?.focus();
+      });
+    root!.querySelector<HTMLFormElement>("#runner-policy")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget as HTMLFormElement);
+      void change(async () => {
+        await api(`/api/runners/${encodeURIComponent(selected!)}/policy`, {
+          agent: String(data.get("agent")),
+          hostOwner: String(data.get("hostOwner")),
+          seat: String(data.get("seat")),
+          sharing: data.has("sharing"),
+          fallback: data.has("fallback"),
+        });
+        feedback = "Host settings saved.";
+      }, false);
+    });
+    root!
+      .querySelector<HTMLFormElement>("#workspace-runner-policy")
+      ?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget as HTMLFormElement);
+        void change(async () => {
+          await api("/api/runners/policy", {
+            fallbackAllowed: data.has("fallbackAllowed"),
+            personalOrganizationHost: data.has("personalOrganizationHost"),
+          });
+          feedback = "Workspace execution permission saved.";
+        });
+      });
     root!.querySelector("[data-runners-refresh]")?.addEventListener("click", () => void load());
     root!
       .querySelector<HTMLInputElement>('input[name="code"]')
@@ -295,6 +432,9 @@ export function createRunners() {
         runners = [];
         inspection = null;
         health = null;
+        hostPolicy = null;
+        workspacePolicy = null;
+        usage = [];
         selected = null;
         element.innerHTML = "<h1>Runners</h1><p>Connect to your Paws dashboard to see runners.</p>";
         return;
