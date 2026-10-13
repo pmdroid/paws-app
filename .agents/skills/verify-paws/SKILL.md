@@ -157,6 +157,8 @@ Run `bun test test/runner-coordinator.test.ts` for encrypted signer/CA initializ
 
 Run `bun test test/runner-control-startup.test.ts` for production `startPaws` monitoring enabled by `PAWS_RUNNER_HOST`, with the existing execution path preserved. Five owned processes prove default-disabled behavior, explicit protected authority initialization, invalid hostname and missing identity rejection, actual HTTPS session/Origin/CSRF checks, administrator pairing and health requests, mTLS heartbeat/renewal/revocation, and joined readiness and listener shutdown. Linear membership responses and agent health results are scripted; TLS, subprocesses, SQLite and production routes are real. The same probe runs through `check` and `audit`.
 
+For normal remote startup, run `bun --no-env-file test test/runner-control-startup.test.ts test/runner-transcript-config.test.ts test/agent-settings-api.test.ts`. The disposable normal Paws process verifies HTTPS pairing, workspace permissions, mutual-TLS health, renewal and revocation, explicit execution-mode validation, protected remote prerequisites, and agent settings probes dispatched to the runner. A local ACP launch sentinel must remain untouched when the remote health result supplies the advertised models. Preserve the 20 native observations and both listener shutdown checks.
+
 Run the daemon, work and result probes together to verify their published modules coexist in one checkout:
 
 ```sh
@@ -190,6 +192,10 @@ Run `bun --no-env-file test/local/runner-runtime.ts` and `PAWS_RUNTIME_PROOF_FAI
 For the trusted-check daemon runtime, run `PAWS_BROKER_VM_BASE=<standalone-qcow2> PAWS_BROKER_VM_SHA512=<trusted-sha512> PAWS_CHECK_VM_GIT_ARTIFACTS=<offline-git-directory> bun --no-env-file test/local/runner-check-runtime.ts`. The disposable offline VM pairs the real daemon through HTTPS and mTLS, dispatches signed checks, publishes immutable inputs and executes the root witness through the production Unix broker and systemd units. It verifies protected Ed25519 results, nonzero exits, installed dependency reuse, a lost result receipt followed by SIGKILL and reopen, saved-grant replay while a newer generation is active, monotonic lease expiry during a hung heartbeat and crash recovery that stops the witness and child before admission. Inspect source hashes, signed receipts and retained observations.
 
 ## Runner daemon health transport
+
+Run `bun --no-env-file test/local/runner-task-spool.ts` with a preloaded `PAWS_TASK_SPOOL_PROOF_IMAGE` for immutable task repository publication under real distinct Linux UIDs. Inspect actual paused-copy agent read denial, atomic source refusals, repository-optional jobs, exact-content retry, source mutation refusal, published0750/0640 ownership, agent read with write/chmod/publication denial, outsider denial and unsafe published mode/symlink refusal. The network-disabled rootless Docker proof records exercised source and image hashes.
+
+Run `bun --no-env-file test test/runner-task-authority.test.ts` for signed answer and artifact tasks through real HTTPS enrollment, mTLS grants, SQLite, repository credentials, questions, sealed transcripts and immutable results. The probe covers both purposes with and without repository context, strict task-mode and session generations, read-only repository credentials, candidate refusal, asynchronous mint fencing and permanent identity revocation after membership removal. The append-only migration proof retains existing command rows, dependent health receipts, schema objects, foreign keys and the ordinal highwater.
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
 

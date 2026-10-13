@@ -3,6 +3,7 @@ export {
   publishRunnerJob,
   readRunnerJob,
   runnerRepositoryBundlePath,
+  runnerTaskRepositoryPath,
   runnerJobDirectory,
   type RunnerSpool,
 } from "./spool";
