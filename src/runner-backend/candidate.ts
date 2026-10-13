@@ -6,6 +6,7 @@ export async function fetchRunnerCandidate(input: {
   worktree: string;
   baseSha: string;
   candidateSha: string;
+  branch: string;
   remoteUrl: string;
   networkGit: (args: string[]) => Promise<string>;
   signal: AbortSignal;
@@ -24,6 +25,7 @@ export async function fetchRunnerCandidate(input: {
     if ((await run(["rev-parse", "HEAD"])).trim() !== input.baseSha)
       throw new Error("Runner candidate base changed.");
   };
+  await run(["check-ref-format", `refs/heads/${input.branch}`]);
   await unchanged();
   try {
     await input.networkGit([
@@ -34,7 +36,7 @@ export async function fetchRunnerCandidate(input: {
       "--no-write-fetch-head",
       "--",
       input.remoteUrl,
-      `${input.candidateSha}:${ref}`,
+      `refs/heads/${input.branch}:${ref}`,
     ]);
     input.signal.throwIfAborted();
     if ((await run(["rev-parse", "--verify", `${ref}^{commit}`])).trim() !== input.candidateSha)

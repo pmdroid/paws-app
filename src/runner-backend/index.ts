@@ -23,6 +23,7 @@ export function createRemoteAgentRunner(options: {
     worktree: string;
     baseSha: string;
     candidateSha: string;
+    branch: string;
     remoteUrl: string;
     networkGit: (args: string[]) => Promise<string>;
     signal: AbortSignal;
@@ -266,6 +267,7 @@ export function createRemoteAgentRunner(options: {
               worktree: input.worktreePath,
               baseSha,
               candidateSha: complete.candidateSha,
+              branch: scoped.item.branchName,
               remoteUrl: assigned.repository.remoteUrl,
               networkGit: input.networkGit,
               signal,

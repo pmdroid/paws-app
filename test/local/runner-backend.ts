@@ -128,6 +128,7 @@ export async function probeRunnerBackend(
     async fetchCandidate(candidate) {
       assert.equal(candidate.remoteUrl, "https://github.com/fixture/repository.git");
       assert.equal(candidate.networkGit, git);
+      assert.equal(candidate.branch, getWorkItem(db, candidate.itemId)?.branchName);
       assert.equal(candidate.baseSha, base);
       assert.equal(candidate.candidateSha, head);
       fetched++;
