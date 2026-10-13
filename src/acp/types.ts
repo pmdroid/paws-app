@@ -72,6 +72,7 @@ export type AcpEventListener = (event: AcpEvent) => void | Promise<void>;
 export type AgentIdentity = { session: string; model: string; provider: string };
 
 export interface RunAgentOptions {
+  networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
   readOnly?: boolean;
   prepareOnly?: boolean;
@@ -128,7 +129,6 @@ export interface ExecuteItemOptions extends Omit<RunAgentOptions, "worktreePath"
   owner: string;
   repo: string;
   remoteUrl: string;
-  networkGit?: (args: string[]) => Promise<string>;
   role?: AgentRole;
   startRef?: string;
   promptRunner?: (options: RunAgentOptions) => Promise<RunAgentResult>;
