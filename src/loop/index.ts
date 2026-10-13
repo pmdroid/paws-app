@@ -30,6 +30,7 @@ export {
   attachOrchestrator,
   type GitHubBinding,
   type OrchestratorOptions,
+  type ExecutionChanges,
   type RepositoryBinding,
 } from "./orchestrator";
 export { itemPathId, worktreeBranch } from "./sources";
