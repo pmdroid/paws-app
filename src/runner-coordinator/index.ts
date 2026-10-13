@@ -12,6 +12,7 @@ import {
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
 import { createRunnerHealth } from "../runner-health";
+import { createRunnerChecks, createRunnerChecksHttp } from "../runner-checks";
 import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
 import type { GitHubApp } from "../github";
@@ -80,6 +81,8 @@ export async function openRunnerCoordinator(options: {
   const workHttp = createRunnerWorkHttp(work);
   const results = createRunnerResults({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const checks = createRunnerChecks({ db: options.db, work, now: options.now });
+  const checksHttp = createRunnerChecksHttp(checks);
   const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
@@ -109,6 +112,7 @@ export async function openRunnerCoordinator(options: {
         (await workHttp(request, runnerId)) ??
         (await results.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
+        (await checksHttp(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
         (await transcriptsHttp?.(request, runnerId)) ??
@@ -132,6 +136,7 @@ export async function openRunnerCoordinator(options: {
     work,
     results,
     health,
+    checks,
     artifacts,
     transcripts,
     async browser(request: Request, principal: WorkspacePrincipal) {

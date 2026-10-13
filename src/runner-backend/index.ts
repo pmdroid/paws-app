@@ -4,11 +4,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { getWorkItem, immediate, saveCheckpoint } from "../db";
 import { git, runDir, type AcpEvent, type RunAgentOptions, type RunAgentResult } from "../acp";
-import type { RunnerWork } from "../runner-work";
+import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import type { RunnerCommand, RunnerResult } from "../runner-protocol";
+import type { RunnerChecks } from "../runner-checks";
+import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
+import { workspaceId } from "../workspace";
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 
@@ -18,6 +21,7 @@ export function createRemoteAgentRunner(options: {
   results: RunnerResults;
   health: RunnerHealth;
   artifacts?: RunnerArtifactStore;
+  checks?: RunnerChecks;
   fetchCandidate(input: {
     itemId: string;
     worktree: string;
@@ -35,7 +39,7 @@ export function createRemoteAgentRunner(options: {
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Set<string>();
-  function select(itemId: string) {
+  function select(itemId: string, runnerId?: string) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
     const candidates = db
@@ -49,6 +53,7 @@ export function createRemoteAgentRunner(options: {
       )
       .all();
     for (const runner of candidates) {
+      if (runnerId && runner.id !== runnerId) continue;
       if (reservations.has(runner.id)) continue;
       try {
         work.scope(item.currentRunId, runner.workspaceId);
@@ -59,6 +64,66 @@ export function createRemoteAgentRunner(options: {
     throw new Error("No available paired runner can access this Linear task repository");
   }
   return {
+    closeoutForItem(itemId: string, signal?: AbortSignal) {
+      const attempts = new Map<string, { id: string; runnerId: string }>();
+      return createRemoteCloseoutCommandRunner({
+        signal,
+        async execute(request) {
+          signal?.throwIfAborted();
+          if (!options.checks) throw new Error("Trusted runner verification is unavailable");
+          const checks = options.checks;
+          const previous = attempts.get(request.candidateSha);
+          const selected = select(itemId, previous?.runnerId);
+          let executionId: string | undefined;
+          let completed = false;
+          try {
+            signal?.throwIfAborted();
+            const attempt = previous ?? { id: workspaceId(now()), runnerId: selected.id };
+            const dispatched = checks.dispatch({
+              runnerId: selected.id,
+              runId: selected.runId,
+              verificationAttemptId: attempt.id,
+              ...request,
+            });
+            attempts.set(request.candidateSha, attempt);
+            executionId = dispatched.input.executionId;
+            const assignment = db
+              .query<{ generation: number; runnerFence: number }, [string]>(
+                "SELECT generation,runner_fence AS runnerFence FROM runner_work WHERE run_id=?",
+              )
+              .get(selected.runId)!;
+            const deadline = now() + request.timeoutMs + 60_000;
+            while (now() < deadline) {
+              signal?.throwIfAborted();
+              work.scope(selected.runId, selected.workspaceId);
+              if (
+                work.identity(selected.id).fence !== assignment.runnerFence ||
+                db
+                  .query<{ generation: number }, [string]>(
+                    "SELECT generation FROM runner_work WHERE run_id=?",
+                  )
+                  .get(selected.runId)?.generation !== assignment.generation
+              )
+                throw new RunnerWorkFencedError("Runner verification authority changed");
+              const receipt = checks.result(executionId);
+              if (receipt) {
+                completed = true;
+                return receipt;
+              }
+              work.current(selected.runId, assignment.generation);
+              await delay(interval, undefined, { signal });
+            }
+            throw new Error("Trusted runner verification timed out");
+          } finally {
+            try {
+              if (executionId && !completed) checks.cancel(executionId);
+            } finally {
+              reservations.delete(selected.id);
+            }
+          }
+        },
+      });
+    },
     forItem(itemId: string) {
       return async (input: RunAgentOptions): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();

@@ -69,6 +69,7 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "awaiting_signoff", event: "changes_requested", to: "running" },
   { from: "awaiting_signoff", event: "signoff_sla_expired", to: "manual" },
   { from: "merge_queue", event: "main_moved", to: "merge_queue" },
+  { from: "merge_queue", event: "reverify_requested", to: "verifying" },
   { from: "merge_queue", event: "merge_accepted", to: "merged" },
   { from: "merge_queue", event: "rebase_high_risk", to: "awaiting_signoff" },
   { from: "merge_queue", event: "ejected", to: "running" },
