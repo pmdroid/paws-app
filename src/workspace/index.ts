@@ -20,3 +20,6 @@ export {
   startWorkspaceAccess,
 } from "./runtime";
 export { createWorkspaceIdentityLinks } from "./identity-links";
+
+export { createWorkspaceAssignments } from "./assignments";
+export type { WorkspaceAssignments } from "./assignments";

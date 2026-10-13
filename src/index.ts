@@ -113,6 +113,7 @@ import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./dep
 import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
+  createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
 import {
@@ -247,6 +248,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   let linearTaskAccess: LinearTaskAccess | null = null;
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
+  let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
@@ -363,7 +365,22 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
     try {
+      if (!linear.issueLifecycle || !linearTaskAccess || !linear.tracker)
+        throw new Error("Public workspace assignments require verified Linear task access.");
+      {
+        assignments = createWorkspaceAssignments({
+          db,
+          origin: runtime.publicUrl!,
+          clientId: runtime.linearClientId!,
+          memberships: linear.memberships,
+          lifecycle: linear.issueLifecycle,
+          tracker: linear.tracker,
+          accept: (event, signal) => linearTaskAccess!.accept(event, { signal }),
+          continue: followUp,
+        });
+      }
       workspace = startWorkspaceAccess({
+        assignments,
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
         db,
         publicUrl: runtime.publicUrl!,
@@ -595,6 +612,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     signal: abort.signal,
     concurrency: workspace && linear?.tracker && linear.issueLifecycle ? 4 : 1,
     prepare(created) {
+      assignments?.register(created.jobs);
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,
@@ -640,8 +658,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           : {}),
         ...(workspace
           ? {
+              authorizeLinearIntake: (sessionId, spec) =>
+                assignments?.authorizeIntake(sessionId, spec) ?? true,
               authorizeLinearEvent: async (event) =>
-                (await workspace.access).authorizeLinearEvent(event),
+                (await (await workspace.access).authorizeLinearEvent(event)) &&
+                (assignments ? await assignments.authorize(event) : true),
             }
           : {}),
         githubAuth:
