@@ -75,6 +75,7 @@ export type {
   IssueAttachment,
   Elicitation,
   EpicSnapshot,
+  LinearSchedulingMetadata,
   LinearSubIssue,
   ProgressUpdate,
   SelectOption,
