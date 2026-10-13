@@ -49,6 +49,10 @@ const origin = `http://127.0.0.1:${server.port}`;
 ready.resolve(
   createWorkspaceAccess({
     db,
+    githubAttributionClient: {
+      clientId: "fixture-github",
+      clientSecret: "synthetic-browser-secret",
+    },
     publicUrl: origin,
     clientId: "fixture-client",
     installedOrganization: { id: "fixture-org", name: "Paws verification" },
@@ -78,6 +82,15 @@ ready.resolve(
       },
     },
     fetch: (async (input, init) => {
+      if (String(input) === "https://github.com/login/oauth/access_token")
+        return Response.json({ access_token: "ghu_syntheticidentity", scope: "" });
+      if (String(input) === "https://api.github.com/user")
+        return Response.json({
+          id: 1234,
+          login: "fixture-human",
+          type: "User",
+          name: "Fixture Human",
+        });
       if (String(input) === "https://api.linear.app/oauth/token")
         return Response.json({
           access_token: `fixture-${new URLSearchParams(String(init?.body)).get("code")}`,

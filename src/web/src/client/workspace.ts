@@ -1,5 +1,7 @@
 import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
+import { initializeWorkspaceGitHub } from "./workspace-github";
+import { initializeWorkspaceAttribution } from "./workspace-attribution";
 
 type BrowserSession = {
   role: string;
@@ -152,7 +154,10 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
         feedback.textContent = "Workspace settings could not be loaded. Reload to try again.";
     }
   }
+  if (["owner", "admin", "member"].includes(session.role))
+    initializeWorkspaceAttribution(root, session.csrfToken);
   if (["owner", "admin"].includes(session.role)) {
+    initializeWorkspaceGitHub(root, session.csrfToken);
     await initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
