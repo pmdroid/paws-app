@@ -297,6 +297,14 @@ export function createRunnerWork(options: {
         if (
           db
             .query(
+              "SELECT 1 FROM runner_command c WHERE c.runner_id=? AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL)",
+            )
+            .get(command.runnerId)
+        )
+          throw new Error("Runner cancellation teardown is still pending.");
+        if (
+          db
+            .query(
               "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
             )
             .get(command.runnerId, at)

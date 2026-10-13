@@ -35,6 +35,7 @@ import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
+import { createRemoteCancellation } from "./cancel";
 
 class RunnerUnavailableError extends Error {}
 
@@ -127,6 +128,7 @@ export function createRemoteAgentRunner(options: {
     );
   }
   return {
+    cancelItem: createRemoteCancellation(options),
     closeoutForItem(itemId: string, signal?: AbortSignal) {
       const attempts = new Map<
         string,
