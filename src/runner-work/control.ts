@@ -211,6 +211,14 @@ export function createRunnerWork(options: {
           command.expiresAt <= at
         )
           throw new Error("Runner is not accepting this assignment.");
+        if (
+          db
+            .query(
+              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+            )
+            .get(command.runnerId, at)
+        )
+          throw new Error("Runner is occupied by session helper work.");
         const { item, repository } = task(command.runId, command.workspaceId);
         if (
           item.id !== command.itemId ||
@@ -250,6 +258,7 @@ export function createRunnerWork(options: {
       const command = RunnerCommandSchema.parse(input);
       if (command.type === "run" || command.type === "review" || command.type === "check")
         throw new Error("Use work assignment for run commands.");
+      if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
       return immediate(db, () => {
         const identity = runner(command.runnerId);
         if (

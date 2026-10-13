@@ -11,6 +11,7 @@ import {
   type RunnerListener,
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
+import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerHealth } from "../runner-health";
 import { createRunnerChecks, createRunnerChecksHttp } from "../runner-checks";
 import type { WorkspacePrincipal } from "../workspace";
@@ -79,6 +80,12 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const workHttp = createRunnerWorkHttp(work);
+  const helpers = createRunnerHelpers({
+    db: options.db,
+    keyId: signing.signingKeys[0].keyId,
+    privateKey: signing.privateKey,
+    now: options.now,
+  });
   const results = createRunnerResults({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
   const checks = createRunnerChecks({ db: options.db, work, now: options.now });
@@ -111,6 +118,7 @@ export async function openRunnerCoordinator(options: {
       return (
         (await workHttp(request, runnerId)) ??
         (await results.fetch(request, runnerId)) ??
+        (await helpers.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
         (await checksHttp(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
@@ -136,6 +144,7 @@ export async function openRunnerCoordinator(options: {
     work,
     results,
     health,
+    helpers,
     checks,
     artifacts,
     transcripts,

@@ -47,6 +47,7 @@ const MODULES = [
   "runner-backend",
   "runner-results",
   "runner-health",
+  "runner-helpers",
   "runner-runtime",
   "runner-health-runtime",
   "runner-journal",
@@ -166,6 +167,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-journal": ["db", "runner-protocol"],
+  "runner-helpers": ["db", "runner-protocol", "workspace"],
   "runner-runtime": [
     "runner-transcripts",
     "runner-artifacts",
@@ -180,6 +182,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
   "runner-coordinator": [
+    "runner-helpers",
     "runner-checks",
     "github",
     "runner-repository-access",

@@ -61,6 +61,15 @@ test.each<RunnerCommand>([
   run,
   { ...run, type: "review" },
   { ...common, type: "probe", profile },
+  {
+    ...common,
+    type: "helper",
+    sessionId: "session",
+    sessionGeneration: 2,
+    purpose: "classify",
+    profile,
+    prompt: "Classify this request",
+  },
   { ...common, type: "login_check", agent: "codex" },
   { ...common, type: "cancel", runId: "run-1", generation: 2 },
   { ...common, type: "upgrade", version: "1.2.3", sha256: "b".repeat(64) },
@@ -233,4 +242,27 @@ test("signing refuses non-Ed25519 keys", () => {
   expect(() =>
     signRunnerCommand({ keyId: "wrong", privateKey: key.privateKey, command: run }),
   ).toThrow("Ed25519");
+});
+
+test("helper commands accept only bounded session-owned routing purposes", () => {
+  const helper = {
+    ...common,
+    type: "helper",
+    sessionId: "session",
+    sessionGeneration: 2,
+    purpose: "select_repository",
+    profile,
+    prompt: "Choose an offered repository",
+  };
+  expect(RunnerCommandSchema.safeParse(helper).success).toBe(true);
+  for (const changed of [
+    { purpose: "implement" },
+    { repository },
+    { runId: "run-1" },
+    { argv: ["sh", "-c", "id"] },
+    { readOnly: false },
+    { expiresAt: helper.issuedAt + 60_001 },
+    { sessionGeneration: -1 },
+  ])
+    expect(RunnerCommandSchema.safeParse({ ...helper, ...changed }).success).toBe(false);
 });
