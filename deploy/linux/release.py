@@ -12,6 +12,12 @@ import tempfile
 
 
 BUN_VERSION = "1.4.2"
+ARCHITECTURE = {"x86_64": ("x64", "x86_64"), "aarch64": ("arm64", "aarch64")}.get(platform.machine(), ("unsupported", "unsupported"))
+PROVIDER_EXECUTABLES = {
+    "claude": f"node_modules/@anthropic-ai/claude-agent-sdk-linux-{ARCHITECTURE[0]}/claude",
+    "codex": f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/vendor/{ARCHITECTURE[1]}-unknown-linux-musl/bin/codex",
+}
+CODEX_PLATFORM_PACKAGE = f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/package.json"
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 ASSETS = {
     "runner-broker.py",
@@ -40,7 +46,11 @@ REQUIRED = {
     "app/node_modules/.bin/claude-agent-acp",
     "app/node_modules/.bin/codex-acp",
     "app/node_modules/.bin/grok",
-} | {f"deploy/linux/{name}" for name in ASSETS}
+    "app/node_modules/.bin/claude",
+    "app/node_modules/.bin/codex",
+    "app/node_modules/@openai/codex/bin/codex.js",
+    "app/" + CODEX_PLATFORM_PACKAGE,
+} | {"app/" + target for target in PROVIDER_EXECUTABLES.values()} | {f"deploy/linux/{name}" for name in ASSETS}
 COMMAND_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C"}
 
 
@@ -140,6 +150,9 @@ def inspect_archive(path):
             archive.seek(following)
     if not REQUIRED <= seen.keys():
         raise ValueError("Release archive is missing required runtime files")
+    executable_providers = {"app/node_modules/.bin/claude", "app/node_modules/.bin/codex"} | {"app/" + target for target in PROVIDER_EXECUTABLES.values()}
+    if any(seen[name].mode != 0o755 for name in executable_providers):
+        raise ValueError("Bundled provider launchers and native binaries must be executable")
     return seen
 
 
