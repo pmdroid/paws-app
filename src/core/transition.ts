@@ -88,6 +88,7 @@ export const EPIC_EDGES: readonly Edge<EpicState, EpicEvent>[] = [
   { from: "running", event: "stalled", to: "stalled" },
   { from: "stalled", event: "resumed", to: "running" },
   { from: "running", event: "completed", to: "done" },
+  { from: "stalled", event: "completed", to: "done" },
 ];
 
 const workItemTable = edgeTable(WORK_ITEM_EDGES);

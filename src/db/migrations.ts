@@ -1206,4 +1206,16 @@ CREATE TABLE epic_reconciliation_effect (
 ) STRICT;
 `,
   },
+  {
+    id: "043_epic_execution_control",
+    sql: `
+CREATE TABLE epic_execution_control (
+  epic_id TEXT PRIMARY KEY REFERENCES epic(id),
+  blocked_since INTEGER,
+  outcome TEXT CHECK(outcome IS NULL OR outcome IN ('completed','abandoned')),
+  stalled_question_id TEXT REFERENCES question(id),
+  notice_generation INTEGER NOT NULL DEFAULT 0 CHECK(notice_generation>=0)
+) STRICT;
+`,
+  },
 ];
