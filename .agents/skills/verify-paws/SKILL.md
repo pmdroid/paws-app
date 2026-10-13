@@ -199,6 +199,8 @@ For the trusted-check daemon runtime, run `PAWS_BROKER_VM_BASE=<standalone-qcow2
 
 ## Runner daemon health transport
 
+Run `PAWS_BROKER_VM_BASE=/path/to/standalone.qcow2 PAWS_BROKER_VM_SHA512=<trusted-sha512> bun --no-env-file test/local/runner-broker-vm.ts --daemon-service` for the daemon unit exit policy under real systemd PID1 and the dedicated runner UID. The disclosed ExecStart fixture joins a child on SIGTERM and exits130; require the original unit to fail, the shipped unit to stop inactive/success and restart healthily, and exit1 to retain failure and automatic restart. Preserve source hashes and all four observations alongside the installed daemon workflow proof.
+
 Run `PAWS_BROKER_VM_BASE=… PAWS_BROKER_VM_SHA512=… PAWS_CHECK_VM_GIT_ARTIFACTS=… bun --no-env-file test/local/runner-task-runtime-vm.ts` with the trusted standalone Debian base and offline Git prerequisites. It drives four signed answer/artifact tasks through real HTTPS pairing, mTLS, SQLite, optional pinned repositories, the native PID1 broker and distinct service UIDs; verify readonly repository access, question/artifact replies, complete sealed transcripts, lost-receipt retries and durable task journal reopening.
 
 Run `bun --no-env-file test/local/runner-task-spool.ts` with a preloaded `PAWS_TASK_SPOOL_PROOF_IMAGE` for immutable task repository publication under real distinct Linux UIDs. Inspect actual paused-copy agent read denial, atomic source refusals, repository-optional jobs, exact-content retry, source mutation refusal, published0750/0640 ownership, agent read with write/chmod/publication denial, outsider denial and unsafe published mode/symlink refusal. The network-disabled rootless Docker proof records exercised source and image hashes.
