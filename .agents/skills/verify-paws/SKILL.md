@@ -177,6 +177,8 @@ For the fixed Linux check-command launcher and PID1 status writer, run `PAWS_CHE
 
 Run `bun --no-env-file test/local/runner-journal.ts` for actual SIGKILL recovery of the execution journal. The disposable writer uses real SQLite WAL and dies without closing its database. A fresh process verifies one persisted admission, typed question values, immutable event prefixes, atomic rejection of invalid suffixes, retained delivery receipts, monotonic answer cursors and terminal no-relaunch behavior. `check` and `audit` run the same probe.
 
+For trusted Closeout dispatch, run `bun --no-env-file test test/runner-trusted-closeout.test.ts`. The native probe enrolls and approves a real Ed25519 verifier identity over HTTPS, sends signed check results through the production coordinator mTLS listener, and writes evidence through the remote Closeout adapter. Setup and checks reuse their candidate attempt. Invalid signatures, cancellation, reassignment and revoked hosts cannot publish evidence. `check` and `audit` run the probe.
+
 ## Runner daemon health transport
 
 Run `bun test test/runner-daemon-health.test.ts` for the paired daemon client against the real coordinator HTTPS and mTLS listeners. The shared audit probe verifies signed health commands, immutable probe and login receipts, outbound schema validation, strict response validation, reopened identities and revoked-peer denial. `check` and `audit` include this recipe.
