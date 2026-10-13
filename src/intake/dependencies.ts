@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { WorkItemState, TaskMode } from "../core";
+import { isTerminalWorkItemState, type WorkItemState, type TaskMode } from "../core";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 
@@ -102,15 +102,26 @@ export function readyItems(db: Database, target: Target): DependencyReadiness {
   return db.transaction(() => readReadyItems(db, target)).deferred();
 }
 
-function readReadyItems(db: Database, target: Target): DependencyReadiness {
+export function canAdvanceItem(db: Database, input: Target & { itemId: string }): boolean {
+  return db
+    .transaction(() => readReadyItems(db, input, input.itemId).readyItemIds.includes(input.itemId))
+    .deferred();
+}
+
+function readReadyItems(db: Database, target: Target, includeItemId?: string): DependencyReadiness {
   const current = scope(db, target);
   const saved = snapshot(db, target);
-  const queued = current.items.filter((item) => item.state === "queued" && !item.cancelRequested);
+  const candidates = current.items.filter(
+    (item) =>
+      !item.cancelRequested &&
+      (item.state === "queued" ||
+        (item.id === includeItemId && !isTerminalWorkItemState(item.state))),
+  );
   if (!saved || saved.scope !== current.token || hasPendingEpicChanges(db, target.epicId))
     return {
       generation: saved?.generation ?? 0,
       readyItemIds: [],
-      heldItemIds: queued.map((item) => item.id),
+      heldItemIds: candidates.map((item) => item.id),
       cycleHeldItemIds: [],
     };
   const edges = db
@@ -140,7 +151,7 @@ function readReadyItems(db: Database, target: Target): DependencyReadiness {
       (item.state === "completed" && (item.mode === "answer" || item.mode === "artifact"))
     );
   };
-  const ready = queued.filter(
+  const ready = candidates.filter(
     (item) =>
       !cycleHeld.has(item.linearIssueId) &&
       [...edges, ...external].every(
@@ -152,7 +163,7 @@ function readReadyItems(db: Database, target: Target): DependencyReadiness {
   return {
     generation: saved.generation,
     readyItemIds: [...ids],
-    heldItemIds: queued.filter((item) => !ids.has(item.id)).map((item) => item.id),
+    heldItemIds: candidates.filter((item) => !ids.has(item.id)).map((item) => item.id),
     cycleHeldItemIds: current.items
       .filter((item) => cycleHeld.has(item.linearIssueId))
       .map((item) => item.id),
