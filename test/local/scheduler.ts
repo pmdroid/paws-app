@@ -210,6 +210,71 @@ export async function probeScheduler(
     });
   }
   {
+    const { db, ids } = setup("idle-merge", 2, () => ["src/shared"]);
+    db.run("UPDATE work_item SET epic_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
+    recordLinearInstallation(db, {
+      organizationId: "merge-org",
+      oauthClientId: "merge-client",
+      appUserId: "app",
+      sessionId: "merge-session",
+      teamId: "team",
+      observedAtMs: 1000,
+    });
+    bindLinearSessionTask(db, "merge-session", `epic-${ids[0]!}`, { actorId: "owner" });
+    const options = { now: 1000, legacyReadyItemIds: ids, concurrency: 1 };
+    assert.deepEqual(dispatchReadyItems(db, options), [ids[0]!]);
+    const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
+    assert.deepEqual(dispatchReadyItems(db, options), []);
+    assert(completeJob(db, start, 1001));
+    const mergeId = enqueueJob(db, {
+      queue: `${JOB_KIND.merge}.deferred`,
+      lane: "merge",
+      payload: { itemId: ids[0]! },
+      now: 1001,
+    });
+    const merge = claimNextJob(db, { now: 1001, queues: [`${JOB_KIND.merge}.deferred`] })!;
+    assert.equal(merge.id, mergeId);
+    assert.deepEqual(dispatchReadyItems(db, { ...options, now: 1002 }), []);
+    assert.equal(count(db, "scheduler_admission"), 1);
+    assert(completeJob(db, merge, 1003));
+    db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
+      `epic-${ids[0]!}`,
+      `lin-item-${ids[1]!}`,
+      `lin-item-${ids[0]!}`,
+    ]);
+    assert.deepEqual(dispatchReadyItems(db, { ...options, now: 1003 }), [ids[1]!]);
+    const blocker = claimNextJob(db, { now: 1003, queues: [JOB_KIND.start] })!;
+    assert.equal((blocker.payload as { itemId: string }).itemId, ids[1]!);
+    assert.equal(count(db, "scheduler_admission"), 1);
+    observed(
+      "Joined idle merges yield the same session, project cap and overlapping footprint to a new blocker",
+      {
+        originalStart: start.id,
+        joinedMerge: merge.id,
+        blockerStart: blocker.id,
+      },
+    );
+    db.close();
+  }
+  {
+    for (const status of ["active", "provisioning"] as const) {
+      const { db, ids } = setup(`merge-run-${status}`, 2, () => ["src/shared"]);
+      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids });
+      const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+      assert(completeJob(db, start, 1001));
+      db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
+      const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
+      assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), []);
+      db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
+      assert.deepEqual(dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids }), [ids[1]!]);
+      db.close();
+    }
+    observed("Merge queues retain footprint locks while active or provisioning runs remain", {
+      statuses: ["active", "provisioning"],
+    });
+  }
+  {
     const { db, ids } = setup("rollback", 2);
     db.run(
       "CREATE TRIGGER fail_admission BEFORE INSERT ON scheduler_admission BEGIN SELECT RAISE(ABORT,'injected crash'); END",

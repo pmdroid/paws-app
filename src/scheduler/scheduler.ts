@@ -14,6 +14,7 @@ type Item = {
   createdAt: number;
   cancelRequested: number;
   liveRun: number;
+  liveJob: number;
   brief: string | null;
   workspaceId: string | null;
   sessionId: string | null;
@@ -129,11 +130,15 @@ function conflicts(left: Admission, right: Admission): boolean {
   );
 }
 
-function allItems(db: Database): Item[] {
+function allItems(db: Database, now: number): Item[] {
   return db
-    .query<Item, []>(`SELECT i.id,i.epic_id AS epicId,i.linear_issue_id AS issueId,
+    .query<Item, [number]>(`SELECT i.id,i.epic_id AS epicId,i.linear_issue_id AS issueId,
     i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,i.brief,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
+    EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
+      AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
+      AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
+        OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
     w.id AS workspaceId,t.session_id AS sessionId,c.project_id AS projectId,c.project_known AS projectKnown,c.priority,c.paths AS savedPaths,r.owner,r.repo
     FROM work_item i JOIN epic e ON e.id=i.epic_id
     LEFT JOIN linear_session_task t ON t.epic_id=e.id
@@ -143,7 +148,13 @@ function allItems(db: Database): Item[] {
     LEFT JOIN work_item_repository r ON r.item_id=i.id
     WHERE e.state IN ('running','stalled') OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
-    .all();
+    .all(now);
+}
+
+function holdsExecution(item: Item): boolean {
+  return Boolean(
+    item.liveRun || item.liveJob || (ACTIVE.has(item.state) && item.state !== "merge_queue"),
+  );
 }
 
 function footprint(item: Item, options: SchedulerOptions): Admission {
@@ -203,7 +214,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
   if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("Invalid project concurrency");
   const now = options.now ?? Date.now();
   return immediate(db, () => {
-    const items = allItems(db);
+    const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
     const ready = new Set<string>();
     const refreshed = new Set<string>();
@@ -244,7 +255,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
     for (const row of saved) {
       const item = byId.get(row.itemId);
       if (
-        (item && (ACTIVE.has(item.state) || item.liveRun)) ||
+        (item && holdsExecution(item)) ||
         (row.status === "running" && (row.lockedUntil === null || row.lockedUntil > now))
       ) {
         held.push({ ...row, paths: JSON.parse(row.paths) });
@@ -275,10 +286,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       db.run("DELETE FROM scheduler_admission WHERE item_id=?", [row.itemId]);
     }
     for (const item of items)
-      if (
-        (ACTIVE.has(item.state) || item.liveRun) &&
-        !held.some((entry) => entry.itemId === item.id)
-      )
+      if (holdsExecution(item) && !held.some((entry) => entry.itemId === item.id))
         held.push(footprint(item, options));
     const depth = depths(db, items);
     const candidates = items
