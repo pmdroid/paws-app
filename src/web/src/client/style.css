@@ -1878,3 +1878,25 @@ body[data-area="runners"] .linear-session-start {
   padding: 7px 9px;
   min-height: 44px;
 }
+
+.runner-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 40rem;
+  margin: 16px 0;
+}
+.runner-consent input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.runner-section summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.runner-section details[open] > summary {
+  margin-bottom: 16px;
+}
