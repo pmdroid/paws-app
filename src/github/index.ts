@@ -74,3 +74,5 @@ export type {
 } from "./types";
 export type { GitHubWebhook } from "./webhook";
 export { defaultGitExec } from "./git";
+
+export { closeStoppedPull } from "./stopped";

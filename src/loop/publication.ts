@@ -4,6 +4,7 @@ import {
   GitCommandError,
   type GitExec,
   type GitHubClient,
+  type TokenPurpose,
 } from "../github";
 import type { GitHubBinding, RepositoryBinding } from "./orchestrator";
 
@@ -14,20 +15,21 @@ export function guardGitHubPublication(input: {
   gitExec?: GitExec;
   onCleanupFailure(): void;
   isCurrent(): boolean;
-  assert(): Promise<void>;
+  assert(purpose?: TokenPurpose): Promise<void>;
 }): GitHubBinding & { gitExec: GitExec } {
   const current = () => {
     input.signal.throwIfAborted();
     if (!input.isCurrent()) throw new Error("The Linear publication was superseded.");
   };
-  const check = async () => {
+  const check = async (purpose?: TokenPurpose) => {
     current();
-    await input.assert();
+    await input.assert(purpose);
     current();
   };
   const client: GitHubClient = {
     async request(request) {
-      if (request.method !== "GET") await check();
+      if (request.method !== "GET")
+        await check(request.method === "PUT" && request.path.endsWith("/merge") ? "merge" : "pr");
       current();
       return input.github.client.request({
         ...request,
@@ -62,7 +64,7 @@ export function guardGitHubPublication(input: {
     ...input.github,
     client,
     async gitExec(args, options) {
-      if (args.includes("push")) await check();
+      if (args.includes("push")) await check("push");
       current();
       return ownedGitExec(args, {
         ...options,
@@ -72,10 +74,10 @@ export function guardGitHubPublication(input: {
     tokenProvider: {
       mode: provider.mode,
       async tokenFor(purpose) {
-        await check();
+        await check(purpose);
         current();
         const token = await provider.tokenFor(purpose);
-        await check();
+        await check(purpose);
         current();
         return token;
       },
