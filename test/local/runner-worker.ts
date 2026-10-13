@@ -609,29 +609,66 @@ export async function probeRunnerWorker(
   const abort = new AbortController();
   const cancelledAgent = launch(4, [{ type: "hang" }]);
   const cancelOutput = output(4);
-  const timer = setTimeout(() => abort.abort(), 150);
+  const timer = setTimeout(() => abort.abort(), 10_000);
+  const completion = execute({
+    job: job(4),
+    repositoryBundle,
+    outputDirectory: cancelOutput,
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: cancelledAgent.launch,
+    signal: abort.signal,
+  }).then(
+    (result) => ({ ok: true as const, result }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  let finished = false;
+  void completion.then(() => {
+    finished = true;
+  });
   try {
-    const cancelled = await execute({
-      job: job(4),
-      repositoryBundle,
-      outputDirectory: cancelOutput,
-      workRoot: join(root, "work"),
-      home,
-      resultsGid: process.getgid!(),
-      launch: cancelledAgent.launch,
-      signal: abort.signal,
-    });
+    while (true) {
+      let trace: { prompts?: unknown[] } | undefined;
+      try {
+        trace = JSON.parse(readFileSync(cancelledAgent.result, "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (trace?.prompts?.length === 1) break;
+      if (finished) {
+        const outcome = await completion;
+        if (!outcome.ok) throw outcome.error;
+        throw new Error("Worker finished before ACP prompt admission");
+      }
+      abort.signal.throwIfAborted();
+      await Bun.sleep(5);
+    }
+    abort.abort();
+    const outcome = await completion;
+    if (!outcome.ok) throw outcome.error;
+    const cancelled = outcome.result;
     assert.equal(cancelled.run.cancelled, true);
     assert.equal(cancelled.run.agentExited, true);
+    assert.equal(cancelled.run.checkpoint, undefined);
+    assert(cancelled.run.pid);
+    assert.throws(() => process.kill(cancelled.run.pid!, 0), { code: "ESRCH" });
     assert.equal(cancelled.candidateSha, undefined);
     assert.throws(() => readFileSync(join(cancelOutput, "candidate.bundle")));
     observe(
       "cancellation waits for the actual ACP process to exit and publishes no candidate",
       true,
-      { cancelled: cancelled.run.cancelled, agentExited: cancelled.run.agentExited },
+      {
+        promptAdmitted: true,
+        cancelled: cancelled.run.cancelled,
+        agentExited: cancelled.run.agentExited,
+        pid: cancelled.run.pid,
+      },
     );
   } finally {
     clearTimeout(timer);
+    abort.abort();
+    await completion;
   }
   const probe = job(5);
   probe.command = {
