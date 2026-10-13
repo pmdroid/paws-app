@@ -23,6 +23,7 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  listProjectMembers?(id: string, options?: TrackerRequestOptions): Promise<readonly string[]>;
   getIssueContext?(id: string, options?: TrackerRequestOptions): Promise<LinearIssueContext>;
   createIssueAttachment?(input: IssueAttachment, options?: TrackerRequestOptions): Promise<void>;
   getSession?(id: string, options?: TrackerRequestOptions): Promise<LinearSessionSnapshot>;
