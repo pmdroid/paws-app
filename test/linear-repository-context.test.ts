@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { git } from "../src/acp";
+import { git, runAgent } from "../src/acp";
 import { systemClock } from "../src/core";
 import {
   JobLoop,
@@ -18,13 +18,26 @@ import {
   createLinearFileTransfer,
   type AcceptedLinearEvent,
 } from "../src/linear";
-import { attachOrchestrator } from "../src/loop";
+import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { tempHome } from "./helpers";
 
-test.each(["answer", "artifact", "clarify", "repository_choice", "repository_freeform"] as const)(
-  "repository-backed %s survives restart and uses source without publishing code",
-  async (scenario) => {
+const scenarios = [
+  "answer",
+  "artifact",
+  "clarify",
+  "repository_choice",
+  "repository_freeform",
+] as const;
+
+test.each(
+  scenarios.flatMap((scenario) => [
+    { scenario, execution: "local" },
+    { scenario, execution: "remote" },
+  ]),
+)(
+  "repository-backed $scenario uses $execution execution across restart",
+  async ({ scenario, execution }) => {
     const mode = scenario === "artifact" ? "artifact" : "answer";
     const repositoryChoice = scenario.startsWith("repository_");
     const home = tempHome();
@@ -82,6 +95,78 @@ test.each(["answer", "artifact", "clarify", "repository_choice", "repository_fre
     });
     const purposes: string[] = [];
     const reads: string[] = [];
+    const launchFixture: AgentLaunch = (input) => {
+      purposes.push(input.purpose);
+      const classifier = input.purpose === "classify";
+      const choosing = input.purpose === "select_repository";
+      if (!classifier && !choosing) {
+        expect(input.purpose).toBe(mode);
+        expect(input.prompt).toContain("./repository");
+        expect(input.prompt).toContain(initialHead);
+        expect(readFileSync(join(input.worktree, "repository", "app.txt"), "utf8")).toBe(
+          "Application source",
+        );
+        expect(existsSync(join(input.worktree, "repository", ".git"))).toBe(false);
+      }
+      const script = join(home, `${purposes.length}.script.json`);
+      const trace = join(home, `${purposes.length}.trace.json`);
+      writeFileSync(
+        script,
+        JSON.stringify({
+          steps: [
+            ...(!classifier && !choosing
+              ? [
+                  { type: "fs_read", path: "repository/app.txt" },
+                  {
+                    type: "fs_write",
+                    path: "repository/app.txt",
+                    content: "Private scratch source",
+                  },
+                ]
+              : []),
+            ...(!classifier && !choosing && mode === "artifact"
+              ? [
+                  {
+                    type: "fs_write",
+                    path: "result.txt",
+                    content: "Repository-based deliverable",
+                  },
+                  {
+                    type: "publish_artifact",
+                    path: "result.txt",
+                    displayName: "result.txt",
+                    mimeType: "text/plain",
+                  },
+                ]
+              : []),
+            {
+              type: "update",
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: {
+                  type: "text",
+                  text: classifier
+                    ? JSON.stringify(
+                        scenario === "clarify" && purposes.length === 1
+                          ? { mode: "clarify", question: "What should I prepare?" }
+                          : { mode, repository: true },
+                      )
+                    : choosing
+                      ? JSON.stringify({ repositoryFullName: "acme/app" })
+                      : "Complete repository result.",
+                },
+              },
+            },
+            { type: "end" },
+          ],
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+      };
+    };
     const attach = () => {
       const jobs = new JobLoop(db, systemClock);
       const outbox = new OutboxDispatcher(db, systemClock);
@@ -104,78 +189,51 @@ test.each(["answer", "artifact", "clarify", "repository_choice", "repository_fre
           reads.push(access!);
           return true;
         },
-        launch(input) {
-          purposes.push(input.purpose);
-          const classifier = input.purpose === "classify";
-          const choosing = input.purpose === "select_repository";
-          if (!classifier && !choosing) {
-            expect(input.purpose).toBe(mode);
-            expect(input.prompt).toContain("./repository");
-            expect(input.prompt).toContain(initialHead);
-            expect(readFileSync(join(input.worktree, "repository", "app.txt"), "utf8")).toBe(
-              "Application source",
-            );
-            expect(existsSync(join(input.worktree, "repository", ".git"))).toBe(false);
-          }
-          const script = join(home, `${purposes.length}.script.json`);
-          const trace = join(home, `${purposes.length}.trace.json`);
-          writeFileSync(
-            script,
-            JSON.stringify({
-              steps: [
-                ...(!classifier && !choosing
-                  ? [
-                      { type: "fs_read", path: "repository/app.txt" },
-                      {
-                        type: "fs_write",
-                        path: "repository/app.txt",
-                        content: "Private scratch source",
-                      },
-                    ]
-                  : []),
-                ...(!classifier && !choosing && mode === "artifact"
-                  ? [
-                      {
-                        type: "fs_write",
-                        path: "result.txt",
-                        content: "Repository-based deliverable",
-                      },
-                      {
-                        type: "publish_artifact",
-                        path: "result.txt",
-                        displayName: "result.txt",
-                        mimeType: "text/plain",
-                      },
-                    ]
-                  : []),
-                {
-                  type: "update",
-                  update: {
-                    sessionUpdate: "agent_message_chunk",
-                    content: {
-                      type: "text",
-                      text: classifier
-                        ? JSON.stringify(
-                            scenario === "clarify" && purposes.length === 1
-                              ? { mode: "clarify", question: "What should I prepare?" }
-                              : { mode, repository: true },
-                          )
-                        : choosing
-                          ? JSON.stringify({ repositoryFullName: "acme/app" })
-                          : "Complete repository result.",
-                    },
-                  },
+        launch:
+          execution === "local"
+            ? launchFixture
+            : () => {
+                throw new Error("Selected remote execution must not launch a local agent");
+              },
+        remoteExecution:
+          execution === "remote"
+            ? {
+                agentForSession(sessionId, purpose) {
+                  expect(sessionId).toBe("session");
+                  return async (options) =>
+                    runAgent({
+                      ...options,
+                      ...launchFixture({
+                        purpose,
+                        role: options.role,
+                        profile: options.profile,
+                        itemId: options.itemId,
+                        worktree: options.worktreePath,
+                        prompt: options.prompt,
+                      }),
+                    });
                 },
-                { type: "end" },
-              ],
-            }),
-          );
-          return {
-            command: process.execPath,
-            args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
-            env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
-          };
-        },
+                agentForItem(itemId) {
+                  return async (options) => {
+                    expect(getWorkItem(db, itemId)?.currentRunId).not.toBeNull();
+                    return runAgent({
+                      ...options,
+                      ...launchFixture({
+                        purpose: mode,
+                        role: options.role,
+                        profile: options.profile,
+                        itemId: options.itemId,
+                        worktree: options.worktreePath,
+                        prompt: options.prompt,
+                      }),
+                    });
+                  };
+                },
+                closeoutForItem() {
+                  throw new Error("Answer and artifact work must not request Closeout");
+                },
+              }
+            : undefined,
       });
       return { orchestrator, jobs, outbox };
     };
