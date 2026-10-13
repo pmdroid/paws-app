@@ -150,6 +150,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
   "runner-backend": [
+    "runner-checks",
+    "runner-closeout",
+    "workspace",
     "db",
     "acp",
     "runner-work",
@@ -163,6 +166,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
   "runner-coordinator": [
+    "runner-checks",
     "github",
     "runner-repository-access",
     "runner-artifacts",
