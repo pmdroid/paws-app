@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -117,7 +118,23 @@ try:
     rows = db.execute("SELECT payload FROM runner_result ORDER BY rowid").fetchall()
     events = db.execute("SELECT payload FROM runner_event ORDER BY rowid").fetchall()
     answers = db.execute("SELECT answer FROM runner_question_answer ORDER BY rowid").fetchall()
+    transcripts = db.execute("SELECT execution_id,sealed_size,sha256,uri FROM runner_transcript WHERE uri IS NOT NULL ORDER BY rowid").fetchall()
     db.close()
+    assert len(transcripts) == (1 if permanent else 2)
+    for execution_id, size, digest, uri in transcripts:
+        raw = (root / "results" / execution_id / "events.jsonl").read_bytes()
+        stored = (root / "server" / "objects" / uri.removeprefix("s3://fixture-transcripts/")).read_bytes()
+        assert stored == raw and len(raw) == size
+        assert hashlib.sha256(stored).hexdigest() == digest
+    if not permanent:
+        execution_id = transcripts[0][0]
+        raw = (root / "results" / execution_id / "events.jsonl").read_bytes()
+        assert len(raw) > 10 * 1024 * 1024 and b"raw-tail-349" in raw
+    assert len(events) < 200
+    journal = sqlite3.connect(root / "runtime" / "executions.db")
+    offsets = journal.execute("SELECT consumed,transcript_offset FROM execution WHERE phase='complete'").fetchall()
+    journal.close()
+    assert len(offsets) == len(transcripts) and all(consumed == uploaded and uploaded > 0 for consumed, uploaded in offsets)
     assert len(rows) == (1 if permanent else 2)
     results = [json.loads(row[0]) for row in rows]
     if not permanent:
@@ -157,7 +174,7 @@ try:
     (root / "reader-cases.json").write_text(json.dumps({"executionId": started[1 if permanent else 0], "valid": valid.name, "rejected": rejected}))
     reader = actor("reader", 1001)
     assert reader.wait(timeout=5) == 0
-    print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedWorkCommands": 4, "mTlsResults": len(results), "questionsAnswered": len(results), "artifactsUploaded": len(results), "canonicalCandidatePublished": not permanent, "failureCase": (root / "failure-case").read_text(), "transientPreparationAndPublicationRetried": (root / "failure-case").read_text() == "all", "permanentClientErrorReleasesSlot": permanent, "lostReceiptsRetriedWithoutDuplicates": True, "protectedArtifactReaderRejections": len(rejected), "readOnlyReview": True, "hungNetworkLeaseStoppedWorker": True, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": 4, "relaunches": 0}))
+    print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedWorkCommands": 4, "mTlsResults": len(results), "questionsAnswered": len(results), "artifactsUploaded": len(results), "canonicalCandidatePublished": not permanent, "failureCase": (root / "failure-case").read_text(), "transientPreparationAndPublicationRetried": (root / "failure-case").read_text() == "all", "permanentClientErrorReleasesSlot": permanent, "lostReceiptsRetriedWithoutDuplicates": True, "transcriptChunkAndSealReceiptsRetried": True, "sealedRawObjects": len(transcripts), "sealAcknowledgedBeforeResult": True, "fullRawTranscriptOver10MiB": not permanent, "lifecycleRows": len(events), "durableTranscriptOffsets": offsets, "protectedArtifactReaderRejections": len(rejected), "readOnlyReview": True, "hungNetworkLeaseStoppedWorker": True, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": 4, "relaunches": 0}))
 finally:
     journal_path = root / "runtime" / "executions.db"
     if journal_path.exists():

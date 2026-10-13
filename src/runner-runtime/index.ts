@@ -3,6 +3,7 @@ import { runGitHubGit } from "../github";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
+import { RUNNER_TRANSCRIPT_CHUNK_BYTES } from "../runner-transcripts";
 import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runner-daemon";
 import {
   createRunnerBrokerClient,
@@ -55,6 +56,7 @@ type Active = {
   stopped?: Promise<void>;
   quiesced?: Promise<void>;
   publicationBranch?: string;
+  transcriptSealed?: boolean;
 };
 
 export async function openRunnerRuntime(options: {
@@ -73,6 +75,8 @@ export async function openRunnerRuntime(options: {
     | "repositoryCredential"
     | "renewCertificate"
     | "uploadArtifact"
+    | "uploadTranscript"
+    | "finishTranscript"
   >;
   spool: RunnerSpool;
   results: RunnerResults;
@@ -243,16 +247,64 @@ export async function openRunnerRuntime(options: {
         entry.task = undefined;
       });
   }
-  async function deliver(entry: Active) {
+  async function drainTranscript(entry: Active, final: boolean) {
     check(entry);
+    let raw: Buffer;
     try {
-      journal.ingest(
-        entry.execution.id,
-        readRunnerResultFile(options.results, entry.execution.id, "events.jsonl"),
-      );
+      raw = readRunnerResultFile(options.results, entry.execution.id, "events.jsonl");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!final && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
+    journal.ingest(entry.execution.id, raw);
+    let { offset, consumed } = journal.transcriptCursor(entry.execution.id);
+    if (offset > consumed || (final && consumed !== raw.length))
+      throw new Error("Runner transcript is incomplete");
+    const end = final
+      ? raw.length
+      : Math.floor(consumed / RUNNER_TRANSCRIPT_CHUNK_BYTES) * RUNNER_TRANSCRIPT_CHUNK_BYTES;
+    while (offset < end) {
+      const previous = offset;
+      const bytes = raw.subarray(offset, Math.min(offset + RUNNER_TRANSCRIPT_CHUNK_BYTES, end));
+      const token = await grant(entry);
+      await remote(() =>
+        options.daemon.uploadTranscript(
+          entry.execution.command.runId,
+          {
+            generation: entry.execution.command.generation,
+            executionId: entry.execution.id,
+            offset,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            data: bytes.toString("base64"),
+          },
+          token,
+        ),
+      );
+      check(entry);
+      offset += bytes.length;
+      journal.transcriptUploaded(entry.execution.id, previous, offset);
+    }
+    if (final && !entry.transcriptSealed) {
+      const token = await grant(entry);
+      await remote(() =>
+        options.daemon.finishTranscript(
+          entry.execution.command.runId,
+          {
+            generation: entry.execution.command.generation,
+            executionId: entry.execution.id,
+            offset: raw.length,
+            sizeBytes: raw.length,
+            sha256: createHash("sha256").update(raw).digest("hex"),
+          },
+          token,
+        ),
+      );
+      check(entry);
+      entry.transcriptSealed = true;
+    }
+  }
+  async function deliver(entry: Active) {
+    await drainTranscript(entry, entry.execution.phase === "publishing");
     for (const delivery of journal.pending(entry.execution.id)) {
       const token = await grant(entry);
       if (delivery.event.type === "artifact") {
@@ -386,6 +438,7 @@ export async function openRunnerRuntime(options: {
       );
       check(entry);
     }
+    await drainTranscript(entry, true);
     const token = await grant(entry);
     await remote(() =>
       options.daemon.postResult(

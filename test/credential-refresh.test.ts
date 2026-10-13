@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createLinearAuth, readStoredToken, writeStoredToken } from "../src/linear";
@@ -50,6 +50,89 @@ test("a refresh waiter rereads credentials when another worker completes between
     expect(value).toEqual(rotated);
     expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
   } finally {
+    db.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a refresh discards its rotation when its claim expires during the latest read", async () => {
+  const home = tempHome();
+  const db = openDatabase(join(home, "paws.db"));
+  migrate(db);
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  let stored = { accessToken: "synthetic-access-old", refreshToken: "synthetic-refresh-old" };
+  const replacement = {
+    accessToken: "synthetic-access-peer",
+    refreshToken: "synthetic-refresh-peer",
+  };
+  let reads = 0;
+  let writes = 0;
+  try {
+    const value = await refreshCredential({
+      db,
+      identity: "synthetic-expired-refresh",
+      leaseMs: 100,
+      read() {
+        const snapshot = stored;
+        if (++reads === 3) {
+          now += 101;
+          stored = replacement;
+        }
+        return snapshot;
+      },
+      write(credential) {
+        writes += 1;
+        stored = credential;
+      },
+      async refresh() {
+        return { accessToken: "synthetic-access-stale", refreshToken: "synthetic-refresh-stale" };
+      },
+    });
+    expect(value).toEqual(replacement);
+    expect(stored).toEqual(replacement);
+    expect(writes).toBe(0);
+    expect(listJobs(db)[0]?.status).toBe("running");
+  } finally {
+    clock.mockRestore();
+    db.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("credential publication holds the SQLite writer lock through read and write", async () => {
+  const home = tempHome();
+  const db = openDatabase(join(home, "paws.db"));
+  migrate(db);
+  const peer = openDatabase(join(home, "paws.db"));
+  peer.run("PRAGMA busy_timeout=0");
+  const stored = { accessToken: "synthetic-access-old", refreshToken: "synthetic-refresh-old" };
+  let reads = 0;
+  let lockedReads = 0;
+  const claim = () => claimNextJob(peer, { workerId: "peer", now: Date.now() + 60_000 });
+  try {
+    await refreshCredential({
+      db,
+      identity: "synthetic-serialized-refresh",
+      read() {
+        if (++reads === 3) {
+          expect(claim).toThrow("database is locked");
+          lockedReads += 1;
+        }
+        return stored;
+      },
+      write() {
+        expect(claim).toThrow("database is locked");
+        lockedReads += 1;
+      },
+      async refresh() {
+        return { accessToken: "synthetic-access-new", refreshToken: "synthetic-refresh-new" };
+      },
+    });
+    expect(lockedReads).toBe(2);
+    expect(listJobs(peer)[0]?.status).toBe("done");
+  } finally {
+    peer.close();
     db.close();
     rmSync(home, { recursive: true, force: true });
   }
