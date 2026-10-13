@@ -262,11 +262,123 @@ export async function probeRunnerTrustedCloseout(
       return delivered;
     }
     await execute("setup", {}, true);
-    await execute("check", { dirty: true, headMoved: true, timedOut: true, exitCode: 2 });
+    const competitor = insertQueuedItem(db, {
+      id: "competing-item",
+      now,
+      sessionKey: "competing-session",
+    });
+    beginImplementRun(db, competitor.id, now);
+    recordLinearInstallation(db, {
+      organizationId: "relay-org",
+      oauthClientId: "fixture",
+      appUserId: "app",
+      sessionId: "competing-session",
+      teamId: "team",
+      observedAtMs: now,
+    });
+    bindLinearSessionTask(db, "competing-session", competitor.epicId, { actorId: "relay-owner" });
+    bindWorkItemRepository(db, competitor.id, repository);
+    const competingController = new AbortController();
+    const competing = backend.forItem(competitor.id)({
+      profile: { agent: "codex", model: null },
+      role: "implementer",
+      itemId: competitor.id,
+      runId: "competing-output",
+      worktreePath: root,
+      pawsRoot: root,
+      prompt: "Prepare",
+      prepareOnly: true,
+      signal: competingController.signal,
+    });
+    const competingStopped = assert.rejects(competing);
+    for (
+      let retry = 0;
+      retry < 100 &&
+      !(await daemon.pollCommands()).commands.some((value) => value.type === "probe");
+      retry++
+    )
+      await delay(1);
+    const waitingCheck = execute("check", {
+      dirty: true,
+      headMoved: true,
+      timedOut: true,
+      exitCode: 2,
+    });
+    const waitingObserved = waitingCheck.then(
+      () => "completed",
+      () => "rejected",
+    );
+    assert.equal(await Promise.race([waitingObserved, delay(20).then(() => "waiting")]), "waiting");
+    competingController.abort();
+    await competingStopped;
+    await waitingCheck;
+    observe(
+      "A competing item temporarily occupying the preferred runner does not fail the same candidate attempt",
+      true,
+      { boundedWait: true, competingStopped: true },
+    );
     assert.equal(executions[0]!.attempt, executions[1]!.attempt);
     assert(executions[1]!.generation > executions[0]!.generation);
+    for (const busyMode of ["abort", "timeout", "fence"] as const) {
+      const queuedController = new AbortController();
+      const queueStarted = performance.now();
+      const queued = backend.closeoutForItem(item.id, queuedController.signal);
+      const primed = queued.runLogged({
+        argv: ["/usr/bin/true"],
+        cwd: root,
+        expectedHead: repository.baseSha,
+        timeoutSeconds: 5,
+        logFile: join(root, `prime-${busyMode}.log`),
+        artifactPath: `prime-${busyMode}.log`,
+      });
+      await deliver();
+      await primed;
+      const blockerController = new AbortController();
+      const blocker = backend.forItem(competitor.id)({
+        profile: { agent: "codex", model: null },
+        role: "implementer",
+        itemId: competitor.id,
+        runId: `blocker-${busyMode}`,
+        worktreePath: root,
+        pawsRoot: root,
+        prompt: "Prepare",
+        prepareOnly: true,
+        signal: blockerController.signal,
+      });
+      const blockerStopped = assert.rejects(blocker);
+      await delay(5);
+      const deniedLog = join(root, `waiting-${busyMode}.log`);
+      const waiting = queued.runLogged({
+        argv: ["/usr/bin/true"],
+        cwd: root,
+        expectedHead: repository.baseSha,
+        timeoutSeconds: busyMode === "timeout" ? 0.02 : 5,
+        logFile: deniedLog,
+        artifactPath: `waiting-${busyMode}.log`,
+      });
+      const deniedWait = assert.rejects(
+        waiting,
+        busyMode === "abort"
+          ? /aborted|Queue cancelled/
+          : busyMode === "fence"
+            ? /authority changed/
+            : /No available paired runner/,
+      );
+      if (busyMode === "abort") queuedController.abort(new Error("Queue cancelled"));
+      if (busyMode === "fence") db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
+      await deniedWait;
+      assert(performance.now() - queueStarted < 2000);
+      assert(!existsSync(deniedLog));
+      blockerController.abort();
+      await blockerStopped;
+      observe(
+        `Preferred runner busy waiting rejects ${busyMode} without trusted evidence or capacity leakage`,
+        true,
+        { logCreated: false },
+      );
+    }
     await execute("changed-candidate", {}, false, "b".repeat(40));
-    assert.notEqual(executions[1]!.attempt, executions[2]!.attempt);
+    assert.notEqual(executions[1]!.attempt, executions[executions.length - 1]!.attempt);
     observe(
       "Production coordinator mTLS verifies root-approved signatures and reuses candidate attempts across setup and checks",
       true,
