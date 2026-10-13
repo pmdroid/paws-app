@@ -23,6 +23,7 @@ import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
 import { workspaceId } from "../workspace";
 
 class RunnerUnavailableError extends Error {}
+export { createRemoteSessionAgentRunner } from "./helpers";
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 
