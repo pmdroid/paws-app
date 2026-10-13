@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import type { FakeResult, FakeScript, FakeStep } from "./script";
 
 /**
@@ -45,7 +45,9 @@ const pending = new Map<
 
 function persist(): void {
   if (!resultPath) return;
-  writeFileSync(resultPath, JSON.stringify(state, null, 2));
+  const pendingPath = `${resultPath}.${process.pid}.pending`;
+  writeFileSync(pendingPath, JSON.stringify(state, null, 2));
+  renameSync(pendingPath, resultPath);
 }
 
 function send(message: unknown): void {
