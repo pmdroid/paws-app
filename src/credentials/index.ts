@@ -1,2 +1,2 @@
-export { readSecretFile, writeSecretFile } from "./files";
+export { readSecretFile, writeSecretFile, decodeSecretEnvelope } from "./files";
 export { refreshCredential } from "./refresh";
