@@ -1302,9 +1302,113 @@ export class Orchestrator {
     head: string,
     candidate: CandidateIdentity,
   ): Promise<CloseoutVerdict> {
+    if (!this.options.remoteExecution)
+      return this.verifyCandidate(item, worktree, base, head, candidate);
+    const priorRunId = item.currentRunId;
+    let ownedRunId: string | null = null;
+    let enteredFromQueue = false;
+    try {
+      item = immediate(this.db, () => {
+        const current = getWorkItem(this.db, item.id);
+        if (
+          !current ||
+          current.currentRunId !== item.currentRunId ||
+          current.cancelRequested ||
+          !["verifying", "merge_queue"].includes(current.state)
+        )
+          throw new Error("Verification belongs to an obsolete task");
+        const prior = current.currentRunId ? getRun(this.db, current.currentRunId) : null;
+        if (!prior || prior.itemId !== current.id) throw new Error("Verification run is missing");
+        if (prior.status === "active") {
+          if (current.state !== "verifying" || this.live.get(prior.id)?.itemId !== current.id)
+            throw new Error("Verification run is not owned by this operation");
+          return current;
+        }
+        if (prior.status !== "ended" && prior.status !== "lost")
+          throw new Error("Prior verification run is still provisioning");
+        const snapshot = this.readProfileSnapshot(prior.id);
+        if (
+          !snapshot?.candidate ||
+          JSON.stringify(snapshot.candidate) !== JSON.stringify(candidate)
+        )
+          throw new Error("Verification candidate identity changed");
+        enteredFromQueue = current.state === "merge_queue";
+        if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
+        const run = insertRun(this.db, {
+          itemId: current.id,
+          kind: "review",
+          agent: snapshot.profiles.reviewer.agent,
+          status: "active",
+          freshSession: true,
+          now: this.now(),
+        });
+        ownedRunId = run.id;
+        setCurrentRun(this.db, current.id, run.id);
+        return getWorkItem(this.db, current.id)!;
+      });
+      if (ownedRunId) {
+        mkdirSync(runDir(this.options.pawsRoot, ownedRunId), { recursive: true, mode: 0o700 });
+        writeFileSync(
+          join(runDir(this.options.pawsRoot, ownedRunId), "agent-profile.json"),
+          readFileSync(join(runDir(this.options.pawsRoot, priorRunId!), "agent-profile.json")),
+          { mode: 0o600 },
+        );
+      }
+      const runId = item.currentRunId!;
+      const assertCurrent = () => {
+        this.signalForItem(item.id)?.throwIfAborted();
+        const current = getWorkItem(this.db, item.id);
+        const identity = this.readProfileSnapshot(runId)?.candidate;
+        if (
+          !current ||
+          current.currentRunId !== runId ||
+          current.cancelRequested ||
+          !["verifying", "running"].includes(current.state) ||
+          getRun(this.db, runId)?.status !== "active" ||
+          JSON.stringify(identity) !== JSON.stringify(candidate)
+        )
+          throw new Error("Verification belongs to an obsolete candidate or run");
+      };
+      assertCurrent();
+      const verdict = await this.verifyCandidate(
+        item,
+        worktree,
+        base,
+        head,
+        candidate,
+        assertCurrent,
+      );
+      assertCurrent();
+      if (enteredFromQueue && verdict.decision === "accepted" && !verdict.exhausted)
+        applyWorkItemEvent(this.db, item.id, "closeout_accepted");
+      return verdict;
+    } finally {
+      if (ownedRunId) markRunEnded(this.db, ownedRunId, this.now());
+    }
+  }
+
+  private async verifyCandidate(
+    item: WorkItemRecord,
+    worktree: string,
+    base: string,
+    head: string,
+    candidate: CandidateIdentity,
+    assertCurrent: () => void = () => {},
+  ): Promise<CloseoutVerdict> {
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const deps = this.agentDeps(item);
+    for (const key of ["agentRunner", "promptRunner"] as const) {
+      const runner = deps[key];
+      if (runner)
+        deps[key] = async (options) => {
+          assertCurrent();
+          const result = await runner(options);
+          assertCurrent();
+          return result;
+        };
+    }
+    const commands = this.options.remoteExecution?.closeoutForItem(item.id, deps.signal);
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
     const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
     const report = (body: string) => {
@@ -1335,7 +1439,16 @@ export class Orchestrator {
     const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
     const gate = createCloseoutGate({
       candidate,
-      commandRunner: this.options.remoteExecution?.closeoutForItem(item.id, deps.signal),
+      commandRunner: commands
+        ? {
+            async runLogged(request) {
+              assertCurrent();
+              const result = await commands.runLogged(request);
+              assertCurrent();
+              return result;
+            },
+          }
+        : undefined,
       reviewer: createAcpCodexReviewer(deps),
       fixer: {
         applyFix: async (request) => {

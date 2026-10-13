@@ -47,6 +47,7 @@ export const WORK_ITEM_EVENTS = [
   "changes_requested",
   "signoff_sla_expired",
   "main_moved",
+  "reverify_requested",
   "merge_accepted",
   "rebase_high_risk",
   "ejected",

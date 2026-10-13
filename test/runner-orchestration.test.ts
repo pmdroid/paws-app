@@ -13,7 +13,7 @@ test("remote orchestration keeps verification on the selected execution path", a
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 2);
+    assert.equal(observations.length, 17);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
