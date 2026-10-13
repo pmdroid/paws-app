@@ -32,7 +32,9 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 ReadWritePaths=/var/lib/paws-runner-spool
+ReadWritePaths=/var/lib/paws-check-input
 ReadOnlyPaths=/var/lib/paws-agent-results
+ReadOnlyPaths=/var/lib/paws-check-results
 InaccessiblePaths=-/var/lib/paws-agent -/var/lib/paws-runner-broker
 
 [Install]
