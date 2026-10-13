@@ -1,0 +1,97 @@
+name: runner release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Debian package (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux-x64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            platform: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 -c 'import re,sys; sys.exit(0 if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",sys.argv[1]) else 1)' "$version"
+          echo "RUNNER_VERSION=$version" >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile
+      - name: Build runner archive
+        env:
+          RUNNER_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python3 -I -B deploy/linux/package.py --source "$GITHUB_WORKSPACE" --bun "$(command -v bun)" --version "$RUNNER_VERSION" --platform "$RUNNER_PLATFORM" --output "$RUNNER_TEMP/runner-archive"
+      - name: Sign runner manifest
+        env:
+          PAWS_RUNNER_RELEASE_KEY: ${{ secrets.PAWS_RUNNER_RELEASE_KEY }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/paws-runner-release.pem"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s\n' "$PAWS_RUNNER_RELEASE_KEY" > "$key"
+          openssl pkey -in "$key" -pubout | cmp - deploy/linux/release.pub
+          openssl pkeyutl -sign -rawin -inkey "$key" -in "$RUNNER_TEMP/runner-archive/manifest.json" -out "$RUNNER_TEMP/runner-archive/manifest.sig"
+      - name: Build Debian package
+        run: |
+          python3 -I -B deploy/linux/deb-package.py --artifact "$RUNNER_TEMP/runner-archive/artifact.tar" --manifest "$RUNNER_TEMP/runner-archive/manifest.json" --signature "$RUNNER_TEMP/runner-archive/manifest.sig" --release-key deploy/linux/release.pub --output dist
+      - name: Verify Debian package
+        env:
+          DEBIAN_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          package="dist/paws-runner_${RUNNER_VERSION}_${DEBIAN_ARCHITECTURE}.deb"
+          test "$(dpkg-deb --field "$package" Architecture)" = "$DEBIAN_ARCHITECTURE"
+          test "$(dpkg-deb --field "$package" Version)" = "$RUNNER_VERSION"
+          mkdir "$RUNNER_TEMP/debian-extracted"
+          dpkg-deb --extract "$package" "$RUNNER_TEMP/debian-extracted"
+          payload="$RUNNER_TEMP/debian-extracted/usr/lib/paws-runner-package"
+          python3 -I -B "$payload/release.py" verify --artifact "$payload/artifact.tar" --manifest "$payload/manifest.json" --signature "$payload/manifest.sig" --release-key "$payload/release.pub"
+          cd dist
+          sha256sum --check *.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paws-runner-${{ matrix.architecture }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Attach Debian packages to release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: paws-runner-*
+          path: dist
+          merge-multiple: true
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

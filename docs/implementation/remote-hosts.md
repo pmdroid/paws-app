@@ -4,6 +4,19 @@ A remote host runs a small Paws daemon and the agent software installed for its 
 
 ## Install a signed release
 
+Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages. Download `paws-runner_X.Y.Z_amd64.deb` or `paws-runner_X.Y.Z_arm64.deb` and its `.deb.sha256` file from that release's assets. The host needs systemd and Node.js 22 or later installed as the `nodejs` package, with its executable at `/usr/bin/node`.
+
+For an ARM64 host, verify and install the downloaded package:
+
+```sh
+sha256sum --check paws-runner_X.Y.Z_arm64.deb.sha256
+sudo apt install ./paws-runner_X.Y.Z_arm64.deb
+```
+
+The Debian package verifies its embedded signed manifest and runtime archive before installation. Reinstalling the same exact release preserves the verified runtime and host identity. Upgrades refuse active executions, preserve configuration and agent login data, and restart the services that were running before the upgrade. Aborted upgrades and removals restore the previously active services. Removal stops and disables the runner services and removes the runtime. Purging also removes `/etc/paws-runner/config.json`; pairing and agent login data remain in their service accounts' state directories.
+
+The [release workflow](../../.github/workflows/runner-release.yml) builds on GitHub's native AMD64 and ARM64 runners when a release is published. It attaches both packages and their SHA-256 files after both builds succeed. The `PAWS_RUNNER_RELEASE_KEY` repository secret holds the Ed25519 private key matching `deploy/linux/release.pub`.
+
 The release and installer modules in `deploy/linux` define a signed Linux package, its manifest, and the host installation contract. The release verifier checks the Ed25519 manifest signature, artifact SHA-256, host platform, pinned Bun version, and archive members. The installer validates the package before selecting a release. It deploys the declared service assets and provider launchers and manages the release pointer used by those launchers.
 
 Installer verification exercises interruption during release selection and recovery. The provider bootstrap adds fixed launchers for the agent programs, so operator commands and service execution resolve the same selected release.
