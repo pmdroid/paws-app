@@ -145,6 +145,8 @@ Runner work verification covers production HTTP request handlers with valid and 
 
 An already persisted event can acknowledge an identical retry during the short answered-question transition gap. The same probe rejects new events and artifact or repository authorization until the canonical task resumes, and retains all identity, grant, generation, lease and repository checks for duplicate receipts.
 
+Run `bun --no-env-file test/local/runner-private-input-publication.ts` for attachment exclusion from candidate history. Real Git must reject a private input present in the tip, removed by a later commit, or renamed, before requesting any write credential or making a push. Verify an ordinary candidate still publishes and retain the credential/network call counts.
+
 Runner result verification drives production HTTP handlers with real migrated SQLite and signed assignments. It checks immutable run/review results, grant and generation denial, paged question answers, rejected answer mutation, bounded streamed bodies and persistence after reopening SQLite. Answer later questions first and confirm delivery waits for earlier replies before advancing the question cursor. Submit a 900 KB Unicode review successfully and check that schema validation rejects Unicode and JSON-escaped results exceeding the HTTP byte limit.
 
 Run `bun test test/runner-health.test.ts` for signed health delivery over actual mTLS. The reusable audit probe verifies current workspace administration, command/result binding, bounded credential-free responses, maximum Unicode and JSON-escaped metadata within the shared 1 MiB result body limit, immutable duplicate receipts, heartbeat timestamps, expiry and revocation, and fresh-process result recovery.
