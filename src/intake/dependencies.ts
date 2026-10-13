@@ -12,6 +12,7 @@ type Item = {
   state: WorkItemState;
   cancelRequested: number;
   mode: TaskMode | null;
+  brief: string | null;
 };
 type Snapshot = { generation: number; scope: string; linearStates: string; workspaceId: string };
 
@@ -55,12 +56,13 @@ function scope(db: Database, target: Target) {
   const items = db
     .query<Item, [string]>(
       `SELECT i.id,i.linear_issue_id AS linearIssueId,i.linear_identifier AS identifier,
-       i.title,i.state,i.cancel_requested AS cancelRequested,t.mode
+       i.title,i.state,i.cancel_requested AS cancelRequested,t.mode,i.brief
        FROM work_item i LEFT JOIN work_item_task t ON t.item_id=i.id
-       WHERE i.epic_id=? ORDER BY i.position,i.id`,
+       LEFT JOIN work_item_specification p ON p.item_id=i.id
+       WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
     .all(target.epicId);
-  if (!items.length || new Set(items.map((item) => item.linearIssueId)).size !== items.length)
+  if (new Set(items.map((item) => item.linearIssueId)).size !== items.length)
     throw new Error("Dependency task identities are incomplete");
   return {
     issueId: identity.issueId,
@@ -69,7 +71,7 @@ function scope(db: Database, target: Target) {
       target.epicId,
       target.workspaceId,
       identity,
-      items.map((item) => [item.id, item.linearIssueId]),
+      items.map((item) => [item.id, item.linearIssueId, item.brief]),
     ]),
   };
 }
@@ -86,6 +88,16 @@ function snapshot(db: Database, target: Target): Snapshot | null {
   return saved;
 }
 
+export function hasPendingEpicChanges(db: Database, epicId: string): boolean {
+  return (
+    db
+      .query(
+        "SELECT 1 FROM epic_reconciliation_request WHERE epic_id=? UNION ALL SELECT 1 FROM epic_reconciliation_effect WHERE epic_id=? LIMIT 1",
+      )
+      .get(epicId, epicId) !== null
+  );
+}
+
 export function readyItems(db: Database, target: Target): DependencyReadiness {
   return db.transaction(() => readReadyItems(db, target)).deferred();
 }
@@ -94,7 +106,7 @@ function readReadyItems(db: Database, target: Target): DependencyReadiness {
   const current = scope(db, target);
   const saved = snapshot(db, target);
   const queued = current.items.filter((item) => item.state === "queued" && !item.cancelRequested);
-  if (!saved || saved.scope !== current.token)
+  if (!saved || saved.scope !== current.token || hasPendingEpicChanges(db, target.epicId))
     return {
       generation: saved?.generation ?? 0,
       readyItemIds: [],

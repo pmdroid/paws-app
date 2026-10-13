@@ -1183,4 +1183,27 @@ CREATE TABLE runner_execution_usage (
 CREATE INDEX runner_usage_item ON runner_execution_usage(item_id,ended_at);
 `,
   },
+  {
+    id: "041_item_specifications",
+    sql: `
+CREATE TABLE work_item_specification (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  hash TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision>0),
+  present INTEGER NOT NULL CHECK(present IN (0,1))
+) STRICT;
+CREATE TABLE epic_reconciliation_request (
+  epic_id TEXT PRIMARY KEY REFERENCES epic(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  token TEXT NOT NULL
+) STRICT;
+CREATE TABLE epic_reconciliation_effect (
+  epic_id TEXT NOT NULL REFERENCES epic(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  kind TEXT NOT NULL CHECK(kind IN ('spec','removed','canceled')),
+  token TEXT NOT NULL,
+  PRIMARY KEY(epic_id,item_id,kind)
+) STRICT;
+`,
+  },
 ];
