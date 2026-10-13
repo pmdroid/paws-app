@@ -14,6 +14,7 @@ import {
   bindLinearSessionTask,
   bindWorkItemRepository,
   getWorkItem,
+  saveTaskMode,
 } from "../../src/db";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
@@ -24,7 +25,13 @@ import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerArtifactStore } from "../../src/runner-artifacts";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { verifyRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
-import { recoverAcpConversation, runDir, type RunAgentOptions, type AcpEvent } from "../../src/acp";
+import {
+  prepareRepositorySnapshot,
+  recoverAcpConversation,
+  runDir,
+  type RunAgentOptions,
+  type AcpEvent,
+} from "../../src/acp";
 import {
   createRunnerTranscripts,
   createFakeRunnerTranscriptObjects,
@@ -427,7 +434,7 @@ export async function probeRunnerBackend(
       },
     });
     async function seal(
-      command: Extract<RunnerCommand, { type: "run" | "review" }>,
+      command: Extract<RunnerCommand, { type: "run" | "review" | "task" }>,
       token: string,
       executionId: string,
       bytes: Buffer,
@@ -451,6 +458,231 @@ export async function probeRunnerBackend(
         sha256: createHash("sha256").update(bytes).digest("hex"),
       });
     }
+    for (const purpose of ["answer", "artifact"] as const) {
+      for (const withRepository of [false, true]) {
+        const task = item();
+        saveTaskMode(db, task.id, purpose, 0, withRepository);
+        const directory = join(root, `response-${task.id}`);
+        mkdirSync(directory, { mode: 0o700 });
+        if (withRepository)
+          await prepareRepositorySnapshot({
+            owner: "fixture",
+            repo: "repository",
+            remoteUrl: source,
+            workspace: directory,
+            signal: new AbortController().signal,
+          });
+        assert(!existsSync(join(directory, ".git")));
+        const fullResponse = `Complete ${purpose} ` + "x".repeat(1024 * 1024);
+        const raw = Buffer.from(
+          [
+            {
+              event: {
+                type: "session_update",
+                update: {
+                  sessionUpdate: "agent_message_chunk",
+                  content: { type: "text", text: fullResponse },
+                },
+              },
+            },
+            { type: "question", text: "Which format?" },
+            {
+              event: {
+                type: "session_update",
+                update: {
+                  sessionUpdate: "tool_call",
+                  toolCallId: "read",
+                  status: "completed",
+                  rawOutput: "source inspected",
+                },
+              },
+            },
+          ]
+            .map((row) => JSON.stringify(row) + "\n")
+            .join(""),
+        );
+        const taskEvents: AcpEvent[] = [];
+        const beforeFetch: number = fetched;
+        const response = sealedBackend.forItem(task.id)(
+          input(task, {
+            worktreePath: directory,
+            readOnly: purpose === "answer",
+            networkGit: undefined,
+            onEvent(event) {
+              taskEvents.push(event);
+            },
+            askTeam: {
+              async ask(request) {
+                assert.equal(request.question, "Which format?");
+                return { answer: "Text" };
+              },
+            },
+            publishArtifact: {
+              async publish(snapshot) {
+                assert.equal(await snapshot.bytes.text(), "Remote evidence");
+                return { url: "https://linear.app/artifact/task" };
+              },
+            },
+          }),
+        );
+        const command = await next();
+        assert.equal(command.type, "task");
+        if (command.type !== "task") throw new Error("Expected response task");
+        assert.equal(command.purpose, purpose);
+        assert.equal(command.repository !== undefined, withRepository);
+        if (withRepository) {
+          assert.equal(command.repository?.baseSha, head);
+          assert(!existsSync(join(directory, "repository", ".git")));
+        }
+        assert.equal(command.sessionId, `session-${sequence}`);
+        const taskGrant = work.issueGrant({
+          runnerId,
+          runId: command.runId,
+          commandId: command.id,
+          generation: command.generation,
+        });
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: taskGrant.token,
+          sequence: 1,
+          event: { type: "progress", text: "Bounded progress" },
+        });
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: taskGrant.token,
+          sequence: 2,
+          event: { type: "question", text: "Which format?", options: [] },
+        });
+        if (purpose === "artifact") {
+          artifacts.upload({
+            runnerId,
+            runId: command.runId,
+            token: taskGrant.token,
+            chunk: {
+              generation: command.generation,
+              artifact,
+              index: 0,
+              data: artifactBytes.toString("base64"),
+            },
+          });
+          work.event({
+            runnerId,
+            runId: command.runId,
+            generation: command.generation,
+            token: taskGrant.token,
+            sequence: 3,
+            event: { type: "artifact", artifact },
+          });
+        }
+        for (let i = 0; i < 500; i++) {
+          const answers = results.answers({
+            runnerId,
+            runId: command.runId,
+            generation: command.generation,
+            token: taskGrant.token,
+            after: 0,
+          });
+          if (
+            answers.some((value) => value.sequence === 2) &&
+            (purpose !== "artifact" || answers.some((value) => value.sequence === 3))
+          )
+            break;
+          if (i === 499) throw new Error("Response task callbacks did not answer");
+          await delay(1);
+        }
+        const receipt = result(command);
+        await seal(command, taskGrant.token, receipt.executionId, raw);
+        results.submit({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: taskGrant.token,
+          result: receipt,
+        });
+        const taskCompleted = await response;
+        const messages = taskEvents.filter(
+          (event) =>
+            event.type === "session_update" && event.update.sessionUpdate === "agent_message_chunk",
+        );
+        assert.equal(messages.length, 1);
+        const message = messages[0]!;
+        assert(
+          message.type === "session_update" &&
+            message.update.sessionUpdate === "agent_message_chunk" &&
+            message.update.content.type === "text",
+        );
+        assert.equal(message.update.content.text, fullResponse);
+        assert(taskCompleted.transcriptPath);
+        const history = await recoverAcpConversation(taskCompleted.transcriptPath);
+        assert.equal(
+          history
+            .filter((entry) => entry.kind === "response")
+            .map((entry) => entry.body)
+            .join(""),
+          fullResponse,
+        );
+        assert.equal(
+          JSON.parse(history.find((entry) => entry.kind === "tool_result")!.body).rawOutput,
+          "source inspected",
+        );
+        assert.equal(fetched, beforeFetch);
+        assert.equal(getWorkItem(db, task.id)?.checkpoint, null);
+        assert.throws(() => work.current(command.runId, command.generation), /fenced/);
+        observe(
+          `remote ${purpose} task with repository=${withRepository} returns complete sealed text and tool history`,
+          true,
+          {
+            responseBytes: fullResponse.length,
+            candidateImports: fetched - beforeFetch,
+            questionAnswered: true,
+            artifactPublished: purpose === "artifact",
+          },
+        );
+      }
+    }
+    const changedTask = item();
+    saveTaskMode(db, changedTask.id, "answer");
+    await assert.rejects(
+      sealedBackend.forItem(changedTask.id)(
+        input(changedTask, {
+          readOnly: true,
+          async prepareInputFiles({ prompt }) {
+            db.run("UPDATE linear_session SET generation=generation+1 WHERE session_id=?", [
+              `session-${sequence}`,
+            ]);
+            return { prompt, inputFiles: [] };
+          },
+        }),
+      ),
+      /binding changed/,
+    );
+    assert.equal(work.commands(runnerId).length, 0);
+    observe(
+      "remote response dispatch rejects a session generation changed during preparation",
+      true,
+      { commands: 0 },
+    );
+    const unsafeTask = item();
+    saveTaskMode(db, unsafeTask.id, "artifact", 0, true);
+    const unsafeDirectory = join(root, "unsafe-response");
+    mkdirSync(unsafeDirectory, { mode: 0o700 });
+    writeFileSync(
+      `${unsafeDirectory}.repository.json`,
+      JSON.stringify({ owner: "wrong", repo: "repository", commit: head }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      sealedBackend.forItem(unsafeTask.id)(input(unsafeTask, { worktreePath: unsafeDirectory })),
+      /snapshot binding changed/,
+    );
+    assert.equal(work.commands(runnerId).length, 0);
+    observe("remote response repository metadata must match the canonical selection", true, {
+      commands: 0,
+    });
     const sealed = item();
     const sealedPath = join(runDir(root, sealed.run.id), "acp.jsonl");
     mkdirSync(runDir(root, sealed.run.id), { recursive: true });
