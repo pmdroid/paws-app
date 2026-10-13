@@ -561,6 +561,7 @@ function snapshotPage(): Record<string, unknown> {
 function relationsPage(): Record<string, unknown> {
   return {
     issue: {
+      id: "parent",
       relations: {
         nodes: [{ type: "blocks", issue: { id: "a" }, relatedIssue: { id: "b" } }],
         pageInfo: { hasNextPage: false, endCursor: null },
@@ -584,6 +585,7 @@ function loneSnapshot(): Record<string, unknown> {
 
 function emptyRelations(): Record<string, unknown> {
   return {
+    id: "iss_stop",
     relations: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
     inverseRelations: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
   };
