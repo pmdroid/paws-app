@@ -36,7 +36,15 @@ export async function probeRunnerControlStartup(
   );
   assert.equal(generated.exitCode, 0, generated.stderr.toString());
   chmodSync(key, 0o600);
-  for (const mode of ["enabled", "disabled", "missing", "pending", "invalid"]) {
+  for (const mode of [
+    "enabled",
+    "disabled",
+    "missing",
+    "pending",
+    "invalid",
+    "remote",
+    "invalid-execution",
+  ]) {
     const home = join(root, mode);
     mkdirSync(home, { recursive: true, mode: 0o700 });
     const child = Bun.spawn(

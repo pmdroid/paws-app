@@ -1,14 +1,18 @@
 import json
+import importlib.util
 import os
 import pathlib
 import selectors
 import shutil
 import signal
 import ssl
+import sqlite3
+import socket
 import stat
 import subprocess
 import sys
 import time
+import threading
 import urllib.request
 
 
@@ -16,11 +20,12 @@ observations = []
 actors = []
 root = pathlib.Path("/state")
 root.mkdir(mode=0o755)
-for name, uid in (("paws-runner", 17001), ("paws-agent", 17002)):
+for name, uid in (("paws-runner", 17001), ("paws-agent", 17002), ("paws-check", 17005)):
     subprocess.run(["/usr/sbin/groupadd", "--gid", str(uid), name], check=True)
     subprocess.run(["/usr/sbin/useradd", "--uid", str(uid), "--gid", str(uid), "--no-create-home", "--home-dir", f"/var/lib/{name}", "--shell", "/usr/sbin/nologin", name], check=True)
 subprocess.run(["/usr/sbin/groupadd", "--gid", "17003", "paws-results"], check=True)
-for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/paws-runner", 17001, 17001, 0o700), ("/var/lib/paws-agent", 17002, 17002, 0o700), ("/var/lib/paws-runner-spool", 17001, 17002, 0o2750), ("/var/lib/paws-agent-results", 0, 17003, 0o750), ("/etc/paws-runner", 0, 0, 0o755), ("/opt/paws-runner/bin", 0, 0, 0o755)):
+subprocess.run(["/usr/sbin/groupadd", "--gid", "17006", "paws-check-input"], check=True)
+for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/paws-runner", 17001, 17001, 0o700), ("/var/lib/paws-agent", 17002, 17002, 0o700), ("/var/lib/paws-runner-spool", 17001, 17002, 0o2750), ("/var/lib/paws-agent-results", 0, 17003, 0o750), ("/var/lib/paws-check-input", 17001, 17006, 0o2750), ("/var/lib/paws-check-attempts", 0, 17005, 0o750), ("/var/lib/paws-check-results", 0, 17001, 0o750), ("/etc/paws-runner", 0, 0, 0o755), ("/opt/paws-runner/bin", 0, 0, 0o755)):
     target = pathlib.Path(path)
     target.mkdir(parents=True, exist_ok=True)
     os.chown(target, uid, gid)
@@ -28,7 +33,7 @@ for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/
 
 
 def actor(arguments, uid):
-    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "HOME": "/var/lib/paws-agent" if uid == 17002 else "/var/lib/paws-runner", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent", "GH_TOKEN": "synthetic-parent", "AWS_ACCESS_KEY_ID": "synthetic-parent", "SSH_AUTH_SOCK": "/synthetic-parent"}, user=uid, group=uid, extra_groups=[17003] if uid == 17002 else [17002, 17003] if uid == 17001 else [], start_new_session=True)
+    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "HOME": "/var/lib/paws-agent" if uid == 17002 else "/var/lib/paws-runner", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent", "GH_TOKEN": "synthetic-parent", "AWS_ACCESS_KEY_ID": "synthetic-parent", "SSH_AUTH_SOCK": "/synthetic-parent"}, user=uid, group=uid, extra_groups=[17003] if uid == 17002 else [17002, 17003, 17006] if uid == 17001 else [], start_new_session=True)
     actors.append(process)
     return process
 
@@ -248,6 +253,81 @@ try:
     cancelled = json.loads((cancelled_results / "result.json").read_text())
     assert cancelled["run"]["cancelled"] is True and cancelled["run"]["agentExited"] is True
     observe("SIGTERM joins the owned ACP process and retains the cancelled immutable result")
+    spec = importlib.util.spec_from_file_location("broker", "/proof/runner-broker.py")
+    broker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(broker)
+    receipts = pathlib.Path("/var/lib/paws-runner-broker")
+    receipts.mkdir(mode=0o700)
+    shutil.copyfile("/proof/paws-agent@.service", root / "paws-agent@.service")
+    (root / "paws-agent@.service").chmod(0o644)
+    broker.UNIT = str(root / "paws-agent@.service")
+    workers = {}
+    started = []
+
+    def control(operation, execution_id, template="paws-agent"):
+        assert template == "paws-agent"
+        if operation == "start":
+            assert execution_id not in workers
+            workers[execution_id] = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "worker", "--execution-id", execution_id], 17002)
+            started.append(execution_id)
+        elif operation in ("kill", "stop"):
+            owned = workers.get(execution_id)
+            if owned and owned.poll() is None:
+                os.killpg(owned.pid, signal.SIGKILL)
+                owned.wait(timeout=5)
+        elif operation == "show":
+            assert not workers.get(execution_id) or workers[execution_id].poll() is not None
+        return subprocess.CompletedProcess([], 0, stdout=b"")
+
+    broker.control_unit = control
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind("/run/paws-runner-broker.sock")
+    os.chown("/run/paws-runner-broker.sock", 17001, 17001)
+    os.chmod("/run/paws-runner-broker.sock", 0o600)
+    listener.listen(16)
+    threading.Thread(target=broker.serve, args=(listener, 17001, 17002, 17002, 17003), daemon=True).start()
+    launcher.write_text("#!/bin/sh\nexec /proof/bun --no-env-file /proof/fake-agent.js /var/lib/paws-agent/health-agent.json /proof/script.json\n")
+    check_root = pathlib.Path("/var/lib/paws-runner/checks")
+    check_root.mkdir(mode=0o700)
+    os.chown(check_root, 17001, 17001)
+    invalid_database = check_root / "checks.db"
+    invalid_database.mkdir(mode=0o700)
+    os.chown(invalid_database, 17001, 17001)
+    command(["daemon", "--config", str(path)], 17001)
+    invalid_database.rmdir()
+    observe("later runtime construction failure joins previously initialized runtimes and exits the real daemon CLI")
+    command_id = http(f"/api/runners/{paired['runnerId']}/health", {"type": "probe", "profile": {"agent": "claude", "model": None}})["commandId"]
+    daemon_arguments = ["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "daemon", "--config", str(path)]
+    daemon = actor(daemon_arguments, 17001)
+    deadline = time.monotonic() + 20
+    while True:
+        assert daemon.poll() is None, daemon.stderr.read().decode()
+        health = http(f"/api/runners/{paired['runnerId']}/health")
+        completed = next((entry for entry in health["checks"] if entry["command"]["id"] == command_id and entry["result"]), None)
+        if completed:
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert completed["result"]["agentExited"] is True
+    assert len(started) == 1
+    daemon.send_signal(signal.SIGTERM)
+    output, errors = daemon.communicate(timeout=15)
+    assert daemon.returncode == 130, errors
+    assert all(worker.poll() is not None for worker in workers.values())
+    for directory, name, table, count in (("runtime", "executions.db", "execution", 0), ("health", "health.db", "health_execution", 1), ("checks", "checks.db", "check_execution", 0)):
+        database = sqlite3.connect(pathlib.Path("/var/lib/paws-runner") / directory / name)
+        assert database.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == count
+        database.close()
+    observe("installed daemon receives signed commands over real mTLS and publishes health receipts through the fixed Unix broker and agent CLI")
+    restarted_daemon = actor(daemon_arguments, 17001)
+    time.sleep(2.5)
+    assert restarted_daemon.poll() is None, restarted_daemon.stderr.read().decode()
+    assert len(started) == 1
+    restarted_daemon.send_signal(signal.SIGTERM)
+    output, errors = restarted_daemon.communicate(timeout=15)
+    assert restarted_daemon.returncode == 130, errors
+    assert len(started) == 1
+    observe("daemon restart retains paired identity and terminal receipts without relaunching the consumed worker")
     server.send_signal(signal.SIGTERM)
     server.communicate(timeout=15)
     assert server.returncode == 0

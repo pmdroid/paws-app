@@ -22,7 +22,7 @@ export type AgentSettingsOptions = {
   trustedOrigin?: string;
   configPath: string;
   csrfToken: string;
-  probe: (profile: AgentProfile) => Promise<AgentConnectionResult>;
+  probe: (profile: AgentProfile, request: Request) => Promise<AgentConnectionResult>;
   repos?: string[];
 };
 
@@ -95,14 +95,14 @@ export async function handleAgentSettingsRequest(
     return json({ error: error instanceof Error ? error.message : "Invalid agent profile" }, 400);
   }
   try {
-    return json(await options.probe(profile));
+    return json(await options.probe(profile, request));
   } catch {
     return json({
       ok: false,
       agent: profile.agent,
       model: profile.model,
       models: [],
-      message: "The local agent connection failed. Check its vendor login and try again.",
+      message: "The agent connection failed. Check its vendor login and try again.",
     });
   }
 }

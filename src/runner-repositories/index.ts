@@ -12,7 +12,7 @@ import { isAbsolute, join } from "node:path";
 import { defaultGitExec, runGitHubGit } from "../github";
 import { RunnerCommandSchema, type RunnerCommand } from "../runner-protocol";
 
-type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "check" }>;
 type NetworkOperation = {
   operation: "clone" | "fetch" | "push";
   remoteUrl: string;
@@ -64,7 +64,7 @@ export function createRunnerRepositories(options: {
   }
   function parse(input: WorkCommand): WorkCommand {
     const command = RunnerCommandSchema.parse(input);
-    if (command.type !== "run" && command.type !== "review")
+    if (command.type !== "run" && command.type !== "review" && command.type !== "check")
       throw new Error("Repository work command is required");
     return command;
   }
@@ -194,7 +194,7 @@ export function createRunnerRepositories(options: {
         !/^paws\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(candidate.branch)
       )
         throw new Error("Invalid runner candidate");
-      if (command.type !== "run") throw new Error("Review cannot publish a candidate");
+      if (command.type !== "run") throw new Error("Only a run can publish a candidate");
       await invoke(["check-ref-format", `refs/heads/${candidate.branch}`], signal);
       return serialize(command, async (mirror) => {
         signal?.throwIfAborted();
