@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { git } from "./git";
@@ -11,10 +11,20 @@ export async function prepareRepositorySnapshot(options: {
   remoteUrl: string;
   workspace: string;
   signal: AbortSignal;
+  commit?: string;
+  env?: NodeJS.ProcessEnv;
+  maxArchiveBytes?: number;
   onCleanupFailure?: () => void;
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<{ path: string; commit: string }> {
   options.signal.throwIfAborted();
+  if (options.commit !== undefined && !/^[a-f0-9]{40}$/.test(options.commit))
+    throw new Error("Invalid snapshot commit");
+  if (
+    options.maxArchiveBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxArchiveBytes) || options.maxArchiveBytes <= 0)
+  )
+    throw new Error("Invalid snapshot archive limit");
   const path = join(options.workspace, "repository");
   const metadataPath = `${options.workspace}.repository.json`;
   try {
@@ -23,7 +33,11 @@ export async function prepareRepositorySnapshot(options: {
       repo: string;
       commit: string;
     };
-    if (saved.owner !== options.owner || saved.repo !== options.repo)
+    if (
+      saved.owner !== options.owner ||
+      saved.repo !== options.repo ||
+      (options.commit !== undefined && saved.commit !== options.commit)
+    )
       throw new Error("Repository snapshot ownership changed");
     if (!(await lstat(path)).isDirectory())
       throw new Error("Repository snapshot is not a directory");
@@ -35,22 +49,38 @@ export async function prepareRepositorySnapshot(options: {
   await mkdir(options.workspace, { recursive: true, mode: 0o700 });
   const staging = await mkdtemp(join(dirname(options.workspace), ".repository-"));
   try {
-    const gitOptions = { signal: options.signal, onCleanupFailure: options.onCleanupFailure };
+    const gitOptions = {
+      signal: options.signal,
+      env: options.env,
+      onCleanupFailure: options.onCleanupFailure,
+    };
     const mirror = join(staging, "mirror.git");
     const clone = ["clone", "--bare", "--", options.remoteUrl, mirror];
     if (options.networkGit) await options.networkGit(clone);
     else await git(clone, gitOptions);
-    const ref = await resolveStartRef(mirror);
+    const ref = options.commit ?? (await resolveStartRef(mirror));
     if (!ref) throw new Error("The repository has no source commit");
-    const commit = (await git(["--git-dir", mirror, "rev-parse", ref], gitOptions)).trim();
+    const commit = (
+      await git(["--git-dir", mirror, "rev-parse", "--verify", `${ref}^{commit}`], gitOptions)
+    ).trim();
+    if (options.commit !== undefined && commit !== options.commit)
+      throw new Error("Snapshot commit is unavailable");
     const archive = join(staging, "source.tar");
     await git(
       ["--git-dir", mirror, "archive", "--format=tar", `--output=${archive}`, commit],
       gitOptions,
     );
+    if (
+      options.maxArchiveBytes !== undefined &&
+      (await stat(archive)).size > options.maxArchiveBytes
+    )
+      throw new Error("Snapshot archive exceeds size limit");
     const tree = join(staging, "tree");
     await mkdir(tree, { mode: 0o700 });
-    await promisify(execFile)("tar", ["-xf", archive, "-C", tree], { signal: options.signal });
+    await promisify(execFile)("tar", ["-xf", archive, "-C", tree], {
+      signal: options.signal,
+      env: options.env,
+    });
     options.signal.throwIfAborted();
     const metadata = join(staging, "metadata.json");
     await writeFile(
