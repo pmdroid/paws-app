@@ -205,6 +205,7 @@ export type OrchestratorOptions = {
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   launch?: AgentLaunch;
   remoteExecution?: {
+    agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
     closeoutForItem(
       itemId: string,
@@ -281,6 +282,9 @@ export class Orchestrator {
       pawsRoot: options.pawsRoot,
       home: options.home,
       launch: (input) => this.launchAgent(input),
+      agentForSession: options.remoteExecution
+        ? (sessionId) => options.remoteExecution!.agentForSession(sessionId, "classify")
+        : undefined,
       profile: () =>
         resolveAgentProfiles(loadConfigFile(join(options.pawsRoot, "config.toml"))).implementer,
     });
@@ -778,6 +782,15 @@ export class Orchestrator {
     }
   }
 
+  private helperRunner(
+    sessionId: string | null,
+    purpose: "classify" | "select_repository",
+  ): typeof runAgent | undefined {
+    if (!this.options.remoteExecution) return undefined;
+    if (!sessionId) throw new Error("Remote helper requires a Linear session");
+    return this.options.remoteExecution.agentForSession(sessionId, purpose);
+  }
+
   private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
     if (getConversation(this.db, item.id).blocked)
       throw new Error("ACP process cleanup could not be verified");
@@ -830,6 +843,7 @@ export class Orchestrator {
         profile: this.profileSnapshot(run.id).implementer,
         signal: controller.signal,
         launch: (input) => this.launchAgent(input),
+        agentRunner: this.helperRunner(item.sessionKey, "classify"),
         onCleanupFailure: () => {
           const stored = getConversation(this.db, item.id);
           saveConversation(
@@ -1001,14 +1015,16 @@ export class Orchestrator {
       ]
         .filter(Boolean)
         .join("\n\n");
-      const launched = this.launchAgent({
-        role: "implementer",
-        profile,
-        purpose: mode,
-        itemId: itemPathId(item),
-        worktree: workspace,
-        prompt,
-      });
+      const launched = this.options.remoteExecution
+        ? {}
+        : this.launchAgent({
+            role: "implementer",
+            profile,
+            purpose: mode,
+            itemId: itemPathId(item),
+            worktree: workspace,
+            prompt,
+          });
       const result = await promptRunner({
         ...launched,
         role: "implementer",
@@ -2991,6 +3007,7 @@ export class Orchestrator {
             .implementer,
           signal: controller.signal,
           launch: this.launchAgent,
+          agentRunner: this.helperRunner(item.sessionKey, "select_repository"),
           onCleanupFailure: () => this.blockConversation(item.id),
         });
         controller.signal.throwIfAborted();

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import type { runAgent } from "../acp";
 import type { AgentProfile } from "../config";
 import {
   assertLinearSessionCleanup,
@@ -17,6 +18,7 @@ export function createTaskPlanner(options: {
   pawsRoot: string;
   home?: string;
   launch: AgentLaunch;
+  agentForSession?: (sessionId: string) => typeof runAgent;
   profile: () => AgentProfile;
 }) {
   let stopVersion = 0;
@@ -82,6 +84,7 @@ export function createTaskPlanner(options: {
           profile: options.profile(),
           signal: controller.signal,
           launch: options.launch,
+          agentRunner: options.agentForSession?.(input.sessionId),
           onCleanupFailure: () => blockLinearSessionCleanup(options.db, input.sessionId),
         });
         current();
