@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  advanceLinearSessionGeneration,
+  claimNextJob,
+  completeJob,
   consumeWorkspaceBootstrap,
   ensureLinearSession,
   getLinearSession,
@@ -15,6 +18,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  syncWorkspaceMember,
 } from "../src/db";
 import { syncEpicDependencies } from "../src/intake";
 import { attachOrchestrator } from "../src/loop";
@@ -362,6 +366,210 @@ test("first assignment holds without manufacturing membership and resumes once a
         .query("SELECT action FROM workspace_access_audit WHERE action='assignment.resumed'")
         .all(),
     ).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const identity of ["wrong", "outsider"])
+  test(`assignment OAuth rejects ${identity} identity`, async () => {
+    const f = fixture();
+    try {
+      await f.assignments.authorize(f.event);
+      const start = await f.begin();
+      expect((await f.callback(start, identity)).status).toBe(identity === "outsider" ? 403 : 400);
+      expect(listJobs(f.db)).toHaveLength(0);
+      expect(f.calls).toBe(0);
+      expect((await f.callback(await f.begin())).status).toBe(303);
+    } finally {
+      await f.close();
+    }
+  });
+
+for (const change of [
+  "stop",
+  "generation",
+  "delegation",
+  "spec",
+  "repository",
+  "membership",
+  "guest",
+  "team",
+  "observer",
+])
+  test(`assignment continuation fails closed after ${change} changes`, async () => {
+    const f = fixture();
+    try {
+      await f.assignments.authorize(f.event);
+      expect((await f.callback(await f.begin())).status).toBe(303);
+      if (change === "stop")
+        advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+      if (change === "generation")
+        advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+      if (change === "delegation") f.ownership.delegateId = "another-app";
+      if (change === "spec") f.tracker.epics.get("issue")!.description = "New criteria";
+      if (change === "repository")
+        f.db.run(
+          "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','owner/new','team')",
+        );
+      if (change === "membership") f.setActive(false);
+      if (change === "guest") f.setGuest(true);
+      if (change === "team") f.setTeams([]);
+      if (change === "observer")
+        f.db.run(
+          "UPDATE workspace_member SET role='observer',manual_role='observer',source='manual' WHERE user_id<>'owner'",
+        );
+      const jobs = f.jobs();
+      await jobs.tick();
+      await jobs.tick();
+      expect(f.calls).toBe(0);
+      expect(f.continuations).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("held prompts cannot become initial delegation; Stop invalidates hold; expired links rotate durably", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const original = f.link();
+    expect(
+      await f.assignments.authorize({
+        ...f.event,
+        action: "prompted",
+        body: "Go ahead",
+        actorId: "member",
+      }),
+    ).toBe(false);
+    f.clock.advance(600_001);
+    expect((await f.begin(original)).status).toBe(400);
+    await f.restart();
+    await f.jobs().tick();
+    expect(listOutbox(f.db)).toHaveLength(2);
+    expect(f.link()).not.toBe(original);
+    expect((await f.begin(original)).status).toBe(400);
+    const start = await f.begin();
+    expect(await f.assignments.authorize({ ...f.event, signal: "stop", action: "prompted" })).toBe(
+      true,
+    );
+    expect((await f.callback(start)).status).toBe(400);
+    expect(f.calls).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("linked members avoid a new-issue sign-in hold while observers and removed members do not", async () => {
+  const f = fixture();
+  try {
+    const userId = putWorkspaceUser(f.db, {
+      id: "member",
+      linearUserId: "member",
+      name: "Member",
+      email: "member@example.invalid",
+    });
+    syncWorkspaceMember(f.db, {
+      workspaceId: "workspace",
+      userId,
+      active: true,
+      role: "member",
+      teamIds: ["team"],
+      now: f.clock.now(),
+    });
+    expect(await f.assignments.authorize(f.event)).toBe(true);
+    expect(listOutbox(f.db)).toHaveLength(0);
+    f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='member'");
+    expect(await f.assignments.authorize(f.event)).toBe(false);
+    expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an interrupted canonical continuation retries from durable acceptance without repeating the decision", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    await f.callback(await f.begin());
+    f.failContinue();
+    await f.jobs().tick();
+    const job = listJobs(f.db).find((value) => value.queue === "workspace.assignment")!;
+    expect(job.status).toBe("pending");
+    await f.restart();
+    f.clock.advance(60_000);
+    const loop = f.jobs();
+    await loop.tick();
+    await loop.tick();
+    expect(f.continuations).toHaveLength(1);
+    expect(
+      f.db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
+    ).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("two workers cannot claim the same durable continuation", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    await f.callback(await f.begin());
+    const first = claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })!;
+    expect(claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })).toBeNull();
+    expect(completeJob(f.db, first, f.clock.now())).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const change of ["spec", "repository", "membership"])
+  test(`intake refuses ${change} changing after continuation checks`, async () => {
+    const f = fixture();
+    try {
+      await f.assignments.authorize(f.event);
+      await f.callback(await f.begin());
+      f.changeAtIntake(() => {
+        if (change === "spec") f.tracker.epics.get("issue")!.description = "Replaced during intake";
+        if (change === "repository")
+          f.db.run(
+            "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('workspace','another/repo','team')",
+          );
+        if (change === "membership")
+          f.db.run("UPDATE workspace_member SET active=0 WHERE user_id<>'owner'");
+      });
+      await f.jobs().tick();
+      expect(listWorkItems(f.db)).toHaveLength(0);
+      expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("a new canonical generation does not reuse an obsolete onboarding hold", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const previous = f.link();
+    advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+    expect(await f.assignments.authorize({ ...f.event, dedupeKey: "new-assignment" })).toBe(false);
+    expect(listOutbox(f.db)).toHaveLength(2);
+    expect(f.link()).not.toBe(previous);
+    expect((await f.begin(previous)).status).toBe(400);
+    expect((await f.callback(await f.begin())).status).toBe(303);
+  } finally {
+    await f.close();
+  }
+});
+
+test("browser callback cannot accept a hold after losing the issue team", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const start = await f.begin();
+    f.setTeams([]);
+    expect((await f.callback(start)).status).toBe(400);
+    expect(listJobs(f.db)).toHaveLength(0);
   } finally {
     await f.close();
   }
