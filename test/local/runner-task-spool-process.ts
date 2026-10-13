@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import {
   chmodSync,
@@ -16,6 +17,7 @@ import { join } from "node:path";
 import {
   publishRunnerJob,
   readRunnerJob,
+  readRunnerJobInputs,
   runnerTaskRepositoryPath,
   type RunnerJob,
 } from "../../src/runner-execution";
@@ -25,6 +27,9 @@ const root = "/proof/data";
 const spool = { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 };
 const source = join(root, "source");
 const executionId = "01K00000000000000000000001";
+const attachment = Buffer.from("Private attachment 日本語");
+const fullPrompt = Buffer.from("Full prepared prompt\n" + "x".repeat(1_048_576));
+const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const job: RunnerJob = {
   executionId,
   command: {
@@ -43,6 +48,16 @@ const job: RunnerJob = {
     purpose: "artifact",
     profile: { agent: "codex", model: null },
     prompt: "Read the private snapshot",
+    inputFiles: [
+      {
+        id: 0,
+        path: ".paws-linear-inputs/task/input.txt",
+        mimeType: "text/plain",
+        sizeBytes: attachment.length,
+        sha256: hash(attachment),
+      },
+    ],
+    promptContext: { sizeBytes: fullPrompt.length, sha256: hash(fullPrompt) },
     repository: {
       owner: "fixture",
       repo: "repository",
@@ -51,14 +66,23 @@ const job: RunnerJob = {
     },
   },
 };
+const publish = (
+  input: RunnerJob,
+  options: { repositoryBundle?: string; repositorySnapshot?: string } = {},
+) =>
+  publishRunnerJob(spool, input, {
+    ...options,
+    inputFiles: [attachment],
+    promptContext: fullPrompt,
+  });
 if (mode === "publish") {
   mkdirSync(join(source, "nested"));
   writeFileSync(join(source, "nested", "source.txt"), "private source\n", { mode: 0o644 });
-  assert.throws(() => publishRunnerJob(spool, job), /snapshot/);
-  assert.throws(() => publishRunnerJob(spool, job, { repositoryBundle: source }), /bundle/);
+  assert.throws(() => publish(job), /snapshot/);
+  assert.throws(() => publish(job, { repositoryBundle: source }), /bundle/);
   const invalid = (name: string, prepare: () => void, cleanup: () => void) => {
     prepare();
-    assert.throws(() => publishRunnerJob(spool, job, { repositorySnapshot: source }), name);
+    assert.throws(() => publish(job, { repositorySnapshot: source }), name);
     assert(!existsSync(join(spool.root, executionId)));
     assert.deepEqual(readdirSync(spool.root), []);
     cleanup();
@@ -92,14 +116,11 @@ if (mode === "publish") {
     () => chmodSync(join(source, "nested"), 0o755),
   );
   symlinkSync(source, join(root, "alias"));
-  assert.throws(() => publishRunnerJob(spool, job, { repositorySnapshot: join(root, "alias") }));
-  assert.deepEqual(publishRunnerJob(spool, job, { repositorySnapshot: source }), job);
-  assert.deepEqual(publishRunnerJob(spool, job, { repositorySnapshot: source }), job);
+  assert.throws(() => publish(job, { repositorySnapshot: join(root, "alias") }));
+  assert.deepEqual(publish(job, { repositorySnapshot: source }), job);
+  assert.deepEqual(publish(job, { repositorySnapshot: source }), job);
   writeFileSync(join(source, "nested", "source.txt"), "changed source\n");
-  assert.throws(
-    () => publishRunnerJob(spool, job, { repositorySnapshot: source }),
-    /different content/,
-  );
+  assert.throws(() => publish(job, { repositorySnapshot: source }), /different content/);
   const repository = runnerTaskRepositoryPath(spool, executionId);
   assert.equal(readFileSync(join(repository, "nested", "source.txt"), "utf8"), "private source\n");
   for (const path of [repository, join(repository, "nested")])
@@ -115,8 +136,8 @@ if (mode === "publish") {
     executionId: "01K00000000000000000000002",
     command: { ...without, id: "optional" },
   };
-  assert.throws(() => publishRunnerJob(spool, optional, { repositorySnapshot: source }), /context/);
-  publishRunnerJob(spool, optional);
+  assert.throws(() => publish(optional, { repositorySnapshot: source }), /context/);
+  publish(optional);
   assert.throws(() => runnerTaskRepositoryPath(spool, optional.executionId), /no task repository/);
   console.log(
     JSON.stringify({
@@ -129,8 +150,7 @@ if (mode === "publish") {
     }),
   );
 } else if (mode === "atomic") {
-  publishRunnerJob(
-    spool,
+  publish(
     {
       ...job,
       executionId: "01K00000000000000000000003",
@@ -144,17 +164,29 @@ if (mode === "publish") {
   console.log(JSON.stringify({ inFlightReadDenied: true }));
 } else if (mode === "agent") {
   assert.deepEqual(readRunnerJob(spool, executionId), job);
+  const inputs = readRunnerJobInputs(spool, executionId);
+  assert.equal(inputs.prompt, fullPrompt.toString("utf8"));
+  assert.equal(inputs.inputFiles[0]!.path, ".paws-linear-inputs/task/input.txt");
+  assert.deepEqual(Buffer.from(inputs.inputFiles[0]!.bytes), attachment);
+  for (const name of ["input-0.bytes", "prompt.bytes"]) {
+    const stored = join(spool.root, executionId, name);
+    assert.throws(() => writeFileSync(stored, "forged"));
+    assert.throws(() => chmodSync(stored, 0o660));
+  }
   const path = join(runnerTaskRepositoryPath(spool, executionId), "nested", "source.txt");
   assert.equal(readFileSync(path, "utf8"), "private source\n");
   assert.throws(() => writeFileSync(path, "forged"));
   assert.throws(() => chmodSync(path, 0o660));
-  assert.throws(() => publishRunnerJob(spool, job, { repositorySnapshot: source }));
+  assert.throws(() => publish(job, { repositorySnapshot: source }));
   console.log(
     JSON.stringify({ readable: true, writeDenied: true, chmodDenied: true, publishDenied: true }),
   );
 } else if (mode === "outsider") {
   assert.throws(() => readRunnerJob(spool, executionId));
   console.log(JSON.stringify({ inputReadDenied: true }));
+} else if (mode === "input-tampered") {
+  assert.throws(() => readRunnerJobInputs(spool, "01K00000000000000000000002"));
+  console.log(JSON.stringify({ unsafeInputDenied: true }));
 } else if (mode === "tampered") {
   assert.throws(() => readRunnerJob(spool, executionId));
   console.log(JSON.stringify({ unsafePublishedTreeDenied: true }));
