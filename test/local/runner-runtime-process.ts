@@ -18,6 +18,7 @@ import { RunnerRequestError, openRunnerDaemon } from "../../src/runner-daemon";
 import {
   createRunnerBrokerClient,
   readRunnerJob,
+  readRunnerJobInputs,
   readRunnerResultFile,
   runnerRepositoryBundlePath,
 } from "../../src/runner-execution";
@@ -31,6 +32,9 @@ const mode = process.argv[2]!;
 const root = process.argv[3]!;
 const server = join(root, "server");
 const dbPath = join(server, "paws.db");
+const inputPath = ".paws-linear-inputs/private [a]*!.bin";
+const inputBytes = Buffer.from([0, 255, 40, 20]);
+const fullPrompt = "Restored native context 日本語 " + "x".repeat(1_048_576) + " context-tail";
 type Fixture = { browserPort: number; runnerPort: number; commands: WorkCommand[]; base: string };
 const configuration = () => JSON.parse(readFileSync(join(root, "fixture.json"), "utf8")) as Fixture;
 const tls = () => ({
@@ -214,6 +218,12 @@ if (mode === "prepare") {
         profile: { agent: "claude", model: index < 2 ? "fixture-model" : "hold" },
         prompt: "Execute the assigned fixture",
       };
+      if (index < 2) {
+        command.inputFiles = coordinator.inputs.stage(command.id, [
+          { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
+        ]);
+        command.promptContext = coordinator.inputs.stagePrompt(command.id, fullPrompt);
+      }
       coordinator.work.assign(command);
       config.commands.push(command);
     }
@@ -321,8 +331,19 @@ if (mode === "prepare") {
       : []),
     { type: "end" },
   ];
-  writeFileSync(script, JSON.stringify({ model: "fixture-model", steps }));
+  writeFileSync(
+    script,
+    JSON.stringify({
+      model: "fixture-model",
+      steps,
+      promptCapabilities: { embeddedContext: true },
+    }),
+  );
+  const inputOptions = { inputs: readRunnerJobInputs(spool, id) };
+  assert.deepEqual(Buffer.from(inputOptions.inputs.inputFiles[0]!.bytes), inputBytes);
+  assert.equal(inputOptions.inputs.prompt, fullPrompt);
   const result = await executeRunnerCommand({
+    ...inputOptions,
     job,
     repositoryBundle: runnerRepositoryBundlePath(spool, id),
     outputDirectory: join(root, "results", id),
@@ -345,6 +366,23 @@ if (mode === "prepare") {
   });
   assert.equal(result.run.errorMessage, undefined, JSON.stringify(result));
   const calls = JSON.parse(readFileSync(agentLog, "utf8"));
+  assert(calls.prompts[0][0].text === fullPrompt, "Exact restored native prompt");
+  const resource = calls.prompts[0].find(
+    (block: { type: string }) => block.type === "resource",
+  ).resource;
+  assert.deepEqual(Buffer.from(resource.blob, "base64"), inputBytes);
+  if (result.candidateSha) {
+    const acquired = join(root, "agent", "work", id);
+    const absent = Bun.spawnSync([
+      "/usr/bin/git",
+      "-C",
+      acquired,
+      "cat-file",
+      "-e",
+      `${result.candidateSha}:${inputPath}`,
+    ]);
+    assert.notEqual(absent.exitCode, 0);
+  }
   assert.equal(calls.artifact.ok, true);
   assert.equal(calls.askTeam.text, "Yes");
   if (job.command.type === "review") {

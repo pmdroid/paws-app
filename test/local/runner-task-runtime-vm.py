@@ -1,3 +1,4 @@
+import base64
 import grp
 import hashlib
 import json
@@ -88,7 +89,14 @@ def main():
             stored = (ROOT / 'server/objects' / uri.removeprefix('s3://task-fixture/')).read_bytes()
             assert stored == raw and len(raw) == size and hashlib.sha256(raw).hexdigest() == digest
             trace = json.loads((pathlib.Path('/var/lib/paws-agent-tasks') / execution_id / 'agent.json').read_text())
-            assert config['commands'][index]['prompt'] in json.dumps(trace['prompts'])
+            prompt = trace['prompts'][0][0]['text']
+            assert prompt == 'Restored native task context 日本語 ' + 'x' * 1048576 + ' context-tail'
+            resource = next(block['resource'] for block in trace['prompts'][0] if block['type'] == 'resource')
+            assert base64.b64decode(resource['blob']) == bytes([0, 255, 40, 20])
+            descriptor = config['commands'][index]['inputFiles'][0]
+            private = pathlib.Path('/var/lib/paws-runner-spool') / execution_id / 'input-0.bytes'
+            assert hashlib.sha256(private.read_bytes()).hexdigest() == descriptor['sha256']
+            assert (pathlib.Path('/var/lib/paws-agent-tasks') / execution_id / descriptor['path']).read_bytes() == bytes([0, 255, 40, 20])
             assert trace['askTeam']['text'] == 'Yes'
             if config['commands'][index]['purpose'] == 'artifact':
                 assert trace['terminals'][0]['exitCode'] == 0
@@ -102,7 +110,7 @@ def main():
         journal = sqlite3.connect(runtime / 'executions.db')
         assert journal.execute("SELECT COUNT(*) FROM execution WHERE phase='complete' AND consumed=transcript_offset AND consumed>0").fetchone()[0] == 4
         journal.close()
-        print('PAWS_TASK_RUNTIME_VM_PROOF ' + json.dumps({'passed':True,'pid1':True,'systemd':run('/usr/bin/systemctl','--version').stdout.splitlines()[0],'runnerUid':runner.pw_uid,'agentUid':agent.pw_uid,'taskResults':4,'questions':4,'artifacts':2,'sealedTranscripts':4,'canonicalOptionalRepositoryPinned':True,'kernelReadonlyRepository':True,'writeCredentials':0,'candidatePublications':0,'lostReceiptsRetriedWithoutDuplicateEffects':True,'relaunches':0}), flush=True)
+        print('PAWS_TASK_RUNTIME_VM_PROOF ' + json.dumps({'passed':True,'pid1':True,'systemd':run('/usr/bin/systemctl','--version').stdout.splitlines()[0],'runnerUid':runner.pw_uid,'agentUid':agent.pw_uid,'taskResults':4,'questions':4,'artifacts':2,'sealedTranscripts':4,'canonicalOptionalRepositoryPinned':True,'kernelReadonlyRepository':True,'writeCredentials':0,'candidatePublications':0,'lostReceiptsRetriedWithoutDuplicateEffects':True,'relaunches':0,'signedInputAndPromptRestored':4}), flush=True)
     finally:
         for process in actors:
             if process.poll() is None:

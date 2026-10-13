@@ -27,6 +27,9 @@ const [mode, ...args] = process.argv.slice(2);
 const root = "/var/lib/paws-task-proof";
 const home = "/var/lib/paws-runner";
 const server = join(root, "server");
+const inputPath = ".paws-linear-inputs/private [a]*!.bin";
+const inputBytes = Buffer.from([0, 255, 40, 20]);
+const fullPrompt = "Restored native task context 日本語 " + "x".repeat(1_048_576) + " context-tail";
 const spool = {
   root: "/var/lib/paws-runner-spool",
   runnerUid: Number(args[0]),
@@ -252,6 +255,10 @@ if (mode === "runner") {
         prompt: "Complete the assigned " + purpose,
         ...(repository ? { repository: binding } : {}),
       };
+      command.inputFiles = service.inputs.stage(command.id, [
+        { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
+      ]);
+      command.promptContext = service.inputs.stagePrompt(command.id, fullPrompt);
       service.work.assign(command);
       configuration.commands.push(command);
     }
@@ -410,7 +417,12 @@ if (mode === "runner") {
         );
         writeFileSync(
           join(root, "scripts", "current.json"),
-          JSON.stringify({ executionId: id, model: "fixture-model", steps }),
+          JSON.stringify({
+            executionId: id,
+            model: "fixture-model",
+            steps,
+            promptCapabilities: { embeddedContext: true },
+          }),
         );
         const receipt = await broker.start(id);
         assert.equal(receipt.alreadyAdmitted, false);

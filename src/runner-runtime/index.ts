@@ -79,7 +79,8 @@ export async function openRunnerRuntime(options: {
     | "uploadArtifact"
     | "uploadTranscript"
     | "finishTranscript"
-  >;
+  > &
+    Partial<Pick<RunnerDaemon, "readInputs">>;
   spool: RunnerSpool;
   results: RunnerResults;
   repositoryRoot: string;
@@ -264,10 +265,20 @@ export async function openRunnerRuntime(options: {
       check(entry);
       if (entry.execution.command.expiresAt <= now())
         throw new Error("Runner command expired before dispatch");
+      const needsInputs = Boolean(command.inputFiles?.length || command.promptContext);
+      if (needsInputs && !options.daemon.readInputs)
+        throw new Error("Runner input transport is unavailable");
+      const inputs = needsInputs
+        ? await remote(() =>
+            options.daemon.readInputs!(command, () => grant(entry), entry.abort.signal),
+          )
+        : undefined;
+      check(entry);
+      if (command.expiresAt <= now()) throw new Error("Runner command expired before dispatch");
       publishRunnerJob(
         options.spool,
         { executionId: entry.execution.id, command: entry.execution.command },
-        { repositoryBundle: bundle, repositorySnapshot },
+        { repositoryBundle: bundle, repositorySnapshot, ...inputs },
       );
       check(entry);
       if (entry.execution.command.expiresAt <= now())
