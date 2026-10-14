@@ -19,6 +19,7 @@ import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
 import { createFakeGitHub } from "../../src/github";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
+import { configureRunnerTranscriptStorage } from "../../src/runner-transcript-config";
 import {
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
@@ -143,6 +144,7 @@ if (enabled || mode === "pending") {
 }
 const pending = Promise.withResolvers<void>();
 if (mode === "pending") runtimeLinear.installation = pending.promise;
+if (mode === "remote") configureRunnerTranscriptStorage(root, '{"kind":"local"}');
 const paws = startPaws(source, {
   noTunnel: true,
   ...(enabled
@@ -151,7 +153,9 @@ const paws = startPaws(source, {
           github: createFakeGitHub(),
           installationForRepository: () => "fixture-installation",
         },
-        runnerTranscriptObjects: createFakeRunnerTranscriptObjects(),
+        ...(mode === "remote"
+          ? {}
+          : { runnerTranscriptObjects: createFakeRunnerTranscriptObjects() }),
       }
     : {}),
 });

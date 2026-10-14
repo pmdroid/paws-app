@@ -3,7 +3,10 @@ import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { decodeSecretEnvelope, writeSecretFile } from "../credentials";
-import { createS3RunnerTranscriptObjects } from "../runner-transcripts";
+import {
+  createLocalRunnerTranscriptObjects,
+  createS3RunnerTranscriptObjects,
+} from "../runner-transcripts";
 
 const FILE = "runner-transcript-storage.json";
 const MAX_BYTES = 65_536;
@@ -14,7 +17,7 @@ const secret = (max: number) =>
     .min(1)
     .max(max)
     .refine((value) => value.trim() === value && withoutControls(value));
-const schema = z
+const s3Schema = z
   .object({
     bucket: z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/),
     endpoint: z
@@ -42,6 +45,7 @@ const schema = z
     sessionToken: secret(16_384).optional(),
   })
   .strict();
+const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
 
 export function loadRunnerTranscriptObjects(home: string) {
   return withSecrets(home, false, (directory) => {
@@ -50,6 +54,8 @@ export function loadRunnerTranscriptObjects(home: string) {
     const key = readProtected(directory, ".envelope-key", 32)!;
     if (key.length !== 32) throw new Error();
     const config = schema.parse(JSON.parse(decodeSecretEnvelope(FILE, encrypted, key)));
+    if ("kind" in config)
+      return createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
     const client = new S3Client({ ...config, sessionToken: config.sessionToken ?? "" });
     const token = new URL(client.presign("paws-config-check")).searchParams.get(
       "X-Amz-Security-Token",

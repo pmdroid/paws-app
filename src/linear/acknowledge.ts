@@ -37,7 +37,7 @@ export async function acknowledgeNewSession(
         await tracker.postProgress({
           sessionId: event.sessionId,
           kind: "error",
-          body: "Could not load the Linear issue.",
+          body: "Paws could not start work on this issue. Please retry.",
         });
       } catch {
         console.error("linear follow-up error activity failed");
