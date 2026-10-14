@@ -35,6 +35,7 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object")
     return `{${Object.keys(value)
+      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
       .sort()
       .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
       .join(",")}}`;
@@ -387,7 +388,7 @@ function parseInput(paths: RunnerCheckPaths, value: RunnerCheckInput): RunnerChe
 
 export function publishRunnerCheckAttempt(
   paths: RunnerCheckPaths,
-  input: Pick<RunnerCheckAttempt, "verificationAttemptId" | "candidateSha">,
+  input: Pick<RunnerCheckAttempt, "verificationAttemptId" | "candidateSha" | "checkoutExclusions">,
   options: { repositoryBundle: string },
 ): RunnerCheckAttempt {
   validatePaths(paths);
@@ -424,7 +425,9 @@ export function publishRunnerCheckCommand(
     const attempt = RunnerCheckAttemptSchema.parse(readJson(directory, "attempt.json", paths));
     if (
       attempt.verificationAttemptId !== input.verificationAttemptId ||
-      attempt.candidateSha !== input.candidateSha
+      attempt.candidateSha !== input.candidateSha ||
+      JSON.stringify(attempt.checkoutExclusions ?? []) !==
+        JSON.stringify(input.checkoutExclusions ?? [])
     )
       throw new Error("Runner check candidate mismatch");
   } finally {

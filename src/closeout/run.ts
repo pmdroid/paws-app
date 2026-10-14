@@ -35,6 +35,7 @@ import {
 } from "../closeout-spec";
 
 export type EvaluateInput = {
+  checkoutExclusions?: readonly string[];
   worktree: string;
   taskId: string;
   base: string;
@@ -63,6 +64,7 @@ export type Evaluation = {
 };
 
 export type GateInput = {
+  checkoutExclusions?: readonly string[];
   worktree: string;
   taskId: string;
   base: string;
@@ -148,6 +150,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   let ran: SpecDecision;
   try {
     ran = await run({
+      checkoutExclusions: input.checkoutExclusions,
       repo: input.worktree,
       base: input.base,
       head: input.head,
@@ -194,6 +197,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   let judged: SpecDecision;
   try {
     judged = await decide({
+      checkoutExclusions: input.checkoutExclusions,
       repo: input.worktree,
       base: input.base,
       head: input.head,
@@ -396,6 +400,7 @@ async function addReviewEvidence(
     let added;
     try {
       added = await addReview({
+        checkoutExclusions: input.checkoutExclusions,
         repo: input.worktree,
         base: input.base,
         head: input.head,

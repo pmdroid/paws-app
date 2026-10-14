@@ -8,6 +8,7 @@
  * requires that hash to change without another commit.
  */
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -68,6 +69,7 @@ export type ValidateResult =
 export type DigestResult = { ok: true; digest: string | null } | { ok: false; message: string };
 
 export type DecisionInput = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -85,6 +87,7 @@ export type DecisionInput = {
 };
 
 export type RunRequest = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -110,6 +113,7 @@ export type ReviewIntake =
     };
 
 export type AddReviewInput = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -227,7 +231,7 @@ export function digest(repo: string): DigestResult {
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   const candidate = input.candidate ?? blankCandidate();
   if (!loaded.ok) {
     return evaluate(
@@ -245,7 +249,7 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
  * Review requirements stay missing until {@link addReview}.
  */
 export async function run(input: RunRequest): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(
@@ -272,6 +276,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
   const evidence = createEvidenceStore({ root: evidenceDir });
   const ran = await runCloseoutCommands({
+    checkoutExclusions: input.checkoutExclusions,
     repo: input.repo,
     policy: loaded.policy,
     base: resolved.base,
@@ -303,7 +308,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
 
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (loaded.policy.source === "none" || loaded.policy.digest === null) {
     return { ok: false, message: "no closeout policy" };
@@ -319,6 +324,7 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
   const reviewed = await input.reviewer.review({
+    checkoutExclusions: input.checkoutExclusions,
     item,
     candidate,
     base: resolved.base,
@@ -532,13 +538,28 @@ function loadOrigin(
   repo: string,
   home: string | undefined,
   policyRoot?: string,
+  checkoutExclusions: readonly string[] = [],
 ): ReturnType<typeof loadPolicy> {
-  return loadPolicy({
+  const loaded = loadPolicy({
     repo,
     git: gitReader,
     ...(home !== undefined ? { home } : {}),
     ...(policyRoot !== undefined ? { policyRoot } : {}),
   });
+  if (loaded.ok && loaded.policy.source !== "none" && checkoutExclusions.length) {
+    loaded.policy = {
+      ...loaded.policy,
+      digest: `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify({
+            policy: loaded.policy.digest,
+            checkoutExclusions: [...new Set(checkoutExclusions)].sort(),
+          }),
+        )
+        .digest("hex")}`,
+    };
+  }
+  return loaded;
 }
 
 function loadTree(repo: string): ReturnType<typeof loadPolicy> {

@@ -25,7 +25,7 @@ const COOKIE = "__Host-paws-attribution";
 export function createGitHubAttributionLink(options: {
   db: Database;
   origin: string;
-  client: { clientId: string; clientSecret: string };
+  client?: { clientId: string; clientSecret: string };
   refresh: (workspaceId: string, userId: string) => Promise<void>;
   fetch?: typeof fetch;
   now?: () => number;
@@ -33,7 +33,7 @@ export function createGitHubAttributionLink(options: {
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
   const origin = new URL(options.origin).origin;
-  if (!options.client.clientId || !options.client.clientSecret)
+  if (options.client && (!options.client.clientId || !options.client.clientSecret))
     throw new Error("Configured GitHub App client metadata is required.");
   return {
     async handle(request: Request): Promise<Response | null> {
@@ -80,12 +80,21 @@ export function createGitHubAttributionLink(options: {
         if (url.pathname === PATH) {
           if (request.method === "GET")
             return reply({
+              configured: options.client !== undefined,
               identity: githubAttribution(options.db, binding.workspaceId, binding.userId),
             });
           if (request.method === "DELETE") {
             revokeGitHubAttribution(options.db, binding, now());
             return reply({ ok: true });
           }
+          if (!options.client)
+            return reply(
+              {
+                error:
+                  "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+              },
+              503,
+            );
           const body = await readWorkspaceJson(request);
           if (!record(body) || Object.keys(body).length !== 1 || body["consent"] !== true)
             return reply(
@@ -130,6 +139,14 @@ export function createGitHubAttributionLink(options: {
           browserHash: workspaceTokenHash(browser),
           now: now(),
         });
+        if (!options.client)
+          return reply(
+            {
+              error:
+                "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+            },
+            503,
+          );
         const code = url.searchParams.get("code");
         if (url.searchParams.has("error") || !code || code.length > 4096)
           throw new Error("Authorization not completed.");

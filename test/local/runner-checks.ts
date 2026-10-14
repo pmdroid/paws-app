@@ -228,6 +228,7 @@ export async function probeRunnerChecks(
         runId: run.id,
         verificationAttemptId: attempt,
         candidateSha: repository.baseSha,
+        checkoutExclusions: ["large"],
         argv: ["/usr/bin/true"],
         cwd: ".",
         timeoutMs: 900_000,
@@ -238,6 +239,8 @@ export async function probeRunnerChecks(
       );
       assert(command?.type === "check");
       assert.equal(command.repository.baseSha, command.candidateSha);
+      assert.deepEqual(command.repository.checkoutExclusions, ["large"]);
+      assert.deepEqual(assigned.input.checkoutExclusions, ["large"]);
       const grant = await daemon.issueRunGrant(run.id, {
         commandId: command.id,
         generation: command.generation,
@@ -276,6 +279,7 @@ export async function probeRunnerChecks(
         runId: run.id,
         verificationAttemptId: first.result.verificationAttemptId,
         candidateSha: repository.baseSha,
+        checkoutExclusions: ["large"],
         argv: ["/usr/bin/true"],
         cwd: ".",
         timeoutMs: 1000,
@@ -323,6 +327,18 @@ export async function probeRunnerChecks(
       await assert.rejects(send(first));
     }
     malformed = undefined;
+    assert.throws(() =>
+      checks.dispatch({
+        runnerId,
+        runId: run.id,
+        verificationAttemptId: first.result.verificationAttemptId,
+        candidateSha: repository.baseSha,
+        checkoutExclusions: ["different"],
+        argv: ["/usr/bin/true"],
+        cwd: ".",
+        timeoutMs: 1000,
+      }),
+    );
     const second = await dispatch(first.result.verificationAttemptId);
     assert(second.command.generation > first.command.generation);
     assert.deepEqual(await send(first), { duplicate: true });

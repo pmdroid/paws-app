@@ -244,3 +244,49 @@ test("check schemas bound argv, environment, wait status and output", () => {
     RunnerCheckResultSchema.safeParse({ ...result, stdout: "x".repeat(1_048_577) }).success,
   ).toBe(false);
 });
+
+test("check attempt topology binds literal exclusions and rejects changed or unsafe omissions", () => {
+  const { paths, bundle, input } = fixture();
+  expect(runnerCheckInputHash({ ...input, checkoutExclusions: undefined })).toBe(
+    runnerCheckInputHash(input),
+  );
+  for (const value of ["a".repeat(1024), "🐕".repeat(256)]) {
+    const exclusions = [...Array<string>(31).fill(value), "b".repeat(927)];
+    expect(Buffer.byteLength(JSON.stringify(exclusions))).toBe(32768);
+    expect(
+      RunnerCheckInputSchema.safeParse({ ...input, checkoutExclusions: exclusions }).success,
+    ).toBe(true);
+    exclusions[31] += "b";
+    expect(
+      RunnerCheckInputSchema.safeParse({ ...input, checkoutExclusions: exclusions }).success,
+    ).toBe(false);
+  }
+  const sparse = { ...input, checkoutExclusions: ["large", "nested/a [b]*!"] };
+  expect(runnerCheckInputHash(sparse)).not.toBe(runnerCheckInputHash(input));
+  for (const folder of [
+    "/large",
+    "../large",
+    "a/../b",
+    ".git",
+    "a/.GIT/b",
+    "a\\b",
+    "a\nb",
+    "a//b",
+    "",
+  ]) {
+    expect(
+      RunnerCheckInputSchema.safeParse({ ...input, checkoutExclusions: [folder] }).success,
+    ).toBe(false);
+  }
+  publishRunnerCheckAttempt(
+    paths,
+    {
+      verificationAttemptId: attemptId,
+      candidateSha,
+      checkoutExclusions: sparse.checkoutExclusions,
+    },
+    { repositoryBundle: bundle },
+  );
+  expect(() => publishRunnerCheckCommand(paths, input)).toThrow("candidate mismatch");
+  expect(publishRunnerCheckCommand(paths, sparse)).toEqual(sparse);
+});

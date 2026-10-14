@@ -33,7 +33,7 @@ function fixture() {
   const path = join(home, "db.sqlite");
   let db = openDatabase(path);
   migrate(db);
-  const now = Date.now();
+  let now = Date.now();
   putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
@@ -85,6 +85,8 @@ function fixture() {
   );
   const calls: { path: string; body: string }[] = [];
   let hold: Promise<void> | undefined;
+  let beforeInstallation: (() => Promise<void>) | undefined;
+  let installationStatus = 200;
   const provider = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -97,8 +99,15 @@ function fixture() {
         return Response.json({ access_token: "scripted-user-token" });
       }
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
-      if (url.pathname === "/app") return Response.json({ id: 99, client_id: "Iv1.fake" });
-      if (url.pathname === "/repos/acme/widgets/installation") return Response.json({ id: 22 });
+      if (url.pathname === "/app")
+        return Response.json({ id: 99, client_id: "Iv1.fake", slug: "fixture-paws" });
+      if (url.pathname === "/repos/acme/widgets/installation") {
+        await beforeInstallation?.();
+        return Response.json(
+          { id: 22, app_id: 99, suspended_at: null, permissions: INSTALLATION_PERMISSIONS },
+          { status: installationStatus },
+        );
+      }
       if (url.pathname === "/repos/acme/widgets")
         return Response.json({
           permissions: { admin: true },
@@ -131,6 +140,7 @@ function fixture() {
       home,
       env,
       origin: "https://paws.example",
+      now: () => now,
       fetch: scriptedFetch,
     });
   function request(role: string, url: string, init: RequestInit = {}) {
@@ -168,6 +178,15 @@ function fixture() {
     request,
     get db() {
       return db;
+    },
+    advance(ms: number) {
+      now += ms;
+    },
+    setInstallationStatus(value: number) {
+      installationStatus = value;
+    },
+    setBeforeInstallation(value: (() => Promise<void>) | undefined) {
+      beforeInstallation = value;
     },
     setHold(value: Promise<void>) {
       hold = value;
@@ -281,3 +300,188 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       await f.close();
     }
   });
+
+test("hosted connection reports missing server credentials as JSON without changing connection state", async () => {
+  const f = fixture();
+  try {
+    const handler = createHostedGitHubConnect({
+      db: f.db,
+      home: f.home,
+      env: {},
+      origin: "https://paws.example",
+    });
+    const response = await handler(
+      f.request("owner", "https://paws.example/api/workspaces/github-connect", {
+        method: "POST",
+        headers: {
+          origin: "https://paws.example",
+          "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+        },
+        body: JSON.stringify({ installationId: "22" }),
+      }),
+    );
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toEqual({
+      error: "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+    });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({ n: 0 });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_connection").get()).toEqual({
+      n: 0,
+    });
+    expect(f.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+function automaticRequest(f: ReturnType<typeof fixture>, method = "POST", role = "owner") {
+  return f.request(role, "https://paws.example/api/workspaces/github-connect", {
+    method,
+    ...(method === "POST"
+      ? {
+          headers: {
+            origin: "https://paws.example",
+            "x-paws-csrf": f.sessions[role]!.session.csrfToken,
+          },
+          body: "{}",
+        }
+      : {}),
+  });
+}
+
+test("GitHub setup discovers the approved installation and exposes status without credential or ID inputs", async () => {
+  const f = fixture();
+  try {
+    const initial = await f.handler()(automaticRequest(f, "GET"));
+    expect(await initial?.json()).toMatchObject({
+      status: "needs_connection",
+      canManage: true,
+      requiresSignIn: false,
+      repositoryCount: 1,
+    });
+    const start = await f.handler()(automaticRequest(f));
+    expect(start?.status).toBe(200);
+    const body = (await start!.json()) as { authorizationUrl: string };
+    expect(JSON.stringify(body)).not.toContain("scripted-client-secret");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
+    const authorize = new URL(body.authorizationUrl);
+    const callback = new URL(authorize.searchParams.get("redirect_uri")!);
+    callback.searchParams.set("state", authorize.searchParams.get("state")!);
+    callback.searchParams.set("code", "scripted-code");
+    expect((await f.handler()(f.request("owner", callback.href)))?.status).toBe(303);
+    const connected = await f.handler()(automaticRequest(f, "GET", "member"));
+    expect(await connected?.json()).toMatchObject({
+      status: "connected",
+      canManage: false,
+      repositoryCount: 1,
+    });
+    f.setInstallationStatus(404);
+    const removed = await f.handler()(automaticRequest(f, "GET"));
+    expect(await removed?.json()).toMatchObject({ status: "needs_installation" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("missing installations offer a verified GitHub install URL without persisting OAuth state", async () => {
+  const f = fixture();
+  try {
+    f.setInstallationStatus(404);
+    const response = await f.handler()(automaticRequest(f));
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual({
+      installationUrl: "https://github.com/apps/fixture-paws/installations/new",
+    });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({ n: 0 });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_connection").get()).toEqual({
+      n: 0,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("connection status remains readable after recent sign-in expires and identifies the recovery", async () => {
+  const f = fixture();
+  try {
+    f.advance(16 * 60_000);
+    const response = await f.handler()(automaticRequest(f, "GET"));
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toMatchObject({ canManage: true, requiresSignIn: true });
+    const calls = f.calls.length;
+    const denied = await f.handler()(automaticRequest(f));
+    expect(denied?.status).toBe(403);
+    expect(await denied?.json()).toMatchObject({ code: "reauth_required" });
+    expect(f.calls.length).toBe(calls);
+    const member = await f.handler()(automaticRequest(f, "POST", "member"));
+    expect(await member?.json()).toMatchObject({ code: "admin_required" });
+  } finally {
+    await f.close();
+  }
+});
+
+for (const change of ["logout", "demotion", "repositories", "credentials", "expiry"] as const) {
+  test(`automatic installation discovery rejects ${change} during GitHub lookup`, async () => {
+    const f = fixture();
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    try {
+      f.setBeforeInstallation(async () => {
+        entered.resolve();
+        await released.promise;
+      });
+      const pending = f.handler()(automaticRequest(f));
+      await entered.promise;
+      if (change === "logout") deleteWorkspaceSession(f.db, f.sessions.owner!.session.tokenHash);
+      if (change === "demotion")
+        f.db.run(
+          "UPDATE workspace_member SET role='member' WHERE workspace_id='ws' AND user_id='owner'",
+        );
+      if (change === "repositories")
+        replaceWorkspaceRepositories(f.db, {
+          workspaceId: "ws",
+          actorId: "owner",
+          repositories: [],
+          now: Date.now(),
+        });
+      if (change === "credentials") f.env.PAWS_GITHUB_CLIENT_ID = "Iv1.changed";
+      if (change === "expiry") f.advance(16 * 60_000);
+      released.resolve();
+      const response = await pending;
+      expect(response?.status).toBe(
+        change === "repositories" || change === "credentials" ? 409 : 403,
+      );
+      expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({
+        n: 0,
+      });
+    } finally {
+      released.resolve();
+      await f.close();
+    }
+  });
+}
+
+for (const repository of [
+  "acme/..",
+  "../widgets",
+  "acme/widgets?x=1",
+  "acme/widgets#fragment",
+  "acme/widgets/extra",
+]) {
+  test(`automatic discovery rejects an unsafe repository before App requests: ${repository}`, async () => {
+    const f = fixture();
+    try {
+      f.db.run("UPDATE workspace_repository SET repository=? WHERE workspace_id='ws'", [
+        repository,
+      ]);
+      const response = await f.handler()(automaticRequest(f));
+      expect(response?.status).toBe(503);
+      expect(f.calls).toEqual([]);
+      expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({
+        n: 0,
+      });
+    } finally {
+      await f.close();
+    }
+  });
+}

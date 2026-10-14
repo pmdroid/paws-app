@@ -12,6 +12,7 @@ import {
 
 export interface RemoteCloseoutRequest {
   candidateSha: string;
+  checkoutExclusions?: string[];
   argv: string[];
   cwd: ".";
   timeoutMs: number;
@@ -23,6 +24,7 @@ export interface RemoteCloseoutExecution {
 export function createRemoteCloseoutCommandRunner(options: {
   execute(request: RemoteCloseoutRequest, signal?: AbortSignal): Promise<RemoteCloseoutExecution>;
   signal?: AbortSignal;
+  checkoutExclusions?: readonly string[];
   secrets?: readonly string[];
 }): Pick<PawsCommandRunner, "runLogged"> {
   const secrets = options.secrets ?? credentialSecrets();
@@ -32,6 +34,9 @@ export function createRemoteCloseoutCommandRunner(options: {
       if (!isAbsolute(request.cwd) || !isAbsolute(request.logFile))
         throw new Error("Remote Closeout requires absolute local evidence paths");
       const dispatched: RemoteCloseoutRequest = {
+        ...(options.checkoutExclusions?.length
+          ? { checkoutExclusions: [...options.checkoutExclusions] }
+          : {}),
         candidateSha: RunnerCheckInputSchema.shape.candidateSha.parse(request.expectedHead),
         argv: RunnerCheckInputSchema.shape.argv.parse(request.argv),
         cwd: ".",
@@ -43,6 +48,8 @@ export function createRemoteCloseoutCommandRunner(options: {
       const result = RunnerCheckResultSchema.parse(execution.result);
       if (
         input.candidateSha !== dispatched.candidateSha ||
+        JSON.stringify(input.checkoutExclusions ?? []) !==
+          JSON.stringify(dispatched.checkoutExclusions ?? []) ||
         JSON.stringify(input.argv) !== JSON.stringify(dispatched.argv) ||
         input.timeoutMs !== dispatched.timeoutMs ||
         !input.cwd.endsWith(`/${input.verificationAttemptId}/workspace`) ||
