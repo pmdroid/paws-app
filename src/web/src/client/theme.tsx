@@ -8,7 +8,7 @@ import parse, {
   type DOMNode,
   type HTMLReactParserOptions,
 } from "html-react-parser";
-import { Button, buttonVariants } from "./ui/button";
+import { buttonVariants } from "./ui/button";
 import { Input } from "./ui/input";
 import { NativeSelect } from "./ui/native-select";
 import { Textarea } from "./ui/textarea";
@@ -152,15 +152,21 @@ function replace(node: DOMNode): ReactElement | undefined {
       return styled(
         "flex w-full flex-wrap items-center gap-3 rounded-base border-2 border-border bg-secondary-background p-4 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
       );
-    return (
-      <Button
-        {...props}
-        type={(attribs.type ?? "button") as "button" | "submit" | "reset"}
-        variant={has("primary", "on") ? "default" : "neutral"}
-        size="default"
-      >
-        {children()}
-      </Button>
+    return createElement(
+      "button",
+      {
+        ...props,
+        type: attribs.type ?? "button",
+        "data-slot": "button",
+        className: cn(
+          attribs.class,
+          buttonVariants({
+            variant: has("primary", "on") ? "default" : "neutral",
+            size: "default",
+          }),
+        ),
+      },
+      children(),
     );
   }
   if (name === "a") {

@@ -54,8 +54,7 @@ async function openSettings(page) {
       await section.locator("summary").click();
       await section.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
       await section.getByRole("checkbox").check();
-      await section.getByRole("button", { name: "Link GitHub identity" }).focus();
-      await page.keyboard.press("Enter");
+      await section.getByRole("button", { name: "Link GitHub identity" }).click();
       await page.waitForURL((url) => url.pathname === "/status" && !url.search);
       await page.getByRole("button", { name: "Sign out" }).waitFor();
       await openSettings(page);
