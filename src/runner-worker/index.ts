@@ -109,6 +109,19 @@ export async function executeRunnerCommand(
   const command = job.command;
   if (command.memberId) {
     if (process.pid !== 1) throw new Error("Member execution requires a private process namespace");
+    const privileges = new Map(
+      readFileSync("/proc/self/status", "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split(":").map((value) => value.trim()) as [string, string]),
+    );
+    if (
+      privileges.get("NoNewPrivs") !== "1" ||
+      ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].some(
+        (name) => !/^0+$/.test(privileges.get(name) ?? ""),
+      )
+    )
+      throw new Error("Member execution must have no capabilities");
     for (const [kind, identity] of [
       ["uid", process.getuid!()],
       ["gid", options.resultsGid],
