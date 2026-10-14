@@ -6,6 +6,7 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
   "runner-accounts",
+  "runner-login",
   "runner-login-worker",
   "worktree-checkout",
   "config",
@@ -153,6 +154,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
+  "runner-accounts": ["db", "runner-protocol"],
+  "runner-login": ["db", "workspace", "runner-work", "runner-protocol", "runner-accounts"],
   "runner-login-worker": ["acp", "install", "runner-protocol"],
   "runner-execution": ["runner-protocol"],
   "runner-check": ["runner-execution", "runner-protocol"],
@@ -187,6 +190,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-check-runtime",
   ],
   "runner-worker": [
+    "runner-login-worker",
     "worktree-checkout",
     "acp",
     "runner-execution",
@@ -205,7 +209,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-verifier",
     "runner-check",
   ],
-  "runner-accounts": ["db", "runner-protocol"],
   "runner-work": ["runner-accounts", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
@@ -241,8 +244,15 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "github",
   ],
   "runner-health": ["runner-accounts", "db", "workspace", "runner-work", "runner-protocol"],
-  "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
+  "runner-health-runtime": [
+    "runner-answers",
+    "db",
+    "runner-daemon",
+    "runner-execution",
+    "runner-protocol",
+  ],
   "runner-coordinator": [
+    "runner-login",
     "runner-inputs",
     "runner-helpers",
     "runner-checks",

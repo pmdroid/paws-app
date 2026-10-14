@@ -14,7 +14,7 @@ export function authorizeRunnerAccount(db: Database, command: RunnerCommand) {
     return;
   }
   authorizeRunnerMember(db, { ...command, memberId: command.memberId });
-  if (command.type === "login_check") return;
+  if (command.type === "login" || command.type === "login_check") return;
   if (
     !db
       .query(
