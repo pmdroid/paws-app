@@ -421,6 +421,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         clientId: runtime.linearClientId!,
         memberships: linear.memberships,
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
+        readTeams: (signal) => linear.access!.teams!({ signal }),
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {

@@ -14,6 +14,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
+  readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 }) {
   const installedOrganization = await options.memberships.installation(AbortSignal.timeout(10_000));
   return createWorkspaceAccess({ ...options, installedOrganization });
@@ -42,6 +43,8 @@ export function startWorkspaceAccess(
   const access = original.then((value) => ({
     ...value,
     authenticate: (request: Request) => accepting(() => value.authenticate(request)),
+    repositoryTeams: (request: Request, signal: AbortSignal) =>
+      accepting(() => value.repositoryTeams(request, signal)),
     handle: (request: Request) => accepting(() => value.handle(request)),
     refreshMemberships: () => accepting(() => value.refreshMemberships()),
   }));
