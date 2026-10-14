@@ -301,10 +301,13 @@ export async function probeRunnerInputs(
         { ...supplied[1]!, path: "same" },
       ]),
     );
-    const twenty = Array.from({ length: 20 }, (_, id) => ({ ...supplied[1]!, path: `${id}.txt` }));
-    assert.equal(inputs.stage(workspaceId(), twenty).length, 20);
+    const twentyOne = Array.from({ length: 21 }, (_, id) => ({
+      ...supplied[1]!,
+      path: `${id}.txt`,
+    }));
+    assert.equal(inputs.stage(workspaceId(), twentyOne).length, 21);
     assert.throws(() =>
-      inputs.stage(workspaceId(), [...twenty, { ...supplied[1]!, path: "21.txt" }]),
+      inputs.stage(workspaceId(), [...twentyOne, { ...supplied[1]!, path: "21.txt" }]),
     );
     const maximum = { ...supplied[1]!, bytes: Buffer.alloc(20 * 1024 * 1024) };
     assert.equal(inputs.stage(workspaceId(), [maximum])[0]!.sizeBytes, 20 * 1024 * 1024);
@@ -314,9 +317,9 @@ export async function probeRunnerInputs(
     assert.throws(() => RunnerInputFilesSchema.parse([{ ...command.inputFiles![0], id: 1 }]));
     assert.throws(() => RunnerCommandSchema.parse({ ...command, type: "probe" }));
     observe(
-      "manifests enforce twenty files and twenty MiB, normalized disjoint safe paths, canonical IDs and no health attachment authority",
+      "manifests enforce twenty-one transfer files and twenty MiB, normalized disjoint safe paths, canonical IDs and no health attachment authority",
       true,
-      { maxFiles: 20, maxBytes: 20 * 1024 * 1024 },
+      { maxFiles: 21, maxBytes: 20 * 1024 * 1024 },
     );
     for (const changed of [
       { ...payload, commandId: workspaceId() },
