@@ -107,3 +107,49 @@ test("private input storage recovers Unicode manifests, directory faults and int
   expect(proof.observations).toHaveLength(4);
   expect(proof.observations.every((value: { passed: boolean }) => value.passed)).toBe(true);
 });
+
+test("skill bundle purpose and digest are bound to a signed implementation command", () => {
+  const skills = {
+    ...command,
+    skillsInputId: 0,
+    inputFiles: [{ ...file, mimeType: "application/vnd.paws.skills+json" }],
+  };
+  const keys = generateKeyPairSync("ed25519");
+  const envelope = signRunnerCommand({
+    keyId: "key",
+    privateKey: keys.privateKey,
+    command: skills,
+  });
+  const changed = { ...skills, skillsInputId: undefined };
+  expect(
+    verifyRunnerCommand(
+      { ...envelope, payload: Buffer.from(JSON.stringify(changed)).toString("base64url") },
+      {
+        trustedKeys: new Map([["key", keys.publicKey]]),
+        runnerId: "runner",
+        workspaceId: "workspace",
+        now: 2,
+        allowedRepositories: ["fixture/repo"],
+        claimCommand: () => true,
+      },
+    ),
+  ).toEqual({ ok: false, reason: "invalid_signature" });
+  expect(RunnerCommandSchema.safeParse({ ...skills, type: "review" }).success).toBe(false);
+  expect(RunnerCommandSchema.safeParse({ ...skills, skillsInputId: 1 }).success).toBe(false);
+  expect(RunnerCommandSchema.safeParse({ ...command, skillsInputId: 0 }).success).toBe(false);
+});
+
+test("only a signed skill bundle reserves a twenty-first transfer slot", () => {
+  const inputFiles = Array.from({ length: 21 }, (_, id) => ({ ...file, id, path: `file-${id}` }));
+  expect(RunnerCommandSchema.safeParse({ ...command, inputFiles }).success).toBe(false);
+  expect(RunnerCommandSchema.safeParse({ ...command, type: "review", inputFiles }).success).toBe(
+    false,
+  );
+  expect(RunnerCommandSchema.safeParse({ ...command, inputFiles, skillsInputId: 20 }).success).toBe(
+    false,
+  );
+  inputFiles[20]!.mimeType = "application/vnd.paws.skills+json";
+  expect(RunnerCommandSchema.safeParse({ ...command, inputFiles, skillsInputId: 20 }).success).toBe(
+    true,
+  );
+});

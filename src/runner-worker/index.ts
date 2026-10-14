@@ -21,6 +21,7 @@ import {
   git,
   runAgent,
   minimalAgentEnv,
+  materializeImplementationSkills,
   type AcpEvent,
   type RunAgentOptions,
   type RunAgentResult,
@@ -159,6 +160,7 @@ export async function executeRunnerCommand(
     fsyncSync(eventJournal);
     journalSize += length;
   }
+  let skillsRoot: string | undefined;
   try {
     if (!task) mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
     const worktree = join(options.workRoot, job.executionId);
@@ -244,7 +246,7 @@ export async function executeRunnerCommand(
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
-    const inputFiles = options.inputs?.inputFiles ?? [];
+    let inputFiles = options.inputs?.inputFiles ?? [];
     if (command.type === "run" || command.type === "review" || command.type === "task") {
       const descriptors = command.inputFiles ?? [];
       const preparedPrompt = options.inputs?.prompt ?? command.prompt;
@@ -266,6 +268,13 @@ export async function executeRunnerCommand(
           : preparedPrompt !== command.prompt)
       )
         throw new Error("Runner input contents are required");
+      if (command.type === "run" && command.skillsInputId !== undefined) {
+        skillsRoot = materializeImplementationSkills(
+          inputFiles[command.skillsInputId]!.bytes,
+          options.workRoot,
+        );
+        inputFiles = inputFiles.filter((_, index) => index !== command.skillsInputId);
+      }
       for (const file of inputFiles) {
         const parts = file.path.split("/");
         let parent = worktree;
@@ -292,6 +301,7 @@ export async function executeRunnerCommand(
     });
     const run = await runAgent({
       ...options.launch,
+      skillsRoot,
       env: agentEnv,
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
@@ -521,6 +531,7 @@ export async function executeRunnerCommand(
     }
     return result;
   } finally {
+    if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     closeSync(journal);
   }
 }

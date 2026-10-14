@@ -10,7 +10,7 @@ export type RunnerPromptContext = z.infer<typeof RunnerPromptContextSchema>;
 export const RUNNER_INPUT_MAX_BYTES = 20 * 1024 * 1024;
 export const RUNNER_INPUT_CHUNK_BYTES = 524288;
 export const RunnerInputFileSchema = z.strictObject({
-  id: z.number().int().min(0).max(19),
+  id: z.number().int().min(0).max(20),
   path: z
     .string()
     .min(1)
@@ -39,7 +39,7 @@ export const RunnerInputFileSchema = z.strictObject({
 });
 export const RunnerInputFilesSchema = z
   .array(RunnerInputFileSchema)
-  .max(20)
+  .max(21)
   .refine(
     (files) =>
       files.reduce((total, file) => total + file.sizeBytes, 0) <= RUNNER_INPUT_MAX_BYTES &&
