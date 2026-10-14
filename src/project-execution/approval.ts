@@ -47,18 +47,28 @@ export function listProjectApprovals(db: Database, workspace: string): ProjectAp
     .map((row) => ({ ...row, preview: JSON.parse(row.preview) }));
 }
 
-export function assertProjectAuthority(db: Database, actor: Actor, preview: ProjectPreview) {
+export function assertProjectTeamAccess(db: Database, actor: Actor, preview: ProjectPreview) {
   const member = workspaceMember(db, actor.workspaceId, actor.userId);
-  const lead = workspaceMember(db, actor.workspaceId, preview.selection.leadUserId);
   const workspace = getWorkspace(db, actor.workspaceId);
-  const mappings = listWorkspaceRepositories(db, actor.workspaceId);
   if (
     !member?.active ||
     member.role === "observer" ||
-    !lead?.active ||
-    lead.role === "observer" ||
-    workspace?.organizationId !== preview.project.organizationId
+    workspace?.organizationId !== preview.project.organizationId ||
+    preview.project.issues.some(
+      (issue) =>
+        preview.includedIssueIds.includes(issue.linearIssueId) &&
+        !member.teamIds.includes(issue.teamId),
+    )
   )
+    throw new Error("Current workspace membership and authorized teams are required.");
+  return { member, workspace };
+}
+
+export function assertProjectAuthority(db: Database, actor: Actor, preview: ProjectPreview) {
+  const { member, workspace } = assertProjectTeamAccess(db, actor, preview);
+  const lead = workspaceMember(db, actor.workspaceId, preview.selection.leadUserId);
+  const mappings = listWorkspaceRepositories(db, actor.workspaceId);
+  if (!lead?.active || lead.role === "observer")
     throw new Error("Current workspace membership and an active lead are required.");
   const ids = new Set(preview.includedIssueIds);
   for (const issue of preview.project.issues.filter((candidate) =>
@@ -78,7 +88,6 @@ export function assertProjectAuthority(db: Database, actor: Actor, preview: Proj
       ),
     ];
     if (
-      !member.teamIds.includes(issue.teamId) ||
       !lead.teamIds.includes(issue.teamId) ||
       repositories.some(
         (repository) =>
