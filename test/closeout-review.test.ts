@@ -35,6 +35,27 @@ const finding = (severity: Finding["severity"], explanation: string): Finding =>
 });
 
 describe("closeout reviewer", () => {
+  test("uses the policy skill snapshot instead of the candidate skill", async () => {
+    const repo = await gitRepo();
+    const script = scripted([{ sessionId: "review-local", model: "review-model", text: "[]" }]);
+    try {
+      const result = await createCodexReviewer(script.runner, { model: "configured" }).review({
+        item: reviewItem(),
+        candidate: { session: "implementer", model: "implementer-model", provider: "test" },
+        base: repo.base,
+        head: repo.head,
+        policyDigest: DIGEST,
+        worktree: repo.dir,
+        skillFiles: new Map([[SKILL, new TextEncoder().encode("Policy snapshot review skill")]]),
+      });
+      expect(result.status).toBe("recorded");
+      expect(script.starts[0]?.prompt).toContain("Policy snapshot review skill");
+      expect(script.starts[0]?.prompt.split("# Diff ")[0]).not.toContain(SKILL_TEXT);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("records the ACP session, reported model, and provider without judging independence", async () => {
     const repo = await gitRepo();
     const session = "implementer-session";
@@ -163,6 +184,47 @@ describe("closeout reviewer", () => {
       expect(result.candidate.session).toBe("implementer-session");
       expect("record" in result).toBe(false);
       expect(result.reason.length).toBeGreaterThan(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("detached reviewers use configured exclusions despite source pattern tampering", async () => {
+    const repo = await gitRepo();
+    let started = false;
+    try {
+      await exec("git", [
+        "-C",
+        repo.dir,
+        "sparse-checkout",
+        "set",
+        "--no-cone",
+        "--",
+        "/*",
+        "!/src/",
+        "!/.agents/",
+      ]);
+      const result = await createCodexReviewer(
+        {
+          async start(input) {
+            started = true;
+            expect(existsSync(path.join(input.worktree, "src"))).toBe(false);
+            expect(existsSync(path.join(input.worktree, SKILL))).toBe(true);
+            return { sessionId: "review-sparse", model: "gpt-5-codex", text: "[]" };
+          },
+        },
+        { model: "codex-configured" },
+      ).review({
+        item: reviewItem(),
+        checkoutExclusions: ["src"],
+        candidate: { session: "implementer-session", model: "claude-opus", provider: "anthropic" },
+        base: repo.base,
+        head: repo.head,
+        policyDigest: DIGEST,
+        worktree: repo.dir,
+      });
+      expect(started).toBe(true);
+      expect(result.status).toBe("recorded");
     } finally {
       await repo.cleanup();
     }

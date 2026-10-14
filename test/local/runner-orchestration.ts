@@ -203,6 +203,11 @@ export async function probeRunnerOrchestration(
     let changed = false;
     let laterDispatches = 0;
     const crashed = scenario.startsWith("crashed-");
+    let verificationExclusions: readonly string[] = [];
+    writeFileSync(
+      join(home, "config.toml"),
+      '[checkout.projects."acme/fixture"]\nexclude = ["large"]\n',
+    );
     const orchestrator = attachOrchestrator({
       db,
       clock,
@@ -280,6 +285,8 @@ export async function probeRunnerOrchestration(
         },
         agentForItem(itemId) {
           return async (options: RunAgentOptions) => {
+            if (options.role === "reviewer" && !options.prepareOnly)
+              assert.deepEqual(options.checkoutExclusions, verificationExclusions);
             if (reverifying) laterDispatches++;
             const item = getWorkItem(db, itemId)!;
             assert.equal(getRun(db, item.currentRunId!)?.status, "active");
@@ -347,7 +354,13 @@ export async function probeRunnerOrchestration(
             });
           };
         },
-        closeoutForItem(itemId, signal) {
+        closeoutForItem(itemId, signal, checkoutExclusions) {
+          verificationExclusions = checkoutExclusions ?? [];
+          assert(verificationExclusions.length > 0);
+          writeFileSync(
+            join(home, "config.toml"),
+            '[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n',
+          );
           return {
             async runLogged(request) {
               if (reverifying) laterDispatches++;

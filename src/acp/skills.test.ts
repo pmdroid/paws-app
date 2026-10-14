@@ -240,3 +240,22 @@ test("permitted home-relative skill reads use the same path as the guard", async
   );
   expect(result.content).toBe("Local reference\n");
 });
+
+test("home-prefixed absolute suffixes open the exact authorized skill path", async () => {
+  const layout = await fixture();
+  const outside = join(layout.root, "outside.txt");
+  await writeFile(outside, "Outside resource");
+  const inside = join(layout.root, outside);
+  await mkdir(join(inside, ".."), { recursive: true });
+  await writeFile(inside, "Authorized resource");
+  const result = await readGuarded(
+    { sessionId: "test", path: `~/${outside}` },
+    {
+      worktree: layout.source,
+      home: layout.root,
+      pawsRoot: layout.pawsRoot,
+      skillRoots: [join(layout.root, "tmp")],
+    },
+  );
+  expect(result.content).toBe("Authorized resource");
+});

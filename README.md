@@ -19,7 +19,7 @@ Add the `paws` label to a Linear issue or delegate it to the configured Linear u
 
 `setup` writes `~/.paws/config.toml`. It connects your Linear personal API key and team, signs in to GitHub, asks which repository to use, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). Existing GitHub authentication settings are preserved. The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. Comment mode polls without a public URL; Linear agent-session mode is also available.
 
-Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
+Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that the [configured local policy](docs/local-closeout.md) or `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
 
 ```text
 missing grok: Run `grok login`
@@ -35,6 +35,15 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 | `~/.paws/worktrees/`  | One git worktree per item                                                                                        |
 | `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |
 | `~/.paws/logs/`       | Process logs                                                                                                     |
+
+Paws can leave selected folders out of its worktrees. Add literal repository-relative folder paths to `~/.paws/config.toml`:
+
+```toml
+[checkout.projects."owner/repo"]
+exclude = ["large-assets", "packages/archived"]
+```
+
+Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. The same per-repository settings travel in signed commands to paired runners and apply to their agent worktrees, trusted verification workspaces, and task source snapshots. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
 
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 

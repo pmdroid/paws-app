@@ -47,9 +47,11 @@ const ControllerRegions = memo(function ControllerRegions() {
       <div id="top" />
       <div id="banner" />
       <section id="linear-session-start" hidden aria-label="Start Linear session" />
-      <main id="content" tabIndex={-1} className="min-w-0 focus:outline-none" />
-      <section id="workspace-access" hidden aria-label="Workspace access" />
-      <div id="github-auth" hidden />
+      <main id="content" tabIndex={-1} className="min-w-0 space-y-8 focus:outline-none">
+        <div id="page-content" />
+        <section id="workspace-access" hidden aria-label="Workspace settings" />
+        <div id="github-auth" hidden />
+      </main>
     </>
   );
 });

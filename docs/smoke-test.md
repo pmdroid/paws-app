@@ -9,7 +9,7 @@ bun run paws doctor
 bun run paws
 ```
 
-Setup connects Linear and your GitHub repository. See [GitHub sign-in](github-login.md) for OAuth, App, and gh authentication. Commit a valid `.agents/closeout.yaml` on the repository's `origin/main` before running doctor. Every required doctor check must be `ok`; a `missing` line includes a fix. The process listens on `127.0.0.1:8787`, with the dashboard at `/status` and health at `/health`.
+Setup connects Linear and your GitHub repository. See [GitHub sign-in](github-login.md) for OAuth, App, and gh authentication. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`, before running doctor. Every required doctor check must be `ok`; a `missing` line includes a fix. The process listens on `127.0.0.1:8787`, with the dashboard at `/status` and health at `/health`.
 
 ## Linear comments
 

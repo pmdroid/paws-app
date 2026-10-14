@@ -13,7 +13,8 @@ import {
   constants,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { relative, sep } from "node:path";
+import { loadConfigFile } from "../config";
+import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, saveCheckpoint } from "../db";
 import {
@@ -53,7 +54,7 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
       info.nlink !== 1 ||
       info.uid !== process.getuid?.() ||
       (info.mode & 0o077) !== 0 ||
-      info.size > 4096
+      info.size > 65536
     )
       throw new Error("Repository snapshot metadata is unsafe");
     const saved = JSON.parse(readFileSync(fd, "utf8")) as {
@@ -145,13 +146,14 @@ export function createRemoteAgentRunner(options: {
   const cancelItem = createRemoteCancellation(options);
   return {
     cancelItem,
-    closeoutForItem(itemId: string, signal?: AbortSignal) {
+    closeoutForItem(itemId: string, signal?: AbortSignal, checkoutExclusions?: readonly string[]) {
       const attempts = new Map<
         string,
         { id: string; runnerId: string; runId: string; workspaceId: string; fence: number }
       >();
       return createRemoteCloseoutCommandRunner({
         signal,
+        checkoutExclusions,
         async execute(request) {
           signal?.throwIfAborted();
           if (!options.checks) throw new Error("Trusted runner verification is unavailable");
@@ -476,6 +478,14 @@ export function createRemoteAgentRunner(options: {
           )
             throw new Error("Run attribution App bot authority changed");
           signal.throwIfAborted();
+          const boundRepository = taskScope?.repository ?? scoped.repository;
+          const checkoutExclusions = input.checkoutExclusions
+            ? [...input.checkoutExclusions]
+            : boundRepository
+              ? loadConfigFile(join(input.pawsRoot, "config.toml")).checkoutProjects?.[
+                  `${boundRepository.owner}/${boundRepository.repo}`.toLowerCase()
+                ]?.exclude
+              : undefined;
           const assigned: WorkCommand = {
             id: commandId,
             runnerId: selected.id,
@@ -499,13 +509,19 @@ export function createRemoteAgentRunner(options: {
                   taskModeGeneration: taskScope.taskModeGeneration,
                   purpose: taskScope.purpose,
                   ...(taskScope.repository
-                    ? { repository: { ...taskScope.repository, baseSha: baseSha! } }
+                    ? {
+                        repository: {
+                          ...taskScope.repository,
+                          baseSha: baseSha!,
+                          checkoutExclusions,
+                        },
+                      }
                     : {}),
                 }
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                   ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                  repository: { ...scoped.repository!, baseSha: baseSha! },
+                  repository: { ...scoped.repository!, baseSha: baseSha!, checkoutExclusions },
                   ...(checkpointBot ? { checkpointBot } : {}),
                   ...(input.commitPolicy
                     ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }

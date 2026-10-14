@@ -197,6 +197,43 @@ describe("paws setup", () => {
     expect(originUrl(scene)).toBe("https://github.com/acme/widgets.git");
   });
 
+  test("setup can replace a valid retired tracker configuration", async () => {
+    const scene = await arrange();
+    mkdirSync(scene.home, { recursive: true });
+    writeFileSync(scene.paths.configFile, '[github]\nauth = "gh"\n[tracker]\nkind = "github"\n');
+    const result = await run(scene, happyArgs(scene));
+    expect(result.code).toBe(0);
+    expect(loadConfigFile(scene.paths.configFile).trackerKind).toBe("linear");
+  });
+
+  test("invalid local Closeout configuration blocks setup before checkout writes", async () => {
+    const scene = await arrange();
+    mkdirSync(scene.home, { recursive: true });
+    const config = '[closeout.projects."acme/widgets"]\npolicy_root = false\n';
+    writeFileSync(scene.paths.configFile, config);
+    const result = await run(scene, happyArgs(scene));
+    expect(result.code).not.toBe(0);
+    expect(readFileSync(scene.paths.configFile, "utf8")).toBe(config);
+    expect(existsSync(join(scene.checkout, ".agents", "closeout.yaml"))).toBe(false);
+  });
+
+  test("local Closeout policy survives setup without changing the checkout", async () => {
+    const scene = await arrange();
+    const root = join(scene.home, "policies", "widgets");
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(join(root, ".agents", "closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
+    writeFileSync(
+      scene.paths.configFile,
+      '[github]\nauth = "gh"\n[closeout.projects."acme/widgets"]\npolicy_root = "policies/widgets"\n',
+    );
+    const result = await run(scene, happyArgs(scene));
+    expect(result.code).toBe(0);
+    expect(existsSync(join(scene.checkout, ".agents", "closeout.yaml"))).toBe(false);
+    expect(loadConfigFile(scene.paths.configFile).closeoutProjects).toEqual({
+      "acme/widgets": "policies/widgets",
+    });
+  });
+
   test("an existing closeout policy is left in place", async () => {
     const scene = await arrange({ policy: "custom: true\n" });
     const result = await run(scene, happyArgs(scene));

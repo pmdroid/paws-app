@@ -85,7 +85,7 @@ async function navigate(page: Page, name: string, width: number) {
   await nav.getByRole("link", { name, exact: true }).click();
   if (width < 768)
     await expect(page.getByRole("dialog", { name: "Paws navigation" })).not.toBeVisible();
-  await expect(page.locator("#content h1")).toHaveText(name);
+  await expect(page.locator("#content h1")).toHaveText(name === "Settings" ? "Agents" : name);
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
     .toBe(true);
