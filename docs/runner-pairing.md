@@ -16,7 +16,19 @@ Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAW
 
 The VM needs outbound access to both endpoints. The default ports are TCP 8787 for dashboard access and HTTPS pairing, and TCP 8788 for the daemon's mTLS connection. Use the ports configured by your Paws operator. Both URLs must have a valid server certificate for their hostname.
 
-Install the matching AMD64 or ARM64 [runner Debian package](implementation/remote-hosts.md#install-a-signed-release). The installer creates the service accounts, verifier identity, runtime and systemd units.
+Install the runner on the VM:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh
+```
+
+The installer selects the AMD64 or ARM64 package from the latest GitHub release, checks its SHA-256, and installs it. The package creates the service accounts, verifier identity, runtime and systemd units. Pass a version to install that release:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
+```
+
+Package contents and upgrade behavior are in [Install a signed release](implementation/remote-hosts.md#install-a-signed-release).
 
 ## Configure the runner
 
