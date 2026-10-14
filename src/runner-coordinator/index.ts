@@ -29,6 +29,7 @@ import {
 export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
   installationForRepository(repository: string): string | null;
+  checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
 };
 
 const SIGNING_FILE = "runner-command-key.pem";

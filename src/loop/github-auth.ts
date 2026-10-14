@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { GitHubIntegrationHolds, type GitHubIntegration } from "./github-integration";
 import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
@@ -14,6 +15,7 @@ import { answerQuestion, findOpenQuestion, getQuestion, openQuestion } from "../
 export type GitHubAuthPhase = "initial" | "publication";
 export type VerifiedGitHubAccount = { id: number; login: string };
 export type HostGitHubAuth = {
+  integration?: GitHubIntegration;
   recoveryMessage?: string;
   externalLogin?: boolean;
   owner(item: WorkItemRecord): string | null;
@@ -40,6 +42,7 @@ type AuthRequest = {
 const AUTH_LIFETIME_MS = 10 * 60_000;
 
 export class GitHubAuthQuestions {
+  private readonly integration: GitHubIntegrationHolds | null;
   private readonly active = new Map<string, AbortController>();
   private closed = false;
   private readonly checks = new Map<string, AbortController>();
@@ -49,10 +52,14 @@ export class GitHubAuthQuestions {
     private readonly host: HostGitHubAuth,
     private readonly now: () => number,
     private readonly allowed: (item: WorkItemRecord) => boolean = () => true,
-  ) {}
+  ) {
+    this.integration = host.integration
+      ? new GitHubIntegrationHolds(db, host.integration, allowed, now)
+      : null;
+  }
 
   owns(questionId: string): boolean {
-    return !this.closed && this.read(questionId) !== null;
+    return !this.closed && (this.integration?.owns(questionId) || this.read(questionId) !== null);
   }
 
   async ensure(
@@ -61,6 +68,7 @@ export class GitHubAuthQuestions {
     signal: AbortSignal,
   ): Promise<boolean> {
     if (this.closed) return false;
+    if (this.integration) return this.integration.ensure(item, phase, signal);
     const sessionGeneration = item.sessionKey
       ? getLinearSessionGeneration(this.db, item.sessionKey)
       : 0;
@@ -127,6 +135,7 @@ export class GitHubAuthQuestions {
 
   async recover(signal: AbortSignal = new AbortController().signal): Promise<void> {
     if (this.closed || signal.aborted) return;
+    if (this.integration) return this.integration.recover(signal);
     const requests = this.db
       .query<AuthRequest, []>("SELECT * FROM linear_github_auth WHERE status = 'pending'")
       .all();
@@ -162,6 +171,7 @@ export class GitHubAuthQuestions {
 
   revoke(itemId: string): void {
     if (this.closed) return;
+    this.integration?.revoke(itemId);
     for (const [questionId, controller] of this.checks)
       if (this.read(questionId)?.item_id === itemId) controller.abort();
     for (const [questionId, controller] of this.active) {
@@ -177,6 +187,7 @@ export class GitHubAuthQuestions {
 
   close(): void {
     this.closed = true;
+    this.integration?.close();
     for (const controller of this.checks.values()) controller.abort();
     this.checks.clear();
     for (const controller of this.active.values()) controller.abort();
@@ -189,6 +200,7 @@ export class GitHubAuthQuestions {
     consume: () => void = () => {},
   ): Promise<boolean> {
     if (this.closed) return false;
+    if (this.integration?.owns(questionId)) return false;
     const request = this.read(questionId);
     if (
       request === null ||

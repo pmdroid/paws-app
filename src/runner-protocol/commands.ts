@@ -23,6 +23,27 @@ export const RunnerRepositorySchema = z
       repository.remoteUrl === `https://github.com/${repository.owner}/${repository.repo}.git`,
   );
 
+export const RunnerCheckpointBotSchema = z.strictObject({
+  appId: z.string().regex(/^[1-9][0-9]*$/),
+  login: z
+    .string()
+    .regex(/^[a-z0-9-]+\[bot\]$/)
+    .max(128),
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+
+const coauthor = z.strictObject({
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  login: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/),
+  name: z.string().min(1).max(256),
+  email: z.string().email().max(256),
+});
+export const RunnerCommitPolicySchema = z.strictObject({
+  bot: RunnerCheckpointBotSchema,
+  projectLead: coauthor,
+  taskSteerer: coauthor,
+});
+
 export const RunnerProfileSchema = z.strictObject({
   agent,
   model: z.string().trim().min(1).max(256).nullable(),
@@ -67,7 +88,13 @@ const work = {
 
 export const RunnerCommandSchema = z
   .discriminatedUnion("type", [
-    z.strictObject({ ...common, type: z.literal("run"), ...work }),
+    z.strictObject({
+      ...common,
+      type: z.literal("run"),
+      ...work,
+      checkpointBot: RunnerCheckpointBotSchema.optional(),
+      commitPolicy: RunnerCommitPolicySchema.optional(),
+    }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({
       ...common,
@@ -125,6 +152,15 @@ export const RunnerCommandSchema = z
       sha256: z.string().regex(/^[a-f0-9]{64}$/),
     }),
   ])
+  .refine(
+    (command) =>
+      command.type !== "run" ||
+      !command.commitPolicy ||
+      !command.checkpointBot ||
+      (command.commitPolicy.bot.appId === command.checkpointBot.appId &&
+        command.commitPolicy.bot.id === command.checkpointBot.id &&
+        command.commitPolicy.bot.login === command.checkpointBot.login),
+  )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)
   .refine(

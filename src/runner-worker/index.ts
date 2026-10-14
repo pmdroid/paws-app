@@ -16,6 +16,8 @@ import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  appBotCommitIdentity,
+  validateCandidateAttribution,
   git,
   runAgent,
   minimalAgentEnv,
@@ -292,6 +294,11 @@ export async function executeRunnerCommand(
       ...options.launch,
       env: agentEnv,
       checkpointEnv: env,
+      commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
+      checkpointIdentity:
+        command.type === "run" && command.checkpointBot
+          ? appBotCommitIdentity(command.checkpointBot)
+          : undefined,
       checkpointExcludePaths: inputFiles.map((file) => file.path),
       profile:
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
@@ -436,6 +443,15 @@ export async function executeRunnerCommand(
         sha,
       ]);
       if (command.type === "run") {
+        if (command.commitPolicy)
+          await validateCandidateAttribution(
+            worktree,
+            command.repository.baseSha,
+            sha,
+            command.commitPolicy,
+            env,
+            options.signal,
+          );
         result.candidateSha = sha;
         if (sha !== command.repository.baseSha) {
           const candidatePath = join(options.outputDirectory, "candidate.bundle");

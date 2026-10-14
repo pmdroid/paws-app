@@ -72,3 +72,20 @@ export {
   type StartupDecision,
   type WakeDecision,
 } from "./recovery";
+
+export {
+  appBotCommitIdentity,
+  commitIdentityEnv,
+  type AppBotIdentity,
+  type GitCommitIdentity,
+} from "./commit-identity";
+
+export {
+  commitCoauthorTrailers,
+  commitPolicyMessage,
+  policyCoauthors,
+  policyPullRequestCredit,
+  validateCommitAttribution,
+  type GitCommitPolicy,
+  type VerifiedGitHubCoauthor,
+} from "./commit-policy";

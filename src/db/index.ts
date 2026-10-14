@@ -82,7 +82,16 @@ export {
 } from "./outbox";
 export { prepareShutdown, recoverOnStartup } from "./recovery";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
-export { getRun, insertRun, listRuns, markRun, saveRunResult, type StoredRun } from "./runs";
+export {
+  getRun,
+  insertRun,
+  listRuns,
+  markRun,
+  saveRunResult,
+  saveRunCommitPolicy,
+  getItemRunCommitPolicy,
+  type StoredRun,
+} from "./runs";
 export {
   listOpenQuestions,
   listWorkItemBlocks,
@@ -275,3 +284,14 @@ export {
 export type { WorkspaceIdentityLink } from "./workspace-links";
 
 export { getRunnerVerifier } from "./runners";
+
+export {
+  requireAttributionSession,
+  beginGitHubAttribution,
+  consumeGitHubAttribution,
+  saveGitHubAttribution,
+  revokeGitHubAttribution,
+  githubAttribution,
+  attributionItemScope,
+} from "./github-attribution";
+export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";

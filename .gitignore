@@ -14,3 +14,8 @@ coverage
 *.db-shm
 *.db-journal
 .vercel
+landing/.astro
+.impeccable/build
+.impeccable/review
+.impeccable/mocks
+assets/plates

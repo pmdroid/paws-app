@@ -1,3 +1,4 @@
+import type { AppBotIdentity } from "../core";
 import {
   checkRepositoryReadAccess,
   checkRepositoryWriteAccess,
@@ -23,6 +24,7 @@ export type GitHubTokenProvider = {
   token(): Promise<string>;
   user(): Promise<{ login: string; id: number }>;
   readonly source: GitHubAuthSource;
+  botIdentity?(): Promise<AppBotIdentity>;
 };
 
 export type GitHubTokenProviderConfig = {
@@ -186,20 +188,20 @@ function appProvider(config: GitHubTokenProviderConfig): GitHubTokenProvider {
     ...(config.access ? { access: config.access } : {}),
     ...(config.now ? { now: () => new Date(config.now?.() ?? Date.now()) } : {}),
   });
-  let bot: { login: string; id: number } | null = null;
+  const resolveBot = async () =>
+    gitHubAppBot({
+      client,
+      appId: config.appId!,
+      privateKeyPem: config.privateKeyPem!,
+      token: await app.tokenFor("pr"),
+    });
   return {
     source: "app",
+    botIdentity: resolveBot,
     token: () => app.tokenFor("push"),
     user: async () => {
-      if (bot !== null) return bot;
-      const token = await app.tokenFor("pr");
-      bot = await gitHubAppBot({
-        client,
-        appId: config.appId!,
-        privateKeyPem: config.privateKeyPem!,
-        token,
-      });
-      return bot;
+      const bot = await resolveBot();
+      return { login: bot.login, id: bot.id };
     },
   };
 }

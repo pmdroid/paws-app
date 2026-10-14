@@ -11,6 +11,13 @@ import {
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+  appBotCommitIdentity,
+  commitPolicyMessage,
+  commitIdentityEnv,
+  type GitCommitIdentity,
+  type GitCommitPolicy,
+} from "../core";
 import { git } from "./git";
 import { mirrorPath, worktreePath } from "./paths";
 
@@ -30,12 +37,7 @@ export interface FreshMainCheckout {
   reason?: string;
 }
 
-const COMMIT_ENV_DEFAULTS = {
-  GIT_AUTHOR_NAME: "Paws",
-  GIT_AUTHOR_EMAIL: "paws@localhost",
-  GIT_COMMITTER_NAME: "Paws",
-  GIT_COMMITTER_EMAIL: "paws@localhost",
-};
+const DEFAULT_IDENTITY = { name: "Paws", email: "paws@localhost" };
 
 /** Same order as worktree start refs: a published main, then whatever the mirror has. */
 const START_REFS = ["origin/main", "main", "origin/master", "HEAD"] as const;
@@ -51,7 +53,9 @@ export async function commitCheckpoint(
   onPublished?: () => void,
   environment?: NodeJS.ProcessEnv,
   excludePaths: readonly string[] = [],
+  identity: GitCommitIdentity = DEFAULT_IDENTITY,
 ): Promise<CheckpointResult> {
+  const commitEnv = commitIdentityEnv(identity);
   const unchanged = { committed: false, message };
   if (signal?.aborted) return unchanged;
   const baseEnv = environment ?? process.env;
@@ -68,7 +72,7 @@ export async function commitCheckpoint(
     ).trim();
     const originalIndex = existsSync(index) ? readFileSync(index) : undefined;
     const privateIndex = join(temporary, "index");
-    const env = { ...baseEnv, ...COMMIT_ENV_DEFAULTS, GIT_INDEX_FILE: privateIndex };
+    const env = { ...baseEnv, ...commitEnv, GIT_INDEX_FILE: privateIndex };
     if (originalIndex) writeFileSync(privateIndex, originalIndex);
     else await git(["-C", tree, "read-tree", head], { env });
     if (excludePaths.length)
@@ -172,7 +176,17 @@ export async function commitCheckpoint(
  * Same commit as `commitCheckpoint`, run synchronously so SIGTERM can finish
  * it before exit. A missing worktree records nothing.
  */
-export function commitCheckpointSync(tree: string, message = "wip: shutdown"): CheckpointResult {
+export function commitCheckpointSync(
+  tree: string,
+  message = "wip: shutdown",
+  identity: GitCommitIdentity = DEFAULT_IDENTITY,
+  policy?: GitCommitPolicy,
+): CheckpointResult {
+  if (policy) {
+    identity = appBotCommitIdentity(policy.bot);
+    message = commitPolicyMessage(message, policy);
+  }
+  const commitEnv = commitIdentityEnv(identity);
   if (!existsSync(tree)) return { committed: false, message };
   let status: string;
   try {
@@ -182,7 +196,7 @@ export function commitCheckpointSync(tree: string, message = "wip: shutdown"): C
   }
   if (!status) return { committed: false, message };
   gitSync(["-C", tree, "add", "-A"]);
-  gitSync(commitArgs(tree, message), { ...process.env, ...COMMIT_ENV_DEFAULTS });
+  gitSync(commitArgs(tree, message), { ...process.env, ...commitEnv });
   const sha = gitSync(["-C", tree, "rev-parse", "HEAD"]).trim();
   return { committed: true, sha, message };
 }
@@ -198,6 +212,8 @@ export function restartFromFreshMain(options: {
   repo: string;
   itemId: string;
   wipBranch: string;
+  commitIdentity?: GitCommitIdentity;
+  commitPolicy?: GitCommitPolicy;
 }): FreshMainCheckout {
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const tree = worktreePath(options.pawsRoot, options.itemId);
@@ -211,7 +227,12 @@ export function restartFromFreshMain(options: {
 
   let wipSha: string | undefined;
   if (isRegisteredWorktree(gitDir, tree)) {
-    const committed = commitCheckpointSync(tree, "wip: paused");
+    const committed = commitCheckpointSync(
+      tree,
+      "wip: paused",
+      options.commitIdentity,
+      options.commitPolicy,
+    );
     wipSha = committed.sha ?? gitSyncOrEmpty(["-C", tree, "rev-parse", "HEAD"]);
     gitSync(["--git-dir", gitDir, "worktree", "remove", "--force", tree]);
     gitSync(["--git-dir", gitDir, "worktree", "prune"]);

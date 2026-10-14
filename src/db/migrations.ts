@@ -1229,4 +1229,89 @@ CREATE TABLE linear_outbox_backoff (
 ) STRICT;
 `,
   },
+  {
+    id: "046_workspace_assignment_handoff",
+    sql: `
+ALTER TABLE workspace_oauth_request ADD COLUMN assignment_hash TEXT;
+CREATE TABLE workspace_assignment (
+ session_id TEXT NOT NULL REFERENCES linear_session(session_id),
+ generation INTEGER NOT NULL,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ actor_id TEXT NOT NULL,
+ token_hash TEXT NOT NULL UNIQUE,
+ fingerprint TEXT NOT NULL,
+ event TEXT NOT NULL CHECK(json_valid(event)),
+ expires_at INTEGER NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','ready','accepted','continued','invalid')),
+ PRIMARY KEY(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "047_github_integration_holds",
+    sql: `
+CREATE TABLE github_integration_hold (
+ question_id TEXT PRIMARY KEY REFERENCES question(id),
+ item_id TEXT NOT NULL REFERENCES work_item(id),
+ phase TEXT NOT NULL CHECK(phase IN ('initial','publication')),
+ item_version INTEGER NOT NULL,
+ session_generation INTEGER NOT NULL,
+ current_run_id TEXT,
+ checkpoint TEXT NOT NULL,
+ authority TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','verified','revoked'))
+) STRICT;
+CREATE INDEX github_integration_hold_pending ON github_integration_hold(status,item_id);
+`,
+  },
+  {
+    id: "048_workspace_github_connect",
+    sql: `
+CREATE TABLE workspace_github_connection (
+ workspace_id TEXT PRIMARY KEY REFERENCES workspace(id),
+ generation INTEGER NOT NULL DEFAULT 0,
+ secret_id TEXT,
+ actor_id TEXT REFERENCES workspace_user(id),
+ installation_id TEXT,
+ repositories TEXT NOT NULL DEFAULT '[]'
+) STRICT;
+CREATE TABLE workspace_github_oauth (
+ state_hash TEXT PRIMARY KEY,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ session_hash TEXT NOT NULL,
+ secret_id TEXT NOT NULL,
+ expected_generation INTEGER NOT NULL,
+ intent TEXT NOT NULL,
+ expires_at INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','claimed','complete','failed'))
+) STRICT;
+`,
+  },
+  {
+    id: "049_verified_github_attribution",
+    sql: `
+CREATE TABLE verified_github_attribution (
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ github_id INTEGER CHECK(github_id>0),
+ login TEXT,
+ name TEXT,
+ consented_at INTEGER,
+ revoked_at INTEGER,
+ revision INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(workspace_id,user_id)
+) STRICT;
+CREATE UNIQUE INDEX verified_github_attribution_account ON verified_github_attribution(workspace_id,github_id) WHERE consented_at IS NOT NULL AND revoked_at IS NULL;
+CREATE TABLE github_attribution_request (
+ state_hash TEXT PRIMARY KEY,
+ browser_hash TEXT NOT NULL,
+ session_hash TEXT NOT NULL REFERENCES workspace_session(token_hash) ON DELETE CASCADE,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ revision INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

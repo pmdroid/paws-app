@@ -1,0 +1,120 @@
+---
+import "@fontsource/baloo-2/latin-800.css";
+import { siLinear, siClaude, siGithub } from "simple-icons";
+import "../styles/global.css";
+
+const repo = "https://github.com/pmdroid/paws-app";
+const setup = `${repo}#setup`;
+const stages = [
+  { name: "Linear issue", detail: "Issue received", symbol: "linear", description: "Add the paws label to a Linear issue, or delegate it to your configured user. Paws picks it up from your queue." },
+  { name: "Coding agent", detail: "Implements the changes", symbol: "claude", description: "Paws runs your selected Claude Code, Codex, or Grok agent over ACP in a Git worktree on your machine." },
+  { name: "Closeout checks", detail: "Checks the work", symbol: "check", description: "Closeout runs the repository’s verification policy. Paws uses the results to drive the fix loop before moving on." },
+  { name: "GitHub pull request", detail: "Ready for review", symbol: "github", description: "The change becomes a GitHub pull request. Implementation, verification, and the merge workflow stay connected." },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paws — Less babysitting. More shipping.</title>
+    <meta name="description" content="Hand Paws a Linear issue. Your coding agent implements it locally, Closeout verifies the work, and GitHub gets the pull request." />
+    <link rel="canonical" href="https://paws.boo/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#c0b4f1" />
+    <meta property="og:title" content="Paws — Less babysitting. More shipping." />
+    <meta property="og:description" content="Your issues. Your coding agent. One local workflow from Linear to GitHub." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://paws.boo/" />
+    <link rel="preload" href="/fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin />
+  </head>
+  <body>
+    <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="paw" viewBox="0 0 40 40"><ellipse cx="10" cy="13" rx="4" ry="6" transform="rotate(-25 10 13)"/><ellipse cx="19" cy="8" rx="4" ry="6"/><ellipse cx="29" cy="12" rx="4" ry="6" transform="rotate(25 29 12)"/><ellipse cx="34" cy="21" rx="3.5" ry="5" transform="rotate(30 34 21)"/><path d="M9 31c0-6 7-14 12-14s12 9 12 14c0 8-8 3-12 3s-12 5-12-3Z"/></symbol>
+      <symbol id="linear" viewBox="0 0 24 24"><path d={siLinear.path}/></symbol>
+      <symbol id="claude" viewBox="0 0 24 24"><path d={siClaude.path}/></symbol>
+      <symbol id="github" viewBox="0 0 24 24"><path d={siGithub.path}/></symbol>
+      <symbol id="arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+      <symbol id="issue" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6m-6 4h6m-6 4h4"/></symbol>
+      <symbol id="code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-14-2 16"/></symbol>
+      <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 6"/></symbol>
+      <symbol id="branch" viewBox="0 0 24 24"><circle cx="7" cy="5" r="3"/><circle cx="7" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M7 8v8m11-8c0 5-11 3-11 8"/></symbol>
+    </svg>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="desktop">
+      <header class="navigation">
+        <a class="brand" href="/" aria-label="Paws home"><svg aria-hidden="true"><use href="#paw" /></svg>paws</a>
+        <nav aria-label="Main navigation">
+          <a href="#how-it-works">How it works</a>
+          <a href={setup}>Get started</a>
+          <a href={repo}>GitHub <span aria-hidden="true">↗</span></a>
+        </nav>
+      </header>
+      <main id="main">
+        <section class="window hero" aria-labelledby="hero-title">
+          <div class="titlebar"><span>paws.boo / your local coding companion</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div>
+          <div class="hero-content">
+            <div class="hero-copy">
+              <h1 id="hero-title">Less babysitting.<br />More shipping.</h1>
+              <p class="intro">Delegate a Linear issue. Paws works with your coding agent, verifies with Closeout, and opens a GitHub pull request.</p>
+              <div class="actions"><a class="button primary" href={setup}>Get started <svg aria-hidden="true"><use href="#arrow" /></svg></a><a class="button secondary" href="#how-it-works">See how it works</a></div>
+              <div class="terminal">
+                <div class="titlebar"><span>terminal</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div>
+                <div class="terminal-content"><code><span class="prompt">$</span> bun run paws setup<br /><span class="terminal-note">Connect your tools.<br />Give your issues a good home.</span><br /><span class="cursor" aria-hidden="true">_</span></code><img src="/images/sleeping-pup.png" width="1536" height="1024" alt="" /></div>
+              </div>
+              <p class="local-note">Runs on your machine. Naps optional.</p>
+            </div>
+            <div class="workflow-window">
+              <div class="titlebar"><span>Illustrative workflow</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div>
+              <div class="workflow-content">
+                <div class="example-issue"><svg aria-hidden="true"><use href="#issue" /></svg><div><h2>Add dark mode</h2><p>PAWS-123 · example issue</p></div></div>
+                <ol class="workflow">
+                  {stages.map((stage, index) => <li><span class:list={["stage-icon", `stage-${index}`]}><svg aria-hidden="true"><use href={`#${stage.symbol}`} /></svg></span><div><h3>{stage.name}</h3><p>{stage.detail}</p></div><span class="complete"><svg aria-label="Complete" role="img"><use href="#check" /></svg></span></li>)}
+                </ol>
+                <div class="workflow-end"><span class="end-dot" aria-hidden="true"></span><div><strong>Good work. Ready to review.</strong><p>You’re still in the loop.</p></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <div class="tool-dock" aria-label="Works with your tools"><span><svg class="tool-logo" aria-hidden="true"><use href="#linear" /></svg>Linear</span><span><svg class="tool-logo claude-logo" aria-hidden="true"><use href="#claude" /></svg>Claude Code /<br />Codex / Grok</span><span><svg aria-hidden="true"><use href="#check" /></svg>Closeout</span><span><svg class="tool-logo" aria-hidden="true"><use href="#github" /></svg>GitHub</span></div>
+        <section id="how-it-works" class="window how" aria-labelledby="how-title">
+          <div class="titlebar"><span>workflow / from issue to pull request</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div>
+          <div class="section-content">
+            <h2 id="how-title">A good home for your issues.</h2>
+            <p class="section-intro">You pick the work. Paws keeps it moving.<br />Same tools, a little less tab-juggling.</p>
+            <div class="workflow-explorer">
+              <div class="stage-controls" aria-label="Explore the workflow">{stages.map((stage, index) => <button type="button" data-stage={index} aria-pressed={index === 0} aria-controls="stage-description"><span class="step-number">{index + 1}</span>{stage.name}<svg aria-hidden="true"><use href="#arrow" /></svg></button>)}</div>
+              <div class="stage-description" id="stage-description" aria-live="polite" aria-atomic="true"><h3 id="stage-title">Start with an issue.</h3><p id="stage-copy">{stages[0]?.description}</p><a id="stage-link" href={`${repo}/blob/main/docs/linear-modes.md`}>Read the Linear guide <svg aria-hidden="true"><use href="#arrow" /></svg></a></div>
+            </div>
+            <noscript><ol class="no-script-stages">{stages.slice(1).map(stage => <li><h3>{stage.name}</h3><p>{stage.description}</p></li>)}</ol></noscript>
+          </div>
+        </section>
+        <section class="local-section" aria-labelledby="local-title"><div class="local-copy"><h2 id="local-title">Your machine.<br />Your agent.<br />Your call.</h2><p>Paws coordinates the coding tools you already use. Choose Claude Code, Codex, or Grok, keep the work local, and follow along in Linear and GitHub.</p><a href={`${repo}/blob/main/docs/smoke-test.md`}>Take a closer look <svg aria-hidden="true"><use href="#arrow" /></svg></a></div><div class="window setup-window"><div class="titlebar"><span>getting-started.txt</span><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div></div><div class="setup-content"><h3>Make yourself at home.</h3><p>Install Bun 1.4 or newer, clone the repo, then connect your tools.</p><pre><code>bun install
+bun run paws setup
+bun run paws doctor
+bun run paws</code></pre><a class="button primary" href={setup}>Open the setup guide <svg aria-hidden="true"><use href="#arrow" /></svg></a><p class="setup-note">Linear + GitHub + your coding agent.</p></div></div></section>
+      </main>
+      <footer><a class="brand" href="/" aria-label="Paws home"><svg aria-hidden="true"><use href="#paw" /></svg>paws</a><p>A little help. A lot of good work.</p><a href={repo}>Find us on GitHub <svg aria-hidden="true"><use href="#arrow" /></svg></a><span>paws.boo</span></footer>
+    </div>
+    <script define:vars={{ stages, repo }}>
+      const titles = ["Start with an issue.", "Your agent gets to work.", "Check. Fix. Check again.", "A pull request, not a loose end."];
+      const links = ["/blob/main/docs/linear-modes.md", "#setup", "/blob/main/docs/smoke-test.md", "/blob/main/docs/github-login.md"];
+      const labels = ["Read the Linear guide", "Choose your coding agent", "Explore verification", "Read the GitHub guide"];
+      const buttons = document.querySelectorAll("[data-stage]");
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const index = Number(button.dataset.stage);
+          const stage = stages[index];
+          if (!stage) return;
+          buttons.forEach((other) => other.setAttribute("aria-pressed", String(other === button)));
+          document.getElementById("stage-title").textContent = titles[index];
+          document.getElementById("stage-copy").textContent = stage.description;
+          const link = document.getElementById("stage-link");
+          link.href = repo + links[index];
+          link.firstChild.textContent = labels[index] + " ";
+        });
+      });
+    </script>
+  </body>
+</html>

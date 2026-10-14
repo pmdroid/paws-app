@@ -1,3 +1,4 @@
+import type { AppBotIdentity } from "../core";
 import { join } from "node:path";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import {
@@ -87,9 +88,26 @@ export async function loginGitHubApp(options: LoginIO): Promise<{ login: string;
     accessible.status !== 200 ||
     !isRecord(accessible.body) ||
     !isRecord(accessible.body.permissions) ||
-    accessible.body.permissions.push !== true
+    accessible.body.permissions.admin !== true ||
+    !isRecord(accessible.body.owner)
   )
-    throw new Error(`The signed-in user must have push access to ${repo} through this GitHub App.`);
+    throw new Error(`The signed-in user must administer ${repo} through this GitHub App.`);
+  if (accessible.body.owner.type === "Organization") {
+    const membership = await client.request({
+      method: "GET",
+      path: `/user/memberships/orgs/${owner}`,
+      token: grant.accessToken,
+    });
+    if (
+      membership.status !== 200 ||
+      !isRecord(membership.body) ||
+      membership.body.state !== "active" ||
+      membership.body.role !== "admin"
+    )
+      throw new Error("GitHub organization installation authority is required.");
+  } else if (accessible.body.owner.type !== "User" || accessible.body.owner.id !== account.id) {
+    throw new Error("GitHub repository installation authority is required.");
+  }
   const installationId = String(installation.body.id);
   if (
     options.env?.GITHUB_APP_INSTALLATION_ID &&
@@ -130,7 +148,7 @@ export async function gitHubAppBot(input: {
   appId: string;
   privateKeyPem: string;
   token: string;
-}): Promise<{ login: string; id: number }> {
+}): Promise<AppBotIdentity> {
   const app = await input.client.request({
     method: "GET",
     path: "/app",
@@ -139,6 +157,10 @@ export async function gitHubAppBot(input: {
   if (
     app.status !== 200 ||
     !isRecord(app.body) ||
+    typeof app.body.id !== "number" ||
+    !Number.isSafeInteger(app.body.id) ||
+    app.body.id <= 0 ||
+    String(app.body.id) !== input.appId ||
     typeof app.body.slug !== "string" ||
     !/^[a-z0-9-]+$/.test(app.body.slug)
   )
@@ -153,12 +175,13 @@ export async function gitHubAppBot(input: {
     user.status !== 200 ||
     !isRecord(user.body) ||
     user.body.login !== login ||
+    user.body.type !== "Bot" ||
     typeof user.body.id !== "number" ||
     !Number.isSafeInteger(user.body.id) ||
     user.body.id <= 0
   )
     throw new Error("Could not read the GitHub App bot account.");
-  return { login, id: user.body.id };
+  return { appId: input.appId, login, id: user.body.id };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

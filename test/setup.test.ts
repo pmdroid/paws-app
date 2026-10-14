@@ -1000,6 +1000,10 @@ describe("paws setup github", () => {
           if (path === "/app")
             return Response.json({ client_id: "Iv1.real-client", slug: "paws-test" });
           if (path.endsWith("/installation")) return Response.json({ id: 22 });
+          if (path === "/repos/acme/widgets" && token === `Bearer ${SETUP_TOKEN}`)
+            return Response.json({ permissions: { admin: true }, owner: { type: "Organization" } });
+          if (path === "/user/memberships/orgs/acme")
+            return Response.json({ state: "active", role: "admin" });
           if (path === "/app/installations/22/access_tokens")
             return Response.json(
               {

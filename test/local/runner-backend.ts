@@ -136,7 +136,12 @@ export async function probeRunnerBackend(
   let importWrongHead = false;
   const artifacts = createRunnerArtifactStore({ root: join(root, "artifact-store"), work });
   let published = false;
+  const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
   const backendOptions: Parameters<typeof createRemoteAgentRunner>[0] = {
+    async checkpointBot(repository) {
+      assert.equal(repository, "fixture/repository");
+      return bot;
+    },
     artifacts,
     db,
     work,
@@ -294,6 +299,7 @@ export async function probeRunnerBackend(
     const assigned = await next();
     assert.equal(assigned.type, "run");
     if (assigned.type !== "run") throw new Error("Unexpected command");
+    assert.deepEqual(assigned.checkpointBot, bot);
     assert.equal(assigned.itemId, first.id);
     assert.equal(assigned.runId, first.run.id);
     assert.equal(assigned.repository.baseSha, base);

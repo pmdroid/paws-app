@@ -37,6 +37,8 @@ export type SerialMergeInput = {
   /** Observability for the host. Do not log the token. */
   onCredential?: (purpose: "push" | "merge", token: string) => void;
   commitTitle?: string;
+  commitMessage?: string;
+  commitEnv?: Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
@@ -169,7 +171,11 @@ async function pushRebased(
   try {
     await fetchMain(input.worktree, url, minted, gitExec);
     const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
-    const rebase = await rebaseOnto(input.worktree, UPSTREAM_MAIN_REF, gitExec);
+    const commitExec: GitExec = input.commitEnv
+      ? (args, options) =>
+          gitExec(args, { ...options, env: { ...options.env, ...input.commitEnv } })
+      : gitExec;
+    const rebase = await rebaseOnto(input.worktree, UPSTREAM_MAIN_REF, commitExec);
     if (rebase !== "ok") {
       return {
         ok: false,
@@ -281,7 +287,7 @@ async function squash(
       merge_method: "squash",
       sha: head,
       commit_title: input.commitTitle ?? input.issue,
-      commit_message: `${fixesLine(input.issue)}\n\n${summary.trim()}\n`,
+      commit_message: `${fixesLine(input.issue)}\n\n${(input.commitMessage ?? summary).trim()}\n`,
     },
   });
 }

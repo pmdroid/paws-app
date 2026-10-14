@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { AskTeamHook, AgentIdentity } from "../acp";
 import {
   executeItem,
+  validateCandidateAttribution,
   git,
   removeWorktree,
   resolveAdapter,
@@ -32,6 +33,12 @@ import {
 } from "../closeout";
 import {
   CommandBus,
+  policyCoauthors,
+  commitIdentityEnv,
+  appBotCommitIdentity,
+  policyPullRequestCredit,
+  commitPolicyMessage,
+  type GitCommitPolicy,
   JOB_KIND,
   transitionEpic,
   type Clock,
@@ -92,6 +99,8 @@ import {
   markRun,
   saveCheckpoint,
   saveRunResult,
+  saveRunCommitPolicy,
+  getItemRunCommitPolicy,
   bindLinearSessionTask,
   ensureLinearSession,
   activateLinearItem,
@@ -122,6 +131,7 @@ import {
 import { intakeDelegatedIssue, readyItems, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
+  EpicSnapshot,
   ProgressUpdate,
   TrackerAdapter,
   TrackerRequestOptions,
@@ -189,6 +199,7 @@ export type OrchestratorOptions = {
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
+  authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
@@ -208,6 +219,7 @@ export type OrchestratorOptions = {
   ) => Promise<string>;
   github?: GitHubBinding | null;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
+  commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
@@ -624,14 +636,24 @@ export class Orchestrator {
               ),
           }
         : tracker;
-    let intakeTracker = progressTracker;
+    let authorizedSnapshot: EpicSnapshot | null = null;
+    const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
+        throw new Error("The Linear assignment changed before intake.");
+      authorizedSnapshot = snapshot;
+      return snapshot;
+    };
+    let intakeTracker = {
+      ...progressTracker,
+      loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
+    };
     const classification =
       this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
         ? await this.taskPlanner.plan({
             taskKey,
             sessionId,
             request: async (signal) => {
-              const snapshot = await tracker.loadEpic(issueId);
+              const snapshot = authorizeSnapshot(await tracker.loadEpic(issueId));
               signal.throwIfAborted();
               intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
               await this.hydrateLinearContext(sessionId, signal);
@@ -653,7 +675,11 @@ export class Orchestrator {
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
-      isCurrent,
+      isCurrent: () =>
+        isCurrent() &&
+        (!sessionId ||
+          authorizedSnapshot === null ||
+          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false),
       onAccepted: (accepted) => {
         immediate(this.db, () => {
           if (redirect) {
@@ -1498,6 +1524,16 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     assertCurrent: () => void = () => {},
   ): Promise<CloseoutVerdict> {
+    const policy = await this.commitPolicy(item);
+    if (policy)
+      await validateCandidateAttribution(
+        worktree,
+        base,
+        head,
+        policy,
+        undefined,
+        this.signalForItem(item.id),
+      );
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
     const deps = this.agentDeps(item);
@@ -1568,6 +1604,15 @@ export class Orchestrator {
           } finally {
             activity.flush();
           }
+          if (result.ok && policy)
+            await validateCandidateAttribution(
+              worktree,
+              base,
+              result.head,
+              policy,
+              undefined,
+              deps.signal,
+            );
           if (result.ok && !this.stopped(item.id)) {
             sessionProgress?.phase("verifying");
             report(
@@ -1808,6 +1853,7 @@ export class Orchestrator {
     if (!candidate) return;
     const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
     const summary = readString(payload, "summary") ?? "Closeout accepted.";
+    const policy = await this.commitPolicy(item);
     if (this.stopped(item.id)) return;
     if (!artifactPublicationReady(this.db, item.id)) {
       this.fail(
@@ -1820,7 +1866,7 @@ export class Orchestrator {
     this.sessionProgress(item)?.phase("publishing");
     const published = await publishAccepted({
       accepted: true,
-      evidence: summary,
+      evidence: summary + (policy ? `\n\n${policyPullRequestCredit(policy)}` : ""),
       worktree,
       issue: item.linearIdentifier,
       branchKey: itemPathId(item),
@@ -1861,6 +1907,8 @@ export class Orchestrator {
       owner: repository.owner,
       repo: repository.repo,
       prNumber: published.pull.number,
+      commitMessage: policy ? commitPolicyMessage(summary, policy) : undefined,
+      commitEnv: policy ? commitIdentityEnv(appBotCommitIdentity(policy.bot)) : undefined,
       appId: github.appId,
       installationId: github.installationId,
       privateKeyPem: github.privateKeyPem,
@@ -3414,7 +3462,16 @@ export class Orchestrator {
       await durableConversation(this.db, sourceItemId);
       saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
     }
-    const runner = await durableConversation(this.db, item.id, this.remoteAgentForItem(item.id));
+    const backend = this.remoteAgentForItem(item.id) ?? runAgent;
+    const runner = await durableConversation(this.db, item.id, async (input) => {
+      const policy =
+        getTaskMode(this.db, item.id) === "code" &&
+        input.role === "implementer" &&
+        !input.prepareOnly
+          ? await this.commitPolicy(item)
+          : undefined;
+      return backend({ ...input, commitPolicy: policy });
+    });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
       applyLinearTurns(
@@ -3424,6 +3481,32 @@ export class Orchestrator {
         item.id,
       );
     return runner;
+  }
+
+  private async commitPolicy(item: WorkItemRecord): Promise<GitCommitPolicy | undefined> {
+    if (!this.options.commitPolicyForItem) return undefined;
+    const current = getWorkItem(this.db, item.id);
+    if (!current?.currentRunId) throw new Error("Attribution run is missing");
+    const prior =
+      getRun(this.db, current.currentRunId)?.checkpoint?.commitPolicy ??
+      getItemRunCommitPolicy(this.db, item.id);
+    const resolved = await this.options.commitPolicyForItem(current);
+    if (
+      getWorkItem(this.db, item.id)?.currentRunId !== current.currentRunId ||
+      this.signalForItem(item.id)?.aborted
+    )
+      throw new Error("Attribution run changed while resolving identities");
+    if (!resolved) throw new Error("Run attribution authority is unavailable");
+    if (prior && resolved && JSON.stringify(prior) !== JSON.stringify(resolved))
+      throw new Error(
+        "Run attribution authority changed; restore the snapshotted lead and steerer or start a new task.",
+      );
+    const policy = prior ?? resolved;
+    if (policy) {
+      policyCoauthors(policy);
+      saveRunCommitPolicy(this.db, current.currentRunId, policy);
+    }
+    return policy;
   }
 
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
@@ -3441,7 +3524,15 @@ export class Orchestrator {
         saveConversation(this.db, item.id, stored.entries, stored.transcript, true);
       },
       signal: this.signalForItem(item.id),
-      promptRunner: this.conversations.get(item.id),
+      promptRunner: async (input) => {
+        const runner =
+          this.conversations.get(item.id) ?? this.remoteAgentForItem(item.id) ?? runAgent;
+        const policy =
+          input.role === "implementer" && !input.prepareOnly
+            ? await this.commitPolicy(item)
+            : undefined;
+        return runner({ ...input, commitPolicy: policy });
+      },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
       launch: this.launchAgent.bind(this),

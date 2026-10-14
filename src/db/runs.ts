@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { Checkpoint, RunKind, RunStatus } from "../core";
+import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
 
 export type StoredRun = {
   id: string;
@@ -103,4 +103,24 @@ function mapRun(row: RunSql): StoredRun {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitPolicy): void {
+  const run = getRun(db, id);
+  if (!run) throw new Error("Attribution run is missing");
+  if (
+    run.checkpoint?.commitPolicy &&
+    JSON.stringify(run.checkpoint.commitPolicy) !== JSON.stringify(policy)
+  )
+    throw new Error("Run attribution snapshot cannot change");
+  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
+    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), commitPolicy: policy }),
+    id,
+  ]);
+}
+
+export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitPolicy | undefined {
+  return listRuns(db, itemId)
+    .toReversed()
+    .find((run) => run.checkpoint?.commitPolicy)?.checkpoint?.commitPolicy;
 }
