@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import { parse, YAMLParseError } from "yaml";
+import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
   PolicyDocument,
@@ -251,9 +251,7 @@ function expectSeverity(value: unknown): Severity {
 }
 
 function readSchema(): AnySchema {
-  const value: unknown = JSON.parse(
-    readFileSync(new URL("../schema/policy.schema.json", import.meta.url), "utf8"),
-  );
+  const value: unknown = policySchema;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("policy schema is not an object");
   }

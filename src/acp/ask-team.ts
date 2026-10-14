@@ -47,6 +47,12 @@ export interface AskTeamBridge {
 }
 
 export function askTeamMcpEntry(): { command: string; args: string[] } {
+  if (!process.execPath.endsWith("/bun")) {
+    return {
+      command: "/opt/paws-runner/bin/bun",
+      args: ["--no-env-file", "/opt/paws-runner/current/src/acp/ask-team-mcp.ts"],
+    };
+  }
   return {
     command: process.execPath,
     args: [fileURLToPath(new URL("./ask-team-mcp.ts", import.meta.url))],

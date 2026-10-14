@@ -28,8 +28,6 @@ def run(arguments, success=True):
 
 
 def provision_tools():
-    shutil.copyfile(ROOT / "node", "/usr/bin/node")
-    pathlib.Path("/usr/bin/node").chmod(0o755)
     loaders = list((ROOT / "host-runtime").glob("ld-linux-*.so.*"))
     if len(loaders) != 1:
         raise RuntimeError("Expected one native Linux dynamic loader")
@@ -91,23 +89,6 @@ def main():
         manifest.write_bytes(manifest.read_bytes() + b" ")
         install(False)
         sign("0.1.1")
-        private_node = pathlib.Path("/opt/private-proof-node")
-        private_node.mkdir(mode=0o700)
-        installed_node = pathlib.Path("/usr/bin/node")
-        installed_node.rename(private_node / "node")
-        installed_node.symlink_to(private_node / "node")
-        install(False)
-        if private_node.stat().st_mode & 0o7777 != 0o700 or pathlib.Path("/var/lib/paws-runner-install").exists():
-            raise RuntimeError("Prerequisite checks changed private directories or installation state")
-        installed_node.unlink()
-        (private_node / "node").rename(installed_node)
-        private_node.rmdir()
-        real_node = installed_node.read_bytes()
-        installed_node.write_text("#!/bin/sh\nprintf 'v18.20.4\n'\n")
-        install(False)
-        installed_node.write_bytes(real_node)
-        if pathlib.Path("/var/lib/paws-runner-install").exists():
-            raise RuntimeError("Unsupported Node version changed installation state")
         flock = pathlib.Path("/usr/bin/flock")
         hidden_flock = pathlib.Path("/usr/bin/paws-proof-flock")
         flock.rename(hidden_flock)
@@ -133,6 +114,9 @@ def main():
             raise RuntimeError("Fixed release pointer is incorrect")
         if run(["/opt/paws-runner/bin/bun", "--version"]).strip() != "1.4.2":
             raise RuntimeError("Pinned installed runtime failed")
+        runner_path = pathlib.Path("/opt/paws-runner/bin/paws-runner")
+        if not runner_path.is_symlink() or os.readlink(runner_path) != "../current/bin/paws-runner" or runner_path.read_bytes()[:4] != b"\x7fELF":
+            raise RuntimeError("Compiled runner is not installed")
         state_path = pathlib.Path("/var/lib/paws-runner-install/release.json")
         installed = state_path.read_bytes()
         current_pointer = pathlib.Path("/opt/paws-runner/current")
@@ -146,7 +130,7 @@ def main():
             for member in incoming:
                 content = incoming.extractfile(member)
                 if member.name == "bin/bun":
-                    binary = (ROOT / "node").read_bytes()
+                    binary = pathlib.Path("/usr/bin/python3").read_bytes()
                     member.size = len(binary)
                     outgoing.addfile(member, io.BytesIO(binary))
                 else:
@@ -360,7 +344,7 @@ module.main()
         for name in ("claude-agent-acp", "codex-acp", "grok"):
             path = pathlib.Path("/opt/paws-runner/current/node_modules/.bin") / name
             content = path.read_text()
-            if path.is_symlink() or "exec /usr/bin/node '/opt/paws-runner/current/node_modules/" not in content:
+            if path.is_symlink() or "exec /opt/paws-runner/bin/bun --no-env-file '/opt/paws-runner/current/node_modules/" not in content:
                 raise RuntimeError("Adapter launcher does not preserve its trusted package path")
         runtime_path = pathlib.Path("/opt/paws-runner/bin/bun")
         if not runtime_path.is_symlink() or os.readlink(runtime_path) != "../current/bin/bun" or hashlib.sha256(runtime_path.read_bytes()).hexdigest() != candidate_runtime_sha or run([str(runtime_path), "--version"]).strip() != "1.4.2":
@@ -374,6 +358,13 @@ module.main()
             raise RuntimeError("Rejected runtime pointer changed release trust state")
         runtime_path.unlink()
         runtime_path.symlink_to("../current/bin/bun")
+        runner_path.unlink()
+        runner_path.symlink_to("../releases/0.1.1/bin/paws-runner")
+        install(False)
+        if state_path.read_bytes() != installed_state:
+            raise RuntimeError("Rejected runner pointer changed release trust state")
+        runner_path.unlink()
+        runner_path.symlink_to("../current/bin/paws-runner")
         for provider in ("claude", "codex"):
             pointer = pathlib.Path("/opt/paws-runner/bin") / provider
             pointer.unlink()
@@ -386,7 +377,7 @@ module.main()
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "privatePrerequisiteUnchanged": True, "unsupportedNodeRejected": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "checkUid": check.pw_uid, "verifierFingerprint": first["verifierIdentity"]["fingerprint"], "verifierIdentityPreserved": True, "nonrootPrivateVerifierKeyDenied": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "bundledProviderPointersRecovered": True, "changedProviderPointersRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "checkUid": check.pw_uid, "verifierFingerprint": first["verifierIdentity"]["fingerprint"], "verifierIdentityPreserved": True, "nonrootPrivateVerifierKeyDenied": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "bundledProviderPointersRecovered": True, "changedProviderPointersRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
         print(json.dumps(observations))
 
 
