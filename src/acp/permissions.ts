@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export interface GuardContext {
+  hostAccess?: boolean;
   worktree: string;
   home: string;
   pawsRoot: string;
@@ -47,6 +48,7 @@ export function isInside(parent: string, child: string): boolean {
 }
 
 export function decidePermission(subject: PermissionSubject, ctx: GuardContext): GuardDecision {
+  if (ctx.hostAccess) return { allow: true, reason: "runner user access" };
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
@@ -135,6 +137,7 @@ function localSkillCommandPaths(subject: PermissionSubject, ctx: GuardContext): 
 }
 
 export function classifyPath(input: string, ctx: GuardContext): PathClass {
+  if (ctx.hostAccess) return { kind: "inside" };
   const candidate = lexicalPath(input, ctx);
   if (isInside(ctx.worktree, candidate)) {
     if (escapesWorktree(candidate, ctx.worktree)) {

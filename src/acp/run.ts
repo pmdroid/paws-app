@@ -143,6 +143,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   const home = options.home ?? homedir();
   const guard: GuardContext = {
+    hostAccess: options.hostAccess,
     worktree: options.worktreePath,
     home,
     pawsRoot: options.pawsRoot,

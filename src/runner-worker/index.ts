@@ -3,7 +3,9 @@ import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   closeSync,
-  readFileSync,
+  chmodSync,
+  cpSync,
+  readdirSync,
   constants,
   fchmodSync,
   fchownSync,
@@ -107,39 +109,7 @@ export async function executeRunnerCommand(
 ): Promise<RunnerWorkerResult> {
   const job = RunnerJobSchema.parse(options.job);
   const command = job.command;
-  if (command.memberId) {
-    if (process.pid !== 1) throw new Error("Member execution requires a private process namespace");
-    const privileges = new Map(
-      readFileSync("/proc/self/status", "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => line.split(":").map((value) => value.trim()) as [string, string]),
-    );
-    if (
-      privileges.get("NoNewPrivs") !== "1" ||
-      ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].some(
-        (name) => !/^0+$/.test(privileges.get(name) ?? ""),
-      )
-    )
-      throw new Error("Member execution must have no capabilities");
-    for (const [kind, identity] of [
-      ["uid", process.getuid!()],
-      ["gid", options.resultsGid],
-    ] as const) {
-      const mappings = readFileSync(`/proc/self/${kind}_map`, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => line.trim().split(/\s+/).map(Number));
-      if (
-        mappings.length !== 2 ||
-        !mappings.every(
-          ([inside, outside, length]) =>
-            inside === outside && length === 1 && (inside === 0 || inside === identity),
-        )
-      )
-        throw new Error("Member execution requires a private user namespace");
-    }
-  }
+  if (process.getuid?.() === 0) throw new Error("Runner agents must run as a non-root user");
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
   if (
@@ -150,6 +120,10 @@ export async function executeRunnerCommand(
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
+  for (const provider of [".codex", ".claude"]) {
+    mkdirSync(join(options.home, provider), { recursive: true, mode: 0o700 });
+    chmodSync(join(options.home, provider), 0o700);
+  }
   options.signal?.throwIfAborted();
   for (const [name, kind] of [
     ["events.jsonl", "journal"],
@@ -241,24 +215,21 @@ export async function executeRunnerCommand(
         closeSync(directory);
       }
       if (options.repositorySnapshot) {
-        const mounted = openSync(
-          join(worktree, "repository"),
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-        );
-        let source: number | undefined;
-        try {
-          source = openSync(
-            options.repositorySnapshot,
-            constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-          );
-          const target = fstatSync(mounted);
-          const expected = fstatSync(source);
-          if (target.dev !== expected.dev || target.ino !== expected.ino)
-            throw new Error("Runner task repository mount mismatch");
-        } finally {
-          closeSync(mounted);
-          if (source !== undefined) closeSync(source);
+        const repositoryPath = join(worktree, "repository");
+        cpSync(options.repositorySnapshot, repositoryPath, {
+          recursive: true,
+          force: false,
+          errorOnExist: true,
+        });
+        function makeWritable(path: string): void {
+          const info = lstatSync(path);
+          if (info.isDirectory()) {
+            chmodSync(path, 0o700);
+            for (const name of readdirSync(path)) makeWritable(join(path, name));
+          } else if (info.isFile()) chmodSync(path, 0o600 | (info.mode & 0o111));
+          else throw new Error("Invalid runner repository entry");
         }
+        makeWritable(repositoryPath);
       }
     }
     const env = {
@@ -381,6 +352,7 @@ export async function executeRunnerCommand(
     });
     const run = await runAgent({
       ...options.launch,
+      hostAccess: true,
       skillsRoot,
       env: agentEnv,
       checkpointEnv: env,
@@ -629,22 +601,7 @@ export async function runRunnerWorker(options: {
     options.results.agentUid === options.spool.runnerUid
   )
     throw new Error("Runner worker must use the separate agent identity");
-  const mapped = (kind: "uid" | "gid", host: number) => {
-    for (const line of readFileSync(`/proc/self/${kind}_map`, "utf8").trim().split("\n")) {
-      const [inside, outside, length] = line.trim().split(/\s+/).map(Number) as [
-        number,
-        number,
-        number,
-      ];
-      if (host >= outside && host - outside < length) return inside + host - outside;
-    }
-    return 65534;
-  };
-  const spool = {
-    ...options.spool,
-    runnerUid: mapped("uid", options.spool.runnerUid),
-    agentGid: mapped("gid", options.spool.agentGid),
-  };
+  const spool = options.spool;
   const job = readRunnerJob(spool, options.executionId);
   return executeRunnerCommand({
     job,

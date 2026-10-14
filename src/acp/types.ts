@@ -80,6 +80,7 @@ export interface RunAgentOptions {
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
   readOnly?: boolean;
+  hostAccess?: boolean;
   prepareOnly?: boolean;
   role: AgentRole;
   itemId: string;
