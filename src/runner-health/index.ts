@@ -1,3 +1,4 @@
+import { authorizeRunnerAccount } from "../runner-accounts";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -75,6 +76,9 @@ export function createRunnerHealth(options: {
           id: commandId,
           runnerId,
           workspaceId: runner.workspaceId,
+          ...(db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runnerId)
+            ? { memberId: principal.userId }
+            : {}),
           issuedAt: at,
           expiresAt,
           ...parsed,
@@ -100,6 +104,7 @@ export function createRunnerHealth(options: {
         )
           throw new Error("Runner identity is unavailable");
         const assigned = command(result.commandId, runnerId);
+        authorizeRunnerAccount(db, assigned);
         const at = now();
         if (
           assigned.workspaceId !== runner.workspaceId ||
@@ -149,6 +154,7 @@ export function createRunnerHealth(options: {
         !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active
       )
         throw new Error("Runner identity is unavailable");
+      authorizeRunnerAccount(db, command(commandId, runnerId));
       if (command(commandId, runnerId).expiresAt <= now())
         throw new Error("Runner health command has expired");
       const row = db

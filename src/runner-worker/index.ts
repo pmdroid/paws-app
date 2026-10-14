@@ -1,6 +1,7 @@
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   closeSync,
+  readFileSync,
   constants,
   fchmodSync,
   fchownSync,
@@ -103,6 +104,26 @@ export async function executeRunnerCommand(
 ): Promise<RunnerWorkerResult> {
   const job = RunnerJobSchema.parse(options.job);
   const command = job.command;
+  if (command.memberId) {
+    if (process.pid !== 1) throw new Error("Member execution requires a private process namespace");
+    for (const [kind, identity] of [
+      ["uid", process.getuid!()],
+      ["gid", options.resultsGid],
+    ] as const) {
+      const mappings = readFileSync(`/proc/self/${kind}_map`, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/).map(Number));
+      if (
+        mappings.length !== 2 ||
+        !mappings.every(
+          ([inside, outside, length]) =>
+            inside === outside && length === 1 && (inside === 0 || inside === identity),
+        )
+      )
+        throw new Error("Member execution requires a private user namespace");
+    }
+  }
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
   if (
@@ -313,6 +334,12 @@ export async function executeRunnerCommand(
       PATH: "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin",
       ...options.launch?.env,
       HOME: options.home,
+      ...(command.memberId
+        ? {
+            CODEX_HOME: join(options.home, ".codex"),
+            CLAUDE_CONFIG_DIR: join(options.home, ".claude"),
+          }
+        : {}),
     });
     const run = await runAgent({
       ...options.launch,
@@ -564,14 +591,30 @@ export async function runRunnerWorker(options: {
     options.results.agentUid === options.spool.runnerUid
   )
     throw new Error("Runner worker must use the separate agent identity");
-  const job = readRunnerJob(options.spool, options.executionId);
+  const mapped = (kind: "uid" | "gid", host: number) => {
+    for (const line of readFileSync(`/proc/self/${kind}_map`, "utf8").trim().split("\n")) {
+      const [inside, outside, length] = line.trim().split(/\s+/).map(Number) as [
+        number,
+        number,
+        number,
+      ];
+      if (host >= outside && host - outside < length) return inside + host - outside;
+    }
+    return 65534;
+  };
+  const spool = {
+    ...options.spool,
+    runnerUid: mapped("uid", options.spool.runnerUid),
+    agentGid: mapped("gid", options.spool.agentGid),
+  };
+  const job = readRunnerJob(spool, options.executionId);
   return executeRunnerCommand({
     job,
-    inputs: readRunnerJobInputs(options.spool, options.executionId),
+    inputs: readRunnerJobInputs(spool, options.executionId),
     ...(job.command.type === "run" || job.command.type === "review"
-      ? { repositoryBundle: runnerRepositoryBundlePath(options.spool, options.executionId) }
+      ? { repositoryBundle: runnerRepositoryBundlePath(spool, options.executionId) }
       : job.command.type === "task" && job.command.repository
-        ? { repositorySnapshot: runnerTaskRepositoryPath(options.spool, options.executionId) }
+        ? { repositorySnapshot: runnerTaskRepositoryPath(spool, options.executionId) }
         : {}),
     outputDirectory: runnerResultDirectory(options.results, options.executionId),
     workRoot: job.command.type === "task" ? "/var/lib/paws-agent-tasks" : options.workRoot,
@@ -581,7 +624,7 @@ export async function runRunnerWorker(options: {
     async answer(requestId, signal) {
       while (true) {
         signal.throwIfAborted();
-        const answer = readRunnerAnswer(options.spool, options.executionId, requestId);
+        const answer = readRunnerAnswer(spool, options.executionId, requestId);
         if (answer) return { answer: answer.answer };
         await delay(250, undefined, { signal });
       }

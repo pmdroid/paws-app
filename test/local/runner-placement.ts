@@ -402,6 +402,58 @@ export async function probeRunnerPlacement(
       true,
       { persisted: true },
     );
+    const colleague = db
+      .query<{ id: string }, []>("SELECT id FROM workspace_user WHERE linear_user_id='colleague'")
+      .get()!.id;
+    db.run("UPDATE workspace_member SET active=1 WHERE user_id=?", [colleague]);
+    db.run(
+      "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES('own','claude','personal',1)",
+    );
+    const otherProvider: PlacementRequest = {
+      ...request,
+      profile: { agent: "claude", model: "implementation-model" },
+    };
+    assert((await ids(otherProvider)).includes("own"));
+    for (const userId of [owner, colleague])
+      db.run(
+        "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES('own',?,'codex',1,?)",
+        [userId, now],
+      );
+    assert(!(await ids(otherProvider)).includes("own"));
+    let selected = (await placement.candidates(request)).find((runner) => runner.id === "own");
+    assert.equal(selected?.memberId, owner);
+    lifecycle.issue.assigneeId = "colleague";
+    assert(!(await ids()).includes("own"));
+    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
+    selected = (await placement.candidates(request)).find((runner) => runner.id === "own");
+    assert.equal(selected?.memberId, colleague);
+    const personalCommand = await start("own");
+    const personalUsage = db
+      .query<{ owner: string; seat: string }, [string]>(
+        "SELECT owner_user_id AS owner,seat FROM runner_execution_usage WHERE command_id=?",
+      )
+      .get(personalCommand)!;
+    assert.equal(personalUsage.owner, colleague);
+    assert.equal(personalUsage.seat, "personal");
+    placement.finished({
+      commandId: personalCommand,
+      runnerId: "own",
+      finishedAt: now,
+      result: result(personalCommand, "implementation-model", {
+        errorMessage: "Rate limit exceeded; retry in 30 minutes",
+        stopReason: "error",
+      }),
+    });
+    assert(!(await ids()).includes("own"));
+    lifecycle.issue.assigneeId = "owner";
+    assert((await ids()).includes("own"));
+    db.run("UPDATE runner_member_account SET connected=0 WHERE user_id=?", [owner]);
+    assert(!(await ids()).includes("own"));
+    observe(
+      "Per-member accounts follow the assignee, host consent and individual quota without shared credential fallback",
+      true,
+      { owner, colleague },
+    );
   } finally {
     db.close();
   }
