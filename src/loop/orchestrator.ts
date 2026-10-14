@@ -1,3 +1,4 @@
+import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -2051,6 +2052,13 @@ export class Orchestrator {
             options,
             now: this.now(),
           });
+          const suggestions = suggestDecisions(this.db, opened.id, opened.body);
+          const decisionContext = suggestions
+            .map(
+              (decision) =>
+                `Saved decision: ${decision.statement}\nSource: ${decision.sourceUrl}\nConfirm: ${decision.value}`,
+            )
+            .join("\n\n");
           const current = getWorkItem(this.db, item.id);
           if (current?.state === "running") {
             applyWorkItemEvent(this.db, item.id, "blocking_question");
@@ -2069,8 +2077,17 @@ export class Orchestrator {
               id: opened.id,
               sessionId,
               questionId: opened.id,
-              body: elicitationBody(request.question, request.context),
-              options,
+              body: elicitationBody(
+                request.question,
+                [request.context, decisionContext].filter(Boolean).join("\n\n"),
+              ),
+              options: [
+                ...options,
+                ...suggestions.map((decision) => ({
+                  label: `Use saved decision: ${decision.statement.slice(0, 80)}`,
+                  value: decision.value,
+                })),
+              ],
             },
             now: this.now(),
           });
@@ -2105,7 +2122,7 @@ export class Orchestrator {
     redirect = false,
   ): Promise<"answered" | "redirect" | "rejected"> {
     const sessionId = event.sessionId;
-    const answer = event.body?.trim() ?? "";
+    let answer = event.body?.trim() ?? "";
     if (sessionId === null || answer === "") return "rejected";
     if (questionReplyConsumed(this.db, sessionId, event.dedupeKey)) return "rejected";
     const open = findOpenQuestion(this.db, sessionId);
@@ -2240,6 +2257,26 @@ export class Orchestrator {
     const outcome = immediate(this.db, () => {
       const item = getWorkItem(this.db, open.itemId);
       if (item?.state !== "awaiting_input") return "rejected" as const;
+      if (answer.startsWith("/paws decision")) {
+        try {
+          const confirmed = confirmDecision(this.db, open.id, answer, answeredBy, this.now());
+          if (confirmed === null)
+            throw new Error("This suggestion is invalid. Answer this question in your own words.");
+          answer = confirmed;
+          this.db.run(
+            "UPDATE linear_turn SET body=? WHERE session_id=? AND event_key=? AND state='pending'",
+            [answer, sessionId, event.dedupeKey],
+          );
+        } catch (error) {
+          this.post(
+            item,
+            "error",
+            error instanceof Error ? error.message : "Answer this question in your own words.",
+            `decision-rejected:${event.dedupeKey}`,
+          );
+          return "rejected" as const;
+        }
+      }
       if (
         answerQuestion(this.db, open.id, {
           answer,

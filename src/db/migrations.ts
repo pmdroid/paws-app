@@ -1314,4 +1314,34 @@ CREATE TABLE github_attribution_request (
 ) STRICT;
 `,
   },
+  {
+    id: "051_decision_memory",
+    sql: `
+CREATE TABLE decision_memory (
+ id TEXT PRIMARY KEY,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ question_id TEXT NOT NULL UNIQUE REFERENCES question(id),
+ statement TEXT NOT NULL,
+ scope_globs TEXT NOT NULL CHECK(json_valid(scope_globs)),
+ tags TEXT NOT NULL CHECK(json_valid(tags)),
+ revision INTEGER NOT NULL DEFAULT 1,
+ retired_at INTEGER,
+ saved_by TEXT NOT NULL REFERENCES workspace_user(id),
+ updated_by TEXT NOT NULL REFERENCES workspace_user(id),
+ updated_at INTEGER NOT NULL
+) STRICT;
+CREATE VIRTUAL TABLE decision_memory_search USING fts5(decision_id UNINDEXED, statement, tags);
+CREATE TABLE decision_suggestion (
+ id TEXT PRIMARY KEY,
+ question_id TEXT NOT NULL REFERENCES question(id),
+ decision_id TEXT NOT NULL REFERENCES decision_memory(id),
+ revision INTEGER NOT NULL,
+ statement TEXT NOT NULL,
+ accepted_by TEXT,
+ accepted_at INTEGER,
+ UNIQUE(question_id,decision_id)
+) STRICT;
+CREATE UNIQUE INDEX decision_suggestion_answer ON decision_suggestion(question_id) WHERE accepted_at IS NOT NULL;
+`,
+  },
 ];

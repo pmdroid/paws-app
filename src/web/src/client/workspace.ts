@@ -1,3 +1,4 @@
+import { initializeDecisions } from "./decisions";
 import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceIdentities } from "./workspace-identities";
@@ -208,6 +209,7 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   if (["owner", "admin", "member"].includes(session.role))
     initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "owner");
+  initializeDecisions(root, session.csrfToken, session.role !== "observer");
   if (["owner", "admin"].includes(session.role)) {
     await initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
