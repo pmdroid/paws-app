@@ -6,6 +6,10 @@ export const PAGES = {
     description: "Work delegated in Linear, verified and delivered by Paws.",
   },
   epics: { title: "Epics", description: "Related work delegated from Linear." },
+  projects: {
+    title: "Projects",
+    description: "Approve selected Linear issues and supervise delivery.",
+  },
   runs: {
     title: "Runs",
     description: "Inspect agent activity, execution controls, and verification output.",
@@ -39,7 +43,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "epics", "runs", "questions", "verdicts", "queue", "sessions"],
+    views: ["overview", "projects", "epics", "runs", "questions", "verdicts", "queue", "sessions"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;
