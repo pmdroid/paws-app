@@ -536,7 +536,24 @@ if __name__ == "__main__":
         if os.getpid() != 1:
             raise RuntimeError("Private PID namespace required")
         subprocess.run(["/usr/bin/mount", "-o", "remount,ro,nosuid,nodev,noexec", "/proc"], check=True)
-        os.execv("/usr/bin/setpriv", ["/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", *sys.argv[2:]])
+        os.execv("/usr/bin/setpriv", ["/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/python3", "-I", "-B", os.path.abspath(__file__), "member-home", *sys.argv[2:]])
+    elif len(sys.argv) > 2 and sys.argv[1] == "member-home":
+        if os.getpid() != 1:
+            raise RuntimeError("Private PID namespace required")
+        for name in (".codex", ".claude"):
+            path = "/var/lib/paws-agent/" + name
+            try:
+                os.mkdir(path, 0o700)
+            except FileExistsError:
+                pass
+            directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if os.fstat(directory).st_uid != os.getuid():
+                    raise ValueError("Unsafe provider home")
+                os.fchmod(directory, 0o700)
+            finally:
+                os.close(directory)
+        os.execv(sys.argv[2], sys.argv[2:])
     elif len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
         try:
             sys.exit(0 if check_broker().guard(sys.modules[__name__], sys.argv[2], sys.argv[1]) else 1)
