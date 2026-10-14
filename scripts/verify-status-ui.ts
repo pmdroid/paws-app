@@ -29,13 +29,6 @@ const server = Bun.serve({
       }
       return Response.json(settings);
     }
-    if (path === "/api/settings/agents/test")
-      return Response.json({
-        ok: true,
-        message: "Connected",
-        models: [{ id: "test-model", name: "Test model" }],
-        efforts: [{ id: "high", name: "High" }],
-      });
     if (path === "/api/runners")
       return Response.json({ setupRequired: true, workspaceReady: false, runners: [] });
     if (path === "/api/linear/sessions") return Response.json({ available: true, sessions: [] });
@@ -209,10 +202,12 @@ try {
     await page.getByText("Start Linear session", { exact: true }).click();
     await page.getByRole("textbox", { name: "Issue or comment thread" }).fill("ENG-123");
     await page.reload();
+    await page.getByText("Start Linear session", { exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Issue or comment thread" })).toHaveValue("");
     await navigate(page, "Runners", width);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
+    await expect(page.getByText("curl -fsSL https://get.paws.boo | sudo sh")).toBeVisible();
     await page.getByRole("button", { name: "Check setup", exact: true }).click();
     await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
     await navigate(page, "Agents", width);
@@ -224,11 +219,10 @@ try {
     await inherit.click();
     await expect(page.locator('input[name="0-implementer-inherit"]')).not.toBeChecked();
     await inherit.click();
-    await page.locator('[data-settings="test"][data-profile="defaults-implementer"]').click();
-    await expect(page.locator("#defaults-implementer-effort")).toBeEnabled();
-    await page.locator("#defaults-implementer-effort").selectOption("high");
+    await expect(page.getByRole("button", { name: "Test connection" })).toHaveCount(0);
+    await expect(page.locator('#agent-settings a[href="#/runners"]')).toBeVisible();
+    await page.locator("#defaults-implementer-effort").fill("high");
     await page.locator("#defaults-implementer-model").fill("ui-test-model");
-    await expect(page.locator("#defaults-implementer-effort")).toBeDisabled();
     await expect(page.locator("#defaults-implementer-effort")).toHaveValue("");
     await page.reload();
     await expect(page.locator("#defaults-implementer-model")).toHaveValue("");

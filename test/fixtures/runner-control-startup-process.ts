@@ -54,10 +54,12 @@ if (mode === "remote") {
   process.env.PAWS_CODEX_ACP = `${process.execPath} ${sentinel}`;
 }
 if (mode === "invalid-execution") {
+  source.PAWS_EXECUTION = "local";
+  assert.throws(() => startPaws(source), /remote runner/);
   source.PAWS_EXECUTION = "remtoe";
-  assert.throws(() => startPaws(source), /PAWS_EXECUTION must be local or remote/);
+  assert.throws(() => startPaws(source), /PAWS_EXECUTION must be remote/);
   assert(!existsSync(join(root, "paws.db")));
-  observe("unknown execution modes fail before opening production state", {
+  observe("local and unknown execution modes fail before opening production state", {
     databaseOpened: false,
   });
   console.log(JSON.stringify(observations));
@@ -485,45 +487,9 @@ try {
         );
       }
       if (mode === "remote") {
-        const checking = call<{ ok: boolean; models: unknown[] }>(
-          browserPort,
-          "/api/settings/agents/test",
-          { profile: { agent: "codex", model: "fixture-runner-model" } },
-          headers,
-        );
-        let commandId: string | undefined;
-        const deadline = Date.now() + 4000;
-        while (!commandId && Date.now() < deadline) {
-          const response = await call<{ commands: { payload: string }[] }>(
-            runnerPort,
-            "/v1/commands",
-            undefined,
-            {},
-            peer,
-          );
-          for (const envelope of response.body.commands) {
-            const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString());
-            if (command.type === "probe" && command.id !== health.body.commandId)
-              commandId = command.id;
-          }
-          if (!commandId) await Bun.sleep(10);
-        }
-        assert(commandId, "settings probe must dispatch through the remote command channel");
-        const result = {
-          ...healthResult,
-          executionId: workspaceId(),
-          commandId,
-          models: [{ id: "remote-fixture", name: "Remote fixture" }],
-        };
-        assert.equal((await call(runnerPort, "/v1/health", result, {}, peer)).status, 200);
-        const checked = await checking;
-        assert.equal(checked.status, 200);
-        assert.equal(checked.body.ok, true);
-        assert.deepEqual(checked.body.models, result.models);
-        assert(!existsSync(localAgent), "remote probes must never launch a local ACP adapter");
-        observe("normal remote startup routes agent settings probes through actual mTLS", {
-          remoteCommandObserved: true,
-          remoteModelsReturned: true,
+        assert(!existsSync(localAgent), "remote startup must not launch a local ACP adapter");
+        observe("remote startup does not launch a local agent from agent settings", {
+          localAgentLaunched: false,
         });
       }
       const renewed = await call(runnerPort, "/v1/certificate", { csr: key.csr }, {}, peer);

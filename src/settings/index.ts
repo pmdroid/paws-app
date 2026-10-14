@@ -1,2 +1,2 @@
 export { handleAgentSettingsRequest } from "./handler";
-export type { AgentConnectionResult, AgentSettingsOptions } from "./handler";
+export type { AgentSettingsOptions } from "./handler";

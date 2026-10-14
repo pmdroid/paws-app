@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeRunnerControlStartup } from "./local/runner-control-startup";
 
-test("normal startup preserves local mode and sends remote agent probes through mTLS", async () => {
+test("startup rejects local execution and serves runner control over HTTPS", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-runner-startup-"));
   const names: string[] = [];
   try {

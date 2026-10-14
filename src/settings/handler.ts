@@ -1,40 +1,26 @@
 import { timingSafeEqual } from "node:crypto";
 import {
   loadConfigFile,
-  parseAgentProfile,
   parseAgentSettings,
   readAgentSettings,
   writeAgentSettings,
-  type AgentProfile,
 } from "../config";
-
-export type AgentConnectionResult = {
-  ok: boolean;
-  agent: AgentProfile["agent"];
-  model: string | null;
-  models: { id: string; name: string }[];
-  effort?: string | null;
-  efforts?: { id: string; name: string }[];
-  message: string;
-};
 
 export type AgentSettingsOptions = {
   trustedOrigin?: string;
   configPath: string;
   csrfToken: string;
-  probe: (profile: AgentProfile, request: Request) => Promise<AgentConnectionResult>;
   repos?: string[];
 };
 
 const SETTINGS_PATH = "/api/settings/agents";
-const TEST_PATH = `${SETTINGS_PATH}/test`;
 
 export async function handleAgentSettingsRequest(
   request: Request,
   options: AgentSettingsOptions,
 ): Promise<Response | null> {
   const url = new URL(request.url);
-  if (url.pathname !== SETTINGS_PATH && url.pathname !== TEST_PATH) return null;
+  if (url.pathname !== SETTINGS_PATH) return null;
   if (!localRequest(request, options.trustedOrigin))
     return json({ error: "Agent settings are only available on the local Paws origin" }, 403);
   if (request.method === "GET" && url.pathname === SETTINGS_PATH) {
@@ -52,9 +38,7 @@ export async function handleAgentSettingsRequest(
       return json({ error: "Agent settings could not be read" }, 503);
     }
   }
-  const write = request.method === "PUT" && url.pathname === SETTINGS_PATH;
-  const probe = request.method === "POST" && url.pathname === TEST_PATH;
-  if (!write && !probe) return json({ error: "Method not allowed" }, 405);
+  if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
     return json({ error: "CSRF token missing" }, 403);
   let body: unknown;
@@ -63,47 +47,17 @@ export async function handleAgentSettingsRequest(
   } catch {
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
-  if (write) {
-    let settings;
-    try {
-      settings = parseAgentSettings(body);
-    } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : "Invalid agent settings" },
-        400,
-      );
-    }
-    try {
-      writeAgentSettings(options.configPath, settings);
-      return json(settings);
-    } catch {
-      return json({ error: "Agent settings could not be saved" }, 503);
-    }
-  }
-  let profile;
+  let settings;
   try {
-    if (
-      typeof body !== "object" ||
-      body === null ||
-      Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
-      !("profile" in body)
-    )
-      throw new Error("Expected one agent profile");
-    profile = parseAgentProfile(body.profile);
+    settings = parseAgentSettings(body);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Invalid agent profile" }, 400);
+    return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   try {
-    return json(await options.probe(profile, request));
+    writeAgentSettings(options.configPath, settings);
+    return json(settings);
   } catch {
-    return json({
-      ok: false,
-      agent: profile.agent,
-      model: profile.model,
-      models: [],
-      message: "The agent connection failed. Check its vendor login and try again.",
-    });
+    return json({ error: "Agent settings could not be saved" }, 503);
   }
 }
 
