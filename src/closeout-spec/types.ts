@@ -541,6 +541,7 @@ export interface CommandRunner {
 }
 
 export type ReviewRequest = {
+  checkoutExclusions?: readonly string[];
   item: ResolvedReview;
   candidate: CandidateIdentity;
   base: string;

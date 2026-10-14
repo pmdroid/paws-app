@@ -85,6 +85,60 @@ describe("closeout command runner", () => {
     }
   });
 
+  test("detached commands use configured exclusions despite source pattern tampering", async () => {
+    const fx = await fixture();
+    try {
+      fx.head = await commit(fx.repo, "large/file.txt", "excluded");
+      await exec("git", [
+        "-C",
+        fx.repo,
+        "sparse-checkout",
+        "set",
+        "--no-cone",
+        "--",
+        "/*",
+        "!/large/",
+        "!/README.md",
+      ]);
+      await run(
+        fx,
+        {
+          items: [
+            command("sparse", [
+              process.execPath,
+              "-e",
+              'const fs = require("node:fs"); process.exit(!fs.existsSync("large") && fs.existsSync("README.md") ? 0 : 1)',
+            ]),
+          ],
+        },
+        { checkoutExclusions: ["large"] },
+      );
+      expect(onlyRecord(fx.store).exec.exitCode).toBe(0);
+      expect(onlyRecord(fx.store).exec.dirty).toBe(false);
+      expect(existsSync(join(fx.repo, "large"))).toBe(false);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test("checkout filter failure blocks commands and removes the detached worktree", async () => {
+    const fx = await fixture();
+    try {
+      fx.head = await commit(fx.repo, ".gitattributes", "README.md filter=broken\n");
+      await exec("git", ["-C", fx.repo, "config", "filter.broken.smudge", "false"]);
+      await exec("git", ["-C", fx.repo, "config", "filter.broken.required", "true"]);
+      const result = await run(fx, {
+        items: [command("check", [process.execPath, "-e", "process.exit(0)"])],
+      });
+      expect(result.blocked).toBe("could not populate a worktree at the candidate commit");
+      expect(result.dispositions).toEqual([]);
+      const listed = (await exec("git", ["-C", fx.repo, "worktree", "list", "--porcelain"])).stdout;
+      expect(listed.split("\n").filter((line) => line.startsWith("worktree "))).toHaveLength(1);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   test("a non-zero exit is recorded and does not time out", async () => {
     const fx = await fixture();
     try {
@@ -659,7 +713,7 @@ function setupStep(
 function run(
   fx: Fixture,
   spec: { setup?: ResolvedSetup[]; items?: ResolvedPolicyPresent["items"]; retry?: RetryPolicy },
-  extra?: { env?: NodeJS.ProcessEnv },
+  extra?: { env?: NodeJS.ProcessEnv; checkoutExclusions?: readonly string[] },
 ): Promise<CloseoutRunResult> {
   return runCloseoutCommands({
     repo: fx.repo,
@@ -670,6 +724,7 @@ function run(
     evidence: fx.store,
     evidenceDir: fx.evidenceDir,
     home: fx.home,
+    checkoutExclusions: extra?.checkoutExclusions,
     ...(extra?.env ? { env: extra.env } : {}),
   });
 }

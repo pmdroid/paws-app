@@ -1,5 +1,7 @@
+import { loadConfigFile } from "../config";
+import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdir, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { git } from "./git";
 import { branchName, mirrorPath, worktreePath } from "./paths";
 
@@ -114,9 +116,14 @@ export async function createWorktree(options: {
   }
   const path = worktreePath(options.pawsRoot, options.itemId);
   const branch = branchName(options.itemId);
+  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
+  const patterns = exclusionPatterns(
+    config.checkoutProjects?.[`${options.owner}/${options.repo}`.toLowerCase()]?.exclude ?? [],
+  );
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 
   if (await isRegisteredWorktree(gitDir, path)) {
+    await checkoutPatterns(path, patterns);
     const startRef = (await resolveStartRef(gitDir, options.startRef)) ?? "HEAD";
     return { path, branch, mirrorPath: gitDir, itemId: options.itemId, startRef };
   }
@@ -130,11 +137,27 @@ export async function createWorktree(options: {
   }
 
   if (await revParse(gitDir, branch)) {
-    await git(["--git-dir", gitDir, "worktree", "add", path, branch]);
+    await git(["--git-dir", gitDir, "worktree", "add", "--no-checkout", path, branch]);
   } else {
-    await git(["--git-dir", gitDir, "worktree", "add", "-b", branch, path, startRef]);
+    await git([
+      "--git-dir",
+      gitDir,
+      "worktree",
+      "add",
+      "--no-checkout",
+      "-b",
+      branch,
+      path,
+      startRef,
+    ]);
   }
 
+  try {
+    await checkoutPatterns(path, patterns);
+  } catch (error) {
+    await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]).catch(() => undefined);
+    throw error;
+  }
   return { path, branch, mirrorPath: gitDir, itemId: options.itemId, startRef };
 }
 
