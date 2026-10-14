@@ -1,4 +1,4 @@
-import { renderSettingsPage } from "./settings-pages";
+import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusCheck,
   StatusEpic,
@@ -52,7 +52,12 @@ const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"])
 
 export function render(model: RenderModel): Rendered {
   const snapshot = model.snapshot;
-  const title = `Paws status · ${PAGES[model.route.view].title}`;
+  const route = model.route;
+  const pageTitle =
+    route.view === "settings"
+      ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
+      : PAGES[model.route.view].title;
+  const title = `Paws status · ${pageTitle}`;
   return {
     top: renderTop(model),
     banner: renderBanner(model),

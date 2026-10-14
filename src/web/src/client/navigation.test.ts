@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
 import { parseRoute, routeHref, type Route } from "./route";
 import { render } from "./render";
@@ -15,11 +16,19 @@ const model = {
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
-  expect(new Set(views).size).toBe(Object.keys(PAGES).length);
-  expect(views.length).toBe(Object.keys(PAGES).length);
+  expect(new Set(views).size).toBe(Object.keys(PAGES).length - 1);
+  expect(views.length).toBe(Object.keys(PAGES).length - 1);
   for (const view of views) {
     const route = { view, id: null } as Route;
     expect(parseRoute(routeHref(route)).view).toBe(view);
+  }
+  for (const page of SETTINGS_PAGES) {
+    const route: Route = { view: "settings", page: page.id };
+    expect(parseRoute(routeHref(route))).toEqual(route);
+    const result = render({ ...model, route });
+    expect(result.content).toContain(`<h1 class="sr-only">${page.name}</h1>`);
+    expect(result.content).not.toContain("settings-navigation");
+    expect(result.title).toContain(page.name);
   }
 });
 

@@ -10,12 +10,17 @@ import {
   GitMerge,
   MessagesSquare,
   Server,
-  Settings,
+  Bot,
+  Plug,
+  Users,
+  UserRound,
+  History,
   Menu,
 } from "lucide-react";
 import type { StatusSnapshot } from "../contract";
 import { parseRoute, routeHref, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
+import { SETTINGS_PAGES } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { Button } from "./ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "./ui/sheet";
@@ -37,7 +42,11 @@ const ICONS = {
   queue: GitMerge,
   sessions: MessagesSquare,
   runners: Server,
-  settings: Settings,
+  agents: Bot,
+  integrations: Plug,
+  workspace: Users,
+  account: UserRound,
+  audit: History,
 };
 type ShellState = { route: Route; project: StatusSnapshot["project"] | null };
 const ControllerRegions = memo(function ControllerRegions() {
@@ -80,6 +89,26 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
           </SidebarMenu>
         </SidebarGroup>
       ))}
+      <SidebarGroup aria-label="Settings">
+        <h2 className="px-3 text-xs font-bold">Settings</h2>
+        <SidebarMenu>
+          {SETTINGS_PAGES.map((page) => {
+            const Icon = ICONS[page.id];
+            return (
+              <li key={page.id}>
+                <SidebarMenuLink
+                  href={routeHref({ view: "settings", page: page.id })}
+                  active={route.view === "settings" && (route.page ?? "agents") === page.id}
+                  onClick={onNavigate}
+                >
+                  <Icon className="size-4 shrink-0" aria-hidden="true" />
+                  <span>{page.name}</span>
+                </SidebarMenuLink>
+              </li>
+            );
+          })}
+        </SidebarMenu>
+      </SidebarGroup>
     </nav>
   );
 }
@@ -98,6 +127,7 @@ export function mountShell(): {
       route: parseRoute(location.hash),
       project: null,
     });
+    const route = state.route;
     const [authenticated, setAuthenticated] = useState(false);
     const [open, setOpen] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
@@ -203,7 +233,11 @@ export function mountShell(): {
                 </Sheet>
               )}
               <span className="text-sm font-semibold">
-                {authenticated ? PAGES[state.route.view].title : "Paws"}
+                {authenticated
+                  ? route.view === "settings"
+                    ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
+                    : PAGES[state.route.view].title
+                  : "Paws"}
               </span>
             </div>
             <AppearanceControl />
