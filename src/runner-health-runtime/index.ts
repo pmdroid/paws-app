@@ -2,6 +2,7 @@ import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { publishRunnerAnswer, removeRunnerAnswers } from "../runner-answers";
 import { openDatabase } from "../db";
 import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
@@ -14,6 +15,8 @@ import {
 } from "../runner-execution";
 import {
   RunnerCommandSchema,
+  RunnerLoginUpdateSchema,
+  type RunnerLoginUpdate,
   RunnerHealthResultSchema,
   RunnerHelperResultSchema,
   type RunnerCommand,
@@ -21,12 +24,13 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 
-type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "helper" }>;
+type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "login" | "helper" }>;
 type Entry = {
   id: string;
   command: Command;
   deadline: number;
   result?: RunnerHealthResult | RunnerHelperResult;
+  login?: RunnerLoginUpdate;
   stopped?: Promise<void>;
 };
 const worker = z.object({
@@ -66,7 +70,12 @@ export async function openRunnerHealthRuntime(options: {
     | "postHealth"
     | "heartbeat"
   > &
-    Partial<Pick<RunnerDaemon, "pollHelperCommands" | "helperLease" | "postHelperResult">>;
+    Partial<
+      Pick<
+        RunnerDaemon,
+        "pollHelperCommands" | "helperLease" | "postHelperResult" | "exchangeLogin"
+      >
+    >;
   spool: RunnerSpool;
   results: RunnerResults;
   broker?: RunnerBrokerClient;
@@ -104,7 +113,20 @@ export async function openRunnerHealthRuntime(options: {
       .all()) {
       await broker.stop(row.id);
       const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-      if (
+      if (command.type === "login") removeRunnerAnswers(options.spool, row.id);
+      if (command.type === "login" && command.expiresAt > now()) {
+        if (active) throw new Error("Multiple runner receipts are unfinished");
+        let update = row.result ? RunnerLoginUpdateSchema.parse(JSON.parse(row.result)) : null;
+        if (!update) {
+          try {
+            update = readLogin(row.id);
+          } catch {
+            update = null;
+          }
+        }
+        active = { id: row.id, command, deadline: monotonic() + command.expiresAt - now() };
+        saveLogin(active, update?.state === "connected" ? "connected" : "failed");
+      } else if (
         row.phase === "publishing" &&
         command.type === "helper" &&
         row.result &&
@@ -126,9 +148,44 @@ export async function openRunnerHealthRuntime(options: {
   let stopping: Promise<void> | undefined;
   let pulsing: Promise<void> | undefined;
   const report = () => options.onError?.(new Error("Runner health operation failed"));
+  function readLogin(id: string): RunnerLoginUpdate | null {
+    let journal: string;
+    try {
+      journal = readRunnerResultFile(options.results, id, "events.jsonl").toString("utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    const lines = journal.slice(0, journal.lastIndexOf("\n")).split("\n").filter(Boolean);
+    if (!lines.length) return null;
+    const event = JSON.parse(lines[lines.length - 1]!) as { type: string; update: unknown };
+    if (event.type !== "login") throw new Error("Unexpected login event");
+    return RunnerLoginUpdateSchema.parse(event.update);
+  }
+  function saveLogin(entry: Entry, state: "connected" | "failed") {
+    entry.login = { state, terminal: "", authorization: null, inputId: null };
+    db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
+      JSON.stringify(entry.login),
+      entry.id,
+    ]);
+  }
   async function interrupt(entry: Entry) {
     entry.stopped ??= (async () => {
       await broker.stop(entry.id);
+      if (entry.command.type === "login") {
+        removeRunnerAnswers(options.spool, entry.id);
+        if (entry.command.expiresAt > now()) {
+          if (entry.login?.state !== "connected" && entry.login?.state !== "failed") {
+            try {
+              entry.login = readLogin(entry.id) ?? undefined;
+            } catch {
+              entry.login = undefined;
+            }
+          }
+          saveLogin(entry, entry.login?.state === "connected" ? "connected" : "failed");
+          return;
+        }
+      }
       db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [entry.id]);
     })();
     await entry.stopped;
@@ -168,7 +225,15 @@ export async function openRunnerHealthRuntime(options: {
   async function step(admit: boolean) {
     if (active?.stopped) {
       await active.stopped;
-      active = undefined;
+      if (
+        !closed &&
+        active.command.type === "login" &&
+        active.command.expiresAt > now() &&
+        options.daemon.status().phase === "paired"
+      ) {
+        active.stopped = undefined;
+        active.deadline = monotonic() + active.command.expiresAt - now();
+      } else active = undefined;
     }
     if (active) {
       const entry = active;
@@ -176,6 +241,41 @@ export async function openRunnerHealthRuntime(options: {
         check(entry);
         if (entry.command.type === "helper") await pulse();
         check(entry);
+        if (entry.command.type === "login") {
+          if (!options.daemon.exchangeLogin)
+            throw new Error("Runner sign-in transport is unavailable");
+          let update = entry.login ?? {
+            state: "starting" as const,
+            terminal: "",
+            authorization: null,
+            inputId: null,
+          };
+          if (update.state !== "connected" && update.state !== "failed")
+            update = readLogin(entry.id) ?? update;
+          if (entry.login?.inputId && entry.login.inputId !== update.inputId)
+            removeRunnerAnswers(options.spool, entry.id);
+          entry.login = update;
+          if (update.state === "connected" || update.state === "failed") {
+            saveLogin(entry, update.state);
+            update = entry.login!;
+            await broker.stop(entry.id);
+          }
+          check(entry);
+          const reply = await options.daemon.exchangeLogin(entry.command.id, update);
+          check(entry);
+          if (reply.cancelled || update.state === "connected" || update.state === "failed") {
+            await interrupt(entry);
+            db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
+            active = undefined;
+          } else if (reply.input) {
+            if (reply.input.id !== update.inputId) throw new Error("Login input binding changed");
+            publishRunnerAnswer(options.spool, entry.id, {
+              requestId: reply.input.id,
+              answer: JSON.stringify(reply.input.value),
+            });
+          }
+          return;
+        }
         if (!entry.result) {
           let raw: Buffer;
           try {
@@ -256,13 +356,19 @@ export async function openRunnerHealthRuntime(options: {
     await options.daemon.pollCommands();
     if (closed) return;
     for (const input of options.daemon.pendingCommands()) {
-      if (input.type !== "probe" && input.type !== "login_check" && input.type !== "helper")
+      if (
+        input.type !== "probe" &&
+        input.type !== "login_check" &&
+        input.type !== "login" &&
+        input.type !== "helper"
+      )
         continue;
       if (
         input.type === "helper" &&
         (!options.daemon.helperLease || !options.daemon.postHelperResult)
       )
         continue;
+      if (input.type === "login" && !options.daemon.exchangeLogin) continue;
       const command = RunnerCommandSchema.parse(input) as Command;
       const previous = db
         .query<{ payload: string }, [string]>(
@@ -287,13 +393,25 @@ export async function openRunnerHealthRuntime(options: {
       const entry: Entry = {
         id,
         command,
-        deadline: monotonic() + Math.min(60_000, command.expiresAt - now()),
+        deadline:
+          monotonic() +
+          Math.min(command.type === "login" ? 600_000 : 60_000, command.expiresAt - now()),
       };
       active = entry;
       try {
         check(entry);
         if (command.type === "helper") await pulse();
         check(entry);
+        if (command.type === "login") {
+          const reply = await options.daemon.exchangeLogin!(command.id, {
+            state: "starting",
+            terminal: "",
+            authorization: null,
+            inputId: null,
+          });
+          if (reply.cancelled) throw new Error("Login was cancelled");
+          check(entry);
+        }
         publishRunnerJob(options.spool, { executionId: id, command });
         check(entry);
         const receipt = await broker.start(id);

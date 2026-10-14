@@ -15,3 +15,10 @@ export { createEpicReconciler } from "./reconciliation";
 export type { EpicChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";
+export {
+  ExternalBlockerPolicySchema,
+  readExternalBlockerPolicies,
+  readExternalBlockerEvidence,
+  saveExternalBlockerPolicies,
+} from "./blocker-policy";
+export type { ExternalBlockerPolicy, InspectBlockerMerge, MergeEvidence } from "./blocker-policy";

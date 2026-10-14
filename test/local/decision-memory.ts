@@ -138,10 +138,14 @@ export async function probeDecisionMemory(root: string) {
       now: Date.now() - 500,
     });
     assert.equal(suggestDecisions(f.db, next.id, next.body).length, 0);
-    f.db.run(
-      "INSERT INTO work_item_scheduling(item_id,project_known,paths) VALUES('controlled',0,?)",
-      [JSON.stringify(["src/web/index.ts"])],
-    );
+    f.db.run("UPDATE work_item SET brief=? WHERE id='controlled'", [
+      JSON.stringify({ issue: { description: "paths: src/api/pagination.ts" } }),
+    ]);
+    f.db.run("INSERT INTO work_item_scheduling(item_id,project_known) VALUES('controlled',0)");
+    assert.equal(suggestDecisions(f.db, next.id, next.body).length, 1);
+    f.db.run("UPDATE work_item_scheduling SET paths=? WHERE item_id='controlled'", [
+      JSON.stringify(["src/web/index.ts"]),
+    ]);
     assert.equal(suggestDecisions(f.db, next.id, next.body).length, 0);
     f.db.run("UPDATE work_item_scheduling SET paths=? WHERE item_id='controlled'", [
       JSON.stringify(["src/api/pagination.ts"]),

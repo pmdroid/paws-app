@@ -37,6 +37,7 @@ import {
 const ICONS = {
   overview: LayoutDashboard,
   epics: GitBranch,
+  projects: GitBranch,
   runs: Terminal,
   questions: CircleHelp,
   verdicts: ShieldCheck,

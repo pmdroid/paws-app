@@ -17,6 +17,8 @@ import {
   type AgentSettings,
 } from "./agents";
 
+import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
+
 export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
 export type TrackerKind = "github" | "linear" | "both";
@@ -78,6 +80,7 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
+  projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
 
@@ -156,6 +159,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
     }
     assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
   }
+  const skills = parseProjectSkills(text);
+  if (skills.length > 0) config.projectSkills = skills;
   const projects = parseCheckoutProjects(text);
   if (Object.keys(projects).length) config.checkoutProjects = projects;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
@@ -221,7 +226,9 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
       ...config,
       githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
       closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
-    }) + renderCheckoutProjects(parseCheckoutProjects(current));
+    }) +
+    renderCheckoutProjects(parseCheckoutProjects(current)) +
+    renderProjectSkills(parseProjectSkills(current));
   const next =
     profiles === null
       ? rendered

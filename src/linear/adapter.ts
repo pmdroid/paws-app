@@ -12,6 +12,8 @@ import type {
   SessionReceipt,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
+import type { LinearProjectSnapshot } from "./project-scope";
+import type { IssuePullRequest } from "./issue-pulls";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -24,6 +26,8 @@ export type TrackerRequestOptions = {
  * `onAnswer` is inbound (the webhook), not a call on this interface.
  */
 export interface TrackerAdapter {
+  loadProject?(id: string, options?: TrackerRequestOptions): Promise<LinearProjectSnapshot>;
+  listIssuePullRequests?(id: string, options?: TrackerRequestOptions): Promise<IssuePullRequest[]>;
   getIssueAttribution?(
     id: string,
     options?: TrackerRequestOptions,
