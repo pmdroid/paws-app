@@ -1,3 +1,5 @@
+import { loadConfigFile } from "../config";
+import { checkoutPatternsSync, exclusionPatterns } from "../worktree-checkout";
 import { spawnSync } from "node:child_process";
 import {
   closeSync,
@@ -225,6 +227,10 @@ export function restartFromFreshMain(options: {
   if (!safeBranch(options.wipBranch)) return { ...base, reason: "bad_branch" };
   if (!existsSync(gitDir)) return { ...base, reason: "no_mirror" };
 
+  const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
+  const patterns = exclusionPatterns(
+    config.checkoutProjects?.[`${options.owner}/${options.repo}`.toLowerCase()]?.exclude ?? [],
+  );
   let wipSha: string | undefined;
   if (isRegisteredWorktree(gitDir, tree)) {
     const committed = commitCheckpointSync(
@@ -246,7 +252,13 @@ export function restartFromFreshMain(options: {
 
   mkdirSync(dirname(tree), { recursive: true, mode: 0o700 });
   const branch = freshBranchName(gitDir, options.wipBranch);
-  gitSync(["--git-dir", gitDir, "worktree", "add", "-b", branch, tree, startRef]);
+  gitSync(["--git-dir", gitDir, "worktree", "add", "--no-checkout", "-b", branch, tree, startRef]);
+  try {
+    checkoutPatternsSync(tree, patterns);
+  } catch (error) {
+    gitSyncOrEmpty(["--git-dir", gitDir, "worktree", "remove", "--force", tree]);
+    throw error;
+  }
   const kept = gitSyncOrEmpty(["--git-dir", gitDir, "rev-parse", "--verify", options.wipBranch]);
   if (wipSha !== undefined && kept !== wipSha) {
     gitSync(["--git-dir", gitDir, "update-ref", `refs/heads/${options.wipBranch}`, wipSha]);

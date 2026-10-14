@@ -1,3 +1,4 @@
+import { parseCheckoutProjects, renderCheckoutProjects, type CheckoutProjects } from "./checkout";
 import {
   chmodSync,
   existsSync,
@@ -77,6 +78,7 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
+  checkoutProjects?: CheckoutProjects;
 };
 
 /**
@@ -154,6 +156,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
     }
     assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
   }
+  const projects = parseCheckoutProjects(text);
+  if (Object.keys(projects).length) config.checkoutProjects = projects;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
   return config;
@@ -212,11 +216,12 @@ export function renderConfigToml(config: PawsSetupConfig): string {
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, config.implementer);
-  const rendered = renderConfigToml({
-    ...config,
-    githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
-    closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
-  });
+  const rendered =
+    renderConfigToml({
+      ...config,
+      githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
+      closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
+    }) + renderCheckoutProjects(parseCheckoutProjects(current));
   const next =
     profiles === null
       ? rendered

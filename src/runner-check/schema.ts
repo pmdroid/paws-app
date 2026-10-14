@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerCheckoutExclusionsSchema } from "../runner-protocol";
 import { ExecutionIdSchema } from "../runner-execution";
 
 const text = (limit: number) =>
@@ -17,6 +18,7 @@ export const RunnerCheckAttemptSchema = z.strictObject({
   format: z.literal(1),
   verificationAttemptId: ExecutionIdSchema,
   candidateSha: sha,
+  checkoutExclusions: RunnerCheckoutExclusionsSchema.optional(),
   bundleSha256: digest,
 });
 export const RunnerCheckInputSchema = z.strictObject({
@@ -24,6 +26,7 @@ export const RunnerCheckInputSchema = z.strictObject({
   executionId: ExecutionIdSchema,
   verificationAttemptId: ExecutionIdSchema,
   candidateSha: sha,
+  checkoutExclusions: RunnerCheckoutExclusionsSchema.optional(),
   argv: z
     .array(text(8192))
     .min(1)

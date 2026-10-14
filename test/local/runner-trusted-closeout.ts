@@ -251,7 +251,7 @@ export async function probeRunnerTrustedCloseout(
       });
       return { command, result };
     }
-    const gate = backend.closeoutForItem(item.id);
+    const gate = backend.closeoutForItem(item.id, undefined, ["captured"]);
     async function execute(
       name: string,
       change: Partial<RunnerCheckResult> = {},
@@ -269,6 +269,7 @@ export async function probeRunnerTrustedCloseout(
         artifactPath: `${name}.log`,
       });
       const delivered = await deliver(change, invalid);
+      assert.deepEqual(delivered.command.repository.checkoutExclusions, ["captured"]);
       const value = await promise;
       assert.equal(value.dirty, change.dirty ?? false);
       assert.equal(value.headMoved, change.headMoved ?? false);

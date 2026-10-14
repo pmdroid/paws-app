@@ -11,10 +11,34 @@ const repo = z
   .regex(/^[A-Za-z0-9._-]{1,100}$/)
   .refine((name) => ![".", ".."].includes(name));
 
+export const RunnerCheckoutExclusionsSchema = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(1024)
+      .refine(
+        (folder) =>
+          Buffer.byteLength(folder) <= 1024 &&
+          !folder.includes("\\") &&
+          [...folder].every((char) => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127) &&
+          folder
+            .split("/")
+            .every(
+              (part) =>
+                part !== "" && part !== "." && part !== ".." && part.toLowerCase() !== ".git",
+            ) &&
+          Buffer.from(folder, "utf8").toString("utf8") === folder,
+      ),
+  )
+  .max(128)
+  .refine((folders) => Buffer.byteLength(JSON.stringify(folders)) <= 32768);
+
 export const RunnerRepositorySchema = z
   .strictObject({
     owner,
     repo,
+    checkoutExclusions: RunnerCheckoutExclusionsSchema.optional(),
     remoteUrl: z.string().max(512),
     baseSha: z.string().regex(/^[a-f0-9]{40}$/),
   })

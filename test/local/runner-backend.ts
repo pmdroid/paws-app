@@ -52,6 +52,10 @@ export async function probeRunnerBackend(
   observe: (name: string, passed: boolean, value: unknown) => void,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(root, "config.toml"),
+    '[checkout.projects."fixture/repository"]\nexclude = ["large"]\n',
+  );
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
@@ -303,6 +307,7 @@ export async function probeRunnerBackend(
     assert.equal(assigned.itemId, first.id);
     assert.equal(assigned.runId, first.run.id);
     assert.equal(assigned.repository.baseSha, base);
+    assert.deepEqual(assigned.repository.checkoutExclusions, ["large"]);
     assert.equal(assigned.prompt, "Implement fixture");
     const grant = work.issueGrant({
       runnerId,
@@ -378,6 +383,7 @@ export async function probeRunnerBackend(
     const reviewed = backend.forItem(reviewer.id)(
       input(reviewer, {
         role: "reviewer",
+        checkoutExclusions: ["captured"],
         readOnly: true,
         onEvent: (e) => {
           if (
@@ -389,9 +395,14 @@ export async function probeRunnerBackend(
         },
       }),
     );
+    writeFileSync(
+      join(root, "config.toml"),
+      '[checkout.projects."fixture/repository"]\nexclude = ["changed"]\n',
+    );
     const review = await next();
     assert.equal(review.type, "review");
     if (review.type !== "review") throw new Error("Unexpected command");
+    assert.deepEqual(review.repository.checkoutExclusions, ["captured"]);
     const reviewGrant = work.issueGrant({
       runnerId,
       runId: review.runId,
@@ -481,6 +492,10 @@ export async function probeRunnerBackend(
         mkdirSync(directory, { mode: 0o700 });
         if (withRepository)
           await prepareRepositorySnapshot({
+            checkoutExclusions: Array.from(
+              { length: 10 },
+              (_, index) => `omitted-${index}-${"x".repeat(500)}`,
+            ),
             owner: "fixture",
             repo: "repository",
             remoteUrl: source,

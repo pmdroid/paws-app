@@ -543,6 +543,7 @@ export interface CommandRunner {
 
 export type ReviewRequest = {
   skillFiles?: ReadonlyMap<string, Uint8Array>;
+  checkoutExclusions?: readonly string[];
   item: ResolvedReview;
   candidate: CandidateIdentity;
   base: string;
