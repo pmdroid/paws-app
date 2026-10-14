@@ -41,7 +41,23 @@ normalize_version() {
 }
 
 fetch() {
+  pinned=1
   if [ -n "${PAWS_RUNNER_DOWNLOAD_BASE:-}" ]; then
+    case $PAWS_RUNNER_DOWNLOAD_BASE in
+      http://127.0.0.1|http://127.0.0.1:*|http://localhost|http://localhost:*)
+        if [ "${PAWS_RUNNER_ALLOW_HTTP_BASE:-}" != 1 ]; then
+          die "Refusing a non-HTTPS download base"
+        fi
+        pinned=0
+        ;;
+      https://*)
+        ;;
+      *)
+        die "Download base must use https"
+        ;;
+    esac
+  fi
+  if [ "$pinned" -eq 0 ]; then
     curl -fsSL --retry 3 --retry-delay 1 "$@"
   else
     curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 1 "$@"
