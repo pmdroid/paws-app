@@ -6,9 +6,21 @@ Follow [Pair a remote Linux runner](../runner-pairing.md) for host configuration
 
 ## Install a signed release
 
-Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages. Download `paws-runner_X.Y.Z_amd64.deb` or `paws-runner_X.Y.Z_arm64.deb` and its `.deb.sha256` file from that release's assets. The host needs systemd and Node.js 22 or later installed as the `nodejs` package, with its executable at `/usr/bin/node`.
+On the Linux host:
 
-For an ARM64 host, verify and install the downloaded package:
+```sh
+curl -fsSL https://get.paws.boo | sudo sh
+```
+
+The installer reads the host architecture, downloads the matching package from the latest GitHub release, checks the published SHA-256, and installs it with apt. Pass a version to install that release:
+
+```sh
+curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
+```
+
+Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The host needs systemd and Node.js 22 or later installed as the `nodejs` package, with its executable at `/usr/bin/node`.
+
+To verify and install a downloaded ARM64 package directly:
 
 ```sh
 sha256sum --check paws-runner_X.Y.Z_arm64.deb.sha256

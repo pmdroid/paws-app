@@ -30,7 +30,7 @@ The dashboard supports local engine status and explicitly labeled demo data. Nav
 
 ## Brand Commitments
 
-The product is Paws. Its landing-page domain is paws.boo. The landing page includes a GitHub setup action and an on-page workflow explanation. The dashboard uses the Neobrutalism component system from https://www.neobrutalism.dev/docs. Light, dark, and system appearance remain available.
+The product is Paws. Its landing-page domain is paws.boo. The remote runner installer is served at get.paws.boo. The landing page includes a GitHub setup action and an on-page workflow explanation. The dashboard uses the Neobrutalism component system from https://www.neobrutalism.dev/docs. Light, dark, and system appearance remain available.
 
 ## Evidence on Hand
 
