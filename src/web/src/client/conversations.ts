@@ -49,8 +49,7 @@ export function renderConversations(
   model: ConversationModel | undefined,
   id: string | null,
 ): string {
-  const heading =
-    '<h1 class="sr-only">Conversations</h1>';
+  const heading = '<h1 class="sr-only">Conversations</h1>';
   if (!model || model.state === "loading")
     return `${heading}<div class="empty" role="status">Loading Linear conversations…</div>`;
   if (model.state === "unavailable")

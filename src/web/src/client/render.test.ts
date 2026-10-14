@@ -124,7 +124,7 @@ describe("status views", () => {
 
   test("epics, runs, questions, verdicts, and the queue each render", () => {
     const epics = render(model({ route: { view: "epics", id: null } })).content;
-    expect(epics).toContain("data-epic-filter=\"active\"");
+    expect(epics).toContain('data-epic-filter="active"');
     expect(epics).toContain("Audit log export");
     expect(render(model({ route: { view: "epics", id: "ENG-98" } })).content).toContain("ENG-104");
     expect(render(model({ route: { view: "runs", id: "r-103" } })).content).toContain(
