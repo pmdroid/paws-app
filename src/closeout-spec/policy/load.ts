@@ -1,3 +1,4 @@
+import { join, resolve } from "node:path";
 import { statSync } from "node:fs";
 import type {
   DecisionWarning,
@@ -26,6 +27,7 @@ export type PolicyLoadOutcome =
   | Extract<PolicyLoadResult, { ok: false }>;
 
 export type LoadPolicyInput = {
+  policyRoot?: string;
   /** Candidate repository. Passed to {@link GitReader}. The work tree is not a policy source. */
   repo: string;
   git: GitReader;
@@ -50,6 +52,25 @@ export type LoadPolicyInput = {
  * {@link NO_CLOSEOUT_POLICY}. A file that exists and fails to load is blocked.
  */
 export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
+  if (input.policyRoot !== undefined) {
+    const root = resolve(input.policyRoot);
+    if (!input.policyRoot.trim() || !isDirectory(root))
+      return blocked("local", "local policy root is not a directory");
+    const loaded = loadHomePolicy(root);
+    if (!loaded.ok) return blocked("local", loaded.message);
+    if (loaded.absent)
+      return blocked("local", `local policy is missing: ${join(root, PUBLIC_POLICY_PATH)}`);
+    return {
+      ok: true,
+      policy: present("local", loaded.policy, join(root, loaded.policy.entryPath)),
+      warnings: [
+        {
+          code: "local-policy",
+          message: `Using configured local policy ${join(root, loaded.policy.entryPath)}.`,
+        },
+      ],
+    };
+  }
   const fetched = input.git.fetchOriginMain(input.repo);
   if (!fetched.ok) return blocked("repo", unavailable(fetched.stderr));
   const commit = fetched.commit.trim().toLowerCase();
@@ -102,12 +123,13 @@ function loadGlobal(input: LoadPolicyInput): PolicyLoadOutcome {
 }
 
 function present(
-  source: "repo" | "global",
+  source: "repo" | "global" | "local",
   policy: TreePolicy,
   entryPath = policy.entryPath,
 ): ResolvedPolicyPresent {
   const resolved: ResolvedPolicyPresent = {
     source,
+    skillFiles: policy.skillFiles,
     digest: policy.digest,
     entryPath,
     setup: policy.setup,
@@ -156,7 +178,7 @@ function isSha(value: string): boolean {
   return (value.length === 40 || value.length === 64) && /^[0-9a-f]+$/.test(value);
 }
 
-function blocked(source: "repo" | "global", message: string): PolicyLoadOutcome {
+function blocked(source: "repo" | "global" | "local", message: string): PolicyLoadOutcome {
   return { ok: false, source, message };
 }
 

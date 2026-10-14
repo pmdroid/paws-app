@@ -445,6 +445,10 @@ function policyIdentity(policy: ResolvedPolicy): DecisionDocument["policy"] {
 }
 
 function warningsFor(policy: ResolvedPolicy): DecisionWarning[] {
+  if (policy.source === "local")
+    return [
+      { code: "local-policy", message: `Using configured local policy ${policy.entryPath}.` },
+    ];
   if (policy.source !== "global") return [];
   return [
     {

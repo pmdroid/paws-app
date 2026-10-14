@@ -38,6 +38,19 @@ git("-C", str(seed), "config", "user.email", "local@example.invalid")
 (seed / "tracked.txt").write_text("candidate\n")
 (seed / ".gitignore").write_text("node_modules/\n")
 large_repository = len(sys.argv) == 3 and sys.argv[2] == "large"
+exclusions = ["large", "nested/a [b]*!"] if large_repository else []
+if large_repository:
+    while len(json.dumps(exclusions, ensure_ascii=False, separators=(",", ":")).encode()) < 32768:
+        remaining = 32768 - len(json.dumps(exclusions, ensure_ascii=False, separators=(",", ":")).encode()) - 3
+        size = min(1024, remaining)
+        prefix = f"missing-{len(exclusions)}/"
+        repetitions = (size - len(prefix) - 1) // 5
+        exclusions.append(prefix + "🐕/" * repetitions + "x" * (size - len(prefix) - repetitions * 5))
+    assert len(json.dumps(exclusions, ensure_ascii=False, separators=(",", ":")).encode()) == 32768
+for folder in ["large", "nested/a [b]*!", "nested/keep"]:
+    (seed / folder).mkdir(parents=True)
+    (seed / folder / "file").write_text("retained tracked file\n")
+topology = hashlib.sha256(json.dumps(exclusions, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 if large_repository:
     for number in range(2000):
         (seed / ("tracked-long-name-" + str(number).zfill(5) + "-" + "x" * 50 + ".txt")).write_text("candidate\n")
@@ -60,8 +73,10 @@ other_candidate = git("-C", str(seed), "rev-parse", "HEAD")
 bundle = inputs / "attempts" / attempt / "repository.bundle"
 git("-C", str(seed), "bundle", "create", str(bundle), "HEAD")
 identity = {"format": 1, "verificationAttemptId": attempt, "candidateSha": candidate, "bundleSha256": hashlib.sha256(bundle.read_bytes()).hexdigest()}
+if exclusions:
+    identity["checkoutExclusions"] = exclusions
 identity_path = bundle.parent / "attempt.json"
-identity_path.write_text(json.dumps(identity))
+identity_path.write_text(json.dumps(identity, ensure_ascii=False))
 for path in (bundle, identity_path):
     os.chown(path, 1001, 1004)
     path.chmod(0o640)
@@ -80,6 +95,8 @@ def run(arguments, trusted=True, success=True):
         os.setgroups([1005, 1004] if trusted else [])
         os.setgid(1006 if trusted else 1005)
         os.setuid(1005)
+    if sys.argv[1] in arguments:
+        arguments = [*arguments, topology]
     result = subprocess.run(arguments, preexec_fn=credentials, env={"PATH": "/usr/bin:/bin", "HOME": "/var/empty"}, capture_output=True, text=True, timeout=90, check=False)
     if (result.returncode == 0) != success:
         raise RuntimeError(result.stderr or "Unexpected metadata probe outcome")
@@ -92,7 +109,7 @@ def inspect():
 
 identity_path.write_text(json.dumps({**identity, "candidateSha": other_candidate}))
 run(["/usr/bin/python3", "-I", "-B", sys.argv[1], "init", attempt, candidate], success=False)
-identity_path.write_text(json.dumps(identity))
+identity_path.write_text(json.dumps(identity, ensure_ascii=False))
 def daemon_identity():
     os.setgroups([1004])
     os.setgid(1001)
@@ -126,6 +143,19 @@ for name in ("config", "repository.bundle"):
         assert attack.returncode != 0, "Daemon accessed private Git metadata"
 
 workspace = work / attempt / "workspace"
+assert (workspace / "nested/keep/file").read_text() == "retained tracked file\n"
+for folder in exclusions:
+    assert not (workspace / folder).exists()
+if exclusions:
+    changed = {**identity, "checkoutExclusions": [*exclusions[:-1], "nested/keep"]}
+    identity_path.write_text(json.dumps(changed, ensure_ascii=False))
+    run(["/usr/bin/python3", "-I", "-B", sys.argv[1], "inspect", attempt, candidate], success=False)
+    identity_path.write_text(json.dumps(identity, ensure_ascii=False))
+    run(["/usr/bin/git", "-C", str(workspace), "sparse-checkout", "set", "--no-cone", "--", "/*", "!/large/", "!/nested/"], trusted=False)
+    assert inspect()["status"], "Candidate sparse patterns hid an unauthorized omitted folder"
+    run(["/usr/bin/git", "-C", str(workspace), "sparse-checkout", "set", "--no-cone", "--", "/*", "!/large/", "!/nested/a \[b\]\*!/"], trusted=False)
+    assert inspect() == {"status": "", "headMoved": False}
+
 for path in (submodule, *submodule.rglob("*")):
     os.chown(path, 1005, 1005)
 run(["/usr/bin/git", "-c", "protocol.file.allow=always", "clone", str(submodule), str(workspace / "dependency")], trusted=False)
@@ -162,11 +192,12 @@ original_index = index_path.read_bytes()
 (workspace / "tracked.txt").write_text("tampered!\n")
 os.utime(workspace / "tracked.txt", (1_000_000_000, 1_000_000_000))
 forged_index = bytearray(original_index)
-assert forged_index[:4] == b"DIRC" and struct.unpack_from(">I", forged_index, 4)[0] == 2
+assert forged_index[:4] == b"DIRC" and struct.unpack_from(">I", forged_index, 4)[0] in (2, 3)
 offset = 12
 for _ in range(struct.unpack_from(">I", forged_index, 8)[0]):
-    end = forged_index.index(0, offset + 62)
-    path = forged_index[offset + 62:end]
+    name_offset = offset + (64 if struct.unpack_from(">H", forged_index, offset + 60)[0] & 0x4000 else 62)
+    end = forged_index.index(0, name_offset)
+    path = forged_index[name_offset:end]
     if path == b"tracked.txt":
         info = (workspace / "tracked.txt").stat()
         values = (info.st_ctime_ns // 1_000_000_000, info.st_ctime_ns % 1_000_000_000, info.st_mtime_ns // 1_000_000_000, info.st_mtime_ns % 1_000_000_000, info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size)
@@ -220,4 +251,4 @@ head.unlink()
 head.write_text(candidate + "\n")
 run(["/usr/bin/git", "-C", str(workspace), "status", "--porcelain"], trusted=False)
 assert pathlib.Path("/tmp/paws-monitor-ran").exists()
-print(json.dumps({"verified": True, "pythonVersion": sys.version, "gitVersion": git("--version"), "candidateSha": candidate, "rootAdmittedCandidateMismatchRejected": True, "daemonBundlePathReplacementCannotChangeFetchedSnapshot": True, "privateBundleSnapshotMatchesManifest": True, "freshAttemptClean": True, "installedDependenciesRetained": True, "attemptReinitializationRejected": True, "daemonPrivateMetadataReadAndReplaceDenied": True, "ordinaryCheckPrivateMetadataAndInputDenied": True, "hostileWorkspaceGitConfigNotExecuted": True, "nativeGitBaselineExecutesForgedFsmonitor": True, "worktreeAndStagedChangesDetected": True, "populatedSubmodulesRefused": True, "populatedSubmodulesRejectedBeforeStatus": True, "concurrentPopulationFailsClosedWithoutNestedStatus": True, "changedSubmoduleIndexRefused": True, "symlinkSubmoduleRefused": True, "unpopulatedSubmodulesAccepted": True, "untrustedIndexFlagsCannotHideChanges": True, "untrustedIndexStatCacheCannotHideChanges": True, "trackedFileCount": git("-C", str(seed), "ls-files", "-z").count("\0"), "workspaceIndexUnchangedByWitness": True, "hostileSubmoduleGitConfigNotExecuted": True, "actualHeadMovementDetected": True, "symlinkHeadFailsClosed": True}), flush=True)
+print(json.dumps({"verified": True, "checkoutExclusionsBytes": len(json.dumps(exclusions, ensure_ascii=False, separators=(",", ":")).encode()), "pythonVersion": sys.version, "gitVersion": git("--version"), "candidateSha": candidate, "rootAdmittedCandidateMismatchRejected": True, "daemonBundlePathReplacementCannotChangeFetchedSnapshot": True, "privateBundleSnapshotMatchesManifest": True, "freshAttemptClean": True, "installedDependenciesRetained": True, "attemptReinitializationRejected": True, "daemonPrivateMetadataReadAndReplaceDenied": True, "ordinaryCheckPrivateMetadataAndInputDenied": True, "hostileWorkspaceGitConfigNotExecuted": True, "nativeGitBaselineExecutesForgedFsmonitor": True, "worktreeAndStagedChangesDetected": True, "populatedSubmodulesRefused": True, "populatedSubmodulesRejectedBeforeStatus": True, "concurrentPopulationFailsClosedWithoutNestedStatus": True, "changedSubmoduleIndexRefused": True, "symlinkSubmoduleRefused": True, "unpopulatedSubmodulesAccepted": True, "untrustedIndexFlagsCannotHideChanges": True, "untrustedIndexStatCacheCannotHideChanges": True, "trackedFileCount": git("-C", str(seed), "ls-files", "-z").count("\0"), "workspaceIndexUnchangedByWitness": True, "hostileSubmoduleGitConfigNotExecuted": True, "actualHeadMovementDetected": True, "symlinkHeadFailsClosed": True}), flush=True)

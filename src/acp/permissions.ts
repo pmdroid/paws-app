@@ -158,7 +158,7 @@ export function resolveInsideWorktree(input: string, ctx: GuardContext): string 
   return lexicalPath(input, ctx);
 }
 
-function lexicalPath(input: string, ctx: GuardContext): string {
+export function lexicalPath(input: string, ctx: GuardContext): string {
   const expanded = expandHome(input, ctx.home);
   if (isAbsolute(expanded)) return resolve(expanded);
   return resolve(ctx.worktree, expanded);

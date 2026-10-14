@@ -133,6 +133,24 @@ test("doctor loads the closeout policy from origin/main", async () => {
   expect(lines[index]).toBe("missing closeout: policy on origin/main is malformed");
   expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
   expect(lines.filter((line) => line.startsWith("missing closeout:"))).toHaveLength(1);
+  const localRoot = join(home, "policies");
+  mkdirSync(join(localRoot, ".agents"), { recursive: true });
+  writeFileSync(join(localRoot, ".agents/closeout.yaml"), 'specVersion: "0.1"\nitems: []\n');
+  writeFileSync(
+    join(home, "config.toml"),
+    '[github]\nrepo = "acme/widgets"\n[closeout.projects."acme/widgets"]\npolicy_root = "policies"\n',
+  );
+  const local = await realProbe(env);
+  expect(local.facts.closeout).toEqual({
+    ok: true,
+    detail: `local policy loads from ${localRoot}`,
+    fix: null,
+  });
+  writeFileSync(join(localRoot, ".agents/closeout.yaml"), "invalid");
+  expect((await realProbe(env)).facts.closeout).toMatchObject({
+    ok: false,
+    detail: "configured local Closeout policy is invalid",
+  });
 }, 30_000);
 
 test("bun run paws doctor exits nonzero until prerequisites exist", async () => {

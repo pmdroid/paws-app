@@ -1,3 +1,4 @@
+import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   closeSync,
   constants,
@@ -241,7 +242,21 @@ export async function executeRunnerCommand(
       ).trim();
       if (base !== command.repository.baseSha) throw new Error("Runner repository base mismatch");
       await invokeGit(["-C", worktree, "config", "core.hooksPath", "/dev/null"]);
-      await invokeGit(["-C", worktree, "checkout", "-b", `paws/${job.executionId}`, base]);
+      await invokeGit([
+        "-C",
+        worktree,
+        "symbolic-ref",
+        "HEAD",
+        `refs/heads/paws/${job.executionId}`,
+      ]);
+      await invokeGit(["-C", worktree, "update-ref", "HEAD", base]);
+      options.signal?.throwIfAborted();
+      await checkoutPatterns(
+        worktree,
+        exclusionPatterns(command.repository.checkoutExclusions ?? []),
+        env,
+      );
+      options.signal?.throwIfAborted();
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });

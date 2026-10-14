@@ -1,11 +1,13 @@
 import { renderMarkup } from "./theme";
 
 export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: string): void {
-  const section = document.createElement("details");
+  const section = document.createElement("section");
   section.id = "workspace-github-attribution";
+  section.dataset.settingsPage = "account";
+  section.className = "settings-section";
   renderMarkup(
     section,
-    '<summary>Your GitHub attribution</summary><p>Link your own GitHub account to receive public credit on commits and pull requests. This verifies your identity only and does not grant repository access.</p><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button>',
+    '<div><h2>GitHub credit</h2><p class="sub">Link GitHub to credit you on commits and pull requests.</p></div><div class="settings-account"><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button></div>',
   );
   root.append(section);
   const feedback = section.querySelector<HTMLElement>('[role="status"]')!;
@@ -20,13 +22,14 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
       ...(method === "POST" ? { body: JSON.stringify({ consent: true }) } : {}),
     });
-    const data = (await response.json()) as {
+    const data = (await response.json().catch(() => null)) as {
+      configured?: boolean;
       identity?: { login: string } | null;
       authorizeUrl?: string;
       error?: string;
-    };
-    if (!response.ok)
-      throw new Error(data.error ?? "Attribution could not be checked. Try Refresh attribution.");
+    } | null;
+    if (!response.ok || data === null)
+      throw new Error(data?.error ?? "Attribution could not be checked. Try Refresh attribution.");
     return data;
   }
   async function load() {
@@ -37,10 +40,12 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       const data = await request("GET");
       feedback.textContent = data.identity
         ? `Public attribution is enabled for @${data.identity.login}.`
-        : "No verified GitHub attribution. Link your identity to enable public credit.";
+        : data.configured === false
+          ? "Ask the Paws operator to configure the GitHub App on the server, then restart Paws."
+          : "No verified GitHub attribution. Link your identity to enable public credit.";
       form.hidden = Boolean(data.identity);
       revoke.hidden = !data.identity;
-      connect.disabled = false;
+      connect.disabled = data.configured === false;
     } catch (error) {
       feedback.textContent =
         error instanceof Error

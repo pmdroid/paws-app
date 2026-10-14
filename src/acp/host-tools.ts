@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname } from "node:path";
 import {
   RequestError,
   type CreateTerminalRequest,
@@ -22,6 +22,7 @@ import { killTree, spawnAgent, stopChild, type OwnedProcess } from "./process";
 import {
   decidePermission,
   isLocalSkillPath,
+  lexicalPath,
   resolveInsideWorktree,
   type GuardContext,
 } from "./permissions";
@@ -169,9 +170,7 @@ export async function readGuarded(
   if (!decision.allow)
     throw RequestError.invalidParams({ reason: decision.reason }, decision.reason);
   const path = isLocalSkillPath(params.path, guard)
-    ? params.path.startsWith("~/")
-      ? resolvePath(guard.home, params.path.slice(2))
-      : resolvePath(guard.worktree, params.path)
+    ? lexicalPath(params.path, guard)
     : resolveInsideWorktree(params.path, guard);
   let content = await readFile(path, "utf8");
   if (params.line != null || params.limit != null) {
