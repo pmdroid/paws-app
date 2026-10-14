@@ -78,6 +78,7 @@ export type DecisionInput = {
   evidenceDir?: string;
   /** Home directory for `~/.agents/closeout.yaml` when origin has no entry. */
   home?: string;
+  policyRoot?: string;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
@@ -92,6 +93,7 @@ export type RunRequest = {
   candidate: CandidateIdentity;
   evidenceDir?: string;
   home?: string;
+  policyRoot?: string;
   /** `~/.paws` override for the detached worktree. */
   pawsHome?: string;
   retryBaseline?: readonly string[];
@@ -119,6 +121,7 @@ export type AddReviewInput = {
   reviewer: ReviewIntake;
   evidenceDir?: string;
   home?: string;
+  policyRoot?: string;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
@@ -171,8 +174,8 @@ const gitReader: GitReader = {
 };
 
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
-export function validate(repo: string, home?: string): ValidateResult {
-  const loaded = loadOrigin(repo, home);
+export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
 }
@@ -180,10 +183,11 @@ export function validate(repo: string, home?: string): ValidateResult {
 export function reviewRequirements(
   repo: string,
   home?: string,
+  policyRoot?: string,
 ):
   | { ok: true; items: Array<{ id: string; gate: Gate; independence: Independence }> }
   | { ok: false; message: string } {
-  const loaded = loadOrigin(repo, home);
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,
@@ -193,8 +197,8 @@ export function reviewRequirements(
   };
 }
 
-export function policyFixBudget(repo: string, home?: string): number | null {
-  const loaded = loadOrigin(repo, home);
+export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none" || policy.retry === undefined) return null;
@@ -223,7 +227,7 @@ export function digest(repo: string): DigestResult {
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
   const candidate = input.candidate ?? blankCandidate();
   if (!loaded.ok) {
     return evaluate(
@@ -241,7 +245,7 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
  * Review requirements stay missing until {@link addReview}.
  */
 export async function run(input: RunRequest): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(
@@ -299,7 +303,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
 
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (loaded.policy.source === "none" || loaded.policy.digest === null) {
     return { ok: false, message: "no closeout policy" };
@@ -320,6 +324,7 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
     base: resolved.base,
     head: resolved.head,
     policyDigest: policy.digest,
+    skillFiles: policy.skillFiles,
     worktree: input.repo,
   });
   if (isInvalid(reviewed)) return { ok: false, message: reviewed.reason };
@@ -523,11 +528,16 @@ async function resolvePair(
   return { ok: true, base, head };
 }
 
-function loadOrigin(repo: string, home: string | undefined): ReturnType<typeof loadPolicy> {
+function loadOrigin(
+  repo: string,
+  home: string | undefined,
+  policyRoot?: string,
+): ReturnType<typeof loadPolicy> {
   return loadPolicy({
     repo,
     git: gitReader,
     ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
   });
 }
 

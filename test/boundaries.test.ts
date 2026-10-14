@@ -124,6 +124,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: [
+    "closeout-spec",
     "db",
     "credentials",
     "config",

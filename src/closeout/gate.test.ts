@@ -25,6 +25,99 @@ Report findings. An empty list means the change is fine.
 `;
 
 describe("closeout gate", () => {
+  test("local policy runs candidate commands and trusted review skills without checkout edits", async () => {
+    const repo = await originRepo({ "candidate.txt": "candidate content" });
+    const root = path.join(repo.root, "local-policy");
+    const skill = ".agents/skills/adversarial-review/SKILL.md";
+    try {
+      await mkdir(path.join(root, ".agents/skills/adversarial-review/references"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(root, ".agents/closeout.yaml"),
+        policy(
+          [
+            {
+              ...alwaysPass("candidate"),
+              exec: [
+                "bun",
+                "-e",
+                "if (require('node:fs').readFileSync('candidate.txt', 'utf8') !== 'candidate content') process.exit(1)",
+              ],
+            },
+            reviewItem("review"),
+          ],
+          1,
+        ),
+      );
+      await writeFile(path.join(root, skill), "Trusted local review skill");
+      await writeFile(
+        path.join(root, ".agents/skills/adversarial-review/references/rule.md"),
+        "Trusted local reference",
+      );
+      await writeFile(
+        path.join(root, ".agents/skills/adversarial-review/asset.png"),
+        new Uint8Array([137, 80, 78, 71, 255]),
+      );
+      await exec("git", ["-C", repo.dir, "remote", "remove", "origin"]);
+      expect(reviewRequirements(repo.dir, repo.home, root)).toMatchObject({
+        ok: true,
+        items: [{ id: "review" }],
+      });
+      let reviews = 0;
+      const gate = createCloseoutGate({
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        policyRoot: root,
+        reviewer: {
+          async review(request) {
+            reviews += 1;
+            expect(request.prompt).toContain("Trusted local review skill");
+            expect(request.prompt).toContain("Trusted local reference");
+            expect(request.prompt).toContain("asset.png");
+            expect(request.prompt).toContain("Binary resource, SHA-256");
+            return { session: "reviewer", model: "review-model", provider: "codex", findings: [] };
+          },
+        },
+        fixer: {
+          async applyFix() {
+            throw new Error("unexpected fix");
+          },
+        },
+      });
+      const input = {
+        taskId: TASK,
+        worktree: repo.dir,
+        baseSha: repo.head,
+        headSha: repo.head,
+        attempt: 1,
+      };
+      const first = await gate.run(input);
+      expect(first.decision).toBe("accepted");
+      expect(first.result?.decision?.policy.path).toBe(path.join(root, ".agents/closeout.yaml"));
+      expect(reviews).toBe(1);
+      expect((await gate.run(input)).decision).toBe("accepted");
+      expect(reviews).toBe(1);
+      await writeFile(
+        path.join(root, ".agents/skills/adversarial-review/references/rule.md"),
+        "Trusted local reference changed",
+      );
+      const changed = await gate.run(input);
+      expect(changed.decision).toBe("accepted");
+      expect(changed.result?.decision?.policy.digest).not.toBe(
+        first.result?.decision?.policy.digest,
+      );
+      expect(reviews).toBe(2);
+      expect((await exec("git", ["-C", repo.dir, "status", "--porcelain"])).stdout).toBe("");
+      await rm(path.join(root, ".agents/closeout.yaml"));
+      expect((await gate.run(input)).decision).toBe("blocked");
+      expect(reviews).toBe(2);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("preflight reads review independence from trusted origin policy", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),

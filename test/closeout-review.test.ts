@@ -35,6 +35,27 @@ const finding = (severity: Finding["severity"], explanation: string): Finding =>
 });
 
 describe("closeout reviewer", () => {
+  test("uses the policy skill snapshot instead of the candidate skill", async () => {
+    const repo = await gitRepo();
+    const script = scripted([{ sessionId: "review-local", model: "review-model", text: "[]" }]);
+    try {
+      const result = await createCodexReviewer(script.runner, { model: "configured" }).review({
+        item: reviewItem(),
+        candidate: { session: "implementer", model: "implementer-model", provider: "test" },
+        base: repo.base,
+        head: repo.head,
+        policyDigest: DIGEST,
+        worktree: repo.dir,
+        skillFiles: new Map([[SKILL, new TextEncoder().encode("Policy snapshot review skill")]]),
+      });
+      expect(result.status).toBe("recorded");
+      expect(script.starts[0]?.prompt).toContain("Policy snapshot review skill");
+      expect(script.starts[0]?.prompt.split("# Diff ")[0]).not.toContain(SKILL_TEXT);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("records the ACP session, reported model, and provider without judging independence", async () => {
     const repo = await gitRepo();
     const session = "implementer-session";

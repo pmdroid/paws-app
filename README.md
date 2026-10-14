@@ -19,7 +19,7 @@ Add the `paws` label to a Linear issue or delegate it to the configured Linear u
 
 `setup` writes `~/.paws/config.toml`. It connects your Linear personal API key and team, signs in to GitHub, asks which repository to use, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). Existing GitHub authentication settings are preserved. The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. Comment mode polls without a public URL; Linear agent-session mode is also available.
 
-Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
+Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that the [configured local policy](docs/local-closeout.md) or `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
 
 ```text
 missing grok: Run `grok login`
