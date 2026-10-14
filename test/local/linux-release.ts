@@ -23,7 +23,6 @@ const proof = deb
       : "test/local/linux-install-proof.py";
 const root = mkdtempSync(join(tmpdir(), "paws-release-verification-"));
 const source = resolve(process.env.PAWS_RELEASE_PROOF_SOURCE ?? repository);
-const node = resolve(process.env.PAWS_RELEASE_PROOF_NODE ?? "/usr/bin/node");
 const image = process.env.PAWS_RELEASE_PROOF_IMAGE ?? "gegenlesen/runner-base:benchmark-current";
 const env = {
   PATH: "/usr/bin:/bin",
@@ -45,9 +44,6 @@ async function run(args: string[], name: string) {
   return stdout;
 }
 console.log(`Evidence ${root}`);
-const nodeVersion = (await run([node, "--version"], "node-version")).trim();
-if (!/^v(?:2[2-9]|[3-9][0-9])\./.test(nodeVersion))
-  throw new Error("Local proof needs Node22 or newer");
 const runtime = join(root, "host-runtime");
 mkdirSync(runtime, { mode: 0o700 });
 for (const name of ["systemd-sysusers", "systemd-tmpfiles", "systemctl"]) {
@@ -109,7 +105,6 @@ const observation = await run(
       [join(repository, "test/local/linux-install-proof.py"), "/proof/source.py"],
       [runtime, "/proof/host-runtime"],
       [artifactRoot, "/proof/package"],
-      [node, "/proof/node"],
       ...(deb
         ? [
             [join(repository, "deploy/linux/deb-package.py"), "/proof/deb-package.py"],
@@ -133,7 +128,6 @@ writeFileSync(
     {
       ...JSON.parse(observation),
       image: imageId,
-      nodeVersion,
       installerSha256: digest(join(repository, "deploy/linux/install.py")),
       verifierSha256: digest(join(repository, "deploy/linux/release.py")),
       packagerSha256: digest(join(repository, "deploy/linux/package.py")),

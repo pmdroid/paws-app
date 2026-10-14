@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import type { EvidenceRecord } from "../types";
+import evidenceSchema from "../schema/evidence.schema.json" with { type: "json" };
 
 const schema = readSchema();
 const validate: ValidateFunction = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
@@ -15,8 +15,7 @@ export function checkEvidence(
 }
 
 function readSchema(): AnySchema {
-  const url = new URL("../schema/evidence.schema.json", import.meta.url);
-  const value: unknown = JSON.parse(readFileSync(url, "utf8"));
+  const value: unknown = evidenceSchema;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("evidence.schema.json is not a schema object");
   }
