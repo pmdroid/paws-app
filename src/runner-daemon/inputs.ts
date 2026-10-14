@@ -10,7 +10,7 @@ const chunk = z.strictObject({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   data: z.string().max(699052),
 });
-const fileChunk = chunk.extend({ fileId: z.number().int().min(0).max(19) });
+const fileChunk = chunk.extend({ fileId: z.number().int().min(0).max(20) });
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 export async function downloadRunnerInputs(
   command: WorkCommand,

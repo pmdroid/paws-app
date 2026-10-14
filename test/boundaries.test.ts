@@ -5,6 +5,9 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "runner-accounts",
+  "runner-login",
+  "runner-login-worker",
   "worktree-checkout",
   "config",
   "credentials",
@@ -14,6 +17,7 @@ const MODULES = [
   "linear",
   "intake",
   "execution-controls",
+  "project-execution",
   "scheduler",
   "acp",
   "closeout",
@@ -79,13 +83,14 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
   "execution-controls": ["core", "db", "workspace"],
+  "project-execution": ["core", "db", "workspace", "linear", "intake"],
   scheduler: ["core", "db", "intake"],
   acp: ["core", "config", "process", "worktree-checkout"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core", "worktree-checkout"],
   github: ["process"],
   questions: ["core"],
-  decisions: ["db"],
+  decisions: ["db", "scheduler"],
   web: ["db"],
   server: [
     "slack",
@@ -152,6 +157,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
+  "runner-accounts": ["db", "runner-protocol"],
+  "runner-login": ["db", "workspace", "runner-work", "runner-protocol", "runner-accounts"],
+  "runner-login-worker": ["acp", "install", "runner-protocol"],
   "runner-execution": ["runner-protocol"],
   "runner-check": ["runner-execution", "runner-protocol"],
   "runner-checks": [
@@ -185,6 +193,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-check-runtime",
   ],
   "runner-worker": [
+    "runner-login-worker",
     "worktree-checkout",
     "acp",
     "runner-execution",
@@ -203,7 +212,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-verifier",
     "runner-check",
   ],
-  "runner-work": ["db", "workspace", "runner-protocol", "questions"],
+  "runner-work": ["runner-accounts", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "config",
@@ -224,7 +233,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-journal": ["db", "runner-protocol"],
-  "runner-helpers": ["db", "runner-protocol", "workspace"],
+  "runner-helpers": ["runner-accounts", "db", "runner-protocol", "workspace"],
   "runner-runtime": [
     "acp",
     "runner-transcripts",
@@ -237,9 +246,16 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-journal",
     "github",
   ],
-  "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
-  "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
+  "runner-health": ["runner-accounts", "db", "workspace", "runner-work", "runner-protocol"],
+  "runner-health-runtime": [
+    "runner-answers",
+    "db",
+    "runner-daemon",
+    "runner-execution",
+    "runner-protocol",
+  ],
   "runner-coordinator": [
+    "runner-login",
     "runner-inputs",
     "runner-helpers",
     "runner-checks",

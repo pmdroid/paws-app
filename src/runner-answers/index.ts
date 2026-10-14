@@ -22,6 +22,16 @@ export const RunnerAnswerSchema = z.strictObject({
 });
 export type RunnerAnswer = z.infer<typeof RunnerAnswerSchema>;
 
+export function removeRunnerAnswers(spool: RunnerSpool, executionId: string): void {
+  if (process.getuid?.() !== spool.runnerUid) throw new Error("Only the runner may remove answers");
+  try {
+    const directory = `${runnerJobDirectory(spool, executionId)}/answers`;
+    rmSync(directory, { recursive: true, force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 function openAnswers(spool: RunnerSpool, executionId: string, create: boolean): number {
   const directory = `${runnerJobDirectory(spool, executionId)}/answers`;
   if (create) {

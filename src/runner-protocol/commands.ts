@@ -95,6 +95,7 @@ const common = {
   id,
   runnerId: id,
   workspaceId: id,
+  memberId: id.optional(),
   issuedAt: time,
   expiresAt: time,
 };
@@ -116,6 +117,7 @@ export const RunnerCommandSchema = z
       ...common,
       type: z.literal("run"),
       ...work,
+      skillsInputId: z.number().int().min(0).max(20).optional(),
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
     }),
@@ -165,6 +167,12 @@ export const RunnerCommandSchema = z
     }),
     z.strictObject({ ...common, type: z.literal("probe"), profile: RunnerProfileSchema }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
+    z.strictObject({
+      ...common,
+      type: z.literal("login"),
+      memberId: id,
+      agent: z.enum(["claude", "codex"]),
+    }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     z.strictObject({
       ...common,
@@ -185,7 +193,20 @@ export const RunnerCommandSchema = z
         command.commitPolicy.bot.id === command.checkpointBot.id &&
         command.commitPolicy.bot.login === command.checkpointBot.login),
   )
+  .refine(
+    (command) =>
+      command.type !== "run" ||
+      command.skillsInputId === undefined ||
+      command.inputFiles?.[command.skillsInputId]?.mimeType === "application/vnd.paws.skills+json",
+  )
+  .refine(
+    (command) =>
+      !("inputFiles" in command) ||
+      (command.inputFiles?.length ?? 0) <= 20 ||
+      (command.type === "run" && command.skillsInputId !== undefined),
+  )
   .refine((command) => command.expiresAt > command.issuedAt)
+  .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
   .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)
   .refine(
     (command) => command.type !== "check" || command.repository.baseSha === command.candidateSha,

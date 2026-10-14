@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { hintedPaths } from "../scheduler";
 import {
   auditWorkspaceAccess,
   getLinearSessionAccess,
@@ -248,11 +249,14 @@ export function suggestDecisions(db: Database, questionId: string, text: string)
   const target = scope(db, questionId);
   const query = terms(text);
   if (!target || !query || getLinearSessionAccess(db, target.sessionId) !== "allowed") return [];
-  const paths = db
-    .query<{ paths: string | null }, [string]>(
-      "SELECT paths FROM work_item_scheduling WHERE item_id=?",
+  const context = db
+    .query<{ paths: string | null; brief: string | null }, [string]>(
+      "SELECT s.paths,i.brief FROM work_item i LEFT JOIN work_item_scheduling s ON s.item_id=i.id WHERE i.id=?",
     )
-    .get(target.itemId)?.paths;
+    .get(target.itemId);
+  const paths: string[] = context?.paths
+    ? JSON.parse(context.paths)
+    : hintedPaths(context?.brief ?? null);
   const candidates = db
     .query<Row, [string, string]>(`${SELECT} JOIN decision_memory_search f ON f.decision_id=d.id
     WHERE d.workspace_id=? AND d.retired_at IS NULL AND decision_memory_search MATCH ? ORDER BY bm25(decision_memory_search) LIMIT 30`)
@@ -272,11 +276,9 @@ export function suggestDecisions(db: Database, questionId: string, text: string)
       if (
         !decision.scopeGlobs.includes("**") &&
         !decision.scopeGlobs.includes("**/*") &&
-        !(
-          paths &&
-          (JSON.parse(paths) as string[]).some((path) =>
-            decision.scopeGlobs.some((glob) => new Bun.Glob(glob).match(path)),
-          )
+        !paths.some(
+          (path) =>
+            path !== "*" && decision.scopeGlobs.some((glob) => new Bun.Glob(glob).match(path)),
         )
       )
         return [];
