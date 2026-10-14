@@ -64,11 +64,13 @@ export function render(model: RenderModel): Rendered {
     content:
       model.route.view === "runners"
         ? '<div id="runner-settings"></div>'
-        : model.route.view === "settings"
-          ? renderSettingsPage(model.route.page)
-          : snapshot && model.phase !== "loading"
-            ? renderView(snapshot, model)
-            : renderPending(model),
+        : model.route.view === "projects"
+          ? '<div id="project-delivery"></div>'
+          : model.route.view === "settings"
+            ? renderSettingsPage(model.route.page)
+            : snapshot && model.phase !== "loading"
+              ? renderView(snapshot, model)
+              : renderPending(model),
     title,
   };
 }
@@ -111,6 +113,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return viewQueue(snapshot);
     case "runners":
       return '<div id="runner-settings"></div>';
+    case "projects":
+      return '<div id="project-delivery"></div>';
     case "settings":
       return renderSettingsPage(model.route.page);
   }
