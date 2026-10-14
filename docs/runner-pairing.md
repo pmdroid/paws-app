@@ -1,6 +1,6 @@
 # Pair a remote Linux runner
 
-Pairing connects a Linux host to your Paws workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
+Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-agent` user with that user’s access to the host. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
 
 ## Prepare Paws and the host
 
