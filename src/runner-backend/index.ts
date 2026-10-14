@@ -582,15 +582,15 @@ export function createRemoteAgentRunner(options: {
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = row.event;
-              if (event.type === "progress")
+              if (event.type === "progress" && taskScope)
+                await emit({ type: "progress", text: event.text });
+              else if (event.type === "progress")
                 await emit({
                   type: "session_update",
                   sessionId: assigned.id,
                   update: {
                     sessionUpdate:
-                      input.role === "reviewer" || taskScope
-                        ? "agent_thought_chunk"
-                        : "agent_message_chunk",
+                      input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
                     content: { type: "text", text: event.text },
                   },
                 });
