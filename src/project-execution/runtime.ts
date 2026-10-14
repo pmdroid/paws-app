@@ -21,6 +21,7 @@ import type {
 import { readExternalBlockerEvidence, type IntakeResult } from "../intake";
 import {
   assertProjectAuthority,
+  assertProjectTeamAccess,
   createProjectApprovals,
   listProjectApprovals,
   readProjectApproval,
@@ -353,13 +354,28 @@ export function createApprovedProjects(input: {
         });
         throw new Error("Project steering access is required.");
       }
-      assertProjectAuthority(db, actor, saved.preview);
+      const authorize = (approval: ProjectApproval) => {
+        try {
+          return action === "resume"
+            ? assertProjectAuthority(db, actor, approval.preview).member
+            : assertProjectTeamAccess(db, actor, approval.preview).member;
+        } catch (error) {
+          auditWorkspaceAccess(db, {
+            ...actor,
+            action: "access.denied",
+            subject: `project.${action}:${id}`,
+            now: now(),
+          });
+          throw error;
+        }
+      };
+      authorize(saved);
       const port = input.getPort();
       if (!port) throw new Error("Project execution controls are not ready.");
       const canAct = () => {
         try {
           const current = readProjectApproval(db, id)!;
-          const currentMember = assertProjectAuthority(db, actor, current.preview).member;
+          const currentMember = authorize(current);
           return (
             current.stoppedAt === null &&
             currentMember.role !== "observer" &&
@@ -374,7 +390,7 @@ export function createApprovedProjects(input: {
       const currentClaims = claims(id);
       db.transaction(() => {
         const current = readProjectApproval(db, id)!;
-        assertProjectAuthority(db, actor, current.preview);
+        authorize(current);
         if (
           current.approvedAt === null ||
           (current.stoppedAt !== null && action !== "stop") ||

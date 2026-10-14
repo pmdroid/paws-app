@@ -93,6 +93,7 @@ import {
   openLinear,
   startCatchUpPoller,
   parseLinearAdministration,
+  sessionCreatedKey,
   type AcceptedLinearEvent,
   type LinearRunning,
   type TrackerAdapter,
@@ -120,6 +121,12 @@ import {
   canAdvanceItem,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
+import {
+  createApprovedProjects,
+  createProjectHttp,
+  createProjectExecutionGuard,
+} from "./project-execution";
+import { saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
@@ -229,7 +236,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let dispatch: (() => readonly string[]) | null = null;
   let legacyReadyItemIds: readonly string[] = [];
   let executionControls: ReturnType<typeof createExecutionControls> | null = null;
+  let projects: ReturnType<typeof createApprovedProjects> | null = null;
+  let projectHttp: ReturnType<typeof createProjectHttp> | null = null;
+  const projectExecution = createProjectExecutionGuard(db, () => projects);
   const managedEpicReady = (epicId: string): boolean =>
+    projectExecution.canDispatch(epicId) &&
     !hasPendingEpicChanges(db, epicId) &&
     db.query("SELECT 1 FROM epic_dependency_snapshot WHERE epic_id=?").get(epicId) !== null;
   const repository = repositoryBinding(runtime.repo);
@@ -483,7 +494,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     void runnerReady.catch(() => console.error("Paws runner startup failed."));
   const placement =
     linear?.tracker && linear.issueLifecycle
-      ? createRunnerPlacement({ db, tracker: linear.tracker, lifecycle: linear.issueLifecycle })
+      ? createRunnerPlacement({
+          db,
+          tracker: linear.tracker,
+          lifecycle: linear.issueLifecycle,
+          sessionActor: projectExecution.actor,
+        })
       : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
   const remote =
@@ -560,6 +576,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??
         Response.json({ error: "Execution controls are starting." }, { status: 503 }),
+      projects: async (...args) =>
+        projectHttp?.(...args) ??
+        Response.json({ error: "Project delivery is starting." }, { status: 503 }),
       ...(tls ? { tls } : {}),
       ...(workspace
         ? {
@@ -687,6 +706,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearTaskModes: true,
         remoteExecution,
         linearAccess: linearTaskAccess ?? undefined,
+        canDispatchEpic: projectExecution.canDispatch,
+        publicationReady: (itemId) => {
+          const item = getWorkItem(db, itemId);
+          return !!item && projectExecution.canDispatch(item.epicId);
+        },
+        authorizeLinearIntake: projectExecution.authorizeIntake,
+        linearIntakeScope: projectExecution.scope,
+        linearIntakeActor: projectExecution.actor,
+        onLinearIntake: projectExecution.accepted,
+        authorizeLinearEvent: async (event) =>
+          (await projectExecution.authorizeEvent(event)) ?? true,
         ...(workspace && linear?.tracker && linear.issueLifecycle
           ? {
               canDispatchEpic: managedEpicReady,
@@ -704,6 +734,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   : null;
                 return (
                   item !== null &&
+                  projectExecution.canDispatch(item.epicId) &&
                   currentWorkspace !== null &&
                   canAdvanceItem(db, {
                     itemId,
@@ -718,16 +749,26 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               },
               publicationReady: (
                 ...args: Parameters<NonNullable<OrchestratorOptions["publicationReady"]>>
-              ) => publication?.publicationReady(...args) ?? Promise.resolve(false),
+              ) =>
+                Promise.resolve(publication?.publicationReady(...args) ?? false).then(
+                  (publicationAllowed) => {
+                    const item = getWorkItem(db, args[0]);
+                    return (
+                      publicationAllowed && !!item && projectExecution.canDispatch(item.epicId)
+                    );
+                  },
+                ),
             }
           : {}),
         ...(workspace
           ? {
               authorizeLinearIntake: (sessionId, spec) =>
-                assignments?.authorizeIntake(sessionId, spec) ?? true,
+                projectExecution.authorizeIntake(sessionId, spec) &&
+                (assignments?.authorizeIntake(sessionId, spec) ?? true),
               authorizeLinearEvent: async (event) =>
                 (await (await workspace.access).authorizeLinearEvent(event)) &&
-                (assignments ? await assignments.authorize(event) : true),
+                ((await projectExecution.authorizeEvent(event)) ??
+                  (assignments ? await assignments.authorize(event) : true)),
             }
           : {}),
         githubAuth:
@@ -919,10 +960,34 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         getPort: () => attached,
       });
       if (workspace && linear?.tracker && linear.issueLifecycle) {
+        if (linear.memberships && linear.startSession && runtime.publicUrl) {
+          projects = createApprovedProjects({
+            db,
+            tracker: linear.tracker,
+            memberships: linear.memberships,
+            startSession: linear.startSession,
+            resumeSession: async (sessionId) => {
+              const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
+              if (!event || !linear.webhook.onEvent)
+                throw new Error("Wait for Linear to refresh this project session.");
+              if ((await linear.webhook.onEvent(event)) === false)
+                throw new Error("Project session admission is awaiting access.");
+            },
+            origin: runtime.publicUrl,
+            bus: attached.bus,
+            getPort: () => attached,
+            repository: (name) =>
+              repositories.find((value) => `${value.owner}/${value.repo}` === name) ?? null,
+            saveBlockerPolicies: (value) => saveExternalBlockerPolicies(db, value),
+          });
+          projectHttp = createProjectHttp({ db, tracker: linear.tracker, projects });
+          projects.register(created.jobs);
+        }
         reconciler = createEpicReconciler({
           db,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
+          scopeSnapshot: projectExecution.scopeSnapshot,
           inspectMerge: async (input) => {
             input.signal?.throwIfAborted();
             const [owner, repo] = input.repository.split("/") as [string, string];

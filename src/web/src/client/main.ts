@@ -19,6 +19,7 @@ import { createAgentSettings } from "./agent-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
+import { createProjects } from "./projects";
 import { createExecutionControls } from "./execution-controls";
 import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
 
@@ -27,6 +28,7 @@ const shell = mountShell();
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
+const projects = createProjects();
 const executionControls = createExecutionControls(reload);
 
 const STORAGE_KEY = "paws.statusEngineUrl";
@@ -229,6 +231,8 @@ function paint(): void {
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), snapshot?.source);
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
   if (runnerRoot) runners.mount(runnerRoot, currentEngine(), snapshot?.source);
+  const projectRoot = document.querySelector<HTMLElement>("#project-delivery");
+  if (projectRoot) projects.mount(projectRoot, currentEngine(), snapshot?.source);
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {
@@ -348,6 +352,7 @@ function onClick(event: Event): void {
     void reload();
     void paintGitHubAuth(null);
     if (parseRoute(location.hash).view === "runners") void runners.refresh();
+    if (parseRoute(location.hash).view === "projects") void projects.refresh();
   }
   if (action === "source") openDialog();
   if (action === "epic-filter") {
