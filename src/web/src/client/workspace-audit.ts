@@ -9,11 +9,12 @@ type AuditEntry = {
 };
 
 export function initializeWorkspaceAudit(root: HTMLElement) {
-  const history = document.createElement("details");
-  history.className = "workspace-audit";
+  const history = document.createElement("section");
+  history.className = "workspace-audit settings-account";
+  history.dataset.settingsPage = "audit";
   renderMarkup(
     history,
-    `<summary>Audit history</summary><p class="muted">Workspace access and administration changes, newest first.</p><p role="status"></p><ol tabindex="0" aria-label="Workspace audit changes"></ol><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`,
+    `<h2>Recent changes</h2><p role="status"></p><ol tabindex="0" aria-label="Workspace audit changes"></ol><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`,
   );
   root.append(history);
   const list = history.querySelector("ol")!;
@@ -21,7 +22,6 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
   const refresh = history.querySelector<HTMLButtonElement>('[data-audit="refresh"]')!;
   const older = history.querySelector<HTMLButtonElement>('[data-audit="older"]')!;
   let nextBefore: number | null = null;
-  let loaded = false;
   let pending = false;
   async function load(append: boolean) {
     if (pending) return;
@@ -60,7 +60,6 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
       if (!append) list.replaceChildren();
       list.append(...rows);
       nextBefore = page.nextBefore;
-      loaded = true;
       status.textContent = list.children.length === 0 ? "No workspace changes recorded yet." : "";
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : "Audit history is unavailable.";
@@ -71,9 +70,7 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
       older.hidden = nextBefore === null;
     }
   }
-  history.addEventListener("toggle", () => {
-    if (history.open && !loaded) void load(false);
-  });
+  void load(false);
   refresh.addEventListener("click", () => void load(false));
   older.addEventListener("click", () => void load(true));
 }

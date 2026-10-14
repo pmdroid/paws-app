@@ -20,7 +20,7 @@ import { canReadConversations, loadConversations, type ConversationModel } from 
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
-import { initializeWorkspaceAccess } from "./workspace";
+import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
 
 const shell = mountShell();
 
@@ -32,7 +32,7 @@ const executionControls = createExecutionControls(reload);
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
 
-const regions = ["#top", "#banner", "#content"] as const;
+const regions = ["#top", "#banner", "#page-content"] as const;
 const painted = new Map<string, string>();
 
 let choice: SourceChoice = { kind: "auto" };
@@ -75,6 +75,11 @@ async function boot(): Promise<void> {
   workspaceReady = await initializeWorkspaceAccess();
   shell.setAuthenticated(workspaceReady);
   if (!workspaceReady) return;
+  try {
+    const destination = sessionStorage.getItem("paws.settingsReturn");
+    sessionStorage.removeItem("paws.settingsReturn");
+    if (destination === "#/settings/integrations") window.location.hash = destination;
+  } catch {}
   void paintGitHubAuth(null);
   const query = new URLSearchParams(location.search).get("engine");
   const fromQuery = query === null ? null : choiceFromValue(query);
@@ -194,13 +199,25 @@ function paint(): void {
   const showSettings = model.route.view === "settings";
   const access = document.querySelector<HTMLElement>("#workspace-access");
   const auth = document.querySelector<HTMLElement>("#github-auth");
-  if (access && access.dataset.loaded === "true") access.hidden = !showSettings;
-  if (auth) auth.hidden = !showSettings;
+  if (access && access.dataset.loaded === "true")
+    access.hidden =
+      !showSettings ||
+      model.route.view !== "settings" ||
+      (model.route.page ?? "agents") === "agents";
+  if (auth)
+    auth.hidden =
+      !showSettings ||
+      model.route.view !== "settings" ||
+      model.route.page !== "account" ||
+      access?.dataset.workspace === "true";
+  showWorkspaceSettingsPage(
+    model.route.view === "settings" ? (model.route.page ?? "agents") : null,
+  );
   document.title = view.title;
   shell.update({ route: model.route, project: model.snapshot?.project ?? null });
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
-  setHtml("#content", view.content);
+  setHtml("#page-content", view.content);
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
@@ -221,12 +238,12 @@ function paint(): void {
 function setHtml(selector: (typeof regions)[number], html: string): void {
   const element = document.querySelector(selector);
   if (!element || painted.get(selector) === html) return;
-  const focus = selector === "#content" ? captureFocus(element) : null;
-  const logs = selector === "#content" ? captureLogs(element) : [];
-  const scroll = selector === "#content" ? window.scrollY : 0;
+  const focus = selector === "#page-content" ? captureFocus(element) : null;
+  const logs = selector === "#page-content" ? captureLogs(element) : [];
+  const scroll = selector === "#page-content" ? window.scrollY : 0;
   painted.set(selector, html);
   renderMarkup(element, html);
-  if (selector !== "#content") return;
+  if (selector !== "#page-content") return;
   window.scrollTo({ top: scroll, behavior: "instant" });
   restoreLogs(element, logs);
   restoreFocus(element, focus);

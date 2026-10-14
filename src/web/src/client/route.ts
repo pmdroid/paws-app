@@ -1,3 +1,5 @@
+import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
+
 export type Route =
   | { view: "overview" }
   | { view: "runners" }
@@ -7,7 +9,7 @@ export type Route =
   | { view: "questions"; id: string | null }
   | { view: "verdicts"; id: string | null }
   | { view: "queue" }
-  | { view: "settings" };
+  | { view: "settings"; page?: SettingsPage };
 
 export function parseRoute(hash: string): Route {
   const parts = hash
@@ -36,7 +38,9 @@ export function parseRoute(hash: string): Route {
     case "queue":
       return { view: "queue" };
     case "settings":
-      return { view: "settings" };
+      return SETTINGS_PAGES.some((entry) => entry.id === id)
+        ? { view: "settings", page: id as SettingsPage }
+        : { view: "settings" };
     default:
       return { view: "overview" };
   }
@@ -44,8 +48,8 @@ export function parseRoute(hash: string): Route {
 
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "#/";
-  if (route.view === "queue" || route.view === "settings" || route.view === "runners")
-    return `#/${route.view}`;
+  if (route.view === "settings") return route.page ? `#/settings/${route.page}` : "#/settings";
+  if (route.view === "queue" || route.view === "runners") return `#/${route.view}`;
   return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
 }
 

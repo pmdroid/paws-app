@@ -18,6 +18,9 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from ".
 import { cn } from "./ui/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs";
 
+const SETTINGS_SECTION_LAYOUT =
+  "grid min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)] [&>*]:min-w-0";
+
 const roots = new WeakMap<globalThis.Element, Root>();
 let revision = 0;
 
@@ -42,9 +45,13 @@ export function renderMarkup(root: globalThis.Element, html: string): void {
         <div
           key={++revision}
           className={
-            root.id === "top"
-              ? "flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-              : "flex min-w-0 flex-col gap-6 [overflow-wrap:anywhere]"
+            root.classList.contains("settings-section")
+              ? SETTINGS_SECTION_LAYOUT
+              : root.classList.contains("row")
+                ? "flex min-w-0 flex-wrap items-center gap-3"
+                : root.id === "top"
+                  ? "flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  : "flex min-w-0 flex-col gap-6 [overflow-wrap:anywhere]"
           }
         >
           {content}
@@ -314,10 +321,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",
     );
-  if (has("settings-section"))
-    return styled(
-      "grid min-w-0 grid-cols-1 items-start gap-6 2xl:grid-cols-[minmax(12rem,1fr)_minmax(0,3fr)] [&>*]:min-w-0",
-    );
+  if (has("settings-navigation"))
+    return styled("flex min-w-0 flex-wrap gap-3 [&>a]:grow sm:[&>a]:grow-0");
+  if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
+  if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))
     return styled(
       "flex min-w-0 flex-col gap-4 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow sm:p-6",
