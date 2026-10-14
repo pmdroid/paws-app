@@ -35,6 +35,40 @@ describe("runner agent connection checks", () => {
     expect(
       agentConnectionReady({
         ...seen,
+        accounts: [{ agent: "codex", connected: true }],
+        checks: [
+          {
+            command: { type: "login_check", agent: "codex" },
+            expiresAt: 5,
+            receivedAt: 5,
+            result: {
+              stopReason: "end_turn",
+              authRequired: false,
+              agentExited: true,
+              timedOut: false,
+              cancelled: false,
+              login: { authenticated: false, method: "none", agent: "codex" },
+            },
+          },
+          {
+            command: { type: "login_check", agent: "codex" },
+            expiresAt: 2,
+            receivedAt: 2,
+            result: {
+              stopReason: "end_turn",
+              authRequired: false,
+              agentExited: true,
+              timedOut: false,
+              cancelled: false,
+              login: { authenticated: true, method: "subscription", agent: "codex" },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      agentConnectionReady({
+        ...seen,
         checks: [
           {
             command: { type: "login_check", agent: "codex" },
