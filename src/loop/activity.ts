@@ -36,6 +36,8 @@ export function shouldKeepAlive(sinceLastActivityMs: number): boolean {
 
 export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
   switch (event.type) {
+    case "progress":
+      return clip("thought", event.text);
     case "session_update":
       return fromSessionUpdate(event.update);
     case "error":
