@@ -90,8 +90,12 @@ def validate_unit():
     descriptor = os.open(UNIT, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 65536:
             raise ValueError("Unsafe worker unit")
+        commands = [line[len("ExecStart="):] for line in os.read(descriptor, 65537).decode().splitlines() if line.startswith("ExecStart=")]
+        if len(commands) != 1 or not commands[0].startswith("/"):
+            raise ValueError("Invalid worker entry point")
+        return commands[0]
     finally:
         os.close(descriptor)
 
@@ -346,8 +350,10 @@ def prepare_member(execution_id, command, agent_uid, agent_gid, runner_uid, resu
         directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
         descriptor = os.open("member.conf", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=directory)
         content = "\n".join([
-            "[Service]", "PrivateUsers=yes", "PrivatePIDs=yes", "Group=paws-results", "SupplementaryGroups=paws-agent", "StateDirectory=",
-            "ExecCondition=", "ExecCondition=+/usr/bin/setpriv --bounding-set=-all --no-new-privs /usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard %i",
+            "[Service]", "PrivateUsers=yes", "ProtectKernelTunables=no", "Group=paws-results", "SupplementaryGroups=paws-agent", "StateDirectory=",
+            "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP", "AmbientCapabilities=CAP_SYS_ADMIN CAP_SETPCAP",
+            "ExecStart=", "ExecStart=/usr/bin/unshare --pid --fork --kill-child=KILL --mount-proc /usr/bin/python3 -I -B " + os.path.abspath(__file__) + " confine " + validate_unit(),
+            "ExecCondition=", "ExecCondition=+/usr/bin/setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs /usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard %i",
             "ReadOnlyPaths=", "ReadWritePaths=", "BindReadOnlyPaths=",
             "BindPaths=" + MEMBER_HOMES + "/" + identity + ":/var/lib/paws-agent",
             "ReadWritePaths=" + RECEIPTS,
@@ -526,7 +532,12 @@ def serve(listener, runner_uid, agent_uid, agent_gid, results_gid):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
+    if len(sys.argv) > 2 and sys.argv[1] == "confine":
+        if os.getpid() != 1:
+            raise RuntimeError("Private PID namespace required")
+        subprocess.run(["/usr/bin/mount", "-o", "remount,ro,nosuid,nodev,noexec", "/proc"], check=True)
+        os.execv("/usr/bin/setpriv", ["/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", *sys.argv[2:]])
+    elif len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
         try:
             sys.exit(0 if check_broker().guard(sys.modules[__name__], sys.argv[2], sys.argv[1]) else 1)
         except (OSError, ValueError, StopIteration):
