@@ -70,6 +70,80 @@ const fixture = JSON.parse(fs.readFileSync(path.join(root, "workspace-ui.json"),
       });
       await page.locator("#workspace-github-attribution summary").click();
     }
+    const section = page.locator("#workspace-github-attribution");
+    await section.locator("summary").click();
+    const attributionApi = `${fixture.origin}/api/workspaces/github-attribution`;
+    await context.route(attributionApi, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ configured: false, identity: null }),
+      }),
+    );
+    await section.getByRole("button", { name: "Refresh attribution" }).click();
+    await section
+      .getByText(
+        "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+      )
+      .waitFor();
+    assert.equal(
+      await section.getByRole("button", { name: "Link GitHub identity" }).isDisabled(),
+      true,
+    );
+    observations.push({
+      missingServerCredentials: true,
+      linkingDisabled: true,
+      noSecretInputs: (await section.locator("input[type=password]").count()) === 0,
+    });
+    await context.unroute(attributionApi);
+    await context.route(attributionApi, (route) =>
+      route.fulfill({ status: 404, contentType: "text/plain", body: "not found" }),
+    );
+    await section.getByRole("button", { name: "Refresh attribution" }).click();
+    await section.getByText("Attribution could not be checked. Try Refresh attribution.").waitFor();
+    assert.equal(
+      await section.getByRole("button", { name: "Link GitHub identity" }).isDisabled(),
+      true,
+    );
+    await context.unroute(attributionApi);
+    await section.getByRole("button", { name: "Refresh attribution" }).click();
+    await section.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
+    assert.equal(
+      await section.getByRole("button", { name: "Link GitHub identity" }).isEnabled(),
+      true,
+    );
+    observations.push({ nonJsonAttributionError: true, refreshRecovery: true });
+    const integration = page.locator("#workspace-github-integration");
+    const connectApi = `${fixture.origin}/api/workspaces/github-connect`;
+    await context.route(connectApi, (route) =>
+      route.fulfill({ status: 503, contentType: "text/plain", body: "not found" }),
+    );
+    await integration.locator("input[name=installationId]").fill("22");
+    await integration.getByRole("button", { name: "Connect or reconnect GitHub App" }).click();
+    await integration.getByText("Connection could not start.", { exact: true }).waitFor();
+    assert.equal(
+      await integration
+        .getByRole("button", { name: "Connect or reconnect GitHub App" })
+        .isEnabled(),
+      true,
+    );
+    const validationApi = `${fixture.origin}/api/workspaces/github-integration`;
+    await context.route(validationApi, (route) =>
+      route.fulfill({ status: 503, contentType: "text/plain", body: "not found" }),
+    );
+    await integration.getByRole("button", { name: "Revalidate GitHub App", exact: true }).click();
+    await integration.getByText("GitHub App access could not be checked. Try again.").waitFor();
+    assert.equal(
+      await integration
+        .getByRole("button", { name: "Revalidate GitHub App", exact: true })
+        .isEnabled(),
+      true,
+    );
+    observations.push({
+      nonJsonConnectError: true,
+      nonJsonRevalidationError: true,
+      retryEnabled: true,
+    });
   } finally {
     await browser.close();
   }

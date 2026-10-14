@@ -13,7 +13,7 @@ import {
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
-function fixture() {
+function fixture(configured = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-attribution-"));
   const path = join(root, "db.sqlite");
   let db = openDatabase(path);
@@ -92,7 +92,9 @@ function fixture() {
       clientId: "linear-client",
       installedOrganization: { id: "org", name: "Workspace" },
       now: () => now,
-      githubAttributionClient: { clientId: "app-client", clientSecret: "fixture-client-secret" },
+      githubAttributionClient: configured
+        ? { clientId: "app-client", clientSecret: "fixture-client-secret" }
+        : undefined,
       memberships: {
         async installation() {
           return { id: "org", name: "Workspace" };
@@ -177,7 +179,8 @@ function fixture() {
     set beforeUser(value: (() => Promise<void>) | undefined) {
       beforeUser = value;
     },
-    async restart() {
+    async restart(nextConfigured = configured) {
+      configured = nextConfigured;
       await access.stop();
       db.close();
       db = openDatabase(path);
@@ -306,3 +309,43 @@ for (const scenario of [
     }
   });
 }
+
+test("missing App credentials keep attribution readable and revocable without starting OAuth", async () => {
+  const f = fixture(false);
+  try {
+    const response = await f.request("GET");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ configured: false, identity: null });
+    const start = await f.request("POST", f.alice, { consent: true });
+    expect(start.status).toBe(503);
+    expect(await start.json()).toEqual({
+      error: "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+    });
+    expect((await f.request("POST", f.alice, { consent: true }, "wrong")).status).toBe(403);
+    expect((await f.request("GET", f.other)).status).toBe(403);
+    expect((await f.request("GET", { ...f.alice, token: "invalid" })).status).toBe(401);
+    expect(f.calls).toBe(0);
+    expect(f.db.query("SELECT count(*) AS n FROM github_attribution_request").get()).toEqual({
+      n: 0,
+    });
+    await f.restart(true);
+    const interrupted = await f.begin();
+    await f.restart(false);
+    expect((await f.callback(interrupted)).status).toBe(503);
+    await f.restart(true);
+    expect((await f.callback(interrupted)).status).toBe(403);
+    const pending = await f.begin();
+    expect((await f.callback(pending)).status).toBe(303);
+    await f.restart(false);
+    const saved = await f.request("GET");
+    expect(await saved.json()).toMatchObject({
+      configured: false,
+      identity: { login: "verified-human" },
+    });
+    expect((await f.request("DELETE")).status).toBe(200);
+    expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
+    expect((await f.callback(pending)).status).toBe(403);
+  } finally {
+    await f.close();
+  }
+});

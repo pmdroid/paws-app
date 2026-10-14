@@ -137,7 +137,18 @@ export function createHostedGitHubConnect(options: {
             { error: "An owner must approve workspace repositories first." },
             { status: 409 },
           );
-        const app = activation.template();
+        let app: ActiveGitHubApp;
+        try {
+          app = activation.template();
+        } catch {
+          return Response.json(
+            {
+              error:
+                "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+            },
+            { status: 503 },
+          );
+        }
         const secret = newGitHubOAuthSecret();
         activation.save(secret.id, {
           app,
