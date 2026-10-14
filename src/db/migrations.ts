@@ -1314,4 +1314,19 @@ CREATE TABLE github_attribution_request (
 ) STRICT;
 `,
   },
+  {
+    id: "054_external_blocker_policy",
+    sql: `
+CREATE TABLE external_blocker_policy (
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ epic_id TEXT NOT NULL REFERENCES epic(id),
+ blocker_issue_id TEXT NOT NULL,
+ policy TEXT NOT NULL CHECK(json_valid(policy)),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ revision INTEGER NOT NULL,
+ PRIMARY KEY(epic_id,blocker_issue_id)
+) STRICT;
+ALTER TABLE epic_dependency_snapshot ADD COLUMN external_evidence TEXT NOT NULL DEFAULT '{}';
+`,
+  },
 ];
