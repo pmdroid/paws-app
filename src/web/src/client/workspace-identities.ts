@@ -9,10 +9,12 @@ type IdentityLink = {
 };
 
 export async function initializeWorkspaceIdentities(root: HTMLElement, csrfToken: string) {
-  const details = document.createElement("details");
+  const details = document.createElement("section");
+  details.dataset.settingsPage = "workspace";
+  details.className = "settings-section";
   renderMarkup(
     details,
-    '<summary>Account links</summary><p class="muted">Slack matches use the email in Linear. You can also map accounts manually.</p><div class="workspace-identities"></div><p role="status"></p>',
+    '<div><h2>Member account links</h2><p class="sub">Match members across Linear, Slack, and GitHub.</p></div><div><div class="workspace-identities"></div><p role="status"></p></div>',
   );
   root.append(details);
   const feedback = details.querySelector<HTMLElement>('[role="status"]')!;

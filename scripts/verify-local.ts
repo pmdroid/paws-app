@@ -51,7 +51,9 @@ const commands = [
     mode === "workspace"
       ? "test/local/workspace-instance.ts"
       : mode === "workspace-serve"
-        ? "test/local/workspace-ui.ts"
+        ? process.argv.includes("--settings")
+          ? "test/local/settings-ui.ts"
+          : "test/local/workspace-ui.ts"
         : "test/local/instance.ts",
     mode,
   ],
