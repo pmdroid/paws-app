@@ -88,6 +88,7 @@ function fixture() {
   let beforeInstallation: (() => Promise<void>) | undefined;
   let installationStatus = 200;
   let catalogPages: boolean | "duplicate" = false;
+  let catalogPermissions: unknown = INSTALLATION_PERMISSIONS;
   const provider = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -107,7 +108,7 @@ function fixture() {
               id: 22,
               app_id: 99,
               account: { login: "acme" },
-              permissions: INSTALLATION_PERMISSIONS,
+              permissions: catalogPermissions,
             },
           ],
         });
@@ -228,6 +229,9 @@ function fixture() {
     },
     setCatalogPages(value: boolean | "duplicate") {
       catalogPages = value;
+    },
+    setCatalogPermissions(value: unknown) {
+      catalogPermissions = value;
     },
     setInstallationStatus(value: number) {
       installationStatus = value;
@@ -576,6 +580,41 @@ async function saveSetup(
     }),
   );
 }
+for (const permissions of [
+  { contents: "write", actions: "read", metadata: "read" },
+  { ...INSTALLATION_PERMISSIONS, checks: "read" },
+  null,
+])
+  test("repository setup shows accessible repositories with missing permissions and blocks activation until approved", async () => {
+    const f = fixture();
+    try {
+      f.db.run("DELETE FROM workspace_repository");
+      f.setCatalogPermissions(permissions);
+      await signInForRepositorySetup(f);
+      const response = await f.setup()(
+        f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+      );
+      expect(response?.status).toBe(200);
+      const body = (await response!.json()) as { missingPermissions: string[] };
+      expect(body).toMatchObject({
+        installationId: "22",
+        installations: [{ id: "22", account: "acme" }],
+        repositories: [{ repository: "acme/widgets", private: true }],
+      });
+      expect(body.missingPermissions.length).toBeGreaterThan(0);
+      const denied = await saveSetup(f);
+      expect(denied?.status).toBe(409);
+      expect(await denied!.json()).toMatchObject({ code: "github_permissions_required" });
+      expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
+      expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+      expect(f.calls.some((call) => call.path.endsWith("/access_tokens"))).toBe(false);
+      f.setCatalogPermissions(INSTALLATION_PERMISSIONS);
+      expect((await saveSetup(f))?.status).toBe(200);
+    } finally {
+      await f.close();
+    }
+  });
+
 test("GitHub sign-in precedes repository approval and activates selected matches atomically", async () => {
   const f = fixture();
   try {

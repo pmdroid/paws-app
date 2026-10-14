@@ -51,19 +51,17 @@ export async function githubRepositoryChoices(
     throw new Error("GitHub repository pagination exceeded its limit.");
   }
   const installations = (await pages("/user/installations", "installations"))
-    .filter(
-      (entry) =>
-        String(entry.app_id) === app.appId &&
-        entry.suspended_at == null &&
-        record(entry.permissions) &&
-        Object.entries(INSTALLATION_PERMISSIONS).every(
-          ([key, value]) => (entry.permissions as Record<string, unknown>)[key] === value,
-        ),
-    )
+    .filter((entry) => String(entry.app_id) === app.appId && entry.suspended_at == null)
     .map((entry) => {
       if (!record(entry.account) || typeof entry.account.login !== "string")
         throw new Error("GitHub account is unavailable.");
-      return { id: String(entry.id), account: entry.account.login };
+      return {
+        id: String(entry.id),
+        account: entry.account.login,
+        missingPermissions: Object.entries(INSTALLATION_PERMISSIONS)
+          .filter(([key, value]) => !record(entry.permissions) || entry.permissions[key] !== value)
+          .map(([key]) => key),
+      };
     });
   const installationId = selected ?? installations[0]?.id ?? null;
   if (installationId !== null && !installations.some((entry) => entry.id === installationId))
@@ -89,7 +87,9 @@ export async function githubRepositoryChoices(
             return { repository: entry.full_name.toLowerCase(), private: entry.private === true };
           });
   signal.throwIfAborted();
-  return { installations, installationId, repositories };
+  const missingPermissions =
+    installations.find((entry) => entry.id === installationId)?.missingPermissions ?? [];
+  return { installations, installationId, repositories, missingPermissions };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
