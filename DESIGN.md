@@ -4,7 +4,7 @@
 
 The dashboard uses [Neobrutalism components](https://www.neobrutalism.dev/docs). Copy-in components live under `src/web/src/client/ui`; their upstream MIT license is retained there. Tailwind 4 builds the stylesheet from `theme.css` and the component and layout utilities. Radix Themes is not used.
 
-The blue palette follows the published Neobrutalism registry: blue accent, pale blue canvas, solid borders, five-pixel radii, bold headings, and four-pixel offset shadows. Dark mode uses deep blue surfaces and light text with the same blue accent and structural borders.
+The palette follows the landing page: lavender canvas, paper panels, near-black outlines, and orange actions. Dark mode uses deep lavender surfaces and light text with the same orange accent and structural borders. Five-pixel radii, bold headings, and four-pixel offset shadows stay with the Neobrutalism components.
 
 ## Layout
 
@@ -22,7 +22,7 @@ Native Select and Input components preserve form names, labels, validation, and 
 
 THESIS: Preserve Paws's operational workflows while fully replacing the previous visual system with the user-selected Neobrutalism library.
 
-OWN-WORLD: Blue accent, high-contrast solid borders, offset shadows, bold type, shared light and dark tokens, and visible native form affordances.
+OWN-WORLD: Lavender canvas, paper panels, orange actions, high-contrast solid borders, offset shadows, bold type, shared light and dark tokens, and visible native form affordances.
 
 STORY: See what needs attention, inspect work and evidence, then manage execution settings.
 

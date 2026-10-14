@@ -30,5 +30,5 @@ export type SettingsPage = (typeof SETTINGS_PAGES)[number]["id"];
 
 export function renderSettingsPage(page: SettingsPage = "agents"): string {
   const current = SETTINGS_PAGES.find((entry) => entry.id === page)!;
-  return `<nav class="settings-navigation" aria-label="Settings pages">${SETTINGS_PAGES.map((entry) => `<a class="btn" href="#/settings/${entry.id}"${entry.id === page ? ' aria-current="page"' : ""}>${entry.name}</a>`).join("")}</nav><header class="page-heading"><h1>${current.name}</h1><p class="sub">${current.description}</p></header>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : ""}`;
+  return `<nav class="settings-navigation" aria-label="Settings pages">${SETTINGS_PAGES.map((entry) => `<a class="btn" href="#/settings/${entry.id}"${entry.id === page ? ' aria-current="page"' : ""}>${entry.name}</a>`).join("")}</nav><h1 class="sr-only">${current.name}</h1><p class="sub">${current.description}</p>${page === "agents" ? '<div id="agent-settings" class="agent-settings"></div>' : ""}`;
 }

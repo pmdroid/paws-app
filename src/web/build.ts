@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { parseEngineUrl } from "./src/endpoint";
 
@@ -50,10 +50,17 @@ const tailwind = Bun.spawn(
   { cwd: join(root, "../.."), stdout: "inherit", stderr: "inherit" },
 );
 if ((await tailwind.exited) !== 0) process.exit(1);
-const css = await Bun.file(cssPath).text();
+const css = (await Bun.file(cssPath).text()).replaceAll(
+  "../fonts/bricolage.woff2",
+  "./bricolage.woff2",
+);
 await rm(cssPath);
 const cssName = `app-${Bun.hash(css).toString(16)}.css`;
 await Bun.write(join(dist, "assets", cssName), css);
+await copyFile(
+  join(root, "../../landing/public/fonts/bricolage.woff2"),
+  join(dist, "assets/bricolage.woff2"),
+);
 
 const html = (await Bun.file(join(root, "src/client/index.html")).text())
   .replaceAll("__CSS__", `assets/${cssName}`)

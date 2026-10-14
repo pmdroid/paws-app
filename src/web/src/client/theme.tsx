@@ -165,10 +165,16 @@ function replace(node: DOMNode): ReactElement | undefined {
         ...props,
         type: attribs.type ?? "button",
         "data-slot": "button",
+        "aria-pressed":
+          attribs["aria-pressed"] === "true"
+            ? "true"
+            : attribs["aria-pressed"] === "false"
+              ? "false"
+              : undefined,
         className: cn(
           attribs.class,
           buttonVariants({
-            variant: has("primary", "on") ? "default" : "neutral",
+            variant: has("primary") || attribs["aria-pressed"] === "true" ? "default" : "neutral",
             size: "default",
           }),
         ),
@@ -194,6 +200,7 @@ function replace(node: DOMNode): ReactElement | undefined {
         : "font-semibold underline decoration-2 underline-offset-4 hover:decoration-main",
     );
   }
+  if (name === "h1" && has("sr-only")) return styled("sr-only");
   if (/^h[1-6]$/.test(name))
     return styled(
       name === "h1"
@@ -217,8 +224,10 @@ function replace(node: DOMNode): ReactElement | undefined {
           ? "inline-block h-3 w-6 rounded-base border-2 border-border bg-green-200"
           : "inline-block h-3 w-6 rounded-base border-2 border-border bg-main",
     );
-  if (has("conversation-message", "conversation-question"))
-    return styled("space-y-3 rounded-base border-2 border-border bg-secondary-background p-4");
+  if (has("conversation-message", "conversation-question", "conversation-row"))
+    return styled(
+      "space-y-3 rounded-base border-2 border-border bg-secondary-background px-4 py-4",
+    );
   if (
     has(
       "conversation-timeline",
@@ -230,7 +239,11 @@ function replace(node: DOMNode): ReactElement | undefined {
       "settings-role",
     )
   )
-    return styled("flex min-w-0 flex-col gap-4");
+    return styled(
+      has("conversation-plan", "conversation-tasks", "conversation-files")
+        ? "m-0 flex list-none flex-col gap-3 p-0 [&>li]:px-4 [&>li]:py-3"
+        : "flex min-w-0 flex-col gap-4",
+    );
   if (has("conversation-message-meta", "conversation-heading", "crumbs"))
     return styled("flex flex-wrap items-center gap-2");
   if (has("sr-only")) return styled("sr-only");
@@ -310,7 +323,13 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("status-meta")) return styled("flex min-w-0 flex-wrap items-center gap-3");
   if (has("status-actions"))
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
-  if (has("epic-head")) return styled("space-y-4 pb-5 [&>div]:space-y-3");
+  if (has("epic-head")) return styled("space-y-3");
+  if (has("epic-filters")) return styled("flex flex-wrap gap-2");
+  if (name === "ul" && has("epic-list", "epic-items"))
+    return styled(
+      "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
+    );
+  if (has("epic-row")) return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
   if (has("overview-columns"))
