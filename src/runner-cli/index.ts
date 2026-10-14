@@ -112,7 +112,7 @@ export async function runRunnerCli(
           resultsGid: ids.resultsGid,
         },
         workRoot: "/var/lib/paws-agent/work",
-        home: "/var/lib/paws-agent",
+        home: process.env.HOME ?? "/var/lib/paws-agent",
         signal: abort.signal,
       });
       abort.signal.throwIfAborted();

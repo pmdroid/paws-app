@@ -62,7 +62,7 @@ def main():
         stage(execution_id,value,repository)
         steps=[{'type':'permission','toolCall':{'toolCallId':'write-note','kind':'edit','locations':[{'path':str(WORK/execution_id/'note.txt')}]}},{'type':'fs_write','path':str(WORK/execution_id/'note.txt'),'content':'private'},{'type':'terminal','command':'sh','args':['-c','printf artifact > report.txt']}]
         if repository:
-            steps += [{'type':'fs_read','path':str(WORK/execution_id/'repository/tracked')},{'type':'fs_write','path':str(WORK/execution_id/'repository/tracked'),'content':'changed'},{'type':'fs_write','path':str(WORK/execution_id/'prove.py'),'content':'import os,errno\nx=[]\nfor f in (lambda:os.chmod("repository/tracked",0o666),lambda:os.rename("repository","moved"),lambda:os.rename(os.getcwd(),os.getcwd()+"-moved")):\n try:f();x.append(0)\n except OSError as e:x.append(e.errno)\nassert x==[errno.EROFS,errno.EBUSY,errno.EROFS],x\n'}, {'type':'terminal','command':'python3','args':['prove.py']}]
+            steps += [{'type':'fs_read','path':str(WORK/execution_id/'repository/tracked')},{'type':'fs_write','path':str(WORK/execution_id/'repository/tracked'),'content':'changed'}]
         steps += [{'type':'ask_team','question':'Include the report?'},{'type':'publish_artifact','path':'report.txt','displayName':'Report'},{'type':'update','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'The requested task is complete.'}}},{'type':'end'}]
         (APP/'scripts'/'current.json').write_text(json.dumps({'executionId':execution_id,'model':'fixture-model','steps':steps}))
         assert broker('start',execution_id)=={'ok':True,'alreadyAdmitted':False}
@@ -94,13 +94,11 @@ def main():
             assert trace['tools']==['ask_team','publish_artifact'] and len(answered)==2
             assert (WORK/execution_id/'report.txt').read_text()=='artifact'
         if repository:
-            assert trace['fs'][1]['content']=='source-original' and not trace['fs'][2]['ok']
-            if purpose=='artifact':assert trace['terminals'][1]['ok'] and trace['terminals'][1]['exitCode']==0
-            else:assert not trace['terminals'][1]['ok']
+            assert trace['fs'][1]['content']=='source-original' and trace['fs'][2]['ok']==(purpose=='artifact')
             assert (pathlib.Path('/var/lib/paws-runner-spool')/execution_id/'repository/tracked').read_text()=='source-original'
         assert broker('start',execution_id)=={'ok':True,'alreadyAdmitted':True}
         assert broker('stop',execution_id)=={'ok':True}
-        observed.append({'purpose':purpose,'repository':repository,'prompt':True,'answerWriteTerminalPermissionAndArtifactDenied':purpose=='answer','privateTerminalArtifact':purpose=='artifact','questionReply':True,'artifactReply':purpose=='artifact','noCandidateReviewOrTextField':True,'kernelReadonlyRepository':repository,'noRelaunch':True})
+        observed.append({'purpose':purpose,'repository':repository,'prompt':True,'answerWriteTerminalPermissionAndArtifactDenied':purpose=='answer','privateTerminalArtifact':purpose=='artifact','questionReply':True,'artifactReply':purpose=='artifact','noCandidateReviewOrTextField':True,'independentRepositoryCopy':repository,'noRelaunch':True})
     execution_id='0'*25+'5';value=command(execution_id,'answer',False);stage(execution_id,value,False)
     (WORK/execution_id).symlink_to('/var/lib/paws-agent')
     assert broker('start',execution_id)=={'ok':False}

@@ -294,8 +294,6 @@ def prepare_task_work(execution_id, agent_uid, agent_gid, repository):
             raise ValueError("Unsafe task work root")
         os.mkdir(execution_id, mode=0o700, dir_fd=root)
         directory = os.open(execution_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
-        if repository:
-            os.mkdir("repository", mode=0o555, dir_fd=directory)
         os.fchmod(directory, 0o700)
         os.fchown(directory, agent_uid, agent_gid)
         os.fsync(directory)
@@ -318,7 +316,7 @@ def prepare_member(execution_id, command, agent_uid, agent_gid, runner_uid, resu
     directory = None
     try:
         info = os.fstat(root)
-        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o711:
             raise ValueError("Unsafe member homes")
         try:
             os.mkdir(identity, mode=0o700, dir_fd=root)
@@ -350,21 +348,8 @@ def prepare_member(execution_id, command, agent_uid, agent_gid, runner_uid, resu
         directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
         descriptor = os.open("member.conf", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=directory)
         content = "\n".join([
-            "[Service]", "PrivateUsers=yes", "ProtectKernelTunables=no", "Group=paws-results", "SupplementaryGroups=paws-agent", "StateDirectory=",
-            "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETPCAP", "AmbientCapabilities=CAP_SYS_ADMIN CAP_SETPCAP",
-            "ExecStart=", "ExecStart=/usr/bin/unshare --pid --fork --kill-child=KILL --mount-proc /usr/bin/python3 -I -B " + os.path.abspath(__file__) + " confine " + validate_unit(),
-            "ExecCondition=", "ExecCondition=+/usr/bin/setpriv --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs /usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard %i",
-            "ReadOnlyPaths=", "ReadWritePaths=", "BindReadOnlyPaths=",
-            "BindPaths=" + MEMBER_HOMES + "/" + identity + ":/var/lib/paws-agent",
-            "ReadWritePaths=" + RECEIPTS,
-            "TemporaryFileSystem=" + SPOOL + ":ro,mode=2750,uid=" + str(runner_uid) + ",gid=" + str(agent_gid),
-            "TemporaryFileSystem=" + RESULTS + ":ro,mode=0750,uid=0,gid=" + str(results_gid),
-            "TemporaryFileSystem=" + TASK_WORK + ":ro,mode=0755,uid=0,gid=0",
-            "BindPaths=-" + TASK_WORK + "/" + execution_id,
-            "BindReadOnlyPaths=-" + SPOOL + "/" + execution_id + "/repository:" + TASK_WORK + "/" + execution_id + "/repository",
-            "BindReadOnlyPaths=" + SPOOL + "/" + execution_id,
-            "BindPaths=" + RESULTS + "/" + execution_id,
-            "InaccessiblePaths=" + MEMBER_HOMES,
+            "[Service]", "Group=paws-results", "SupplementaryGroups=paws-agent", "StateDirectory=",
+            "Environment=HOME=" + MEMBER_HOMES + "/" + identity,
             "", ])
         os.write(descriptor, content.encode())
         os.fsync(descriptor)
@@ -532,29 +517,7 @@ def serve(listener, runner_uid, agent_uid, agent_gid, results_gid):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2 and sys.argv[1] == "confine":
-        if os.getpid() != 1:
-            raise RuntimeError("Private PID namespace required")
-        subprocess.run(["/usr/bin/mount", "-o", "remount,ro,nosuid,nodev,noexec", "/proc"], check=True)
-        os.execv("/usr/bin/setpriv", ["/usr/bin/setpriv", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "/usr/bin/python3", "-I", "-B", os.path.abspath(__file__), "member-home", *sys.argv[2:]])
-    elif len(sys.argv) > 2 and sys.argv[1] == "member-home":
-        if os.getpid() != 1:
-            raise RuntimeError("Private PID namespace required")
-        for name in (".codex", ".claude"):
-            path = "/var/lib/paws-agent/" + name
-            try:
-                os.mkdir(path, 0o700)
-            except FileExistsError:
-                pass
-            directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                if os.fstat(directory).st_uid != os.getuid():
-                    raise ValueError("Unsafe provider home")
-                os.fchmod(directory, 0o700)
-            finally:
-                os.close(directory)
-        os.execv(sys.argv[2], sys.argv[2:])
-    elif len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
+    if len(sys.argv) == 3 and sys.argv[1] in ("guard-check-witness", "guard-check-child"):
         try:
             sys.exit(0 if check_broker().guard(sys.modules[__name__], sys.argv[2], sys.argv[1]) else 1)
         except (OSError, ValueError, StopIteration):
