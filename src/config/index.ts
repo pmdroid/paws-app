@@ -42,4 +42,6 @@ export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles }
 
 export { loadRunnerControl } from "./runner-control";
 
+export { projectSkillsRoot } from "./skills";
+export type { ProjectSkills } from "./skills";
 export type { CheckoutProjects } from "./checkout";

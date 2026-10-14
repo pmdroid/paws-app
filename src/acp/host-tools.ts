@@ -19,7 +19,13 @@ import {
 } from "@agentclientprotocol/sdk";
 import { minimalAgentEnv } from "./env";
 import { killTree, spawnAgent, stopChild, type OwnedProcess } from "./process";
-import { decidePermission, resolveInsideWorktree, type GuardContext } from "./permissions";
+import {
+  decidePermission,
+  isLocalSkillPath,
+  lexicalPath,
+  resolveInsideWorktree,
+  type GuardContext,
+} from "./permissions";
 
 const DEFAULT_OUTPUT_LIMIT = 1_000_000;
 
@@ -163,7 +169,9 @@ export async function readGuarded(
   const decision = decidePermission({ kind: "read", locations: [{ path: params.path }] }, guard);
   if (!decision.allow)
     throw RequestError.invalidParams({ reason: decision.reason }, decision.reason);
-  const path = resolveInsideWorktree(params.path, guard);
+  const path = isLocalSkillPath(params.path, guard)
+    ? lexicalPath(params.path, guard)
+    : resolveInsideWorktree(params.path, guard);
   let content = await readFile(path, "utf8");
   if (params.line != null || params.limit != null) {
     const lines = content.split("\n");

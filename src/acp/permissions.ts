@@ -5,6 +5,7 @@ export interface GuardContext {
   worktree: string;
   home: string;
   pawsRoot: string;
+  skillRoots?: readonly string[];
 }
 
 export interface PermissionSubject {
@@ -71,7 +72,14 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
     if (cwd.kind === "denied") return { allow: false, reason: cwd.reason };
   }
 
+  const resources = localSkillCommandPaths(subject, ctx);
+  if (command && !resources.length && ctx.skillRoots?.some((root) => command.includes(root)))
+    return { allow: false, reason: "local skills allow only direct scripts and resource reads" };
   for (const path of paths) {
+    if (isLocalSkillPath(path, ctx)) {
+      if (subject.kind === "read" && !command) continue;
+      if (resources.includes(lexicalPath(path, ctx))) continue;
+    }
     const classified = classifyPath(path, ctx);
     if (classified.kind === "denied") return { allow: false, reason: classified.reason };
   }
@@ -94,6 +102,36 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
   }
 
   return { allow: true, reason: "inside the worktree" };
+}
+
+export function isLocalSkillPath(input: string, ctx: GuardContext): boolean {
+  const candidate = lexicalPath(input, ctx);
+  return (ctx.skillRoots ?? []).some((root) => {
+    if (!isInside(root, candidate)) return false;
+    try {
+      return isInside(root, realpathSync(candidate));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function localSkillCommandPaths(subject: PermissionSubject, ctx: GuardContext): string[] {
+  if (subject.kind !== "execute" && subject.kind !== "read") return [];
+  let args = subject.command ? [subject.command, ...(subject.args ?? [])] : undefined;
+  if (!args && subject.rawInput && typeof subject.rawInput === "object") {
+    const raw = subject.rawInput as { command?: unknown };
+    if (typeof raw.command !== "string" || /[;&|<>$`()\\\r\n]/.test(raw.command)) return [];
+    args = tokenize(raw.command);
+  }
+  if (!args?.length) return [];
+  const [command, ...rest] = args;
+  if (command === "cat" && rest.length > 0 && rest.every((arg) => isLocalSkillPath(arg, ctx)))
+    return rest.map((arg) => lexicalPath(arg, ctx));
+  const interpreters = new Set(["bash", "sh", "python", "python3", "node", "bun"]);
+  const script = interpreters.has(command!) ? rest[0] : command;
+  if (!script || !isLocalSkillPath(script, ctx)) return [];
+  return [lexicalPath(script, ctx)];
 }
 
 export function classifyPath(input: string, ctx: GuardContext): PathClass {
@@ -120,7 +158,7 @@ export function resolveInsideWorktree(input: string, ctx: GuardContext): string 
   return lexicalPath(input, ctx);
 }
 
-function lexicalPath(input: string, ctx: GuardContext): string {
+export function lexicalPath(input: string, ctx: GuardContext): string {
   const expanded = expandHome(input, ctx.home);
   if (isAbsolute(expanded)) return resolve(expanded);
   return resolve(ctx.worktree, expanded);
@@ -194,7 +232,11 @@ function collectPaths(subject: PermissionSubject, command: string): string[] {
     if (location?.path) paths.push(location.path);
   }
   walkRaw(subject.rawInput, [], paths);
-  for (const token of tokenize(command)) {
+  const commandTokens =
+    subject.command && !subject.rawInput
+      ? [subject.command, ...(subject.args ?? [])]
+      : tokenize(command);
+  for (const token of commandTokens) {
     if (looksLikePath(token)) paths.push(token);
   }
   if (subject.title) {
