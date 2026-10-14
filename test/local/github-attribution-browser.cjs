@@ -4,6 +4,15 @@ const path = require("node:path");
 const { chromium } = require(process.env.PAWS_PLAYWRIGHT_MODULE || "playwright");
 const root = process.argv[2];
 const fixture = JSON.parse(fs.readFileSync(path.join(root, "workspace-ui.json"), "utf8"));
+async function openSettings(page) {
+  if (page.viewportSize().width < 768)
+    await page.getByRole("button", { name: "Open navigation" }).click();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Settings", exact: true })
+    .click();
+  await page.locator("#content h1").filter({ hasText: "Settings" }).waitFor();
+}
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -38,7 +47,7 @@ const fixture = JSON.parse(fs.readFileSync(path.join(root, "workspace-ui.json"),
     await page.locator("input[name=bootstrap]").fill(fixture.bootstrap);
     await page.getByRole("button", { name: "Connect workspace" }).click();
     await page.getByRole("button", { name: "Sign out" }).waitFor();
-    await page.locator('#side a[href="#/settings"]').click();
+    await openSettings(page);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
       const section = page.locator("#workspace-github-attribution");
@@ -49,8 +58,7 @@ const fixture = JSON.parse(fs.readFileSync(path.join(root, "workspace-ui.json"),
       await page.keyboard.press("Enter");
       await page.waitForURL((url) => url.pathname === "/status" && !url.search);
       await page.getByRole("button", { name: "Sign out" }).waitFor();
-      if (width === 390) await page.getByRole("button", { name: "Open menu" }).click();
-      await page.locator('#side a[href="#/settings"]').click();
+      await openSettings(page);
       await page.locator("#workspace-github-attribution summary").click();
       await page.getByText("Public attribution is enabled for @fixture-human.").waitFor();
       await page.locator("#workspace-github-integration summary").click();
