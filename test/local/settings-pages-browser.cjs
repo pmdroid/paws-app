@@ -84,35 +84,159 @@ const errors = [];
   }
   try {
     const { page, context } = await account("owner");
-    await settings(page, "Integrations");
-    await page.getByRole("link", { name: "Add repositories", exact: true }).click();
-    await page.getByRole("heading", { name: "Workspace access", exact: true, level: 1 }).waitFor();
-    observations.push({ ownerCanAddRepositoriesFromIntegrations: true });
     await settings(page, "Agents");
-    await page.locator("#agent-settings-form").waitFor();
     await page.getByRole("button", { name: "Save settings", exact: true }).click();
     await page.getByText("Agent settings saved. New work will use these profiles.").waitFor();
-    await settings(page, "Workspace access");
-    await page.locator("textarea[name=repositories]").fill("acme/widgets fixture-team");
-    await page.getByRole("button", { name: "Save repositories" }).click();
-    await page.getByText("Repository access saved.", { exact: true }).waitFor();
     await settings(page, "Integrations");
     const github = page.locator("#workspace-github-integration");
-    await github.getByText("Not installed", { exact: true }).waitFor();
-    assert.equal(await page.locator("input[name=installationId]").count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Revalidate GitHub App" }).count(), 0);
+    assert.equal(await page.locator("textarea[name=repositories]").count(), 0);
+    assert.equal(
+      await page.getByRole("link", { name: "Add repositories", exact: true }).count(),
+      0,
+    );
+    await github.getByRole("button", { name: "Sign in with GitHub", exact: true }).waitFor();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: path.join(root, "github-signin-" + width + ".png"),
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await github.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await github.getByText("@fixture-human", { exact: true }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(
+        async () => (await (await fetch("/api/workspaces/repositories")).json()).repositories,
+      ),
+      [],
+    );
+    observations.push({ githubSignInBeforeRepositoryConfiguration: true });
     const popupPromise = page.waitForEvent("popup");
-    await github.getByRole("link", { name: "Install GitHub App" }).click();
+    await github.getByRole("link", { name: "Choose repositories on GitHub" }).click();
     const popup = await popupPromise;
     await popup.getByText("Synthetic GitHub installation approved.").waitFor();
     await popup.close();
     await page.bringToFront();
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await github.getByText("Connected", { exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => location.hash), "#/settings/integrations");
+    await github.getByRole("combobox", { name: "GitHub account" }).selectOption({ label: "acme" });
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
+      .waitFor();
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
+      .check();
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+      .check();
+    await github.getByRole("button", { name: "Next", exact: true }).click();
+    await github
+      .getByRole("checkbox", { name: "Match acme/service-25 to Engineering", exact: true })
+      .check();
+    await github.getByRole("button", { name: "Previous", exact: true }).click();
+    assert.equal(
+      await github
+        .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+        .isChecked(),
+      true,
+    );
+    await github.getByRole("searchbox", { name: "Find a repository" }).fill("widgets");
+    assert.equal(
+      await github.getByRole("table", { name: "GitHub repositories" }).locator("tbody tr").count(),
+      1,
+    );
+    await github.getByRole("button", { name: "Save repository access", exact: true }).click();
+    await github.getByText("Repository access saved.", { exact: true }).waitFor();
+    const mappings = await page.evaluate(
+      async () => (await (await fetch("/api/workspaces/repositories")).json()).repositories,
+    );
+    assert.equal(mappings.length, 3);
+    assert.equal(mappings.filter((entry) => entry.repository === "acme/widgets").length, 2);
+    await github
+      .getByText("Connected · 2 repositories available to Paws.", { exact: true })
+      .waitFor();
+    await control(context, { hiddenRepository: "acme/service-25" });
+    await github.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    await github.getByRole("button", { name: "Remove unavailable repository access" }).waitFor();
+    assert.equal(
+      await github
+        .getByRole("button", { name: "Save repository access", exact: true })
+        .isDisabled(),
+      true,
+    );
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+      .uncheck();
+    assert.equal(
+      await github
+        .getByRole("button", { name: "Save repository access", exact: true })
+        .isDisabled(),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("/api/workspaces/repositories")).json()).repositories.length,
+      ),
+      3,
+    );
+    await github.getByRole("button", { name: "Remove unavailable repository access" }).click();
+    await github.getByRole("button", { name: "Save repository access", exact: true }).click();
+    await github.getByText("Repository access saved.", { exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("/api/workspaces/repositories")).json()).repositories.length,
+      ),
+      1,
+    );
+    await control(context, { hiddenRepository: null });
+    await github.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+      .check();
+    await github.getByRole("searchbox", { name: "Find a repository" }).fill("service-25");
+    await github
+      .getByRole("checkbox", { name: "Match acme/service-25 to Engineering", exact: true })
+      .check();
+    await github.getByRole("button", { name: "Save repository access", exact: true }).click();
+    await github.getByText("Repository access saved.", { exact: true }).waitFor();
+    observations.push({ unavailableMappingsPreservedUntilExplicitRemoval: true });
+    await github.getByRole("searchbox", { name: "Find a repository" }).fill("widgets");
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
+      .uncheck();
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+      .uncheck();
+    await github.getByRole("searchbox", { name: "Find a repository" }).fill("service-25");
+    await github
+      .getByRole("checkbox", { name: "Match acme/service-25 to Engineering", exact: true })
+      .uncheck();
+    await github
+      .getByRole("button", { name: "Remove all repository access", exact: true })
+      .waitFor();
+    await github
+      .getByRole("checkbox", { name: "Match acme/service-25 to Engineering", exact: true })
+      .check();
+    await github.getByRole("searchbox", { name: "Find a repository" }).fill("widgets");
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
+      .check();
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
+      .check();
     observations.push({
-      automaticInstallationDiscovery: true,
-      scriptedGitHubApproval: true,
+      explicitRemoveAllAction: true,
+      repositoryPicker: true,
+      namedLinearTeams: true,
+      githubAccountChoice: true,
+      multipleTeamsPerRepository: true,
+      selectionAcrossPagesAndSearch: true,
       realConnectionPersistence: true,
     });
     await settings(page, "Your account");
@@ -176,6 +300,10 @@ const errors = [];
       attributionOnAccountPage: true,
       auditRead: true,
     });
+    await settings(page, "Integrations");
+    await github.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await github.getByRole("table", { name: "GitHub repositories" }).waitFor();
+    assert.equal(await github.getByRole("combobox", { name: "GitHub account" }).inputValue(), "22");
     for (const width of [1440, 768, 390]) {
       for (const appearance of ["Light", "Dark"]) {
         await page.setViewportSize({ width, height: 1000 });
@@ -262,36 +390,43 @@ const errors = [];
     await settings(member.page, "Integrations");
     await member.page.getByRole("link", { name: "Manage on GitHub" }).waitFor();
     observations.push({ administratorPromotion: true });
-    await settings(page, "Integrations");
+    await settings(member.page, "Integrations");
+    const adminGitHub = member.page.locator("#workspace-github-integration");
     await control(context, { disconnect: true });
-    await github.getByRole("button", { name: "Refresh status" }).click();
-    await github.getByRole("button", { name: "Connect GitHub" }).waitFor();
+    await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
+    await adminGitHub.getByRole("button", { name: "Connect GitHub" }).waitFor();
     await control(context, { expire: true });
-    await github.getByRole("button", { name: "Connect GitHub" }).click();
-    await github.getByRole("link", { name: "Sign in again" }).waitFor();
-    await github.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.hash === "#/settings/integrations");
-    await github.getByRole("button", { name: "Connect GitHub" }).click();
-    await github.getByText("Connected", { exact: true }).waitFor();
+    await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
+    await adminGitHub.getByRole("link", { name: "Sign in again" }).waitFor();
+    await adminGitHub.getByRole("link", { name: "Sign in again" }).click();
+    await member.page.waitForURL((url) => url.hash === "#/settings/integrations");
+    await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
+    await adminGitHub.getByText("Connected", { exact: true }).waitFor();
     observations.push({ expiredSignInRecovery: true, settingsReturnRestored: true });
     await control(context, { unavailable: true });
-    await github.getByRole("button", { name: "Refresh status" }).click();
-    await github.getByText("Connection unavailable", { exact: true }).waitFor();
+    await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
+    await adminGitHub.getByText("Connection unavailable", { exact: true }).waitFor();
     await control(context, { unavailable: false });
-    await github.getByRole("button", { name: "Refresh status" }).click();
-    await github.getByText("Connected", { exact: true }).waitFor();
+    await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
+    await adminGitHub.getByText("Connected", { exact: true }).waitFor();
     const api = `${fixture.origin}/api/workspaces/github-connect`;
-    await context.route(api, (route) =>
+    await member.context.route(api, (route) =>
       route.fulfill({ status: 404, contentType: "text/plain", body: "not found" }),
     );
-    await github.getByRole("button", { name: "Refresh status" }).click();
-    await github.getByText("GitHub could not be checked. Refresh status to try again.").waitFor();
-    await context.unroute(api);
-    await github.getByRole("button", { name: "Refresh status" }).click();
-    await github.getByText("Connected", { exact: true }).waitFor();
+    await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
+    await adminGitHub
+      .getByText("GitHub could not be checked. Refresh status to try again.")
+      .waitFor();
+    await member.context.unroute(api);
+    await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
+    await adminGitHub.getByText("Connected", { exact: true }).waitFor();
     assert.equal((await page.content()).includes("synthetic-client-secret"), false);
     assert.equal((await page.content()).includes("PRIVATE KEY"), false);
     await settings(page, "Your account");
+    await attribution.getByRole("button", { name: "Refresh attribution" }).click();
+    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
+    await attribution.getByRole("link", { name: "Sign in again" }).click();
+    await page.waitForURL((url) => url.hash === "#/settings/account");
     await attribution.getByRole("button", { name: "Revoke attribution consent" }).click();
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     observations.push({ consentRevocation: true });
