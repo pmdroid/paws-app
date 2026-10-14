@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "runner-login-worker",
   "worktree-checkout",
   "config",
   "credentials",
@@ -151,6 +152,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
+  "runner-login-worker": ["acp", "install", "runner-protocol"],
   "runner-execution": ["runner-protocol"],
   "runner-check": ["runner-execution", "runner-protocol"],
   "runner-checks": [
