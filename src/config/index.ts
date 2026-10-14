@@ -1,6 +1,7 @@
 export { loadEnv, DEFAULT_HOST, DEFAULT_PORT } from "./env";
 export type { EnvSource, PawsEnv } from "./env";
 export {
+  closeoutPolicyRoot,
   defaultAgents,
   emptyConfigFile,
   isImplementer,

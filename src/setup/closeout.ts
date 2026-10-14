@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { validate } from "../closeout-spec";
 import type { SetupIO } from "./io";
 import { stop } from "./stop";
 
@@ -23,9 +24,15 @@ items:
 
 export async function ensureCloseoutPolicy(input: {
   checkout: string;
+  policyRoot?: string;
   yes: boolean;
   io: SetupIO;
 }): Promise<void> {
+  if (input.policyRoot !== undefined) {
+    const loaded = validate(input.checkout, undefined, input.policyRoot);
+    if (!loaded.ok) stop(`Configured local Closeout policy is invalid: ${loaded.message}`);
+    return;
+  }
   const path = join(input.checkout, ".agents", "closeout.yaml");
   if (existsSync(path)) return;
   const offer = `Write a starter .agents/closeout.yaml in ${input.checkout}?`;

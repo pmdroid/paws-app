@@ -12,6 +12,7 @@ import {
 } from "../auth";
 import { createPersonalLinearClient, type CommentFetch } from "../comments";
 import {
+  closeoutPolicyRoot,
   loadRuntime,
   type AgentProfiles,
   type EnvSource,
@@ -118,7 +119,11 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
-    closeout: closeoutPolicyFact(runtime.checkout, runtime.env.home),
+    closeout: closeoutPolicyFact(
+      runtime.checkout,
+      runtime.env.home,
+      closeoutPolicyRoot(runtime.file, runtime.env.home, runtime.repo),
+    ),
     linear,
   };
 }
@@ -196,7 +201,11 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
   }
 }
 
-function closeoutPolicyFact(checkout: string | null, home: string): ProbeFacts["closeout"] {
+function closeoutPolicyFact(
+  checkout: string | null,
+  home: string,
+  policyRoot?: string,
+): ProbeFacts["closeout"] {
   if (checkout === null || checkout.trim().length === 0) {
     return {
       ok: false,
@@ -204,11 +213,13 @@ function closeoutPolicyFact(checkout: string | null, home: string): ProbeFacts["
       fix: "Run bun run paws setup so the checkout path is set.",
     };
   }
-  const loaded = validate(checkout, home);
+  const loaded = validate(checkout, home, policyRoot);
   if (!loaded.ok) {
     return {
       ok: false,
-      detail: "policy on origin/main is malformed",
+      detail: policyRoot
+        ? "configured local Closeout policy is invalid"
+        : "policy on origin/main is malformed",
       fix: oneLine(loaded.message),
     };
   }
@@ -219,7 +230,11 @@ function closeoutPolicyFact(checkout: string | null, home: string): ProbeFacts["
       fix: "Commit .agents/closeout.yaml on origin/main.",
     };
   }
-  return { ok: true, detail: "policy loads on origin/main", fix: null };
+  return {
+    ok: true,
+    detail: policyRoot ? `local policy loads from ${policyRoot}` : "policy loads on origin/main",
+    fix: null,
+  };
 }
 
 function oneLine(message: string): string {

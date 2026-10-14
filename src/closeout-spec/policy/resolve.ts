@@ -27,6 +27,7 @@ type PolicyTree = {
 };
 
 export type TreePolicy = {
+  skillFiles: ReadonlyMap<string, Uint8Array>;
   entryPath: string;
   digest: string;
   setup: ResolvedSetup[];
@@ -60,6 +61,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     items: [],
     files: [],
     seenFiles: new Set<string>(),
+    skillFiles: new Map(),
     ids: new Set<string>(),
   };
   const walked = walk(state, PUBLIC_POLICY_PATH, "", []);
@@ -74,6 +76,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
     ...(state.retry !== undefined ? { retry: state.retry } : {}),
   });
   const policy: TreePolicy = {
+    skillFiles: state.skillFiles,
     entryPath: PUBLIC_POLICY_PATH,
     digest: `sha256:${sha256Text(canonical)}`,
     setup: state.setup,
@@ -85,6 +88,7 @@ function loadTree(tree: PolicyTree): TreeLoad {
 }
 
 type WalkState = {
+  skillFiles: Map<string, Uint8Array>;
   tree: PolicyTree;
   retry: RetryPolicy | undefined;
   setup: ResolvedSetup[];
@@ -205,6 +209,7 @@ function hashSkills(state: WalkState): string | undefined {
       const read = state.tree.read(path);
       if (read.status !== "file") return "could not read the policy file";
       state.files.push({ path, sha256: sha256Hex(read.bytes) });
+      state.skillFiles.set(path, read.bytes);
     }
   }
   return undefined;

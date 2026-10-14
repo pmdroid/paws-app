@@ -158,7 +158,7 @@ export type PolicyFile = {
  *
  * A file that exists and fails to load is not `none`. Acceptance is `blocked`.
  */
-export type PolicySource = "repo" | "global" | "none";
+export type PolicySource = "repo" | "global" | "local" | "none";
 
 /**
  * Resolved command, in canonical form. `paths` is omitted when the item has none.
@@ -238,7 +238,8 @@ export type ResolvedRequirement = Exclude<ResolvedItem, ResolvedSetup>;
  * An item omits `paths` when it has none.
  */
 export type ResolvedPolicyPresent = {
-  source: "repo" | "global";
+  skillFiles?: ReadonlyMap<string, Uint8Array>;
+  source: "repo" | "global" | "local";
   digest: string;
   /**
    * Entry that was read, stored on the decision as `policy.path`.
@@ -294,7 +295,7 @@ export type PolicyLoadResult =
        * The global file is not a substitute for an unreadable remote.
        * `global` when the home file exists and fails.
        */
-      source: "repo" | "global";
+      source: "repo" | "global" | "local";
       message: string;
     };
 
@@ -541,6 +542,7 @@ export interface CommandRunner {
 }
 
 export type ReviewRequest = {
+  skillFiles?: ReadonlyMap<string, Uint8Array>;
   checkoutExclusions?: readonly string[];
   item: ResolvedReview;
   candidate: CandidateIdentity;
