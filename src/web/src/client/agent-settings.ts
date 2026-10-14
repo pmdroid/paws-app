@@ -61,8 +61,8 @@ type SettingsView = {
 };
 
 export function renderAgentSettings(view: SettingsView): string {
-  if (view.denied) return "<h1>Settings</h1>";
-  const intro = `<h1>Settings</h1><p class="sub">Choose who implements and independently reviews new work. Agents use their own CLI sign-ins on this machine.</p>`;
+  if (view.denied) return '<p class="sub">Only workspace owners can change agent profiles.</p>';
+  const intro = `<p class="sub">Agents use their own CLI sign-ins on the host that runs your work.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
   const problems = settingsProblems(view.data);

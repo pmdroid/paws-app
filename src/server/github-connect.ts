@@ -461,7 +461,10 @@ export function createHostedGitHubConnect(options: {
         enqueueJob(db, { queue: "github.auth.recover", now: now() });
         return new Response(null, {
           status: 303,
-          headers: { location: origin + "/status#/settings", "cache-control": "no-store" },
+          headers: {
+            location: origin + "/status#/settings/integrations",
+            "cache-control": "no-store",
+          },
         });
       });
     } catch {
