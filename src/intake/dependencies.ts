@@ -2,6 +2,14 @@ import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type WorkItemState, type TaskMode } from "../core";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
+import {
+  externalPolicyBinding,
+  inspectExternalBlockers,
+  managedBlockerSatisfied,
+  readExternalBlockerPolicies,
+  type BlockerEvidence,
+  type InspectBlockerMerge,
+} from "./blocker-policy";
 
 type Target = { epicId: string; workspaceId: string };
 type Item = {
@@ -14,7 +22,13 @@ type Item = {
   mode: TaskMode | null;
   brief: string | null;
 };
-type Snapshot = { generation: number; scope: string; linearStates: string; workspaceId: string };
+type Snapshot = {
+  generation: number;
+  scope: string;
+  linearStates: string;
+  workspaceId: string;
+  externalEvidence: string;
+};
 
 export type DependencyReadiness = {
   generation: number;
@@ -72,6 +86,7 @@ function scope(db: Database, target: Target) {
       target.workspaceId,
       identity,
       items.map((item) => [item.id, item.linearIssueId, item.brief]),
+      externalPolicyBinding(db, target),
     ]),
   };
 }
@@ -79,7 +94,7 @@ function scope(db: Database, target: Target) {
 function snapshot(db: Database, target: Target): Snapshot | null {
   const saved = db
     .query<Snapshot, [string]>(
-      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId
+      `SELECT generation,scope,linear_states AS linearStates,workspace_id AS workspaceId,external_evidence AS externalEvidence
        FROM epic_dependency_snapshot WHERE epic_id=?`,
     )
     .get(target.epicId);
@@ -133,6 +148,10 @@ function readReadyItems(db: Database, target: Target, includeItemId?: string): D
   const ordered = orderByBlocks(current.items, edges);
   const cycleHeld = new Set(ordered.ok ? [] : ordered.remaining.map((item) => item.linearIssueId));
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
+  const evidence = JSON.parse(saved.externalEvidence) as Record<string, BlockerEvidence>;
+  const policies = new Map(
+    readExternalBlockerPolicies(db, target).map((policy) => [policy.blockerLinearIssueId, policy]),
+  );
   const byId = new Map(current.items.map((item) => [item.linearIssueId, item]));
   const external = db
     .query<DependencyEdge, [string]>(
@@ -143,7 +162,20 @@ function readReadyItems(db: Database, target: Target, includeItemId?: string): D
   const satisfied = (id: string): boolean => {
     if (states.get(id) === "canceled") return false;
     const item = byId.get(id);
-    if (!item) return states.get(id) === "completed";
+    if (!item || item.state === "manual") {
+      const policy = policies.get(id);
+      if (policy) {
+        const proof = evidence[id];
+        if (
+          !proof?.satisfied ||
+          proof.checkedAt > Date.now() ||
+          Date.now() - proof.checkedAt >= 300_000
+        )
+          return false;
+        return policy.outcome === "merge" || states.get(id) === "completed";
+      }
+      if (!item) return managedBlockerSatisfied(db, target, id) ?? states.get(id) === "completed";
+    }
     if (item.cancelRequested || item.state === "cancelled") return false;
     if (item.state === "manual") return states.get(id) === "completed";
     return (
@@ -174,8 +206,9 @@ export async function syncEpicDependencies(
   db: Database,
   input: Target & {
     expectedGeneration: number;
-    tracker: Pick<TrackerAdapter, "listDeps">;
+    tracker: Pick<TrackerAdapter, "listDeps" | "listIssuePullRequests">;
     lifecycle: Pick<LinearIssueLifecycle, "inspect">;
+    inspectMerge?: InspectBlockerMerge;
     signal?: AbortSignal;
   },
 ): Promise<DependencyReadiness> {
@@ -218,6 +251,14 @@ export async function syncEpicDependencies(
     states.set(id, issue.stateType);
   }
   signal?.throwIfAborted();
+  const evidence = await inspectExternalBlockers(db, {
+    ...target,
+    issues: [...states.keys()],
+    inspectMerge: input.inspectMerge,
+    tracker,
+    signal,
+  });
+  signal?.throwIfAborted();
   return db
     .transaction(() => {
       if (
@@ -235,11 +276,18 @@ export async function syncEpicDependencies(
         );
       }
       db.run(
-        `INSERT INTO epic_dependency_snapshot(epic_id,workspace_id,generation,scope,linear_states)
-       VALUES(?,?,?,?,?) ON CONFLICT(epic_id) DO UPDATE SET
-       generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states
+        `INSERT INTO epic_dependency_snapshot(epic_id,workspace_id,generation,scope,linear_states,external_evidence)
+       VALUES(?,?,?,?,?,?) ON CONFLICT(epic_id) DO UPDATE SET
+       generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states,external_evidence=excluded.external_evidence
        WHERE epic_dependency_snapshot.workspace_id=excluded.workspace_id`,
-        [epicId, workspaceId, expectedGeneration + 1, initial.token, JSON.stringify([...states])],
+        [
+          epicId,
+          workspaceId,
+          expectedGeneration + 1,
+          initial.token,
+          JSON.stringify([...states]),
+          JSON.stringify(evidence),
+        ],
       );
       return readyItems(db, target);
     })

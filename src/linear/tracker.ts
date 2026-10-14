@@ -1,4 +1,5 @@
 import { createLinearAttributionReads } from "./attribution";
+import { createIssuePullRequestReads } from "./issue-pulls";
 import { createLinearProjectMembers } from "./project-members";
 import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
@@ -77,6 +78,7 @@ export function createLinearTracker(
     ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
     ...createLinearAttachmentMethods(client),
+    listIssuePullRequests: createIssuePullRequestReads(client),
     async loadEpic(linearIssueId) {
       const children = new Map<string, LinearSubIssue & { sort: number | null }>();
       const cursors = new Set<string>();
