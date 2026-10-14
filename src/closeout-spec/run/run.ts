@@ -1,3 +1,4 @@
+import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -52,6 +53,7 @@ export type CloseoutRunResult = {
 };
 
 export type CloseoutRunInput = {
+  checkoutExclusions?: readonly string[];
   /** Agent checkout. Policy commands are never started with this as `cwd`. */
   repo: string;
   policy: ResolvedPolicy;
@@ -121,7 +123,11 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     }
 
     const tree = allocateWorktree(pawsHome(input.home));
-    const added = await git(input.repo, ["worktree", "add", "--detach", tree, head], env);
+    const added = await git(
+      input.repo,
+      ["worktree", "add", "--no-checkout", "--detach", tree, head],
+      env,
+    );
     if (!added.ok) {
       rmSync(tree, { recursive: true, force: true });
       blockPending(
@@ -136,6 +142,13 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
     const dispositions: CommandDisposition[] = [];
     let stop = false;
     try {
+      try {
+        await checkoutPatterns(tree, exclusionPatterns(input.checkoutExclusions ?? []), env);
+      } catch {
+        const blocked = "could not populate a worktree at the candidate commit";
+        blockPending(input.progress, identity, actions, blocked);
+        return { blocked, dispositions: [] };
+      }
       for (const action of actions) {
         if (action.kind === "skip") {
           dispositions.push(action.disposition);

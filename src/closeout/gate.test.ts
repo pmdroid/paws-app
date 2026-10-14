@@ -25,6 +25,39 @@ Report findings. An empty list means the change is fine.
 `;
 
 describe("closeout gate", () => {
+  test("changed checkout exclusions invalidate evidence for the same candidate", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([
+        {
+          id: "layout",
+          kind: "command",
+          exec: ["sh", "-c", "test ! -e large/file"],
+          timeoutSeconds: 30,
+        },
+      ]),
+      "large/file": "kept in Git",
+    });
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: throwingReviewer(),
+      };
+      const sparse = await evaluateCandidate({ ...input, checkoutExclusions: ["large"] });
+      expect(sparse.outcome).toBe("accepted");
+      const full = await evaluateCandidate(input);
+      expect(full.outcome).toBe("rejected");
+      expect(full.decision?.policy.digest).not.toBe(sparse.decision?.policy.digest);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("preflight reads review independence from trusted origin policy", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),

@@ -40,3 +40,5 @@ export {
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
 export { loadRunnerControl } from "./runner-control";
+
+export type { CheckoutProjects } from "./checkout";
