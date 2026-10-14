@@ -1,4 +1,5 @@
 import type { TrackerRequestOptions } from "./adapter";
+import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
@@ -24,6 +25,7 @@ import type {
 export type FakeTracker = LinearSessionAdapter &
   LinearRepositoryAdapter & {
     attachments: IssueAttachment[];
+    issuePullRequests: Map<string, IssuePullRequest[]>;
     issueContexts: Map<string, LinearIssueContext>;
     repositorySuggestionRequests: RepositorySuggestionsInput[];
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
@@ -39,6 +41,7 @@ export type FakeTracker = LinearSessionAdapter &
 
 export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTracker {
   const attachments: IssueAttachment[] = [];
+  const issuePullRequests = new Map<string, IssuePullRequest[]>();
   const issueContexts = new Map<string, LinearIssueContext>();
   const byId = new Map(epics.map((epic) => [epic.linearIssueId, epic]));
   const deps = new Map<string, readonly DependencyEdge[]>();
@@ -63,6 +66,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     return { id: question.id ?? crypto.randomUUID() };
   }
   return {
+    issuePullRequests,
+    async listIssuePullRequests(id, options) {
+      options?.signal?.throwIfAborted();
+      return issuePullRequests.get(id) ?? [];
+    },
     supportsActivityReconciliation: true,
     issueContexts,
     async getIssueContext(id, options) {
