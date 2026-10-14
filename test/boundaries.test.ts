@@ -149,7 +149,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
   "runner-execution": ["runner-protocol"],
-  "runner-check": ["runner-execution"],
+  "runner-check": ["runner-execution", "runner-protocol"],
   "runner-checks": [
     "db",
     "runner-check",
@@ -180,7 +180,14 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-health-runtime",
     "runner-check-runtime",
   ],
-  "runner-worker": ["acp", "runner-execution", "runner-answers", "install", "runner-protocol"],
+  "runner-worker": [
+    "worktree-checkout",
+    "acp",
+    "runner-execution",
+    "runner-answers",
+    "install",
+    "runner-protocol",
+  ],
   "runner-answers": ["runner-execution"],
   "runner-control": ["db", "workspace", "runner-identity", "runner-verifier"],
   "runner-daemon": [
@@ -195,6 +202,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
+    "config",
     "runner-placement",
     "runner-inputs",
     "runner-transcripts",

@@ -527,7 +527,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           input.signal?.throwIfAborted();
           return backend.sessions.forSession(sessionId, purpose)(input);
         },
-        closeoutForItem: (itemId, signal) => {
+        closeoutForItem: (itemId, signal, checkoutExclusions) => {
           let commands: ReturnType<Awaited<typeof remote>["agents"]["closeoutForItem"]>;
           return {
             async runLogged(request) {
@@ -535,7 +535,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               await ready;
               const backend = await remote;
               signal?.throwIfAborted();
-              commands ??= backend.agents.closeoutForItem(itemId, signal);
+              commands ??= backend.agents.closeoutForItem(itemId, signal, checkoutExclusions);
               return commands.runLogged(request);
             },
           };

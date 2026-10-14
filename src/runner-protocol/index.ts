@@ -1,6 +1,7 @@
 export {
   RunnerCommandSchema,
   RunnerRepositorySchema,
+  RunnerCheckoutExclusionsSchema,
   RunnerCheckpointBotSchema,
   RunnerCommitPolicySchema,
   RunnerProfileSchema,

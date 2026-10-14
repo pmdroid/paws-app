@@ -514,6 +514,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         executionId: command.executionId,
         verificationAttemptId: command.verificationAttemptId,
         candidateSha: command.candidateSha,
+        checkoutExclusions: command.repository.checkoutExclusions,
         argv: command.argv,
         cwd: command.cwd,
         timeoutMs: command.timeoutMs,
