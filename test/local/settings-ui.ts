@@ -160,13 +160,6 @@ const server = startServer({
   workspaceAccess: ready.promise,
   agentSettings: {
     configPath: join(root, "config.toml"),
-    probe: async (profile) => ({
-      ok: true,
-      agent: profile.agent,
-      model: profile.model,
-      models: [],
-      message: "Scripted browser verification",
-    }),
   },
 });
 const origin = `https://127.0.0.1:${server.port}`;

@@ -264,16 +264,16 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     /configuration is missing or invalid/,
   );
   assert(!existsSync(missing));
-  const local = startPaws({
-    PAWS_HOME: join(root, "startup-local"),
+  const started = startPaws({
+    PAWS_HOME: join(root, "startup-control"),
     PAWS_PORT: "0",
     PAWS_NO_TUNNEL: "1",
   });
   try {
-    await local.ready;
-    assert.equal((await fetch(`http://127.0.0.1:${local.server.port}/health`)).status, 200);
+    await started.ready;
+    assert.equal((await fetch(`http://127.0.0.1:${started.server.port}/health`)).status, 200);
   } finally {
-    await local.stop();
+    await started.stop();
   }
   assert.throws(
     () =>
@@ -290,9 +290,9 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   );
   assert(!existsSync(join(root, "startup-injected")));
   observe(
-    "explicit remote storage and runner prerequisites fail before opening files; local startup remains usable",
+    "explicit remote storage and runner prerequisites fail before opening files; startup without a runner answers health",
     true,
-    { missingHomeUnchanged: true, localHealth: 200, injectedRemotePrerequisitesRejected: true },
+    { missingHomeUnchanged: true, health: 200, injectedRemotePrerequisitesRejected: true },
   );
   const objects = new Map<string, Uint8Array>();
   const nativeFile = S3Client.prototype.file;

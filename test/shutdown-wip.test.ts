@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -52,7 +52,7 @@ describe("shutdown WIP", () => {
     db.close();
   }, 20_000);
 
-  test("stop joins a live ACP descendant before WIP recovery and database closure", async () => {
+  test("a start job does not launch a host agent and stop still commits recoverable WIP", async () => {
     const home = tempHome();
     const evidence = join(home, "owned-agent.jsonl");
     await seedWorktree(home, "ENG-21");
@@ -173,17 +173,23 @@ describe("shutdown WIP", () => {
       bindLinearSessionTask(paws.db, "session", answer.epicId);
       saveTaskMode(paws.db, answer.id, "answer");
       enqueueJob(paws.db, { queue: JOB_KIND.start, payload: { itemId: answer.id } });
-      for (let i = 0; i < 5_000 && !existsSync(evidence + ".descendant"); i++) await Bun.sleep(1);
-      expect(existsSync(evidence + ".descendant")).toBe(true);
-      const descendant = Number(readFileSync(evidence + ".descendant", "utf8"));
-      expect(processAlive(descendant)).toBe(true);
+      for (let i = 0; i < 5_000 && getWorkItem(paws.db, answer.id)?.state !== "failed"; i++)
+        await Bun.sleep(1);
+      expect(getWorkItem(paws.db, answer.id)?.state).toBe("failed");
+      expect(
+        paws.db
+          .query<{ body: string }, [string]>(
+            "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE idempotency_key=?",
+          )
+          .get(`fail:${answer.id}:answer_error`)?.body,
+      ).toContain("remote runner");
+      expect(existsSync(evidence)).toBe(false);
+      expect(existsSync(`${evidence}.descendant`)).toBe(false);
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
       beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 });
       const stopping = paws.stop();
       expect(paws.stop()).toBe(stopping);
-      expect(getWorkItem(paws.db, answer.id)?.state).toBe("running");
       await stopping;
-      expect(processAlive(descendant)).toBe(false);
       expect(() => getWorkItem(paws.db, answer.id)).toThrow();
       expect(
         (await git(["-C", worktreePath(home, "ENG-21"), "log", "-1", "--format=%s"])).trim(),
@@ -191,7 +197,7 @@ describe("shutdown WIP", () => {
       const recovered = openDatabase(paws.paths.db);
       try {
         expect(getWorkItem(recovered, "ENG-21")?.state).toBe("recovering");
-        expect(getWorkItem(recovered, answer.id)?.state).toBe("recovering");
+        expect(getWorkItem(recovered, answer.id)?.state).toBe("failed");
       } finally {
         recovered.close();
       }
@@ -321,21 +327,4 @@ async function readUntil(proc: Bun.Subprocess, needle: string, timeoutMs: number
     text += decoder.decode(chunk.value);
   }
   return text;
-}
-
-function processAlive(pid: number): boolean {
-  if (process.platform === "linux") {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]!);
-    } catch {
-      return false;
-    }
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }

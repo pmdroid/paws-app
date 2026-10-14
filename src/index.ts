@@ -1,10 +1,9 @@
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
-import { commitCheckpointSync, probeAgentProfile, restartFromFreshMain, worktreePath } from "./acp";
+import { commitCheckpointSync, restartFromFreshMain, worktreePath } from "./acp";
 import {
   createCommentMode,
   createLinearCommentBoard,
@@ -185,23 +184,24 @@ const LOOPBACK = "127.0.0.1";
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
   const envSource = source ?? process.env;
-  const execution = envSource.PAWS_EXECUTION ?? "local";
-  if (execution !== "local" && execution !== "remote")
-    throw new Error("PAWS_EXECUTION must be local or remote.");
+  const execution = envSource.PAWS_EXECUTION;
+  if (execution === "local") throw new Error("Paws places work on a remote runner.");
+  if (execution !== undefined && execution !== "remote")
+    throw new Error("PAWS_EXECUTION must be remote.");
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
-  const transcriptObjects =
+  const explicitTranscripts =
     options?.runnerTranscriptObjects ??
     (execution === "remote" ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
   let repositoryAccess = options?.runnerRepositoryAccess;
-  if (
-    execution === "remote" &&
-    (runnerConfig === null || (!repositoryAccess && runtime.githubAuth !== "app"))
-  )
+  const remotePlacementReady =
+    runnerConfig !== null && (repositoryAccess !== undefined || runtime.githubAuth === "app");
+  if (execution === "remote" && !remotePlacementReady)
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
+  const placeOnRunner = execution === "remote" || remotePlacementReady;
   if (runnerConfig !== null && (!publicDashboard || tls === undefined))
     throw new Error("Runner control requires the public HTTPS dashboard.");
   if (publicDashboard) {
@@ -219,6 +219,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (runtime.linearClientId === null || runtime.linearMode !== "agent-session")
       throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
+  const transcriptObjects =
+    explicitTranscripts ??
+    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   assertLinearQueue(paths.db);
@@ -503,28 +506,26 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         })
       : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
-  const remote =
-    execution === "remote"
-      ? runnerReady.then((coordinator) => {
-          if (!coordinator?.transcripts)
-            throw new Error("Remote transcript storage is unavailable.");
-          if (!placement) throw new Error("Remote execution requires current Linear ownership.");
-          return {
-            agents: createRemoteAgentRunner({
-              db,
-              ...coordinator,
-              fetchCandidate: fetchRunnerCandidate,
-              checkpointBot: repositoryAccess?.checkpointBot,
-              placement,
-            }),
-            sessions: createRemoteSessionAgentRunner({
-              db,
-              helpers: coordinator.helpers,
-              placement,
-            }),
-          };
-        })
-      : undefined;
+  const remote = placeOnRunner
+    ? runnerReady.then((coordinator) => {
+        if (!coordinator?.transcripts) throw new Error("Remote transcript storage is unavailable.");
+        if (!placement) throw new Error("Remote execution requires current Linear ownership.");
+        return {
+          agents: createRemoteAgentRunner({
+            db,
+            ...coordinator,
+            fetchCandidate: fetchRunnerCandidate,
+            checkpointBot: repositoryAccess?.checkpointBot,
+            placement,
+          }),
+          sessions: createRemoteSessionAgentRunner({
+            db,
+            helpers: coordinator.helpers,
+            placement,
+          }),
+        };
+      })
+    : undefined;
   void remote?.catch(() => {});
   const remoteExecution: OrchestratorOptions["remoteExecution"] = remote
     ? {
@@ -560,7 +561,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           };
         },
       }
-    : undefined;
+    : unavailableRemoteExecution();
   async function stopRunner() {
     runnerStopping = true;
     await runnerReady.catch(() => {});
@@ -620,58 +621,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
-        probe: async (profile, request) => {
-          if (execution === "local")
-            return probeAgentProfile({
-              profile,
-              pawsRoot: paths.home,
-              worktree: paths.home,
-              signal: abort.signal,
-            });
-          await ready;
-          const access = await workspace!.access;
-          const principal = (await access.authenticate(request))?.principal;
-          if (!principal || !runner) throw new Error("Runner workspace access is unavailable.");
-          const selected = db
-            .query<{ id: string }, [string, number]>(
-              "SELECT id FROM runner WHERE workspace_id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>? ORDER BY last_seen_at DESC,id LIMIT 1",
-            )
-            .get(principal.workspaceId, Date.now() - 60_000);
-          if (!selected) throw new Error("No paired runner is ready.");
-          const command = runner.health.request(principal, selected.id, {
-            type: "probe",
-            profile: { ...profile, model: profile.model ?? null },
-          });
-          while (Date.now() < command.expiresAt) {
-            abort.signal.throwIfAborted();
-            request.signal.throwIfAborted();
-            const result = runner.health.read(selected.id, command.commandId);
-            if (result) {
-              if (!(await access.authenticate(request)))
-                throw new Error("Runner workspace access changed.");
-              const ok =
-                result.stopReason === "end_turn" &&
-                result.agentExited &&
-                !result.timedOut &&
-                !result.cancelled &&
-                !result.authRequired &&
-                !result.errorMessage;
-              return {
-                ok,
-                agent: profile.agent,
-                model: profile.model,
-                models: result.models ?? [],
-                effort: result.effort,
-                efforts: result.efforts,
-                message: ok
-                  ? "Agent connection is ready."
-                  : "Check the agent login on your runner.",
-              };
-            }
-            await delay(250, undefined, { signal: abort.signal });
-          }
-          throw new Error("Runner agent check timed out.");
-        },
       },
     });
   } catch (error) {
@@ -1289,6 +1238,16 @@ export async function syncComments(
       });
     }
   }
+}
+
+function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteExecution"]> {
+  const required = () => Promise.reject(new Error("A remote runner is required."));
+  return {
+    cancelItem: async () => {},
+    agentForSession: () => required,
+    agentForItem: () => required,
+    closeoutForItem: () => ({ runLogged: required }),
+  };
 }
 
 function down(): LinearRunning {

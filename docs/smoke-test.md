@@ -1,6 +1,6 @@
-# Local smoke test
+# Smoke test
 
-Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git, and sign in to Claude Code, Grok, or Codex for implementation and Codex for review.
+Run Paws against a Linear epic with three sub-issues, GitHub pull requests in blocked-by order, one answered question, and one Closeout fix loop. Install Bun 1.4.2 or newer and Git. Pair a Linux runner, sign in to Claude Code, Grok, or Codex on that host for implementation and Codex for review, and connect GitHub App repository access. Pairing is in [Pair a remote Linux runner](runner-pairing.md). GitHub App sign-in is in [GitHub sign-in](github-login.md).
 
 ```sh
 bun install
