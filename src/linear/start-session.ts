@@ -21,6 +21,7 @@ export function createSessionStarter(options: {
     target: LinearSessionTarget,
     externalUrl: string,
     signal?: AbortSignal,
+    acceptSession?: (event: AcceptedLinearEvent) => void,
   ): Promise<StartedLinearSession> => {
     const operation =
       target.kind === "issue" ? "agentSessionCreateOnIssue" : "agentSessionCreateOnComment";
@@ -95,8 +96,9 @@ export function createSessionStarter(options: {
         promptContext,
       }),
     };
+    acceptSession?.(event);
     const stored = options.store.commit(event);
-    if (!stored.handled) {
+    if (!stored.handled || acceptSession !== undefined) {
       void options
         .onEvent(options.store.get(event.dedupeKey) ?? event)
         .then(() => options.store.markHandled(event.dedupeKey))

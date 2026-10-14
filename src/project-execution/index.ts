@@ -7,3 +7,4 @@ export {
   assertProjectAuthority,
 } from "./approval";
 export type { ProjectApproval } from "./approval";
+export { createApprovedProjects } from "./runtime";

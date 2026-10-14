@@ -90,6 +90,11 @@ export function createEpicReconciler(input: {
   inspectMerge?: InspectBlockerMerge;
   onChanges: (changes: EpicChanges) => void;
   afterChanges?: (changes: EpicChanges) => Promise<void>;
+  scopeSnapshot?: (
+    sessionId: string,
+    snapshot: EpicSnapshot,
+    signal?: AbortSignal,
+  ) => Promise<EpicSnapshot>;
   now?: () => number;
 }) {
   const { db, tracker, lifecycle } = input;
@@ -103,7 +108,10 @@ export function createEpicReconciler(input: {
   async function refresh(target: Target, requestToken: string) {
     target.signal?.throwIfAborted();
     const initial = authority(db, target);
-    const snapshot = await tracker.loadEpic(initial.identity.issueId);
+    const loaded = await tracker.loadEpic(initial.identity.issueId);
+    const snapshot = input.scopeSnapshot
+      ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
+      : loaded;
     target.signal?.throwIfAborted();
     if (snapshot.linearIssueId !== initial.identity.issueId)
       throw new Error("Linear returned another epic");
