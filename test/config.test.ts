@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  closeoutPolicyRoot,
   emptyConfigFile,
   ensureLayout,
   loadConfigFile,
@@ -34,11 +35,34 @@ describe("config", () => {
       maxAwakeMs: 1_000,
       implementer: "claude" as const,
     };
-    const text = renderConfigToml({ ...setup, githubRepos: ["acme/one", "acme/two"] });
+    const text = renderConfigToml({
+      ...setup,
+      githubRepos: ["acme/one", "acme/two"],
+      closeoutProjects: { "acme/one": "policies/one" },
+    });
     expect(parseConfigToml(text).githubRepos).toEqual(["acme/one", "acme/two"]);
     writeFileSync(paths.configFile, text, { mode: 0o600 });
     writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
+    expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
+      join(paths.home, "policies/one"),
+    );
+    expect(
+      closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "acme/two"),
+    ).toBeUndefined();
+  });
+  test("local Closeout settings reject malformed project roots", () => {
+    for (const text of [
+      '[closeout.projects."acme/repo"]\npolicy_root = ""',
+      '[closeout.projects."acme/repo"]\npolicy_root = false',
+      '[closeout.projects."acme/repo"]\npolicy_rot = "foo"',
+      '[closeout.projects.acme]\npolicy_root = "foo"',
+    ])
+      expect(() => parseConfigToml(text)).toThrow();
+    const config = parseConfigToml(
+      '[closeout.projects."Acme/Repo"]\npolicy_root = "/tmp/policies"',
+    );
+    expect(closeoutPolicyRoot(config, "/tmp/paws", "acme/repo")).toBe("/tmp/policies");
   });
   test("defaults to localhost and ~/.paws", () => {
     const env = loadEnv({});

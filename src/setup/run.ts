@@ -4,9 +4,11 @@ import { isAbsolute, join, resolve } from "node:path";
 import { ensureBareMirror, mirrorPath } from "../acp";
 import { DEFAULT_LINEAR_MODE } from "../comments";
 import {
+  closeoutPolicyRoot,
   ensureLayout,
   isImplementer,
   pawsPaths,
+  loadConfigFile,
   loadRuntime,
   writeConfigFile,
   type ImplementerName,
@@ -97,6 +99,7 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
   ensureLayout(paths);
   const oauthClientId = resolveSetupGitHubClientId(home, io.env);
   const previous = loadRuntime({ ...io.env, PAWS_HOME: home });
+  if (previous.configError !== null) loadConfigFile(paths.configFile);
   const githubAuth =
     previous.configured ||
     previous.githubAuth === "app" ||
@@ -195,7 +198,12 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
     }
   }
 
-  await ensureCloseoutPolicy({ checkout, yes: flags.yes, io });
+  const policyRoot = closeoutPolicyRoot(
+    previous.file,
+    home,
+    `${repository.owner}/${repository.repo}`,
+  );
+  await ensureCloseoutPolicy({ checkout, policyRoot, yes: flags.yes, io });
 
   if (linear !== null) {
     const token = linearToken(linear);
@@ -238,9 +246,9 @@ async function run(argv: readonly string[], io: SetupIO, secrets: string[]): Pro
       if (!check.ok) stop(check.message);
     }
   }
-  const policy = join(checkout, ".agents", "closeout.yaml");
+  const policy = join(policyRoot ?? checkout, ".agents", "closeout.yaml");
   if (!existsSync(policy)) {
-    stop(`Create .agents/closeout.yaml in ${checkout} before running Paws.`);
+    stop(`Create ${policy} before running Paws.`);
   }
   io.stdout(`paws setup wrote ${paths.configFile}`);
 }

@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   parseAgentSettingsToml,
   renderAgentSettingsText,
@@ -75,6 +75,7 @@ export type PawsConfigFile = {
   checkout: string | null;
   maxTurns: number | null;
   maxAwakeMs: number | null;
+  closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
   checkoutProjects?: CheckoutProjects;
@@ -100,6 +101,7 @@ export type PawsSetupConfig = {
   maxTurns: number;
   maxAwakeMs: number;
   implementer: ImplementerName;
+  closeoutProjects?: Record<string, string>;
 };
 
 export function emptyConfigFile(): PawsConfigFile {
@@ -201,6 +203,9 @@ export function renderConfigToml(config: PawsSetupConfig): string {
     "allow_api_key = false",
     "",
   );
+  for (const [repo, root] of Object.entries(config.closeoutProjects ?? {})) {
+    lines.push(`[closeout.projects.${tomlString(repo)}]`, `policy_root = ${tomlString(root)}`, "");
+  }
   return lines.join("\n");
 }
 
@@ -215,6 +220,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     renderConfigToml({
       ...config,
       githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
+      closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
     }) + renderCheckoutProjects(parseCheckoutProjects(current));
   const next =
     profiles === null
@@ -382,6 +388,21 @@ function assignConfig(
     config.retiredTrackerConfigured = true;
     return;
   }
+  const closeoutProject = /^closeout\.projects\."([^"\\]+)"$/.exec(section);
+  if (closeoutProject) {
+    const repo = closeoutProject[1]!;
+    if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo))
+      throw new Error(`config.toml line ${line} requires a Closeout owner/repo`);
+    if (key !== "policy_root")
+      throw new Error(`config.toml line ${line} has an unknown Closeout project key`);
+    const root = asString(value, line);
+    if (!root.trim() || root.includes("\0"))
+      throw new Error(`config.toml line ${line} requires a nonempty Closeout policy_root`);
+    (config.closeoutProjects ??= {})[repo] = root;
+    return;
+  }
+  if (section.startsWith("closeout.projects"))
+    throw new Error(`config.toml line ${line} requires [closeout.projects."owner/repo"]`);
   if (section === "closeout") {
     return;
   }
@@ -543,4 +564,14 @@ function asInt(value: string | number | boolean | string[], line: number): numbe
     throw new Error(`config.toml line ${line} must be a non-negative integer`);
   }
   return value;
+}
+
+export function closeoutPolicyRoot(
+  config: PawsConfigFile,
+  pawsHome: string,
+  repository: string | null,
+): string | undefined {
+  const root =
+    repository === null ? undefined : config.closeoutProjects?.[repository.toLowerCase()];
+  return root === undefined ? undefined : resolve(pawsHome, root);
 }

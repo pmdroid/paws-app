@@ -21,5 +21,6 @@ test("trusted Closeout dispatch uses production mTLS and canonical check authori
     true,
     true,
     true,
+    true,
   ]);
 }, 30_000);

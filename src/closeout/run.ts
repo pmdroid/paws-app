@@ -44,6 +44,7 @@ export type EvaluateInput = {
   reviewer: CodexReviewer;
   /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
   home?: string;
+  policyRoot?: string;
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   progress?: CloseoutProgress;
@@ -75,6 +76,7 @@ export type GateInput = {
   recorder?: VerdictRecorder;
   reportDir?: string;
   home?: string;
+  policyRoot?: string;
   pawsHome?: string;
   maxFixAttempts?: number;
   progress?: CloseoutProgress;
@@ -157,6 +159,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       candidate: input.candidate,
       evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(input.progress !== undefined ? { progress: input.progress } : {}),
@@ -203,6 +206,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       candidate: input.candidate,
       evidenceDir,
       ...(input.home !== undefined ? { home: input.home } : {}),
+      ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
     });
   } catch (error) {
@@ -287,7 +291,8 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
       return finalResult(input, evaluation.outcome, fixAttempts, evaluations, head, evaluation);
     }
 
-    maxFixAttempts ??= policyFixBudget(input.worktree, input.home) ?? MAX_FIX_ATTEMPTS;
+    maxFixAttempts ??=
+      policyFixBudget(input.worktree, input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
@@ -405,6 +410,7 @@ async function addReviewEvidence(
         candidate: input.candidate,
         evidenceDir,
         ...(input.home !== undefined ? { home: input.home } : {}),
+        ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
         ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
         reviewer: {
           async review(request) {
@@ -414,6 +420,7 @@ async function addReviewEvidence(
                 await loadReviewMaterial({
                   repo: request.worktree,
                   skill: request.item.skill,
+                  skillFiles: request.skillFiles,
                   base: request.base,
                   head: request.head,
                 }),

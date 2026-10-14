@@ -13,6 +13,7 @@ import {
   type CommentMode,
 } from "./comments";
 import {
+  closeoutPolicyRoot,
   ensureLayout,
   loadRuntime,
   loadEnv,
@@ -679,6 +680,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         jobs: created.jobs,
         outbox: created.outbox,
         pawsRoot: paths.home,
+        closeoutPolicyRoot: ({ owner, repo }) =>
+          closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
         remoteExecution,

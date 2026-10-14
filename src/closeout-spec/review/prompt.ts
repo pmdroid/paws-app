@@ -1,3 +1,4 @@
+import { sha256Hex } from "../policy/canonical";
 import { FINDING_FORMAT } from "./findings";
 import { gitOutput } from "./git";
 
@@ -24,6 +25,7 @@ export function assertSkillPath(skill: string): void {
 export async function loadReviewMaterial(input: {
   repo: string;
   skill: string;
+  skillFiles?: ReadonlyMap<string, Uint8Array>;
   base: string;
   head: string;
 }): Promise<ReviewMaterial> {
@@ -31,8 +33,17 @@ export async function loadReviewMaterial(input: {
   assertCommit(input.head, "head");
   assertSkillPath(input.skill);
   const range = `${input.base}..${input.head}`;
-  const skill = await gitOutput(input.repo, ["show", `${input.head}:${input.skill}`]);
-  const references = await loadReferences(input.repo, input.head, input.skill);
+  const trusted = input.skillFiles;
+  const skill = trusted
+    ? skillText(trusted, input.skill)
+    : await gitOutput(input.repo, ["show", `${input.head}:${input.skill}`]);
+  const prefix = `${input.skill.slice(0, input.skill.lastIndexOf("/"))}/`;
+  const references = trusted
+    ? [...trusted.keys()]
+        .filter((path) => path.startsWith(prefix) && path !== input.skill)
+        .sort()
+        .map((path) => ({ path, text: referenceText(trusted.get(path)!) }))
+    : await loadReferences(input.repo, input.head, input.skill);
   const filesText = await gitOutput(input.repo, [
     "-c",
     "core.quotepath=false",
@@ -124,4 +135,18 @@ function assertRepoPath(input: string): void {
   if (parts.some((part) => part.length === 0 || part === "." || part === "..")) {
     throw new Error("skill path escapes the checkout");
   }
+}
+
+function skillText(files: ReadonlyMap<string, Uint8Array>, path: string): string {
+  const bytes = files.get(path);
+  if (bytes === undefined) throw new Error(`trusted skill file is missing: ${path}`);
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+function referenceText(bytes: Uint8Array): string {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (!text.includes("\0")) return text;
+  } catch {}
+  return `Binary resource, SHA-256 ${sha256Hex(bytes)}`;
 }

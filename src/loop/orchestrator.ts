@@ -196,6 +196,7 @@ export type OrchestratorOptions = {
   outbox: OutboxDispatcher;
   pawsRoot: string;
   home?: string;
+  closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -1656,7 +1657,7 @@ export class Orchestrator {
         },
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
-      ...this.closeoutHome(),
+      ...this.closeoutHome(item),
       ...recoveryOptions(this.db, item.id),
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
@@ -3677,7 +3678,11 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     });
-    const required = reviewRequirements(worktree.path, this.options.home);
+    const required = reviewRequirements(
+      worktree.path,
+      this.options.home,
+      this.options.closeoutPolicyRoot?.(repository),
+    );
     if (!required.ok) throw new Error(required.message);
     const requirements = required.items.filter((check) => check.gate === "beforePR");
     if (!requirements.length) return;
@@ -3730,8 +3735,15 @@ export class Orchestrator {
     );
   }
 
-  private closeoutHome(): { home?: string; pawsHome: string } {
+  private closeoutHome(item: WorkItemRecord): {
+    home?: string;
+    pawsHome: string;
+    policyRoot?: string;
+  } {
+    const repository = this.repositoryForItem(item);
+    const policyRoot = repository ? this.options.closeoutPolicyRoot?.(repository) : undefined;
     return {
+      ...(policyRoot !== undefined ? { policyRoot } : {}),
       ...(this.options.home !== undefined ? { home: this.options.home } : {}),
       pawsHome: this.options.pawsRoot,
     };

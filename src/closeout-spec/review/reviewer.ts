@@ -82,6 +82,7 @@ export function createReviewer(agent: ReviewAgent, options: ReviewerOptions) {
         material = await loadReviewMaterial({
           repo: request.worktree,
           skill: request.item.skill,
+          skillFiles: request.skillFiles,
           base: request.base,
           head: request.head,
         });
