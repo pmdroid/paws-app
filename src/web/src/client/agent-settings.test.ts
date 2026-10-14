@@ -42,7 +42,6 @@ describe("agent settings", () => {
       via: null,
       error: null,
       engineUrl: "http://localhost:8787",
-      epicView: "graph",
       selectedCheck: null,
     });
     expect(rendered.content).toContain('id="agent-settings"');

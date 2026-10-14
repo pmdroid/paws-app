@@ -3,28 +3,35 @@
 @source "./**/*.{ts,tsx}";
 @custom-variant dark (&:where(.dark, .dark *));
 
+@font-face {
+  font-family: "Bricolage";
+  src: url("../fonts/bricolage.woff2") format("woff2");
+  font-weight: 400 800;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
-  --background: hsl(214 95% 93%);
-  --secondary-background: #fff;
-  --main: hsl(217 100% 66%);
-  --foreground: #000;
-  --main-foreground: #000;
-  --border: #000;
-  --ring: #000;
-  --overlay: rgb(0 0 0 / 80%);
+  --background: #c0b4f1;
+  --secondary-background: #fdfdfb;
+  --main: #ff793e;
+  --foreground: #101317;
+  --main-foreground: #101317;
+  --border: #101317;
+  --ring: #5b3198;
+  --overlay: rgb(16 19 23 / 72%);
   --shadow: 4px 4px 0 0 var(--border);
 }
 
 .dark {
   color-scheme: dark;
-  --background: #1e2633;
-  --secondary-background: #273344;
-  --main: #5294ff;
-  --foreground: #f7f7f7;
-  --main-foreground: #000;
-  --border: #000;
-  --ring: #fff;
+  --background: #241c38;
+  --secondary-background: #312848;
+  --main: #ff793e;
+  --foreground: #f8f6f2;
+  --main-foreground: #101317;
+  --border: #101317;
+  --ring: #c0b4f1;
 }
 
 @theme inline {
@@ -45,6 +52,7 @@
   --radius-base: 5px;
   --font-weight-base: 500;
   --font-weight-heading: 700;
+  --font-sans: "Bricolage", sans-serif;
   --shadow-shadow: var(--shadow);
 }
 
@@ -52,6 +60,7 @@
   body {
     background: var(--background);
     color: var(--foreground);
+    font-family: var(--font-sans);
     font-weight: var(--font-weight-base);
   }
   h1,
@@ -64,6 +73,10 @@
   }
   [hidden] {
     display: none !important;
+  }
+  [data-epic-filter][aria-pressed="true"] {
+    background: var(--main);
+    color: var(--main-foreground);
   }
   :focus-visible {
     outline: 2px solid var(--ring);

@@ -150,7 +150,6 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
     via: "engine",
     error: null,
     engineUrl: "http://127.0.0.1:8787",
-    epicView: "graph",
     selectedCheck: { itemId: id, checkId },
   };
   return render(model).content;

@@ -10,7 +10,6 @@ const model = {
   via: "bundled" as const,
   error: null,
   engineUrl: null,
-  epicView: "graph" as const,
   selectedCheck: null,
 };
 
@@ -49,8 +48,8 @@ test("empty pages retain their own heading and empty state", () => {
       route: { view, id: null },
       conversations: { state: "ready", sessions: [] },
     }).content;
-    expect(html.match(/<h1>/g)?.length).toBe(1);
-    expect(html).toContain(`<h1>${PAGES[view].title}</h1>`);
+    expect(html.match(/<h1 /g)?.length).toBe(1);
+    expect(html).toContain(`<h1 class="sr-only">${PAGES[view].title}</h1>`);
     expect(html).toContain('class="empty"');
   }
 });
@@ -63,10 +62,12 @@ test("invalid detail routes do not silently show a different result", () => {
   }
 });
 
-test("epic view uses one tabs root with two labeled content panels", () => {
-  const html = render({ ...model, route: { view: "epics", id: null } }).content;
-  expect(html).toContain('data-view-tabs data-selected="graph"');
-  expect(html).toContain('data-tab="graph" data-label="Dependencies"');
-  expect(html).toContain('data-tab="board" data-label="Board"');
-  expect(html).not.toContain('data-action="epic-view"');
+test("epics list offers state filters and a simple item list", () => {
+  const list = render({ ...model, route: { view: "epics", id: null } }).content;
+  expect(list).toContain('data-epic-filter="needs"');
+  expect(list).toContain("data-epic-state=");
+  expect(list).not.toContain("data-view-tabs");
+  const detail = render({ ...model, route: { view: "epics", id: "ENG-98" } }).content;
+  expect(detail).toContain("All epics");
+  expect(detail).not.toContain("Linear agent session");
 });

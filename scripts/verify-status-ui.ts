@@ -86,6 +86,7 @@ async function navigate(page: Page, name: string, width: number) {
   if (width < 768)
     await expect(page.getByRole("dialog", { name: "Paws navigation" })).not.toBeVisible();
   await expect(page.locator("#content h1")).toHaveText(name === "Settings" ? "Agents" : name);
+  await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
     .toBe(true);
@@ -97,6 +98,7 @@ try {
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`http://127.0.0.1:${server.port}/status/`);
     await expect(page.locator("#content h1")).toHaveText("Overview");
+    await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     if (width < 768) {
       await page.getByRole("button", { name: "Open navigation" }).click();
@@ -109,10 +111,10 @@ try {
         .getByRole("combobox", { name: "Appearance", exact: true })
         .selectOption(appearance.toLowerCase());
       await expect(page.locator("html")).toHaveClass(new RegExp(appearance.toLowerCase()));
-      await page.getByRole("button", { name: "Engine", exact: true }).click();
-      await expect(page.getByRole("dialog", { name: "Status source" })).toBeVisible();
-      await page.keyboard.press("Escape");
-      await expect(page.getByRole("dialog")).not.toBeVisible();
+      await expect(page.getByRole("button", { name: "Engine", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Refresh", exact: true })).toHaveCount(0);
+      await expect(page.locator("#banner")).not.toContainText("Status from");
+      await expect(page.locator("#banner")).not.toContainText("Demo");
       await page.waitForTimeout(250);
       await page.screenshot({
         path: join(
@@ -141,31 +143,23 @@ try {
       await expect(page.locator("#content h1")).toHaveCount(1);
     }
     await navigate(page, "Epics", width);
-    await expect(page.getByRole("combobox", { name: "Epic", exact: true })).toBeVisible();
-    const board = page.getByRole("tab", { name: "Board", exact: true });
-    await board.click();
-    await expect(board).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("ArrowLeft");
-    await page.keyboard.press("Enter");
-    await expect(page.getByRole("tab", { name: "Dependencies", exact: true })).toHaveAttribute(
-      "aria-selected",
+    await expect(page.getByRole("button", { name: "All", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Active", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Active", exact: true })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
-    await expect(page.getByRole("tabpanel", { name: "Dependencies", exact: true })).toContainText(
-      "Stage 1",
-    );
-    await board.click();
     snapshot.epics[0]!.description += " Refreshed.";
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.getByRole("tab", { name: "Board", exact: true })).toHaveAttribute(
-      "aria-selected",
+    await page.reload();
+    await expect(page.getByRole("button", { name: "All", exact: true })).toHaveAttribute(
+      "aria-pressed",
       "true",
     );
     await page.screenshot({
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `epics-${width}.png`),
       fullPage: true,
     });
-    await page.getByRole("combobox", { name: "Epic", exact: true }).selectOption({ index: 1 });
+    await page.getByRole("link", { name: "Team billing" }).click();
     await expect(page).toHaveURL(/#\/epics\//);
     await page.goBack();
     await expect(page.locator("#content h1")).toHaveText("Epics");
@@ -186,8 +180,8 @@ try {
     await expect.poll(() => actions.includes("pause")).toBe(true);
     await page.getByText("Stop this item", { exact: true }).click();
     await expect(page.getByRole("button", { name: "Confirm stop", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Confirm stop", exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Confirm stop", exact: true })).toHaveCount(0);
     await page.screenshot({
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `runs-${width}.png`),
       fullPage: true,
@@ -210,10 +204,8 @@ try {
     ).toBe(true);
     await page.getByText("Start Linear session", { exact: true }).click();
     await page.getByRole("textbox", { name: "Issue or comment thread" }).fill("ENG-123");
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "Issue or comment thread" })).toHaveValue(
-      "ENG-123",
-    );
+    await page.reload();
+    await expect(page.getByRole("textbox", { name: "Issue or comment thread" })).toHaveValue("");
     await navigate(page, "Runners", width);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
@@ -234,8 +226,8 @@ try {
     await page.locator("#defaults-implementer-model").fill("ui-test-model");
     await expect(page.locator("#defaults-implementer-effort")).toBeDisabled();
     await expect(page.locator("#defaults-implementer-effort")).toHaveValue("");
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.locator("#defaults-implementer-model")).toHaveValue("ui-test-model");
+    await page.reload();
+    await expect(page.locator("#defaults-implementer-model")).toHaveValue("");
     await page.getByRole("button", { name: "Save settings", exact: true }).click();
     await expect(
       page.getByRole("status").filter({ hasText: "Agent settings saved" }),
@@ -272,15 +264,16 @@ try {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 503, json: { error: "Fixture unavailable" } }),
     );
-    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.reload();
     await expect(page.locator("#banner")).toContainText("Offline");
-    await expect(page.locator("#top")).toContainText("Offline");
     await navigate(page, "Settings", width);
     await expect(page.getByRole("heading", { name: "Global defaults" })).toBeVisible();
-    await page.getByRole("button", { name: "Engine", exact: true }).click();
-    await page.getByRole("button", { name: "Use demo data", exact: true }).click();
+    await page.evaluate(() => {
+      localStorage.setItem("paws.statusEngineUrl", "demo");
+    });
+    await page.reload();
     await navigate(page, "Overview", width);
-    await expect(page.locator("#banner")).toContainText("fictional workspace");
+    await expect(page.locator("#banner")).not.toContainText("fictional workspace");
     await page.route("**/api/auth/session", (route) => route.fulfill({ status: 401 }));
     await page.reload();
     await expect(page.getByRole("heading", { name: "Sign in to Paws", exact: true })).toBeVisible();
@@ -305,6 +298,7 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.port}/status/`);
     await expect(page.locator("#content h1")).toHaveText("Overview");
+    await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     for (const [name] of pages) {
       await navigate(page, name, viewport.width);
       const dimensions = await page.evaluate(() => {
@@ -360,16 +354,6 @@ try {
       expect(Math.abs(pinned!.y)).toBeLessThan(1);
       expect(Math.abs(pinned!.height - viewport.height)).toBeLessThan(1);
     }
-    await page.getByRole("button", { name: "Engine", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Status source" });
-    await expect(dialog).toBeVisible();
-    await page.waitForTimeout(250);
-    const box = await dialog.boundingBox();
-    expect(box!.y).toBeGreaterThanOrEqual(0);
-    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
-    expect(box!.x).toBeGreaterThanOrEqual(0);
-    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
-    await page.keyboard.press("Escape");
     await page.close();
   }
   if (process.env.PAWS_UI_EVIDENCE_DIR)

@@ -41,7 +41,6 @@ test("every dashboard view renders without authored inline styles", () => {
       via: "bundled",
       error: null,
       engineUrl: null,
-      epicView: "graph",
       selectedCheck: null,
     });
     expect(rendered.content).not.toContain("style=");
@@ -49,7 +48,7 @@ test("every dashboard view renders without authored inline styles", () => {
   }
 });
 
-test("dependency graph keeps dependency order and blocker states without positioned CSS", () => {
+test("epic detail lists blockers without positioned CSS", () => {
   const snapshot = demoStatus();
   const rendered = render({
     route: { view: "epics", id: "ENG-98" },
@@ -58,12 +57,9 @@ test("dependency graph keeps dependency order and blocker states without positio
     via: "bundled",
     error: null,
     engineUrl: null,
-    epicView: "graph",
     selectedCheck: null,
   });
-  expect(rendered.content).toContain("Depends on");
-  expect(rendered.content).toContain("Stage 1");
-  expect(rendered.content).toContain("Stage 2");
+  expect(rendered.content).toContain("Waiting on");
   expect(rendered.content).not.toContain("style=");
-  expect(markup(rendered.content)).toContain("grid-cols-1");
+  expect(markup(rendered.content)).toContain("divide-y-2");
 });
