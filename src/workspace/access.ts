@@ -41,6 +41,7 @@ export type WorkspaceAccessOptions = {
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
+  readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 };
 
 export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
@@ -377,6 +378,13 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     authorizeLinearEvent: (event: Parameters<typeof authorizeLinearEvent>[0]) =>
       track(() => authorizeLinearEvent(event)),
     authenticate: (request: Request) => track(() => authenticate(request)),
+    repositoryTeams: (request: Request, signal: AbortSignal) =>
+      track(async () => {
+        const access = await authenticate(request);
+        if (access?.principal.role !== "owner" || !options.readTeams)
+          throw new Error("Workspace team access is unavailable.");
+        return options.readTeams(signal);
+      }),
     handle: (request: Request) => track(() => handle(request)),
     origin,
     organizationId: options.installedOrganization.id,

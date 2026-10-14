@@ -1,3 +1,4 @@
+import { createGitHubRepositorySetup } from "./github-repository-setup";
 import { createHostedGitHubConnect } from "./github-connect";
 import { handleSlackWebhook } from "../slack";
 import type { Database } from "bun:sqlite";
@@ -174,7 +175,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (access !== null) csrfToken = access.session.csrfToken;
     }
     if (
-      (path === "/api/workspaces/github-connect" || path === "/auth/github-app/callback") &&
+      (path === "/api/workspaces/github-connect" ||
+        path === "/api/workspaces/github-setup" ||
+        path === "/auth/github-app/callback") &&
       secrets.db
     ) {
       try {
@@ -184,6 +187,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       const env = secrets.statusEnv ?? process.env;
       const runtime = loadRuntime(env);
+      const setup = await createGitHubRepositorySetup({
+        db: secrets.db,
+        home: runtime.env.home,
+        env,
+        origin: workspace.origin,
+        teams: (setupRequest, signal) => workspace.repositoryTeams(setupRequest, signal),
+      })(request);
+      if (setup) return setup;
       return (await createHostedGitHubConnect({
         db: secrets.db,
         home: runtime.env.home,
