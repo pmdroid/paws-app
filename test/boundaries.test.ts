@@ -6,6 +6,7 @@ const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
   "runner-accounts",
+  "runner-login-worker",
   "worktree-checkout",
   "config",
   "credentials",
@@ -15,6 +16,7 @@ const MODULES = [
   "linear",
   "intake",
   "execution-controls",
+  "project-execution",
   "scheduler",
   "acp",
   "closeout",
@@ -79,6 +81,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   linear: ["core", "credentials"],
   intake: ["core", "linear"],
   "execution-controls": ["core", "db", "workspace"],
+  "project-execution": ["core", "db", "workspace", "linear", "intake"],
   scheduler: ["core", "db", "intake"],
   acp: ["core", "config", "process", "worktree-checkout"],
   closeout: ["closeout-spec"],
@@ -150,6 +153,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-artifacts": ["acp", "runner-protocol", "runner-work"],
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
+  "runner-login-worker": ["acp", "install", "runner-protocol"],
   "runner-execution": ["runner-protocol"],
   "runner-check": ["runner-execution", "runner-protocol"],
   "runner-checks": [
