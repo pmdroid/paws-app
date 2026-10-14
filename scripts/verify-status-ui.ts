@@ -213,6 +213,7 @@ try {
     await navigate(page, "Runners", width);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
+    await expect(page.getByText("curl -fsSL https://get.paws.boo | sudo sh")).toBeVisible();
     await page.getByRole("button", { name: "Check setup", exact: true }).click();
     await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
     await navigate(page, "Agents", width);
