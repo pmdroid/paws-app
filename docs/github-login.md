@@ -101,3 +101,11 @@ The smoke run uses Pascal's OAuth App. To register your own: GitHub → Settings
 5. Paws uses no client secret. If GitHub displays a client secret after registration, leave it there. Copy only the client id into `github.oauth_client_id`.
 
 When an organization limits third-party applications, an owner approves **Paws (local)** under **Third-party access**. Until that approval, the token can reach your personal repositories and cannot reach the organization's private issues. GitHub documents the owner step in [Approving OAuth apps for your organization](https://docs.github.com/en/organizations/managing-oauth-access-to-your-organizations-data/approving-oauth-apps-for-your-organization).
+
+## Workspace repository setup
+
+Open Settings → Integrations and choose **Sign in with GitHub**. Authorize the Paws GitHub App. If the App needs repository access, choose **Choose repositories on GitHub**, select its repositories on GitHub, then return to Paws and refresh the list.
+
+Choose the GitHub account, find your repositories, and check the Linear teams that can use each one. A repository can match several teams. Choose **Save repository access**. Workspace access links back to this picker.
+
+Paws keeps App credentials and temporary authorization tokens on the server. Repository work uses scoped App installation tokens.
