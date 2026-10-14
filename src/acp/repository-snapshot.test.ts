@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,10 @@ test("repository snapshots pin tracked source, preserve deliverables and keep ho
   try {
     await git(["init", "-b", "main", source]);
     writeFileSync(join(source, "app.txt"), "Original application");
+    for (const folder of ["large", "nested/a [b]*!", "nested/keep"]) {
+      mkdirSync(join(source, folder), { recursive: true });
+      writeFileSync(join(source, folder, "file"), "tracked");
+    }
     writeFileSync(join(root, "host-secret"), "PRIVATE");
     await symlink(join(root, "host-secret"), join(source, "escaped"));
     await git(["-C", source, "add", "."]);
@@ -31,9 +35,22 @@ test("repository snapshots pin tracked source, preserve deliverables and keep ho
     ]);
     const original = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
     writeFileSync(join(source, "untracked-secret"), "PRIVATE");
-    const input = { owner: "acme", repo: "app", remoteUrl: source, workspace, signal };
+    const input = {
+      owner: "acme",
+      repo: "app",
+      remoteUrl: source,
+      workspace,
+      signal,
+      checkoutExclusions: ["large", "nested/a [b]*!"],
+    };
     const snapshot = await prepareRepositorySnapshot(input);
     expect(snapshot.commit).toBe(original);
+    expect(existsSync(join(snapshot.path, "large"))).toBe(false);
+    expect(existsSync(join(snapshot.path, "nested/a [b]*!"))).toBe(false);
+    expect(readFileSync(join(snapshot.path, "nested/keep/file"), "utf8")).toBe("tracked");
+    await expect(prepareRepositorySnapshot({ ...input, checkoutExclusions: [] })).rejects.toThrow(
+      "ownership changed",
+    );
     expect(readFileSync(join(snapshot.path, "app.txt"), "utf8")).toBe("Original application");
     expect(existsSync(join(snapshot.path, ".git"))).toBe(false);
     expect(existsSync(join(snapshot.path, "untracked-secret"))).toBe(false);

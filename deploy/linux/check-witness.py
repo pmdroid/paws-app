@@ -25,6 +25,10 @@ RESULTS = "/var/lib/paws-check-results"
 ASSETS = "/opt/paws-runner/current/deploy/linux"
 
 
+def valid_exclusions(folders):
+    return isinstance(folders, list) and len(folders) <= 128 and len(json.dumps(folders, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 32768 and all(isinstance(folder, str) and 0 < len(folder.encode("utf-8")) <= 1024 and "\\" not in folder and all(ord(char) >= 32 and ord(char) != 127 for char in folder) and all(part not in ("", ".", "..") and part.lower() != ".git" for part in folder.split("/")) for folder in folders)
+
+
 def directory(path):
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -88,10 +92,12 @@ def read_input(execution_id, runner_uid, input_gid):
     finally:
         os.close(parent)
     job = json.loads(content)
-    if not isinstance(job, dict) or set(job) != {"format", "executionId", "verificationAttemptId", "candidateSha", "argv", "cwd", "env", "timeoutMs"} or type(job["format"]) is not int or job["format"] != 1 or job["executionId"] != execution_id or not isinstance(job["verificationAttemptId"], str) or not IDENTIFIER.fullmatch(job["verificationAttemptId"]) or not isinstance(job["candidateSha"], str) or not re.fullmatch(r"[a-f0-9]{40}", job["candidateSha"]):
+    if not isinstance(job, dict) or set(job) - {"checkoutExclusions"} != {"format", "executionId", "verificationAttemptId", "candidateSha", "argv", "cwd", "env", "timeoutMs"} or type(job["format"]) is not int or job["format"] != 1 or job["executionId"] != execution_id or not isinstance(job["verificationAttemptId"], str) or not IDENTIFIER.fullmatch(job["verificationAttemptId"]) or not isinstance(job["candidateSha"], str) or not re.fullmatch(r"[a-f0-9]{40}", job["candidateSha"]):
         raise ValueError("Invalid witness command identity")
     if not isinstance(job["argv"], list) or not 1 <= len(job["argv"]) <= 128 or not all(bounded_text(value, 8192) for value in job["argv"]) or not job["argv"][0] or type(job["timeoutMs"]) is not int or not 1 <= job["timeoutMs"] <= 900000:
         raise ValueError("Invalid witness command bounds")
+    if not valid_exclusions(job.get("checkoutExclusions", [])):
+        raise ValueError("Invalid checkout exclusions")
     attempt = "/var/lib/paws-check-attempts/" + job["verificationAttemptId"]
     workspace = attempt + "/workspace"
     if not bounded_text(job["cwd"], 4096) or not (job["cwd"] == workspace or job["cwd"].startswith(workspace + "/")) or job["cwd"] != os.path.normpath(job["cwd"]):
@@ -121,12 +127,12 @@ def control(operation, execution_id):
         connection.close()
 
 
-def metadata(mode, attempt, candidate, check, input_gid, metadata_gid):
+def metadata(mode, attempt, candidate, check, input_gid, metadata_gid, exclusions):
     def identity():
         os.setgroups([check.pw_gid, input_gid])
         os.setgid(metadata_gid)
         os.setuid(check.pw_uid)
-    result = subprocess.run(["/usr/bin/python3", "-I", "-B", ASSETS + "/check-metadata.py", mode, attempt, candidate], preexec_fn=identity, stdin=subprocess.DEVNULL, capture_output=True, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/var/empty"}, timeout=450, check=False)
+    result = subprocess.run(["/usr/bin/python3", "-I", "-B", ASSETS + "/check-metadata.py", mode, attempt, candidate, hashlib.sha256(canonical(exclusions)).hexdigest()], preexec_fn=identity, stdin=subprocess.DEVNULL, capture_output=True, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/var/empty"}, timeout=450, check=False)
     if result.returncode != 0:
         raise ValueError("Trusted metadata inspection failed: " + result.stderr[:8192].decode("utf-8", "replace"))
     if len(result.stdout) > 131072:
@@ -301,9 +307,9 @@ def main():
             read_file(attempt, "initialized", 0, 0, 0o600, 0)
         except FileNotFoundError:
             exclusive_file(attempt, "initializing", b"")
-            metadata("init", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid)
+            metadata("init", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid, job.get("checkoutExclusions", []))
             exclusive_file(attempt, "initialized", b"")
-        before = metadata("inspect", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid)
+        before = metadata("inspect", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid, job.get("checkoutExclusions", []))
         if before["status"] is None:
             raise ValueError("Candidate metadata cannot admit a check")
         status, timed_out, duration, output = execute(parent, job)
@@ -312,7 +318,7 @@ def main():
         exit_code, command_signal = status["exitCode"], status["signal"]
         if not ((type(exit_code) is int and 0 <= exit_code <= 255 and command_signal is None) or (exit_code is None and type(command_signal) is int and 1 <= command_signal <= 64)):
             raise ValueError("Invalid trusted PID1 wait status")
-        after = metadata("inspect", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid)
+        after = metadata("inspect", job["verificationAttemptId"], job["candidateSha"], check, input_gid, metadata_gid, job.get("checkoutExclusions", []))
         publish_result({**expected, "exitCode": exit_code, "signal": command_signal, "timedOut": timed_out or status["serviceResult"] == "timeout", "stdout": output[0].text(), "stderr": output[1].text(), "stdoutTruncated": output[0].truncated, "stderrTruncated": output[1].truncated, "durationMs": int(duration), "dirty": new_dirt(before["status"], after["status"]), "headMoved": after["headMoved"]}, runner.pw_gid)
     finally:
         for descriptor in (attempt, active, parent, root):
