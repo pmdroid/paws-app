@@ -76,7 +76,7 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   root.className = "flex min-w-0 flex-col gap-8";
   renderMarkup(
     root,
-    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p><section data-settings-page="integrations" class="settings-section"><div><h2>Linear</h2><p class="sub">Work, planning, and questions stay in Linear.</p></div><div><span class="pill ok">Connected</span><p>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</p></div></section>${session.role === "owner" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><form id="workspace-repositories"><label class="field"><span>Repository and Linear team ID, one pair per line</span><textarea name="repositories" rows="4" placeholder="owner/repository team-id"></textarea></label><button class="btn" type="submit">Save repositories</button></form></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace owner to change members, roles, or repository access.</p>'}${!["owner", "admin"].includes(session.role) ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace owners and admins.</p>' : ""}`,
+    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p><section data-settings-page="integrations" class="settings-section"><div><h2>Linear</h2><p class="sub">Work, planning, and questions stay in Linear.</p></div><div><span class="pill ok">Connected</span><p>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</p></div></section>${session.role === "owner" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="#/settings/integrations">Manage GitHub repositories</a></div></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace owner to change members, roles, or repository access.</p>'}${!["owner", "admin"].includes(session.role) ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace owners and admins.</p>' : ""}`,
   );
   async function change(path: string, method: string, body?: unknown) {
     const result = await fetch(path, {
@@ -107,10 +107,9 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
       }),
   );
   if (session.role === "owner") {
-    const [initialMembers, repositories] = await Promise.all([
-      fetch("/api/workspaces/members", { cache: "no-store" }),
-      fetch("/api/workspaces/repositories", { cache: "no-store" }),
-    ]).catch(() => [null, null]);
+    const initialMembers = await fetch("/api/workspaces/members", { cache: "no-store" }).catch(
+      () => null,
+    );
     async function loadMembers(initialResponse?: Response | null) {
       const refresh = root!.querySelector<HTMLButtonElement>("[data-members-refresh]")!;
       refresh.disabled = true;
@@ -165,45 +164,6 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
       .querySelector("[data-members-refresh]")!
       .addEventListener("click", () => void loadMembers());
     await loadMembers(initialMembers);
-
-    const repositoryForm = root.querySelector<HTMLFormElement>("#workspace-repositories");
-    if (repositories?.ok && repositoryForm !== null) {
-      const data = (await repositories.json()) as {
-        repositories: { repository: string; teamId: string }[];
-      };
-      const input = repositoryForm.querySelector<HTMLTextAreaElement>("textarea")!;
-      input.value = data.repositories
-        .map((entry) => `${entry.repository} ${entry.teamId}`)
-        .join("\n");
-      repositoryForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const button = repositoryForm.querySelector<HTMLButtonElement>("button")!;
-        button.disabled = true;
-        void report(async () => {
-          const entries = input.value
-            .split("\n")
-            .map((line) => line.trim())
-            .filter(Boolean);
-          const mapped = entries.map((line) => {
-            const parts = line.split(/\s+/);
-            if (parts.length !== 2)
-              throw new Error("Enter a repository and its Linear team ID on each line.");
-            return { repository: parts[0], teamId: parts[1] };
-          });
-          await change("/api/workspaces/repositories", "PUT", { repositories: mapped });
-          const feedback = root!.querySelector("#workspace-feedback");
-          if (feedback !== null) feedback.textContent = "Repository access saved.";
-          document.dispatchEvent(new Event("paws:github-access-changed"));
-        }).finally(() => {
-          button.disabled = false;
-        });
-      });
-    } else if (repositoryForm !== null) {
-      repositoryForm.querySelector("button")?.setAttribute("disabled", "");
-      const feedback = root.querySelector("#workspace-feedback");
-      if (feedback !== null)
-        feedback.textContent = "Workspace settings could not be loaded. Reload to try again.";
-    }
   }
   if (["owner", "admin", "member"].includes(session.role))
     initializeWorkspaceAttribution(root, session.csrfToken);

@@ -1,5 +1,7 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
+import { initializeGitHubRepositorySetup } from "./github-repository-setup";
+import { githubUrl } from "./github-url";
 
 type GitHubStatus = {
   status:
@@ -20,6 +22,10 @@ export function initializeWorkspaceGitHub(
   csrfToken: string,
   canEditRepositories = false,
 ): void {
+  if (canEditRepositories) {
+    initializeGitHubRepositorySetup(root, csrfToken);
+    return;
+  }
   const section = document.createElement("section");
   section.id = "workspace-github-integration";
   section.dataset.settingsPage = "integrations";
@@ -206,18 +212,4 @@ export function initializeWorkspaceGitHub(
     if (section.isConnected) void load();
   });
   void load();
-}
-
-function githubUrl(value: string, kind: "install" | "authorize"): string {
-  const url = new URL(value);
-  if (
-    url.origin !== "https://github.com" ||
-    url.username ||
-    url.password ||
-    (kind === "authorize"
-      ? url.pathname !== "/login/oauth/authorize"
-      : !/^\/apps\/[a-z0-9-]+\/installations\/new$/.test(url.pathname))
-  )
-    throw new Error("GitHub returned an invalid connection link. Refresh status to try again.");
-  return url.href;
 }

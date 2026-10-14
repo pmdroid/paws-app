@@ -38,6 +38,7 @@ const generated = Bun.spawnSync([
 if (generated.exitCode !== 0) throw new Error("Could not create the disposable HTTPS identity.");
 let installed = false;
 let unavailable = false;
+let hiddenRepository: string | null = null;
 const provider = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -49,38 +50,80 @@ const provider = Bun.serve({
         unavailable?: boolean;
         expire?: boolean;
         disconnect?: boolean;
+        hiddenRepository?: string | null;
       };
       if (body.installed !== undefined) installed = body.installed;
       if (body.unavailable !== undefined) unavailable = body.unavailable;
+      if (body.hiddenRepository !== undefined) hiddenRepository = body.hiddenRepository;
       if (body.disconnect) db.run("DELETE FROM workspace_github_connection");
       if (body.expire)
         db.run("UPDATE workspace_session SET authenticated_at=?", [Date.now() - 16 * 60_000]);
       return Response.json({ ok: true });
     }
     if (unavailable) return Response.json({ error: "Synthetic GitHub outage" }, { status: 503 });
+    if (url.pathname === "/user/installations")
+      return Response.json({
+        total_count: installed ? 2 : 0,
+        installations: installed
+          ? [
+              {
+                id: 23,
+                app_id: 99,
+                account: { login: "other" },
+                permissions: INSTALLATION_PERMISSIONS,
+              },
+              {
+                id: 22,
+                app_id: 99,
+                account: { login: "acme" },
+                permissions: INSTALLATION_PERMISSIONS,
+              },
+            ]
+          : [],
+      });
+    if (url.pathname === "/user/installations/23/repositories")
+      return Response.json({
+        total_count: 1,
+        repositories: [{ id: 100, full_name: "other/readme", permissions: { admin: true } }],
+      });
+    if (url.pathname === "/user/installations/22/repositories")
+      return Response.json({
+        total_count: hiddenRepository ? 25 : 26,
+        repositories: Array.from({ length: 26 }, (_, index) => ({
+          id: index + 1,
+          full_name: index === 0 ? "acme/widgets" : "acme/service-" + index,
+          private: true,
+          permissions: { admin: true },
+        })).filter((repo) => repo.full_name !== hiddenRepository),
+      });
     if (url.pathname === "/app")
       return Response.json({ id: 99, client_id: "Iv1.fixture", slug: "fixture-paws" });
-    if (url.pathname === "/repos/acme/widgets/installation")
+    if (/^\/repos\/acme\/(widgets|service-[0-9]+)\/installation$/.test(url.pathname))
       return Response.json(
         { id: 22, app_id: 99, suspended_at: null, permissions: INSTALLATION_PERMISSIONS },
         { status: installed ? 200 : 404 },
       );
-    if (url.pathname === "/app/installations/22/access_tokens")
+    if (url.pathname === "/app/installations/22/access_tokens") {
+      const body = (await request.json()) as {
+        repositories: string[];
+        permissions: Record<string, string>;
+      };
       return Response.json(
         {
           token: "synthetic-installation-token",
           expires_at: new Date(Date.now() + 3600000).toISOString(),
           repository_selection: "selected",
-          repositories: [{ name: "widgets", full_name: "acme/widgets" }],
-          permissions: INSTALLATION_PERMISSIONS,
+          repositories: body.repositories.map((name) => ({ name, full_name: "acme/" + name })),
+          permissions: body.permissions,
         },
         { status: 201 },
       );
+    }
     if (url.pathname === "/login/oauth/access_token")
       return Response.json({ access_token: "ghu_syntheticidentity", scope: "" });
     if (url.pathname === "/user")
       return Response.json({ id: 7, login: "fixture-human", type: "User", name: "Fixture Human" });
-    if (url.pathname === "/repos/acme/widgets")
+    if (/^\/repos\/acme\/(widgets|service-[0-9]+)$/.test(url.pathname))
       return Response.json({ permissions: { admin: true }, owner: { type: "User", id: 7 } });
     throw new Error("Unexpected fixture GitHub request");
   },
@@ -147,7 +190,11 @@ ready.resolve(
         };
       },
     },
-    verifyTeam: async (id) => id === "fixture-team",
+    verifyTeam: async (id) => ["fixture-team", "fixture-quality"].includes(id),
+    readTeams: async () => [
+      { id: "fixture-team", name: "Engineering", key: "ENG" },
+      { id: "fixture-quality", name: "Quality", key: "QA" },
+    ],
     slackIdentities: {
       teamId: "T123",
       async lookup(email) {
