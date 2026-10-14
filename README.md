@@ -36,6 +36,15 @@ The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, se
 | `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |
 | `~/.paws/logs/`       | Process logs                                                                                                     |
 
+Paws can leave selected folders out of its worktrees. Add literal repository-relative folder paths to `~/.paws/config.toml`:
+
+```toml
+[checkout.projects."owner/repo"]
+exclude = ["large-assets", "packages/archived"]
+```
+
+Paws applies these exclusions before checking out files, including in detached Closeout verification worktrees. Excluded files remain tracked in Git. The developer's checkout stays unchanged. Updated settings take effect when Paws next prepares an item worktree; an empty list restores a full checkout. Git preserves edited files when their folder becomes excluded.
+
 `GET /health` returns JSON. `GET /status` serves the status dashboard (run `bun run build:status` first; otherwise the route tells you how). `GET /api/status` returns the live snapshot from the local database (`source: "live"`). `?engine=demo` or `PAWS_STATUS_DEMO=1` still serves the sample stub. Webhook routes stay off unless `config.toml` or `LINEAR_WEBHOOKS` turns them on. When they are on, `POST /webhooks/linear` checks the HMAC signature and timestamp, then commits the delivery before it acknowledges.
 
 ## Status dashboard
