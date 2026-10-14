@@ -14,6 +14,7 @@ import { quotaSignal } from "./quota";
 
 type Candidate = {
   id: string;
+  memberId?: string;
   workspaceId: string;
   ownerId: string;
   linearUserId: string;
@@ -41,7 +42,13 @@ export function createRunnerPlacement(options: {
   const now = options.now ?? Date.now;
   const admissions = new Map<
     string,
-    { request: PlacementRequest; scope: string; policy: string; expiresAt: number }
+    {
+      request: PlacementRequest;
+      scope: string;
+      policy: string;
+      expiresAt: number;
+      memberId?: string;
+    }
   >();
   function admissionKey(
     runnerId: string,
@@ -58,6 +65,11 @@ export function createRunnerPlacement(options: {
   }
   function policy(id: string, agent?: string) {
     return JSON.stringify({
+      accounts: db
+        .query(
+          "SELECT a.*,m.active,m.role,(SELECT json_group_array(team_id) FROM (SELECT team_id FROM workspace_user_team WHERE workspace_id=r.workspace_id AND user_id=a.user_id ORDER BY team_id)) AS teams FROM runner_member_account a JOIN runner r ON r.id=a.runner_id JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=a.user_id WHERE a.runner_id=? ORDER BY a.user_id,a.agent",
+        )
+        .all(id),
       runner: db
         .query(
           "SELECT id,workspace_id,owner_user_id,status,fence,revoked_at FROM runner WHERE id=?",
@@ -228,7 +240,45 @@ export function createRunnerPlacement(options: {
             )
             .get(input.itemId)
         : null;
+      const accountActor = input.purpose === "helper" ? current.ownership : issue.assigneeId;
+      const accountUser = accountActor
+        ? db
+            .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+            .get(accountActor)?.id
+        : undefined;
       const ranked = rows.flatMap((runner) => {
+        if (
+          input.profile &&
+          db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runner.id)
+        ) {
+          const account = accountUser
+            ? db
+                .query<
+                  { connected: number; cooldownUntil: number; resolvedModel: string | null },
+                  [string, string, string]
+                >(
+                  "SELECT connected,cooldown_until AS cooldownUntil,resolved_model AS resolvedModel FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=?",
+                )
+                .get(runner.id, accountUser, input.profile.agent)
+            : null;
+          if (
+            !account?.connected ||
+            !accountUser ||
+            (runner.ownerId !== accountUser && runner.sharing !== 1)
+          )
+            return [];
+          runner = {
+            ...runner,
+            memberId: accountUser,
+            ownerId: accountUser,
+            linearUserId: accountActor!,
+            seat: "personal",
+            ready: 1,
+            authExpired: 0,
+            cooldownUntil: account.cooldownUntil,
+            resolvedModel: account.resolvedModel,
+          };
+        }
         if (input.excludeRunnerIds?.includes(runner.id)) return [];
         const member = workspaceMember(db, current.workspace.id, runner.ownerId);
         if (
@@ -288,8 +338,13 @@ export function createRunnerPlacement(options: {
           scope: binding,
           policy: policy(runner.id, input.profile?.agent),
           expiresAt: at + 15_000,
+          memberId: runner.memberId,
         });
-      return ranked.map(({ runner }) => ({ id: runner.id, workspaceId: runner.workspaceId }));
+      return ranked.map(({ runner }) => ({
+        id: runner.id,
+        workspaceId: runner.workspaceId,
+        ...(runner.memberId ? { memberId: runner.memberId } : {}),
+      }));
     },
     started(input) {
       immediate(db, () => {
@@ -310,7 +365,7 @@ export function createRunnerPlacement(options: {
           )
           .get(input.runnerId);
         if (!runner) throw new Error("Runner identity changed before assignment");
-        if (input.profile) {
+        if (input.profile && !admission.memberId) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,?) ON CONFLICT DO NOTHING",
             [input.runnerId, input.profile.agent],
@@ -322,15 +377,16 @@ export function createRunnerPlacement(options: {
         }
         db.run(
           `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,seat,role,purpose,started_at)
-          VALUES(?,?,?,?,?,?,?,COALESCE((SELECT seat FROM runner_agent_policy WHERE runner_id=? AND agent=?),'unknown'),?,?,?)`,
+          VALUES(?,?,?,?,?,?,?,CASE WHEN ? THEN 'personal' ELSE COALESCE((SELECT seat FROM runner_agent_policy WHERE runner_id=? AND agent=?),'unknown') END,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
-            runner.ownerId,
+            admission.memberId ?? runner.ownerId,
             input.itemId ?? null,
             input.runId ?? null,
             input.profile?.agent ?? null,
             input.profile?.model ?? null,
+            admission.memberId ? 1 : 0,
             input.runnerId,
             input.profile?.agent ?? "",
             input.role,
@@ -346,6 +402,7 @@ export function createRunnerPlacement(options: {
         const usage = db
           .query<
             {
+              ownerId: string;
               purpose: string;
               agent: string | null;
               itemId: string | null;
@@ -354,7 +411,7 @@ export function createRunnerPlacement(options: {
             },
             [string, string]
           >(
-            "SELECT purpose,agent,item_id AS itemId,role,ended_at AS endedAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
+            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,ended_at AS endedAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
           )
           .get(input.commandId, input.runnerId);
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
@@ -414,7 +471,36 @@ export function createRunnerPlacement(options: {
             input.commandId,
           ],
         );
-        if (usage.agent) {
+        const memberAccount = usage.agent
+          ? db
+              .query(
+                "SELECT 1 FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=?",
+              )
+              .get(input.runnerId, usage.ownerId, usage.agent)
+          : null;
+        if (memberAccount && quota)
+          db.run(
+            "UPDATE runner_member_account SET cooldown_until=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [quota.cooldownUntil, input.finishedAt, input.runnerId, usage.ownerId, usage.agent!],
+          );
+        if (memberAccount && success)
+          db.run(
+            "UPDATE runner_member_account SET cooldown_until=CASE WHEN ? THEN cooldown_until ELSE 0 END,resolved_model=COALESCE(?,resolved_model),updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [
+              usage.purpose === "prepare" ? 1 : 0,
+              model,
+              input.finishedAt,
+              input.runnerId,
+              usage.ownerId,
+              usage.agent!,
+            ],
+          );
+        if (memberAccount && result?.authRequired)
+          db.run(
+            "UPDATE runner_member_account SET connected=0,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [input.finishedAt, input.runnerId, usage.ownerId, usage.agent!],
+          );
+        if (usage.agent && !memberAccount) {
           db.run(
             `UPDATE runner_agent_policy SET
             ready=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE ready END,

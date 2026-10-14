@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createPrivateKey, generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { request as httpsRequest } from "node:https";
@@ -22,6 +22,7 @@ import { openRunnerAuthority, startRunnerListener } from "../../src/runner-ident
 import { createRunnerWorkHttp } from "../../src/runner-work";
 import { createRunnerChecks, createRunnerChecksHttp } from "../../src/runner-checks";
 import { runnerCheckInputHash, type RunnerCheckResult } from "../../src/runner-check";
+import { signRunnerCommand, type RunnerCommand } from "../../src/runner-protocol";
 import {
   runnerCheckResultSigningBytes,
   runnerVerifierFingerprint,
@@ -103,7 +104,7 @@ export async function probeRunnerChecks(
   assert.equal(generated.exitCode, 0, generated.stderr.toString());
   const tls = { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8") };
   const issuer = join(root, "issuer");
-  await initializeRunnerCoordinator(issuer);
+  const signingKeys = await initializeRunnerCoordinator(issuer);
   const coordinator = await openRunnerCoordinator({
     db,
     root: issuer,
@@ -199,7 +200,7 @@ export async function probeRunnerChecks(
       "fixture/repository",
       "team",
     ]);
-    coordinator.work.enqueue({
+    const legacyCommand: RunnerCommand = {
       type: "probe",
       id: workspaceId(now),
       runnerId,
@@ -207,7 +208,19 @@ export async function probeRunnerChecks(
       issuedAt: now,
       expiresAt: now + 600_000,
       profile: { agent: "codex", model: "scripted" },
+    };
+    const legacyEnvelope = signRunnerCommand({
+      keyId: signingKeys[0].keyId,
+      privateKey: createPrivateKey(readSecretFile(join(issuer, "runner-command-key.pem"))!),
+      command: legacyCommand,
     });
+    db.run("INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES(?,?,?,?,?)", [
+      legacyCommand.id,
+      runnerId,
+      "probe",
+      JSON.stringify(legacyEnvelope),
+      legacyCommand.expiresAt,
+    ]);
     const retainedCommands = db.query("SELECT * FROM runner_command ORDER BY ordinal").all();
     db.run("UPDATE sqlite_sequence SET seq=1000 WHERE name='runner_command'");
     migrate(db);
