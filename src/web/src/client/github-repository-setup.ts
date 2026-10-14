@@ -11,6 +11,7 @@ type Catalog = {
   installationId?: string | null;
   repositories?: { repository: string; private: boolean }[];
   teams?: { id: string; name: string; key: string }[];
+  missingPermissions?: string[];
   mappings: Mapping[];
 };
 
@@ -100,7 +101,11 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     const button = editor.querySelector<HTMLButtonElement>('button[type="submit"]')!;
     const removing = selection.length === 0 && (catalog?.mappings.length ?? 0) > 0;
     button.textContent = removing ? "Remove all repository access" : "Save repository access";
-    button.disabled = pending || unavailable.length > 0 || (selection.length === 0 && !removing);
+    button.disabled =
+      pending ||
+      unavailable.length > 0 ||
+      (catalog?.missingPermissions?.length ?? 0) > 0 ||
+      (selection.length === 0 && !removing);
   }
   function unavailableMappings() {
     return selection.filter(
@@ -141,9 +146,16 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     }
     const repositories = catalog.repositories ?? [];
     const teams = catalog.teams ?? [];
+    const permissionNames: Record<string, string> = {
+      contents: "Contents",
+      pull_requests: "Pull requests",
+      checks: "Checks",
+      issues: "Issues",
+    };
+    const missing = catalog.missingPermissions ?? [];
     renderMarkup(
       editor,
-      `<form class="flex min-w-0 flex-col gap-4"><p>Signed in as <strong>@${esc(catalog.login ?? "")}</strong></p>${(catalog.installations?.length ?? 0) ? `<label class="field"><span>GitHub account</span><select name="installationId">${catalog.installations!.map((installation) => `<option value="${esc(installation.id)}"${installation.id === catalog!.installationId ? " selected" : ""}>${esc(installation.account)}</option>`).join("")}</select></label>` : ""}${repositories.length && teams.length ? '<label class="field"><span>Find a repository</span><input type="search" name="repositorySearch" placeholder="Search repositories" /></label><p class="sub">Select the Linear teams that can use each repository.</p><div data-repository-rows role="region" aria-label="Repository choices" tabindex="0" class="max-h-[28rem] overflow-auto"></div><div class="row"><button class="btn" type="button" data-previous>Previous</button><span data-page></span><button class="btn" type="button" data-next>Next</button></div>' : `<p>${!catalog.installations?.length ? "Give the Paws App access to your GitHub repositories, then refresh this list." : !repositories.length ? "Choose repositories the App can access on GitHub, then refresh this list." : "Ask your Linear administrator to give Paws access to a team, then refresh this list."}</p>`}<div data-unavailable role="status" class="flex flex-col gap-3 empty:hidden"></div><p data-selection role="status"></p><button class="btn primary" type="submit">Save repository access</button></form>`,
+      `<form class="flex min-w-0 flex-col gap-4">${missing.length ? `<div role="alert"><p>The Paws GitHub App needs Read and write access to: ${missing.map((permission) => esc(permissionNames[permission] ?? permission)).join(", ")}.</p><p>Ask the Paws operator to update the App permissions, then approve the update on GitHub and refresh repositories.</p><a class="btn" href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Review GitHub App permissions</a></div>` : ""}<p>Signed in as <strong>@${esc(catalog.login ?? "")}</strong></p>${(catalog.installations?.length ?? 0) ? `<label class="field"><span>GitHub account</span><select name="installationId">${catalog.installations!.map((installation) => `<option value="${esc(installation.id)}"${installation.id === catalog!.installationId ? " selected" : ""}>${esc(installation.account)}</option>`).join("")}</select></label>` : ""}${repositories.length && teams.length ? '<label class="field"><span>Find a repository</span><input type="search" name="repositorySearch" placeholder="Search repositories" /></label><p class="sub">Select the Linear teams that can use each repository.</p><div data-repository-rows role="region" aria-label="Repository choices" tabindex="0" class="max-h-[28rem] overflow-auto"></div><div class="row"><button class="btn" type="button" data-previous>Previous</button><span data-page></span><button class="btn" type="button" data-next>Next</button></div>' : `<p>${!catalog.installations?.length ? "Give the Paws App access to your GitHub repositories, then refresh this list." : !repositories.length ? "Choose repositories the App can access on GitHub, then refresh this list." : "Ask your Linear administrator to give Paws access to a team, then refresh this list."}</p>`}<div data-unavailable role="status" class="flex flex-col gap-3 empty:hidden"></div><p data-selection role="status"></p><button class="btn primary" type="submit">Save repository access</button></form>`,
     );
     if (repositories.length && teams.length) paintRows();
     else updateSelection();
@@ -286,7 +298,13 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
   });
   editor.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (pending || !catalog?.installationId || unavailableMappings().length) return;
+    if (
+      pending ||
+      !catalog?.installationId ||
+      unavailableMappings().length ||
+      catalog.missingPermissions?.length
+    )
+      return;
     const installationId = catalog.installationId;
     const setupId = catalog.setupId;
     const mappings = structuredClone(selection);
