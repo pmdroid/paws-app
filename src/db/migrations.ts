@@ -1440,4 +1440,13 @@ CREATE TABLE decision_suggestion (
 CREATE UNIQUE INDEX decision_suggestion_answer ON decision_suggestion(question_id) WHERE accepted_at IS NOT NULL;
 `,
   },
+  {
+    id: "055_runner_capacity",
+    sql: `
+CREATE TABLE runner_capacity (
+ runner_id TEXT PRIMARY KEY REFERENCES runner(id),
+ capacity INTEGER NOT NULL CHECK(capacity BETWEEN 1 AND 16)
+) STRICT;
+`,
+  },
 ];

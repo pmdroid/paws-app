@@ -18,7 +18,7 @@ import {
 import { publishRunnerAnswer } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RunnerResultSchema, type RunnerResult } from "../runner-protocol";
-import { openExecutionJournal, type Execution, type WorkCommand } from "../runner-journal";
+import { openExecutionJournal, type Execution } from "../runner-journal";
 
 class RemoteFailure extends Error {}
 
@@ -90,6 +90,7 @@ export async function openRunnerRuntime(options: {
   now?: () => number;
   monotonic?: () => number;
   onError?: (error: Error) => void;
+  concurrency?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
@@ -107,13 +108,20 @@ export async function openRunnerRuntime(options: {
     journal.close();
     throw error;
   }
-  let active: Active | undefined;
+  const concurrency = z
+    .number()
+    .int()
+    .min(1)
+    .max(16)
+    .parse(options.concurrency ?? 1);
+  const active = new Map<string, Active>();
   let closed = false;
   let ticking: Promise<void> | undefined;
   let pulsing: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
   const leases = new Map<string, number>();
-  const key = (command: WorkCommand) => `${command.runId}:${command.generation}`;
+  const key = (command: { runId: string; generation: number }) =>
+    `${command.runId}:${command.generation}`;
   async function grant(entry: Active) {
     check(entry);
     if (!entry.grant || entry.grant.expiresAt <= now() + 5000) {
@@ -155,7 +163,7 @@ export async function openRunnerRuntime(options: {
     home: options.home,
     networkGit: (input) => remote(() => (options.networkGit ?? runGitHubGit)(input)),
     async credential(command, access) {
-      const entry = active;
+      const entry = active.get(key(command));
       if (!entry || entry.execution.command.id !== command.id)
         throw new Error("Runner command is not active");
       check(entry);
@@ -186,8 +194,7 @@ export async function openRunnerRuntime(options: {
             observed + Math.max(0, Math.min(60_000, lease.expiresAt - now())),
           ),
         );
-      const entry = active;
-      if (entry) {
+      for (const entry of active.values()) {
         const deadline = leases.get(key(entry.execution.command));
         if (
           !deadline ||
@@ -197,7 +204,7 @@ export async function openRunnerRuntime(options: {
               value.generation === entry.execution.command.generation,
           )
         )
-          await interrupt(entry);
+          void interrupt(entry).catch(report);
         else if (!entry.abort.signal.aborted) entry.deadline = deadline;
       }
       const identity = options.daemon.status();
@@ -519,7 +526,7 @@ export async function openRunnerRuntime(options: {
     );
     check(entry);
     journal.phase(entry.execution.id, "complete");
-    active = undefined;
+    active.delete(key(entry.execution.command));
   }
   async function step() {
     await pulse().catch(report);
@@ -529,29 +536,24 @@ export async function openRunnerRuntime(options: {
     const commands = options.daemon.pendingCommands();
     for (const command of commands) {
       if (command.type !== "cancel") continue;
-      if (
-        active &&
-        active.execution.command.runId === command.runId &&
-        active.execution.command.generation === command.generation
-      )
-        await interrupt(active);
+      const entry = active.get(`${command.runId}:${command.generation}`);
+      if (entry) await interrupt(entry);
       await options.daemon.acknowledgeCommand(command.id);
     }
-    if (active) {
-      const entry = active;
+    for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
         await entry.stopped;
         await entry.task;
-        if (active === entry) active = undefined;
+        active.delete(key(entry.execution.command));
       } else if (entry.execution.phase === "preparing") {
         if (!entry.task) prepare(entry);
-        return;
       }
     }
-    if (!active) {
+    if (active.size < concurrency) {
       for (const command of commands) {
         if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           continue;
+        if (active.has(key(command))) continue;
         if (command.expiresAt <= now()) {
           await options.daemon.acknowledgeCommand(command.id);
           continue;
@@ -565,24 +567,21 @@ export async function openRunnerRuntime(options: {
           continue;
         }
         const entry: Active = { execution, abort: new AbortController(), deadline };
-        active = entry;
+        active.set(key(command), entry);
         prepare(entry);
         await options.daemon.acknowledgeCommand(command.id).catch(report);
-        return;
+        if (active.size >= concurrency) break;
       }
     }
-    if (
-      active &&
-      (active.execution.phase === "running" || active.execution.phase === "publishing")
-    ) {
-      const entry = active;
+    for (const entry of active.values()) {
+      if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
       try {
         await deliver(entry);
         await complete(entry);
       } catch (error) {
         if (error instanceof RemoteFailure) {
           report();
-          return;
+          continue;
         }
         await interrupt(entry);
         report();
@@ -593,23 +592,26 @@ export async function openRunnerRuntime(options: {
     void pulse().catch(report);
   }, 15_000);
   const watchdog = setInterval(() => {
-    if (
-      active &&
-      (monotonic() >= active.deadline ||
-        (active.execution.phase === "preparing" && active.execution.command.expiresAt <= now()))
-    )
-      void interrupt(active).catch(report);
+    for (const entry of active.values())
+      if (
+        monotonic() >= entry.deadline ||
+        (entry.execution.phase === "preparing" && entry.execution.command.expiresAt <= now())
+      )
+        void interrupt(entry).catch(report);
   }, 250);
   return {
-    status: () => ({
-      active: active
-        ? {
-            executionId: active.execution.id,
-            commandId: active.execution.command.id,
-            phase: active.execution.phase,
-          }
-        : null,
-    }),
+    status: () => {
+      const entry = active.values().next().value;
+      return {
+        active: entry
+          ? {
+              executionId: entry.execution.id,
+              commandId: entry.execution.command.id,
+              phase: entry.execution.phase,
+            }
+          : null,
+      };
+    },
     tick() {
       if (closed) return Promise.reject(new Error("Runner runtime is closed"));
       ticking ??= step().finally(() => {
@@ -622,8 +624,12 @@ export async function openRunnerRuntime(options: {
         closed = true;
         clearInterval(heartbeat);
         clearInterval(watchdog);
-        if (active) await interrupt(active);
-        await Promise.allSettled([ticking, pulsing, active?.task]);
+        await Promise.all([...active.values()].map(interrupt));
+        await Promise.allSettled([
+          ticking,
+          pulsing,
+          ...[...active.values()].map((entry) => entry.task),
+        ]);
         journal.close();
       })();
       return stopping;

@@ -1,4 +1,5 @@
 export { drainCommands, enqueueCommand, submitCommand, applyLinearCommand } from "./commands";
+export { runnerHasCapacity } from "./runner-capacity";
 export { applyDecision, postPauseNote, type WakeStamp } from "./decisions";
 export { OutboxDispatcher, type OutboxHandler, type OutboxDeliveryContext } from "./dispatcher";
 export {
