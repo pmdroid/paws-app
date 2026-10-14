@@ -1,5 +1,6 @@
 import { createLinearAttributionReads } from "./attribution";
 import { createLinearProjectMembers } from "./project-members";
+import { createLinearProjectScopeReads } from "./project-scope";
 import { createLinearAttachmentMethods } from "./attachments";
 import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
@@ -72,6 +73,7 @@ export function createLinearTracker(
     supportsActivityReconciliation: true,
     ...sessions,
     ...createLinearProjectMembers(client),
+    ...createLinearProjectScopeReads(client),
     ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
     ...createLinearAttachmentMethods(client),
