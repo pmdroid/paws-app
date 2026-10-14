@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "runner-accounts",
   "worktree-checkout",
   "config",
   "credentials",
@@ -200,7 +201,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-verifier",
     "runner-check",
   ],
-  "runner-work": ["db", "workspace", "runner-protocol", "questions"],
+  "runner-accounts": ["db", "runner-protocol"],
+  "runner-work": ["runner-accounts", "db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
     "config",
@@ -221,7 +223,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-results": ["db", "runner-work", "runner-protocol"],
   "runner-journal": ["db", "runner-protocol"],
-  "runner-helpers": ["db", "runner-protocol", "workspace"],
+  "runner-helpers": ["runner-accounts", "db", "runner-protocol", "workspace"],
   "runner-runtime": [
     "acp",
     "runner-transcripts",
@@ -234,7 +236,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-journal",
     "github",
   ],
-  "runner-health": ["db", "workspace", "runner-work", "runner-protocol"],
+  "runner-health": ["runner-accounts", "db", "workspace", "runner-work", "runner-protocol"],
   "runner-health-runtime": ["db", "runner-daemon", "runner-execution", "runner-protocol"],
   "runner-coordinator": [
     "runner-inputs",

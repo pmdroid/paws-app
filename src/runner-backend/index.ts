@@ -115,7 +115,7 @@ export function createRemoteAgentRunner(options: {
     const candidates = options.placement
       ? await options.placement.candidates(placement)
       : db
-          .query<{ id: string; workspaceId: string }, []>(
+          .query<{ id: string; workspaceId: string; memberId?: string }, []>(
             `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
@@ -133,7 +133,11 @@ export function createRemoteAgentRunner(options: {
       try {
         const mode = getTaskMode(db, itemId);
         if (mode === "answer" || mode === "artifact")
-          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
+          work.scopeTask(
+            item.currentRunId,
+            runner.workspaceId,
+            runner.memberId ?? work.identity(runner.id).userId,
+          );
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.add(runner.id);
         return { ...runner, runId: item.currentRunId };
@@ -333,7 +337,7 @@ export function createRemoteAgentRunner(options: {
             ? work.scopeTask(
                 selected.runId,
                 selected.workspaceId,
-                work.identity(selected.id).userId,
+                selected.memberId ?? work.identity(selected.id).userId,
               )
             : undefined;
           mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
@@ -348,6 +352,7 @@ export function createRemoteAgentRunner(options: {
                 id,
                 runnerId: selected.id,
                 workspaceId: selected.workspaceId,
+                ...(selected.memberId ? { memberId: selected.memberId } : {}),
                 issuedAt,
                 expiresAt: issuedAt + 120_000,
                 type: "probe",
@@ -370,7 +375,7 @@ export function createRemoteAgentRunner(options: {
                 work.scopeTask(
                   selected.runId,
                   selected.workspaceId,
-                  work.identity(selected.id).userId,
+                  selected.memberId ?? work.identity(selected.id).userId,
                 );
               else work.scope(selected.runId, selected.workspaceId);
               const result = health.read(selected.id, id);
@@ -490,6 +495,7 @@ export function createRemoteAgentRunner(options: {
             id: commandId,
             runnerId: selected.id,
             workspaceId: selected.workspaceId,
+            ...(selected.memberId ? { memberId: selected.memberId } : {}),
             issuedAt,
             expiresAt: deadline,
             runId: selected.runId,
@@ -803,6 +809,7 @@ export function createRemoteAgentRunner(options: {
                 id: randomUUID(),
                 runnerId: selected.id,
                 workspaceId: selected.workspaceId,
+                ...(selected.memberId ? { memberId: selected.memberId } : {}),
                 issuedAt,
                 expiresAt: issuedAt + 60_000,
                 type: "cancel",

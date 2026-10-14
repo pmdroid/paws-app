@@ -1314,4 +1314,54 @@ CREATE TABLE github_attribution_request (
 ) STRICT;
 `,
   },
+  {
+    id: "053_runner_member_accounts",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE runner_command_with_login (
+  ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  run_id TEXT REFERENCES run(id),
+  generation INTEGER,
+  kind TEXT NOT NULL CHECK(kind IN ('run','review','check','task','cancel','probe','login_check','login','upgrade')),
+  envelope TEXT NOT NULL CHECK(json_valid(envelope)),
+  expires_at INTEGER NOT NULL,
+  acknowledged_at INTEGER
+) STRICT;
+INSERT INTO runner_command_with_login SELECT * FROM runner_command;
+INSERT INTO sqlite_sequence(name,seq)
+SELECT 'runner_command_with_login',seq FROM sqlite_sequence WHERE name='runner_command'
+AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='runner_command_with_login');
+UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='runner_command'),0))
+WHERE name='runner_command_with_login';
+DROP TABLE runner_command;
+ALTER TABLE runner_command_with_login RENAME TO runner_command;
+CREATE INDEX runner_command_pending ON runner_command(runner_id,acknowledged_at,ordinal);
+CREATE TABLE runner_member_account (
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ connected INTEGER NOT NULL DEFAULT 0 CHECK(connected IN (0,1)),
+ cooldown_until INTEGER NOT NULL DEFAULT 0,
+ resolved_model TEXT,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(runner_id,user_id,agent)
+) STRICT;
+CREATE TABLE runner_login (
+ id TEXT PRIMARY KEY REFERENCES runner_command(id),
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex')),
+ state TEXT NOT NULL CHECK(state IN ('starting','waiting','connected','failed','cancelled','expired')),
+ expires_at INTEGER NOT NULL,
+ terminal TEXT NOT NULL DEFAULT '',
+ authorization TEXT,
+ input_id TEXT,
+ updated_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX runner_login_account ON runner_login(runner_id,user_id,agent,updated_at);
+`,
+  },
 ];

@@ -95,6 +95,7 @@ const common = {
   id,
   runnerId: id,
   workspaceId: id,
+  memberId: id.optional(),
   issuedAt: time,
   expiresAt: time,
 };

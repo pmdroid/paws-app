@@ -14,7 +14,9 @@ export type PlacementRequest = {
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {
-  candidates(input: PlacementRequest): Promise<readonly { id: string; workspaceId: string }[]>;
+  candidates(
+    input: PlacementRequest,
+  ): Promise<readonly { id: string; workspaceId: string; memberId?: string }[]>;
   started(input: {
     commandId: string;
     runnerId: string;

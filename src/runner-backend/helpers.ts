@@ -50,7 +50,7 @@ export function createRemoteSessionAgentRunner(options: {
               signal: input.signal,
             })
           : options.db
-              .query<{ id: string }, [number, number, number]>(
+              .query<{ id: string; memberId?: string }, [number, number, number]>(
                 "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
               )
               .all(now() - 60_000, now(), now());
@@ -61,6 +61,7 @@ export function createRemoteSessionAgentRunner(options: {
             command = immediate(options.db, () => {
               const dispatched = options.helpers.dispatch({
                 runnerId: runner.id,
+                ...(runner.memberId ? { memberId: runner.memberId } : {}),
                 sessionId,
                 purpose,
                 profile,
@@ -69,6 +70,7 @@ export function createRemoteSessionAgentRunner(options: {
               options.placement?.started({
                 commandId: dispatched.id,
                 runnerId: runner.id,
+                ...(runner.memberId ? { memberId: runner.memberId } : {}),
                 sessionId,
                 profile,
                 role: input.role,

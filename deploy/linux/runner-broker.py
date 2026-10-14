@@ -22,6 +22,7 @@ UNIT = "/etc/systemd/system/paws-agent@.service"
 RECEIPTS = "/var/lib/paws-runner-broker"
 RESULTS = "/var/lib/paws-agent-results"
 TASK_WORK = "/var/lib/paws-agent-tasks"
+MEMBER_HOMES = "/var/lib/paws-runner-members"
 
 
 def open_directory(path):
@@ -65,7 +66,7 @@ def validate_job(execution_id, runner_uid, agent_gid):
             if len(content) > 524288:
                 raise ValueError("Job file exceeds size limit")
             job = json.loads(content)
-        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check", "helper", "task"):
+        if not isinstance(job, dict) or set(job) != {"executionId", "command"} or job["executionId"] != execution_id or not isinstance(job["command"], dict) or job["command"].get("type") not in ("run", "review", "probe", "login_check", "login", "helper", "task"):
             raise ValueError("Invalid job")
         if job["command"]["type"] in ("run", "review"):
             descriptor = os.open("repository.bundle", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -301,6 +302,75 @@ def prepare_task_work(execution_id, agent_uid, agent_gid, repository):
         os.close(root)
 
 
+def prepare_member(execution_id, command, agent_uid, agent_gid, runner_uid, results_gid):
+    member = command.get("memberId")
+    if member is None:
+        return
+    workspace = command.get("workspaceId")
+    if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value) for value in (member, workspace)):
+        raise ValueError("Invalid member identity")
+    identity = hashlib.sha256(json.dumps([workspace, member], separators=(",", ":")).encode()).hexdigest()
+    root = open_directory(MEMBER_HOMES)
+    directory = None
+    try:
+        info = os.fstat(root)
+        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("Unsafe member homes")
+        try:
+            os.mkdir(identity, mode=0o700, dir_fd=root)
+            created = True
+        except FileExistsError:
+            created = False
+        directory = os.open(identity, (os.O_RDONLY if created else os.O_PATH) | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        info = os.fstat(directory)
+        if created and info.st_uid == 0 and info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o700:
+            os.fchown(directory, agent_uid, agent_gid)
+        elif info.st_uid != agent_uid or info.st_gid != agent_gid or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("Unsafe member home")
+        if created:
+            os.fsync(directory)
+            os.fsync(root)
+    finally:
+        if directory is not None:
+            os.close(directory)
+        os.close(root)
+    root = open_directory("/run/systemd/system")
+    directory = None
+    descriptor = None
+    try:
+        info = os.fstat(root)
+        if info.st_uid != 0 or info.st_gid != 0 or info.st_mode & 0o022:
+            raise ValueError("Unsafe runtime units")
+        name = "paws-agent@" + execution_id + ".service.d"
+        os.mkdir(name, mode=0o755, dir_fd=root)
+        directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        descriptor = os.open("member.conf", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=directory)
+        content = "\n".join([
+            "[Service]", "PrivateUsers=yes", "PrivatePIDs=yes", "Group=paws-results", "SupplementaryGroups=paws-agent", "StateDirectory=",
+            "ExecCondition=", "ExecCondition=+/usr/bin/setpriv --bounding-set=-all --no-new-privs /usr/bin/python3 -I -B /opt/paws-runner/current/deploy/linux/runner-broker.py guard %i",
+            "ReadOnlyPaths=", "ReadWritePaths=", "BindReadOnlyPaths=",
+            "BindPaths=" + MEMBER_HOMES + "/" + identity + ":/var/lib/paws-agent",
+            "ReadWritePaths=" + RECEIPTS,
+            "TemporaryFileSystem=" + SPOOL + ":ro,mode=2750,uid=" + str(runner_uid) + ",gid=" + str(agent_gid),
+            "TemporaryFileSystem=" + RESULTS + ":ro,mode=0750,uid=0,gid=" + str(results_gid),
+            "TemporaryFileSystem=" + TASK_WORK + ":ro,mode=0755,uid=0,gid=0",
+            "BindPaths=-" + TASK_WORK + "/" + execution_id,
+            "BindReadOnlyPaths=-" + SPOOL + "/" + execution_id + "/repository:" + TASK_WORK + "/" + execution_id + "/repository",
+            "BindReadOnlyPaths=" + SPOOL + "/" + execution_id,
+            "BindPaths=" + RESULTS + "/" + execution_id,
+            "InaccessiblePaths=" + MEMBER_HOMES,
+            "", ])
+        os.write(descriptor, content.encode())
+        os.fsync(descriptor)
+        os.fsync(directory)
+        os.fsync(root)
+    finally:
+        for opened in (descriptor, directory, root):
+            if opened is not None:
+                os.close(opened)
+    subprocess.run(["/usr/bin/systemctl", "daemon-reload"], check=True, timeout=30, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def control_unit(operation, execution_id, template="paws-agent"):
     return subprocess.run(
         ["/usr/bin/systemctl", *({"kill": ["kill", "--kill-whom=all", "--signal=SIGKILL"], "show": ["show", "--property=ControlGroup", "--value"]}.get(operation, [operation])), "--", f"{template}@{execution_id}.service"],
@@ -392,8 +462,9 @@ def handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request=No
                 connection.sendall(b'{"ok":true,"alreadyAdmitted":true}\n')
                 return
             prepare_results(request["executionId"], agent_uid, results_gid)
+            prepare_member(request["executionId"], job["command"], agent_uid, agent_gid, runner_uid, results_gid)
             if job["command"]["type"] == "task":
-                prepare_task_work(request["executionId"], agent_uid, agent_gid, "repository" in job["command"])
+                prepare_task_work(request["executionId"], agent_uid, results_gid if job["command"].get("memberId") else agent_gid, "repository" in job["command"])
         if request["operation"] == "stop":
             success = stop_unit(request["executionId"])
         else:
