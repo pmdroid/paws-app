@@ -74,7 +74,8 @@ async function boot(): Promise<void> {
   try {
     const destination = sessionStorage.getItem("paws.settingsReturn");
     sessionStorage.removeItem("paws.settingsReturn");
-    if (destination === "#/settings/integrations") window.location.hash = destination;
+    if (["#/settings/integrations", "#/settings/account"].includes(destination ?? ""))
+      window.location.hash = destination!;
   } catch {}
   void paintGitHubAuth(null);
   const query = new URLSearchParams(location.search).get("engine");

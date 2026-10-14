@@ -72,7 +72,11 @@ const pages = [
   ["Merge queue", "#/queue"],
   ["Conversations", "#/sessions"],
   ["Runners", "#/runners"],
-  ["Settings", "#/settings"],
+  ["Agents", "#/settings/agents"],
+  ["Integrations", "#/settings/integrations"],
+  ["Workspace access", "#/settings/workspace"],
+  ["Your account", "#/settings/account"],
+  ["Audit history", "#/settings/audit"],
 ] as const;
 async function navigate(page: Page, name: string, width: number) {
   if (width < 768) await page.getByRole("button", { name: "Open navigation" }).click();
@@ -85,7 +89,7 @@ async function navigate(page: Page, name: string, width: number) {
   await nav.getByRole("link", { name, exact: true }).click();
   if (width < 768)
     await expect(page.getByRole("dialog", { name: "Paws navigation" })).not.toBeVisible();
-  await expect(page.locator("#content h1")).toHaveText(name === "Settings" ? "Agents" : name);
+  await expect(page.locator("#content h1")).toHaveText(name);
   await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
@@ -211,7 +215,7 @@ try {
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
     await page.getByRole("button", { name: "Check setup", exact: true }).click();
     await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
-    await navigate(page, "Settings", width);
+    await navigate(page, "Agents", width);
     await expect(page.getByRole("heading", { name: "Global defaults" })).toBeVisible();
     await page.locator("select#defaults-implementer-agent").selectOption("grok");
     await page.locator("#settings-repo").fill(`acme/ui-${width}`);
@@ -266,7 +270,7 @@ try {
     );
     await page.reload();
     await expect(page.locator("#banner")).toContainText("Offline");
-    await navigate(page, "Settings", width);
+    await navigate(page, "Agents", width);
     await expect(page.getByRole("heading", { name: "Global defaults" })).toBeVisible();
     await page.evaluate(() => {
       localStorage.setItem("paws.statusEngineUrl", "demo");
@@ -365,7 +369,7 @@ try {
   expect(settings.defaults.implementer).not.toHaveProperty("effort");
   expect(errors).toEqual([]);
   console.log(
-    "PASS: all nine pages via sidebar/mobile menu, active links, Back, deep links, keyboard tabs, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, source dialog, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
+    "PASS: all thirteen pages via sidebar/mobile menu, active links, Back, deep links, epic filters, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
   );
 } finally {
   await browser.close();
