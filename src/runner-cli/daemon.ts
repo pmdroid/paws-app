@@ -47,6 +47,7 @@ export async function runPairedDaemon(
     root: join(root, "runtime"),
     repositoryRoot: join(root, "repositories"),
     home: root,
+    concurrency: daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let check: Awaited<ReturnType<typeof openRunnerCheckRuntime>> | undefined;
@@ -86,16 +87,9 @@ export async function runPairedDaemon(
     signal.addEventListener("abort", interrupt, { once: true });
     while (!signal.aborted) {
       try {
-        if (check.status().active) await check.tick(false);
-        else if (runtime.status().active) await runtime.tick();
-        else if (health.status().active) await health.tick(false);
-        else {
-          await check.tick();
-          if (!signal.aborted && !check.status().active) {
-            await runtime.tick();
-            if (!signal.aborted && !runtime.status().active) await health.tick();
-          }
-        }
+        await check.tick();
+        if (!signal.aborted) await runtime.tick();
+        if (!signal.aborted) await health.tick();
       } catch {
         if (!signal.aborted) report();
       }

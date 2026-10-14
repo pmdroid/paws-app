@@ -9,6 +9,7 @@ import {
   getWorkItem,
   getWorkItemRepository,
   immediate,
+  runnerHasCapacity,
   linearSessionForEpic,
   taskRequiresRepository,
   workspaceSessionIds,
@@ -310,21 +311,7 @@ export function createRunnerWork(options: {
             .get(command.runnerId)
         )
           throw new Error("Runner cancellation teardown is still pending.");
-        if (
-          db
-            .query(
-              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
-            )
-            .get(command.runnerId, at)
-        )
-          throw new Error("Runner is occupied by session helper work.");
-        if (
-          db
-            .query(
-              "SELECT 1 FROM runner_work WHERE runner_id=? AND run_id<>? AND ended_at IS NULL AND lease_until>?",
-            )
-            .get(command.runnerId, command.runId, at)
-        )
+        if (!runnerHasCapacity(db, command.runnerId, at, command.runId))
           throw new Error("Runner is occupied by active work.");
         if (command.type === "task")
           bindTask(
@@ -458,9 +445,15 @@ export function createRunnerWork(options: {
       )
         throw new Error("Runner command is unknown.");
     },
-    heartbeat(runnerId: string) {
+    heartbeat(runnerId: string, capacity = 1) {
       return immediate(db, () => {
         runner(runnerId);
+        if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 16)
+          throw new Error("Invalid runner capacity");
+        db.run(
+          "INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?) ON CONFLICT(runner_id) DO UPDATE SET capacity=excluded.capacity",
+          [runnerId, capacity],
+        );
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         const rows = db

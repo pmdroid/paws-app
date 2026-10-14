@@ -16,7 +16,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getTaskMode, getWorkItem, immediate, saveCheckpoint } from "../db";
+import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
   git,
   recoverAcpConversation,
@@ -104,7 +104,7 @@ export function createRemoteAgentRunner(options: {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
-  const reservations = new Set<string>();
+  const reservations = new Map<string, string>();
   async function select(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
@@ -120,8 +120,6 @@ export function createRemoteAgentRunner(options: {
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
        AND r.last_seen_at>${now() - 60_000}
-       AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>${now()})
-       AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>${now()})
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
@@ -129,7 +127,20 @@ export function createRemoteAgentRunner(options: {
     for (const runner of candidates) {
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
       if (runnerId && runner.id !== runnerId) continue;
-      if (reservations.has(runner.id)) continue;
+      const reserved = [...reservations].filter(
+        ([runId, hostId]) =>
+          hostId === runner.id &&
+          !db
+            .query<{ active: number }, [string, number]>(
+              "SELECT 1 AS active FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?",
+            )
+            .get(runId, now()),
+      ).length;
+      if (
+        reservations.has(item.currentRunId) ||
+        !runnerHasCapacity(db, runner.id, now(), "", reserved)
+      )
+        continue;
       try {
         const mode = getTaskMode(db, itemId);
         if (mode === "answer" || mode === "artifact")
@@ -139,7 +150,7 @@ export function createRemoteAgentRunner(options: {
             runner.memberId ?? work.identity(runner.id).userId,
           );
         else work.scope(item.currentRunId, runner.workspaceId);
-        reservations.add(runner.id);
+        reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch {}
     }
@@ -278,7 +289,7 @@ export function createRemoteAgentRunner(options: {
             try {
               if (executionId && !completed) checks.cancel(executionId);
             } finally {
-              reservations.delete(selected.id);
+              reservations.delete(selected.runId);
             }
           }
         },
@@ -535,12 +546,8 @@ export function createRemoteAgentRunner(options: {
                 }),
           };
           immediate(db, () => {
-            const occupied = db
-              .query(
-                "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>?",
-              )
-              .get(selected.id, now());
-            if (occupied) throw new Error("Runner became busy before assignment");
+            if (!runnerHasCapacity(db, selected.id, now()))
+              throw new Error("Runner became busy before assignment");
             work.assign(assigned);
             options.placement?.started({
               commandId: assigned.id,
@@ -821,7 +828,7 @@ export function createRemoteAgentRunner(options: {
           controller.abort();
           await question;
           input.signal?.removeEventListener("abort", abort);
-          reservations.delete(selected.id);
+          reservations.delete(selected.runId);
         }
       };
       return (input: RunAgentOptions) =>

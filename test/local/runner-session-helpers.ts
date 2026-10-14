@@ -291,7 +291,7 @@ export async function probeRunnerSessionHelpers(
       profile: input.profile,
       prompt: "Implement task",
     };
-    assert.throws(() => coordinator.work.assign(workCommand), /session helper work/);
+    assert.throws(() => coordinator.work.assign(workCommand), /occupied by active work/);
     coordinator.helpers.finish(selected.command.id);
     coordinator.work.assign(workCommand);
     assert.throws(() => coordinator.helpers.dispatch(input), /busy/);

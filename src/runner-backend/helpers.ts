@@ -4,7 +4,7 @@ import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
-import { immediate } from "../db";
+import { immediate, runnerHasCapacity } from "../db";
 import type { RunnerCommand } from "../runner-protocol";
 
 import { RetryableRunnerError, runWithFailover } from "./failover";
@@ -50,10 +50,11 @@ export function createRemoteSessionAgentRunner(options: {
               signal: input.signal,
             })
           : options.db
-              .query<{ id: string; memberId?: string }, [number, number, number]>(
-                "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+              .query<{ id: string; memberId?: string }, [number, number]>(
+                "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
               )
-              .all(now() - 60_000, now(), now());
+              .all(now() - 60_000, now())
+              .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
         let command: HelperCommand | undefined;
         for (const runner of runners) {
           if (excluded.includes(runner.id)) continue;

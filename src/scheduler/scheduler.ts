@@ -120,14 +120,7 @@ function isHot(paths: readonly string[]): boolean {
 }
 
 function conflicts(left: Admission, right: Admission): boolean {
-  if (left.sessionId && left.sessionId === right.sessionId) return true;
-  if (left.repositoryKey !== right.repositoryKey) return false;
-  if (left.hot && right.hot) return true;
-  return left.paths.some((a) =>
-    right.paths.some(
-      (b) => a === "*" || b === "*" || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`),
-    ),
-  );
+  return Boolean(left.sessionId && left.sessionId === right.sessionId);
 }
 
 function allItems(db: Database, now: number): Item[] {
@@ -153,8 +146,14 @@ function allItems(db: Database, now: number): Item[] {
 
 function holdsExecution(item: Item): boolean {
   return Boolean(
-    item.liveRun || item.liveJob || (ACTIVE.has(item.state) && item.state !== "merge_queue"),
+    item.liveRun ||
+    item.liveJob ||
+    (ACTIVE.has(item.state) && !["merge_queue", "awaiting_input", "paused"].includes(item.state)),
   );
+}
+
+function holdsSession(item: Item): boolean {
+  return holdsExecution(item) || item.state === "awaiting_input" || item.state === "paused";
 }
 
 function footprint(item: Item, options: SchedulerOptions): Admission {
@@ -255,7 +254,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
     for (const row of saved) {
       const item = byId.get(row.itemId);
       if (
-        (item && holdsExecution(item)) ||
+        (item && holdsSession(item)) ||
         (row.status === "running" && (row.lockedUntil === null || row.lockedUntil > now))
       ) {
         held.push({ ...row, paths: JSON.parse(row.paths) });
@@ -286,7 +285,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       db.run("DELETE FROM scheduler_admission WHERE item_id=?", [row.itemId]);
     }
     for (const item of items)
-      if (holdsExecution(item) && !held.some((entry) => entry.itemId === item.id))
+      if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id))
         held.push(footprint(item, options));
     const depth = depths(db, items);
     const candidates = items
@@ -303,8 +302,16 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       if (held.some((entry) => entry.itemId === item.id)) continue;
       const next = footprint(item, options);
       if (
-        held.filter((entry) => entry.projectKey === next.projectKey).length >= cap ||
-        held.some((entry) => conflicts(entry, next))
+        held.filter((entry) => {
+          const current = byId.get(entry.itemId);
+          return (
+            entry.projectKey === next.projectKey &&
+            (!current || current.state === "queued" || holdsExecution(current))
+          );
+        }).length >= cap ||
+        held.some(
+          (entry) => conflicts(entry, next) || byId.get(entry.itemId)?.issueId === item.issueId,
+        )
       )
         continue;
       db.run(
