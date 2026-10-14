@@ -55,12 +55,17 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         first = build("0.1.1")
         architecture = {"linux-x64": "amd64", "linux-arm64": "arm64"}[original["platform"]]
         assert run(["/usr/bin/dpkg-deb", "--field", str(first), "Architecture"]).strip() == architecture
-        assert run(["/usr/bin/dpkg-deb", "--field", str(first), "Depends"]).find("nodejs (>= 22)") >= 0
+        depends = run(["/usr/bin/dpkg-deb", "--field", str(first), "Depends"])
+        assert "nodejs" not in depends and "git" in depends and "systemd" in depends
         with first.open("rb") as completed:
             digest = hashlib.file_digest(completed, "sha256").hexdigest()
         assert first.with_suffix(".deb.sha256").read_text() == f"{digest}  {first.name}\n"
         install(first)
         assert run(["/opt/paws-runner/bin/bun", "--version"]).strip() == "1.4.2"
+        runner_bin = pathlib.Path("/opt/paws-runner/bin/paws-runner")
+        assert runner_bin.is_symlink() and os.readlink(runner_bin) == "../current/bin/paws-runner" and runner_bin.read_bytes()[:4] == b"\x7fELF"
+        assert "ExecStart=/opt/paws-runner/bin/paws-runner runner daemon --config /etc/paws-runner/config.json\n" in pathlib.Path("/etc/systemd/system/paws-runner.service").read_text()
+        assert "ExecStart=/opt/paws-runner/bin/paws-runner runner worker --execution-id %i\n" in pathlib.Path("/etc/systemd/system/paws-agent@.service").read_text()
         assert run(["/opt/paws-runner/bin/claude", "--version"]).strip()
         assert run(["/opt/paws-runner/bin/codex", "--version"]).strip()
         runner = pwd.getpwnam("paws-runner")

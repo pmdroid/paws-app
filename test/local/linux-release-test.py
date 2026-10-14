@@ -133,16 +133,23 @@ class ReleaseVerification(unittest.TestCase):
                 runtime.write_bytes(b"synthetic Bun runtime")
                 output = self.root / ("package-" + str(index))
                 arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")):
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
                     if index == 0:
                         packager.pack(arguments)
                         members = release.inspect_archive(output / "artifact.tar")
                         self.assertIn("app/node_modules/" + target, members)
+                        self.assertEqual(members["bin/paws-runner"].mode, 0o755)
                         with tarfile.open(output / "artifact.tar") as archive:
+                            self.assertTrue(archive.extractfile("bin/paws-runner").read().startswith(b"\x7fELF"))
                             for provider in ("claude", "codex"):
                                 launcher = archive.extractfile("app/node_modules/.bin/" + provider).read().decode()
                                 self.assertIn("'/opt/paws-runner/current/node_modules/", launcher)
+                                self.assertNotIn("/usr/bin/node", launcher)
                                 self.assertEqual(members["app/node_modules/.bin/" + provider].mode, 0o755)
+                            codex = archive.extractfile("app/node_modules/.bin/codex").read().decode()
+                            self.assertIn("exec /opt/paws-runner/bin/bun --no-env-file '", codex)
+                            adapter = archive.extractfile("app/node_modules/.bin/claude-agent-acp").read().decode()
+                            self.assertIn("exec /opt/paws-runner/bin/bun --no-env-file '", adapter)
                     else:
                         with self.assertRaises(ValueError):
                             packager.pack(arguments)

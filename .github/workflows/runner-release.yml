@@ -66,6 +66,7 @@ jobs:
           package="dist/paws-runner_${RUNNER_VERSION}_${DEBIAN_ARCHITECTURE}.deb"
           test "$(dpkg-deb --field "$package" Architecture)" = "$DEBIAN_ARCHITECTURE"
           test "$(dpkg-deb --field "$package" Version)" = "$RUNNER_VERSION"
+          case "$(dpkg-deb --field "$package" Depends)" in *nodejs*) exit 1 ;; esac
           mkdir "$RUNNER_TEMP/debian-extracted"
           dpkg-deb --extract "$package" "$RUNNER_TEMP/debian-extracted"
           payload="$RUNNER_TEMP/debian-extracted/usr/lib/paws-runner-package"

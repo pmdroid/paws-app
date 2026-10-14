@@ -5,6 +5,7 @@
     "module": "Preserve",
     "moduleDetection": "force",
     "moduleResolution": "bundler",
+    "resolveJsonModule": true,
     "types": ["bun"],
     "verbatimModuleSyntax": true,
     "noEmit": true,
