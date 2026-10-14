@@ -113,6 +113,8 @@ For protected control-plane transcript storage, run `bun --no-env-file test test
 
 ## Remote repository transfer
 
+For local transcript storage, run `bun --no-env-file test test/runner-local-transcripts.test.ts test/runner-control-startup.test.ts test/runner-transcript-config.test.ts` and `bun --no-env-file test/local/runner-transcript-config.ts`. Inspect all eight retained observations. The CLI configures `{"kind":"local"}` in encrypted settings, and the actual filesystem adapter runs scoped upload, sealing, retry, restart, revocation and digest checks with real SQLite. The remote startup subprocess loads protected local configuration without an injected transcript store. Files must remain mode 0600 under a mode 0700 directory; interrupted and oversized writes must preserve the previous object, and reads must reject symlinks, hard links and unsafe permissions.
+
 The audit uses actual local Git origins to verify daemon mirror updates, immutable assigned-base bundles, candidate ancestry, exact-head publication and retry after rebuilding the adapter over the same durable cache. It interrupts an actual partial clone, proves that no incomplete mirror is published, retries through a fresh adapter and recovers an owned legacy incomplete mirror. It rejects a missing base, mismatched candidate, protected branch and reviewer push. Actual Git locks and AbortSignals verify snapshot removal after cleanup failure and interruption, including interruption during temporary-ref creation. A valid bundle with enough refs to exceed the 10 MiB Git output limit fails before requesting write credentials. Hosted GitHub network operations and credentials are scripted; Git objects, bundles and remote refs are real.
 
 ## Repository transfer cancellation
