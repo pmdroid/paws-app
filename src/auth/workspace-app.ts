@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import { loadGitHubAppCredentials } from "../config";
 
@@ -29,6 +30,9 @@ export function createWorkspaceGitHubActivation(
     template,
     save(id: string, value: unknown) {
       writeSecretFile(path(id), JSON.stringify(value), true);
+    },
+    remove(id: string) {
+      rmSync(path(id), { force: true });
     },
     read<T>(id: string): T {
       const value = readSecretFile(path(id), false);

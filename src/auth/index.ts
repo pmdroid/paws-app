@@ -37,4 +37,6 @@ export {
   hash,
   newGitHubOAuthSecret,
   verifyHostedGitHubApp,
+  authorizeHostedGitHubUser,
+  verifyHostedGitHubRepositories,
 } from "./hosted-app";

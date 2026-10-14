@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHostedGitHubConnect } from "../src/server";
+import { createGitHubRepositorySetup, createHostedGitHubConnect } from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   consumeWorkspaceBootstrap,
@@ -87,6 +87,7 @@ function fixture() {
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
   let installationStatus = 200;
+  let catalogPages: boolean | "duplicate" = false;
   const provider = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -98,6 +99,39 @@ function fixture() {
         await hold;
         return Response.json({ access_token: "scripted-user-token" });
       }
+      if (url.pathname === "/user/installations")
+        return Response.json({
+          total_count: 1,
+          installations: [
+            {
+              id: 22,
+              app_id: 99,
+              account: { login: "acme" },
+              permissions: INSTALLATION_PERMISSIONS,
+            },
+          ],
+        });
+      if (url.pathname === "/user/installations/22/repositories" && catalogPages) {
+        const page = Number(url.searchParams.get("page"));
+        const offset = page === 1 || catalogPages === "duplicate" ? 0 : 100;
+        const count = page === 1 ? 100 : 1;
+        return Response.json({
+          total_count: 101,
+          repositories: Array.from({ length: count }, (_, index) => ({
+            id: offset + index + 1,
+            full_name: `acme/widget${offset + index}`,
+            permissions: { admin: true },
+          })),
+        });
+      }
+      if (url.pathname === "/user/installations/22/repositories")
+        return Response.json({
+          total_count: 2,
+          repositories: [
+            { id: 1, full_name: "acme/widgets", private: true, permissions: { admin: true } },
+            { id: 2, full_name: "other/private", permissions: { admin: false } },
+          ],
+        });
       if (url.pathname === "/user") return Response.json({ id: 7, login: "installer" });
       if (url.pathname === "/app")
         return Response.json({ id: 99, client_id: "Iv1.fake", slug: "fixture-paws" });
@@ -131,7 +165,7 @@ function fixture() {
   });
   const scriptedFetch = ((url, init) =>
     fetch(
-      `http://127.0.0.1:${provider.port}${new URL(String(url)).pathname}`,
+      `http://127.0.0.1:${provider.port}${new URL(String(url)).pathname}${new URL(String(url)).search}`,
       init,
     )) as typeof fetch;
   const handler = () =>
@@ -175,12 +209,25 @@ function fixture() {
     sessions,
     begin,
     handler,
+    setup: () =>
+      createGitHubRepositorySetup({
+        db,
+        home,
+        env,
+        origin: "https://paws.example",
+        now: () => now,
+        fetch: scriptedFetch,
+        teams: async () => [{ id: "team", name: "Engineering", key: "ENG" }],
+      }),
     request,
     get db() {
       return db;
     },
     advance(ms: number) {
       now += ms;
+    },
+    setCatalogPages(value: boolean | "duplicate") {
+      catalogPages = value;
     },
     setInstallationStatus(value: number) {
       installationStatus = value;
@@ -485,3 +532,183 @@ for (const repository of [
     }
   });
 }
+
+async function signInForRepositorySetup(f: ReturnType<typeof fixture>) {
+  const response = await f.setup()(
+    f.request("owner", "https://paws.example/api/workspaces/github-setup", {
+      method: "POST",
+      headers: {
+        origin: "https://paws.example",
+        "content-type": "application/json",
+        "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+      },
+      body: "{}",
+    }),
+  );
+  expect(response?.status).toBe(200);
+  const target = new URL(
+    ((await response!.json()) as { authorizationUrl: string }).authorizationUrl,
+  );
+  const callback = new URL(target.searchParams.get("redirect_uri")!);
+  callback.searchParams.set("state", target.searchParams.get("state")!);
+  callback.searchParams.set("code", "scripted-code");
+  expect((await f.setup()(f.request("owner", callback.href)))?.status).toBe(303);
+  return callback;
+}
+async function saveSetup(
+  f: ReturnType<typeof fixture>,
+  mappings: unknown = [{ repository: "acme/widgets", teamId: "team" }],
+  installationId = "22",
+) {
+  const catalog = await f.setup()(
+    f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+  );
+  const setupId = ((await catalog!.json()) as { setupId?: string }).setupId;
+  return f.setup()(
+    f.request("owner", "https://paws.example/api/workspaces/github-setup", {
+      method: "PUT",
+      headers: {
+        origin: "https://paws.example",
+        "content-type": "application/json",
+        "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+      },
+      body: JSON.stringify({ installationId, mappings, setupId }),
+    }),
+  );
+}
+test("GitHub sign-in precedes repository approval and activates selected matches atomically", async () => {
+  const f = fixture();
+  try {
+    f.db.run("DELETE FROM workspace_repository");
+    const callback = await signInForRepositorySetup(f);
+    expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
+    expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+    expect((await f.setup()(f.request("owner", callback.href)))?.status).toBe(403);
+    f.restart();
+    const catalog = await f.setup()(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+    );
+    expect(catalog?.status).toBe(200);
+    const body = await catalog!.json();
+    expect(body).toMatchObject({
+      signedIn: true,
+      login: "installer",
+      repositories: [{ repository: "acme/widgets", private: true }],
+      teams: [{ id: "team", name: "Engineering", key: "ENG" }],
+      mappings: [],
+    });
+    expect(JSON.stringify(body)).not.toContain("scripted-user-token");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE KEY");
+    expect(
+      readFileSync(join(f.home, "db.sqlite")).includes(Buffer.from("scripted-user-token")),
+    ).toBe(false);
+    expect((await saveSetup(f))?.status).toBe(200);
+    expect(
+      f.db.query("SELECT repository,team_id AS teamId FROM workspace_repository").all(),
+    ).toEqual([{ repository: "acme/widgets", teamId: "team" }]);
+    expect(
+      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").installationId,
+    ).toBe("22");
+    expect(
+      (await f.setup()(f.request("owner", "https://paws.example/api/workspaces/github-setup")))
+        ?.status,
+    ).toBe(200);
+    expect((await saveSetup(f, []))?.status).toBe(200);
+    expect(f.db.query("SELECT * FROM workspace_repository").all()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+for (const scenario of [
+  "member",
+  "csrf",
+  "wrong-installation",
+  "wrong-repository",
+  "wrong-team",
+  "expired",
+  "demoted",
+  "scope",
+  "credentials",
+  "rollback",
+] as const) {
+  test(`repository setup rejects ${scenario} without activating access`, async () => {
+    const f = fixture();
+    try {
+      await signInForRepositorySetup(f);
+      if (scenario === "expired") f.advance(600_001);
+      if (scenario === "demoted")
+        f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='owner'");
+      if (scenario === "scope") f.db.run("DELETE FROM workspace_repository");
+      if (scenario === "credentials") f.env.PAWS_GITHUB_CLIENT_SECRET = "rotated-scripted-secret";
+      if (scenario === "rollback")
+        f.db.run(
+          "CREATE TRIGGER refuse_activation BEFORE UPDATE ON workspace_github_connection BEGIN SELECT RAISE(ABORT,'synthetic rollback'); END",
+        );
+      let response: Response | null;
+      if (scenario === "member")
+        response = await f.setup()(
+          f.request("member", "https://paws.example/api/workspaces/github-setup"),
+        );
+      else if (scenario === "csrf")
+        response = await f.setup()(
+          f.request("owner", "https://paws.example/api/workspaces/github-setup", {
+            method: "PUT",
+            body: "{}",
+          }),
+        );
+      else
+        response = await saveSetup(
+          f,
+          [
+            {
+              repository: scenario === "wrong-repository" ? "other/private" : "acme/widgets",
+              teamId: scenario === "wrong-team" ? "other-team" : "team",
+            },
+          ],
+          scenario === "wrong-installation" ? "999" : "22",
+        );
+      expect([400, 403, 409]).toContain(response!.status);
+      expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+      expect(f.db.query("SELECT count(*) AS n FROM workspace_repository").get()).toEqual({
+        n: scenario === "scope" ? 0 : 1,
+      });
+    } finally {
+      await f.close();
+    }
+  });
+}
+test("repository setup rechecks owner authority while GitHub verification is held", async () => {
+  const f = fixture();
+  try {
+    await signInForRepositorySetup(f);
+    f.setBeforeInstallation(async () => {
+      f.db.run("UPDATE workspace_member SET role='member' WHERE user_id='owner'");
+    });
+    expect((await saveSetup(f))?.status).toBe(403);
+    expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("repository choices read every user-accessible page and reject duplicate pagination", async () => {
+  const f = fixture();
+  try {
+    await signInForRepositorySetup(f);
+    f.setCatalogPages(true);
+    const response = await f.setup()(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+    );
+    expect(response?.status).toBe(200);
+    const data = (await response!.json()) as { repositories: { repository: string }[] };
+    expect(data.repositories.length).toBe(101);
+    expect(data.repositories[100]?.repository).toBe("acme/widget100");
+    f.setCatalogPages("duplicate");
+    expect(
+      (await f.setup()(f.request("owner", "https://paws.example/api/workspaces/github-setup")))
+        ?.status,
+    ).toBe(409);
+  } finally {
+    await f.close();
+  }
+});

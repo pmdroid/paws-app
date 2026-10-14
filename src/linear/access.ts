@@ -13,6 +13,7 @@ export interface LinearAccessReads {
   installation(options?: TrackerRequestOptions): Promise<LinearInstallation>;
   session(sessionId: string, options?: TrackerRequestOptions): Promise<LinearSessionInstallation>;
   team(teamId: string, options?: TrackerRequestOptions): Promise<boolean>;
+  teams?(options?: TrackerRequestOptions): Promise<{ id: string; name: string; key: string }[]>;
 }
 
 const VIEWER = `query PawsInstallation {
@@ -68,6 +69,46 @@ export function createLinearAccessReads(
         issueId: required(issue, "id"),
         teamId: required(child(issue, "team"), "id"),
       };
+    },
+    async teams(options) {
+      const result: { id: string; name: string; key: string }[] = [];
+      const cursors = new Set<string>();
+      const ids = new Set<string>();
+      const scope = await this.installation(options);
+      let after: string | null = null;
+      for (let page = 0; page < 100; page++) {
+        const data = await client.query(
+          `query PawsRepositoryTeams($after: String) {
+          viewer { id app organization { id } }
+          teams(first: 100, after: $after) { nodes { id name key } pageInfo { hasNextPage endCursor } }
+        }`,
+          { after },
+          options,
+        );
+        options?.signal?.throwIfAborted();
+        if (JSON.stringify(installation(data)) !== JSON.stringify(scope))
+          throw new Error("Linear installation changed.");
+        const teams = child(data, "teams");
+        const info = child(teams, "pageInfo");
+        if (!Array.isArray(teams?.["nodes"]) || typeof info?.["hasNextPage"] !== "boolean")
+          throw new Error("Linear teams are incomplete.");
+        for (const team of teams["nodes"]) {
+          const id = required(team, "id");
+          if (ids.has(id)) throw new Error("Linear team pagination repeated a team.");
+          ids.add(id);
+          result.push({
+            id: required(team, "id"),
+            name: required(team, "name"),
+            key: required(team, "key"),
+          });
+        }
+        if (!info["hasNextPage"]) return result;
+        const cursor = required(info, "endCursor");
+        if (cursors.has(cursor)) throw new Error("Linear team pagination did not advance.");
+        cursors.add(cursor);
+        after = cursor;
+      }
+      throw new Error("Linear team pagination exceeded its limit.");
     },
     async team(teamId, options) {
       const data = await client.query(TEAM, { id: teamId }, options);
