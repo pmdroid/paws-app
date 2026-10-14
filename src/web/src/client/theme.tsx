@@ -340,8 +340,6 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",
     );
-  if (has("settings-navigation"))
-    return styled("flex min-w-0 flex-wrap gap-3 [&>a]:grow sm:[&>a]:grow-0");
   if (has("settings-account")) return styled("flex min-w-0 flex-col items-start gap-4");
   if (has("settings-section")) return styled(SETTINGS_SECTION_LAYOUT);
   if (has("overview-section"))

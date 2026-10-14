@@ -1,4 +1,5 @@
 import { renderMarkup } from "./theme";
+import { esc } from "./format";
 type AuditEntry = {
   id: number;
   actorId: string | null;
@@ -14,15 +15,27 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
   history.dataset.settingsPage = "audit";
   renderMarkup(
     history,
-    `<h2>Recent changes</h2><p role="status"></p><ol tabindex="0" aria-label="Workspace audit changes"></ol><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`,
+    `<h2>Recent changes</h2><p class="empty:hidden" role="status"></p><div data-audit-table></div><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`,
   );
   root.append(history);
-  const list = history.querySelector("ol")!;
+  const table = history.querySelector<HTMLElement>("[data-audit-table]")!;
+  let entries: AuditEntry[] = [];
   const status = history.querySelector("[role=status]")!;
   const refresh = history.querySelector<HTMLButtonElement>('[data-audit="refresh"]')!;
   const older = history.querySelector<HTMLButtonElement>('[data-audit="older"]')!;
   let nextBefore: number | null = null;
   let pending = false;
+  function renderRows() {
+    renderMarkup(
+      table,
+      `<table tabindex="0" aria-label="Workspace audit changes" class="min-w-[48rem] [&_td]:break-words [&_td]:align-top [&_th]:bg-secondary-background [&_th]:whitespace-nowrap [&_td:first-child]:whitespace-nowrap [&_td:nth-child(3)]:whitespace-nowrap"><thead><tr><th scope="col">Time</th><th scope="col">Change</th><th scope="col">Person</th><th scope="col">Details</th></tr></thead><tbody>${entries
+        .map((entry) => {
+          const date = new Date(entry.createdAt);
+          return `<tr><td><time datetime="${date.toISOString()}">${esc(date.toLocaleString())}</time></td><td><strong>${esc(entry.action.replaceAll(".", " "))}</strong></td><td>${esc(entry.actorName ?? entry.actorId ?? "Paws")}</td><td>${esc(entry.subject)}</td></tr>`;
+        })
+        .join("")}</tbody></table>`,
+    );
+  }
   async function load(append: boolean) {
     if (pending) return;
     pending = true;
@@ -35,32 +48,17 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
         { cache: "no-store" },
       );
       if (response.status === 401 || response.status === 403) {
-        list.replaceChildren();
+        entries = [];
+        renderRows();
         nextBefore = null;
         throw new Error("Workspace administration is required. Sign in again to check access.");
       }
       if (!response.ok) throw new Error("Audit history could not be loaded. Refresh to try again.");
       const page = (await response.json()) as { entries: AuditEntry[]; nextBefore: number | null };
-      const rows = page.entries.map((entry) => {
-        const row = document.createElement("li");
-        const when = document.createElement("time");
-        const date = new Date(entry.createdAt);
-        when.dateTime = date.toISOString();
-        when.textContent = date.toLocaleString();
-        const action = document.createElement("strong");
-        action.textContent = entry.action.replaceAll(".", " ");
-        const actor = document.createElement("span");
-        actor.textContent = entry.actorName ?? entry.actorId ?? "Paws";
-        const subject = document.createElement("span");
-        subject.className = "muted";
-        subject.textContent = entry.subject;
-        row.append(when, action, actor, subject);
-        return row;
-      });
-      if (!append) list.replaceChildren();
-      list.append(...rows);
+      entries = append ? [...entries, ...page.entries] : page.entries;
+      renderRows();
       nextBefore = page.nextBefore;
-      status.textContent = list.children.length === 0 ? "No workspace changes recorded yet." : "";
+      status.textContent = entries.length === 0 ? "No workspace changes recorded yet." : "";
     } catch (error) {
       status.textContent = error instanceof Error ? error.message : "Audit history is unavailable.";
     } finally {
