@@ -285,7 +285,7 @@ def prepare_results(execution_id, agent_uid, results_gid):
         os.close(root)
 
 
-def prepare_task_work(execution_id, agent_uid, agent_gid, repository):
+def prepare_task_work(execution_id, agent_uid, agent_gid):
     root = open_directory(TASK_WORK)
     directory = None
     try:
@@ -455,7 +455,7 @@ def handle(connection, runner_uid, agent_uid, agent_gid, results_gid, request=No
             prepare_results(request["executionId"], agent_uid, results_gid)
             prepare_member(request["executionId"], job["command"], agent_uid, agent_gid, runner_uid, results_gid)
             if job["command"]["type"] == "task":
-                prepare_task_work(request["executionId"], agent_uid, results_gid if job["command"].get("memberId") else agent_gid, "repository" in job["command"])
+                prepare_task_work(request["executionId"], agent_uid, results_gid if job["command"].get("memberId") else agent_gid)
         if request["operation"] == "stop":
             success = stop_unit(request["executionId"])
         else:
