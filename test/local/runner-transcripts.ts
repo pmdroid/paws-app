@@ -227,7 +227,8 @@ export async function probeRunnerTranscripts(
       recoveredStatus: 200,
     });
     const result = await transcripts.finish(access, finish);
-    assert(result.uri.startsWith("s3://"));
+    const objectKey = `paws/transcripts/${workspace.id}/${command.id}/${finish.executionId}/acp.jsonl`;
+    assert.equal(result.uri, objects.uri(objectKey));
     assert.equal((await transcripts.finish(access, finish)).uri, result.uri);
     const readBack = await transcripts.download(run.id, 1);
     for (const fault of ["throw", "short", "long", "digest"] as const) {
@@ -296,7 +297,7 @@ export async function probeRunnerTranscripts(
       true,
       { expiredAfterMs: 60_001 },
     );
-    await objects.write(new URL(result.uri).pathname.slice(1), new Blob(["changed object"]));
+    await objects.write(objectKey, new Blob(["changed object"]));
     await assert.rejects(transcripts.download(run.id, 1));
     observe(
       "retrieving a changed transcript object fails its accepted byte count and digest",
