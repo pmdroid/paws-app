@@ -72,16 +72,14 @@ export function agentConnectionReady(input: {
   checks: Health["checks"];
 }): boolean {
   if (input.status === "revoked" || input.lastSeenAt === null) return false;
-  if (input.accounts.some((account) => account.agent === input.agent && account.connected))
-    return true;
-  return (
-    input.checks.find(
-      (check) =>
-        check.command.type === "login_check" &&
-        check.command.agent === input.agent &&
-        check.result?.login !== undefined,
-    )?.result?.login?.authenticated === true
-  );
+  const login = input.checks.find(
+    (check) =>
+      check.command.type === "login_check" &&
+      check.command.agent === input.agent &&
+      check.result?.login !== undefined,
+  )?.result?.login;
+  if (login) return login.authenticated === true;
+  return input.accounts.some((account) => account.agent === input.agent && account.connected);
 }
 
 export function createRunners() {
