@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import tarfile
+import tempfile
 
 
 spec = importlib.util.spec_from_file_location("paws_release", pathlib.Path(__file__).with_name("release.py"))
@@ -39,6 +40,26 @@ def add_content(archive, name, content, executable=False):
     archive.addfile(member, io.BytesIO(content))
 
 
+def compile_runner(bun, source, destination):
+    with tempfile.TemporaryDirectory(prefix="paws-runner-compile-") as home:
+        completed = subprocess.run(
+            [str(bun), "build", str(source / "src" / "index.ts"), "--compile", "--outfile", str(destination), "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--target=bun"],
+            cwd=source,
+            env={**release.COMMAND_ENV, "HOME": home},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=900,
+        )
+    if completed.returncode != 0:
+        detail = " ".join(completed.stderr.decode(errors="replace").splitlines()[-8:])[:800]
+        raise ValueError(f"Runner compilation failed: {detail}")
+    content = read_package_file(destination, 536_870_912)
+    destination.unlink()
+    if not content.startswith(b"\x7fELF"):
+        raise ValueError("Compiled runner is not a native executable")
+    return content
+
+
 def pack(arguments):
     source = pathlib.Path(arguments.source).resolve(strict=True)
     bun = pathlib.Path(arguments.bun).resolve(strict=True)
@@ -61,14 +82,16 @@ def pack(arguments):
     actual_version = subprocess.run([str(bun), "--version"], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=10).stdout.decode().strip()
     if actual_version != release.BUN_VERSION:
         raise ValueError("Pinned Bun runtime is required")
+    compiled = compile_runner(bun, source, output / "paws-runner")
     artifact = output / "artifact.tar"
     launcher_targets = set()
     with tarfile.open(artifact, "w", format=tarfile.USTAR_FORMAT) as archive:
         add_content(archive, "bin/bun", runtime, True)
+        add_content(archive, "bin/paws-runner", compiled, True)
         for name in ("package.json", "bun.lock"):
             add_content(archive, f"app/{name}", read_package_file(source / name, 16_777_216))
         for name, target in provider_targets.items():
-            interpreter = "/usr/bin/node " if name == "codex" else ""
+            interpreter = "/opt/paws-runner/bin/bun --no-env-file " if name == "codex" else ""
             content = ("#!/bin/sh\nexec " + interpreter + "'/opt/paws-runner/current/" + target + "' \"$@\"\n").encode()
             add_content(archive, f"app/node_modules/.bin/{name}", content, True)
         for directory in ("src", "node_modules"):
@@ -100,7 +123,7 @@ def pack(arguments):
                         launcher_targets.add(target_name)
                         content = read_package_file(target, 536_870_912)
                         installed = "/opt/paws-runner/current/" + target.relative_to(source).as_posix()
-                        interpreter = "/usr/bin/node " if content.startswith(b"#!") and b"node" in content.split(b"\n", 1)[0] else ""
+                        interpreter = "/opt/paws-runner/bin/bun --no-env-file " if content.startswith(b"#!") and b"node" in content.split(b"\n", 1)[0] else ""
                         content = ("#!/bin/sh\nexec " + interpreter + "'" + installed + "' \"$@\"\n").encode()
                         add_content(archive, "app/" + relative, content, True)
                     else:

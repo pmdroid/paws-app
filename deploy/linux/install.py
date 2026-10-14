@@ -96,7 +96,7 @@ def validate_identity_separation():
 def prerequisites():
     if os.getuid() != 0:
         raise ValueError("Installation requires root")
-    for path in ("/usr/bin/node", "/usr/bin/git", "/usr/bin/openssl", "/usr/bin/python3", "/usr/bin/flock", "/usr/sbin/runuser", "/usr/bin/env", "/usr/bin/systemctl", "/usr/bin/systemd-sysusers", "/usr/bin/systemd-tmpfiles"):
+    for path in ("/usr/bin/git", "/usr/bin/openssl", "/usr/bin/python3", "/usr/bin/flock", "/usr/sbin/runuser", "/usr/bin/env", "/usr/bin/systemctl", "/usr/bin/systemd-sysusers", "/usr/bin/systemd-tmpfiles"):
         resolved = pathlib.Path(path).resolve(strict=True)
         info = resolved.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not info.st_mode & 0o001:
@@ -105,9 +105,6 @@ def prerequisites():
             directory = parent.stat()
             if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != 0 or directory.st_mode & 0o022 or not directory.st_mode & 0o001:
                 raise ValueError("Unsafe or inaccessible prerequisite directory")
-    node = release.command(["/usr/bin/node", "--version"]).decode().strip()
-    if not node.startswith("v") or int(node[1:].split(".")[0]) < 22:
-        raise ValueError("Node 22 or later is required at /usr/bin/node")
     if not release.command(["/usr/bin/openssl", "version"]).startswith(b"OpenSSL 3."):
         raise ValueError("OpenSSL 3 is required")
     release.command(["/usr/bin/git", "--version"])
@@ -178,7 +175,7 @@ def extract_verified(artifact, destination):
                     remaining -= len(chunk)
                 outgoing.flush()
                 mode = member.mode
-                if member.name == "bin/bun":
+                if member.name in ("bin/bun", "bin/paws-runner"):
                     mode = 0o755
                 elif member.name.startswith("deploy/linux/"):
                     mode = 0o644
@@ -193,6 +190,7 @@ def verify_selected_release(destination, unpacked):
     expected = {path.relative_to(unpacked / "app"): path for path in (unpacked / "app").rglob("*") if path.is_file()}
     expected.update({pathlib.Path("deploy/linux") / name: unpacked / "deploy/linux" / name for name in release.ASSETS})
     expected[pathlib.Path("bin/bun")] = unpacked / "bin/bun"
+    expected[pathlib.Path("bin/paws-runner")] = unpacked / "bin/paws-runner"
     seen = set()
     directories = {pathlib.Path(".")}
     for path in expected:
@@ -227,7 +225,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             raise ValueError("Unsafe installation lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         accepted = admitted_release(manifest, fingerprint, reinstall)
-        pointers = {"bun": "../current/bin/bun", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
+        pointers = {"bun": "../current/bin/bun", "paws-runner": "../current/bin/paws-runner", "claude": "../current/node_modules/.bin/claude", "codex": "../current/node_modules/.bin/codex"}
         for name, target in pointers.items():
             pointer = BASE / "bin" / name
             if pointer.is_symlink():
@@ -241,6 +239,10 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             unpacked = pathlib.Path(temporary)
             extract_verified(artifact, unpacked)
             bun = unpacked / "bin/bun"
+            runner_binary = unpacked / "bin/paws-runner"
+            with runner_binary.open("rb") as stream:
+                if stream.read(4) != b"\x7fELF":
+                    raise ValueError("Packaged runner is not a native executable")
             if release.command([str(bun), "--version"]).decode().strip() != release.BUN_VERSION:
                 raise ValueError("Packaged Bun does not match the pinned runtime")
             stop_for_install()
@@ -260,6 +262,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             if not selected:
                 staged = unpacked / "app"
                 write_atomic(staged / "bin/bun", bun.read_bytes(), 0o755)
+                write_atomic(staged / "bin/paws-runner", runner_binary.read_bytes(), 0o755)
                 for name in sorted(release.ASSETS):
                     write_atomic(staged / "deploy/linux" / name, (unpacked / "deploy/linux" / name).read_bytes(), 0o644)
                 os.rename(staged, destination)

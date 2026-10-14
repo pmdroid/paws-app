@@ -75,8 +75,7 @@ On the VM, start pairing as the runner account. Replace `my-runner` with the hos
 sudo /usr/sbin/runuser --user paws-runner -- \
   /usr/bin/env -i --chdir=/var/lib/paws-runner \
   HOME=/var/lib/paws-runner PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C \
-  /opt/paws-runner/bin/bun --no-env-file \
-  /opt/paws-runner/current/src/index.ts runner pair \
+  /opt/paws-runner/bin/paws-runner runner pair \
   --config /etc/paws-runner/config.json --name my-runner
 ```
 

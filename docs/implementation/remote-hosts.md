@@ -18,7 +18,7 @@ The installer reads the host architecture, downloads the matching package from t
 curl -fsSL https://get.paws.boo | sudo sh -s -- 1.2.3
 ```
 
-Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The host needs systemd and Node.js 22 or later installed as the `nodejs` package, with its executable at `/usr/bin/node`.
+Publishing a GitHub release tagged `vX.Y.Z` or `X.Y.Z` builds native AMD64 and ARM64 Debian packages named `paws-runner_X.Y.Z_amd64.deb` and `paws-runner_X.Y.Z_arm64.deb`, each with a `.deb.sha256` file. The package includes the compiled runner and the Bun runtime its agent programs use. The host needs systemd.
 
 To verify and install a downloaded ARM64 package directly:
 

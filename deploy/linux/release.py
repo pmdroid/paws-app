@@ -38,6 +38,7 @@ ASSETS = {
 }
 REQUIRED = {
     "bin/bun",
+    "bin/paws-runner",
     "app/package.json",
     "app/bun.lock",
     "app/src/index.ts",
@@ -109,7 +110,7 @@ def validate_member(member):
     parts = name.split("/")
     if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or member.size < 0 or member.mode not in (0o644, 0o755) or any(part in ("", ".", "..") or not re.fullmatch(r"[A-Za-z0-9@._+-]+", part) for part in parts):
         raise ValueError("Unsafe release archive member")
-    allowed = name == "bin/bun" or name in ("app/package.json", "app/bun.lock") or len(parts) > 2 and parts[:2] in (["app", "src"], ["app", "node_modules"]) or len(parts) == 3 and parts[:2] == ["deploy", "linux"] and parts[2] in ASSETS
+    allowed = name in ("bin/bun", "bin/paws-runner") or name in ("app/package.json", "app/bun.lock") or len(parts) > 2 and parts[:2] in (["app", "src"], ["app", "node_modules"]) or len(parts) == 3 and parts[:2] == ["deploy", "linux"] and parts[2] in ASSETS
     if not allowed:
         raise ValueError("Unexpected release archive member")
     if any(part.startswith(".") and part != ".bin" for part in parts):

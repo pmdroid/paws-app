@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020";
 import type { AnySchema, ErrorObject, ValidateFunction } from "ajv/dist/2020";
 import type { Finding, Severity } from "../types";
+import evidenceSchema from "../schema/evidence.schema.json" with { type: "json" };
 
 const SEVERITIES = new Set<Severity>(["P0", "P1", "P2", "P3"]);
 
@@ -70,11 +68,7 @@ function schemaReason(errors: ErrorObject[] | null | undefined): string {
 
 function findingsValidator(): ValidateFunction {
   if (compiled) return compiled;
-  const schemaPath = join(
-    dirname(fileURLToPath(import.meta.url)),
-    "../schema/evidence.schema.json",
-  );
-  const parsed: unknown = JSON.parse(readFileSync(schemaPath, "utf8"));
+  const parsed: unknown = evidenceSchema;
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   compiled = ajv.compile(findingsSchema(parsed));
   return compiled;
