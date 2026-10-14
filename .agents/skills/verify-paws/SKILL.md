@@ -7,6 +7,8 @@ description: Verify Paws locally in disposable instances with scripted ACP agent
 
 Run `bun --no-env-file test/local/current-run-startup.ts /absolute/disposable/evidence-directory` for new code and repository-backed artifact startup through the production job loop and GitHub installation holds. Require both observations in `observations.json` to pass. An unavailable installation must persist an input hold tied to the newly created current run, with zero agent launches, instead of leaving a task marked Running without executing it. Run `bun --no-env-file test test/current-run-startup.test.ts src/loop/github-integration.test.ts test/runner-orchestration.test.ts test/boundaries.test.ts` for the affected regression suite.
 
+Run `bun --no-env-file test test/runner-snapshot-links.test.ts test/runner-execution.test.ts` for task snapshot link handling. Internal file, directory and chained links must become regular immutable copies, byte-identical retries must succeed, and changed targets must reject retry. External, sibling-prefix, missing and cyclic targets must reject publication atomically, and published-tree symlinks must remain forbidden. Run `bun --no-env-file test/local/runner-task-spool.ts` to retain the separate-UID proof; require `internalLinksCopied`, all seven invalid source refusals, private staging, agent read-only access and outsider denial in `observations.json`.
+
 ## Contract
 
 State the claim before testing: given a particular epic, agent script and failure, which observable state, comment, evidence record and Git ref must result? A green unit suite alone does not prove an epic is safe to merge.

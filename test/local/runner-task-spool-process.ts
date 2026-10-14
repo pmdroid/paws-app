@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -103,6 +104,13 @@ if (mode === "publish") {
     () => rmSync(join(source, "hard")),
   );
   invalid(
+    "directory cycle",
+    () => symlinkSync("..", join(source, "nested", "cycle")),
+    () => rmSync(join(source, "nested", "cycle")),
+  );
+  symlinkSync("nested/source.txt", join(source, "openapi.yaml"));
+  symlinkSync("nested", join(source, "directory-link"));
+  invalid(
     "oversize",
     () => {
       writeFileSync(join(source, "large"), "");
@@ -122,6 +130,12 @@ if (mode === "publish") {
   writeFileSync(join(source, "nested", "source.txt"), "changed source\n");
   assert.throws(() => publish(job, { repositorySnapshot: source }), /different content/);
   const repository = runnerTaskRepositoryPath(spool, executionId);
+  assert.equal(readFileSync(join(repository, "openapi.yaml"), "utf8"), "private source\n");
+  assert(!lstatSync(join(repository, "openapi.yaml")).isSymbolicLink());
+  assert.equal(
+    readFileSync(join(repository, "directory-link", "source.txt"), "utf8"),
+    "private source\n",
+  );
   assert.equal(readFileSync(join(repository, "nested", "source.txt"), "utf8"), "private source\n");
   for (const path of [repository, join(repository, "nested")])
     assert.equal(statSync(path).mode & 0o7777, 0o750);
@@ -142,7 +156,8 @@ if (mode === "publish") {
   console.log(
     JSON.stringify({
       published: true,
-      invalidSourcesRejected: 6,
+      invalidSourcesRejected: 7,
+      internalLinksCopied: true,
       atomicRefusals: true,
       byteIdenticalRetry: true,
       changedRetryDenied: true,
