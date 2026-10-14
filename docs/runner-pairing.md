@@ -47,12 +47,15 @@ sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.j
 {
   "controlPlaneUrl": "https://paws.example.com:8787",
   "runnerApiUrl": "https://paws.example.com:8788",
-  "allowedRepositories": ["your-org/your-repo"]
+  "allowedRepositories": ["your-org/your-repo"],
+  "concurrency": 2
 }
 JSON
 ```
 
 `controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. `allowedRepositories` lists the exact GitHub `owner/repository` names this host may execute.
+
+`concurrency` sets the number of simultaneous tasks this host accepts, from 1 to 16, and defaults to 2. Each task has its own private workspace. Change the value in `/etc/paws-runner/config.json` and restart `paws-runner.service` to apply it. Paws receives the capacity through the runner's authenticated heartbeat. Pull request merges remain serialized.
 
 For a private server certificate authority, add `serverCa` containing its PEM certificate text as a JSON string. Certificates issued by a publicly trusted authority use the default trust store.
 

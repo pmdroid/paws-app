@@ -13,7 +13,7 @@ test("runner repository cache fetches exact bases and validates candidates outsi
       assert(passed, name);
       observations += 1;
     });
-    assert.equal(observations, 9);
+    assert.equal(observations, 10);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

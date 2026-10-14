@@ -5,6 +5,7 @@ import {
   getWorkItem,
   getWorkItemRepository,
   immediate,
+  runnerHasCapacity,
   linearSessionForEpic,
   workspaceMember,
 } from "../db";
@@ -76,6 +77,7 @@ export function createRunnerPlacement(options: {
         )
         .get(id),
       host: db.query("SELECT * FROM runner_policy WHERE runner_id=?").get(id),
+      capacity: db.query("SELECT capacity FROM runner_capacity WHERE runner_id=?").get(id),
       agent: agent
         ? db.query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent=?").get(id, agent)
         : null,
@@ -215,7 +217,7 @@ export function createRunnerPlacement(options: {
         throw new Error("Runner requester is not an active workspace member");
       const at = now();
       const rows = db
-        .query<Candidate, [string, string, number, number, number]>(
+        .query<Candidate, [string, string, number]>(
           `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,u.linear_user_id AS linearUserId,
          COALESCE(p.sharing,0) AS sharing,COALESCE(p.fallback,0) AS fallback,COALESCE(p.host_owner,'unknown') AS hostOwner,
          COALESCE(a.seat,'unknown') AS seat,COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
@@ -226,11 +228,9 @@ export function createRunnerPlacement(options: {
          LEFT JOIN runner_agent_policy a ON a.runner_id=r.id AND a.agent=?
          WHERE r.workspace_id=? AND r.status='active' AND r.revoked_at IS NULL AND m.active=1
          AND m.role<>'observer' AND r.last_seen_at>?
-         AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?)
-         AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?)
          AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind='cancel' AND c.acknowledged_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_command a WHERE a.runner_id=c.runner_id AND a.run_id=c.run_id AND a.generation=c.generation AND a.kind='cancel' AND a.ordinal>c.ordinal AND a.acknowledged_at IS NOT NULL))`,
         )
-        .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000, at, at);
+        .all(input.profile?.agent ?? "", current.workspace.id, at - 60_000);
       const lastImplementation = input.itemId
         ? db
             .query<{ runnerId: string; model: string | null }, [string]>(
@@ -247,6 +247,16 @@ export function createRunnerPlacement(options: {
             .get(accountActor)?.id
         : undefined;
       const ranked = rows.flatMap((runner) => {
+        if (!runnerHasCapacity(db, runner.id, at)) return [];
+        if (
+          input.purpose === "helper" &&
+          db
+            .query(
+              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+            )
+            .get(runner.id, at)
+        )
+          return [];
         if (
           input.profile &&
           db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runner.id)

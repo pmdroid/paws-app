@@ -77,10 +77,17 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
   verifierPublicKeyPem?: string;
+  concurrency?: number;
   now?: () => number;
 };
 
 export function openRunnerDaemon(options: RunnerDaemonOptions) {
+  const concurrency = z
+    .number()
+    .int()
+    .min(1)
+    .max(16)
+    .parse(options.concurrency ?? 1);
   const origins = {
     controlPlaneUrl: httpsOrigin(options.controlPlaneUrl),
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
@@ -276,6 +283,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   return {
     status,
+    capacity: () => concurrency,
     pendingCommands,
     async beginPairing(name: string) {
       ensureOpen();
@@ -381,7 +389,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return status();
     },
     async heartbeat() {
-      return RunnerHeartbeatSchema.parse(await authenticated("/v1/heartbeat", "POST", {}));
+      return RunnerHeartbeatSchema.parse(
+        await authenticated(
+          "/v1/heartbeat",
+          "POST",
+          options.concurrency === undefined ? {} : { capacity: concurrency },
+        ),
+      );
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {
       z.uuid().parse(id);

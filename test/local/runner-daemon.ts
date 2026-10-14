@@ -36,6 +36,7 @@ export async function probeRunnerDaemon(
   const enrollmentBodies: Record<string, unknown>[] = [];
   const acknowledgments: string[] = [];
   const workRequests: { path: string; body: unknown; bearer: boolean }[] = [];
+  const heartbeatBodies: unknown[] = [];
   const runGrant = randomBytes(32).toString("base64url");
   const repositoryToken = `ghs_${randomBytes(32).toString("base64url")}`;
   const generations = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -124,7 +125,10 @@ export async function probeRunnerDaemon(
         return Response.json(value);
       }
       if (path === "/v1/commands") return deliver({ commands });
-      if (path === "/v1/heartbeat") return deliver(heartbeatResponse);
+      if (path === "/v1/heartbeat") {
+        heartbeatBodies.push(await request.json());
+        return deliver(heartbeatResponse);
+      }
       if (path === "/v1/runs/run-one/grant") {
         assert.equal(request.headers.get("authorization"), null);
         const body = z
@@ -440,6 +444,21 @@ export async function probeRunnerDaemon(
     assert.notEqual(renewed.fingerprint, identity.fingerprint);
     const heartbeat = (await child("heartbeat")).result;
     assert.equal(heartbeat.fingerprint, renewed.fingerprint);
+    assert.deepEqual(heartbeatBodies.at(-1), {});
+    const configured = openRunnerDaemon({
+      ...config,
+      allowedRepositories: ["local/fixture"],
+      concurrency: 4,
+    });
+    try {
+      assert.equal(configured.capacity(), 4);
+      await configured.heartbeat();
+      assert.deepEqual(heartbeatBodies.at(-1), { capacity: 4 });
+    } finally {
+      configured.close();
+    }
+    assert.throws(() => openRunnerDaemon({ ...config, allowedRepositories: [], concurrency: 0 }));
+    assert.throws(() => openRunnerDaemon({ ...config, allowedRepositories: [], concurrency: 17 }));
     assert.equal(peers.at(-1), renewed.fingerprint);
     observe(
       "certificate replacement rejects identity changes atomically and survives restart with actual mTLS",

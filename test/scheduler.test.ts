@@ -13,7 +13,7 @@ test("Scheduler dispatch is durable, capacity bound and conflict safe across pro
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 20);
+    assert.equal(observations.length, 22);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

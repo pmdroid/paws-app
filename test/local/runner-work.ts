@@ -623,7 +623,13 @@ export async function probeRunnerWork(
       control.setStatus(principal, firstRunner, "active");
       const helper = helpers.dispatch(helperInput);
       const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
-      assert.throws(() => work.assign(review), /occupied by session helper/);
+      assert.throws(() => work.assign(review), /occupied/);
+      work.heartbeat(firstRunner, 2);
+      work.assign({ ...released, id: workspaceId(), generation: 3 });
+      assert.throws(() => work.assign(review), /occupied/);
+      assert.throws(() => helpers.dispatch(helperInput), /busy/);
+      work.finish(released.runId, 3);
+      work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
       const check: Extract<RunnerCommand, { type: "check" }> = {
         id: workspaceId(),
