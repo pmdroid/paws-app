@@ -624,6 +624,10 @@ export async function probeRunnerBackend(
           if (i === 499) throw new Error("Response task callbacks did not answer");
           await delay(1);
         }
+        assert.deepEqual(
+          taskEvents.filter((event) => event.type === "progress"),
+          [{ type: "progress", text: "Bounded progress" }],
+        );
         const receipt = result(command);
         await seal(command, taskGrant.token, receipt.executionId, raw);
         results.submit({
