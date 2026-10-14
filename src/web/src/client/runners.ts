@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
@@ -317,16 +318,22 @@ export function createRunners() {
   function paint() {
     if (!root?.isConnected) return;
     if (!available) {
-      root.innerHTML = "<h1>Runners</h1><p>Connect to your Paws dashboard to see runners.</p>";
+      renderMarkup(root, "<h1>Runners</h1><p>Connect to your Paws dashboard to see runners.</p>");
       return;
     }
     if (setupRequired) {
-      root.innerHTML = `<h1>Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
+      renderMarkup(
+        root,
+        `<h1>Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`,
+      );
       root.querySelector("[data-runners-refresh]")?.addEventListener("click", () => void load());
       return;
     }
     const disabled = busy || !recent() ? " disabled" : "";
-    root.innerHTML = `<div class="between"><h1>Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. Install the daemon on a Linux host and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`;
+    renderMarkup(
+      root,
+      `<div class="between"><h1>Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. Install the daemon on a Linux host and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`,
+    );
     bind();
   }
   function bind() {
@@ -463,7 +470,10 @@ export function createRunners() {
         selected = null;
         setupRequired = false;
         workspaceReady = false;
-        element.innerHTML = "<h1>Runners</h1><p>Connect to your Paws dashboard to see runners.</p>";
+        renderMarkup(
+          element,
+          "<h1>Runners</h1><p>Connect to your Paws dashboard to see runners.</p>",
+        );
         return;
       }
       void load();

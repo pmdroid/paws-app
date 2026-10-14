@@ -94,8 +94,12 @@ const server = Bun.serve({
     };
     if (path === "/runner.js")
       return new Response(script, { headers: { "content-type": "text/javascript" } });
-    if (path === "/style.css")
-      return new Response(Bun.file(new URL("../../src/web/src/client/style.css", import.meta.url)));
+    if (path === "/style.css") {
+      const assets = new URL("../../src/web/dist/assets/", import.meta.url).pathname;
+      const css = [...new Bun.Glob("*.css").scanSync(assets)][0];
+      if (!css) return new Response("Run bun run build:status first", { status: 503 });
+      return new Response(Bun.file(join(assets, css)), { headers: { "content-type": "text/css" } });
+    }
     if (path === "/api/auth/session") return Response.json(principal);
     if (path === "/api/runners") return Response.json({ runners });
     if (path.endsWith("/health")) return Response.json({ lastSeenAt: now, checks: [] });

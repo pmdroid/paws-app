@@ -1,3 +1,7 @@
+import { renderMarkup } from "./theme";
+import { mountShell } from "./shell";
+import { createSourceDialog } from "./source-dialog";
+
 import { parseStatusSnapshot, STATUS_API_VERSION, type StatusSnapshot } from "../contract";
 import { demoStatus } from "../demo";
 import { parseEngineUrl, statusEndpoint } from "../endpoint";
@@ -18,6 +22,8 @@ import { createRunners } from "./runners";
 import { createExecutionControls } from "./execution-controls";
 import { initializeWorkspaceAccess } from "./workspace";
 
+const shell = mountShell();
+
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
@@ -26,7 +32,7 @@ const executionControls = createExecutionControls(reload);
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
 
-const regions = ["#side", "#top", "#banner", "#content", "#tabbar"] as const;
+const regions = ["#top", "#banner", "#content"] as const;
 const painted = new Map<string, string>();
 
 let choice: SourceChoice = { kind: "auto" };
@@ -41,27 +47,33 @@ let timer = 0;
 let workspaceReady = false;
 let conversations: ConversationModel = { state: "loading", sessions: [] };
 
-const dialog = document.querySelector("#source-dialog");
-const form = document.querySelector("#source-form");
-const help = document.querySelector("#source-help");
-const fieldError = document.querySelector("#source-error");
-const demoButton = document.querySelector("#source-demo");
+const sourceDialog = createSourceDialog(applyChoice);
 
 document.addEventListener("click", onClick);
 window.addEventListener("hashchange", () => {
-  document.body.classList.remove("drawer-open");
   paint();
+  window.scrollTo({ top: 0, behavior: "instant" });
+  document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
-form?.addEventListener("submit", onSave);
-demoButton?.addEventListener("click", () => {
-  applyChoice({ kind: "demo" });
-  closeDialog();
+document.addEventListener("paws:epic-view", (event) => {
+  const mode = (event as CustomEvent<unknown>).detail;
+  if (mode === "graph" || mode === "board") epicView = mode;
+});
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (
+    target instanceof HTMLSelectElement &&
+    target.dataset.routePicker !== undefined &&
+    /^#\/(epics|runs|verdicts|sessions)(\/|$)/.test(target.value)
+  )
+    location.hash = target.value;
 });
 
 void boot();
 
 async function boot(): Promise<void> {
   workspaceReady = await initializeWorkspaceAccess();
+  shell.setAuthenticated(workspaceReady);
   if (!workspaceReady) return;
   void paintGitHubAuth(null);
   const query = new URLSearchParams(location.search).get("engine");
@@ -98,6 +110,7 @@ async function reload(): Promise<void> {
     });
     if (response.status === 401) {
       workspaceReady = await initializeWorkspaceAccess();
+      shell.setAuthenticated(workspaceReady);
       if (!workspaceReady) return;
     }
     if (!response.ok) throw new Error(await errorText(response));
@@ -178,19 +191,27 @@ function paint(): void {
       : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
-  document.body.dataset.area = ["settings", "runners"].includes(model.route.view)
-    ? model.route.view
-    : "overview";
+  const showSettings = model.route.view === "settings";
+  const access = document.querySelector<HTMLElement>("#workspace-access");
+  const auth = document.querySelector<HTMLElement>("#github-auth");
+  if (access && access.dataset.loaded === "true") access.hidden = !showSettings;
+  if (auth) auth.hidden = !showSettings;
   document.title = view.title;
-  setHtml("#side", view.side);
+  shell.update({ route: model.route, project: model.snapshot?.project ?? null });
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#content", view.content);
-  setHtml("#tabbar", view.tabbar);
+
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
-  if (sessionRoot) sessionStart.mount(sessionRoot, currentEngine(), snapshot?.source);
+  if (sessionRoot)
+    sessionStart.mount(
+      sessionRoot,
+      currentEngine(),
+      snapshot?.source,
+      model.route.view === "sessions",
+    );
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), snapshot?.source);
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
@@ -202,15 +223,11 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
   if (!element || painted.get(selector) === html) return;
   const focus = selector === "#content" ? captureFocus(element) : null;
   const logs = selector === "#content" ? captureLogs(element) : [];
-  const scroll = selector === "#content" ? element.scrollTop : 0;
-  const execution = element.querySelector<HTMLElement>("#execution-controls");
+  const scroll = selector === "#content" ? window.scrollY : 0;
   painted.set(selector, html);
-  element.innerHTML = html;
-  const nextExecution = element.querySelector<HTMLElement>("#execution-controls");
-  if (execution && nextExecution && execution.dataset["item"] === nextExecution.dataset["item"])
-    nextExecution.replaceWith(execution);
+  renderMarkup(element, html);
   if (selector !== "#content") return;
-  element.scrollTop = scroll;
+  window.scrollTo({ top: scroll, behavior: "instant" });
   restoreLogs(element, logs);
   restoreFocus(element, focus);
 }
@@ -218,7 +235,9 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
 type HeldFocus =
   | { kind: "action"; action: string; item: string; check: string }
   | { kind: "log"; key: string }
-  | { kind: "href"; href: string };
+  | { kind: "href"; href: string }
+  | { kind: "tab"; text: string }
+  | { kind: "picker"; label: string };
 
 type LogScroll = { key: string; top: number; stick: boolean };
 
@@ -229,7 +248,10 @@ function captureFocus(root: Element): HeldFocus | null {
     const href = active.getAttribute("href");
     if (href) return { kind: "href", href };
   }
-  const log = active.closest("pre.out")?.getAttribute("data-log");
+  if (active.getAttribute("role") === "tab") return { kind: "tab", text: active.textContent ?? "" };
+  if (active.matches("select[data-route-picker]"))
+    return { kind: "picker", label: active.getAttribute("aria-label") ?? "" };
+  const log = active.closest("[data-log]")?.getAttribute("data-log");
   if (log) return { kind: "log", key: log };
   const holder = active.closest("[data-action][data-item][data-check]");
   if (!(holder instanceof HTMLElement)) return null;
@@ -247,8 +269,19 @@ function restoreFocus(root: Element, held: HeldFocus | null): void {
 }
 
 function findHeld(root: Element, held: HeldFocus): Element | null {
+  if (held.kind === "tab")
+    return (
+      [...root.querySelectorAll('[role="tab"]')].find((node) => node.textContent === held.text) ??
+      null
+    );
+  if (held.kind === "picker")
+    return (
+      [...root.querySelectorAll("select[data-route-picker]")].find(
+        (node) => node.getAttribute("aria-label") === held.label,
+      ) ?? null
+    );
   if (held.kind === "log") {
-    for (const node of root.querySelectorAll("pre.out")) {
+    for (const node of root.querySelectorAll("[data-log]")) {
       if (node.getAttribute("data-log") === held.key) return node;
     }
     return null;
@@ -273,7 +306,7 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
 
 function captureLogs(root: Element): LogScroll[] {
   const logs: LogScroll[] = [];
-  for (const node of root.querySelectorAll("pre.out")) {
+  for (const node of root.querySelectorAll("[data-log]")) {
     if (!(node instanceof HTMLElement)) continue;
     const key = node.getAttribute("data-log");
     if (!key) continue;
@@ -285,7 +318,7 @@ function captureLogs(root: Element): LogScroll[] {
 
 function restoreLogs(root: Element, logs: readonly LogScroll[]): void {
   for (const saved of logs) {
-    for (const node of root.querySelectorAll("pre.out")) {
+    for (const node of root.querySelectorAll("[data-log]")) {
       if (!(node instanceof HTMLElement) || node.getAttribute("data-log") !== saved.key) continue;
       node.scrollTop = saved.stick ? node.scrollHeight : saved.top;
     }
@@ -297,8 +330,6 @@ function onClick(event: Event): void {
   if (!(target instanceof Element)) return;
   const action = target.closest("[data-action]")?.getAttribute("data-action");
   if (!action) return;
-  if (action === "drawer") document.body.classList.add("drawer-open");
-  if (action === "drawer-close") document.body.classList.remove("drawer-open");
   if (action === "github-signin") void signInWithGitHub();
   if (action === "refresh") {
     void reload();
@@ -306,13 +337,6 @@ function onClick(event: Event): void {
     if (parseRoute(location.hash).view === "runners") void runners.refresh();
   }
   if (action === "source") openDialog();
-  if (action === "epic-view") {
-    const mode = target.closest("[data-mode]")?.getAttribute("data-mode");
-    if (mode === "graph" || mode === "board") {
-      epicView = mode;
-      paint();
-    }
-  }
   if (action === "select-check") {
     const row = target.closest("[data-item][data-check]");
     const itemId = row?.getAttribute("data-item");
@@ -337,16 +361,19 @@ async function paintGitHubAuth(
   if (!slot) return;
   const access = await loadGitHubAccess().catch(() => null);
   if (access === null) return;
-  slot.innerHTML = access.allowed
-    ? renderGitHubSignIn({ user: access.user, device: access.user ? null : device })
-    : "";
+  renderMarkup(
+    slot,
+    access.allowed
+      ? renderGitHubSignIn({ user: access.user, device: access.user ? null : device })
+      : "",
+  );
 }
 
 async function signInWithGitHub(): Promise<void> {
   const slot = document.querySelector("#github-auth");
   try {
     const device = await startGitHubDevice(readCsrfToken(document));
-    if (slot) slot.innerHTML = renderGitHubSignIn({ user: null, device });
+    if (slot) renderMarkup(slot, renderGitHubSignIn({ user: null, device }));
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await new Promise((resolve) => {
         window.setTimeout(resolve, 1500);
@@ -355,9 +382,10 @@ async function signInWithGitHub(): Promise<void> {
       if (access === null) continue;
       if (!access.allowed || access.user) {
         if (slot)
-          slot.innerHTML = access.allowed
-            ? renderGitHubSignIn({ user: access.user, device: null })
-            : "";
+          renderMarkup(
+            slot,
+            access.allowed ? renderGitHubSignIn({ user: access.user, device: null }) : "",
+          );
         return;
       }
     }
@@ -367,31 +395,7 @@ async function signInWithGitHub(): Promise<void> {
 }
 
 function openDialog(): void {
-  if (!(dialog instanceof HTMLDialogElement) || !(form instanceof HTMLFormElement)) return;
-  const input = form.querySelector("input");
-  if (input) input.value = choice.kind === "engine" ? choice.url : "";
-  if (help) help.textContent = sourceHelp();
-  if (fieldError) fieldError.textContent = "";
-  dialog.showModal();
-}
-
-function onSave(event: Event): void {
-  event.preventDefault();
-  if (!(form instanceof HTMLFormElement)) return;
-  const raw = String(new FormData(form).get("engine") ?? "").trim();
-  if (!raw) {
-    applyChoice({ kind: "auto" });
-    closeDialog();
-    return;
-  }
-  const url = parseEngineUrl(raw);
-  if (!url) {
-    if (fieldError)
-      fieldError.textContent = "Enter an http or https URL, or leave the field empty.";
-    return;
-  }
-  applyChoice({ kind: "engine", url });
-  closeDialog();
+  sourceDialog.open(choice.kind === "engine" ? choice.url : "", sourceHelp());
 }
 
 function applyChoice(next: SourceChoice): void {
@@ -410,10 +414,6 @@ function applyChoice(next: SourceChoice): void {
     paint();
   }
   void reload();
-}
-
-function closeDialog(): void {
-  if (dialog instanceof HTMLDialogElement) dialog.close();
 }
 
 function sourceHelp(): string {

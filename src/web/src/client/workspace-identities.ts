@@ -1,3 +1,5 @@
+import { renderMarkup } from "./theme";
+import { esc } from "./format";
 type IdentityLink = {
   userId: string;
   provider: string;
@@ -8,8 +10,10 @@ type IdentityLink = {
 
 export async function initializeWorkspaceIdentities(root: HTMLElement, csrfToken: string) {
   const details = document.createElement("details");
-  details.innerHTML =
-    '<summary>Account links</summary><p class="muted">Slack matches use the email in Linear. You can also map accounts manually.</p><div class="workspace-identities"></div><p role="status"></p>';
+  renderMarkup(
+    details,
+    '<summary>Account links</summary><p class="muted">Slack matches use the email in Linear. You can also map accounts manually.</p><div class="workspace-identities"></div><p role="status"></p>',
+  );
   root.append(details);
   const feedback = details.querySelector<HTMLElement>('[role="status"]')!;
   try {
@@ -31,30 +35,14 @@ export async function initializeWorkspaceIdentities(root: HTMLElement, csrfToken
         );
         const form = document.createElement("form");
         form.className = "row workspace-member";
-        const label = document.createElement("label");
-        label.className = "field";
-        const title = document.createElement("span");
-        title.textContent = provider === "slack" ? "Slack user ID" : "GitHub username";
-        const input = document.createElement("input");
-        input.value = link?.externalId ?? "";
-        input.autocomplete = "off";
-        input.maxLength = provider === "slack" ? 100 : 39;
         const unavailable = provider === "slack" && data.slackTeamId === null;
-        input.disabled = unavailable;
-        label.append(title, input);
-        const status = document.createElement("span");
-        status.className = "muted";
-        status.textContent = unavailable
-          ? "Connect Slack to match accounts."
-          : link
-            ? `${link.status} · ${link.method}`
-            : "Unlinked";
-        const save = document.createElement("button");
-        save.type = "submit";
-        save.className = "btn";
-        save.textContent = "Save account";
-        save.disabled = unavailable;
-        form.append(label, status, save);
+        renderMarkup(
+          form,
+          `<label class="field"><span>${provider === "slack" ? "Slack user ID" : "GitHub username"}</span><input value="${esc(link?.externalId ?? "")}" autocomplete="off" maxlength="${provider === "slack" ? 100 : 39}"${unavailable ? " disabled" : ""}></label><span class="muted" data-identity-status>${esc(unavailable ? "Connect Slack to match accounts." : link ? `${link.status} · ${link.method}` : "Unlinked")}</span><button type="submit"${unavailable ? " disabled" : ""}>Save account</button>`,
+        );
+        const input = form.querySelector<HTMLInputElement>("input")!;
+        const status = form.querySelector<HTMLElement>("[data-identity-status]")!;
+        const save = form.querySelector<HTMLButtonElement>("button")!;
         form.addEventListener("submit", (event) => {
           event.preventDefault();
           save.disabled = true;

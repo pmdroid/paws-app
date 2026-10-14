@@ -1,8 +1,12 @@
+import { renderMarkup } from "./theme";
+
 export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string): void {
   const section = document.createElement("details");
   section.id = "workspace-github-integration";
-  section.innerHTML =
-    '<summary>Workspace GitHub App</summary><p>Repository work uses the workspace App installation, not a member’s personal GitHub credentials. Optional GitHub username mappings identify people; they do not grant repository access.</p><form><label class="field"><span>GitHub App installation ID</span><input name="installationId" inputmode="numeric" pattern="[1-9][0-9]*" required autocomplete="off" /></label><button class="btn" type="submit">Connect or reconnect GitHub App</button></form><p>After restoring the configured installation and approved repository permissions on GitHub, revalidate access to resume waiting work safely.</p><button class="btn" type="button">Revalidate GitHub App</button><p role="status"></p>';
+  renderMarkup(
+    section,
+    '<summary>Workspace GitHub App</summary><p>Repository work uses the workspace App installation, not a member’s personal GitHub credentials. Optional GitHub username mappings identify people; they do not grant repository access.</p><form><label class="field"><span>GitHub App installation ID</span><input name="installationId" inputmode="numeric" pattern="[1-9][0-9]*" required autocomplete="off" /></label><button class="btn" type="submit">Connect or reconnect GitHub App</button></form><p>After restoring the configured installation and approved repository permissions on GitHub, revalidate access to resume waiting work safely.</p><button class="btn" type="button">Revalidate GitHub App</button><p role="status"></p>',
+  );
   root.append(section);
   const button = section.querySelector<HTMLButtonElement>("button[type=button]")!;
   const feedback = section.querySelector<HTMLElement>('[role="status"]')!;

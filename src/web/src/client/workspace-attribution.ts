@@ -1,8 +1,12 @@
+import { renderMarkup } from "./theme";
+
 export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: string): void {
   const section = document.createElement("details");
   section.id = "workspace-github-attribution";
-  section.innerHTML =
-    '<summary>Your GitHub attribution</summary><p>Link your own GitHub account to receive public credit on commits and pull requests. This verifies your identity only and does not grant repository access.</p><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button>';
+  renderMarkup(
+    section,
+    '<summary>Your GitHub attribution</summary><p>Link your own GitHub account to receive public credit on commits and pull requests. This verifies your identity only and does not grant repository access.</p><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button>',
+  );
   root.append(section);
   const feedback = section.querySelector<HTMLElement>('[role="status"]')!;
   const connect = section.querySelector<HTMLButtonElement>('button[type="submit"]')!;

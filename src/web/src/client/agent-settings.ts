@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 import type { AgentConnection, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
@@ -61,7 +62,7 @@ type SettingsView = {
 
 export function renderAgentSettings(view: SettingsView): string {
   if (view.denied) return "<h1>Settings</h1>";
-  const intro = `<h1>Agent settings</h1><p class="sub">Choose who implements and independently reviews new work. Agents use their own CLI sign-ins on this machine.</p>`;
+  const intro = `<h1>Settings</h1><p class="sub">Choose who implements and independently reviews new work. Agents use their own CLI sign-ins on this machine.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
   const problems = settingsProblems(view.data);
@@ -146,7 +147,7 @@ export function createAgentSettings(invalidate: () => void): {
               ? `[data-settings="${active.dataset.settings}"]`
               : null;
     }
-    root.innerHTML = renderAgentSettings(view);
+    renderMarkup(root, renderAgentSettings(view));
     if (heldFocus) root.querySelector<HTMLElement>(heldFocus)?.focus({ preventScroll: true });
   };
   const draft = () => {
@@ -278,6 +279,11 @@ export function createAgentSettings(invalidate: () => void): {
   const change = (event: Event) => {
     if (view.busy) return;
     const target = event.target as HTMLInputElement | HTMLSelectElement;
+    if (
+      event.type === "input" &&
+      (target instanceof HTMLSelectElement || target.type === "checkbox")
+    )
+      return;
     draft();
     const name = target.name;
     root?.querySelector("#settings-feedback")?.replaceChildren();
@@ -293,7 +299,8 @@ export function createAgentSettings(invalidate: () => void): {
       if (profile) delete profile.effort;
       const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) {
-        effort.innerHTML = '<option value="">Agent default</option>';
+        effort.replaceChildren(new Option("Agent default", ""));
+        effort.value = "";
         effort.disabled = true;
       }
       const help = root?.querySelector<HTMLElement>(`#${CSS.escape(`${key}-effort-help`)}`);
@@ -306,15 +313,19 @@ export function createAgentSettings(invalidate: () => void): {
       const problems = view.data ? settingsProblems(view.data) : [];
       const holder = root?.querySelector<HTMLElement>("#settings-problems");
       if (holder) {
-        holder.innerHTML = problems.map(esc).join("<br>");
+        holder.textContent = problems.join(" ");
         holder.hidden = problems.length === 0;
       }
       const save = root?.querySelector<HTMLButtonElement>('button[type="submit"]');
       if (save) save.disabled = problems.length > 0;
       return;
     }
+    if (name === "repo") return;
     paint();
-    root?.querySelector<HTMLElement>(`[name="${name}"]`)?.focus();
+    requestAnimationFrame(() => {
+      const field = root?.querySelector<HTMLElement>(`[name="${name}"]`);
+      field?.focus();
+    });
   };
   return {
     mount(next, nextEngine) {

@@ -1,0 +1,54 @@
+import { Button as ButtonPrimitive } from "@base-ui/react/button";
+import { cva, type VariantProps } from "class-variance-authority";
+
+import * as React from "react";
+
+import { cn } from "./utils";
+
+const buttonVariants = cva(
+  "inline-flex max-w-full shrink-0 items-center justify-center whitespace-normal text-center leading-5 rounded-base text-sm font-base ring-offset-secondary-background transition-all gap-2 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-disabled:pointer-events-none data-disabled:opacity-50",
+  {
+    variants: {
+      variant: {
+        default:
+          "text-main-foreground bg-main border-2 border-border shadow-shadow hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none",
+        noShadow: "text-main-foreground bg-main border-2 border-border",
+        neutral:
+          "bg-secondary-background text-foreground border-2 border-border shadow-shadow hover:translate-x-boxShadowX hover:translate-y-boxShadowY hover:shadow-none",
+        reverse:
+          "text-main-foreground bg-main border-2 border-border hover:translate-x-reverseBoxShadowX hover:translate-y-reverseBoxShadowY hover:shadow-shadow",
+      },
+      size: {
+        default: "min-h-control px-4 py-2",
+        xs: "min-h-control gap-1.5 px-3 py-2",
+        sm: "min-h-control px-3 py-2",
+        lg: "min-h-control px-6 py-2",
+        icon: "size-control",
+        "icon-xs": "size-control",
+        "icon-sm": "size-control",
+        "icon-lg": "size-control",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  },
+);
+
+function Button({
+  className,
+  variant,
+  size,
+  ...props
+}: React.ComponentProps<typeof ButtonPrimitive> & VariantProps<typeof buttonVariants>) {
+  return (
+    <ButtonPrimitive
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  );
+}
+
+export { Button, buttonVariants };

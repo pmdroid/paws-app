@@ -49,15 +49,19 @@ export function renderConversations(
   model: ConversationModel | undefined,
   id: string | null,
 ): string {
+  const heading =
+    '<header class="page-heading"><h1>Conversations</h1><p class="sub">Read Linear sessions and start a conversation on an issue or comment thread.</p></header>';
   if (!model || model.state === "loading")
-    return '<div class="empty" role="status">Loading Linear conversations…</div>';
+    return `${heading}<div class="empty" role="status">Loading Linear conversations…</div>`;
   if (model.state === "unavailable")
-    return '<div class="empty">Open the local Paws dashboard to read private Linear conversations.</div>';
+    return `${heading}<div class="empty">Open the local Paws dashboard to read private Linear conversations.</div>`;
   if (model.state === "error")
-    return '<div class="empty" role="alert">Could not load Linear conversations. <button class="btn" type="button" data-action="refresh">Retry</button></div>';
-  const selected = model.sessions.find((session) => session.id === id) ?? model.sessions[0];
+    return `${heading}<div class="empty" role="alert">Could not load Linear conversations. <button class="btn" type="button" data-action="refresh">Retry</button></div>`;
+  const selected =
+    model.sessions.find((session) => session.id === id) ??
+    (id === null ? model.sessions[0] : undefined);
   if (!selected)
-    return '<h1>Linear conversations</h1><div class="empty">Delegate an issue to Paws or start a Linear session to see its conversation here.</div>';
+    return `${heading}<div class="empty">${id ? 'Conversation not found. <a href="#/sessions">View conversations</a>.' : "Delegate an issue to Paws or start a Linear session to see its conversation here."}</div>`;
   const current =
     selected.items.find((item) => item.id === selected.activeItemId) ?? selected.items.at(-1);
   const questions = selected.questions.filter((question) => question.state === "open");
@@ -68,12 +72,7 @@ export function renderConversations(
       : current
         ? taskState(current.state)
         : "Starting";
-  const nav = model.sessions
-    .map(
-      (session) =>
-        `<a class="conversation-tab${session.id === selected.id ? " on" : ""}" href="#/sessions/${encodeURIComponent(session.id)}"${session.id === selected.id ? ' aria-current="page"' : ""}>${esc(session.title)}</a>`,
-    )
-    .join("");
+  const picker = `<label class="entity-picker"><span>Conversation</span><select data-route-picker aria-label="Conversation">${model.sessions.map((session) => `<option value="#/sessions/${encodeURIComponent(session.id)}"${session.id === selected.id ? " selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label>`;
   const links = selected.links
     .map(
       (link) =>
@@ -113,8 +112,8 @@ export function renderConversations(
   const pending = selected.delivery.filter(
     (entry) => entry.state === "pending" || entry.state === "dead",
   );
-  return `<nav class="conversation-tabs" aria-label="Linear sessions">${nav}</nav>
-    <header class="conversation-heading"><div><h1>${esc(selected.title)}</h1><p class="muted">${esc(selected.summary || status)}</p></div><span class="tag">${esc(status)}</span></header>
+  return `${heading}${picker}
+    <header class="conversation-heading"><div><h2>${esc(selected.title)}</h2><p class="muted">${esc(selected.summary || status)}</p></div><span class="tag">${esc(status)}</span></header>
     <div class="conversation-links">${links}</div>${waiting}
     <div class="conversation-layout"><section aria-label="Conversation"><h2>Conversation</h2><ol class="conversation-timeline">${timeline || '<li class="empty">The session is starting. Messages will appear here.</li>'}</ol></section>
     <aside class="conversation-details">${plan ? `<section><h2>Plan ${selected.planState && selected.planState !== "sent" ? deliveryBadge(selected.planState) : ""}</h2><ol class="conversation-plan">${plan}</ol></section>` : ""}

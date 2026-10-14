@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 import { readCsrfToken } from "./github-auth";
 import { esc } from "./format";
 
@@ -9,6 +10,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
   let pending = "";
   let message = "";
   let confirming = false;
+  let painted = "";
   function paint() {
     if (!root) return;
     root.hidden = actions.length === 0;
@@ -21,8 +23,9 @@ export function createExecutionControls(reload: () => Promise<void>) {
       .join(
         "",
       )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">Stop this item</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
-    if (root.innerHTML === html) return;
-    root.innerHTML = html;
+    if (painted === html) return;
+    painted = html;
+    renderMarkup(root, html);
     root.querySelector("details")?.addEventListener("toggle", (event) => {
       confirming = (event.currentTarget as HTMLDetailsElement).open;
     });
@@ -70,6 +73,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
   }
   return {
     mount(element: HTMLElement, engineUrl: string | null, source: string | undefined) {
+      if (root !== element) painted = "";
       root = element;
       const selected = element.dataset["item"] ?? "";
       const local =

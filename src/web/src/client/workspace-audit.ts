@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 type AuditEntry = {
   id: number;
   actorId: string | null;
@@ -10,7 +11,10 @@ type AuditEntry = {
 export function initializeWorkspaceAudit(root: HTMLElement) {
   const history = document.createElement("details");
   history.className = "workspace-audit";
-  history.innerHTML = `<summary>Audit history</summary><p class="muted">Workspace access and administration changes, newest first.</p><p role="status"></p><ol tabindex="0" aria-label="Workspace audit changes"></ol><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`;
+  renderMarkup(
+    history,
+    `<summary>Audit history</summary><p class="muted">Workspace access and administration changes, newest first.</p><p role="status"></p><ol tabindex="0" aria-label="Workspace audit changes"></ol><div class="row"><button class="btn" type="button" data-audit="refresh">Refresh history</button><button class="btn" type="button" data-audit="older" hidden>Load older changes</button></div>`,
+  );
   root.append(history);
   const list = history.querySelector("ol")!;
   const status = history.querySelector("[role=status]")!;

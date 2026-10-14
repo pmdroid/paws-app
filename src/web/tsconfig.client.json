@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "lib": ["ESNext", "DOM"],
+    "jsx": "react-jsx",
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
@@ -16,6 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true
   },
-  "include": ["src/client/**/*.ts"],
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"],
   "exclude": []
 }
