@@ -167,6 +167,12 @@ export const RunnerCommandSchema = z
     }),
     z.strictObject({ ...common, type: z.literal("probe"), profile: RunnerProfileSchema }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
+    z.strictObject({
+      ...common,
+      type: z.literal("login"),
+      memberId: id,
+      agent: z.enum(["claude", "codex"]),
+    }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     z.strictObject({
       ...common,
@@ -200,6 +206,7 @@ export const RunnerCommandSchema = z
       (command.type === "run" && command.skillsInputId !== undefined),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
+  .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
   .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)
   .refine(
     (command) => command.type !== "check" || command.repository.baseSha === command.candidateSha,
