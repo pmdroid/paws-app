@@ -315,7 +315,11 @@ test("missing App credentials keep attribution readable and revocable without st
   try {
     const response = await f.request("GET");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ configured: false, identity: null });
+    expect(await response.json()).toEqual({
+      configured: false,
+      identity: null,
+      requiresSignIn: false,
+    });
     const start = await f.request("POST", f.alice, { consent: true });
     expect(start.status).toBe(503);
     expect(await start.json()).toEqual({
@@ -345,6 +349,37 @@ test("missing App credentials keep attribution readable and revocable without st
     expect((await f.request("DELETE")).status).toBe(200);
     expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
     expect((await f.callback(pending)).status).toBe(403);
+  } finally {
+    await f.close();
+  }
+});
+
+test("stale sign-in keeps own attribution readable and requires fresh sign-in before changes", async () => {
+  const f = fixture();
+  try {
+    const pending = await f.begin();
+    expect((await f.callback(pending)).status).toBe(303);
+    f.db.run("UPDATE workspace_session SET authenticated_at=?", [f.now - 900_001]);
+    const status = await f.request("GET");
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      configured: true,
+      identity: { login: "verified-human" },
+      requiresSignIn: true,
+    });
+    for (const method of ["POST", "DELETE"]) {
+      const denied = await f.request(
+        method,
+        f.alice,
+        method === "POST" ? { consent: true } : undefined,
+      );
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toMatchObject({ code: "reauth_required" });
+    }
+    expect(githubAttribution(f.db, "workspace", "alice")?.login).toBe("verified-human");
+    expect((await f.request("GET", f.other)).status).toBe(403);
+    f.guest = true;
+    expect((await f.request("GET")).status).toBe(403);
   } finally {
     await f.close();
   }

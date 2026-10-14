@@ -56,18 +56,27 @@ const errors = [];
     return { page, context };
   }
   async function settings(page, name) {
-    const navigation = page.getByRole("navigation", { name: "Settings pages" });
-    if (!(await navigation.isVisible())) {
-      if (page.viewportSize().width < 768)
-        await page.getByRole("button", { name: "Open navigation" }).click();
-      await page
-        .getByRole("navigation", { name: "Main navigation" })
-        .getByRole("link", { name: "Settings", exact: true })
-        .click();
-    }
+    const mobile = page.viewportSize().width < 768;
+    if (mobile) await page.getByRole("button", { name: "Open navigation" }).click();
+    const navigation = mobile
+      ? page
+          .getByRole("dialog", { name: "Paws navigation" })
+          .getByRole("navigation", { name: "Main navigation" })
+      : page.getByRole("navigation", { name: "Main navigation" });
+    await navigation.getByRole("region", { name: "Settings", exact: true }).waitFor();
+    assert.equal(
+      await navigation
+        .getByRole("region", { name: "Settings", exact: true })
+        .getByRole("link")
+        .count(),
+      5,
+    );
     await navigation.getByRole("link", { name, exact: true }).click();
+    if (mobile)
+      await page.getByRole("dialog", { name: "Paws navigation" }).waitFor({ state: "hidden" });
     await page.getByRole("heading", { name, exact: true, level: 1 }).waitFor();
     assert.equal(await page.locator("#content h1").count(), 1);
+    assert.equal(await page.locator('#content nav[aria-label="Settings pages"]').count(), 0);
   }
   async function control(context, body) {
     const response = await context.request.post(fixture.control, { data: body });
@@ -75,6 +84,10 @@ const errors = [];
   }
   try {
     const { page, context } = await account("owner");
+    await settings(page, "Integrations");
+    await page.getByRole("link", { name: "Add repositories", exact: true }).click();
+    await page.getByRole("heading", { name: "Workspace access", exact: true, level: 1 }).waitFor();
+    observations.push({ ownerCanAddRepositoriesFromIntegrations: true });
     await settings(page, "Agents");
     await page.locator("#agent-settings-form").waitFor();
     await page.getByRole("button", { name: "Save settings", exact: true }).click();
@@ -105,7 +118,30 @@ const errors = [];
     await settings(page, "Your account");
     await page.getByText("owner@example.invalid", { exact: true }).waitFor();
     const attribution = page.locator("#workspace-github-attribution");
+    await control(context, { expire: true });
+    await page.reload();
+    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
+    assert.equal(
+      await attribution.getByRole("button", { name: "Link GitHub identity" }).isVisible(),
+      false,
+    );
+    await attribution.getByRole("link", { name: "Sign in again" }).click();
+    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
+    assert.equal(
+      await attribution.getByRole("button", { name: "Link GitHub identity" }).isDisabled(),
+      true,
+    );
     await attribution.getByRole("checkbox").check();
+    assert.equal(
+      await attribution.getByRole("button", { name: "Link GitHub identity" }).isEnabled(),
+      true,
+    );
+    observations.push({
+      staleAttributionReadRecovery: true,
+      accountReturnRestored: true,
+      explicitConsentRequired: true,
+    });
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
     await page.waitForURL((url) => url.hash === "#/settings/account");
     await attribution.getByText("Public attribution is enabled for @fixture-human.").waitFor();
@@ -116,10 +152,25 @@ const errors = [];
     await settings(page, "Audit history");
     await page.getByRole("button", { name: "Refresh history" }).click();
     await page
-      .getByRole("list", { name: "Workspace audit changes" })
+      .getByRole("table", { name: "Workspace audit changes" })
       .getByText("github attribution consented", { exact: true })
       .waitFor();
+    assert.deepEqual(
+      await page
+        .getByRole("table", { name: "Workspace audit changes" })
+        .getByRole("columnheader")
+        .allTextContents(),
+      ["Time", "Change", "Person", "Details"],
+    );
+    assert.equal(
+      (await page
+        .getByRole("table", { name: "Workspace audit changes" })
+        .locator("tbody tr")
+        .count()) > 0,
+      true,
+    );
     observations.push({
+      auditUsesSemanticTable: true,
       profilesSave: true,
       repositoryAccessSave: true,
       attributionOnAccountPage: true,
@@ -144,18 +195,29 @@ const errors = [];
             true,
             `${name} ${width}`,
           );
-          assert.equal(
-            await page
-              .getByRole("navigation", { name: "Settings pages" })
-              .getByRole("link")
-              .count(),
-            5,
-          );
-          if ([1440, 390].includes(width) && ["Integrations", "Workspace access"].includes(name))
+          const hash = await page.evaluate(() => location.hash);
+          await page.reload();
+          await page.getByRole("heading", { name, exact: true, level: 1 }).waitFor();
+          assert.equal(await page.evaluate(() => location.hash), hash);
+          assert.equal(await page.title(), `Paws status · ${name}`);
+          if (name === "Audit history" && width === 390) {
+            const audit = page.getByRole("table", { name: "Workspace audit changes" });
+            await audit.focus();
+            await page.keyboard.press("ArrowRight");
+            await page.waitForFunction(
+              () =>
+                document.querySelector('[aria-label="Workspace audit changes"]').parentElement
+                  .scrollLeft > 0,
+            );
+            await audit.evaluate((table) => {
+              table.parentElement.scrollLeft = 0;
+            });
+          }
+          if ([1440, 390].includes(width) && ["Integrations", "Audit history"].includes(name))
             await page.screenshot({
               path: path.join(
                 root,
-                `settings-${name === "Integrations" ? "integrations" : "workspace"}-${width}-${appearance.toLowerCase()}.png`,
+                `settings-${name === "Integrations" ? "integrations" : "audit"}-${width}-${appearance.toLowerCase()}.png`,
               ),
               fullPage: true,
             });
@@ -233,6 +295,20 @@ const errors = [];
     await attribution.getByRole("button", { name: "Revoke attribution consent" }).click();
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     observations.push({ consentRevocation: true });
+    await control(context, { expire: true });
+    await attribution.getByRole("checkbox").check();
+    await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
+    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
+    await attribution.getByRole("link", { name: "Sign in again" }).click();
+    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
+    await attribution.getByRole("checkbox").check();
+    await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
+    await attribution.getByText("Public attribution is enabled for @fixture-human.").waitFor();
+    observations.push({
+      attributionExpiryDuringSubmitRecovery: true,
+      realMouseLinkAfterFreshSignIn: true,
+    });
     assert.deepEqual(errors, []);
     observations.push({
       providerOutageRecovery: true,

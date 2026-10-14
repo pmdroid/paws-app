@@ -76,13 +76,24 @@ export function createGitHubAttributionLink(options: {
           access.principal.workspaceId !== binding.workspaceId
         )
           throw new Error("Session changed.");
-        requireAttributionSession(options.db, binding, now());
+        if (access.principal.role === "observer") throw new Error("Membership is required.");
+        const checkedAt = now();
+        const requiresSignIn =
+          checkedAt < access.principal.authenticatedAt ||
+          checkedAt - access.principal.authenticatedAt > 900_000;
+        if (url.pathname === PATH && request.method === "GET")
+          return reply({
+            configured: options.client !== undefined,
+            identity: githubAttribution(options.db, binding.workspaceId, binding.userId),
+            requiresSignIn,
+          });
+        if (url.pathname === PATH && requiresSignIn)
+          return reply(
+            { error: "Sign in again to change your GitHub credit.", code: "reauth_required" },
+            403,
+          );
+        requireAttributionSession(options.db, binding, checkedAt);
         if (url.pathname === PATH) {
-          if (request.method === "GET")
-            return reply({
-              configured: options.client !== undefined,
-              identity: githubAttribution(options.db, binding.workspaceId, binding.userId),
-            });
           if (request.method === "DELETE") {
             revokeGitHubAttribution(options.db, binding, now());
             return reply({ ok: true });

@@ -15,7 +15,11 @@ type GitHubStatus = {
   repositoryCount?: number;
 };
 
-export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string): void {
+export function initializeWorkspaceGitHub(
+  root: HTMLElement,
+  csrfToken: string,
+  canEditRepositories = false,
+): void {
   const section = document.createElement("section");
   section.id = "workspace-github-integration";
   section.dataset.settingsPage = "integrations";
@@ -53,7 +57,9 @@ export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string):
         : data.status === "setup_required"
           ? "Ask your Paws operator to finish GitHub setup."
           : data.status === "needs_repositories"
-            ? "Ask a workspace owner to add repositories in Workspace access."
+            ? canEditRepositories
+              ? "Add the repositories Paws can work on for your Linear teams."
+              : "Ask a workspace owner to add repositories in Workspace access."
             : !data.canManage
               ? "Ask a workspace admin to install and connect the GitHub App."
               : data.requiresSignIn
@@ -61,7 +67,10 @@ export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string):
                 : data.status === "needs_connection"
                   ? "Approve GitHub access once. Paws handles the connection details."
                   : "Install the App on your workspace repositories, then return here to finish connecting.";
-    let primary = "";
+    let primary =
+      data.status === "needs_repositories" && canEditRepositories
+        ? '<a class="btn primary" href="#/settings/workspace">Add repositories</a>'
+        : "";
     if (
       data.canManage &&
       !["connected", "setup_required", "needs_repositories"].includes(data.status)
