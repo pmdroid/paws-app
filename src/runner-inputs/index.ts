@@ -36,7 +36,7 @@ const contextRequestSchema = z.strictObject({
   offset: z.number().int().min(0).max(RUNNER_PROMPT_CONTEXT_MAX_BYTES),
 });
 const requestSchema = contextRequestSchema.extend({
-  fileId: z.number().int().min(0).max(19),
+  fileId: z.number().int().min(0).max(20),
   offset: z.number().int().min(0).max(RUNNER_INPUT_MAX_BYTES),
 });
 function privateFile(path: string, limit: number) {
@@ -231,7 +231,7 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
     },
     stage(commandId: string, files: readonly RunnerInputSource[]): RunnerInputFile[] {
       if (
-        files.length > 20 ||
+        files.length > 21 ||
         files.reduce((total, file) => total + file.bytes.byteLength, 0) > RUNNER_INPUT_MAX_BYTES
       )
         throw new Error("Runner input exceeds limit");

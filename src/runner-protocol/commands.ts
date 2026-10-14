@@ -116,6 +116,7 @@ export const RunnerCommandSchema = z
       ...common,
       type: z.literal("run"),
       ...work,
+      skillsInputId: z.number().int().min(0).max(20).optional(),
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
     }),
@@ -184,6 +185,18 @@ export const RunnerCommandSchema = z
       (command.commitPolicy.bot.appId === command.checkpointBot.appId &&
         command.commitPolicy.bot.id === command.checkpointBot.id &&
         command.commitPolicy.bot.login === command.checkpointBot.login),
+  )
+  .refine(
+    (command) =>
+      command.type !== "run" ||
+      command.skillsInputId === undefined ||
+      command.inputFiles?.[command.skillsInputId]?.mimeType === "application/vnd.paws.skills+json",
+  )
+  .refine(
+    (command) =>
+      !("inputFiles" in command) ||
+      (command.inputFiles?.length ?? 0) <= 20 ||
+      (command.type === "run" && command.skillsInputId !== undefined),
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)

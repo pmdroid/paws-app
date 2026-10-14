@@ -21,6 +21,7 @@ import {
   git,
   recoverAcpConversation,
   snapshotAgentInputs,
+  snapshotImplementationSkills,
   runDir,
   type AcpEvent,
   type RunAgentOptions,
@@ -408,10 +409,27 @@ export function createRemoteAgentRunner(options: {
                 signal,
               })
             : { prompt: input.prompt, inputFiles: [] };
+          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           const files = snapshotAgentInputs(input.worktreePath, [
             ...suppliedInputs,
             ...prepared.inputFiles,
           ]);
+          const skillBundle =
+            !taskScope && input.role === "implementer"
+              ? await snapshotImplementationSkills({
+                  pawsRoot: input.pawsRoot,
+                  worktree: input.worktreePath,
+                  repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
+                  signal,
+                })
+              : undefined;
+          const skillsInputId = skillBundle ? files.length : undefined;
+          if (skillBundle)
+            files.push({
+              path: `${input.worktreePath}/.paws-skills-${randomUUID()}.json`,
+              mimeType: "application/vnd.paws.skills+json",
+              bytes: skillBundle,
+            });
           if (files.length && !options.inputs)
             throw new Error("Remote agent input transfer is unavailable");
           if (prepared.prompt.length > 65_536 && !options.inputs)
@@ -430,7 +448,6 @@ export function createRemoteAgentRunner(options: {
             prepared.prompt.length > 65_536
               ? options.inputs!.stagePrompt(commandId, prepared.prompt)
               : undefined;
-          const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           const baseSha = taskScope
             ? taskScope.repository
               ? snapshotCommit(input.worktreePath, taskScope.repository)
@@ -503,6 +520,7 @@ export function createRemoteAgentRunner(options: {
                 }
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
+                  ...(skillsInputId !== undefined ? { skillsInputId } : {}),
                   repository: { ...scoped.repository!, baseSha: baseSha!, checkoutExclusions },
                   ...(checkpointBot ? { checkpointBot } : {}),
                   ...(input.commitPolicy

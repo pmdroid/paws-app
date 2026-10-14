@@ -25,6 +25,7 @@ export async function executeItem(options: ExecuteItemOptions): Promise<ExecuteI
   const run = await (options.promptRunner ?? runAgent)({
     ...options,
     role: options.role ?? "implementer",
+    repository: `${options.owner}/${options.repo}`,
     worktreePath: worktree.path,
   });
   return {

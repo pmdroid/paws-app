@@ -73,6 +73,8 @@ export type AcpEventListener = (event: AcpEvent) => void | Promise<void>;
 export type AgentIdentity = { session: string; model: string; provider: string };
 
 export interface RunAgentOptions {
+  repository?: string;
+  skillsRoot?: string;
   checkoutExclusions?: readonly string[];
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
