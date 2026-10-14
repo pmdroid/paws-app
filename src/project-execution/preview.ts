@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { orderByBlocks } from "../intake";
+import { ExternalBlockerPolicySchema, orderByBlocks, type ExternalBlockerPolicy } from "../intake";
 import type { DependencyEdge, LinearProjectSnapshot, TrackerAdapter } from "../linear";
+
+export type ProjectBlockerPolicy = ExternalBlockerPolicy;
 
 export type ProjectSelection = {
   projectId: string;
@@ -9,6 +11,7 @@ export type ProjectSelection = {
   targetBranch: string;
   leadUserId: string;
   steeringRoles: readonly ("owner" | "admin" | "member")[];
+  blockers?: readonly ProjectBlockerPolicy[];
 };
 
 export type ProjectPreview = {
@@ -79,6 +82,9 @@ export async function previewProject(
     ...selection,
     issueIds: [...selection.issueIds].sort(),
     steeringRoles: [...new Set(selection.steeringRoles)].sort(),
+    blockers: (selection.blockers ?? [])
+      .map((policy) => ExternalBlockerPolicySchema.parse(policy))
+      .sort((a, b) => a.blockerLinearIssueId.localeCompare(b.blockerLinearIssueId)),
   };
   const generation = createHash("sha256")
     .update(JSON.stringify({ selection: normalized, project, edges: dependencies }))
