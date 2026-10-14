@@ -22,9 +22,12 @@ export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string):
           headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
           body: JSON.stringify({ installationId: new FormData(form).get("installationId") }),
         });
-        const data = (await response.json()) as { authorizationUrl?: string; error?: string };
-        if (!response.ok || !data.authorizationUrl)
-          throw new Error(data.error ?? "Connection could not start.");
+        const data = (await response.json().catch(() => null)) as {
+          authorizationUrl?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || !data?.authorizationUrl)
+          throw new Error(data?.error ?? "Connection could not start.");
         const url = new URL(data.authorizationUrl);
         if (url.origin !== "https://github.com" || url.pathname !== "/login/oauth/authorize")
           throw new Error("Invalid GitHub authorization redirect.");
@@ -46,9 +49,9 @@ export function initializeWorkspaceGitHub(root: HTMLElement, csrfToken: string):
           method: "POST",
           headers: { "x-paws-csrf": csrfToken },
         });
-        const data = (await response.json()) as { error?: string };
-        if (!response.ok)
-          throw new Error(data.error ?? "GitHub App access could not be checked. Try again.");
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        if (!response.ok || data === null)
+          throw new Error(data?.error ?? "GitHub App access could not be checked. Try again.");
         feedback.textContent =
           "GitHub App access verified. Waiting tasks will be revalidated before continuing.";
       } catch (error) {

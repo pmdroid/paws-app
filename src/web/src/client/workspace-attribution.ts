@@ -20,13 +20,14 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       headers: { "content-type": "application/json", "x-paws-csrf": csrfToken },
       ...(method === "POST" ? { body: JSON.stringify({ consent: true }) } : {}),
     });
-    const data = (await response.json()) as {
+    const data = (await response.json().catch(() => null)) as {
+      configured?: boolean;
       identity?: { login: string } | null;
       authorizeUrl?: string;
       error?: string;
-    };
-    if (!response.ok)
-      throw new Error(data.error ?? "Attribution could not be checked. Try Refresh attribution.");
+    } | null;
+    if (!response.ok || data === null)
+      throw new Error(data?.error ?? "Attribution could not be checked. Try Refresh attribution.");
     return data;
   }
   async function load() {
@@ -37,10 +38,12 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
       const data = await request("GET");
       feedback.textContent = data.identity
         ? `Public attribution is enabled for @${data.identity.login}.`
-        : "No verified GitHub attribution. Link your identity to enable public credit.";
+        : data.configured === false
+          ? "Ask the Paws operator to configure the GitHub App on the server, then restart Paws."
+          : "No verified GitHub attribution. Link your identity to enable public credit.";
       form.hidden = Boolean(data.identity);
       revoke.hidden = !data.identity;
-      connect.disabled = false;
+      connect.disabled = data.configured === false;
     } catch (error) {
       feedback.textContent =
         error instanceof Error

@@ -281,3 +281,36 @@ for (const invalidation of ["logout", "demotion", "repositories", "session"] as 
       await f.close();
     }
   });
+
+test("hosted connection reports missing server credentials as JSON without changing connection state", async () => {
+  const f = fixture();
+  try {
+    const handler = createHostedGitHubConnect({
+      db: f.db,
+      home: f.home,
+      env: {},
+      origin: "https://paws.example",
+    });
+    const response = await handler(
+      f.request("owner", "https://paws.example/api/workspaces/github-connect", {
+        method: "POST",
+        headers: {
+          origin: "https://paws.example",
+          "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+        },
+        body: JSON.stringify({ installationId: "22" }),
+      }),
+    );
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toEqual({
+      error: "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+    });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_oauth").get()).toEqual({ n: 0 });
+    expect(f.db.query("SELECT count(*) AS n FROM workspace_github_connection").get()).toEqual({
+      n: 0,
+    });
+    expect(f.calls).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
