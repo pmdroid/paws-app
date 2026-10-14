@@ -95,7 +95,7 @@ export function saveSchedulingContext(
   );
 }
 
-function hintedPaths(brief: string | null): string[] {
+export function hintedPaths(brief: string | null): string[] {
   const description = brief === null ? null : (JSON.parse(brief) as WorkBrief).issue.description;
   const hints = description?.match(/^\s*paths:\s*(.+)$/gim);
   if (!hints?.length) return ["*"];
