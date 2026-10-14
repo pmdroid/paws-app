@@ -14,6 +14,14 @@ bun run paws runner-authority init
 
 Add `PAWS_RUNNER_HOST` with the interface address Paws should listen on and `PAWS_RUNNER_PORT=8788` to the HTTPS service's environment, then restart Paws. On Tailscale, use the Paws machine's Tailscale IP as the listener address and its Tailscale DNS hostname in the HTTPS URLs below.
 
+Configure transcript storage on the Paws machine using the same Paws home as its service:
+
+```sh
+printf '%s' '{"kind":"local"}' | bun run paws runner-storage configure
+```
+
+Paws stores transcripts in `~/.paws/runner-transcripts` with owner-only directory and file permissions. With a custom `PAWS_HOME`, it uses that home's `runner-transcripts` directory. Restart Paws after configuration. With runner HTTPS and GitHub App access configured, Paws sends agent work to paired hosts and keeps their transcripts on the Paws machine.
+
 The VM needs outbound access to both endpoints. The default ports are TCP 8787 for dashboard access and HTTPS pairing, and TCP 8788 for the daemon's mTLS connection. Use the ports configured by your Paws operator. Both URLs must have a valid server certificate for their hostname.
 
 Install the runner on the VM:

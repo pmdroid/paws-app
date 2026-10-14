@@ -339,6 +339,33 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     true,
     await probeActualStorage(root),
   );
+  const localHome = join(root, "local-home");
+  assert.equal((await cli('{"kind":"local"}', localHome)).code, 0);
+  const local = loadRunnerTranscriptObjects(localHome);
+  await local.write("restart", new Blob(["persistent transcript"]));
+  assert.equal(
+    await new Response(loadRunnerTranscriptObjects(localHome).read("restart")).text(),
+    "persistent transcript",
+  );
+  let localObservations = 0;
+  await probeRunnerTranscripts(
+    join(root, "local-transcripts"),
+    (name, passed) => {
+      assert(passed, name);
+      localObservations++;
+    },
+    local,
+  );
+  assert(localObservations > 5);
+  observe(
+    "local disk configuration preserves scoped uploads, sealing, restart and digest checks",
+    true,
+    {
+      transcriptObservations: localObservations,
+      storage: "local",
+      directoryMode: statSync(join(localHome, "runner-transcripts")).mode & 0o777,
+    },
+  );
 }
 
 async function probeActualStorage(root: string) {

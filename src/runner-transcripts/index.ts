@@ -13,3 +13,4 @@ export {
 } from "./schema";
 export { createRunnerTranscripts, type RunnerTranscripts } from "./store";
 export { createRunnerTranscriptsHttp } from "./http";
+export { createLocalRunnerTranscriptObjects } from "./local-objects";

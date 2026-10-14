@@ -12,7 +12,7 @@ test("protected transcript configuration feeds explicit storage and startup with
       expect(passed).toBe(true);
       observations.push(name);
     });
-    expect(observations).toHaveLength(7);
+    expect(observations).toHaveLength(8);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

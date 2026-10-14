@@ -410,7 +410,7 @@ test("the first-activity deadline does not silence a later intake error", async 
     await f.outcome();
     expect(f.sent.map((activity) => activity.body)).toEqual([
       "Picked up this issue.",
-      "Could not load the Linear issue.",
+      "Paws could not start work on this issue. Please retry.",
     ]);
   } finally {
     release.resolve();
