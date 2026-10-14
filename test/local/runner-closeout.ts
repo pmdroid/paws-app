@@ -91,10 +91,12 @@ export async function probeRunnerCloseout(
       maxFixAttempts: 0,
       pawsHome: join(root, variant),
       commandRunner: createRemoteCloseoutCommandRunner({
+        checkoutExclusions: ["large"],
         secrets: ["synthetic-closeout-secret"],
         async execute(request) {
           calls.push(request);
           assert.equal(request.candidateSha, head);
+          assert.deepEqual(request.checkoutExclusions, ["large"]);
           assert.equal(request.cwd, ".");
           assert.deepEqual(request.argv, argv);
           const input: RunnerCheckInput = {
@@ -102,6 +104,7 @@ export async function probeRunnerCloseout(
             executionId: `01J${String(calls.length).padStart(23, "0")}`,
             verificationAttemptId: "01J00000000000000000000000",
             candidateSha: head,
+            checkoutExclusions: request.checkoutExclusions,
             argv: request.argv,
             cwd: "/var/lib/paws-check-attempts/01J00000000000000000000000/workspace",
             env: {
@@ -212,6 +215,7 @@ export async function probeRunnerCloseout(
     ["execution", (value) => (value.result.executionId = "01J00000000000000000000002")],
     ["attempt", (value) => (value.result.verificationAttemptId = "01J00000000000000000000002")],
     ["result-candidate", (value) => (value.result.candidateSha = base)],
+    ["exclusions", (value) => (value.input.checkoutExclusions = ["untrusted"])],
     ["digest", (value) => (value.result.inputSha256 = "0".repeat(64))],
   ];
   for (const [name, change] of changes) {

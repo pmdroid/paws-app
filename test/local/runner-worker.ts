@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   readFileSync,
@@ -46,6 +47,8 @@ export async function probeRunnerWorker(
   const invoke = (args: string[]) => git(args, { env: gitEnv });
   await invoke(["init", "-b", "main", repository]);
   writeFileSync(join(repository, "base.txt"), "exact assigned base\n");
+  mkdirSync(join(repository, "large/nested"), { recursive: true });
+  writeFileSync(join(repository, "large/nested/file"), "excluded but tracked\n");
   await invoke(["-C", repository, "add", "."]);
   await invoke(["-C", repository, "commit", "-m", "base"]);
   const baseSha = (await invoke(["-C", repository, "rev-parse", "HEAD"])).trim();
@@ -74,6 +77,7 @@ export async function probeRunnerWorker(
           repo: "repo",
           remoteUrl: "https://github.com/fixture/repo.git",
           baseSha,
+          checkoutExclusions: ["large"],
         },
         profile: { agent: "claude", model: "fixture-model" },
         prompt: "Implement the assigned task.",
@@ -269,6 +273,11 @@ export async function probeRunnerWorker(
     "worker checks out the exact assigned base and returns a real Git candidate bundle",
     true,
     { baseSha, candidateSha: candidate.candidateSha },
+  );
+  assert.equal(existsSync(join(root, "work", first.executionId, "large")), false);
+  assert.equal(
+    await invoke(["-C", acquired, "show", `${candidate.candidateSha}:large/nested/file`]),
+    "excluded but tracked\n",
   );
   const fake = JSON.parse(readFileSync(firstAgent.result, "utf8"));
   if (privateInputs) {
@@ -487,6 +496,7 @@ export async function probeRunnerWorker(
     true,
     { artifact: snapshots[1] },
   );
+  assert.equal(existsSync(join(root, "work", review.executionId, "large")), false);
   assert.equal(reviewed.candidateSha, undefined);
   assert.equal(JSON.parse(readFileSync(reviewAgent.result, "utf8")).fs[0].ok, false);
   assert.equal(
