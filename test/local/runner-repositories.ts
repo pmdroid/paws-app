@@ -163,6 +163,30 @@ export async function probeRunnerRepositories(
     { failedCloneUnpublished: true, legacyPartialRecloned: true },
   );
   const repositories = createRunnerRepositories(options);
+  const parallelCalls: string[] = [];
+  const parallelOptions = {
+    ...options,
+    root: join(root, "parallel-cache"),
+    async networkGit(input: Parameters<typeof options.networkGit>[0]) {
+      parallelCalls.push(input.operation);
+      await options.networkGit(input);
+    },
+  };
+  const parallelSnapshots = await Promise.all(
+    [1, 2].map(() =>
+      createRunnerRepositories(parallelOptions).prepare({ ...command, id: randomUUID() }),
+    ),
+  );
+  assert.deepEqual(parallelCalls, ["clone", "fetch"]);
+  assert.equal(parallelSnapshots[0]!.mirror, parallelSnapshots[1]!.mirror);
+  assert.notEqual(parallelSnapshots[0]!.bundle, parallelSnapshots[1]!.bundle);
+  for (const snapshot of parallelSnapshots)
+    assert((await invoke(["bundle", "list-heads", snapshot.bundle])).startsWith(baseSha));
+  observe("independent execution and check adapters serialize the same real Git cache", true, {
+    operations: parallelCalls,
+    independentBundles: 2,
+  });
+  calls.length = 0;
   const prepared = await repositories.prepare(command);
   assert.equal(statSync(prepared.bundle).mode & 0o777, 0o600);
   assert.equal(calls[0]?.token, "fixture-read");
