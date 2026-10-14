@@ -45,7 +45,7 @@ broker = runpy.run_path(str(installed))
 template = (source / 'deploy/linux/paws-agent@.service').read_text()
 template = '\n'.join(line for line in template.splitlines() if not line.startswith('ExecStart='))
 template += '\nExecStart=/usr/bin/python3 ' + str(root / 'worker.py') + ' %i\n'
-pathlib.Path('/run/systemd/system/paws-agent@.service').write_text(template)
+pathlib.Path('/etc/systemd/system/paws-agent@.service').write_text(template)
 
 for execution in ['01J0000000000000000000000A', '01J0000000000000000000000B']:
     spool = pathlib.Path('/var/lib/paws-runner-spool') / execution
@@ -74,7 +74,8 @@ worker = '''import os,pathlib,json,time,sys
 execution=sys.argv[1]
 home=pathlib.Path('/var/lib/paws-agent')
 home.joinpath('credential').write_text(execution+'-synthetic-credential')
-result={'execution':execution,'pid':os.getpid(),'uidMap':pathlib.Path('/proc/self/uid_map').read_text(),'gidMap':pathlib.Path('/proc/self/gid_map').read_text(),'ownInput':pathlib.Path('/var/lib/paws-runner-spool',execution,'command').read_text(),'ownCredential':home.joinpath('credential').read_text(),'ownTask':pathlib.Path('/var/lib/paws-agent-tasks',execution,'private-input').read_text()}
+result={'execution':execution,'pid':os.getpid(),'uidMap':pathlib.Path('/proc/self/uid_map').read_text(),'gidMap':pathlib.Path('/proc/self/gid_map').read_text(),'ownInput':pathlib.Path('/var/lib/paws-runner-spool',execution,'command').read_text(),'ownCredential':home.joinpath('credential').read_text(),'ownTask':pathlib.Path('/var/lib/paws-agent-tasks',execution,'private-input').read_text(),'privileges':{line.split(':')[0]:line.split(':')[1].strip() for line in pathlib.Path('/proc/self/status').read_text().splitlines() if line.startswith(('CapInh:','CapPrm:','CapEff:','CapBnd:','CapAmb:','NoNewPrivs:'))}}
+result['procReadOnly']=bool(os.statvfs('/proc').f_flag & os.ST_RDONLY)
 if execution=='01J0000000000000000000000B':
  for key,path in [('memberParent','/var/lib/paws-runner-members'),('peerSpool','/var/lib/paws-runner-spool/01J0000000000000000000000A/command'),('peerResult','/var/lib/paws-agent-results/01J0000000000000000000000A/result.json'),('peerTask','/var/lib/paws-agent-tasks/01J0000000000000000000000A/private-input')]:
   try:
@@ -109,6 +110,9 @@ for n in range(100):
     time.sleep(0.1)
 result = json.loads(result_file.read_text())
 assert result['pid'] == 1, result
+assert result['procReadOnly'], result
+assert result['privileges']['NoNewPrivs'] == '1', result
+assert all(int(result['privileges'][name], 16) == 0 for name in ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']), result
 for key in ['memberParent', 'peerSpool', 'peerResult', 'peerTask', 'peerRoot', 'peerMemory', 'peerEnvironment', 'peerSignal']:
     assert result[key] in [2, 3, 13], result
 assert result['ownInput'] == '01J0000000000000000000000B', result
