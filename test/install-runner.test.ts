@@ -122,6 +122,7 @@ function envFor(
     TMPDIR: directory,
     LANG: "C",
     PAWS_RUNNER_DOWNLOAD_BASE: origin,
+    PAWS_RUNNER_ALLOW_HTTP_BASE: "1",
     PAWS_APT_LOG: aptLog,
     PAWS_INSTALLED_DEB: installed,
     ...extra,
@@ -288,4 +289,44 @@ test("installer help and the default download command stay on https", () => {
   const source = readFileSync(script, "utf8");
   expect(source).toContain("curl --proto '=https' --tlsv1.2 -fsSL");
   expect(source).toContain("https://github.com/pmdroid/paws-app/releases");
+});
+
+test("installer refuses a checksum joined with a carriage return", async () => {
+  const name = "paws-runner_1.2.3_amd64.deb";
+  const body = "package";
+  const line = checksum(name, body).replace(/\n$/, "");
+  await withRelease(
+    {
+      [`/download/v1.2.3/${name}`]: body,
+      [`/download/v1.2.3/${name}.sha256`]: `${line}\rother.deb`,
+    },
+    "/tag/v1.2.3",
+    async (origin, directory, aptLog, installed) => {
+      const result = await install([], envFor(origin, directory, aptLog, installed));
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("Published checksum must be one line");
+      expect(existsSync(aptLog)).toBe(false);
+      expect(existsSync(installed)).toBe(false);
+    },
+  );
+});
+
+test("installer refuses an http download base outside the loopback opt-in", async () => {
+  await withRelease({}, "/tag/v1.2.3", async (origin, directory, aptLog, installed) => {
+    const remote = await install(
+      ["1.2.3"],
+      envFor(origin, directory, aptLog, installed, {
+        PAWS_RUNNER_DOWNLOAD_BASE: "http://example.com/releases",
+      }),
+    );
+    expect(remote.code).not.toBe(0);
+    expect(remote.stderr).toContain("Download base must use https");
+    const loopback = await install(
+      ["1.2.3"],
+      envFor(origin, directory, aptLog, installed, { PAWS_RUNNER_ALLOW_HTTP_BASE: "" }),
+    );
+    expect(loopback.code).not.toBe(0);
+    expect(loopback.stderr).toContain("Refusing a non-HTTPS download base");
+    expect(existsSync(aptLog)).toBe(false);
+  });
 });
