@@ -35,6 +35,7 @@ export function createRunnerPlacement(options: {
   db: Database;
   lifecycle: LinearIssueLifecycle;
   tracker: Pick<TrackerAdapter, "listProjectMembers">;
+  sessionActor?: (sessionId: string) => string | undefined;
   now?: () => number;
 }): RunnerPlacement {
   const { db } = options;
@@ -123,7 +124,7 @@ export function createRunnerPlacement(options: {
             "SELECT owner_actor_id AS actorId FROM linear_session_task WHERE session_id=? AND epic_id=?",
           )
           .get(session.sessionId, item.epicId)?.actorId
-      : session.creatorId;
+      : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
     return { item, session, workspace, repository, issueId, ownership };
   }
   function authority(current: ReturnType<typeof scope>) {

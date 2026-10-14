@@ -1315,6 +1315,52 @@ CREATE TABLE github_attribution_request (
 `,
   },
   {
+    id: "054_external_blocker_policy",
+    sql: `
+CREATE TABLE external_blocker_policy (
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ epic_id TEXT NOT NULL REFERENCES epic(id),
+ blocker_issue_id TEXT NOT NULL,
+ policy TEXT NOT NULL CHECK(json_valid(policy)),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ revision INTEGER NOT NULL,
+ PRIMARY KEY(epic_id,blocker_issue_id)
+) STRICT;
+ALTER TABLE epic_dependency_snapshot ADD COLUMN external_evidence TEXT NOT NULL DEFAULT '{}';
+`,
+  },
+  {
+    id: "052_project_approval",
+    sql: `
+CREATE TABLE project_approval (
+ id TEXT PRIMARY KEY,
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ project_id TEXT NOT NULL,
+ actor_id TEXT NOT NULL REFERENCES workspace_user(id),
+ lead_user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ generation TEXT NOT NULL,
+ preview TEXT NOT NULL CHECK(json_valid(preview)),
+ created_at INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL,
+ approved_at INTEGER,
+ paused_at INTEGER,
+ stopped_at INTEGER,
+ last_error TEXT
+) STRICT;
+CREATE UNIQUE INDEX project_approval_current ON project_approval(workspace_id,actor_id,generation) WHERE stopped_at IS NULL;
+CREATE TABLE project_approval_issue (
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ issue_id TEXT NOT NULL,
+ approval_id TEXT NOT NULL REFERENCES project_approval(id),
+ session_id TEXT UNIQUE,
+ epic_id TEXT REFERENCES epic(id),
+ released_at INTEGER,
+ PRIMARY KEY(approval_id,issue_id)
+) STRICT;
+CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(workspace_id,issue_id) WHERE released_at IS NULL;
+`,
+  },
+  {
     id: "053_runner_member_accounts",
     foreignKeys: false,
     sql: `

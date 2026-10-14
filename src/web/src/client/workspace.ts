@@ -4,6 +4,7 @@ import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
+import { initializeAgentAccounts } from "./agent-accounts";
 
 type BrowserSession = {
   role: string;
@@ -208,6 +209,8 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   if (["owner", "admin", "member"].includes(session.role))
     initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "owner");
+  if (["owner", "admin", "member"].includes(session.role))
+    initializeAgentAccounts(root, session.csrfToken);
   if (["owner", "admin"].includes(session.role)) {
     await initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
