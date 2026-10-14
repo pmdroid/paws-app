@@ -92,29 +92,39 @@ export async function intakeDelegatedIssue(
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
-  const saved = insertRunningQueue(db, {
-    taskKey,
-    linearIssueId: snapshot.linearIssueId,
-    identifier: snapshot.identifier,
-    title: snapshot.title,
-    ordered: ordered.ordered,
-    briefs: new Map(
-      (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
-        issue.linearIssueId,
-        { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
-      ]),
-    ),
-    edges,
-    now,
-  });
-  const result = { ok: true, epic: saved.epic, items: saved.items, alreadyExisted: false } as const;
-  input.onAccepted?.(result);
+  const result = db
+    .transaction(() => {
+      const saved = insertRunningQueue(db, {
+        taskKey,
+        linearIssueId: snapshot.linearIssueId,
+        identifier: snapshot.identifier,
+        title: snapshot.title,
+        ordered: ordered.ordered,
+        briefs: new Map(
+          (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+            issue.linearIssueId,
+            { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+          ]),
+        ),
+        edges,
+        now,
+      });
+      const admitted = {
+        ok: true,
+        epic: saved.epic,
+        items: saved.items,
+        alreadyExisted: false,
+      } as const;
+      input.onAccepted?.(admitted);
+      return admitted;
+    })
+    .immediate();
   await announce(
     tracker,
     input.sessionId,
     "thought",
     queueMessage(
-      saved.items.map((item) => item.linearIdentifier),
+      result.items.map((item) => item.linearIdentifier),
       delegatedAlone,
     ),
   );
