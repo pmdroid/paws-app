@@ -1,5 +1,10 @@
 export const SETTINGS_PAGES = [
   {
+    id: "decisions",
+    name: "Decisions",
+    description: "Save and maintain answers your team can reuse.",
+  },
+  {
     id: "agents",
     name: "Agents",
     description: "Choose the agents that implement and review your work.",
