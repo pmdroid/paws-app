@@ -7,7 +7,8 @@ export const SETTINGS_PAGES = [
   {
     id: "agents",
     name: "Agents",
-    description: "Choose the agents that implement and review your work.",
+    description:
+      "Choose the agents that implement and review your work. Check each connection on an installed runner after sign-in.",
   },
   {
     id: "integrations",

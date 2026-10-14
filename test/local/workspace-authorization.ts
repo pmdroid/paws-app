@@ -142,7 +142,6 @@ export async function probeWorkspaceAuthorization(
     );
   const ready = Promise.withResolvers<WorkspaceAccess>();
   const reads: string[] = [];
-  let probes = 0;
   let membershipFailure = false;
   const runnerCalls: { userId: string; workspaceId: string }[] = [];
   let enrollments = 0;
@@ -166,16 +165,6 @@ export async function probeWorkspaceAuthorization(
     },
     agentSettings: {
       configPath: join(root, "config.toml"),
-      probe: async (profile) => {
-        probes++;
-        return {
-          ok: true,
-          agent: profile.agent,
-          model: profile.model,
-          models: [],
-          message: "Fixture",
-        };
-      },
     },
     readLinearArtifact: async (id) => {
       reads.push(id);
@@ -364,8 +353,8 @@ export async function probeWorkspaceAuthorization(
     });
     observe(
       "members cannot read owner settings or invoke host credential probes",
-      settings.status === 403 && probe.status === 403 && probes === 0,
-      { settings: settings.status, probe: probe.status, invocations: probes },
+      settings.status === 403 && probe.status === 403,
+      { settings: settings.status, probe: probe.status },
     );
     const stale = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",
@@ -426,18 +415,27 @@ export async function probeWorkspaceAuthorization(
     );
     const ownerPage = await fetch(`${origin}/status/`, { headers: headers(owner) });
     const pageCsrf = (await ownerPage.text()).match(/name="paws-csrf" content="([^"]+)"/)?.[1];
-    const pageAction = await fetch(`${origin}/api/settings/agents/test`, {
-      method: "POST",
-      headers: { ...headers(owner), "x-paws-csrf": pageCsrf ?? "" },
-      body: JSON.stringify({ profile: { agent: "claude", model: null } }),
+    const pageAction = await fetch(`${origin}/api/settings/agents`, {
+      method: "PUT",
+      headers: {
+        ...headers(owner),
+        "content-type": "application/json",
+        "x-paws-csrf": pageCsrf ?? "",
+      },
+      body: JSON.stringify({
+        defaults: {
+          implementer: { agent: "claude", model: null },
+          reviewer: { agent: "codex", model: null },
+        },
+        projects: [],
+      }),
     });
     observe(
-      "authenticated status HTML supplies the session CSRF accepted by owner host controls",
-      pageCsrf === owner.session.csrfToken && pageAction.status === 200 && probes === 1,
+      "authenticated status HTML supplies the session CSRF accepted by owner settings",
+      pageCsrf === owner.session.csrfToken && pageAction.status === 200,
       {
         matchingSessionCsrf: pageCsrf === owner.session.csrfToken,
         status: pageAction.status,
-        probes,
       },
     );
     const outageSession = issueWorkspaceSession(db, {

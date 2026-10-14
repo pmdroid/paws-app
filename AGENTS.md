@@ -1,10 +1,10 @@
 # Paws agent guide
 
-Paws is one Bun process on the developer's machine. It takes delegated Linear issues, drives that developer's already-logged-in Claude Code and Codex over ACP, verifies with Closeout, asks questions through Linear elicitations, and opens or merges pull requests with a GitHub App token.
+Paws is one Bun process on the developer's machine. It takes delegated Linear issues, places that work on a paired remote runner, verifies with Closeout, asks questions through Linear elicitations, and opens or merges pull requests with a GitHub App token.
 
 The product is Paws. Do not rename it, and do not describe it as a factory.
 
-The loop lives in `src/loop` and is wired from `src/index.ts`. A real local run is `docs/smoke-test.md`. Check prerequisites with `bun run paws doctor`. If a function throws `NotImplementedError`, that seam is still open. Do not invent the feature while touching a neighboring module. The dashboard in `src/web` is owned separately.
+The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `docs/smoke-test.md`. Check prerequisites with `bun run paws doctor`. If a function throws `NotImplementedError`, that seam is still open. Do not invent the feature while touching a neighboring module. The dashboard in `src/web` is owned separately.
 
 ## Run
 

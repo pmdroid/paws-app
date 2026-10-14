@@ -62,6 +62,25 @@ type Health = {
     } | null;
   }[];
 };
+type SignedInAccount = { agent: string; connected: boolean };
+
+export function agentConnectionReady(input: {
+  lastSeenAt: number | null;
+  status: Runner["status"];
+  agent: string;
+  accounts: SignedInAccount[];
+  checks: Health["checks"];
+}): boolean {
+  if (input.status === "revoked" || input.lastSeenAt === null) return false;
+  const login = input.checks.find(
+    (check) =>
+      check.command.type === "login_check" &&
+      check.command.agent === input.agent &&
+      check.result?.login !== undefined,
+  )?.result?.login;
+  if (login) return login.authenticated === true;
+  return input.accounts.some((account) => account.agent === input.agent && account.connected);
+}
 
 export function createRunners() {
   let root: HTMLElement | null = null;
@@ -69,6 +88,7 @@ export function createRunners() {
   let session: Session | null = null;
   let selected: string | null = null;
   let health: Health | null = null;
+  let accounts: SignedInAccount[] = [];
   let hostPolicy: HostPolicy | null = null;
   let workspacePolicy: WorkspacePolicy | null = null;
   let setupRequired = false;
@@ -138,6 +158,7 @@ export function createRunners() {
         runners = [];
         selected = null;
         health = null;
+        accounts = [];
         hostPolicy = null;
         workspacePolicy = null;
         usage = [];
@@ -161,10 +182,14 @@ export function createRunners() {
           : await Promise.all([
               api<Health>(`/api/runners/${encodeURIComponent(selected)}/health`),
               api<HostPolicy>(`/api/runners/${encodeURIComponent(selected)}/policy`),
+              api<{ accounts: SignedInAccount[] }>(
+                `/api/runners/${encodeURIComponent(selected)}/accounts`,
+              ).catch(() => ({ accounts: [] as SignedInAccount[] })),
             ]);
       if (current === generation) {
         health = details?.[0] ?? null;
         hostPolicy = details?.[1] ?? null;
+        accounts = details?.[2]?.accounts ?? [];
       }
     } catch (caught) {
       if (current !== generation) return;
@@ -234,7 +259,20 @@ export function createRunners() {
     const runner = runners.find((entry) => entry.id === selected);
     if (!runner) return "";
     const disabled = busy || !recent() || runner.status === "revoked" ? " disabled" : "";
-    return `<section class="runner-section"><h2 id="runner-health-heading" tabindex="-1">${esc(runner.name)} health</h2><p class="muted">Last seen: ${health?.lastSeenAt ? esc(new Date(health.lastSeenAt).toLocaleString()) : "Not reported"}</p>${manages() ? `<form id="runner-health"><fieldset${disabled}><label class="field"><span>Agent</span><select name="agent" aria-label="Agent">${["claude", "codex", "grok"].map((value) => `<option${value === agent ? " selected" : ""}>${value}</option>`).join("")}</select></label><label class="field"><span>Model, optional</span><input name="model" maxlength="256" value="${esc(model)}"></label><label class="field"><span>Effort, optional</span><input name="effort" maxlength="64" value="${esc(effort)}"></label><div class="row"><button class="btn" type="submit" name="check" value="probe">Check connection</button><button class="btn" type="submit" name="check" value="login_check">Check sign-in</button></div></fieldset></form>` : ""}<ul class="runner-checks">${
+    const ready = agentConnectionReady({
+      lastSeenAt: health?.lastSeenAt ?? null,
+      status: runner.status,
+      agent,
+      accounts,
+      checks: health?.checks ?? [],
+    });
+    const connectionNote =
+      disabled || ready
+        ? ""
+        : health?.lastSeenAt == null
+          ? '<p class="muted">Install and start this runner, then sign in before checking the connection.</p>'
+          : '<p class="muted">Sign in to this agent on the runner and check sign-in before checking the connection.</p>';
+    return `<section class="runner-section"><h2 id="runner-health-heading" tabindex="-1">${esc(runner.name)} health</h2><p class="muted">Last seen: ${health?.lastSeenAt ? esc(new Date(health.lastSeenAt).toLocaleString()) : "Not reported"}</p>${manages() ? `<form id="runner-health"><fieldset${disabled}><label class="field"><span>Agent</span><select name="agent" aria-label="Agent">${["claude", "codex", "grok"].map((value) => `<option${value === agent ? " selected" : ""}>${value}</option>`).join("")}</select></label><label class="field"><span>Model, optional</span><input name="model" maxlength="256" value="${esc(model)}"></label><label class="field"><span>Effort, optional</span><input name="effort" maxlength="64" value="${esc(effort)}"></label><div class="row"><button class="btn" type="submit" name="check" value="probe"${ready ? "" : " disabled"}>Check connection</button><button class="btn" type="submit" name="check" value="login_check">Check sign-in</button></div>${connectionNote}</fieldset></form>` : ""}<ul class="runner-checks">${
       health?.checks
         .map((check) => {
           const result = check.result;
@@ -327,7 +365,7 @@ export function createRunners() {
     if (setupRequired) {
       renderMarkup(
         root,
-        `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`,
+        `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo | sudo sh</code>.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`,
       );
       root.querySelector("[data-runners-refresh]")?.addEventListener("click", () => void load());
       return;
@@ -335,7 +373,7 @@ export function createRunners() {
     const disabled = busy || !recent() ? " disabled" : "";
     renderMarkup(
       root,
-      `<div class="between"><h1 class="sr-only">Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. Install the daemon on a Linux host and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`,
+      `<div class="between"><h1 class="sr-only">Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>${inspection.verifierFingerprint ? "Compare both fingerprints with the host before approving." : "Compare this request fingerprint with the host before approving."}</p>${inspection.verifierFingerprint ? "<p>Connection fingerprint</p>" : ""}<code>${esc(inspection.requestFingerprint)}</code>${inspection.verifierFingerprint ? `<p>Verification key fingerprint</p><code>${esc(inspection.verifierFingerprint)}</code>` : ""}<p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code> and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`,
     );
     bind();
   }
@@ -422,15 +460,22 @@ export function createRunners() {
       );
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-health]"))
       button.addEventListener("click", () => {
-        if (selected !== button.dataset.runnerHealth) health = null;
+        if (selected !== button.dataset.runnerHealth) {
+          health = null;
+          accounts = [];
+        }
         selected = button.dataset.runnerHealth!;
         void load().then(() => root?.querySelector<HTMLElement>("#runner-health-heading")?.focus());
       });
     root!.querySelector<HTMLFormElement>("#runner-health")?.addEventListener("input", (event) => {
       const data = new FormData(event.currentTarget as HTMLFormElement);
-      agent = String(data.get("agent"));
+      const nextAgent = String(data.get("agent"));
       model = String(data.get("model"));
       effort = String(data.get("effort"));
+      if (nextAgent === agent) return;
+      agent = nextAgent;
+      paint();
+      root?.querySelector<HTMLSelectElement>('#runner-health select[name="agent"]')?.focus();
     });
     root!.querySelector<HTMLFormElement>("#runner-health")?.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -440,6 +485,21 @@ export function createRunners() {
       model = String(data.get("model")).trim();
       effort = String(data.get("effort")).trim();
       const type = (event as SubmitEvent).submitter?.getAttribute("value");
+      const runner = runners.find((entry) => entry.id === selected);
+      if (
+        type !== "login_check" &&
+        !agentConnectionReady({
+          lastSeenAt: health?.lastSeenAt ?? null,
+          status: runner?.status ?? "revoked",
+          agent,
+          accounts,
+          checks: health?.checks ?? [],
+        })
+      ) {
+        error = "Sign in on this installed runner before checking the connection.";
+        paint();
+        return;
+      }
       void change(async () => {
         const body =
           type === "login_check"
@@ -467,6 +527,7 @@ export function createRunners() {
         runners = [];
         inspection = null;
         health = null;
+        accounts = [];
         hostPolicy = null;
         workspacePolicy = null;
         usage = [];

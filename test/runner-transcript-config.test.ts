@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeRunnerTranscriptStorage } from "./local/runner-transcript-config";
 
-test("protected transcript configuration feeds explicit storage without changing local startup", async () => {
+test("protected transcript configuration feeds explicit storage and startup without a runner answers health", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-transcript-config-test-"));
   const observations: string[] = [];
   try {
