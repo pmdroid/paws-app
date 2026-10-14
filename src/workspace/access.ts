@@ -1,3 +1,4 @@
+import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
@@ -154,6 +155,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         "/api/auth/session",
         "/api/workspaces/identity-links",
         "/api/workspaces/audit",
+        "/api/workspaces/decisions",
         "/api/auth/logout",
         "/api/workspaces",
         "/api/workspaces/members",
@@ -310,6 +312,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         return json({ error: "This workspace is not installed or authorized." }, 403);
       return json({ ok: true });
     }
+    const decisionResponse = await handleDecisions(request, {
+      db: options.db,
+      ...access,
+      origin,
+      clientId: options.clientId,
+      now,
+    });
+    if (decisionResponse !== null) return decisionResponse;
     const identityAdministration = await links.handle(request, { ...access, origin, now: now() });
     if (identityAdministration !== null) return identityAdministration;
     const administration = await handleWorkspaceAdministration(request, {

@@ -16,6 +16,7 @@ import {
   UserRound,
   History,
   Menu,
+  BookOpen,
 } from "lucide-react";
 import type { StatusSnapshot } from "../contract";
 import { parseRoute, routeHref, type Route } from "./route";
@@ -47,6 +48,7 @@ const ICONS = {
   workspace: Users,
   account: UserRound,
   audit: History,
+  decisions: BookOpen,
 };
 type ShellState = { route: Route; project: StatusSnapshot["project"] | null };
 const ControllerRegions = memo(function ControllerRegions() {

@@ -21,6 +21,7 @@ const MODULES = [
   "github",
   "runner-repository-access",
   "questions",
+  "decisions",
   "server",
   "settings",
   "web",
@@ -84,6 +85,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "closeout-spec": ["core", "worktree-checkout"],
   github: ["process"],
   questions: ["core"],
+  decisions: ["db"],
   web: ["db"],
   server: [
     "slack",
@@ -100,6 +102,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: ["config"],
   host: ["core", "db"],
   loop: [
+    "decisions",
     "worktree-checkout",
     "core",
     "db",
@@ -140,7 +143,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials", "core"],
-  workspace: ["db", "linear", "slack"],
+  workspace: ["db", "linear", "slack", "decisions"],
   "runner-identity": ["credentials"],
   "runner-repository-access": ["github", "runner-work"],
   "runner-transcript-config": ["credentials", "runner-transcripts"],
