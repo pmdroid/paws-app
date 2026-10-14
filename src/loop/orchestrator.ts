@@ -3511,7 +3511,9 @@ export class Orchestrator {
 
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {
     const runId = item.currentRunId ?? item.id;
+    const repository = this.repositoryForItem(item);
     return {
+      repository: repository ? `${repository.owner}/${repository.repo}` : undefined,
       pawsRoot: this.options.pawsRoot,
       profiles: this.profileSnapshot(runId),
       publishArtifact: this.artifactPublisher(item),

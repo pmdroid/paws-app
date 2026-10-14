@@ -17,6 +17,7 @@ import {
   type StopReason,
 } from "@agentclientprotocol/sdk";
 import { loadConfigFile, resolveAgentProfiles } from "../config";
+import { loadImplementationSkills } from "./skills";
 import { buildAgentPrompt, snapshotAgentInputs } from "./input-files";
 import { commitCheckpoint } from "./checkpoint";
 import { validateCandidateAttribution } from "./commit-policy";
@@ -147,6 +148,18 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     pawsRoot: options.pawsRoot,
   };
   const config = loadConfigFile(join(options.pawsRoot, "config.toml"));
+  if (options.role === "implementer" && !options.prepareOnly) {
+    const skills = await loadImplementationSkills({
+      config,
+      pawsRoot: options.pawsRoot,
+      worktree: options.worktreePath,
+      repository: options.repository,
+      root: options.skillsRoot,
+      signal: options.signal,
+    });
+    guard.skillRoots = skills.roots;
+    if (skills.prompt) preparedInput.prompt += `\n\n${skills.prompt}`;
+  }
   const agents = config.agents;
   const profile = options.profile ?? resolveAgentProfiles(config)[options.role];
   const grok = profile.agent === "grok";

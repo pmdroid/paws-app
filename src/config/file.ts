@@ -16,6 +16,8 @@ import {
   type AgentSettings,
 } from "./agents";
 
+import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
+
 export type LinearConfigMode = "comments" | "agent-session";
 export type GitHubConfigAuth = "oauth" | "gh" | "app";
 export type TrackerKind = "github" | "linear" | "both";
@@ -76,6 +78,7 @@ export type PawsConfigFile = {
   maxAwakeMs: number | null;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
+  projectSkills?: ProjectSkills[];
 };
 
 /**
@@ -152,6 +155,8 @@ export function parseConfigToml(text: string): PawsConfigFile {
     }
     assignConfig(config, section, key, parseValue(raw, index + 1), index + 1);
   }
+  const skills = parseProjectSkills(text);
+  if (skills.length > 0) config.projectSkills = skills;
   const settings = parseAgentSettingsToml(text, config.agents.implementer);
   if (settings !== null) config.agentSettings = settings;
   return config;
@@ -207,10 +212,11 @@ export function renderConfigToml(config: PawsSetupConfig): string {
 export function writeConfigFile(path: string, config: PawsSetupConfig): boolean {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, config.implementer);
-  const rendered = renderConfigToml({
-    ...config,
-    githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
-  });
+  const rendered =
+    renderConfigToml({
+      ...config,
+      githubRepos: config.githubRepos ?? parseConfigToml(current).githubRepos,
+    }) + renderProjectSkills(parseProjectSkills(current));
   const next =
     profiles === null
       ? rendered
