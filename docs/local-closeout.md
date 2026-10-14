@@ -58,3 +58,5 @@ Write the review instructions in `SKILL.md` and supporting text in `references/r
 The local policy replaces the repository policy for that project. Paws blocks verification if the configured local policy is missing or invalid. Setup preserves this setting and validates the local policy without creating `.agents/closeout.yaml` in the work repository. Run `bun run paws doctor` to check the selected policy.
 
 The policy digest includes imported policies and every referenced skill file. Changing any of those files requires fresh evidence. Review prompts use the skill bytes captured with that digest, including text resources and hashes for binary resources. Decisions show the local policy path and a `local-policy` warning.
+
+Paired runners use the same selected policy. Paws sends its commands for execution in the runner’s candidate checkout and sends the captured review prompt through the signed runner request. The policy and skills stay outside the repository.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   beginImplementRun,
@@ -20,6 +20,9 @@ import {
   runnerCheckResultSigningBytes,
   runnerVerifierFingerprint,
 } from "../../src/runner-verifier";
+import { createCloseoutGate } from "../../src/closeout";
+import { decision, validate } from "../../src/closeout-spec";
+import { createAcpCodexReviewer } from "../../src/loop";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { setTimeout as delay } from "node:timers/promises";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
@@ -155,6 +158,7 @@ export async function probeRunnerTrustedCloseout(
       results: coordinator.results,
       health: coordinator.health,
       checks: coordinator.checks,
+      inputs: coordinator.inputs,
       now: () => now,
       pollIntervalMs: 1,
       async fetchCandidate() {
@@ -397,6 +401,175 @@ export async function probeRunnerTrustedCloseout(
       true,
       { executions, invalidSignatureRejected: true, gateFlagsPreserved: true },
     );
+    {
+      const source = join(root, "policy-source");
+      const policyRoot = join(root, "host-policy");
+      const skillRoot = join(policyRoot, ".agents/skills/review");
+      mkdirSync(source);
+      mkdirSync(skillRoot, { recursive: true });
+      function git(...args: string[]) {
+        const result = Bun.spawnSync(["git", "-C", source, ...args], {
+          env: {
+            PATH: "/usr/bin:/bin",
+            HOME: root,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_AUTHOR_NAME: "Fixture",
+            GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+            GIT_COMMITTER_NAME: "Fixture",
+            GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        assert.equal(result.exitCode, 0, result.stderr.toString());
+        return result.stdout.toString().trim();
+      }
+      git("init", "-b", "main");
+      writeFileSync(join(source, "result.txt"), "base");
+      git("add", ".");
+      git("commit", "-m", "Base");
+      const base = git("rev-parse", "HEAD");
+      writeFileSync(join(source, "result.txt"), "candidate");
+      git("commit", "-am", "Candidate");
+      const head = git("rev-parse", "HEAD");
+      const instructions = "Host-only review rules\n" + "Trusted resource text\n".repeat(4000);
+      const binary = Buffer.from([0xff, 0x00, 0xfe]);
+      writeFileSync(join(skillRoot, "SKILL.md"), "Apply the host-only review rules.");
+      writeFileSync(join(skillRoot, "rules.md"), instructions);
+      writeFileSync(join(skillRoot, "diagram.bin"), binary);
+      const argv = ["/usr/bin/test", "-f", "result.txt"];
+      writeFileSync(
+        join(policyRoot, ".agents/closeout.yaml"),
+        JSON.stringify({
+          specVersion: "0.1",
+          items: [
+            { id: "check", kind: "command", gate: "beforePR", exec: argv, timeoutSeconds: 5 },
+            {
+              id: "review",
+              kind: "review",
+              gate: "beforePR",
+              skill: ".agents/skills/review/SKILL.md",
+              independence: { differentSession: true, differentModel: true },
+              failOn: "P1",
+            },
+          ],
+        }),
+      );
+      const candidate = {
+        session: "implementation",
+        model: "implementation-model",
+        provider: "fixture",
+      };
+      const nativeGate = createCloseoutGate({
+        candidate,
+        policyRoot,
+        pawsHome: root,
+        maxFixAttempts: 0,
+        commandRunner: backend.closeoutForItem(item.id),
+        reviewer: createAcpCodexReviewer({
+          pawsRoot: root,
+          launch: () => ({}),
+          profiles: {
+            implementer: { agent: "codex", model: "implementation-model" },
+            reviewer: { agent: "codex", model: "review-model" },
+          },
+          agentRunner: backend.forItem(item.id),
+        }),
+        fixer: {
+          async applyFix() {
+            throw new Error("Unexpected fix");
+          },
+        },
+      });
+      db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now, runnerId]);
+      const verifying = nativeGate.run({
+        taskId: item.id,
+        worktree: source,
+        baseSha: base,
+        headSha: head,
+        attempt: 1,
+      });
+      const checked = await deliver();
+      assert.deepEqual(checked.command.argv, argv);
+      assert.equal(checked.command.candidateSha, head);
+      let review;
+      for (let retry = 0; retry < 200 && !review; retry++) {
+        review = (await daemon.pollCommands()).commands.find(
+          (command) => command.type === "review" && !seen.has(command.id),
+        );
+        if (!review) await delay(5);
+      }
+      assert(review?.type === "review");
+      assert.equal(review.repository.baseSha, head);
+      assert.equal(review.repository.owner, "fixture");
+      assert.equal(review.repository.repo, "repository");
+      assert(review.promptContext);
+      assert.equal(review.inputFiles, undefined);
+      const grant = await daemon.issueRunGrant(run.id, {
+        commandId: review.id,
+        generation: review.generation,
+      });
+      writeFileSync(join(skillRoot, "rules.md"), "Changed after dispatch");
+      const received = await daemon.readInputs(
+        review,
+        async () => grant.token,
+        new AbortController().signal,
+      );
+      const prompt = Buffer.from(received.promptContext!).toString("utf8");
+      assert(prompt.includes(instructions));
+      assert(!prompt.includes("Changed after dispatch"));
+      assert(prompt.includes(createHash("sha256").update(binary).digest("hex")));
+      assert.equal(received.inputFiles.length, 0);
+      writeFileSync(join(skillRoot, "rules.md"), instructions);
+      await daemon.postResult(
+        run.id,
+        review.generation,
+        {
+          executionId: workspaceId(),
+          commandId: review.id,
+          role: "reviewer",
+          stopReason: "end_turn",
+          timedOut: false,
+          cancelled: false,
+          authRequired: false,
+          agentExited: true,
+          identity: { session: "independent-review", model: "review-model", provider: "fixture" },
+          reviewText: "[]",
+        },
+        grant.token,
+      );
+      const verdict = await verifying;
+      assert.equal(verdict.decision, "accepted", verdict.summary);
+      writeFileSync(join(skillRoot, "rules.md"), "Changed policy resource");
+      const stale = await decision({
+        repo: source,
+        policyRoot,
+        base,
+        head,
+        gate: "beforePR",
+        task: item.id,
+        candidate,
+        evidenceDir: join(root, "closeout/evidence", item.id),
+      });
+      assert.notEqual(stale.decision, "accepted");
+      assert.equal(validate(source, undefined, join(root, "missing-policy")).ok, false);
+      assert.equal(git("status", "--porcelain"), "");
+      assert.equal(git("ls-tree", "-r", "--name-only", head), "result.txt");
+      assert(!existsSync(join(options.root, "host-policy")));
+      observe(
+        "Host-only Closeout overrides bind paired mTLS checks and immutable review resources without repository injection",
+        true,
+        {
+          candidate: head,
+          command: checked.command.argv,
+          promptBytes: received.promptContext!.length,
+          decision: verdict.decision,
+          changedResourceDecision: stale.decision,
+          trackedFiles: ["result.txt"],
+        },
+      );
+    }
     for (const mode of ["abort", "generation", "revoke"] as const) {
       db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now, runnerId]);
       const controller = new AbortController();
