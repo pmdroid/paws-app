@@ -44,6 +44,7 @@ export async function probeRunnerControlStartup(
     "invalid",
     "remote",
     "invalid-execution",
+    "transcripts-later",
   ]) {
     const home = join(root, mode);
     mkdirSync(home, { recursive: true, mode: 0o700 });
