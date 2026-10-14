@@ -69,7 +69,7 @@ const errors = [];
         .getByRole("region", { name: "Settings", exact: true })
         .getByRole("link")
         .count(),
-      5,
+      6,
     );
     await navigation.getByRole("link", { name, exact: true }).click();
     if (mobile)
@@ -130,6 +130,47 @@ const errors = [];
     await github
       .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
       .check();
+    const permissions = github.getByRole("alert").filter({ hasText: "Read and write access" });
+    await permissions.waitFor();
+    assert.match(await permissions.innerText(), /Pull requests, Checks, Issues/);
+    assert.equal(
+      await github
+        .getByRole("button", { name: "Save repository access", exact: true })
+        .isDisabled(),
+      true,
+    );
+    assert.equal(
+      await github
+        .getByRole("link", { name: "Review GitHub App permissions" })
+        .getAttribute("href"),
+      "https://github.com/settings/installations",
+    );
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: path.join(root, "github-permissions-" + width + ".png"),
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await control(context, { permissionsReady: true });
+    await github.getByRole("button", { name: "Refresh repositories", exact: true }).click();
+    await permissions.waitFor({ state: "hidden" });
+    await github
+      .getByRole("checkbox", { name: "Match acme/widgets to Engineering", exact: true })
+      .check();
+    assert.equal(
+      await github.getByRole("button", { name: "Save repository access", exact: true }).isEnabled(),
+      true,
+    );
+    observations.push({
+      repositoriesVisibleWithMissingPermissions: true,
+      permissionRecovery: true,
+    });
     await github
       .getByRole("checkbox", { name: "Match acme/widgets to Quality", exact: true })
       .check();
@@ -311,6 +352,7 @@ const errors = [];
           .getByRole("combobox", { name: "Appearance" })
           .selectOption({ label: appearance });
         for (const name of [
+          "Decisions",
           "Agents",
           "Integrations",
           "Workspace access",
@@ -353,7 +395,7 @@ const errors = [];
         observations.push({
           width,
           appearance,
-          fivePages: true,
+          sixPages: true,
           noOverflow: true,
           oneHeading: true,
         });

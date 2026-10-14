@@ -288,6 +288,14 @@ export function createGitHubRepositorySetup(options: {
           teams,
           mappings: listWorkspaceRepositories(db, workspaceId),
         });
+      if (choices.missingPermissions.length)
+        return reply(
+          {
+            code: "github_permissions_required",
+            error: "Approve the required GitHub App permissions before saving repository access.",
+          },
+          409,
+        );
       if (
         !record(body) ||
         Object.keys(body).some((key) => !["installationId", "mappings", "setupId"].includes(key)) ||

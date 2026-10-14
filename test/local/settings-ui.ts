@@ -39,6 +39,7 @@ if (generated.exitCode !== 0) throw new Error("Could not create the disposable H
 let installed = false;
 let unavailable = false;
 let hiddenRepository: string | null = null;
+let permissionsReady = false;
 const provider = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -51,10 +52,12 @@ const provider = Bun.serve({
         expire?: boolean;
         disconnect?: boolean;
         hiddenRepository?: string | null;
+        permissionsReady?: boolean;
       };
       if (body.installed !== undefined) installed = body.installed;
       if (body.unavailable !== undefined) unavailable = body.unavailable;
       if (body.hiddenRepository !== undefined) hiddenRepository = body.hiddenRepository;
+      if (body.permissionsReady !== undefined) permissionsReady = body.permissionsReady;
       if (body.disconnect) db.run("DELETE FROM workspace_github_connection");
       if (body.expire)
         db.run("UPDATE workspace_session SET authenticated_at=?", [Date.now() - 16 * 60_000]);
@@ -76,7 +79,9 @@ const provider = Bun.serve({
                 id: 22,
                 app_id: 99,
                 account: { login: "acme" },
-                permissions: INSTALLATION_PERMISSIONS,
+                permissions: permissionsReady
+                  ? INSTALLATION_PERMISSIONS
+                  : { contents: "write", actions: "read", metadata: "read" },
               },
             ]
           : [],
