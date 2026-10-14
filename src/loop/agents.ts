@@ -31,6 +31,7 @@ export type AgentLaunch = (input: {
 }) => { command?: string; args?: string[]; env?: NodeJS.ProcessEnv };
 
 export type AcpAgentDeps = {
+  repository?: string;
   pawsRoot: string;
   publishArtifact?: PublishArtifactHook;
   prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
@@ -86,6 +87,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         prompt,
       });
       const result = await (deps.agentRunner ?? runAgent)({
+        repository: deps.repository,
         prepareInputFiles: deps.prepareInputFiles,
         role: "reviewer",
         profile: deps.profiles?.reviewer,
@@ -140,6 +142,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         prompt,
       });
       const result = await (deps.promptRunner ?? deps.agentRunner ?? runAgent)({
+        repository: deps.repository,
         prepareInputFiles: deps.prepareInputFiles,
         onEvent: deps.onEvent,
         role: "implementer",

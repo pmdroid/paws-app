@@ -40,3 +40,6 @@ export {
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
 export { loadRunnerControl } from "./runner-control";
+
+export { projectSkillsRoot } from "./skills";
+export type { ProjectSkills } from "./skills";
