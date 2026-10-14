@@ -7,6 +7,7 @@ import {
   statSync,
   lstatSync,
   renameSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -24,6 +25,8 @@ type NetworkOperation = {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 };
+
+const queues = new Map<string, Promise<unknown>>();
 
 export function createRunnerRepositories(options: {
   root: string;
@@ -44,17 +47,18 @@ export function createRunnerRepositories(options: {
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
   };
-  const queues = new Map<string, Promise<unknown>>();
+  const repositoryRoot = realpathSync(options.root);
   function serialize<T>(
     command: WorkCommand,
     operation: (mirror: string) => Promise<T>,
   ): Promise<T> {
     const repository = `${command.repository.owner}/${command.repository.repo}`;
-    const key = createHash("sha256").update(repository.toLowerCase()).digest("hex");
+    const key = join(
+      repositoryRoot,
+      `${createHash("sha256").update(repository.toLowerCase()).digest("hex")}.git`,
+    );
     const previous = queues.get(key) ?? Promise.resolve();
-    const pending = previous
-      .catch(() => undefined)
-      .then(() => operation(join(options.root, `${key}.git`)));
+    const pending = previous.catch(() => undefined).then(() => operation(key));
     queues.set(key, pending);
     void pending
       .finally(() => {
