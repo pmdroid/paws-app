@@ -271,11 +271,17 @@ export function createRunnerLogin(options: { db: Database; work: RunnerWork; now
         }
         if (match[4] && request.method === "POST") {
           const value = RunnerLoginInputSchema.parse(await body(request));
-          if (!pending(row) || !row.inputId || (agent === "claude") !== "text" in value)
+          const current = own(principal, runnerId, agent, id);
+          if (
+            !pending(current) ||
+            !current.inputId ||
+            current.inputId !== row.inputId ||
+            (agent === "claude") !== "text" in value
+          )
             throw new Error("Login input is unavailable");
           if (inputs.has(id)) throw new Error("Previous login input is still pending");
-          inputs.set(id, { id: row.inputId, value });
-          return json(snapshot(row));
+          inputs.set(id, { id: current.inputId, value });
+          return json(snapshot(current));
         }
         return json({ error: "Unsupported agent account request." }, 405);
       } catch {

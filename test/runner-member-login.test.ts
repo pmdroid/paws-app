@@ -240,3 +240,36 @@ test("a member cannot initiate account cutover without host consent, while the o
     }),
   ).toThrow("Select a member");
 });
+
+test("delayed login input is rejected after cancellation, revocation, expiry or prompt changes", async () => {
+  for (const change of ["cancelled", "revoked", "expired", "prompt"] as const) {
+    const f = fixture();
+    const session = f.login.start(f.member, f.runnerId, "codex");
+    f.login.exchange(f.runnerId, session.id, f.waiting);
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+      },
+    });
+    const pending = f.login.browser(
+      new Request(f.url(session.id, "/input"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+      f.member,
+    );
+    if (change === "cancelled")
+      await f.login.browser(new Request(f.url(session.id), { method: "DELETE" }), f.member);
+    if (change === "revoked")
+      f.db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [f.member.userId]);
+    if (change === "expired") f.advance(600001);
+    const current = change === "prompt" ? { ...f.waiting, inputId: randomUUID() } : f.waiting;
+    if (change === "prompt") f.login.exchange(f.runnerId, session.id, current);
+    controller.enqueue(new TextEncoder().encode(JSON.stringify({ accept: true })));
+    controller.close();
+    expect((await pending)!.status).toBe(403);
+    expect(f.login.exchange(f.runnerId, session.id, current).input).toBeNull();
+  }
+});
