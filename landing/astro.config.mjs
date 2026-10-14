@@ -5,7 +5,10 @@ export default defineConfig({
   output: "static",
   devToolbar: { enabled: false },
   vite: {
-    server: { allowedHosts: ["agentbox.taile07e4.ts.net"] },
+    server: {
+      allowedHosts: ["agentbox.taile07e4.ts.net"],
+      fs: { allow: ["../deploy/linux"] },
+    },
   },
   server: {
     host: "127.0.0.1",
