@@ -13,6 +13,7 @@ import {
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
 import { createRunnerHelpers } from "../runner-helpers";
+import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
 import { createRunnerChecks, createRunnerChecksHttp } from "../runner-checks";
 import type { WorkspacePrincipal } from "../workspace";
@@ -90,6 +91,7 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const results = createRunnerResults({ db: options.db, work, now: options.now });
+  const login = createRunnerLogin({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
   const checks = createRunnerChecks({ db: options.db, work, now: options.now });
   const checksHttp = createRunnerChecksHttp(checks);
@@ -123,6 +125,7 @@ export async function openRunnerCoordinator(options: {
         (await results.fetch(request, runnerId)) ??
         (await helpers.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
+        (await login.fetch(request, runnerId)) ??
         (await checksHttp(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
@@ -148,18 +151,24 @@ export async function openRunnerCoordinator(options: {
     work,
     results,
     health,
+    login,
     helpers,
     checks,
     artifacts,
     inputs,
     transcripts,
     async browser(request: Request, principal: WorkspacePrincipal) {
-      return (await http.browser(request, principal)) ?? health.browser(request, principal);
+      return (
+        (await http.browser(request, principal)) ??
+        (await health.browser(request, principal)) ??
+        login.browser(request, principal)
+      );
     },
     async enrollment(request: Request) {
       return withSigningKeys(await http.enrollment(request), signing.signingKeys);
     },
     async stop() {
+      login.stop();
       clearInterval(timer);
       await listener?.stop();
     },

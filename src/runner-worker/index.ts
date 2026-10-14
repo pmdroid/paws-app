@@ -1,3 +1,5 @@
+import { runProviderLogin } from "../runner-login-worker";
+import type { RunnerLoginUpdate } from "../runner-protocol";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import {
   closeSync,
@@ -64,6 +66,7 @@ export interface RunnerWorkerOptions {
 }
 
 export type RunnerWorkerEvent =
+  | { type: "login"; update: RunnerLoginUpdate }
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact };
@@ -184,6 +187,28 @@ export async function executeRunnerCommand(
   }
   let skillsRoot: string | undefined;
   try {
+    if (command.type === "login") {
+      if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
+      await runProviderLogin({
+        agent: command.agent,
+        home: options.home,
+        signal: options.signal,
+        answer: options.answer,
+        emit: (update) => emit({ type: "login", update }),
+      });
+      return {
+        executionId: job.executionId,
+        commandId: command.id,
+        run: {
+          role: "implementer",
+          stopReason: "end_turn",
+          cancelled: false,
+          timedOut: false,
+          authRequired: false,
+          agentExited: true,
+        },
+      };
+    }
     if (!task) mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
     const worktree = join(options.workRoot, job.executionId);
     if (task) {
