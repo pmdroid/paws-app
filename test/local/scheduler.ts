@@ -144,13 +144,15 @@ export async function probeScheduler(
     ["unknown", () => []],
   ] as const) {
     const { db, ids } = setup(name, 2, paths);
-    assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 1);
+    assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 2);
     const first = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    const second = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
+    assert.notEqual(first.id, second.id);
     const id = (first.payload as { itemId: string }).itemId;
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [id]);
     assert(completeJob(db, first, 1001));
-    assert.equal(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids }).length, 1);
-    observed(`${name} footprints serialize until the first item finishes`, { ids });
+    assert.equal(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids }).length, 0);
+    observed(`${name} footprints execute independently in separate task workspaces`, { ids });
     db.close();
   }
   {
@@ -158,21 +160,29 @@ export async function probeScheduler(
       const { db, ids } = setup(`root-glob-${glob.replaceAll("*", "")}`, 2, (index) => [
         index ? glob.replace("*", "concrete") : glob,
       ]);
-      assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 1);
+      assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 2);
       db.close();
     }
-    observed("Root-segment globs widen to a repository lock", {
+    observed("Root-segment globs do not serialize private task workspaces", {
       globs: ["src*", "package*.json", "ab*"],
     });
   }
   {
     const { db, ids } = setup("claimed-retraction", 2, () => ["src/shared"]);
-    assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 1);
+    assert.equal(
+      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 }).length,
+      1,
+    );
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const first = (claimed.payload as { itemId: string }).itemId;
     const canDispatchEpic = (epicId: string) => epicId !== `epic-${first}`;
     assert.deepEqual(
-      dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids, canDispatchEpic }),
+      dispatchReadyItems(db, {
+        now: 1001,
+        legacyReadyItemIds: ids,
+        canDispatchEpic,
+        concurrency: 1,
+      }),
       [],
     );
     assert.equal(getJob(db, claimed.id)!.status, "running");
@@ -180,7 +190,12 @@ export async function probeScheduler(
     assert.equal(count(db, "scheduler_admission"), 1);
     assert(completeJob(db, claimed, 1002));
     assert.equal(
-      dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids, canDispatchEpic }).length,
+      dispatchReadyItems(db, {
+        now: 1002,
+        legacyReadyItemIds: ids,
+        canDispatchEpic,
+        concurrency: 1,
+      }).length,
       1,
     );
     observed("A claimed start retains its locks until the actual job holder releases", {
@@ -191,7 +206,7 @@ export async function probeScheduler(
   {
     for (const running of [false, true]) {
       const { db, ids } = setup(`stale-start-${running}`, 1);
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids });
+      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 });
       if (running) assert(claimNextJob(db, { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }));
       db.run("UPDATE work_item SET state='failed' WHERE id=?", [ids[0]!]);
       dispatchReadyItems(db, { now: 1011 });
@@ -260,19 +275,41 @@ export async function probeScheduler(
   {
     for (const status of ["active", "provisioning"] as const) {
       const { db, ids } = setup(`merge-run-${status}`, 2, () => ["src/shared"]);
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids });
+      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 });
       const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
       assert(completeJob(db, start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
       const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
-      assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), []);
+      assert.deepEqual(
+        dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids, concurrency: 1 }),
+        [],
+      );
       db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
-      assert.deepEqual(dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids }), [ids[1]!]);
+      assert.deepEqual(
+        dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids, concurrency: 1 }),
+        [ids[1]!],
+      );
       db.close();
     }
-    observed("Merge queues retain footprint locks while active or provisioning runs remain", {
+    observed("Merge queues retain project capacity while active or provisioning runs remain", {
       statuses: ["active", "provisioning"],
     });
+  }
+  {
+    const { db, ids } = setup("waiting-independent", 3, () => []);
+    db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [ids[0]!]);
+    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), ids.slice(1));
+    observed("A waiting task without live work releases capacity for two independent tasks", {
+      ids,
+    });
+    db.close();
+  }
+  {
+    const { db, ids } = setup("duplicate-issue", 2, () => []);
+    db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [`lin-item-${ids[0]!}`, ids[1]!]);
+    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), [ids[0]!]);
+    observed("Separate sessions cannot execute the same Linear issue concurrently", { ids });
+    db.close();
   }
   {
     const { db, ids } = setup("rollback", 2);

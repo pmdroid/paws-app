@@ -2,7 +2,7 @@ import { authorizeRunnerAccount } from "../runner-accounts";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { getLinearSession, immediate, workspaceSessionIds } from "../db";
+import { getLinearSession, immediate, runnerHasCapacity, workspaceSessionIds } from "../db";
 import {
   RunnerCommandSchema,
   RunnerHelperResultSchema,
@@ -122,9 +122,10 @@ export function createRunnerHelpers(options: {
         if (
           db
             .query(
-              "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? UNION ALL SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
+              "SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>? LIMIT 1",
             )
-            .get(input.runnerId, now(), input.runnerId, now())
+            .get(input.runnerId, now()) ||
+          !runnerHasCapacity(db, input.runnerId, now())
         )
           throw new Error("Runner is busy");
         const at = now();

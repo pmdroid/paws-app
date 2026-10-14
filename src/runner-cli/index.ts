@@ -14,6 +14,7 @@ const configuration = z.strictObject({
   runnerApiUrl: z.string().max(2048),
   allowedRepositories: z.array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/)).max(256),
   serverCa: z.string().max(32768).optional(),
+  concurrency: z.number().int().min(1).max(16).default(2),
 });
 
 function account(kind: "user" | "group", name: string): number {
