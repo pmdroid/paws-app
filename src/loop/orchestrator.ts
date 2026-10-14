@@ -202,6 +202,9 @@ export type OrchestratorOptions = {
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
+  linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
+  linearIntakeActor?: (sessionId: string) => string | undefined;
+  onLinearIntake?: (sessionId: string, result: IntakeResult) => void;
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
@@ -644,7 +647,9 @@ export class Orchestrator {
       if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
-      return snapshot;
+      return sessionId
+        ? (this.options.linearIntakeScope?.(sessionId, snapshot) ?? snapshot)
+        : snapshot;
     };
     let intakeTracker = {
       ...progressTracker,
@@ -713,8 +718,12 @@ export class Orchestrator {
                 saveConversation(this.db, child.id, options.conversation, null);
             }
           if (sessionId !== null) {
-            if (initialSession) bindLinearSessionTask(this.db, sessionId, accepted.epic.id);
+            if (initialSession)
+              bindLinearSessionTask(this.db, sessionId, accepted.epic.id, {
+                actorId: this.options.linearIntakeActor?.(sessionId),
+              });
             this.assignSession(accepted.epic.id, sessionId);
+            this.options.onLinearIntake?.(sessionId, accepted);
           }
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)
