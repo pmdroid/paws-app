@@ -11,7 +11,6 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
     via: "bundled",
     error: null,
     engineUrl: null,
-    epicView: "graph",
     selectedCheck: null,
     ...patch,
   };
@@ -90,17 +89,43 @@ describe("status views", () => {
     expect(live).toContain("Download log");
   });
 
-  test("overview labels demo data and lists the sample epic, question, and queue", () => {
+  test("overview lists the sample epic, question, and queue without a demo banner", () => {
     const view = render(model());
-    expect(view.top).toContain("Demo data");
-    expect(view.banner.toLowerCase()).toContain("sample");
+    expect(view.top).not.toContain("Demo data");
+    expect(view.top).not.toContain("Refresh");
+    expect(view.banner).toBe("");
     expect(view.content).toContain("Audit log export");
     expect(view.content).toContain("Q-41");
     expect(view.content).toContain("Merge queue");
     expect(view.content).not.toContain("javascript:");
   });
 
+  test("epic filters keep in-progress work out of Done", () => {
+    const snapshot = demoStatus();
+    const epic = snapshot.epics[0];
+    if (!epic) throw new Error("missing epic");
+    epic.state = "idle";
+    const html = render(model({ snapshot, route: { view: "epics", id: null } })).content;
+    expect(html).toContain('data-epic-state="active"');
+    epic.state = "done";
+    epic.delegated = true;
+    snapshot.items = snapshot.items.map((item) =>
+      item.epicId === epic.id ? { ...item, state: "merged" } : item,
+    );
+    const done = render(model({ snapshot, route: { view: "epics", id: null } })).content;
+    expect(done).toContain(`data-epic-state="done"`);
+    const stillOpen = snapshot.items.find((item) => item.epicId === epic.id);
+    if (!stillOpen) throw new Error("missing item");
+    stillOpen.state = "running";
+    const active = render(model({ snapshot, route: { view: "epics", id: null } })).content;
+    expect(active).toContain(`data-epic-state="active"`);
+    expect(active).not.toContain(`data-epic-state="done"`);
+  });
+
   test("epics, runs, questions, verdicts, and the queue each render", () => {
+    const epics = render(model({ route: { view: "epics", id: null } })).content;
+    expect(epics).toContain("data-epic-filter=\"active\"");
+    expect(epics).toContain("Audit log export");
     expect(render(model({ route: { view: "epics", id: "ENG-98" } })).content).toContain("ENG-104");
     expect(render(model({ route: { view: "runs", id: "r-103" } })).content).toContain(
       "Parked on Q-41",
@@ -135,13 +160,14 @@ describe("status views", () => {
     expect(html).not.toContain("javascript:");
   });
 
-  test("a live snapshot is labeled live", () => {
+  test("a live snapshot hides the engine address and live banner", () => {
     const snapshot = demoStatus();
     snapshot.source = "live";
     const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
-    expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
-    expect(view.banner).toContain("127.0.0.1:8787");
+    expect(view.top).not.toContain("Engine");
+    expect(view.banner).not.toContain("127.0.0.1:8787");
     expect(view.banner.toLowerCase()).not.toContain("sample");
   });
 
@@ -156,7 +182,7 @@ describe("status views", () => {
     snapshot.mergeQueue = [];
     snapshot.events = [];
     const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
-    expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
     expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
     expect(view.content).not.toContain("Audit log export");

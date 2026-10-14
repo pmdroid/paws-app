@@ -1,5 +1,4 @@
 import type {
-  ItemState,
   StatusCheck,
   StatusEpic,
   StatusItem,
@@ -38,7 +37,6 @@ export interface RenderModel {
   via: "bundled" | "engine" | null;
   error: string | null;
   engineUrl: string | null;
-  epicView: "graph" | "board";
   selectedCheck: { itemId: string; checkId: string } | null;
 }
 
@@ -48,20 +46,6 @@ export interface Rendered {
   content: string;
   title: string;
 }
-
-const ITEM_ORDER: ItemState[] = [
-  "planning",
-  "queued",
-  "running",
-  "awaiting_input",
-  "verifying",
-  "signoff",
-  "merge_queue",
-  "merged",
-  "exhausted",
-  "stopped",
-  "needs_human",
-];
 
 const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"]);
 
@@ -83,35 +67,20 @@ export function render(model: RenderModel): Rendered {
   };
 }
 
-function renderTop(model: RenderModel): string {
-  const pill = sourcePill(model);
-  const clockText = model.snapshot ? clock(model.snapshot.generatedAt) : "";
-  return `<div class="status-meta">${pill}<span class="clock">${clockText ? `Updated ${clockText}` : "Waiting for status"}</span></div><div class="status-actions"><button class="btn ghost" type="button" data-action="refresh">Refresh</button><button class="btn" type="button" data-action="source">Engine</button></div>`;
+function renderTop(_model: RenderModel): string {
+  return "";
 }
 
 function renderBanner(model: RenderModel): string {
-  if (model.phase === "loading") {
-    return `<div class="demo-bar" role="status"><span class="n">Loading</span><span>Fetching status…</span></div>`;
-  }
   if (model.phase === "error") {
-    const where = model.engineUrl ? ` from ${model.engineUrl}` : "";
-    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}${esc(where)}.${model.snapshot ? " Showing the last snapshot." : ""}</span><button class="btn sm" type="button" data-action="source">Change source</button></div>`;
+    return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${model.snapshot ? " Showing the last snapshot." : ""}</span></div>`;
   }
-  const snapshot = model.snapshot;
-  if (!snapshot) return "";
-  if (snapshot.source === "live") {
-    return `<div class="live-bar" role="status"><span class="n">Live</span><span>Status from ${esc(model.engineUrl ?? "the engine")} · as of ${esc(clock(snapshot.generatedAt))}.</span></div>`;
-  }
-  if (snapshot.source !== "demo") return "";
-  if (model.via === "engine") {
-    return `<div class="demo-bar" role="status"><span class="n">Demo</span><span>The engine answered, and this snapshot is still the sample stub. It is not live work.</span></div>`;
-  }
-  return `<div class="demo-bar" role="status"><span class="n">Demo</span><span>Sample snapshot of a fictional workspace (${esc(snapshot.project.workspace ?? snapshot.project.team)} / ${esc(snapshot.project.repo)}). Not a live engine.</span><button class="btn sm" type="button" data-action="source">Connect engine</button></div>`;
+  return "";
 }
 
 function renderPending(model: RenderModel): string {
   if (model.phase === "error") {
-    return `${pageHeading(model.route.view)}<div class="empty"><div>Status unavailable</div>${esc(model.error ?? "The engine did not return a snapshot.")}<div><button class="btn primary" type="button" data-action="source">Choose a source</button></div></div>`;
+    return `${pageHeading(model.route.view)}<div class="empty"><div>Status unavailable</div>${esc(model.error ?? "The engine did not return a snapshot.")}<div><button class="btn primary" type="button" data-action="refresh">Retry</button></div></div>`;
   }
   return `${pageHeading(model.route.view)}<div class="empty" role="status">Loading status…</div>`;
 }
@@ -125,7 +94,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "overview":
       return viewOverview(snapshot);
     case "epics":
-      return viewEpics(snapshot, model.route.id, model.epicView);
+      return viewEpics(snapshot, model.route.id);
     case "runs":
       return viewRuns(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "questions":
@@ -183,11 +152,10 @@ function viewOverview(snapshot: StatusSnapshot): string {
     </section></div>`;
 }
 
-function viewEpics(snapshot: StatusSnapshot, id: string | null, mode: "graph" | "board"): string {
-  const selected =
-    snapshot.epics.find((epic) => epic.id === id) ?? (id === null ? snapshot.epics[0] : undefined);
-  if (!selected)
-    return `${pageHeading("epics")}<div class="empty">${id ? "Epic not found. Choose an epic from the list." : "No epics yet. Delegate a parent issue in Linear to see its work here."}</div>${entityPicker(
+function viewEpics(snapshot: StatusSnapshot, id: string | null): string {
+  const selected = snapshot.epics.find((epic) => epic.id === id);
+  if (id && !selected)
+    return `${pageHeading("epics")}<div class="empty">Epic not found. Choose an epic from the list.</div>${entityPicker(
       "Epic",
       snapshot.epics.map((epic) => ({
         value: routeHref({ view: "epics", id: epic.id }),
@@ -195,32 +163,59 @@ function viewEpics(snapshot: StatusSnapshot, id: string | null, mode: "graph" | 
       })),
       "",
     )}`;
-  const picker = entityPicker(
-    "Epic",
-    snapshot.epics.map((epic) => ({
-      value: routeHref({ view: "epics", id: epic.id }),
-      label: `${epic.id} · ${epic.title}`,
-    })),
-    routeHref({ view: "epics", id: selected.id }),
-  );
+  if (selected) return epicDetail(snapshot, selected);
+  if (!snapshot.epics.length)
+    return `${pageHeading("epics")}<div class="empty">No epics yet. Delegate a parent issue in Linear to see its work here.</div>`;
+  return `${pageHeading("epics")}
+    <div class="epic-filters" role="group" aria-label="Filter epics">
+      <button type="button" class="btn on" data-action="epic-filter" data-epic-filter="all" aria-pressed="true">All</button>
+      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="active" aria-pressed="false">Active</button>
+      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="needs" aria-pressed="false">Needs attention</button>
+      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="done" aria-pressed="false">Done</button>
+    </div>
+    <ul class="epic-list" role="list">${snapshot.epics.map((epic) => epicRow(snapshot, epic)).join("")}</ul>
+    <p class="empty epic-filter-empty" hidden>No epics match this filter.</p>`;
+}
+
+function epicDetail(snapshot: StatusSnapshot, selected: StatusEpic): string {
   const items = snapshot.items.filter((item) => item.epicId === selected.id);
   const state = selected.delegated
     ? statePill(selected.state === "done" ? "merged" : selected.state, epicLabel(selected.state))
     : '<span class="tag">Not delegated</span>';
-  return `${pageHeading("epics")}${picker}
-    <div class="split"><div>
-      <div class="epic-head"><div>
-        <div class="row"><span class="lin-id">${esc(selected.id)}</span><span class="tag lin">Linear parent</span>${state}</div>
-        <h2>${esc(selected.title)}</h2>
-        <div class="muted">${esc(selected.description)}</div>
-        <div class="row">${avatar(selected.dri, true)} <span class="muted">DRI ${esc(selected.dri)}</span> <span class="dim">·</span> ${linkList(selected.links)}</div>
-      </div></div>
-      ${items.length ? `<div data-view-tabs data-selected="${mode}" aria-label="Epic view"><div data-tab="graph" data-label="Dependencies">${graph(items)}</div><div data-tab="board" data-label="Board">${board(items)}</div></div>` : `<div class="empty">No items yet.</div>`}
+  return `${pageHeading("epics")}
+    <a href="${routeHref({ view: "epics", id: null })}">All epics</a>
+    <div class="epic-head">
+      <div class="row"><span class="lin-id">${esc(selected.id)}</span>${state}</div>
+      <h2>${esc(selected.title)}</h2>
+      <p class="muted">${esc(selected.description)}</p>
+      <div class="row">${linkList(selected.links)}</div>
     </div>
-    <div class="card lin-panel"><div class="between"><h3>Linear agent session</h3><span class="tag lin">${esc(selected.id)}</span></div>
-      <div class="dim">What Paws posted on the parent issue.</div>
-      <div class="scroll" data-log="session-${esc(selected.id)}">${session(selected, snapshot.generatedAt)}</div>
-    </div></div>`;
+    ${items.length ? `<ul class="epic-items" role="list">${items.map((item) => epicItem(item)).join("")}</ul>` : `<div class="empty">No items yet.</div>`}`;
+}
+
+function epicRow(snapshot: StatusSnapshot, epic: StatusEpic): string {
+  const items = snapshot.items.filter((item) => item.epicId === epic.id);
+  const open = items.filter((item) => !["merged", "completed", "stopped"].includes(item.state));
+  const needs = items.some((item) =>
+    ["needs_human", "exhausted", "awaiting_input"].includes(item.state),
+  );
+  const state = epic.delegated
+    ? statePill(epic.state === "done" ? "merged" : epic.state, epicLabel(epic.state))
+    : '<span class="tag">Not delegated</span>';
+  return `<li class="epic-row" data-epic-state="${esc(epicFilter(epic, needs, open.length))}"><a class="work-title" href="${routeHref({ view: "epics", id: epic.id })}"><span class="lin-id">${esc(epic.id)}</span> <b>${esc(epic.title)}</b></a><div class="row wrap">${state}<span class="muted">${open.length} open · ${items.length} items</span></div></li>`;
+}
+
+function epicFilter(epic: StatusEpic, needs: boolean, open: number): string {
+  if (needs || epic.state === "awaiting_input") return "needs";
+  if (epic.delegated && epic.state === "done" && open === 0) return "done";
+  return "active";
+}
+
+function epicItem(item: StatusItem): string {
+  const href = item.runId
+    ? routeHref({ view: "runs", id: item.runId })
+    : routeHref({ view: "epics", id: item.epicId });
+  return `<li><div class="between"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${item.blockers.length ? `<span>Waiting on ${esc(item.blockers.join(", "))}</span>` : ""}</div></li>`;
 }
 
 function viewRuns(
@@ -368,77 +363,6 @@ function viewQueue(snapshot: StatusSnapshot): string {
   return `${pageHeading("queue")}
     <div class="sub">Serial. Each pull request is rebased onto main and Closeout runs again, because old evidence goes stale on a new base.</div>
     ${body}${recent}`;
-}
-
-function board(items: StatusItem[]): string {
-  const columns = ITEM_ORDER.filter((state) => items.some((item) => item.state === state));
-  return `<div class="board">${columns
-    .map((state) => {
-      const group = items.filter((item) => item.state === state);
-      return `<div class="col"><div class="between">${statePill(state, itemLabel(state))}<span class="dim mono">${group.length}</span></div>${group.map((item) => node(item)).join("")}</div>`;
-    })
-    .join("")}</div>`;
-}
-
-function graph(items: StatusItem[]): string {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  const depths = new Map<string, number>();
-  const visiting = new Set<string>();
-  function depth(id: string): number {
-    if (depths.has(id)) return depths.get(id)!;
-    if (visiting.has(id)) return 0;
-    visiting.add(id);
-    const blockers = (byId.get(id)?.blockers ?? []).filter((blocker) => byId.has(blocker));
-    const value = blockers.length ? 1 + Math.max(...blockers.map(depth)) : 0;
-    visiting.delete(id);
-    depths.set(id, value);
-    return value;
-  }
-  for (const item of items) depth(item.id);
-  const levels = [...new Set(depths.values())].sort((a, b) => a - b);
-  return `<div class="dependency-levels">${levels
-    .map(
-      (level) =>
-        `<section class="col"><h3>Stage ${level + 1}</h3>${items
-          .filter((item) => depths.get(item.id) === level)
-          .map(
-            (item) =>
-              `${node(item)}<p class="muted">${
-                item.blockers.length
-                  ? `Depends on ${item.blockers
-                      .map((id) => {
-                        const blocker = byId.get(id);
-                        return `${esc(id)}${blocker ? ` · ${esc(itemLabel(blocker.state))}` : ""}`;
-                      })
-                      .join(", ")}`
-                  : "No dependencies"
-              }</p>`,
-          )
-          .join("")}</section>`,
-    )
-    .join("")}</div>`;
-}
-
-function node(item: StatusItem): string {
-  const href = item.runId
-    ? routeHref({ view: "runs", id: item.runId })
-    : routeHref({ view: "epics", id: item.epicId });
-  return `<a class="node s-${esc(item.state)}" href="${href}">
-    <div class="between"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
-    <div class="t" title="${esc(item.title)}">${esc(item.title)}</div>
-    <div class="meta"><div class="row">${agentChip(item.agent)}</div><div class="row">${avatar(item.assignee, true)}</div></div>
-  </a>`;
-}
-
-function session(epic: StatusEpic, now: string): string {
-  if (!epic.session.length) return '<div class="dim">No session yet.</div>';
-  return [...epic.session]
-    .reverse()
-    .map(
-      (note) =>
-        `<div class="act"><span class="kind ${esc(note.kind)}">${esc(note.kind)}</span><div><div>${esc(note.text)}</div><div class="dim">${esc(note.actor)} · ${esc(ago(note.at, now))}</div></div></div>`,
-    )
-    .join("");
 }
 
 function questionCard(
@@ -696,17 +620,8 @@ function barClass(verdict: StatusVerdict): string {
   return "f";
 }
 
-function sourcePill(model: RenderModel): string {
-  if (model.phase === "error") return `<span class="pill">Offline</span>`;
-  if (model.phase === "loading") return `<span class="pill">Loading</span>`;
-  if (model.snapshot?.source === "demo")
-    return `<span class="pill demo-pill" title="Sample data">Demo data</span>`;
-  if (model.snapshot?.source === "live") return `<span class="pill live-pill">Live</span>`;
-  return `<span class="pill">Status</span>`;
-}
-
 function pageHeading(view: Route["view"]): string {
-  return `<header class="page-heading"><h1>${PAGES[view].title}</h1><p class="sub">${PAGES[view].description}</p></header>`;
+  return `<h1 class="sr-only">${PAGES[view].title}</h1>`;
 }
 
 function entityPicker(

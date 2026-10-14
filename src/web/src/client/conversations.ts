@@ -50,7 +50,7 @@ export function renderConversations(
   id: string | null,
 ): string {
   const heading =
-    '<header class="page-heading"><h1>Conversations</h1><p class="sub">Read Linear sessions and start a conversation on an issue or comment thread.</p></header>';
+    '<h1 class="sr-only">Conversations</h1>';
   if (!model || model.state === "loading")
     return `${heading}<div class="empty" role="status">Loading Linear conversations…</div>`;
   if (model.state === "unavailable")
@@ -88,7 +88,7 @@ export function renderConversations(
   const plan = selected.plan
     .map(
       (step) =>
-        `<li><span class="conversation-step ${step.status}" aria-label="${esc(planState(step.status))}"></span><span>${esc(step.content)}</span><small>${esc(planState(step.status))}</small></li>`,
+        `<li class="conversation-row"><span class="conversation-step ${step.status}" aria-label="${esc(planState(step.status))}"></span><span>${esc(step.content)}</span><small>${esc(planState(step.status))}</small></li>`,
     )
     .join("");
   const files = selected.artifacts
@@ -106,7 +106,7 @@ export function renderConversations(
   const history = selected.items
     .map(
       (item) =>
-        `<li><div><b>${esc(item.identifier)}</b><span>${esc(item.title)}</span></div><small>${esc(taskState(item.state))}</small>${item.response ? `<p>${esc(item.response)}</p>` : ""}</li>`,
+        `<li class="conversation-row"><div><b>${esc(item.identifier)}</b><span>${esc(item.title)}</span></div><small>${esc(taskState(item.state))}</small>${item.response ? `<p>${esc(item.response)}</p>` : ""}</li>`,
     )
     .join("");
   const pending = selected.delivery.filter(

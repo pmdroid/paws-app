@@ -37,7 +37,6 @@ const painted = new Map<string, string>();
 
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
-let epicView: "graph" | "board" = "graph";
 let selectedCheck: { itemId: string; checkId: string } | null = null;
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
@@ -48,16 +47,13 @@ let workspaceReady = false;
 let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const sourceDialog = createSourceDialog(applyChoice);
+let epicFilter: "all" | "active" | "needs" | "done" = "all";
 
 document.addEventListener("click", onClick);
 window.addEventListener("hashchange", () => {
   paint();
   window.scrollTo({ top: 0, behavior: "instant" });
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
-});
-document.addEventListener("paws:epic-view", (event) => {
-  const mode = (event as CustomEvent<unknown>).detail;
-  if (mode === "graph" || mode === "board") epicView = mode;
 });
 document.addEventListener("change", (event) => {
   const target = event.target;
@@ -85,7 +81,6 @@ async function boot(): Promise<void> {
     choice = choiceFromValue(storageGet(STORAGE_KEY)) ?? { kind: "auto" };
   }
   baked = await loadBakedEngineUrl();
-  epicView = window.matchMedia("(max-width: 900px)").matches ? "board" : "graph";
   if (currentEngine()) {
     phase = "loading";
     paint();
@@ -184,7 +179,6 @@ function paint(): void {
     via,
     error,
     engineUrl: currentEngine(),
-    epicView,
     selectedCheck,
     conversations: canReadConversations(currentEngine(), snapshot?.source, location.origin)
       ? conversations
@@ -201,6 +195,7 @@ function paint(): void {
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#content", view.content);
+  applyEpicFilter();
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
@@ -337,6 +332,13 @@ function onClick(event: Event): void {
     if (parseRoute(location.hash).view === "runners") void runners.refresh();
   }
   if (action === "source") openDialog();
+  if (action === "epic-filter") {
+    const filter = target.closest("[data-epic-filter]")?.getAttribute("data-epic-filter");
+    if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
+      epicFilter = filter;
+      applyEpicFilter();
+    }
+  }
   if (action === "select-check") {
     const row = target.closest("[data-item][data-check]");
     const itemId = row?.getAttribute("data-item");
@@ -395,7 +397,30 @@ async function signInWithGitHub(): Promise<void> {
 }
 
 function openDialog(): void {
-  sourceDialog.open(choice.kind === "engine" ? choice.url : "", sourceHelp());
+  sourceDialog.open(sourceHelp());
+}
+
+function applyEpicFilter(): void {
+  const root = document.querySelector("#content");
+  if (!root) return;
+  const rows = [...root.querySelectorAll<HTMLElement>("[data-epic-state]")];
+  if (!rows.length) return;
+  let visible = 0;
+  for (const row of rows) {
+    const show = epicFilter === "all" || row.dataset.epicState === epicFilter;
+    row.hidden = !show;
+    if (show) visible += 1;
+  }
+  const empty = root.querySelector<HTMLElement>(".epic-filter-empty");
+  if (empty) empty.hidden = visible > 0;
+  for (const button of root.querySelectorAll<HTMLButtonElement>("[data-epic-filter]")) {
+    const on = button.dataset.epicFilter === epicFilter;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.classList.toggle("bg-main", on);
+    button.classList.toggle("text-main-foreground", on);
+    button.classList.toggle("bg-secondary-background", !on);
+    button.classList.toggle("text-foreground", !on);
+  }
 }
 
 function applyChoice(next: SourceChoice): void {
@@ -417,12 +442,8 @@ function applyChoice(next: SourceChoice): void {
 }
 
 function sourceHelp(): string {
-  const engine = currentEngine();
   if (choice.kind === "demo") return "Showing bundled demo data.";
-  if (choice.kind === "engine") return `Showing ${choice.url}.`;
-  if (engine) return `Automatic. This page will use ${engine}.`;
-  if (servedLocally()) return "Automatic. This page reads the local engine.";
-  return "Automatic. This static site shows demo data until an engine URL is saved.";
+  return "Status comes from this Paws server.";
 }
 
 function currentEngine(): string | null {

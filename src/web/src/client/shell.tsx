@@ -26,7 +26,6 @@ import {
   SidebarGroup,
   SidebarMenu,
   SidebarMenuLink,
-  SidebarFooter,
 } from "./ui/sidebar";
 
 const ICONS = {
@@ -141,15 +140,13 @@ export function mountShell(): {
           <Sidebar className="hidden md:block">
             <div className="sticky top-0 flex h-dvh min-h-0 flex-col">
               <SidebarHeader>
-                <a href="#/" className="text-xl font-bold">
+                <a href="#/" className="text-xl font-bold tracking-tight">
                   Paws
                 </a>
-                <p className="break-words text-sm">{state.project?.repo ?? "Local workspace"}</p>
               </SidebarHeader>
               <SidebarContent>
                 <Navigation route={state.route} />
               </SidebarContent>
-              <SidebarFooter>Questions are answered in Linear.</SidebarFooter>
             </div>
           </Sidebar>
         )}
@@ -189,9 +186,7 @@ export function mountShell(): {
                   >
                     <div className="shrink-0 border-b-2 border-border p-5 pr-14">
                       <SheetTitle>Paws navigation</SheetTitle>
-                      <SheetDescription className="mt-2 break-words">
-                        {state.project?.repo ?? "Local workspace"}
-                      </SheetDescription>
+                      <SheetDescription className="sr-only">Dashboard pages</SheetDescription>
                     </div>
                     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
                       <Navigation
@@ -214,7 +209,7 @@ export function mountShell(): {
           <div
             className={
               authenticated
-                ? "mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 sm:p-6 lg:p-8"
+                ? "mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 pb-4 pt-3 sm:px-6 sm:pb-6 lg:px-8"
                 : "mx-auto flex w-full max-w-xl flex-col gap-6 p-6"
             }
           >

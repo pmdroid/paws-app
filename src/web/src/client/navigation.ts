@@ -5,7 +5,7 @@ export const PAGES = {
     title: "Overview",
     description: "Work delegated in Linear, verified and delivered by Paws.",
   },
-  epics: { title: "Epics", description: "Track related work and the dependencies between items." },
+  epics: { title: "Epics", description: "Related work delegated from Linear." },
   runs: {
     title: "Runs",
     description: "Inspect agent activity, execution controls, and verification output.",

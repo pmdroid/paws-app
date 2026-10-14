@@ -223,12 +223,11 @@ test("an empty live snapshot renders the Linear label empty state", async () => 
       via: "engine",
       error: null,
       engineUrl: "http://127.0.0.1:8787",
-      epicView: "graph",
       selectedCheck: null,
     });
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.items).toEqual([]);
-    expect(view.top).toContain("Live");
+    expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
     expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
   } finally {
