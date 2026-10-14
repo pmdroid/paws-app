@@ -28,6 +28,7 @@ import {
 import { routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
 import { renderConversations, type ConversationModel } from "./conversations";
+import { PAGES } from "./navigation";
 
 export interface RenderModel {
   conversations?: ConversationModel;
@@ -42,11 +43,9 @@ export interface RenderModel {
 }
 
 export interface Rendered {
-  side: string;
   top: string;
   banner: string;
   content: string;
-  tabbar: string;
   title: string;
 }
 
@@ -66,53 +65,10 @@ const ITEM_ORDER: ItemState[] = [
 
 const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"]);
 
-const ICONS = {
-  settings:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="5" cy="4" r="1.5" fill="var(--bg2)"/><circle cx="11" cy="8" r="1.5" fill="var(--bg2)"/><circle cx="6" cy="12" r="1.5" fill="var(--bg2)"/></svg>',
-  overview:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>',
-  epic: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.5 5.5 7 10.5M10.5 5.5 9 10.5"/></svg>',
-  run: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12v10H2z"/><path d="m4.5 6.5 2 1.5-2 1.5M8 10h3"/></svg>',
-  inbox:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h3.5l1 2h3l1-2H14M2 9l2-6h8l2 6v4H2z"/></svg>',
-  verify:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5 13.5 4v4c0 3.2-2.5 5.6-5.5 6.5C5 13.6 2.5 11.2 2.5 8V4z"/><path d="m5.5 8 2 2 3-3.5"/></svg>',
-  queue:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M4 5v6M4 8h6.5"/></svg>',
-};
-
-const NAV = [
-  { view: "overview", label: "Overview", icon: "overview" },
-  { view: "runners", label: "Runners", icon: "run" },
-  { view: "settings", label: "Settings", icon: "settings" },
-] as const;
-
-const WORK_VIEWS = [
-  { view: "runs", label: "Runs and logs" },
-  { view: "questions", label: "Questions" },
-  { view: "verdicts", label: "Verification" },
-  { view: "queue", label: "Merge queue" },
-  { view: "sessions", label: "Linear conversations" },
-  { view: "epics", label: "Epics and dependencies" },
-] as const;
-
-const CRUMB: Record<Route["view"], string> = {
-  overview: "Overview",
-  runners: "Runners",
-  epics: "Epics",
-  runs: "Agent runs",
-  sessions: "Linear conversations",
-  questions: "Open questions",
-  verdicts: "Closeout",
-  queue: "Merge queue",
-  settings: "Settings",
-};
-
 export function render(model: RenderModel): Rendered {
   const snapshot = model.snapshot;
-  const title = `Paws status · ${CRUMB[model.route.view]}`;
+  const title = `Paws status · ${PAGES[model.route.view].title}`;
   return {
-    side: renderSide(model),
     top: renderTop(model),
     banner: renderBanner(model),
     content:
@@ -121,49 +77,16 @@ export function render(model: RenderModel): Rendered {
         : model.route.view === "settings"
           ? '<div id="agent-settings" class="agent-settings"></div>'
           : snapshot && model.phase !== "loading"
-            ? renderWorkNavigation(model) + renderView(snapshot, model)
+            ? renderView(snapshot, model)
             : renderPending(model),
-    tabbar: renderTabbar(model),
     title,
   };
 }
 
-function renderSide(model: RenderModel): string {
-  const snapshot = model.snapshot;
-  const project = snapshot?.project;
-  const workspace = project?.workspace ? `${esc(project.workspace)} · ` : "";
-  const counts = snapshot ? navCounts(snapshot) : null;
-  const links = NAV.map((item) => {
-    const active =
-      model.route.view === "settings" || model.route.view === "runners"
-        ? model.route.view
-        : "overview";
-    const on = active === item.view ? " on" : "";
-    const count = counts ? counts[item.view] : 0;
-    const hot = item.view === "overview" && count > 0 ? " hot" : "";
-    const badge = count > 0 ? `<span class="cnt${hot}">${count}</span>` : "";
-    return `<a class="nav${on}" href="${routeHref({ view: item.view })}"${on ? ' aria-current="page"' : ""}>${ICONS[item.icon]}${item.label}${badge}</a>`;
-  }).join("");
-  return `<div class="brand"><div class="logo">P</div><div><b>Paws</b><small>status</small></div></div>
-    <div class="ws"><div class="row">${workspace}<b>${esc(project?.team ?? "…")}</b></div>
-    <div class="row">${esc(project?.repo ?? "Not connected")}</div></div>
-    ${links}
-    <div class="foot">Questions are answered in Linear.</div>`;
-}
-
 function renderTop(model: RenderModel): string {
-  const name = model.snapshot?.project.name ?? "Paws";
-  const crumb = CRUMB[model.route.view];
-  const param = routeParam(model.route);
   const pill = sourcePill(model);
   const clockText = model.snapshot ? clock(model.snapshot.generatedAt) : "";
-  return `<button class="btn ghost hamb" type="button" data-action="drawer" aria-label="Open menu">☰</button>
-    <div class="crumbs"><span class="c-root">${esc(name)} <span class="dim">/</span></span>${model.route.view !== "overview" && model.route.view !== "settings" && model.route.view !== "runners" ? '<a href="#/">Overview</a> <span class="dim">/</span> ' : ""}<b>${crumb}</b>${param ? ` <span class="c-param"><span class="dim">/</span> <span class="mono">${esc(param)}</span></span>` : ""}</div>
-    ${pill}
-    <div class="sp"></div>
-    <span class="clock">${clockText}</span>
-    <button class="btn ghost sm" type="button" data-action="refresh">Refresh</button>
-    <button class="btn sm" type="button" data-action="source">Engine</button>`;
+  return `<div class="status-meta">${pill}<span class="clock">${clockText ? `Updated ${clockText}` : "Waiting for status"}</span></div><div class="status-actions"><button class="btn ghost" type="button" data-action="refresh">Refresh</button><button class="btn" type="button" data-action="source">Engine</button></div>`;
 }
 
 function renderBanner(model: RenderModel): string {
@@ -188,39 +111,9 @@ function renderBanner(model: RenderModel): string {
 
 function renderPending(model: RenderModel): string {
   if (model.phase === "error") {
-    return `<div class="empty"><div style="font-size:15px;color:var(--text);margin-bottom:6px">Status unavailable</div>${esc(model.error ?? "The engine did not return a snapshot.")}<div style="margin-top:14px"><button class="btn primary" type="button" data-action="source">Choose a source</button></div></div>`;
+    return `${pageHeading(model.route.view)}<div class="empty"><div>Status unavailable</div>${esc(model.error ?? "The engine did not return a snapshot.")}<div><button class="btn primary" type="button" data-action="source">Choose a source</button></div></div>`;
   }
-  return `<div class="empty">Loading status…</div>`;
-}
-
-function renderTabbar(model: RenderModel): string {
-  const counts = model.snapshot ? navCounts(model.snapshot) : null;
-  const tabs = [
-    ["overview", "Overview", "overview"],
-    ["runners", "Runners", "run"],
-    ["settings", "Settings", "settings"],
-  ] as const;
-  return tabs
-    .map(([view, label, icon]) => {
-      const active =
-        model.route.view === "settings" || model.route.view === "runners"
-          ? model.route.view
-          : "overview";
-      const on = active === view ? " on" : "";
-      const count = counts ? counts[view] : 0;
-      const badge = view === "overview" && count > 0 ? `<span class="cnt">${count}</span>` : "";
-      return `<a class="${on}" href="${routeHref({ view })}" aria-label="${label}"${on ? ' aria-current="page"' : ""}>${ICONS[icon]}<span>${label}</span>${badge}</a>`;
-    })
-    .join("");
-}
-
-function renderWorkNavigation(model: RenderModel): string {
-  return `<nav class="work-navigation" aria-label="Work details">${WORK_VIEWS.map(
-    ({ view, label }) => {
-      const count = model.snapshot ? navCounts(model.snapshot)[view] : 0;
-      return `<a href="${routeHref({ view, id: null } as Route)}"${model.route.view === view ? ' aria-current="page"' : ""}>${label}${count ? ` <span class="cnt">${count}</span>` : ""}</a>`;
-    },
-  ).join("")}</nav>`;
+  return `${pageHeading(model.route.view)}<div class="empty" role="status">Loading status…</div>`;
 }
 
 const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
@@ -228,7 +121,6 @@ const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   if (model.route.view === "sessions")
     return renderConversations(model.conversations, model.route.id);
-  if (snapshot.items.length === 0) return `<div class="empty">${esc(EMPTY_ITEMS)}</div>`;
   switch (model.route.view) {
     case "overview":
       return viewOverview(snapshot);
@@ -250,6 +142,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
 }
 
 function viewOverview(snapshot: StatusSnapshot): string {
+  if (!snapshot.items.length)
+    return `${pageHeading("overview")}<div class="empty">${esc(EMPTY_ITEMS)}</div>`;
   const active = snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length;
   const attention = snapshot.items.filter((item) =>
     ["needs_human", "exhausted"].includes(item.state),
@@ -258,7 +152,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
     (item) => !["merged", "completed", "stopped"].includes(item.state),
   );
   const visible = (work.length ? work : [...snapshot.items].reverse()).slice(0, 12);
-  return `<h1>Overview</h1><p class="sub">Work delegated in Linear, verified and delivered by Paws.</p>
+  return `${pageHeading("overview")}
     <section class="overview-section" aria-labelledby="attention-heading"><div class="between"><h2 id="attention-heading">Needs attention</h2><a href="${routeHref({ view: "questions", id: null })}">Open questions</a></div>
       ${snapshot.questions.map((question) => questionRow(snapshot, question)).join("")}
       ${attention.map((item) => `<div class="it"><a href="${routeHref(item.runId ? { view: "runs", id: item.runId } : { view: "epics", id: item.epicId })}"><b>${esc(item.id)}</b> ${esc(item.title)}</a> ${statePill(item.state, itemLabel(item.state))}<div>${linkList(item.links)}</div></div>`).join("")}
@@ -266,13 +160,13 @@ function viewOverview(snapshot: StatusSnapshot): string {
     </section>
     <div class="overview-columns"><section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">${work.length ? "Work in progress" : "Recent work"}</h2><a href="${routeHref({ view: "runs", id: null })}">${active} active runs</a></div>
       <div class="overview-epics">${snapshot.epics.map((epic) => `<a href="${routeHref({ view: "epics", id: epic.id })}">${esc(epic.title)}</a>`).join("")}</div>
-      <ul class="overview-work">${visible
+      <ul class="overview-work" role="list">${visible
         .map((item) => {
           const run = snapshot.runs.find((entry) => entry.id === item.runId);
           const blockers = item.blockers.filter(
             (id) => !["merged", "completed"].includes(findItem(snapshot, id)?.state ?? "queued"),
           );
-          return `<li><div class="between"><a href="${routeHref(run ? { view: "runs", id: run.id } : { view: "epics", id: item.epicId })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
+          return `<li><div class="between"><a class="work-title" href="${routeHref(run ? { view: "runs", id: run.id } : { view: "epics", id: item.epicId })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
         })
         .join("")}</ul>
       <a href="${routeHref({ view: "epics", id: null })}">View epics and dependencies</a>
@@ -290,36 +184,42 @@ function viewOverview(snapshot: StatusSnapshot): string {
 }
 
 function viewEpics(snapshot: StatusSnapshot, id: string | null, mode: "graph" | "board"): string {
-  const selected = snapshot.epics.find((epic) => epic.id === id) ?? snapshot.epics[0];
-  if (!selected) return `<div class="empty">No epics.</div>`;
-  const tabs = snapshot.epics
-    .map((epic) => {
-      const on = epic.id === selected.id ? " on" : "";
-      return `<a class="tab${on}" href="${routeHref({ view: "epics", id: epic.id })}">${esc(epic.id)} · ${esc(epic.title)}</a>`;
-    })
-    .join("");
+  const selected =
+    snapshot.epics.find((epic) => epic.id === id) ?? (id === null ? snapshot.epics[0] : undefined);
+  if (!selected)
+    return `${pageHeading("epics")}<div class="empty">${id ? "Epic not found. Choose an epic from the list." : "No epics yet. Delegate a parent issue in Linear to see its work here."}</div>${entityPicker(
+      "Epic",
+      snapshot.epics.map((epic) => ({
+        value: routeHref({ view: "epics", id: epic.id }),
+        label: `${epic.id} · ${epic.title}`,
+      })),
+      "",
+    )}`;
+  const picker = entityPicker(
+    "Epic",
+    snapshot.epics.map((epic) => ({
+      value: routeHref({ view: "epics", id: epic.id }),
+      label: `${epic.id} · ${epic.title}`,
+    })),
+    routeHref({ view: "epics", id: selected.id }),
+  );
   const items = snapshot.items.filter((item) => item.epicId === selected.id);
-  const graphOn = mode === "graph" ? " on" : "";
-  const boardOn = mode === "board" ? " on" : "";
-  const toggle = items.length
-    ? `<div class="tabs" style="margin:0;border:0"><button class="tab${graphOn}" type="button" data-action="epic-view" data-mode="graph">Graph</button><button class="tab${boardOn}" type="button" data-action="epic-view" data-mode="board">Board</button></div>`
-    : "";
   const state = selected.delegated
     ? statePill(selected.state === "done" ? "merged" : selected.state, epicLabel(selected.state))
     : '<span class="tag">Not delegated</span>';
-  return `<div class="tabs">${tabs}</div>
+  return `${pageHeading("epics")}${picker}
     <div class="split"><div>
       <div class="epic-head"><div>
         <div class="row"><span class="lin-id">${esc(selected.id)}</span><span class="tag lin">Linear parent</span>${state}</div>
-        <h1>${esc(selected.title)}</h1>
-        <div class="muted" style="max-width:640px">${esc(selected.description)}</div>
-        <div class="row" style="margin-top:10px;font-size:12px">${avatar(selected.dri, true)} <span class="muted">DRI ${esc(selected.dri)}</span> <span class="dim">·</span> ${linkList(selected.links)}</div>
-      </div><div class="row">${toggle}</div></div>
-      ${items.length ? (mode === "board" ? board(items) : graph(items)) : `<div class="empty">No items yet.</div>`}
+        <h2>${esc(selected.title)}</h2>
+        <div class="muted">${esc(selected.description)}</div>
+        <div class="row">${avatar(selected.dri, true)} <span class="muted">DRI ${esc(selected.dri)}</span> <span class="dim">·</span> ${linkList(selected.links)}</div>
+      </div></div>
+      ${items.length ? `<div data-view-tabs data-selected="${mode}" aria-label="Epic view"><div data-tab="graph" data-label="Dependencies">${graph(items)}</div><div data-tab="board" data-label="Board">${board(items)}</div></div>` : `<div class="empty">No items yet.</div>`}
     </div>
-    <div class="card lin-panel"><div class="between"><h3 style="margin:0">Linear agent session</h3><span class="tag lin">${esc(selected.id)}</span></div>
-      <div class="dim" style="font-size:11.5px;margin:4px 0 8px">What Paws posted on the parent issue.</div>
-      <div class="scroll">${session(selected, snapshot.generatedAt)}</div>
+    <div class="card lin-panel"><div class="between"><h3>Linear agent session</h3><span class="tag lin">${esc(selected.id)}</span></div>
+      <div class="dim">What Paws posted on the parent issue.</div>
+      <div class="scroll" data-log="session-${esc(selected.id)}">${session(selected, snapshot.generatedAt)}</div>
     </div></div>`;
 }
 
@@ -332,26 +232,28 @@ function viewRuns(
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
-  const selected = runs.find((run) => run.id === id) ?? runs[0];
-  if (!selected) return `<div class="empty">No runs.</div>`;
+  const selected = runs.find((run) => run.id === id) ?? (id === null ? runs[0] : undefined);
+  const picker = entityPicker(
+    "Run",
+    runs.map((run) => ({
+      value: routeHref({ view: "runs", id: run.id }),
+      label: `${run.id} · ${run.itemId} · ${runLabel(run.state)}`,
+    })),
+    selected ? routeHref({ view: "runs", id: selected.id }) : "",
+  );
+  if (!selected)
+    return `${pageHeading("runs")}${picker}<div class="empty">${id ? "Run not found. Choose another run." : "No runs yet. Agent activity appears here when delegated work starts."}</div>`;
   const item = findItem(snapshot, selected.itemId);
-  const buttons = runs
-    .map((run) => {
-      const cls = run.id === selected.id ? "btn sm primary" : "btn sm ghost";
-      const runItem = findItem(snapshot, run.itemId);
-      return `<a class="${cls}" href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)} · ${esc(run.itemId)} ${phasePill(runItem, run, itemVerdict(snapshot, run.itemId))}</a>`;
-    })
-    .join("");
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
-  return `<div class="row wrap">${buttons}</div>
-    <div class="split" style="margin-top:12px"><div>
+  return `${pageHeading("runs")}${picker}
+    <div class="split"><div>
       <div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}${agentChip(selected.agent)}</div>
-      <h1>${esc(title)}</h1>
+      <h2>${esc(title)}</h2>
       <p class="muted">${esc(selected.summary)}</p>
       ${phaseStrip(item, selected, verdict)}
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
-      <div class="log">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
+      <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
       ${runCloseout(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>
     <div class="card"><h3>Run</h3><div class="kv">
@@ -370,8 +272,7 @@ function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
   const cards = snapshot.questions
     .map((question) => questionCard(snapshot, question, question.id === id))
     .join("");
-  return `<h1>Open questions</h1>
-    <div class="sub">Agents parked these runs. Answers happen in Linear. This page does not send them.</div>
+  return `${pageHeading("questions")}
     ${cards || '<div class="empty">No open questions.</div>'}`;
 }
 
@@ -382,15 +283,19 @@ function viewVerdicts(
   engineUrl: string | null,
 ): string {
   const verdicts = snapshot.verdicts;
-  const selected = verdicts.find((verdict) => verdict.itemId === id) ?? verdicts[0];
-  if (!selected) return `<div class="empty">No Closeout verdicts yet.</div>`;
+  const selected =
+    verdicts.find((verdict) => verdict.itemId === id) ?? (id === null ? verdicts[0] : undefined);
+  const picker = entityPicker(
+    "Candidate",
+    verdicts.map((verdict) => ({
+      value: routeHref({ view: "verdicts", id: verdict.itemId }),
+      label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}`,
+    })),
+    selected ? routeHref({ view: "verdicts", id: selected.itemId }) : "",
+  );
+  if (!selected)
+    return `${pageHeading("verdicts")}${picker}<div class="empty">${id ? "Candidate not found. Choose another verification result." : "No Closeout verdicts yet. Verification results appear here after an agent produces a candidate."}</div>`;
   const item = findItem(snapshot, selected.itemId);
-  const buttons = verdicts
-    .map((verdict) => {
-      const cls = verdict.itemId === selected.itemId ? "btn sm primary" : "btn sm ghost";
-      return `<a class="${cls}" href="${routeHref({ view: "verdicts", id: verdict.itemId })}">${esc(verdict.itemId)} <span class="dim">·</span> ${esc(verdict.decision)}</a>`;
-    })
-    .join("");
   const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
     const n = index + 1;
     const cls = n < selected.attempt ? "f" : n > selected.attempt ? "" : barClass(selected);
@@ -398,19 +303,19 @@ function viewVerdicts(
   }).join("");
   const fail =
     selected.failingCheck && selected.decision !== "accepted"
-      ? `<div class="mono" style="color:#ff9f9f;margin-top:3px">${esc(selected.failingCheck)}</div>`
+      ? `<div class="mono">${esc(selected.failingCheck)}</div>`
       : "";
-  return `<div class="row wrap">${buttons}</div>
-    <div class="between closeout-head" style="margin:12px 0"><div>
+  return `${pageHeading("verdicts")}${picker}
+    <div class="between closeout-head"><div>
       <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
-      <h1>Closeout · ${esc(item?.title ?? selected.itemId)}</h1>
+      <h2>${esc(item?.title ?? selected.itemId)}</h2>
       ${item ? phaseStrip(item, runForItem(snapshot, item.id), selected) : ""}
       <div class="muted">${esc(selected.summary)}</div>
     </div>
-    <div style="text-align:right"><div class="muted" style="font-size:12px;margin-bottom:5px">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
-    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted" style="flex:1">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card" style="padding:0;margin-top:14px">${checks(selected, selectedCheck, engineUrl)}</div>
-    <div class="card" style="margin-top:14px"><h3>Report</h3><div class="kv">
+    <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
+    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
+    <div class="card">${checks(selected, selectedCheck, engineUrl)}</div>
+    <div class="card"><h3>Report</h3><div class="kv">
       <span class="k">Base</span><span class="mono">${esc(selected.baseSha ?? "—")}</span>
       <span class="k">Head</span><span class="mono">${esc(selected.headSha ?? "—")}</span>
       <span class="k">Policy</span><span class="mono">${esc(policyLabel(selected))}</span>
@@ -451,7 +356,7 @@ function viewQueue(snapshot: StatusSnapshot): string {
         .join("")
     : '<div class="empty">Queue is empty.</div>';
   const recent = merged.length
-    ? `<div class="card" style="margin-top:16px"><h2>Recently merged</h2><div class="tw"><table><tr><th>Item</th><th>PR</th><th class="hide-phone">Agent</th><th>Assignee</th></tr>
+    ? `<div class="card"><h2>Recently merged</h2><div class="tw"><table><tr><th>Item</th><th>PR</th><th class="hide-phone">Agent</th><th>Assignee</th></tr>
         ${merged
           .map(
             (item) =>
@@ -460,7 +365,7 @@ function viewQueue(snapshot: StatusSnapshot): string {
           .join("")}
       </table></div></div>`
     : "";
-  return `<h1>Merge queue</h1>
+  return `${pageHeading("queue")}
     <div class="sub">Serial. Each pull request is rebased onto main and Closeout runs again, because old evidence goes stale on a new base.</div>
     ${body}${recent}`;
 }
@@ -470,95 +375,59 @@ function board(items: StatusItem[]): string {
   return `<div class="board">${columns
     .map((state) => {
       const group = items.filter((item) => item.state === state);
-      return `<div class="col"><div class="between" style="margin-bottom:8px">${statePill(state, itemLabel(state))}<span class="dim mono">${group.length}</span></div>${group.map((item) => node(item, "")).join("")}</div>`;
+      return `<div class="col"><div class="between">${statePill(state, itemLabel(state))}<span class="dim mono">${group.length}</span></div>${group.map((item) => node(item)).join("")}</div>`;
     })
     .join("")}</div>`;
 }
 
 function graph(items: StatusItem[]): string {
-  const layout = layoutDag(items);
-  const edges = items.flatMap((item) =>
-    item.blockers.flatMap((blocker) => {
-      const from = layout.pos.get(blocker);
-      const to = layout.pos.get(item.id);
-      const blockerItem = items.find((candidate) => candidate.id === blocker);
-      if (!from || !to || !blockerItem) return [];
-      const x1 = from.x + layout.w;
-      const y1 = from.y + layout.h / 2;
-      const x2 = to.x;
-      const y2 = to.y + layout.h / 2;
-      const mx = (x1 + x2) / 2;
-      const done = blockerItem.state === "merged" || blockerItem.state === "completed";
-      const color = done ? "#2b7a5e" : "#4b4f63";
-      const dash = done ? "" : ' stroke-dasharray="4 4"';
-      return [
-        `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 4},${y2}" fill="none" stroke="${color}" stroke-width="1.6"${dash}/>`,
-      ];
-    }),
-  );
-  const nodes = items
-    .map((item) => {
-      const pos = layout.pos.get(item.id);
-      if (!pos) return "";
-      return node(item, `left:${pos.x}px;top:${pos.y}px`);
-    })
-    .join("");
-  return `<div class="dag-wrap"><div class="dag" style="width:${layout.width}px;height:${layout.height}px"><svg width="${layout.width}" height="${layout.height}">${edges.join("")}</svg>${nodes}</div></div>
-    <div class="legend"><span>Dashed: blocker still open</span><span style="color:#5dd3a3">Solid: blocker merged</span></div>`;
-}
-
-function node(item: StatusItem, style: string): string {
-  const href = item.runId
-    ? routeHref({ view: "runs", id: item.runId })
-    : routeHref({ view: "epics", id: item.epicId });
-  const positioned = style ? ` style="${style}"` : "";
-  return `<a class="node s-${esc(item.state)}" href="${href}"${positioned}>
-    <div class="between"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
-    <div class="t" title="${esc(item.title)}">${esc(item.title)}</div>
-    <div class="meta"><div class="row">${agentChip(item.agent)}</div><div class="row">${avatar(item.assignee, true)}</div></div>
-  </a>`;
-}
-
-function layoutDag(items: StatusItem[]): {
-  pos: Map<string, { x: number; y: number }>;
-  width: number;
-  height: number;
-  w: number;
-  h: number;
-} {
   const byId = new Map(items.map((item) => [item.id, item]));
-  const level = new Map<string, number>();
+  const depths = new Map<string, number>();
   const visiting = new Set<string>();
-  const depth = (id: string): number => {
-    const cached = level.get(id);
-    if (cached !== undefined) return cached;
+  function depth(id: string): number {
+    if (depths.has(id)) return depths.get(id)!;
     if (visiting.has(id)) return 0;
     visiting.add(id);
     const blockers = (byId.get(id)?.blockers ?? []).filter((blocker) => byId.has(blocker));
     const value = blockers.length ? 1 + Math.max(...blockers.map(depth)) : 0;
     visiting.delete(id);
-    level.set(id, value);
+    depths.set(id, value);
     return value;
-  };
+  }
   for (const item of items) depth(item.id);
-  const columns = new Map<number, StatusItem[]>();
-  for (const item of items) {
-    const column = level.get(item.id) ?? 0;
-    const list = columns.get(column) ?? [];
-    list.push(item);
-    columns.set(column, list);
-  }
-  const w = 236;
-  const h = 92;
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const [column, group] of columns) {
-    group.forEach((item, index) => {
-      pos.set(item.id, { x: 20 + column * (w + 72), y: 20 + index * (h + 18) });
-    });
-  }
-  const columnCount = Math.max(1, columns.size);
-  const rowCount = Math.max(1, ...[...columns.values()].map((group) => group.length));
-  return { pos, w, h, width: 40 + columnCount * (w + 72), height: 40 + rowCount * (h + 18) };
+  const levels = [...new Set(depths.values())].sort((a, b) => a - b);
+  return `<div class="dependency-levels">${levels
+    .map(
+      (level) =>
+        `<section class="col"><h3>Stage ${level + 1}</h3>${items
+          .filter((item) => depths.get(item.id) === level)
+          .map(
+            (item) =>
+              `${node(item)}<p class="muted">${
+                item.blockers.length
+                  ? `Depends on ${item.blockers
+                      .map((id) => {
+                        const blocker = byId.get(id);
+                        return `${esc(id)}${blocker ? ` · ${esc(itemLabel(blocker.state))}` : ""}`;
+                      })
+                      .join(", ")}`
+                  : "No dependencies"
+              }</p>`,
+          )
+          .join("")}</section>`,
+    )
+    .join("")}</div>`;
+}
+
+function node(item: StatusItem): string {
+  const href = item.runId
+    ? routeHref({ view: "runs", id: item.runId })
+    : routeHref({ view: "epics", id: item.epicId });
+  return `<a class="node s-${esc(item.state)}" href="${href}">
+    <div class="between"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
+    <div class="t" title="${esc(item.title)}">${esc(item.title)}</div>
+    <div class="meta"><div class="row">${agentChip(item.agent)}</div><div class="row">${avatar(item.assignee, true)}</div></div>
+  </a>`;
 }
 
 function session(epic: StatusEpic, now: string): string {
@@ -600,7 +469,7 @@ function questionCard(
     <div class="qb"><div class="muted">${esc(question.body)}</div>
       ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
       ${options}
-      <div class="row" style="margin-top:8px">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
+      <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
 }
 
@@ -618,15 +487,7 @@ function events(snapshot: StatusSnapshot): string {
   if (!rows.length) return '<div class="dim">No events.</div>';
   return rows
     .map((event) => {
-      const color =
-        event.level === "err"
-          ? "color:#ff8f8f"
-          : event.level === "ok"
-            ? "color:#9fe3c5"
-            : event.level === "warn"
-              ? "color:#f3d18d"
-              : "";
-      return `<div class="it row"><span class="mono dim" style="width:72px;flex:none">${esc(clock(event.at))}</span><span style="${color}">${esc(event.text)}</span></div>`;
+      return `<div class="it row"><span class="mono dim">${esc(clock(event.at))}</span><span>${esc(event.text)}</span></div>`;
     })
     .join("");
 }
@@ -684,7 +545,7 @@ function checkDetail(verdict: StatusVerdict, check: StatusCheck, engineUrl: stri
     check.stdout || check.stderr
       ? `<button class="btn sm ghost" type="button" data-action="download-output" data-item="${esc(verdict.itemId)}" data-check="${esc(check.id)}">Download log</button>`
       : "";
-  return `<div class="check-detail"><div class="between"><h3 style="margin:0">${esc(check.id)}</h3>${download}</div>${meta ? `<div class="dim" style="margin:6px 0 10px">${meta}</div>` : ""}${commandOutput(verdict.itemId, check)}${findings}${paths ? `<div class="artifact">${paths}</div>` : ""}</div>`;
+  return `<div class="check-detail"><div class="between"><h3>${esc(check.id)}</h3>${download}</div>${meta ? `<div class="dim">${meta}</div>` : ""}${commandOutput(verdict.itemId, check)}${findings}${paths ? `<div class="artifact">${paths}</div>` : ""}</div>`;
 }
 
 function artifactLink(
@@ -798,7 +659,7 @@ function runCloseout(
   if (!verdict || verdict.checks.length === 0) return "";
   const check = chosenCheck(verdict, selectedCheck);
   if (!check) return "";
-  return `<div class="card" style="margin-top:14px"><div class="between"><h3 style="margin:0">Closeout</h3><a href="${routeHref({ view: "verdicts", id: itemId })}">All checks</a></div>${checkDetail(verdict, check, engineUrl)}</div>`;
+  return `<div class="card"><div class="between"><h3>Closeout</h3><a href="${routeHref({ view: "verdicts", id: itemId })}">All checks</a></div>${checkDetail(verdict, check, engineUrl)}</div>`;
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
@@ -825,31 +686,6 @@ function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined 
   return snapshot.items.find((item) => item.id === id);
 }
 
-function navCounts(snapshot: StatusSnapshot): Record<Route["view"], number> {
-  return {
-    overview: snapshot.questions.length,
-    runners: 0,
-    epics: snapshot.epics.length,
-    runs: snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length,
-    sessions: 0,
-    questions: snapshot.questions.length,
-    verdicts: snapshot.verdicts.filter((verdict) => verdict.decision !== "accepted").length,
-    queue: snapshot.mergeQueue.length,
-    settings: 0,
-  };
-}
-
-function routeParam(route: Route): string | null {
-  if (
-    route.view === "overview" ||
-    route.view === "queue" ||
-    route.view === "settings" ||
-    route.view === "runners"
-  )
-    return null;
-  return route.id;
-}
-
 function rankRun(run: StatusRun): number {
   return ACTIVE_RUN.has(run.state) ? 0 : 1;
 }
@@ -861,10 +697,23 @@ function barClass(verdict: StatusVerdict): string {
 }
 
 function sourcePill(model: RenderModel): string {
+  if (model.phase === "error") return `<span class="pill">Offline</span>`;
   if (model.phase === "loading") return `<span class="pill">Loading</span>`;
   if (model.snapshot?.source === "demo")
     return `<span class="pill demo-pill" title="Sample data">Demo data</span>`;
   if (model.snapshot?.source === "live") return `<span class="pill live-pill">Live</span>`;
-  if (model.phase === "error") return `<span class="pill">Offline</span>`;
   return `<span class="pill">Status</span>`;
+}
+
+function pageHeading(view: Route["view"]): string {
+  return `<header class="page-heading"><h1>${PAGES[view].title}</h1><p class="sub">${PAGES[view].description}</p></header>`;
+}
+
+function entityPicker(
+  label: string,
+  choices: { value: string; label: string }[],
+  selected: string,
+): string {
+  if (!choices.length) return "";
+  return `<label class="entity-picker"><span>${label}</span><select data-route-picker aria-label="${label}">${selected ? "" : '<option value="">Choose a result</option>'}${choices.map((choice) => `<option value="${esc(choice.value)}"${choice.value === selected ? " selected" : ""}>${esc(choice.label)}</option>`).join("")}</select></label>`;
 }

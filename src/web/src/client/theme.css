@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@source "./**/*.{ts,tsx}";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --background: hsl(214 95% 93%);
+  --secondary-background: #fff;
+  --main: hsl(217 100% 66%);
+  --foreground: #000;
+  --main-foreground: #000;
+  --border: #000;
+  --ring: #000;
+  --overlay: rgb(0 0 0 / 80%);
+  --shadow: 4px 4px 0 0 var(--border);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #1e2633;
+  --secondary-background: #273344;
+  --main: #5294ff;
+  --foreground: #f7f7f7;
+  --main-foreground: #000;
+  --border: #000;
+  --ring: #fff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-secondary-background: var(--secondary-background);
+  --color-main: var(--main);
+  --color-foreground: var(--foreground);
+  --color-main-foreground: var(--main-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-overlay: var(--overlay);
+  --spacing-control: 2.75rem;
+  --spacing-sidebar: 16rem;
+  --spacing-boxShadowX: 4px;
+  --spacing-boxShadowY: 4px;
+  --spacing-reverseBoxShadowX: -4px;
+  --spacing-reverseBoxShadowY: -4px;
+  --radius-base: 5px;
+  --font-weight-base: 500;
+  --font-weight-heading: 700;
+  --shadow-shadow: var(--shadow);
+}
+
+@layer base {
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-weight: var(--font-weight-base);
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: var(--font-weight-heading);
+  }
+  [hidden] {
+    display: none !important;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 4px;
+  }
+  ::selection {
+    background: var(--main);
+    color: var(--main-foreground);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

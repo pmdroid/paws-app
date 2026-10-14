@@ -10,58 +10,10 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235e6ad2'/%3E%3C/svg%3E"
     />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap"
-    />
     <link rel="stylesheet" href="__CSS__" />
   </head>
   <body>
-    <div class="app">
-      <aside class="side" id="side"></aside>
-      <div class="main">
-        <header class="top" id="top"></header>
-        <div id="banner"></div>
-        <section
-          id="workspace-access"
-          class="workspace-access"
-          hidden
-          aria-label="Workspace access"
-        ></section>
-        <div id="github-auth" class="github-auth"></div>
-        <section id="linear-session-start" hidden aria-label="Start Linear session"></section>
-        <main class="content" id="content"></main>
-      </div>
-    </div>
-    <div class="scrim" id="scrim" data-action="drawer-close"></div>
-    <nav class="tabbar" id="tabbar" aria-label="Status"></nav>
-    <dialog id="source-dialog" aria-labelledby="source-title">
-      <form id="source-form">
-        <h2 id="source-title">Status source</h2>
-        <p class="muted" id="source-help"></p>
-        <label class="field">
-          <span>Engine URL</span>
-          <input
-            name="engine"
-            type="url"
-            inputmode="url"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="http://127.0.0.1:8787"
-          />
-        </label>
-        <p class="dim" id="source-hint">
-          Leave this empty and save to choose automatically. When this page is served at /status,
-          that reads this engine. Demo data is only shown when you choose it.
-        </p>
-        <p class="err" id="source-error" role="alert"></p>
-        <div class="row dialog-actions">
-          <button type="button" class="btn" id="source-demo">Use demo data</button>
-          <button type="submit" class="btn primary">Save</button>
-        </div>
-      </form>
-    </dialog>
+    <div id="app"></div>
     <noscript
       ><p class="content">Paws status needs JavaScript to render the dashboard.</p></noscript
     >

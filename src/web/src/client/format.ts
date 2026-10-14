@@ -1,7 +1,5 @@
 import type { EpicState, ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
 
-const PALETTE = ["#a9b0ff", "#f6ad6c", "#5dd3a3", "#e46ea9", "#7cb8ff", "#c79cff"];
-
 const ITEM_LABEL: Record<ItemState, string> = {
   queued: "Queued",
   planning: "Planning",
@@ -48,14 +46,6 @@ const VERDICT_DETAIL: Record<VerdictDecision, string> = {
   exhausted: "Retry budget for this task is used up.",
   running: "Closeout is still collecting evidence.",
   blocked: "Closeout stopped and needs a person.",
-};
-
-const AGENTS: Record<string, { letter: string; color: string }> = {
-  claude: { letter: "C", color: "#d97757" },
-  codex: { letter: "X", color: "#10a37f" },
-  gemini: { letter: "G", color: "#4c9bf5" },
-  cursor: { letter: "Cu", color: "#c9cbd1" },
-  paws: { letter: "P", color: "#a371f7" },
 };
 
 export function esc(value: string): string {
@@ -178,13 +168,11 @@ export function statePill(state: string, label: string): string {
 }
 
 export function agentChip(name: string): string {
-  const style = agentStyle(name);
-  return `<span class="agent"><i style="background:${style.color}">${esc(style.letter)}</i>${esc(name)}</span>`;
+  return `<span class="agent">${esc(name)}</span>`;
 }
 
 export function avatar(name: string, small = false): string {
-  const cls = small ? "av sm" : "av";
-  return `<span class="${cls}" title="${esc(name)}" style="background:${colorFor(name)}">${esc(initials(name))}</span>`;
+  return `<span class="av${small ? " sm" : ""}" title="${esc(name)}">${esc(initials(name))}</span>`;
 }
 
 export function clock(iso: string): string {
@@ -225,22 +213,8 @@ export function safeHref(href: string): string | null {
   }
 }
 
-function agentStyle(name: string): { letter: string; color: string } {
-  const key = name.toLowerCase();
-  for (const [id, style] of Object.entries(AGENTS)) {
-    if (key.includes(id)) return style;
-  }
-  return { letter: initials(name).slice(0, 2), color: colorFor(name) };
-}
-
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
   const letters = parts.map((part) => part[0] ?? "").join("");
   return letters.toUpperCase() || "?";
-}
-
-function colorFor(name: string): string {
-  let hash = 0;
-  for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return PALETTE[hash % PALETTE.length] ?? "#a9b0ff";
 }

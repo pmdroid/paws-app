@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 
@@ -23,17 +24,23 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   if (response.status === 404) return true;
   if (response.status === 401) {
     document.body.classList.add("paws-login");
+    setLoginLayout(true);
     const content = document.querySelector("#content");
     if (content !== null)
-      content.innerHTML = `<section class="login-panel"><h1>Sign in to Paws</h1><p class="muted">Use your Linear account to open your workspace.</p><a class="btn primary" href="/auth/linear">Sign in with Linear</a><details><summary>Set up your first workspace</summary><form action="/auth/linear" method="post"><label class="field"><span>Setup code from the Paws operator</span><input name="bootstrap" required autocomplete="off" pattern="[A-Za-z0-9_-]{43}" /></label><button class="btn" type="submit">Connect workspace</button></form></details></section>`;
+      renderMarkup(
+        content,
+        `<section class="login-panel"><h1>Sign in to Paws</h1><p class="muted">Use your Linear account to open your workspace.</p><a class="btn primary" href="/auth/linear">Sign in with Linear</a><details><summary>Set up your first workspace</summary><form action="/auth/linear" method="post"><label class="field"><span>Setup code from the Paws operator</span><input name="bootstrap" required autocomplete="off" pattern="[A-Za-z0-9_-]{43}" /></label><button class="btn" type="submit">Connect workspace</button></form></details></section>`,
+      );
     if (root !== null) root.hidden = true;
     return false;
   }
   if (!response.ok) {
     if (root !== null) {
       root.hidden = false;
-      root.innerHTML =
-        '<p role="status">Workspace access could not be checked. Reload to try again.</p><button class="btn" id="workspace-signout">Sign out</button>';
+      renderMarkup(
+        root,
+        '<p role="status">Workspace access could not be checked. Reload to try again.</p><button class="btn" id="workspace-signout">Sign out</button>',
+      );
       root.querySelector("#workspace-signout")?.addEventListener("click", () => {
         const csrf =
           document.querySelector('meta[name="paws-csrf"]')?.getAttribute("content") ?? "";
@@ -46,11 +53,16 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   }
   const session = (await response.json()) as BrowserSession;
   document.body.classList.remove("paws-login");
+  setLoginLayout(false);
   const csrf = document.querySelector('meta[name="paws-csrf"]');
   csrf?.setAttribute("content", session.csrfToken);
   if (root === null) return true;
   root.hidden = false;
-  root.innerHTML = `<div class="row"><span>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</span><span class="muted">${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div><p id="workspace-feedback" role="status"></p>${session.role === "owner" ? '<details id="workspace-members"><summary>Workspace access</summary><h2>Members</h2><div id="workspace-members-list"></div><h2>Repositories</h2><p class="muted">Match each repository to the Linear team that can access its work.</p><form id="workspace-repositories"><label class="field"><span>Repository and Linear team ID, one pair per line</span><textarea name="repositories" rows="4" placeholder="owner/repository team-id"></textarea></label><button class="btn" type="submit">Save repositories</button></form></details>' : ""}`;
+  root.dataset.loaded = "true";
+  renderMarkup(
+    root,
+    `<div class="row"><span>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</span><span class="muted">${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div><p id="workspace-feedback" role="status"></p>${session.role === "owner" ? '<details id="workspace-members"><summary>Workspace access</summary><h2>Members</h2><div id="workspace-members-list"></div><h2>Repositories</h2><p class="muted">Match each repository to the Linear team that can access its work.</p><form id="workspace-repositories"><label class="field"><span>Repository and Linear team ID, one pair per line</span><textarea name="repositories" rows="4" placeholder="owner/repository team-id"></textarea></label><button class="btn" type="submit">Save repositories</button></form></details>' : ""}`,
+  );
   async function change(path: string, method: string, body?: unknown) {
     const result = await fetch(path, {
       method,
@@ -90,12 +102,15 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
       };
       const list = root.querySelector("#workspace-members-list");
       if (list !== null) {
-        list.innerHTML = data.members
-          .map(
-            (member) =>
-              `<form class="row workspace-member" data-member="${escapeHtml(member.id)}"><span>${escapeHtml(member.name)}${member.active ? "" : " (removed)"}</span><label><span class="sr-only">Role for ${escapeHtml(member.name)}</span><select name="role"${member.active ? "" : " disabled"}>${["owner", "admin", "member", "observer"].map((role) => `<option${role === member.role ? " selected" : ""}>${role}</option>`).join("")}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
-          )
-          .join("");
+        renderMarkup(
+          list,
+          data.members
+            .map(
+              (member) =>
+                `<form class="row workspace-member" data-member="${escapeHtml(member.id)}"><span>${escapeHtml(member.name)}${member.active ? "" : " (removed)"}</span><label><span class="sr-only">Role for ${escapeHtml(member.name)}</span><select name="role"${member.active ? "" : " disabled"}>${["owner", "admin", "member", "observer"].map((role) => `<option${role === member.role ? " selected" : ""}>${role}</option>`).join("")}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
+            )
+            .join(""),
+        );
         for (const form of list.querySelectorAll<HTMLFormElement>("form"))
           form.addEventListener("submit", (event) => {
             event.preventDefault();
@@ -174,4 +189,11 @@ async function signOut(csrfToken: string) {
   });
   if (!response.ok) throw new Error("Sign-out failed. Reload to try again.");
   location.reload();
+}
+
+function setLoginLayout(login: boolean): void {
+  for (const selector of ["#top", "#banner", "#github-auth", "#linear-session-start"]) {
+    const element = document.querySelector<HTMLElement>(selector);
+    if (element) element.hidden = login;
+  }
 }

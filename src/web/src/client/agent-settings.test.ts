@@ -46,8 +46,6 @@ describe("agent settings", () => {
       selectedCheck: null,
     });
     expect(rendered.content).toContain('id="agent-settings"');
-    expect(rendered.side).toContain('href="#/settings"');
-    expect(rendered.tabbar).toContain('aria-label="Settings"');
   });
 
   test("rendering explains inheritance and preserves empty model as agent default", () => {

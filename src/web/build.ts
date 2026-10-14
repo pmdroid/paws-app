@@ -35,7 +35,23 @@ if (!js || !jsName) {
   process.exit(1);
 }
 
-const css = await Bun.file(join(root, "src/client/style.css")).text();
+const cssPath = join(dist, "assets", "theme.css");
+const tailwind = Bun.spawn(
+  [
+    process.execPath,
+    "run",
+    "tailwindcss",
+    "-i",
+    join(root, "src/client/theme.css"),
+    "-o",
+    cssPath,
+    "--minify",
+  ],
+  { cwd: join(root, "../.."), stdout: "inherit", stderr: "inherit" },
+);
+if ((await tailwind.exited) !== 0) process.exit(1);
+const css = await Bun.file(cssPath).text();
+await rm(cssPath);
 const cssName = `app-${Bun.hash(css).toString(16)}.css`;
 await Bun.write(join(dist, "assets", cssName), css);
 

@@ -1,3 +1,4 @@
+import { renderMarkup } from "./theme";
 import { LINEAR_SESSION_API_PATH } from "../session-start";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
@@ -7,12 +8,14 @@ export function createSessionStart(reload: () => Promise<void>) {
   let checked = false;
   let available = false;
   let local = false;
+  let visible = true;
   return {
-    mount(element: HTMLElement, engineUrl: string | null, source: string | undefined) {
+    mount(element: HTMLElement, engineUrl: string | null, source: string | undefined, show = true) {
       root = element;
+      visible = show;
       local =
         engineUrl !== null && new URL(engineUrl).origin === location.origin && source === "live";
-      element.hidden = !local || !available;
+      element.hidden = !local || !available || !visible;
       if (!local || checked) return;
       checked = true;
       void fetch(LINEAR_SESSION_API_PATH, {
@@ -27,12 +30,12 @@ export function createSessionStart(reload: () => Promise<void>) {
             "available" in body &&
             body.available === true;
           if (!root || !available) return;
-          root.innerHTML = renderSessionStart();
+          renderMarkup(root, renderSessionStart());
           root.querySelector("form")?.addEventListener("submit", (event) => {
             event.preventDefault();
             void submit();
           });
-          root.hidden = !local;
+          root.hidden = !local || !visible;
         })
         .catch(() => undefined);
     },
@@ -72,7 +75,10 @@ export function createSessionStart(reload: () => Promise<void>) {
       )
         throw new Error("Linear returned no session.");
       const url = "url" in body && typeof body.url === "string" ? safeLinearUrl(body.url) : null;
-      status.innerHTML = `Session started.${url ? ` <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open in Linear</a>` : ""}`;
+      renderMarkup(
+        status,
+        `Session started.${url ? ` <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open in Linear</a>` : ""}`,
+      );
       form.reset();
       await reload();
     } catch (error) {
