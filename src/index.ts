@@ -201,7 +201,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     runnerConfig !== null && (repositoryAccess !== undefined || runtime.githubAuth === "app");
   if (execution === "remote" && !remotePlacementReady)
     throw new Error("Remote execution requires runner HTTPS and GitHub App repository access.");
-  const placeOnRunner = execution === "remote" || remotePlacementReady;
   if (runnerConfig !== null && (!publicDashboard || tls === undefined))
     throw new Error("Runner control requires the public HTTPS dashboard.");
   if (publicDashboard) {
@@ -219,9 +218,23 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (runtime.linearClientId === null || runtime.linearMode !== "agent-session")
       throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
-  const transcriptObjects =
-    explicitTranscripts ??
-    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
+  let placeOnRunner = execution === "remote";
+  let transcriptObjects = explicitTranscripts;
+  if (!placeOnRunner && remotePlacementReady) {
+    if (transcriptObjects !== undefined) placeOnRunner = true;
+    else {
+      try {
+        transcriptObjects = loadRunnerTranscriptObjects(runtime.env.home);
+        placeOnRunner = true;
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          error.message !== "Runner transcript storage configuration is missing or invalid."
+        )
+          throw error;
+      }
+    }
+  }
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   assertLinearQueue(paths.db);

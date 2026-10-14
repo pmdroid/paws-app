@@ -26,7 +26,7 @@ import {
   workspaceTokenHash,
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
-import { runtimeLinear } from "./workspace-runtime-linear";
+import { runtimeLinear, runtimeNativeFetch } from "./workspace-runtime-linear";
 import { probeExecutionRuntime } from "../local/execution-runtime";
 
 const mode = process.argv[2]!;
@@ -79,6 +79,27 @@ source.PAWS_PUBLIC_URL = `https://127.0.0.1:${browserPort}`;
 if (mode !== "disabled") {
   source.PAWS_RUNNER_HOST = "127.0.0.1";
   source.PAWS_RUNNER_PORT = String(runnerPort);
+}
+if (mode === "transcripts-later") {
+  source.GITHUB_AUTH = "app";
+  source.GITHUB_APP_ID = "99";
+  source.GITHUB_APP_INSTALLATION_ID = "1";
+  source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
+  const paws = startPaws(source, { noTunnel: true });
+  try {
+    const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
+      tls: { ca },
+    });
+    assert.equal(health.status, 200);
+  } finally {
+    await paws.stop();
+  }
+  observe(
+    "runner and GitHub App configuration still serves the dashboard before transcript storage exists",
+    { health: 200 },
+  );
+  console.log(JSON.stringify(observations));
+  process.exit(0);
 }
 if (mode === "invalid") {
   source.PAWS_RUNNER_HOST = "https://invalid.example/path";
