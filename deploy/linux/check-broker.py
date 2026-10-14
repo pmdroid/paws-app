@@ -132,7 +132,7 @@ def prepare_directory(common, parent, name, uid, gid, mode):
 
 def prepare_attempt(common, job, check, metadata_gid):
     attempt_id = job["verificationAttemptId"]
-    binding = json.dumps({"verificationAttemptId": attempt_id, "candidateSha": job["candidateSha"]}, sort_keys=True, separators=(",", ":")).encode()
+    binding = json.dumps({"verificationAttemptId": attempt_id, "candidateSha": job["candidateSha"], **({"checkoutExclusions": job["checkoutExclusions"]} if job.get("checkoutExclusions") else {})}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     root = private_directory(common, PRIVATE, metadata_gid, 0o750)
     work = private_directory(common, WORK, check.pw_gid, 0o750)
     private = None
@@ -142,7 +142,7 @@ def prepare_attempt(common, job, check, metadata_gid):
             prepare_directory(common, root, attempt_id, 0, metadata_gid, 0o750)
         except FileExistsError:
             private = private_directory(common, PRIVATE + "/" + attempt_id, metadata_gid, 0o750)
-            if read_root_file(common, private, "binding.json") != binding:
+            if read_root_file(common, private, "binding.json", 65536) != binding:
                 raise ValueError("Check attempt candidate binding differs")
             workspace = private_directory(common, WORK + "/" + attempt_id, check.pw_gid, 0o750)
             return

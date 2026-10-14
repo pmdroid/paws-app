@@ -229,6 +229,7 @@ export type OrchestratorOptions = {
     closeoutForItem(
       itemId: string,
       signal?: AbortSignal,
+      checkoutExclusions?: readonly string[],
     ): NonNullable<CloseoutGateOptions["commandRunner"]>;
   };
   publicationReady?: (
@@ -1107,6 +1108,8 @@ export class Orchestrator {
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
         const source = await prepareRepositorySnapshot({
           ...repository,
+          checkoutExclusions: loadConfigFile(join(this.options.pawsRoot, "config.toml"))
+            .checkoutProjects?.[`${repository.owner}/${repository.repo}`.toLowerCase()]?.exclude,
           workspace,
           networkGit: this.repositoryGit(item, repository, controller.signal, "read"),
           signal: controller.signal,
@@ -1537,18 +1540,28 @@ export class Orchestrator {
       );
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
+    const repository = this.repositoryForItem(item);
+    const checkoutExclusions = repository
+      ? (loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
+          `${repository.owner}/${repository.repo}`.toLowerCase()
+        ]?.exclude ?? [])
+      : [];
     const deps = this.agentDeps(item);
     for (const key of ["agentRunner", "promptRunner"] as const) {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
           assertCurrent();
-          const result = await runner(options);
+          const result = await runner({ ...options, checkoutExclusions });
           assertCurrent();
           return result;
         };
     }
-    const commands = this.options.remoteExecution?.closeoutForItem(item.id, deps.signal);
+    const commands = this.options.remoteExecution?.closeoutForItem(
+      item.id,
+      deps.signal,
+      checkoutExclusions,
+    );
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
     const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
     const report = (body: string) => {
@@ -1577,12 +1590,6 @@ export class Orchestrator {
       onCandidate?.(identity);
     };
     const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
-    const repository = this.repositoryForItem(item);
-    const checkoutExclusions = repository
-      ? (loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
-          `${repository.owner}/${repository.repo}`.toLowerCase()
-        ]?.exclude ?? [])
-      : [];
     const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
       checkoutExclusions,

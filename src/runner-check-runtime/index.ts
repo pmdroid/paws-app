@@ -128,6 +128,7 @@ export async function openRunnerCheckRuntime(options: {
       executionId: command.executionId,
       verificationAttemptId: command.verificationAttemptId,
       candidateSha: command.candidateSha,
+      checkoutExclusions: command.repository.checkoutExclusions,
       argv: command.argv,
       cwd: command.cwd,
       timeoutMs: command.timeoutMs,
@@ -241,6 +242,7 @@ export async function openRunnerCheckRuntime(options: {
           {
             verificationAttemptId: entry.command.verificationAttemptId,
             candidateSha: entry.command.candidateSha,
+            checkoutExclusions: entry.command.repository.checkoutExclusions,
           },
           { repositoryBundle: bundle },
         );
