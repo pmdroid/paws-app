@@ -9,6 +9,7 @@ import {
   openSync,
   readSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -144,7 +145,39 @@ function snapshotTree(
   destination?: number,
 ): string {
   const hash = createHash("sha256");
+  const repositoryRoot = realpathSync(`/proc/self/fd/${directory}`);
+  const ancestors = new Set<string>();
   let total = 0;
+  function openSource(fd: number, name: string): number {
+    const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    const path = `/proc/self/fd/${fd}/${name}`;
+    try {
+      return openSync(path, flags);
+    } catch (error) {
+      if (stored || (error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+      const target = realpathSync(path);
+      if (
+        !target.startsWith(`${repositoryRoot}/`) ||
+        target
+          .slice(repositoryRoot.length + 1)
+          .split("/")
+          .some((part) => part.toLowerCase() === ".git")
+      )
+        throw new Error("Task repository link escapes its source snapshot", { cause: error });
+      const parts = target.slice(repositoryRoot.length + 1).split("/");
+      let parent = openDirectory(`/proc/self/fd/${directory}/.`);
+      try {
+        for (const part of parts.slice(0, -1)) {
+          const next = openDirectory(`/proc/self/fd/${parent}/${part}`);
+          closeSync(parent);
+          parent = next;
+        }
+        return openSync(`/proc/self/fd/${parent}/${parts.at(-1)}`, flags);
+      } finally {
+        closeSync(parent);
+      }
+    }
+  }
   function visit(fd: number, target: number | undefined, prefix: string) {
     const info = fstatSync(fd);
     if (
@@ -155,16 +188,16 @@ function snapshotTree(
         : (info.mode & 0o7022) !== 0)
     )
       throw new Error("Unsafe task repository directory");
+    const identity = `${info.dev}:${info.ino}`;
+    if (ancestors.has(identity)) throw new Error("Task repository contains a directory cycle");
+    ancestors.add(identity);
     for (const name of readdirSync(`/proc/self/fd/${fd}`).sort()) {
       const relative = `${prefix}${name}`;
       total += 512 + Buffer.byteLength(name);
       if (name.toLowerCase() === ".git" || Buffer.byteLength(relative) > 4096)
         throw new Error("Unsafe task repository path");
       if (total > 536_870_912) throw new Error("Task repository exceeds size limit");
-      const source = openSync(
-        `/proc/self/fd/${fd}/${name}`,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
+      const source = openSource(fd, name);
       let output: number | undefined;
       try {
         const stat = fstatSync(source);
@@ -232,6 +265,7 @@ function snapshotTree(
         if (output !== undefined) closeSync(output);
       }
     }
+    ancestors.delete(identity);
   }
   visit(directory, destination, "");
   return hash.digest("hex");
