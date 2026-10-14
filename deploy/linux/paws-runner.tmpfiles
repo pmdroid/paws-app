@@ -14,4 +14,4 @@ d /var/lib/paws-check-control 0700 root root -
 d /var/lib/paws-check-metadata 0750 root paws-check-metadata -
 d /var/lib/paws-check-broker 0700 root root -
 d /run/systemd/system 0755 root root -
-d /var/lib/paws-runner-members 0700 root root -
+d /var/lib/paws-runner-members 0711 root root -
