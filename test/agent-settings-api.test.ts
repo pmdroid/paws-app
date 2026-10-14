@@ -8,23 +8,12 @@ import { tempHome } from "./helpers";
 
 function fixture() {
   const configPath = join(tempHome(), "config.toml");
-  const calls: unknown[] = [];
   const options: AgentSettingsOptions = {
     configPath,
     csrfToken: "test-token",
     repos: ["pmdroid/barkvisor"],
-    async probe(profile) {
-      calls.push(profile);
-      return {
-        ok: true,
-        ...profile,
-        models: [{ id: "test-model", name: "Test model" }],
-        efforts: [{ id: "high", name: "High" }],
-        message: "Connected",
-      };
-    },
   };
-  return { options, calls };
+  return { options };
 }
 
 const settings: AgentSettings = {
@@ -98,8 +87,8 @@ describe("local agent settings API", () => {
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
 
-  test("rejects hostile origins, hosts, missing CSRF, and preflight without writing or probing", async () => {
-    const { options, calls } = fixture();
+  test("rejects hostile origins, hosts, missing CSRF, and preflight without writing", async () => {
+    const { options } = fixture();
     const hostileHeaders: Record<string, string>[] = [
       { origin: "https://evil.example" },
       { origin: "http://127.0.0.1:9000" },
@@ -128,11 +117,10 @@ describe("local agent settings API", () => {
       )?.status,
     ).toBe(403);
     expect(existsSync(options.configPath)).toBe(false);
-    expect(calls).toEqual([]);
   });
 
-  test("invalid or oversized input cannot execute commands or change config", async () => {
-    const { options, calls } = fixture();
+  test("invalid or oversized input cannot change config or probe an agent", async () => {
+    const { options } = fixture();
     expect(
       (
         await handleAgentSettingsRequest(
@@ -156,15 +144,13 @@ describe("local agent settings API", () => {
       )?.status,
     ).toBe(400);
     expect(
-      (
-        await handleAgentSettingsRequest(
-          request("/api/settings/agents/test", "POST", {
-            profile: { agent: "grok", model: null, executable: "/tmp/execute" },
-          }),
-          options,
-        )
-      )?.status,
-    ).toBe(400);
+      await handleAgentSettingsRequest(
+        request("/api/settings/agents/test", "POST", {
+          profile: { agent: "grok", model: null, executable: "/tmp/execute" },
+        }),
+        options,
+      ),
+    ).toBeNull();
     expect(
       (
         await handleAgentSettingsRequest(
@@ -180,36 +166,10 @@ describe("local agent settings API", () => {
     });
     expect((await handleAgentSettingsRequest(malformed, options))?.status).toBe(400);
     expect(existsSync(options.configPath)).toBe(false);
-    expect(calls).toEqual([]);
-  });
-
-  test("connection test forwards one validated profile and hides thrown credential errors", async () => {
-    const { options, calls } = fixture();
-    const response = await handleAgentSettingsRequest(
-      request("/api/settings/agents/test", "POST", { profile: settings.defaults.implementer }),
-      options,
-    );
-    expect(await response!.json()).toEqual({
-      ok: true,
-      ...settings.defaults.implementer,
-      models: [{ id: "test-model", name: "Test model" }],
-      efforts: [{ id: "high", name: "High" }],
-      message: "Connected",
-    });
-    expect(calls).toEqual([settings.defaults.implementer]);
-    options.probe = async () => {
-      throw new Error("secret-token");
-    };
-    const failed = await handleAgentSettingsRequest(
-      request("/api/settings/agents/test", "POST", { profile: settings.defaults.implementer }),
-      options,
-    );
-    expect(await failed!.json()).toMatchObject({ ok: false, agent: "grok" });
-    expect(existsSync(options.configPath)).toBe(false);
   });
 
   test("live server shares the dashboard CSRF token with settings routes", async () => {
-    const { options, calls } = fixture();
+    const { options } = fixture();
     const { csrfToken: _, ...agentSettings } = options;
     const server = startServer({ hostname: "127.0.0.1", port: 0, webhooks: false, agentSettings });
     try {
@@ -229,8 +189,7 @@ describe("local agent settings API", () => {
         headers: { "Content-Type": "application/json", "x-paws-csrf": token!, origin: base },
         body: JSON.stringify({ profile: settings.defaults.implementer }),
       });
-      expect(probe.status).toBe(200);
-      expect(calls).toHaveLength(1);
+      expect(probe.status).toBe(404);
     } finally {
       server.stop(true);
     }

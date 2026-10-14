@@ -26,7 +26,7 @@ import {
   workspaceTokenHash,
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
-import { runtimeLinear } from "./workspace-runtime-linear";
+import { runtimeLinear, runtimeNativeFetch } from "./workspace-runtime-linear";
 import { probeExecutionRuntime } from "../local/execution-runtime";
 
 const mode = process.argv[2]!;
@@ -54,10 +54,12 @@ if (mode === "remote") {
   process.env.PAWS_CODEX_ACP = `${process.execPath} ${sentinel}`;
 }
 if (mode === "invalid-execution") {
+  source.PAWS_EXECUTION = "local";
+  assert.throws(() => startPaws(source), /remote runner/);
   source.PAWS_EXECUTION = "remtoe";
-  assert.throws(() => startPaws(source), /PAWS_EXECUTION must be local or remote/);
+  assert.throws(() => startPaws(source), /PAWS_EXECUTION must be remote/);
   assert(!existsSync(join(root, "paws.db")));
-  observe("unknown execution modes fail before opening production state", {
+  observe("local and unknown execution modes fail before opening production state", {
     databaseOpened: false,
   });
   console.log(JSON.stringify(observations));
@@ -77,6 +79,27 @@ source.PAWS_PUBLIC_URL = `https://127.0.0.1:${browserPort}`;
 if (mode !== "disabled") {
   source.PAWS_RUNNER_HOST = "127.0.0.1";
   source.PAWS_RUNNER_PORT = String(runnerPort);
+}
+if (mode === "transcripts-later") {
+  source.GITHUB_AUTH = "app";
+  source.GITHUB_APP_ID = "99";
+  source.GITHUB_APP_INSTALLATION_ID = "1";
+  source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
+  const paws = startPaws(source, { noTunnel: true });
+  try {
+    const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
+      tls: { ca },
+    });
+    assert.equal(health.status, 200);
+  } finally {
+    await paws.stop();
+  }
+  observe(
+    "runner and GitHub App configuration still serves the dashboard before transcript storage exists",
+    { health: 200 },
+  );
+  console.log(JSON.stringify(observations));
+  process.exit(0);
 }
 if (mode === "invalid") {
   source.PAWS_RUNNER_HOST = "https://invalid.example/path";
@@ -485,45 +508,9 @@ try {
         );
       }
       if (mode === "remote") {
-        const checking = call<{ ok: boolean; models: unknown[] }>(
-          browserPort,
-          "/api/settings/agents/test",
-          { profile: { agent: "codex", model: "fixture-runner-model" } },
-          headers,
-        );
-        let commandId: string | undefined;
-        const deadline = Date.now() + 4000;
-        while (!commandId && Date.now() < deadline) {
-          const response = await call<{ commands: { payload: string }[] }>(
-            runnerPort,
-            "/v1/commands",
-            undefined,
-            {},
-            peer,
-          );
-          for (const envelope of response.body.commands) {
-            const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString());
-            if (command.type === "probe" && command.id !== health.body.commandId)
-              commandId = command.id;
-          }
-          if (!commandId) await Bun.sleep(10);
-        }
-        assert(commandId, "settings probe must dispatch through the remote command channel");
-        const result = {
-          ...healthResult,
-          executionId: workspaceId(),
-          commandId,
-          models: [{ id: "remote-fixture", name: "Remote fixture" }],
-        };
-        assert.equal((await call(runnerPort, "/v1/health", result, {}, peer)).status, 200);
-        const checked = await checking;
-        assert.equal(checked.status, 200);
-        assert.equal(checked.body.ok, true);
-        assert.deepEqual(checked.body.models, result.models);
-        assert(!existsSync(localAgent), "remote probes must never launch a local ACP adapter");
-        observe("normal remote startup routes agent settings probes through actual mTLS", {
-          remoteCommandObserved: true,
-          remoteModelsReturned: true,
+        assert(!existsSync(localAgent), "remote startup must not launch a local ACP adapter");
+        observe("remote startup does not launch a local agent from agent settings", {
+          localAgentLaunched: false,
         });
       }
       const renewed = await call(runnerPort, "/v1/certificate", { csr: key.csr }, {}, peer);

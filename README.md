@@ -1,6 +1,6 @@
 # Paws
 
-Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, implements the change with your Claude Code, Grok, or Codex session over ACP, checks it with Closeout, and merges a pull request.
+Agent workflows for engineering teams. Paws runs on your machine, picks up an issue you hand it, places the work on a paired Linux runner, checks it with Closeout, and merges a pull request.
 
 Linear is the issue tracker. GitHub hosts the repositories and pull requests. This repository is the local process. Planning and the issue list live in [pmdroid/paws-planning](https://github.com/pmdroid/paws-planning) (QM-01 through QM-13 are the quick MVP).
 
@@ -15,7 +15,7 @@ bun run paws doctor
 bun run paws
 ```
 
-Add the `paws` label to a Linear issue or delegate it to the configured Linear user. Paws polls Linear and starts the work. Linear credentials, triggers, and questions are in [docs/linear-modes.md](docs/linear-modes.md). GitHub sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
+Add the `paws` label to a Linear issue or delegate it to the configured Linear user. Paws polls Linear and places the work on a [paired Linux runner](docs/runner-pairing.md). Linear credentials, triggers, and questions are in [docs/linear-modes.md](docs/linear-modes.md). GitHub sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
 
 `setup` writes `~/.paws/config.toml`. It connects your Linear personal API key and team, signs in to GitHub, asks which repository to use, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). Existing GitHub authentication settings are preserved. The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. Comment mode polls without a public URL; Linear agent-session mode is also available.
 
