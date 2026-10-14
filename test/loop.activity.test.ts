@@ -76,6 +76,22 @@ describe("activity mapping", () => {
 });
 
 describe("streamed activity", () => {
+  test("publishes remote progress immediately without mixing it into the final answer", () => {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent({ type: "progress", text: "Reading the selected repository." });
+    reporter.onEvent(chunk("Private reasoning", true));
+    expect(posted).toEqual([{ kind: "thought", body: "Reading the selected repository." }]);
+    expect(reporter.resultBody()).toBe("");
+    reporter.onEvent(chunk("The screenshot is ready."));
+    reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
+    expect(reporter.resultBody()).toBe("The screenshot is ready.");
+    expect(posted).toEqual([
+      { kind: "thought", body: "Reading the selected repository." },
+      { kind: "thought", body: "The screenshot is ready." },
+    ]);
+  });
+
   function chunk(text: string, thought = false): AcpEvent {
     return {
       type: "session_update",
