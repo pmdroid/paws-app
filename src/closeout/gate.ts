@@ -30,6 +30,7 @@ export interface CloseoutGate {
 }
 
 export type CloseoutGateOptions = {
+  checkoutExclusions?: readonly string[];
   /** Implementer identity. The Codex hook must use a different session and model. */
   candidate: CandidateIdentity;
   reviewer: CodexReviewer;
@@ -62,6 +63,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         };
       }
       const result = await runCloseoutGate({
+        checkoutExclusions: options.checkoutExclusions,
         worktree: input.worktree,
         taskId: input.taskId,
         base: input.baseSha,

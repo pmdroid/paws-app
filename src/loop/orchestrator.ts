@@ -1,3 +1,4 @@
+import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -1576,7 +1577,15 @@ export class Orchestrator {
       onCandidate?.(identity);
     };
     const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
+    const repository = this.repositoryForItem(item);
+    const checkoutExclusions = repository
+      ? (loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
+          `${repository.owner}/${repository.repo}`.toLowerCase()
+        ]?.exclude ?? [])
+      : [];
+    const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
+      checkoutExclusions,
       candidate,
       commandRunner: commands
         ? {
@@ -1588,7 +1597,12 @@ export class Orchestrator {
             },
           }
         : undefined,
-      reviewer: createAcpCodexReviewer(deps),
+      reviewer: {
+        async review(request) {
+          await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
+          return reviewer.review(request);
+        },
+      },
       fixer: {
         applyFix: async (request) => {
           if (this.stopped(item.id)) return { ok: false, reason: "fix cancelled" };

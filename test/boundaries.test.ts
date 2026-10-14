@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "worktree-checkout",
   "config",
   "credentials",
   "slack",
@@ -68,7 +69,8 @@ type ModuleName = (typeof MODULES)[number];
 /** Who may import whose public index. Enforced so parallel issues stay in their directory. */
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
-  config: ["core", "credentials"],
+  "worktree-checkout": [],
+  config: ["core", "credentials", "worktree-checkout"],
   credentials: ["db"],
   slack: ["config", "credentials"],
   core: [],
@@ -77,9 +79,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   intake: ["core", "linear"],
   "execution-controls": ["core", "db", "workspace"],
   scheduler: ["core", "db", "intake"],
-  acp: ["core", "config", "process"],
+  acp: ["core", "config", "process", "worktree-checkout"],
   closeout: ["closeout-spec"],
-  "closeout-spec": ["core"],
+  "closeout-spec": ["core", "worktree-checkout"],
   github: ["process"],
   questions: ["core"],
   web: ["db"],
@@ -98,6 +100,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: ["config"],
   host: ["core", "db"],
   loop: [
+    "worktree-checkout",
     "core",
     "db",
     "linear",

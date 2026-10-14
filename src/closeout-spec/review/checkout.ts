@@ -1,3 +1,4 @@
+import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +11,14 @@ import { gitOutput, gitRun } from "./git";
 export async function createCandidateCheckout(
   repo: string,
   head: string,
+  checkoutExclusions: readonly string[] = [],
 ): Promise<{ path: string; remove: () => Promise<void> }> {
   const path = await mkdtemp(join(tmpdir(), "paws-review-"));
   try {
-    await gitOutput(repo, ["worktree", "add", "--detach", path, head]);
+    await gitOutput(repo, ["worktree", "add", "--no-checkout", "--detach", path, head]);
+    await checkoutPatterns(path, exclusionPatterns(checkoutExclusions));
   } catch (error) {
+    await gitRun(repo, ["worktree", "remove", "--force", path]);
     await rm(path, { recursive: true, force: true });
     throw error;
   }
