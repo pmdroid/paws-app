@@ -23,6 +23,10 @@ OPTIONS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c",
 ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/var/empty", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
 
 
+def valid_exclusions(folders):
+    return isinstance(folders, list) and len(folders) <= 128 and len(json.dumps(folders, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 32768 and all(isinstance(folder, str) and 0 < len(folder.encode("utf-8")) <= 1024 and "\\" not in folder and all(ord(char) >= 32 and ord(char) != 127 for char in folder) and all(part not in ("", ".", "..") and part.lower() != ".git" for part in folder.split("/")) for folder in folders)
+
+
 def directory(path):
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -103,9 +107,11 @@ def attempt_input(attempt, runner_uid, input_gid):
         info = os.fstat(descriptor)
         if info.st_uid != runner_uid or info.st_gid != input_gid or stat.S_IMODE(info.st_mode) != 0o750:
             raise ValueError("Unsafe attempt input directory")
-        identity = json.loads(read_file(descriptor, "attempt.json", 4096, runner_uid, input_gid, 0o640))
-        if not isinstance(identity, dict) or set(identity) != {"format", "verificationAttemptId", "candidateSha", "bundleSha256"} or identity["format"] != 1 or identity["verificationAttemptId"] != attempt or not isinstance(identity["candidateSha"], str) or not SHA.fullmatch(identity["candidateSha"]) or not isinstance(identity["bundleSha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", identity["bundleSha256"]):
+        identity = json.loads(read_file(descriptor, "attempt.json", 65536, runner_uid, input_gid, 0o640))
+        if not isinstance(identity, dict) or set(identity) - {"checkoutExclusions"} != {"format", "verificationAttemptId", "candidateSha", "bundleSha256"} or identity["format"] != 1 or identity["verificationAttemptId"] != attempt or not isinstance(identity["candidateSha"], str) or not SHA.fullmatch(identity["candidateSha"]) or not isinstance(identity["bundleSha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", identity["bundleSha256"]):
             raise ValueError("Invalid attempt identity")
+        if not valid_exclusions(identity.get("checkoutExclusions", [])):
+            raise ValueError("Invalid checkout exclusions")
         copy_bundle(descriptor, identity, runner_uid, input_gid)
         return identity
     finally:
@@ -199,11 +205,16 @@ def initialize(identity, private, workspace, runner_uid, input_gid):
     git(["--git-dir=" + private, "read-tree", candidate])
     git(["-C", workspace, "init"])
     git(["-C", workspace, "fetch", "--no-tags", "--no-recurse-submodules", bundle, candidate])
-    git(["-C", workspace, "checkout", "--force", "--detach", candidate])
+    git(["-C", workspace, "update-ref", "--no-deref", "HEAD", candidate])
+    exclusions = identity.get("checkoutExclusions", [])
+    if exclusions:
+        patterns = ["/*", *["!/" + re.sub(r"([*?\[\] !#])", r"\\\1", folder) + "/" for folder in exclusions]]
+        git(["-C", workspace, "sparse-checkout", "set", "--no-cone", "--no-sparse-index", "--", *patterns])
+    git(["-C", workspace, "read-tree", "-mu", "HEAD"])
     descriptor = os.open(private + "/baseline.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
     os.fchmod(descriptor, 0o640)
     with os.fdopen(descriptor, "w") as stream:
-        json.dump(identity, stream, sort_keys=True, separators=(",", ":"))
+        json.dump(identity, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         stream.flush()
         os.fsync(stream.fileno())
 
@@ -246,7 +257,7 @@ def reject_populated_submodules(workspace, links):
 def inspect(identity, private, workspace, check_uid, metadata_gid):
     parent = directory(private)
     try:
-        baseline = json.loads(read_file(parent, "baseline.json", 4096, check_uid, metadata_gid, 0o640))
+        baseline = json.loads(read_file(parent, "baseline.json", 65536, check_uid, metadata_gid, 0o640))
         if baseline != identity:
             raise ValueError("Attempt baseline identity mismatch")
     finally:
@@ -278,6 +289,13 @@ def inspect(identity, private, workspace, check_uid, metadata_gid):
             input_file.write(entries)
             input_file.seek(0)
             git([*arguments, "update-index", "-z", "--index-info"], environment=index_environment, input_file=input_file)
+        excluded = [folder.encode("utf-8") + b"/" for folder in identity.get("checkoutExclusions", [])]
+        absent = [record.split(b"\t", 1)[1] for record in entries.split(b"\0") if record and any(record.split(b"\t", 1)[1].startswith(folder) for folder in excluded) and not os.path.lexists(os.fsencode(workspace) + b"/" + record.split(b"\t", 1)[1])]
+        if absent:
+            with tempfile.TemporaryFile(dir=private) as input_file:
+                input_file.write(b"\0".join(absent) + b"\0")
+                input_file.seek(0)
+                git([*arguments, "update-index", "--skip-worktree", "-z", "--stdin"], environment=index_environment, input_file=input_file)
         content = git([*arguments, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all"], environment=index_environment)[1]
         reject_populated_submodules(workspace, baseline_links)
         status = base64.b64encode(content).decode("ascii")
@@ -292,7 +310,7 @@ def main():
     input_gid = grp.getgrnam("paws-check-input").gr_gid
     metadata_gid = grp.getgrnam("paws-check-metadata").gr_gid
     capabilities = next(line.split()[1] for line in open("/proc/self/status") if line.startswith("CapEff:"))
-    if check.pw_uid == 0 or os.getuid() != check.pw_uid or os.getgid() != metadata_gid or set(os.getgroups()) != {check.pw_gid, input_gid} or int(capabilities, 16) != 0 or len(sys.argv) != 4 or sys.argv[1] not in ("init", "inspect") or not IDENTIFIER.fullmatch(sys.argv[2]) or not SHA.fullmatch(sys.argv[3]):
+    if check.pw_uid == 0 or os.getuid() != check.pw_uid or os.getgid() != metadata_gid or set(os.getgroups()) != {check.pw_gid, input_gid} or int(capabilities, 16) != 0 or len(sys.argv) != 5 or sys.argv[1] not in ("init", "inspect") or not IDENTIFIER.fullmatch(sys.argv[2]) or not SHA.fullmatch(sys.argv[3]):
         raise ValueError("Fixed trusted metadata identity required")
     attempt = sys.argv[2]
     validate_directory(PRIVATE, 0, metadata_gid, 0o750)
@@ -304,7 +322,8 @@ def main():
     workspace = WORK + "/" + attempt + "/workspace"
     validate_directory(workspace, check.pw_uid, check.pw_gid, 0o700)
     identity = attempt_input(attempt, runner.pw_uid, input_gid)
-    if identity["candidateSha"] != sys.argv[3]:
+    topology = json.dumps(identity.get("checkoutExclusions", []), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if identity["candidateSha"] != sys.argv[3] or hashlib.sha256(topology).hexdigest() != sys.argv[4]:
         raise ValueError("Attempt differs from root-admitted candidate")
     if sys.argv[1] == "init":
         initialize(identity, private, workspace, runner.pw_uid, input_gid)

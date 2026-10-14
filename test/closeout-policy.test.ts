@@ -76,6 +76,57 @@ describe("path matcher", () => {
   });
 });
 
+describe("local policy override", () => {
+  test("loads without fetching origin and snapshots imported skills with their digest", () => {
+    const root = tempDir();
+    mkdirSync(join(root, ".agents/skills/review/references"), { recursive: true });
+    writeFileSync(
+      join(root, PUBLIC_POLICY_PATH),
+      'specVersion: "0.1"\nimports: [{as: local, path: .agents/checks.yaml}]\n',
+    );
+    writeFileSync(
+      join(root, ".agents/checks.yaml"),
+      'specVersion: "0.1"\nitems: [{id: review, kind: review, gate: beforePR, skill: .agents/skills/review/SKILL.md, independence: {differentSession: true, differentModel: true}, failOn: P1}]\n',
+    );
+    const skillPath = ".agents/skills/review/SKILL.md";
+    writeFileSync(join(root, skillPath), "Trusted local review instructions");
+    const git = createFakeGitReader();
+    const first = loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
+    expect(first.ok).toBe(true);
+    if (!first.ok || first.policy.source === "none") throw new Error("expected policy");
+    expect(first.policy.source).toBe("local");
+    expect(first.policy.items[0]?.id).toBe("local/review");
+    expect(first.policy.entryPath).toBe(join(root, PUBLIC_POLICY_PATH));
+    expect(git.calls).toHaveLength(0);
+    writeFileSync(join(root, skillPath), "Changed local review instructions");
+    expect(new TextDecoder().decode(first.policy.skillFiles?.get(skillPath))).toBe(
+      "Trusted local review instructions",
+    );
+    const second = loadPolicy({ repo: "/missing/repo", git, policyRoot: root });
+    expect(second.ok && second.policy.digest).not.toBe(first.policy.digest);
+  });
+
+  test("configured missing and malformed local policies block without fallback", () => {
+    const root = tempDir();
+    const git = createFakeGitReader();
+    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
+      ok: false,
+      source: "local",
+    });
+    mkdirSync(join(root, ".agents"));
+    writeFileSync(join(root, PUBLIC_POLICY_PATH), "specVersion: invalid\n");
+    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: root })).toMatchObject({
+      ok: false,
+      source: "local",
+    });
+    expect(loadPolicy({ repo: "/missing/repo", git, policyRoot: "" })).toMatchObject({
+      ok: false,
+      source: "local",
+    });
+    expect(git.calls).toHaveLength(0);
+  });
+});
+
 describe("policy errors", () => {
   test("duplicate keys", () => {
     const { result } = origin({

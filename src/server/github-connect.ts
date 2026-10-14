@@ -1,7 +1,9 @@
+import { discoverGitHubInstallation } from "./github-connect-status";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   createWorkspaceGitHubActivation,
+  createGitHubInstallationCheck,
   githubAppAuthorization,
   hash,
   newGitHubOAuthSecret,
@@ -79,20 +81,127 @@ export function createHostedGitHubConnect(options: {
         subject: url.pathname,
         now: now(),
       });
+    const administrator = () => {
+      const member = access
+        ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
+        : null;
+      return Boolean(member?.active && ["owner", "admin"].includes(member.role));
+    };
+    const signedIn = () => {
+      const current = requestWorkspaceSession(db, request, now());
+      return access && current?.session.tokenHash === access.session.tokenHash;
+    };
     const denied = () => {
       audit("access.denied");
       return Response.json(
-        { error: "Current workspace administration and recent sign-in required." },
+        administrator()
+          ? { code: "reauth_required", error: "Sign in again to connect GitHub." }
+          : {
+              code: "admin_required",
+              error: "Ask a workspace admin to install and connect the GitHub App.",
+            },
         { status: 403 },
       );
     };
     if (
       url.origin !== origin ||
       (request.headers.has("host") && request.headers.get("host") !== url.host) ||
-      !permitted() ||
+      !signedIn() ||
       (selected !== null && selected !== access!.principal.workspaceId)
     )
       return denied();
+    if (url.pathname === START && request.method === "GET") {
+      let app: ActiveGitHubApp;
+      try {
+        app = activation.template();
+      } catch {
+        return Response.json(
+          { status: "setup_required", canManage: administrator(), requiresSignIn: !permitted() },
+          { headers: { "cache-control": "no-store" } },
+        );
+      }
+      const workspaceId = access!.principal.workspaceId;
+      const scope = JSON.stringify(listWorkspaceRepositories(db, workspaceId));
+      const repositories = [
+        ...new Set(listWorkspaceRepositories(db, workspaceId).map((entry) => entry.repository)),
+      ];
+      try {
+        const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30000)]);
+        const discovered = await discoverGitHubInstallation(
+          app,
+          repositories,
+          signal,
+          options.fetch,
+        );
+        const connection = db
+          .query<
+            { secret_id: string | null; installation_id: string | null; repositories: string },
+            [string]
+          >(
+            "SELECT secret_id,installation_id,repositories FROM workspace_github_connection WHERE workspace_id=?",
+          )
+          .get(workspaceId);
+        const expected = repositories.map((name) => name.toLowerCase()).sort();
+        const approved: unknown = connection ? JSON.parse(connection.repositories) : null;
+        let connected = Boolean(
+          connection?.secret_id &&
+          connection.installation_id === discovered.installationId &&
+          Array.isArray(approved) &&
+          JSON.stringify(
+            approved
+              .map((name: unknown) => (typeof name === "string" ? name.toLowerCase() : null))
+              .sort(),
+          ) === JSON.stringify(expected),
+        );
+        if (connected) {
+          const check = createGitHubInstallationCheck({
+            home: options.home,
+            env: options.env,
+            fetch: options.fetch,
+            resolve: (repository) => activation.resolve(repository),
+          });
+          for (const repository of repositories)
+            if (!(await check(repository, "write", signal))) connected = false;
+        }
+        if (!signedIn()) return denied();
+        if (
+          JSON.stringify(listWorkspaceRepositories(db, workspaceId)) !== scope ||
+          JSON.stringify(activation.template()) !== JSON.stringify(app)
+        )
+          return Response.json(
+            { error: "Workspace access changed. Refresh to check GitHub again." },
+            { status: 409 },
+          );
+        return Response.json(
+          {
+            status: !repositories.length
+              ? "needs_repositories"
+              : !discovered.installed
+                ? "needs_installation"
+                : !discovered.permissions
+                  ? "needs_access"
+                  : connected
+                    ? "connected"
+                    : "needs_connection",
+            canManage: administrator(),
+            requiresSignIn: !permitted(),
+            installationUrl: discovered.installationUrl,
+            repositoryCount: repositories.length,
+          },
+          { headers: { "cache-control": "no-store" } },
+        );
+      } catch {
+        if (!signedIn()) return denied();
+        return Response.json(
+          {
+            error:
+              "GitHub access could not be checked. Try again or ask a workspace admin to review the App installation.",
+          },
+          { status: 503 },
+        );
+      }
+    }
+    if (!permitted()) return denied();
     if (url.pathname === START) {
       if (
         request.method !== "POST" ||
@@ -119,16 +228,93 @@ export function createHostedGitHubConnect(options: {
         return Response.json({ error: "Invalid installation intent." }, { status: 400 });
       let installationId: unknown;
       try {
-        installationId = (JSON.parse(body) as { installationId?: unknown }).installationId;
+        const input: unknown = JSON.parse(body);
+        if (
+          typeof input !== "object" ||
+          input === null ||
+          Array.isArray(input) ||
+          Object.keys(input).some((key) => key !== "installationId")
+        )
+          throw new Error();
+        installationId = (input as { installationId?: unknown }).installationId;
+        if (
+          installationId !== undefined &&
+          (typeof installationId !== "string" || !/^[1-9][0-9]{0,19}$/.test(installationId))
+        )
+          throw new Error();
       } catch {
-        return Response.json({ error: "Choose an installation ID." }, { status: 400 });
+        return Response.json(
+          { error: "The connection request is invalid. Refresh and try again." },
+          { status: 400 },
+        );
       }
-      if (typeof installationId !== "string" || !/^[1-9][0-9]{0,19}$/.test(installationId))
-        return Response.json({ error: "Choose a numeric installation ID." }, { status: 400 });
+      if (!permitted()) return denied();
+      const initialRepositories = listWorkspaceRepositories(db, access!.principal.workspaceId);
+      const initialScope = JSON.stringify(initialRepositories);
+      let discoveredApp: ActiveGitHubApp | undefined;
+      if (installationId === undefined) {
+        const repositories = [...new Set(initialRepositories.map((entry) => entry.repository))];
+        if (!repositories.length)
+          return Response.json(
+            { error: "Ask a workspace owner to add repositories first." },
+            { status: 409 },
+          );
+        try {
+          discoveredApp = activation.template();
+        } catch {
+          return Response.json(
+            {
+              error:
+                "Ask the Paws operator to configure the GitHub App on the server, then restart Paws.",
+            },
+            { status: 503 },
+          );
+        }
+        try {
+          const discovered = await discoverGitHubInstallation(
+            discoveredApp,
+            repositories,
+            AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
+            options.fetch,
+          );
+          if (!permitted()) return denied();
+          if (
+            JSON.stringify(listWorkspaceRepositories(db, access!.principal.workspaceId)) !==
+              initialScope ||
+            JSON.stringify(activation.template()) !== JSON.stringify(discoveredApp)
+          )
+            return Response.json(
+              { error: "Workspace access changed. Refresh and try again." },
+              { status: 409 },
+            );
+          if (!discovered.installed || !discovered.permissions)
+            return Response.json(
+              { installationUrl: discovered.installationUrl },
+              { headers: { "cache-control": "no-store" } },
+            );
+          installationId = discovered.installationId;
+        } catch {
+          if (!permitted()) return denied();
+          return Response.json(
+            {
+              error:
+                "GitHub access could not be checked. Try again or ask a workspace admin to review the App installation.",
+            },
+            { status: 503 },
+          );
+        }
+      }
+      if (typeof installationId !== "string")
+        return Response.json({ error: "Install the GitHub App first." }, { status: 409 });
       return immediate(db, () => {
         if (!permitted()) return denied();
         const workspaceId = access!.principal.workspaceId;
         const scope = JSON.stringify(listWorkspaceRepositories(db, workspaceId));
+        if (scope !== initialScope)
+          return Response.json(
+            { error: "Workspace access changed. Refresh and try again." },
+            { status: 409 },
+          );
         const repositories = [
           ...new Set(listWorkspaceRepositories(db, workspaceId).map((entry) => entry.repository)),
         ];
@@ -149,6 +335,11 @@ export function createHostedGitHubConnect(options: {
             { status: 503 },
           );
         }
+        if (discoveredApp && JSON.stringify(app) !== JSON.stringify(discoveredApp))
+          return Response.json(
+            { error: "GitHub setup changed. Refresh and try again." },
+            { status: 409 },
+          );
         const secret = newGitHubOAuthSecret();
         activation.save(secret.id, {
           app,
@@ -270,7 +461,10 @@ export function createHostedGitHubConnect(options: {
         enqueueJob(db, { queue: "github.auth.recover", now: now() });
         return new Response(null, {
           status: 303,
-          headers: { location: origin + "/status#/settings", "cache-control": "no-store" },
+          headers: {
+            location: origin + "/status#/settings/integrations",
+            "cache-control": "no-store",
+          },
         });
       });
     } catch {

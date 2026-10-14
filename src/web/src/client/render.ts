@@ -1,3 +1,4 @@
+import { renderSettingsPage } from "./settings-pages";
 import type {
   StatusCheck,
   StatusEpic,
@@ -59,7 +60,7 @@ export function render(model: RenderModel): Rendered {
       model.route.view === "runners"
         ? '<div id="runner-settings"></div>'
         : model.route.view === "settings"
-          ? '<div id="agent-settings" class="agent-settings"></div>'
+          ? renderSettingsPage(model.route.page)
           : snapshot && model.phase !== "loading"
             ? renderView(snapshot, model)
             : renderPending(model),
@@ -106,7 +107,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
     case "runners":
       return '<div id="runner-settings"></div>';
     case "settings":
-      return '<div id="agent-settings" class="agent-settings"></div>';
+      return renderSettingsPage(model.route.page);
   }
 }
 

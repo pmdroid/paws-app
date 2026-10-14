@@ -1,3 +1,4 @@
+import type { SettingsPage } from "./settings-pages";
 import { renderMarkup } from "./theme";
 import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
@@ -6,6 +7,7 @@ import { initializeWorkspaceAttribution } from "./workspace-attribution";
 
 type BrowserSession = {
   role: string;
+  user?: { name: string; email: string } | null;
   workspaceId: string;
   csrfToken: string;
   workspaces: { id: string; name: string; role: string }[];
@@ -23,11 +25,20 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
     }
     return false;
   }
-  if (response.status === 404) return true;
+  if (response.status === 404) {
+    if (root) {
+      root.dataset.loaded = "true";
+      renderMarkup(
+        root,
+        '<p data-settings-page="integrations">Configure workspace sign-in to manage service connections.</p><p data-settings-page="workspace">Configure workspace sign-in to manage members and repositories.</p><p data-settings-page="audit">Configure workspace sign-in to view workspace changes.</p>',
+      );
+    }
+    return true;
+  }
   if (response.status === 401) {
     document.body.classList.add("paws-login");
     setLoginLayout(true);
-    const content = document.querySelector("#content");
+    const content = document.querySelector("#page-content");
     if (content !== null)
       renderMarkup(
         content,
@@ -61,9 +72,11 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   if (root === null) return true;
   root.hidden = false;
   root.dataset.loaded = "true";
+  root.dataset.workspace = "true";
+  root.className = "flex min-w-0 flex-col gap-8";
   renderMarkup(
     root,
-    `<div class="row"><span>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</span><span class="muted">${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div><p id="workspace-feedback" role="status"></p>${session.role === "owner" ? '<details id="workspace-members"><summary>Workspace access</summary><h2>Members</h2><div id="workspace-members-list"></div><h2>Repositories</h2><p class="muted">Match each repository to the Linear team that can access its work.</p><form id="workspace-repositories"><label class="field"><span>Repository and Linear team ID, one pair per line</span><textarea name="repositories" rows="4" placeholder="owner/repository team-id"></textarea></label><button class="btn" type="submit">Save repositories</button></form></details>' : ""}`,
+    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p><section data-settings-page="integrations" class="settings-section"><div><h2>Linear</h2><p class="sub">Work, planning, and questions stay in Linear.</p></div><div><span class="pill ok">Connected</span><p>${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}</p></div></section>${session.role === "owner" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><form id="workspace-repositories"><label class="field"><span>Repository and Linear team ID, one pair per line</span><textarea name="repositories" rows="4" placeholder="owner/repository team-id"></textarea></label><button class="btn" type="submit">Save repositories</button></form></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace owner to change members, roles, or repository access.</p>'}${!["owner", "admin"].includes(session.role) ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace owners and admins.</p>' : ""}`,
   );
   async function change(path: string, method: string, body?: unknown) {
     const result = await fetch(path, {
@@ -94,43 +107,65 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
       }),
   );
   if (session.role === "owner") {
-    const [members, repositories] = await Promise.all([
+    const [initialMembers, repositories] = await Promise.all([
       fetch("/api/workspaces/members", { cache: "no-store" }),
       fetch("/api/workspaces/repositories", { cache: "no-store" }),
     ]).catch(() => [null, null]);
-    if (members?.ok) {
-      const data = (await members.json()) as {
-        members: { id: string; name: string; role: string; active: number }[];
-      };
-      const list = root.querySelector("#workspace-members-list");
-      if (list !== null) {
-        renderMarkup(
-          list,
-          data.members
-            .map(
-              (member) =>
-                `<form class="row workspace-member" data-member="${escapeHtml(member.id)}"><span>${escapeHtml(member.name)}${member.active ? "" : " (removed)"}</span><label><span class="sr-only">Role for ${escapeHtml(member.name)}</span><select name="role"${member.active ? "" : " disabled"}>${["owner", "admin", "member", "observer"].map((role) => `<option${role === member.role ? " selected" : ""}>${role}</option>`).join("")}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
-            )
-            .join(""),
-        );
-        for (const form of list.querySelectorAll<HTMLFormElement>("form"))
-          form.addEventListener("submit", (event) => {
-            event.preventDefault();
-            const button = form.querySelector<HTMLButtonElement>("button")!;
-            button.disabled = true;
-            void report(async () => {
-              await change("/api/workspaces/members", "PUT", {
-                userId: form.dataset.member,
-                role: new FormData(form).get("role"),
+    async function loadMembers(initialResponse?: Response | null) {
+      const refresh = root!.querySelector<HTMLButtonElement>("[data-members-refresh]")!;
+      refresh.disabled = true;
+      try {
+        const memberResponse =
+          initialResponse === undefined
+            ? await fetch("/api/workspaces/members", { cache: "no-store" })
+            : initialResponse;
+        if (!memberResponse?.ok)
+          throw new Error("Members could not be loaded. Refresh members to try again.");
+        const data = (await memberResponse.json()) as {
+          members: { id: string; name: string; role: string; active: number }[];
+        };
+        const list = root!.querySelector("#workspace-members-list");
+        if (list !== null) {
+          renderMarkup(
+            list,
+            data.members
+              .map(
+                (member) =>
+                  `<form class="row workspace-member" data-member="${escapeHtml(member.id)}"><span>${escapeHtml(member.name)}${member.active ? "" : " (removed)"}</span><label><span class="sr-only">Role for ${escapeHtml(member.name)}</span><select name="role"${member.active ? "" : " disabled"}>${["owner", "admin", "member", "observer"].map((role) => `<option${role === member.role ? " selected" : ""}>${role}</option>`).join("")}</select></label><button class="btn" type="submit"${member.active ? "" : " disabled"}>Save role</button></form>`,
+              )
+              .join(""),
+          );
+          for (const form of list.querySelectorAll<HTMLFormElement>("form"))
+            form.addEventListener("submit", (event) => {
+              event.preventDefault();
+              const button = form.querySelector<HTMLButtonElement>("button")!;
+              button.disabled = true;
+              void report(async () => {
+                await change("/api/workspaces/members", "PUT", {
+                  userId: form.dataset.member,
+                  role: new FormData(form).get("role"),
+                });
+                const feedback = root!.querySelector("#workspace-feedback");
+                if (feedback !== null) feedback.textContent = "Workspace role saved.";
+              }).finally(() => {
+                button.disabled = false;
               });
-              const feedback = root!.querySelector("#workspace-feedback");
-              if (feedback !== null) feedback.textContent = "Workspace role saved.";
-            }).finally(() => {
-              button.disabled = false;
             });
-          });
+        }
+      } catch {
+        renderMarkup(
+          root!.querySelector("#workspace-members-list")!,
+          '<p role="status">Members could not be loaded. Refresh members to try again.</p>',
+        );
+      } finally {
+        refresh.disabled = false;
       }
     }
+    root
+      .querySelector("[data-members-refresh]")!
+      .addEventListener("click", () => void loadMembers());
+    await loadMembers(initialMembers);
+
     const repositoryForm = root.querySelector<HTMLFormElement>("#workspace-repositories");
     if (repositories?.ok && repositoryForm !== null) {
       const data = (await repositories.json()) as {
@@ -158,6 +193,7 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
           await change("/api/workspaces/repositories", "PUT", { repositories: mapped });
           const feedback = root!.querySelector("#workspace-feedback");
           if (feedback !== null) feedback.textContent = "Repository access saved.";
+          document.dispatchEvent(new Event("paws:github-access-changed"));
         }).finally(() => {
           button.disabled = false;
         });
@@ -171,12 +207,23 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   }
   if (["owner", "admin", "member"].includes(session.role))
     initializeWorkspaceAttribution(root, session.csrfToken);
+  initializeWorkspaceGitHub(root, session.csrfToken);
   if (["owner", "admin"].includes(session.role)) {
-    initializeWorkspaceGitHub(root, session.csrfToken);
     await initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
+  const route = location.hash.split("/");
+  showWorkspaceSettingsPage(
+    route[1] === "settings" ? ((route[2] as SettingsPage) ?? "agents") : null,
+  );
   return true;
+}
+
+export function showWorkspaceSettingsPage(page: SettingsPage | null): void {
+  for (const section of document.querySelectorAll<HTMLElement>(
+    "#workspace-access [data-settings-page]",
+  ))
+    section.hidden = section.dataset.settingsPage !== page;
 }
 
 function escapeHtml(value: string): string {

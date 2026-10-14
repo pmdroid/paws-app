@@ -324,6 +324,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (path === "/api/auth/session" && request.method === "GET")
       return json({
         ...access.principal,
+        user: (() => {
+          const member = workspaceMember(
+            options.db,
+            access.principal.workspaceId,
+            access.principal.userId,
+          );
+          return member ? { name: member.name, email: member.email } : null;
+        })(),
         csrfToken: access.session.csrfToken,
         workspaces: listUserWorkspaces(options.db, access.principal.userId),
       });

@@ -30,12 +30,14 @@ export interface CloseoutGate {
 }
 
 export type CloseoutGateOptions = {
+  checkoutExclusions?: readonly string[];
   /** Implementer identity. The Codex hook must use a different session and model. */
   candidate: CandidateIdentity;
   reviewer: CodexReviewer;
   fixer: FixRunner;
   /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
   home?: string;
+  policyRoot?: string;
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   reportDir?: string;
@@ -62,6 +64,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         };
       }
       const result = await runCloseoutGate({
+        checkoutExclusions: options.checkoutExclusions,
         worktree: input.worktree,
         taskId: input.taskId,
         base: input.baseSha,
@@ -70,6 +73,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         reviewer: options.reviewer,
         fixer: options.fixer,
         ...(options.home !== undefined ? { home: options.home } : {}),
+        ...(options.policyRoot !== undefined ? { policyRoot: options.policyRoot } : {}),
         ...(options.pawsHome !== undefined ? { pawsHome: options.pawsHome } : {}),
         ...(options.reportDir ? { reportDir: options.reportDir } : {}),
         ...(options.recorder ? { recorder: options.recorder } : {}),

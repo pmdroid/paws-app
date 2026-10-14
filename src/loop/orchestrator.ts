@@ -1,3 +1,4 @@
+import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -195,6 +196,7 @@ export type OrchestratorOptions = {
   outbox: OutboxDispatcher;
   pawsRoot: string;
   home?: string;
+  closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
@@ -228,6 +230,7 @@ export type OrchestratorOptions = {
     closeoutForItem(
       itemId: string,
       signal?: AbortSignal,
+      checkoutExclusions?: readonly string[],
     ): NonNullable<CloseoutGateOptions["commandRunner"]>;
   };
   publicationReady?: (
@@ -1106,6 +1109,8 @@ export class Orchestrator {
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
         const source = await prepareRepositorySnapshot({
           ...repository,
+          checkoutExclusions: loadConfigFile(join(this.options.pawsRoot, "config.toml"))
+            .checkoutProjects?.[`${repository.owner}/${repository.repo}`.toLowerCase()]?.exclude,
           workspace,
           networkGit: this.repositoryGit(item, repository, controller.signal, "read"),
           signal: controller.signal,
@@ -1536,18 +1541,28 @@ export class Orchestrator {
       );
     const sessionProgress = this.sessionProgress(item);
     sessionProgress?.phase("verifying");
+    const repository = this.repositoryForItem(item);
+    const checkoutExclusions = repository
+      ? (loadConfigFile(join(this.options.pawsRoot, "config.toml")).checkoutProjects?.[
+          `${repository.owner}/${repository.repo}`.toLowerCase()
+        ]?.exclude ?? [])
+      : [];
     const deps = this.agentDeps(item);
     for (const key of ["agentRunner", "promptRunner"] as const) {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
           assertCurrent();
-          const result = await runner(options);
+          const result = await runner({ ...options, checkoutExclusions });
           assertCurrent();
           return result;
         };
     }
-    const commands = this.options.remoteExecution?.closeoutForItem(item.id, deps.signal);
+    const commands = this.options.remoteExecution?.closeoutForItem(
+      item.id,
+      deps.signal,
+      checkoutExclusions,
+    );
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
     const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
     const report = (body: string) => {
@@ -1576,7 +1591,9 @@ export class Orchestrator {
       onCandidate?.(identity);
     };
     const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
+    const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
+      checkoutExclusions,
       candidate,
       commandRunner: commands
         ? {
@@ -1588,7 +1605,12 @@ export class Orchestrator {
             },
           }
         : undefined,
-      reviewer: createAcpCodexReviewer(deps),
+      reviewer: {
+        async review(request) {
+          await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
+          return reviewer.review(request);
+        },
+      },
       fixer: {
         applyFix: async (request) => {
           if (this.stopped(item.id)) return { ok: false, reason: "fix cancelled" };
@@ -1635,7 +1657,7 @@ export class Orchestrator {
         },
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
-      ...this.closeoutHome(),
+      ...this.closeoutHome(item),
       ...recoveryOptions(this.db, item.id),
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
@@ -3656,7 +3678,11 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     });
-    const required = reviewRequirements(worktree.path, this.options.home);
+    const required = reviewRequirements(
+      worktree.path,
+      this.options.home,
+      this.options.closeoutPolicyRoot?.(repository),
+    );
     if (!required.ok) throw new Error(required.message);
     const requirements = required.items.filter((check) => check.gate === "beforePR");
     if (!requirements.length) return;
@@ -3709,8 +3735,15 @@ export class Orchestrator {
     );
   }
 
-  private closeoutHome(): { home?: string; pawsHome: string } {
+  private closeoutHome(item: WorkItemRecord): {
+    home?: string;
+    pawsHome: string;
+    policyRoot?: string;
+  } {
+    const repository = this.repositoryForItem(item);
+    const policyRoot = repository ? this.options.closeoutPolicyRoot?.(repository) : undefined;
     return {
+      ...(policyRoot !== undefined ? { policyRoot } : {}),
       ...(this.options.home !== undefined ? { home: this.options.home } : {}),
       pawsHome: this.options.pawsRoot,
     };

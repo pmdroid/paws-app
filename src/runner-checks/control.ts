@@ -97,11 +97,25 @@ export function createRunnerChecks(options: {
             .get(request.verificationAttemptId)
         )
           fenced();
+        if (previous) {
+          const prior = db
+            .query<{ input: string }, [string]>(
+              "SELECT input FROM runner_check_execution WHERE attempt_id=? LIMIT 1",
+            )
+            .get(request.verificationAttemptId);
+          if (
+            !prior ||
+            JSON.stringify(JSON.parse(prior.input).checkoutExclusions ?? []) !==
+              JSON.stringify(request.checkoutExclusions ?? [])
+          )
+            fenced();
+        }
         const executionId = workspaceId(at);
         const input = deriveRunnerCheckInput({
           executionId,
           verificationAttemptId: request.verificationAttemptId,
           candidateSha: request.candidateSha,
+          checkoutExclusions: request.checkoutExclusions,
           argv: request.argv,
           cwd: request.cwd,
           timeoutMs: request.timeoutMs,
@@ -121,7 +135,11 @@ export function createRunnerChecks(options: {
           runId: request.runId,
           itemId: scope.item.id,
           generation: (assigned?.generation ?? 0) + 1,
-          repository: { ...scope.repository, baseSha: request.candidateSha },
+          repository: {
+            ...scope.repository,
+            baseSha: request.candidateSha,
+            checkoutExclusions: request.checkoutExclusions,
+          },
           executionId,
           verificationAttemptId: request.verificationAttemptId,
           candidateSha: request.candidateSha,

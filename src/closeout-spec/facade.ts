@@ -8,6 +8,7 @@
  * requires that hash to change without another commit.
  */
 
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -68,6 +69,7 @@ export type ValidateResult =
 export type DigestResult = { ok: true; digest: string | null } | { ok: false; message: string };
 
 export type DecisionInput = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -78,12 +80,14 @@ export type DecisionInput = {
   evidenceDir?: string;
   /** Home directory for `~/.agents/closeout.yaml` when origin has no entry. */
   home?: string;
+  policyRoot?: string;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
 };
 
 export type RunRequest = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -92,6 +96,7 @@ export type RunRequest = {
   candidate: CandidateIdentity;
   evidenceDir?: string;
   home?: string;
+  policyRoot?: string;
   /** `~/.paws` override for the detached worktree. */
   pawsHome?: string;
   retryBaseline?: readonly string[];
@@ -108,6 +113,7 @@ export type ReviewIntake =
     };
 
 export type AddReviewInput = {
+  checkoutExclusions?: readonly string[];
   repo: string;
   base: string;
   head: string;
@@ -119,6 +125,7 @@ export type AddReviewInput = {
   reviewer: ReviewIntake;
   evidenceDir?: string;
   home?: string;
+  policyRoot?: string;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
@@ -171,8 +178,8 @@ const gitReader: GitReader = {
 };
 
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
-export function validate(repo: string, home?: string): ValidateResult {
-  const loaded = loadOrigin(repo, home);
+export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
 }
@@ -180,10 +187,11 @@ export function validate(repo: string, home?: string): ValidateResult {
 export function reviewRequirements(
   repo: string,
   home?: string,
+  policyRoot?: string,
 ):
   | { ok: true; items: Array<{ id: string; gate: Gate; independence: Independence }> }
   | { ok: false; message: string } {
-  const loaded = loadOrigin(repo, home);
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,
@@ -193,8 +201,8 @@ export function reviewRequirements(
   };
 }
 
-export function policyFixBudget(repo: string, home?: string): number | null {
-  const loaded = loadOrigin(repo, home);
+export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
+  const loaded = loadOrigin(repo, home, policyRoot);
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none" || policy.retry === undefined) return null;
@@ -223,7 +231,7 @@ export function digest(repo: string): DigestResult {
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   const candidate = input.candidate ?? blankCandidate();
   if (!loaded.ok) {
     return evaluate(
@@ -241,7 +249,7 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
  * Review requirements stay missing until {@link addReview}.
  */
 export async function run(input: RunRequest): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(
@@ -268,6 +276,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
   const evidence = createEvidenceStore({ root: evidenceDir });
   const ran = await runCloseoutCommands({
+    checkoutExclusions: input.checkoutExclusions,
     repo: input.repo,
     policy: loaded.policy,
     base: resolved.base,
@@ -299,7 +308,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
 
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
-  const loaded = loadOrigin(input.repo, input.home);
+  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (loaded.policy.source === "none" || loaded.policy.digest === null) {
     return { ok: false, message: "no closeout policy" };
@@ -315,11 +324,13 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
   const reviewed = await input.reviewer.review({
+    checkoutExclusions: input.checkoutExclusions,
     item,
     candidate,
     base: resolved.base,
     head: resolved.head,
     policyDigest: policy.digest,
+    skillFiles: policy.skillFiles,
     worktree: input.repo,
   });
   if (isInvalid(reviewed)) return { ok: false, message: reviewed.reason };
@@ -523,12 +534,32 @@ async function resolvePair(
   return { ok: true, base, head };
 }
 
-function loadOrigin(repo: string, home: string | undefined): ReturnType<typeof loadPolicy> {
-  return loadPolicy({
+function loadOrigin(
+  repo: string,
+  home: string | undefined,
+  policyRoot?: string,
+  checkoutExclusions: readonly string[] = [],
+): ReturnType<typeof loadPolicy> {
+  const loaded = loadPolicy({
     repo,
     git: gitReader,
     ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
   });
+  if (loaded.ok && loaded.policy.source !== "none" && checkoutExclusions.length) {
+    loaded.policy = {
+      ...loaded.policy,
+      digest: `sha256:${createHash("sha256")
+        .update(
+          JSON.stringify({
+            policy: loaded.policy.digest,
+            checkoutExclusions: [...new Set(checkoutExclusions)].sort(),
+          }),
+        )
+        .digest("hex")}`,
+    };
+  }
+  return loaded;
 }
 
 function loadTree(repo: string): ReturnType<typeof loadPolicy> {

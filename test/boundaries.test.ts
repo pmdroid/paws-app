@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "worktree-checkout",
   "config",
   "credentials",
   "slack",
@@ -68,7 +69,8 @@ type ModuleName = (typeof MODULES)[number];
 /** Who may import whose public index. Enforced so parallel issues stay in their directory. */
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
-  config: ["core", "credentials"],
+  "worktree-checkout": [],
+  config: ["core", "credentials", "worktree-checkout"],
   credentials: ["db"],
   slack: ["config", "credentials"],
   core: [],
@@ -77,9 +79,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   intake: ["core", "linear"],
   "execution-controls": ["core", "db", "workspace"],
   scheduler: ["core", "db", "intake"],
-  acp: ["core", "config", "process"],
+  acp: ["core", "config", "process", "worktree-checkout"],
   closeout: ["closeout-spec"],
-  "closeout-spec": ["core"],
+  "closeout-spec": ["core", "worktree-checkout"],
   github: ["process"],
   questions: ["core"],
   web: ["db"],
@@ -98,6 +100,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   settings: ["config"],
   host: ["core", "db"],
   loop: [
+    "worktree-checkout",
     "core",
     "db",
     "linear",
@@ -124,6 +127,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   setup: [
+    "closeout-spec",
     "db",
     "credentials",
     "config",
@@ -146,7 +150,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-closeout": ["closeout-spec", "runner-check"],
   "runner-protocol": [],
   "runner-execution": ["runner-protocol"],
-  "runner-check": ["runner-execution"],
+  "runner-check": ["runner-execution", "runner-protocol"],
   "runner-checks": [
     "db",
     "runner-check",
@@ -177,7 +181,14 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-health-runtime",
     "runner-check-runtime",
   ],
-  "runner-worker": ["acp", "runner-execution", "runner-answers", "install", "runner-protocol"],
+  "runner-worker": [
+    "worktree-checkout",
+    "acp",
+    "runner-execution",
+    "runner-answers",
+    "install",
+    "runner-protocol",
+  ],
   "runner-answers": ["runner-execution"],
   "runner-control": ["db", "workspace", "runner-identity", "runner-verifier"],
   "runner-daemon": [
@@ -192,6 +203,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-work": ["db", "workspace", "runner-protocol", "questions"],
   "runner-placement": ["db", "linear", "runner-protocol", "workspace"],
   "runner-backend": [
+    "config",
     "runner-placement",
     "runner-inputs",
     "runner-transcripts",

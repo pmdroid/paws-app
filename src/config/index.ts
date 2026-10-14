@@ -1,6 +1,7 @@
 export { loadEnv, DEFAULT_HOST, DEFAULT_PORT } from "./env";
 export type { EnvSource, PawsEnv } from "./env";
 export {
+  closeoutPolicyRoot,
   defaultAgents,
   emptyConfigFile,
   isImplementer,
@@ -40,3 +41,5 @@ export {
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
 export { loadRunnerControl } from "./runner-control";
+
+export type { CheckoutProjects } from "./checkout";
