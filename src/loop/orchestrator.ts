@@ -1067,6 +1067,7 @@ export class Orchestrator {
     handoff?: string,
   ): Promise<void> {
     const run = this.ensureRun(item);
+    item = getWorkItem(this.db, item.id)!;
     const profile = this.profileSnapshot(run.id).implementer;
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
@@ -1223,6 +1224,7 @@ export class Orchestrator {
       this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
     }
     const run = this.ensureRun(item);
+    item = getWorkItem(this.db, item.id)!;
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
