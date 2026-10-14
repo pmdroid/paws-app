@@ -35,9 +35,23 @@ export async function verifyHostedGitHubApp(input: {
   signal: AbortSignal;
   fetch?: typeof fetch;
 }): Promise<{ login: string; id: number }> {
+  const user = await authorizeHostedGitHubUser(input);
+  await verifyHostedGitHubRepositories({ ...input, user });
+  return { login: user.login, id: user.id };
+}
+
+export async function authorizeHostedGitHubUser(input: {
+  app: ActiveGitHubApp;
+  code: string;
+  verifier: string;
+  redirectUri: string;
+  signal: AbortSignal;
+  fetch?: typeof fetch;
+}): Promise<{ login: string; id: number; token: string }> {
   const fetchImpl = input.fetch ?? fetch;
   const response = await fetchImpl("https://github.com/login/oauth/access_token", {
     method: "POST",
+    redirect: "error",
     signal: input.signal,
     headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -59,7 +73,7 @@ export async function verifyHostedGitHubApp(input: {
   )
     throw new Error("GitHub authorization exchange failed.");
   const client = createFetchGitHubClient((url, init) =>
-    fetchImpl(String(url), { ...init, signal: input.signal }),
+    fetchImpl(String(url), { ...init, signal: input.signal, redirect: "error" }),
   );
   const user = await client.request({ method: "GET", path: "/user", token: grant.access_token });
   if (
@@ -71,6 +85,21 @@ export async function verifyHostedGitHubApp(input: {
     typeof user.body.login !== "string"
   )
     throw new Error("GitHub identity unavailable.");
+  return { login: user.body.login, id: user.body.id, token: grant.access_token };
+}
+
+export async function verifyHostedGitHubRepositories(input: {
+  app: ActiveGitHubApp;
+  installationId: string;
+  repositories: string[];
+  user: { login: string; id: number; token: string };
+  signal: AbortSignal;
+  fetch?: typeof fetch;
+}): Promise<void> {
+  const fetchImpl = input.fetch ?? fetch;
+  const client = createFetchGitHubClient((url, init) =>
+    fetchImpl(String(url), { ...init, signal: input.signal, redirect: "error" }),
+  );
   const jwt = signAppJwt(input.app.appId, input.app.privateKeyPem);
   const app = await client.request({ method: "GET", path: "/app", token: jwt });
   if (
@@ -96,7 +125,7 @@ export async function verifyHostedGitHubApp(input: {
     const access = await client.request({
       method: "GET",
       path: `/repos/${repository}`,
-      token: grant.access_token,
+      token: input.user.token,
     });
     if (
       access.status !== 200 ||
@@ -111,7 +140,7 @@ export async function verifyHostedGitHubApp(input: {
       const membership = await client.request({
         method: "GET",
         path: `/user/memberships/orgs/${repository.split("/")[0]}`,
-        token: grant.access_token,
+        token: input.user.token,
       });
       if (
         membership.status !== 200 ||
@@ -120,7 +149,7 @@ export async function verifyHostedGitHubApp(input: {
         membership.body.role !== "admin"
       )
         throw new Error("GitHub organization installation authority required.");
-    } else if (owner.type !== "User" || owner.id !== user.body.id)
+    } else if (owner.type !== "User" || owner.id !== input.user.id)
       throw new Error("GitHub installation owner required.");
     const [ownerName, repo] = repository.split("/") as [string, string];
     await mintInstallationToken({
@@ -132,7 +161,6 @@ export async function verifyHostedGitHubApp(input: {
       repo,
     });
   }
-  return { login: user.body.login, id: user.body.id };
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

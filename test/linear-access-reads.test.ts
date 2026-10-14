@@ -76,3 +76,40 @@ test("Stop during a completed access read rejects its stale result", async () =>
     "Stopped",
   );
 });
+
+test("repository team choices paginate within the installed Linear organization", async () => {
+  let index = 0;
+  const adapter = createLinearAccessReads(
+    {
+      async query(query) {
+        if (!query.includes("PawsRepositoryTeams")) return { viewer };
+        return {
+          viewer,
+          teams: {
+            nodes: [{ id: `team${index}`, name: `Team ${index}`, key: `T${index}` }],
+            pageInfo: { hasNextPage: index++ === 0, endCursor: "next" },
+          },
+        };
+      },
+    },
+    "client",
+  );
+  expect(await adapter.teams!()).toEqual([
+    { id: "team0", name: "Team 0", key: "T0" },
+    { id: "team1", name: "Team 1", key: "T1" },
+  ]);
+  const wrong = createLinearAccessReads(
+    {
+      async query(query) {
+        return query.includes("PawsRepositoryTeams")
+          ? {
+              viewer: { ...viewer, organization: { id: "other" } },
+              teams: { nodes: [], pageInfo: { hasNextPage: false } },
+            }
+          : { viewer };
+      },
+    },
+    "client",
+  );
+  await expect(wrong.teams!()).rejects.toThrow("installation changed");
+});
