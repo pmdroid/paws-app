@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   lstatSync,
@@ -19,19 +19,44 @@ import {
 } from "../src/runner-execution";
 
 const roots: string[] = [];
+const pids: number[] = [];
 const id = "01K00000000000000000000000";
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function remember(pid: number | undefined): number {
+  if (pid === undefined) throw new Error("Runner worker did not start");
+  pids.push(pid);
+  return pid;
+}
+
 afterEach(() => {
+  for (const pid of pids.splice(0)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 test("direct worker supervisor admits an execution once and kills its process group", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
   roots.push(root);
+  let pid = 0;
   const supervisor = createDirectWorkerSupervisor({
     stateRoot: join(root, "workers"),
     launch(executionId) {
-      return spawn(
+      const child = spawn(
         process.execPath,
         ["-e", `setTimeout(() => {}, 30000); void ${JSON.stringify(executionId)}`],
         {
@@ -39,12 +64,55 @@ test("direct worker supervisor admits an execution once and kills its process gr
           stdio: "ignore",
         },
       );
+      pid = remember(child.pid);
+      return child;
     },
   });
   expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
   expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: true });
   await supervisor.stop(id);
+  expect(alive(pid)).toBe(false);
   await supervisor.stop(id);
+});
+
+test("stop kills a worker that has not become its process group", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
+  roots.push(root);
+  const started = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      [
+        'const {spawn}=require("node:child_process");',
+        'const child=spawn(process.execPath,["-e","setTimeout(()=>{},30000)"],{stdio:"ignore"});',
+        "child.unref();",
+        "process.stdout.write(String(child.pid));",
+      ].join(""),
+    ],
+    { encoding: "utf8" },
+  );
+  const pid = Number(started.stdout);
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    throw new Error(`orphan worker did not start: ${started.stderr}`);
+  }
+  remember(pid);
+  let groupMissing = false;
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    groupMissing = (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+  expect(groupMissing).toBe(true);
+  expect(alive(pid)).toBe(true);
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: join(root, "workers"),
+    launch() {
+      return { pid, unref() {} };
+    },
+  });
+  expect(await supervisor.start(id)).toEqual({ alreadyAdmitted: false });
+  await supervisor.stop(id);
+  expect(alive(pid)).toBe(false);
 });
 
 const probe: RunnerJob = {
@@ -86,10 +154,12 @@ test("a failed launch removes the admission receipt and creates the result direc
     results,
     launch() {
       if (fail) throw new Error("Runner worker did not start");
-      return spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
         detached: true,
         stdio: "ignore",
       });
+      remember(child.pid);
+      return child;
     },
   });
   await expect(supervisor.start(id)).rejects.toThrow("Runner worker did not start");
