@@ -152,6 +152,8 @@ export {
   ensureLinearSession,
   bindLinearSessionTask,
   activateLinearItem,
+  workItemForSession,
+  delegatedLinearUserId,
   linearSessionForEpic,
   recordLinearTurn,
   listPendingLinearTurns,
