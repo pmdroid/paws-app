@@ -14,7 +14,7 @@ export const KEEPALIVE_MS = 10 * 60 * 1000;
 
 export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
-const ACTIVITY_LIMIT = 3_500;
+const ACTIVITY_PART_LENGTH = 3_500;
 type AcpActivity = Omit<ProgressUpdate, "sessionId">;
 type ToolUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
 type ToolActivity = {
@@ -57,7 +57,7 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
 }
 
 export function createAcpActivityReporter(
-  post: (activity: AcpActivity) => void,
+  emit: (activity: AcpActivity) => void,
   onPlan?: (steps: readonly SessionPlanStep[]) => void,
 ): {
   onEvent(event: AcpEvent): void;
@@ -68,6 +68,33 @@ export function createAcpActivityReporter(
   let publicMessage = "";
   let resultBody = "";
   const tools = new Map<string, ToolActivity>();
+
+  function post(activity: AcpActivity) {
+    const action = activity.action;
+    const length = action
+      ? Math.max(action.parameter.length, action.result?.length ?? 0)
+      : activity.body.length;
+    const parts = Math.max(1, Math.ceil(length / ACTIVITY_PART_LENGTH));
+    for (let part = 0; part < parts; part++) {
+      const start = part * ACTIVITY_PART_LENGTH;
+      const end = start + ACTIVITY_PART_LENGTH;
+      emit({
+        ...activity,
+        body: action
+          ? activity.body.slice(0, ACTIVITY_PART_LENGTH)
+          : activity.body.slice(start, end),
+        ...(action
+          ? {
+              action: {
+                action: parts === 1 ? action.action : `${action.action} (${part + 1}/${parts})`,
+                parameter: action.parameter.slice(start, end),
+                ...(action.result === undefined ? {} : { result: action.result.slice(start, end) }),
+              },
+            }
+          : {}),
+      });
+    }
+  }
 
   function flushPublicMessage() {
     const activity = clip("thought", publicToolText(publicMessage));
@@ -108,7 +135,6 @@ export function createAcpActivityReporter(
             tools.delete(update.toolCallId);
           else {
             tools.set(update.toolCallId, tool);
-            if (tools.size > 100) tools.delete(tools.keys().next().value!);
           }
           const activity = toolActivity(tool);
           if (activity) {
@@ -133,12 +159,6 @@ export function createAcpActivityReporter(
     flush,
     resultBody: () => resultBody,
   };
-}
-
-export function clipActivity(body: string): string {
-  const trimmed = body.trim();
-  if (trimmed.length <= ACTIVITY_LIMIT) return trimmed;
-  return `${trimmed.slice(0, ACTIVITY_LIMIT - 1)}…`;
 }
 
 function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
@@ -167,7 +187,7 @@ function textOf(content: { type: string; text?: string }): string {
 }
 
 function clip(kind: ActivityKind, body: string): AcpActivity | null {
-  const clipped = clipActivity(body);
+  const clipped = body.trim();
   if (clipped === "") return null;
   return { kind, body: clipped };
 }
@@ -200,7 +220,7 @@ function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
     );
   for (const key of ["terminal_output", "terminal_output_delta"]) {
     const data = terminalText(update["_meta"]?.[key]);
-    if (data !== null) tool.terminalOutput = (tool.terminalOutput + data).slice(0, 64 * 1024);
+    if (data !== null) tool.terminalOutput = tool.terminalOutput + data;
   }
   if ((tool.status === "completed" || tool.status === "failed") && tool.terminalOutput)
     tool.result = publicToolText(tool.terminalOutput);
@@ -227,7 +247,6 @@ function toolActivity(tool: ToolActivity): AcpActivity | null {
       parameter: tool.parameter,
       ...(tool.result || terminal ? { result: tool.result || tool.status! } : {}),
     },
-    ...(terminal ? {} : { ephemeral: true }),
   };
 }
 
@@ -261,27 +280,23 @@ function publicToolText(value: unknown): string {
       });
   }
   function clean(input: unknown, depth: number): unknown {
-    if (typeof input === "string") return clipActivity(text(input));
+    if (typeof input === "string") return text(input);
     if (input === null || typeof input === "number" || typeof input === "boolean") return input;
-    if (depth >= 4) return "[truncated]";
-    if (Array.isArray(input)) return input.slice(0, 20).map((entry) => clean(entry, depth + 1));
+    if (depth >= 32) return "[truncated]";
+    if (Array.isArray(input)) return input.map((entry) => clean(entry, depth + 1));
     if (typeof input !== "object" || input === undefined) return "";
     return Object.fromEntries(
-      Object.entries(input)
-        .slice(0, 20)
-        .flatMap(([key, entry]) => {
-          if (/reasoning|thought|analysis/i.test(key)) return [];
-          return [
-            [
-              text(key),
-              /api.?key|password|secret|token|authorization|cookie|credential|private.?key/i.test(
-                key,
-              )
-                ? "[redacted]"
-                : clean(entry, depth + 1),
-            ],
-          ];
-        }),
+      Object.entries(input).flatMap(([key, entry]) => {
+        if (/reasoning|thought|analysis/i.test(key)) return [];
+        return [
+          [
+            text(key),
+            /api.?key|password|secret|token|authorization|cookie|credential|private.?key/i.test(key)
+              ? "[redacted]"
+              : clean(entry, depth + 1),
+          ],
+        ];
+      }),
     );
   }
   if (typeof value === "string" && /^[\s]*[[{]/.test(value)) {
@@ -290,5 +305,5 @@ function publicToolText(value: unknown): string {
     } catch {}
   }
   const cleaned = clean(value, 0);
-  return clipActivity(typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned));
+  return typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned);
 }

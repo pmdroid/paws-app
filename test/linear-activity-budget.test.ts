@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeLinearActivityBudget } from "./local/linear-activity-budget";
 
-test("Chatty runs retain bounded progress and durable provider backoff without losing critical replies", async () => {
+test("Chatty runs retain all public history and durable provider backoff across restarts", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-activity-budget-"));
   const observations: boolean[] = [];
   try {
