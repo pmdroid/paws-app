@@ -10,6 +10,8 @@ import {
   type PublishArtifactHook,
   type PublishArtifactRequest,
 } from "./artifacts";
+import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
+import { decidePermission, type GuardContext } from "./permissions";
 
 export type AskTeamOption = string | { label?: string; value: string };
 
@@ -82,6 +84,9 @@ interface HostToolBridgeOptions {
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
+  closeout?: CloseoutSession;
+  commandGuard?: GuardContext;
+  allowCloseoutRun?: boolean;
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
@@ -101,11 +106,23 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
   };
   options.signal.addEventListener("abort", onAbort, { once: true });
   if (options.signal.aborted) onAbort();
+  const entry = askTeamMcpEntry();
+  const worktreePath = options.context.worktreePath;
+  const closeout = worktreePath
+    ? createCloseoutSession(worktreePath, {
+        signal: options.signal,
+        allowCommand(argv) {
+          authorizeCloseout(argv, worktreePath, options.commandGuard);
+        },
+      })
+    : undefined;
+  const allowCloseoutRun = options.allowCloseoutRun !== false;
+  const bridge = { ...options, ...(closeout ? { closeout } : {}) };
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.on("error", () => undefined);
-    void handleConnection(socket, { ...options, signal: lifetime.signal });
+    void handleConnection(socket, { ...bridge, signal: lifetime.signal });
   });
   try {
     await listen(server, options.socketPath);
@@ -119,7 +136,6 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     throw error;
   }
 
-  const entry = askTeamMcpEntry();
   return {
     mcpServer: {
       name: "paws",
@@ -133,6 +149,8 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.hook ? "ask_team" : "",
             options.updatePlan ? "update_plan" : "",
             options.publishArtifact ? "publish_artifact" : "",
+            closeout ? "get_closeout" : "",
+            closeout && allowCloseoutRun ? "run_closeout" : "",
           ]
             .filter(Boolean)
             .join(","),
@@ -190,6 +208,27 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
     };
     id = parsed.id ?? 0;
     options.signal.throwIfAborted();
+    if (parsed.tool === "get_closeout" || parsed.tool === "run_closeout") {
+      if (!options.closeout) throw new Error(`${parsed.tool} is unavailable`);
+      if (parsed.tool === "run_closeout" && options.allowCloseoutRun === false) {
+        throw new Error("run_closeout is unavailable");
+      }
+      options.onHookStart?.();
+      let answer: string;
+      try {
+        answer =
+          parsed.tool === "get_closeout"
+            ? await options.closeout.report()
+            : await options.closeout.run(
+                closeoutId(parsed.arguments ?? {}),
+                closeoutModel(parsed.arguments),
+              );
+      } finally {
+        options.onHookEnd?.();
+      }
+      socket.end(`${JSON.stringify({ id, answer })}\n`);
+      return;
+    }
     if (parsed.tool === "update_plan") {
       if (!options.updatePlan) throw new Error("update_plan is unavailable");
       const steps = parsePlan(parsed.arguments ?? {});
@@ -313,6 +352,39 @@ function parsePlan(value: { steps?: unknown }): PlanStep[] {
       );
     return { content, status };
   });
+}
+
+function authorizeCloseout(
+  argv: readonly string[],
+  worktree: string,
+  guard: GuardContext | undefined,
+): void {
+  if (!guard) throw new Error("closeout command is not authorized");
+  const decision = decidePermission(
+    {
+      kind: "execute",
+      command: argv[0] ?? "",
+      args: [...argv.slice(1)],
+      cwd: worktree,
+    },
+    guard,
+  );
+  if (!decision.allow) throw new Error(decision.reason);
+}
+
+function closeoutId(value: Record<string, unknown>): string {
+  if (typeof value.id !== "string" || value.id.trim().length === 0) {
+    throw new Error("run_closeout requires an id");
+  }
+  return value.id.trim();
+}
+
+function closeoutModel(value: Record<string, unknown> | undefined): string | undefined {
+  if (value?.model === undefined) return undefined;
+  if (typeof value.model !== "string" || value.model.trim().length === 0) {
+    throw new Error("run_closeout model must be a model id");
+  }
+  return value.model.trim();
 }
 
 function parseAsk(value: {

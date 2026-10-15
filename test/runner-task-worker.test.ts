@@ -128,14 +128,20 @@ for (const purpose of ["answer", "artifact"] as const) {
         expect(trace.terminals).toMatchObject([{ ok: false }]);
         expect(trace.fs).toMatchObject([{ op: "write", ok: false }]);
         expect(trace.artifact.ok).toBe(false);
-        expect(trace.tools).toEqual(["ask_team", "update_plan"]);
+        expect(trace.tools).toEqual(["ask_team", "update_plan", "get_closeout"]);
         expect(existsSync(join(worktree, "note.txt"))).toBe(false);
         expect(existsSync(join(worktree, "report.txt"))).toBe(false);
       } else {
         expect(trace.terminals).toMatchObject([{ ok: true, exitCode: 0 }]);
         expect(trace.fs).toMatchObject([{ op: "write", ok: true }]);
         expect(trace.artifact.ok).toBe(true);
-        expect(trace.tools).toEqual(["ask_team", "update_plan", "publish_artifact"]);
+        expect(trace.tools).toEqual([
+          "ask_team",
+          "update_plan",
+          "publish_artifact",
+          "get_closeout",
+          "run_closeout",
+        ]);
         expect(readFileSync(join(worktree, "note.txt"), "utf8")).toBe("private");
         expect(readFileSync(join(worktree, "report.txt"), "utf8")).toBe("artifact");
       }
