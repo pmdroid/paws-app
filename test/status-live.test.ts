@@ -10,6 +10,8 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  putWorkspaceUser,
+  saveTaskBlocks,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import { parseStatusSnapshot, statusIntegrity } from "../src/web/src/contract";
@@ -39,16 +41,35 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       now: NOW,
     });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-2", waiting.id]);
-    db.run("UPDATE work_item SET epic_id = ?, linear_identifier = ? WHERE id = ?", [
-      waiting.epicId,
-      "ENG-3",
-      merging.id,
-    ]);
-    db.run("DELETE FROM epic WHERE id = ?", [merging.epicId]);
+    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
     db.run(
-      `INSERT INTO work_item_block (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
-       VALUES (?, ?, ?)`,
-      [waiting.epicId, waiting.linearIssueId, merging.linearIssueId],
+      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
+    );
+    const userId = putWorkspaceUser(db, {
+      id: "user",
+      linearUserId: "linear-user",
+      name: "Ada Owner",
+      email: "ada@example.test",
+    });
+    db.run(
+      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at)
+       VALUES('approval','ws','proj',?,?,'g1',?,0,1)`,
+      [userId, userId, JSON.stringify({ project: { name: "Exports" } })],
+    );
+    db.run("UPDATE work_item SET owner_user_id = ?, project_approval_id = ? WHERE id = ?", [
+      userId,
+      "approval",
+      waiting.id,
+    ]);
+    saveTaskBlocks(
+      db,
+      [merging.linearIssueId],
+      [
+        {
+          blockerLinearIssueId: waiting.linearIssueId,
+          blockedLinearIssueId: merging.linearIssueId,
+        },
+      ],
     );
 
     const parked = beginImplementRun(db, waiting.id, NOW);
@@ -162,14 +183,18 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     expect(parsed.snapshot.items.map((item) => item.id)).not.toContain("01WAITINGITEM");
     expect(parsed.snapshot.runs.map((run) => run.itemId)).not.toContain("01MERGINGITEM");
 
-    const rows = parsed.snapshot.items.map((item) => [item.id, item.state, item.epicId]);
+    const rows = parsed.snapshot.items.map((item) => [
+      item.id,
+      item.state,
+      item.owner,
+      item.project,
+    ]);
     expect(rows).toEqual([
-      ["ENG-2", "awaiting_input", waiting.epicId],
-      ["ENG-3", "merge_queue", waiting.epicId],
+      ["ENG-2", "awaiting_input", "Ada Owner", { id: "approval", name: "Exports" }],
+      ["ENG-3", "merge_queue", null, null],
     ]);
     expect(parsed.snapshot.items.find((item) => item.id === "ENG-2")?.blockers).toEqual([]);
     expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.blockers).toEqual(["ENG-2"]);
-    expect(parsed.snapshot.epics.map((epic) => epic.id)).toEqual([waiting.epicId]);
 
     const parkedRun = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");
     expect(parkedRun?.state).toBe("awaiting_input");

@@ -23,9 +23,9 @@ describe("status HTTP stub", () => {
     if (!response) return;
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
-    const body = (await response.json()) as { source: string; epics: unknown[] };
+    const body = (await response.json()) as { source: string; items: unknown[] };
     expect(body.source).toBe("demo");
-    expect(body.epics.length).toBeGreaterThan(0);
+    expect(body.items.length).toBeGreaterThan(0);
   });
 
   test("leaves engine routes it does not own", async () => {
@@ -70,9 +70,9 @@ describe("status HTTP stub", () => {
     expect(JSON.stringify(body)).not.toContain("Audit log export");
 
     const demo = await fetch(`${base}/api/status?engine=demo`);
-    const sample = (await demo.json()) as { source: string; epics: unknown[] };
+    const sample = (await demo.json()) as { source: string; items: unknown[] };
     expect(sample.source).toBe("demo");
-    expect(sample.epics.length).toBeGreaterThan(0);
+    expect(sample.items.length).toBeGreaterThan(0);
 
     const flagged = startStatusServer({
       port: 0,

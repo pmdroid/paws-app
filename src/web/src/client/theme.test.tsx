@@ -25,11 +25,9 @@ test("markup renders Neobrutalism components while retaining action hooks and na
 test("every dashboard view renders without authored inline styles", () => {
   for (const view of [
     "overview",
-    "epics",
+    "issues",
     "runs",
     "questions",
-    "verdicts",
-    "queue",
     "sessions",
     "settings",
     "runners",
@@ -48,10 +46,10 @@ test("every dashboard view renders without authored inline styles", () => {
   }
 });
 
-test("epic detail lists blockers without positioned CSS", () => {
+test("issues list shows blockers without positioned CSS", () => {
   const snapshot = demoStatus();
   const rendered = render({
-    route: { view: "epics", id: "ENG-98" },
+    route: { view: "issues", id: null },
     phase: "ready",
     snapshot,
     via: "bundled",
@@ -59,7 +57,7 @@ test("epic detail lists blockers without positioned CSS", () => {
     engineUrl: null,
     selectedCheck: null,
   });
-  expect(rendered.content).toContain("Waiting on");
+  expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");
   expect(markup(rendered.content)).toContain("divide-y-2");
 });
