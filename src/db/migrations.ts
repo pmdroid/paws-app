@@ -1449,4 +1449,24 @@ CREATE TABLE runner_capacity (
 ) STRICT;
 `,
   },
+  {
+    id: "056_project_run",
+    sql: `
+CREATE TABLE project_run (
+ id TEXT PRIMARY KEY,
+ source TEXT NOT NULL CHECK(source IN ('project','parent')),
+ linear_id TEXT NOT NULL CHECK(length(linear_id) > 0),
+ created_at INTEGER NOT NULL
+) STRICT;
+ALTER TABLE work_item ADD COLUMN project_run_id TEXT REFERENCES project_run(id);
+CREATE INDEX work_item_project_run ON work_item(project_run_id) WHERE project_run_id IS NOT NULL;
+CREATE TABLE task_block (
+ blocker_linear_issue_id TEXT NOT NULL,
+ blocked_linear_issue_id TEXT NOT NULL,
+ PRIMARY KEY(blocked_linear_issue_id,blocker_linear_issue_id),
+ CHECK(blocker_linear_issue_id <> blocked_linear_issue_id)
+) STRICT;
+CREATE INDEX task_block_blocker ON task_block(blocker_linear_issue_id);
+`,
+  },
 ];
