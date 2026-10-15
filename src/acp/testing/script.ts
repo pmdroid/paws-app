@@ -41,6 +41,7 @@ export interface FakeScript {
   sessionId?: string;
   model?: string | null;
   models?: string[];
+  modelOptions?: Array<{ value: string; name: string; description?: string }>;
   modelError?: string;
   confirmModel?: string;
   effort?: string;
