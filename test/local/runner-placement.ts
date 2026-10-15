@@ -11,6 +11,8 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  revokeLinearInstallation,
+  getLinearSessionAccess,
   syncWorkspaceMember,
   saveCheckpoint,
 } from "../../src/db";
@@ -112,11 +114,34 @@ export async function probeRunnerPlacement(
   const lifecycle = createFakeLinearIssueLifecycle(issue);
   let members = ["colleague"];
   let membershipFailure = false;
+  let installationObservation = now;
+  let observedTeam: string | undefined = "team";
+  let revokeDuringRead = false;
+  const observeInstallation = (teamId: string) =>
+    recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "app-client",
+      appUserId: "app",
+      sessionId: "session",
+      teamId,
+      observedAtMs: ++installationObservation,
+    });
   const placement = createRunnerPlacement({
     db,
     lifecycle,
     tracker: {
       async listProjectMembers() {
+        if (revokeDuringRead)
+          revokeLinearInstallation(db, {
+            eventKey: "placement-revocation",
+            organizationId: "org",
+            oauthClientId: "app-client",
+            createdAtMs: ++installationObservation,
+          });
+        if (observedTeam !== undefined) {
+          observeInstallation(observedTeam);
+          observedTeam = undefined;
+        }
         if (membershipFailure) throw new Error("Linear returned incomplete project membership");
         return members;
       },
@@ -139,6 +164,7 @@ export async function probeRunnerPlacement(
   ) => {
     const profile = purpose === "check" ? undefined : { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
+    observeInstallation("team");
     const commandId = workspaceId();
     placement.started({
       commandId,
@@ -170,6 +196,18 @@ export async function probeRunnerPlacement(
   });
   try {
     assert.deepEqual(await ids(), ["own", "shared"]);
+    observe("An unchanged installation refresh preserves ownership reads and assignment", true, {
+      sameOAuthClient: true,
+      sameAppUser: true,
+      sameTeam: true,
+    });
+    observedTeam = "other-team";
+    await assert.rejects(ids(), /Runner issue authority changed/);
+    observeInstallation("team");
+    assert.deepEqual(await ids(), ["own", "shared"]);
+    observe("A changed installation team still fences selection", true, {
+      teamChangeRejected: true,
+    });
     members = [];
     assert.deepEqual(await ids(), ["own"]);
     members = ["colleague"];
@@ -454,6 +492,12 @@ export async function probeRunnerPlacement(
       true,
       { owner, colleague },
     );
+    revokeDuringRead = true;
+    await assert.rejects(ids(), /Runner (?:task|session authority) is unavailable/);
+    assert.equal(getLinearSessionAccess(db, "session"), "revoked");
+    observe("App revocation during ownership reads still fences selection", true, {
+      revoked: true,
+    });
   } finally {
     db.close();
   }

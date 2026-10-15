@@ -9,7 +9,7 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
   try {
     const observations: boolean[] = [];
     await probeRunnerPlacement(root, (_name, passed) => observations.push(passed));
-    expect(observations).toHaveLength(13);
+    expect(observations).toHaveLength(16);
     expect(observations.every(Boolean)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
