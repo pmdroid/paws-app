@@ -271,6 +271,12 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
+const MAX_REBASE_CONFLICT_RETURNS = 3;
+const REBASE_CONFLICT_INSTRUCTION =
+  "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+const REBASE_CONFLICT_THOUGHT =
+  "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
+
 type AnswerWaiter = (answer: string) => void;
 
 /**
@@ -2035,6 +2041,7 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, failure.result, failure.summary);
         return;
       }
+      if (merged.outcome === "conflict" && this.returnForRebaseConflict(item)) return;
       this.post(
         item,
         "thought",
@@ -2069,6 +2076,44 @@ export class Orchestrator {
     }).catch(() => undefined);
     this.pump();
     await this.flush();
+  }
+
+  private returnForRebaseConflict(item: WorkItemRecord): boolean {
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
+      const returns = this.rebaseConflictReturns(current.id);
+      if (returns >= MAX_REBASE_CONFLICT_RETURNS) return false;
+      const running = applyWorkItemEvent(this.db, current.id, "ejected");
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey: `rebase-conflict:${current.id}:${returns}`,
+        payload: {
+          itemId: current.id,
+          handoff: REBASE_CONFLICT_INSTRUCTION,
+          reason: "rebase-conflict",
+        },
+        now: this.now(),
+      });
+      this.post(
+        running,
+        "thought",
+        REBASE_CONFLICT_THOUGHT,
+        `${current.id}:rebase-conflict:${returns}`,
+      );
+      return true;
+    });
+  }
+
+  private rebaseConflictReturns(itemId: string): number {
+    const row = this.db
+      .query<{ n: number }, [string, string]>(
+        `SELECT COUNT(*) AS n FROM job
+         WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+           AND json_extract(payload, '$.reason') = 'rebase-conflict'`,
+      )
+      .get(JOB_KIND.resume, itemId);
+    return Number(row?.n ?? 0);
   }
 
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
