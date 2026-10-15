@@ -96,8 +96,10 @@ test("terminal results redact credentials split across chunks and bound oversize
       toolCallId: "command",
       status: "completed",
     });
-    expect(posted.at(-1)?.action?.result).toContain("[redacted]");
-    expect(posted.at(-1)?.action?.result?.length).toBeLessThanOrEqual(3500);
+    expect(posted.map((activity) => activity.action?.result ?? "").join("")).toBe(
+      "[redacted]\n" + "x".repeat(20_000),
+    );
+    expect(posted.every((activity) => (activity.action?.result?.length ?? 0) <= 3500)).toBe(true);
     expect(JSON.stringify(posted)).not.toContain("synthetic-host-");
   } finally {
     if (previous === undefined) delete process.env.PAWS_ACTIVITY_TEST_TOKEN;
@@ -123,7 +125,7 @@ test("tool results retain the input from their start and terminal details are du
     content: [{ type: "content", content: { type: "text", text: "14 tests passed" } }],
   });
   expect(posted[0]?.action?.parameter).toContain("bun test");
-  expect(posted[0]?.ephemeral).toBe(true);
+  expect(posted.every((activity) => !activity.ephemeral)).toBe(true);
   expect(posted[1]?.action?.parameter).toBe(posted[0]?.action?.parameter);
   expect(posted[1]?.action?.result).toContain("14 tests passed");
   expect(posted[1]?.ephemeral).not.toBe(true);
@@ -157,7 +159,10 @@ test("structured tool details redact credentials and omit reasoning before clipp
   expect(serialized).toContain("[redacted]");
   expect(serialized).not.toContain("sensitive-");
   expect(serialized).not.toContain("private reasoning");
-  expect(posted[1]?.action?.result?.length).toBeLessThanOrEqual(3500);
+  expect(posted.map((activity) => activity.action?.result ?? "").join("")).toContain(
+    "x".repeat(5000),
+  );
+  expect(posted.every((activity) => (activity.action?.result?.length ?? 0) <= 3500)).toBe(true);
   expect(posted[1]?.ephemeral).not.toBe(true);
 });
 
@@ -222,4 +227,26 @@ test("host credential values are removed from otherwise unlabelled tool output",
     if (previous === undefined) delete process.env.PAWS_ACTIVITY_TEST_TOKEN;
     else process.env.PAWS_ACTIVITY_TEST_TOKEN = previous;
   }
+});
+
+test("long structured output and deeply nested arguments survive ordered activity parts", () => {
+  const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+  const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+  const output = "Beginning\n" + "x".repeat(100_000) + "\nLast required line";
+  const input = {
+    rows: Array.from({ length: 30 }, (_, index) => ({ index })),
+    nested: { a: { b: { c: { d: { path: "required-source.ts" } } } } },
+  };
+  emit(reporter, {
+    sessionUpdate: "tool_call",
+    toolCallId: "long-output",
+    title: "Inspect full output",
+    status: "completed",
+    rawInput: input,
+    rawOutput: output,
+  });
+  expect(posted.map((activity) => activity.action?.parameter).join("")).toBe(JSON.stringify(input));
+  expect(posted.map((activity) => activity.action?.result).join("")).toBe(output);
+  expect(posted.every((activity) => !activity.ephemeral)).toBe(true);
+  expect(posted.every((activity) => (activity.action?.result?.length ?? 0) <= 3500)).toBe(true);
 });

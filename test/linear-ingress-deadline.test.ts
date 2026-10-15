@@ -454,7 +454,7 @@ test("another session delivery cannot hold an expired first-acknowledgement atte
   }
 });
 
-test("a signed created acknowledgement supersedes dead progress from a preceding prompt", async () => {
+test("a signed created acknowledgement bypasses and retains dead public history from a preceding prompt", async () => {
   const f = fixture();
   try {
     f.runFollowUps();
@@ -476,9 +476,7 @@ test("a signed created acknowledgement supersedes dead progress from a preceding
       "Received your update.",
       "Picked up this issue.",
     ]);
-    expect(listOutbox(f.db, "session").find((row) => row.id === progress.id)?.status).toBe(
-      "dropped",
-    );
+    expect(listOutbox(f.db, "session").find((row) => row.id === progress.id)?.status).toBe("dead");
     const acknowledgement = f.sent[1]!;
     await Bun.sleep(0);
     await f.deliver();
