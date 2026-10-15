@@ -51,7 +51,7 @@ elif args[0]=="list-unit-files":
  for name in present: print(name,"disabled")
  if args[3:] and not present: sys.exit(1)
 elif args[0]=="list-units" and pathlib.Path("/proof/active-worker").exists(): print(pathlib.Path("/proof/active-worker").read_text()+" loaded active running")
-elif args[0] not in ("list-units","stop","daemon-reload","enable"): sys.exit(1)
+elif args[0] not in ("list-units","stop","daemon-reload","enable","disable"): sys.exit(1)
 ''')
 
 
@@ -107,7 +107,6 @@ def main():
             raise RuntimeError("Valid release did not install")
         runner = pwd.getpwnam("paws-runner")
         agent = pwd.getpwnam("paws-agent")
-        check = pwd.getpwnam("paws-check")
         if runner.pw_uid == agent.pw_uid or runner.pw_uid == 0 or agent.pw_uid == 0:
             raise RuntimeError("Dedicated service identities are missing")
         if pathlib.Path("/opt/paws-runner/current").resolve() != pathlib.Path("/opt/paws-runner/releases/0.1.1"):
@@ -153,7 +152,7 @@ def main():
         artifact, source = original_artifact, original_source
         group_path = pathlib.Path("/etc/group")
         original_groups = group_path.read_text()
-        input_gid = grp.getgrnam("paws-check-input").gr_gid
+        input_gid = grp.getgrnam("paws-runner").gr_gid
         group_path.write_text(original_groups + "paws-proof-input-alias:x:" + str(input_gid) + ":paws-agent\n")
         try:
             if input_gid not in os.getgrouplist("paws-agent", agent.pw_gid):
@@ -164,19 +163,8 @@ def main():
                 raise RuntimeError("Rejected private-group alias changed installed trust state")
         finally:
             group_path.write_text(original_groups)
-        metadata_gid = grp.getgrnam("paws-check-metadata").gr_gid
-        for account in (runner, agent, pwd.getpwnam("paws-check")):
-            group_path.write_text(original_groups + "paws-proof-metadata-alias:x:" + str(metadata_gid) + ":" + account.pw_name + "\n")
-            try:
-                if metadata_gid not in os.getgrouplist(account.pw_name, account.pw_gid):
-                    raise RuntimeError("Metadata group alias fixture did not take effect")
-                install(False)
-                if state_path.read_bytes() != installed:
-                    raise RuntimeError("Rejected metadata-group alias changed installed trust state")
-            finally:
-                group_path.write_text(original_groups)
         unrelated_gid = max(group.gr_gid for group in grp.getgrall()) + 1
-        group_path.write_text(original_groups + "paws-proof-privileged:x:" + str(unrelated_gid) + ":paws-agent,paws-check\n")
+        group_path.write_text(original_groups + "paws-proof-privileged:x:" + str(unrelated_gid) + ":paws-agent\n")
         try:
             if unrelated_gid not in os.getgrouplist("paws-agent", agent.pw_gid):
                 raise RuntimeError("Unrelated supplemental-group fixture did not take effect")
@@ -212,8 +200,8 @@ def main():
         install(False)
         state_path.write_text(json.dumps({**previous, "version": "0.1.2", "status": "pending"}))
         recovered = json.loads(install())
-        if recovered["verifierIdentity"] != first["verifierIdentity"]:
-            raise RuntimeError("Update replaced the approved verifier identity")
+        if recovered["version"] != "0.1.2" or recovered["installed"] is not True:
+            raise RuntimeError("Update did not recover the pending release")
         previous_runtime_sha = hashlib.sha256(pathlib.Path("/opt/paws-runner/bin/bun").read_bytes()).hexdigest()
         candidate = root / "candidate.tar"
         with tarfile.open(artifact, "r:") as incoming, tarfile.open(candidate, "w", format=tarfile.USTAR_FORMAT) as outgoing:
@@ -303,7 +291,7 @@ module.main()
                     raise RuntimeError("Rejected changed pending tree removed the selected release")
                 selected_file.write_bytes(original_content)
             recovery = json.loads(install())
-            if recovery["verifierIdentity"] != first["verifierIdentity"] or pathlib.Path("/opt/paws-runner/current").resolve(strict=True) != pathlib.Path("/opt/paws-runner/releases") / version:
+            if pathlib.Path("/opt/paws-runner/current").resolve(strict=True) != pathlib.Path("/opt/paws-runner/releases") / version:
                 raise RuntimeError("Actual interrupted installation did not recover its exact release")
             if stage == "current" and selected.stat().st_ino != selected_inode:
                 raise RuntimeError("Exact recovery replaced the selected release directory")
@@ -319,25 +307,10 @@ module.main()
         accessible = subprocess.run(["/usr/bin/python3", "-I", "-c", "from pathlib import Path;assert Path('/opt/paws-runner/current/src/index.ts').read_bytes();assert Path('/opt/paws-runner/current/node_modules/.bin/claude-agent-acp').read_bytes()"], preexec_fn=agent_identity, capture_output=True, check=False)
         if accessible.returncode != 0:
             raise RuntimeError("Private installer umask prevented service UID package access")
-        public_key = pathlib.Path("/var/lib/paws-check-verifier-public.pem")
-        private_key = pathlib.Path("/var/lib/paws-check-verifier/key.pem")
-        if public_key.stat().st_uid != 0 or public_key.stat().st_mode & 0o7777 != 0o644 or private_key.stat().st_uid != 0 or private_key.stat().st_mode & 0o7777 != 0o600:
-            raise RuntimeError("Verifier key has unsafe ownership or mode")
-        der = subprocess.check_output(["/usr/bin/openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER"])
-        if hashlib.sha256(der).hexdigest() != first["verifierIdentity"]["fingerprint"]:
-            raise RuntimeError("Installer fingerprint does not match root-owned public identity")
-        for account in (runner, agent, check):
-            def credentials():
-                os.setgroups(os.getgrouplist(account.pw_name, account.pw_gid))
-                os.setgid(account.pw_gid)
-                os.setuid(account.pw_uid)
-            denied = subprocess.run(["/usr/bin/python3", "-I", "-c", "from pathlib import Path;Path('/var/lib/paws-check-verifier/key.pem').read_bytes()"], preexec_fn=credentials, capture_output=True, check=False)
-            if denied.returncode == 0:
-                raise RuntimeError("Nonroot service identity read the verifier private key")
         final = json.loads(state_path.read_bytes())
         if final["version"] != "0.1.6" or final["status"] != "installed":
             raise RuntimeError("Exact interrupted installation did not recover")
-        for name in ("paws-agent@.service", "paws-check@.service", "paws-check-witness@.service", "paws-runner.service", "paws-runner-broker.service", "paws-runner-broker.socket"):
+        for name in ("paws-agent@.service", "paws-runner.service"):
             path = pathlib.Path("/etc/systemd/system") / name
             if path.stat().st_uid != 0 or path.stat().st_mode & 0o7777 != 0o644:
                 raise RuntimeError("Fixed unit has unsafe ownership or mode")
@@ -377,7 +350,7 @@ module.main()
         commands = [json.loads(line) for line in (ROOT / "systemctl-commands.jsonl").read_text().splitlines()]
         if any(command[0] == "start" for command in commands):
             raise RuntimeError("Installer started an unconfigured daemon")
-        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "checkUid": check.pw_uid, "verifierFingerprint": first["verifierIdentity"]["fingerprint"], "verifierIdentityPreserved": True, "nonrootPrivateVerifierKeyDenied": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "bundledProviderPointersRecovered": True, "changedProviderPointersRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
+        observations = {"verified": True, "artifactSha256": source["artifactSha256"], "unsignedRejected": True, "signedWrongRuntimeRejected": True, "wrongRuntimeTrustUnchanged": True, "wrongRuntimeCurrentInodesPreserved": True, "wrongRuntimeServicesNotStopped": True, "missingFlockRejected": True, "wrongKeyRejected": True, "manifestTamperRejected": True, "olderAndEqualVersionsRejected": True, "activeWorkerUpdateRejected": True, "activeCheckAndWitnessUpdatesRejected": True, "privateGroupAliasRejected": True, "unrelatedPrivilegedGroupRejected": True, "exactInterruptedRecovery": True, "newerReleaseDuringPendingRejected": True, "selectedPendingTreePreserved": True, "changedSelectedTreeRejected": True, "actualSigkillRecoveryCheckpoints": interrupted, "selectedRuntimePreservedBeforePointer": True, "sameVersionDifferentRuntimeBytes": True, "runtimeSelectedThroughCurrent": True, "danglingCurrentInitialized": True, "changedRuntimePointerRejected": True, "bundledProviderPointersRecovered": True, "changedProviderPointersRejected": True, "originalArtifactSha256": json.loads((ROOT / "package/manifest.json").read_bytes())["artifactSha256"], "originalRuntimeSha256": previous_runtime_sha, "candidateRuntimeSha256": candidate_runtime_sha, "privateUmaskServicePackageReadable": True, "changedPendingDigestRejected": True, "changedTrustedKeyRejected": True, "actualSysusersAndTmpfiles": True, "runnerUid": runner.pw_uid, "agentUid": agent.pw_uid, "resultsGid": grp.getgrnam("paws-results").gr_gid, "fixedUnitsInstalled": True, "adapterLaunchersRegular": True, "systemctlBackend": "recording fixture", "daemonStarted": False, "trustStateMode": oct(state_path.stat().st_mode & 0o7777)}
         print(json.dumps(observations))
 
 

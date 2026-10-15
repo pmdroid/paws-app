@@ -4,20 +4,8 @@ import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerControl } from "./pairing";
 
 const code = z.object({ code: z.string().regex(/^[A-F0-9]{16}$/) }).strict();
-const approval = code.extend({
-  verifierFingerprint: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .optional(),
-});
 const enrollment = z.union([
-  z
-    .object({
-      name: z.string().max(80),
-      csr: z.string().max(16_384),
-      verifierPublicKeyPem: z.string().max(256).optional(),
-    })
-    .strict(),
+  z.object({ name: z.string().max(80), csr: z.string().max(16_384) }).strict(),
   z.object({ id: z.string().max(80), claim: z.string().max(80) }).strict(),
 ]);
 const certificate = z.object({ csr: z.string().max(16_384) }).strict();
@@ -54,12 +42,10 @@ export function createRunnerHttp(control: RunnerControl) {
           return json({ runners: control.list(principal) });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
-        if (path === "/api/runners/pairings/approve" && request.method === "POST") {
-          const input = approval.parse(await readJson(request));
+        if (path === "/api/runners/pairings/approve" && request.method === "POST")
           return json(
-            await control.approvePairing(principal, input.code, input.verifierFingerprint),
+            await control.approvePairing(principal, code.parse(await readJson(request)).code),
           );
-        }
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {
           control.setStatus(

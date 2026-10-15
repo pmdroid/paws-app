@@ -135,7 +135,7 @@ export async function probeRunnerOrchestration(
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: { role: string; prepare: boolean; prompt: string }[] = [];
-    let witnessCalls = 0;
+    const witnessCalls = 0;
     let implementationCount = 0;
     let reverifying = false;
     let originalRunId = "";
@@ -412,10 +412,6 @@ export async function probeRunnerOrchestration(
               ),
             };
           };
-        },
-        closeoutForItem() {
-          witnessCalls += 1;
-          throw new Error("Remote command checks use the session report");
         },
       },
     });

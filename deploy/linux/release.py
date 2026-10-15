@@ -20,18 +20,8 @@ PROVIDER_EXECUTABLES = {
 CODEX_PLATFORM_PACKAGE = f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/package.json"
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 ASSETS = {
-    "check-broker.py",
-    "check-child.py",
-    "check-status.py",
-    "check-metadata.py",
-    "check-witness.py",
-    "check-verifier.py",
-    "paws-check@.service",
-    "paws-check-witness@.service",
     "paws-agent@.service",
     "paws-runner.service",
-    "paws-runner-broker.service",
-    "paws-runner-broker.socket",
     "paws-runner.sysusers",
     "paws-runner.tmpfiles",
 }
