@@ -13,7 +13,7 @@ test("epic execution finishes, waits and wakes through durable production state"
       assert(passed, name);
       names.push(name);
     });
-    assert.equal(names.length, 16);
+    assert.equal(names.length, 17);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
