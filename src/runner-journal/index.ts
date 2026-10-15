@@ -171,6 +171,35 @@ export function openExecutionJournal(root: string) {
               .safeParse(raw);
             if (progress.success && sequence < 128)
               event = { type: "progress", text: progress.data.event.update.content.text };
+            const tool = z
+              .object({
+                type: z.literal("acp"),
+                event: z.object({
+                  type: z.literal("session_update"),
+                  update: z.object({
+                    sessionUpdate: z.enum(["tool_call", "tool_call_update"]),
+                    title: z.string().max(4096).optional(),
+                    status: z.string().max(256).optional(),
+                    content: z.array(z.unknown()).optional(),
+                  }),
+                }),
+              })
+              .safeParse(raw);
+            if (tool.success && sequence < 128) {
+              const update = tool.data.event.update;
+              const text = [update.title, update.status].filter(Boolean);
+              for (const part of update.content ?? []) {
+                const content = z
+                  .object({
+                    type: z.literal("content"),
+                    content: z.object({ type: z.literal("text"), text: z.string().max(65_536) }),
+                  })
+                  .safeParse(part);
+                if (content.success) text.push(content.data.content.text);
+              }
+              if (text.length)
+                event = { type: "progress", text: `Tool: ${text.join("\n")}`.slice(0, 65_536) };
+            }
           }
           if (event) {
             if (sequence >= 1024) throw new Error("Runner event count exceeds limit");
