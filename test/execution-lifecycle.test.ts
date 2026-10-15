@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { probeExecutionLifecycle } from "./local/execution-lifecycle";
 
-test("epic execution finishes, waits and wakes through durable production state", async () => {
+test("epic execution finishes terminal work without a queue stall question", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-lifecycle-"));
   const names: string[] = [];
   try {
@@ -13,7 +13,7 @@ test("epic execution finishes, waits and wakes through durable production state"
       assert(passed, name);
       names.push(name);
     });
-    assert.equal(names.length, 16);
+    assert.equal(names.length, 10);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

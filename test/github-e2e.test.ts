@@ -175,7 +175,9 @@ test("a Linear epic publishes and merges three GitHub pull requests with one pla
     expect(reply?.issueId).toBe(question?.issueId);
     expect(reply?.body).not.toContain("<!--");
     expect(reply?.body.startsWith("Paws:")).toBe(false);
-    expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(true);
+    expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(
+      false,
+    );
     expect(comments.comments.some((comment) => comment.body.includes("Picked up 3"))).toBe(true);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);

@@ -408,36 +408,28 @@ export async function probePublicationStop(
       )
       .get()?.n;
     observe(
-      "authoritative cycles ask once while unaffected queued work remains dispatchable",
-      cycleQuestion === 1 && openQuestions === 1 && freeJob === 1,
+      "authoritative cycles notice once while unaffected queued work remains dispatchable",
+      cycleQuestion === 1 && openQuestions === 0 && freeJob === 1,
       { cycleQuestion, openQuestions, freeJob },
     );
-    await current.orchestrator.onLinearEvent({
-      dedupeKey: "cycle-ack",
-      deliveryId: null,
-      source: "webhook",
-      action: "prompted",
-      sessionId: "cycle-session",
-      issueId: "cycle-parent",
-      activityId: "cycle-ack-activity",
-      actorId: "cycle-human",
-      body: "Keep paused",
-      signal: null,
-      updatedAtMs: clock.now() + 1,
-      payload: "{}",
-    });
     current.orchestrator.reconcileExecution();
     observe(
-      "delivered cycle questions remain one-shot after a human reply without steering unrelated work",
+      "a cycle notice stays one-shot and does not open a stall question",
       db
         .query<{ n: number }, []>(
           "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE 'dependency-cycle:cycle:%'",
         )
         .get()?.n === 1 &&
         db
-          .query<{ state: string }, []>("SELECT state FROM linear_turn WHERE event_key='cycle-ack'")
-          .get()?.state === "cancelled",
-      db.query("SELECT state FROM linear_turn WHERE event_key='cycle-ack'").get(),
+          .query<{ n: number }, []>(
+            "SELECT COUNT(*) AS n FROM question WHERE session_id='cycle-session' AND status='open' AND cancelled_at IS NULL",
+          )
+          .get()?.n === 0,
+      db
+        .query<{ n: number }, []>(
+          "SELECT COUNT(*) AS n FROM question WHERE session_id='cycle-session'",
+        )
+        .get(),
     );
     db.run(
       `CREATE TABLE IF NOT EXISTS work_item_specification(item_id TEXT PRIMARY KEY REFERENCES work_item(id),hash TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),present INTEGER NOT NULL CHECK(present IN(0,1))) STRICT`,
@@ -507,16 +499,16 @@ export async function probePublicationStop(
     pendingEpics.delete("all-removed");
     current.orchestrator.reconcileExecution();
     const outcomes = db
-      .query<{ epic_id: string; outcome: string }, []>(
-        "SELECT epic_id,outcome FROM epic_execution_control WHERE epic_id IN ('all-removed','delivered-history') ORDER BY epic_id",
+      .query<{ id: string; state: string }, []>(
+        "SELECT id,state FROM epic WHERE id IN ('all-removed','delivered-history') ORDER BY id",
       )
       .all();
     observe(
-      "all removed work abandons after reconciliation and delivered history stays completed",
+      "all removed work cancels the epic and delivered history settles done",
       JSON.stringify(outcomes) ===
         JSON.stringify([
-          { epic_id: "all-removed", outcome: "abandoned" },
-          { epic_id: "delivered-history", outcome: "completed" },
+          { id: "all-removed", state: "cancelled" },
+          { id: "delivered-history", state: "done" },
         ]),
       outcomes,
     );
