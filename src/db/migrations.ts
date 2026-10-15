@@ -1490,4 +1490,25 @@ CREATE INDEX work_item_project_approval ON work_item(project_approval_id) WHERE 
 ALTER TABLE project_approval ADD COLUMN source TEXT NOT NULL DEFAULT 'project' CHECK(source IN ('project','parent'));
 `,
   },
+  {
+    id: "058_one_active_item",
+    sql: `
+CREATE TEMP TABLE retired_item AS SELECT id FROM work_item WHERE state NOT IN ('completed','merged','cancelled')
+  AND EXISTS(SELECT 1 FROM work_item n WHERE n.linear_issue_id=work_item.linear_issue_id
+    AND n.state NOT IN ('completed','merged','cancelled')
+    AND (n.created_at>work_item.created_at OR (n.created_at=work_item.created_at AND n.id>work_item.id)));
+UPDATE work_item SET state='cancelled',cancel_requested=1 WHERE id IN (SELECT id FROM retired_item);
+UPDATE run SET status='ended' WHERE status IN ('active','provisioning') AND item_id IN (SELECT id FROM retired_item);
+UPDATE job SET status='cancelled' WHERE status='pending' AND json_extract(payload,'$.itemId') IN (SELECT id FROM retired_item);
+DROP TABLE retired_item;
+INSERT OR IGNORE INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id)
+  SELECT b.blocker_linear_issue_id,b.blocked_linear_issue_id FROM work_item_block b
+  JOIN work_item i ON i.epic_id=b.epic_id AND i.linear_issue_id=b.blocked_linear_issue_id
+  WHERE i.state NOT IN ('completed','merged','cancelled') AND b.blocker_linear_issue_id<>b.blocked_linear_issue_id
+  UNION SELECT d.blocker_linear_issue_id,d.blocked_linear_issue_id FROM external_dep d
+  JOIN work_item i ON i.epic_id=d.epic_id AND i.linear_issue_id=d.blocked_linear_issue_id
+  WHERE i.state NOT IN ('completed','merged','cancelled') AND d.blocker_linear_issue_id<>d.blocked_linear_issue_id;
+CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
+`,
+  },
 ];
