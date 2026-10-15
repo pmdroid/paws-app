@@ -545,19 +545,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           input.signal?.throwIfAborted();
           return backend.sessions.forSession(sessionId, purpose)(input);
         },
-        closeoutForItem: (itemId, signal, checkoutExclusions) => {
-          let commands: ReturnType<Awaited<typeof remote>["agents"]["closeoutForItem"]>;
-          return {
-            async runLogged(request) {
-              signal?.throwIfAborted();
-              await ready;
-              const backend = await remote;
-              signal?.throwIfAborted();
-              commands ??= backend.agents.closeoutForItem(itemId, signal, checkoutExclusions);
-              return commands.runLogged(request);
-            },
-          };
-        },
       }
     : unavailableRemoteExecution();
   async function stopRunner() {
@@ -1244,7 +1231,6 @@ function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["remoteEx
     cancelItem: async () => {},
     agentForSession: () => required,
     agentForItem: () => required,
-    closeoutForItem: () => ({ runLogged: required }),
   };
 }
 

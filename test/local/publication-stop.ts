@@ -117,9 +117,6 @@ export async function probePublicationStop(
         agentForItem: () => async () => {
           throw new Error("No agent may launch");
         },
-        closeoutForItem: () => {
-          throw new Error("No check may launch");
-        },
         async cancelItem() {
           joined += 1;
         },

@@ -229,9 +229,6 @@ test.each(
                     });
                   };
                 },
-                closeoutForItem() {
-                  throw new Error("Answer and artifact work must not request Closeout");
-                },
               }
             : undefined,
       });

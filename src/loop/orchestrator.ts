@@ -35,7 +35,6 @@ import {
   type GateResult,
   type CloseoutVerdict,
   type CandidateIdentity,
-  type CloseoutGateOptions,
 } from "../closeout";
 import {
   CommandBus,
@@ -236,11 +235,6 @@ export type OrchestratorOptions = {
     cancelItem?(itemId: string): Promise<void>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
-    closeoutForItem(
-      itemId: string,
-      signal?: AbortSignal,
-      checkoutExclusions?: readonly string[],
-    ): NonNullable<CloseoutGateOptions["commandRunner"]>;
   };
   publicationReady?: (
     itemId: string,

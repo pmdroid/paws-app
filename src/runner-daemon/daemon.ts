@@ -3,13 +3,7 @@ import { join } from "node:path";
 import { chmodSync } from "node:fs";
 import { z } from "zod";
 import { immediate, openDatabase } from "../db";
-import {
-  deriveRunnerCheckInput,
-  runnerCheckInputHash,
-  type RunnerCheckResult,
-} from "../runner-check";
 import { describeRunnerCertificate } from "../runner-identity";
-import { runnerVerifierFingerprint } from "../runner-verifier";
 import {
   RunnerCommandSchema,
   RunnerLoginUpdateSchema,
@@ -53,7 +47,6 @@ import {
 import { downloadRunnerInputs } from "./inputs";
 import { httpsOrigin, requestJson, RunnerRequestError } from "./transport";
 import {
-  RunnerCheckDeliverySchema,
   RunnerAnswersRequestSchema,
   RunnerAnswersSchema,
   RunnerEventDeliverySchema,
@@ -76,7 +69,6 @@ export type RunnerDaemonOptions = {
   serverCa?: string;
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
-  verifierPublicKeyPem?: string;
   concurrency?: number;
   now?: () => number;
 };
@@ -93,10 +85,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
   };
   const now = options.now ?? Date.now;
-  const verifierFingerprint =
-    options.verifierPublicKeyPem === undefined
-      ? undefined
-      : runnerVerifierFingerprint(options.verifierPublicKeyPem);
   const pins = options.trustedKeys ? new Map(options.trustedKeys) : undefined;
   if (pins)
     for (const key of pins.values())
@@ -104,9 +92,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Runner job signing pins must be Ed25519 public keys.");
   let state = readState(options.root);
   let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
-  for (const identity of [state && state.phase !== "prepared" ? state : null, recovery])
-    if (identity && identity.verifierFingerprint !== verifierFingerprint)
-      throw new Error("Runner verifier identity differs from its paired or pending identity.");
   let closed = false;
   if (
     state &&
@@ -151,9 +136,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       code,
       requestFingerprint: fingerprint,
       expiresAt,
-      ...(challenge.verifierFingerprint
-        ? { verifierFingerprint: challenge.verifierFingerprint }
-        : {}),
     };
   }
   function status() {
@@ -169,7 +151,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       workspaceId: state.workspaceId,
       fingerprint: certificate.fingerprint,
       expiresAt: certificate.notAfter,
-      ...(state.verifierFingerprint ? { verifierFingerprint: state.verifierFingerprint } : {}),
     };
   }
   async function authenticated(
@@ -314,9 +295,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         body: {
           name: parsedName,
           csr: state.csr,
-          ...(options.verifierPublicKeyPem
-            ? { verifierPublicKeyPem: options.verifierPublicKeyPem }
-            : {}),
         },
         serverCa: options.serverCa,
       });
@@ -326,8 +304,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const challenge = PairingChallengeSchema.parse(response);
       if (
         challenge.expiresAt <= now() ||
-        challenge.requestFingerprint !== requestFingerprint(state.csr) ||
-        challenge.verifierFingerprint !== verifierFingerprint
+        challenge.requestFingerprint !== requestFingerprint(state.csr)
       )
         throw new Error("Runner pairing challenge does not match the local request.");
       const pending = { ...common(), phase: "pending" as const, ...challenge };
@@ -367,11 +344,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       if (currentChallenge !== challenge || challenge.expiresAt <= now())
         throw new Error("Runner pairing changed while awaiting the response.");
       if (result.status === "pending") return status();
-      if (
-        result.verifierFingerprint !== challenge.verifierFingerprint ||
-        result.verifierFingerprint !== verifierFingerprint
-      )
-        throw new Error("Approved verifier identity differs from the pairing challenge.");
       const { status: _status, ...identity } = result;
       const approved = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, approved, now());
@@ -514,50 +486,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         ),
       );
     },
-    async postCheckResult(
-      runId: string,
-      generation: number,
-      result: RunnerCheckResult,
-      verifierSignature: string,
-      grantToken: string,
-    ) {
-      ensureOpen();
-      identifier.parse(runId);
-      const body = RunnerCheckDeliverySchema.parse({ generation, result, verifierSignature });
-      RunnerGrantTokenSchema.parse(grantToken);
-      const row = db
-        .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type')='check' ORDER BY rowid DESC LIMIT 1",
-        )
-        .get(runId, generation);
-      if (!row) throw new Error("Runner check command is unknown.");
-      const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
-      if (command.type !== "check") throw new Error("Runner check command is invalid.");
-      const input = deriveRunnerCheckInput({
-        executionId: command.executionId,
-        verificationAttemptId: command.verificationAttemptId,
-        candidateSha: command.candidateSha,
-        checkoutExclusions: command.repository.checkoutExclusions,
-        argv: command.argv,
-        cwd: command.cwd,
-        timeoutMs: command.timeoutMs,
-      });
-      if (
-        result.executionId !== command.executionId ||
-        result.verificationAttemptId !== command.verificationAttemptId ||
-        result.candidateSha !== command.candidateSha ||
-        result.inputSha256 !== runnerCheckInputHash(input)
-      )
-        throw new Error("Runner check result does not match the admitted command.");
-      return RunnerEventReceiptSchema.parse(
-        await authenticated(
-          `/v1/runs/${encodeURIComponent(runId)}/check-result`,
-          "POST",
-          body,
-          grantToken,
-        ),
-      );
-    },
     async answers(runId: string, generation: number, after: number, grantToken: string) {
       identifier.parse(runId);
       const body = RunnerAnswersRequestSchema.parse({ generation, after });
@@ -589,16 +517,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       RunnerGrantTokenSchema.parse(grantToken);
       const stored = db
         .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','check','task') ORDER BY rowid DESC LIMIT 1",
+          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','task') ORDER BY rowid DESC LIMIT 1",
         )
         .get(runId, generation);
       if (!stored) throw new Error("Runner work command is unknown.");
       const command = RunnerCommandSchema.parse(JSON.parse(stored.payload));
       if (
-        (command.type !== "run" &&
-          command.type !== "review" &&
-          command.type !== "check" &&
-          command.type !== "task") ||
+        (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
         !command.repository
       )
         throw new Error("Runner work command is invalid.");
@@ -654,11 +579,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       );
       ensureOpen();
       unchangedIdentity(previous);
-      if (
-        identity.runnerId !== previous.runnerId ||
-        identity.workspaceId !== previous.workspaceId ||
-        identity.verifierFingerprint !== previous.verifierFingerprint
-      )
+      if (identity.runnerId !== previous.runnerId || identity.workspaceId !== previous.workspaceId)
         throw new Error("Renewed certificate changes the paired identity.");
       const renewed = { ...common(), phase: "paired" as const, ...identity };
       validateIdentity(options.root, renewed, now());

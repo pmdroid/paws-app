@@ -34,8 +34,6 @@ def main():
     run("/usr/bin/systemd-sysusers", str(ASSETS / "paws-runner.sysusers"))
     run("/usr/bin/systemd-tmpfiles", "--create", str(ASSETS / "paws-runner.tmpfiles"))
     runner = pwd.getpwnam("paws-runner")
-    for name in ("paws-runner-broker.service", "paws-runner-broker.socket"):
-        (UNIT.parent / name).write_bytes((ASSETS / name).read_bytes())
     fixture = pathlib.Path("/opt/paws-daemon-service-fixture.py")
     fixture.write_text('''import os,pathlib,signal,subprocess,sys
 root=pathlib.Path('/var/lib/paws-runner')
@@ -101,7 +99,7 @@ while True:
     start()
     recovered = stop()
     assert recovered["Result"] == "success" and recovered["ActiveState"] == "inactive", recovered
-    names = ("paws-runner.service", "paws-runner-broker.service", "paws-runner-broker.socket", "paws-runner.sysusers", "paws-runner.tmpfiles")
+    names = ("paws-runner.service", "paws-runner.sysusers", "paws-runner.tmpfiles")
     print("PAWS_DAEMON_SERVICE_PROOF " + json.dumps({"passed": True, "pid1": True, "runnerUid": runner.pw_uid, "baseline": baseline, "treatment": treatment, "restart": restart, "crash": crash, "crashRestarts": int(retries["NRestarts"]), "recovered": recovered, "processFixture": "Python SIGTERM handler joins a child then exits130 under the unchanged runner identity and unit hardening; only ExecStart is overridden", "sourceHashes": {name: hashlib.sha256((ASSETS / name).read_bytes()).hexdigest() for name in names}, "observations": ["baselineFailed130", "joinedShutdownSuccess", "healthyRestart", "crashFailureRestarts"]}), flush=True)
 
 

@@ -137,7 +137,7 @@ export async function probeRunnerPlacement(
     role: PlacementRequest["role"] = "implementer",
     model = "implementation-model",
   ) => {
-    const profile = purpose === "check" ? undefined : { agent: "codex" as const, model };
+    const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
     const commandId = workspaceId();
     placement.started({

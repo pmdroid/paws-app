@@ -86,13 +86,13 @@ sudo /usr/sbin/runuser --user paws-runner -- \
   --config /etc/paws-runner/config.json --name my-runner
 ```
 
-Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, `verifierFingerprint` and `expiresAt`. The request expires after ten minutes.
+Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, and `expiresAt`. The request expires after ten minutes.
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/status/#/runners`.
 2. Sign in as an owner or administrator. Approval requires a sign-in within the last fifteen minutes.
 3. Under **Pair a host**, enter the VM's `code` and select **Inspect host**.
-4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal, and the verification key fingerprint with `verifierFingerprint`.
-5. When both match, select **Approve runner**.
+4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal.
+5. When they match, select **Approve runner**.
 
 The VM command prints `"paired":true` with its runner and workspace identifiers, then exits successfully. If the request expires, run the same pairing command again and use its new code. Restarting an unexpired pending request retains its existing identity and code.
 
@@ -101,7 +101,7 @@ The VM command prints `"paired":true` with its runner and workspace identifiers,
 On the VM:
 
 ```sh
-sudo systemctl enable --now paws-runner-broker.socket paws-runner.service
+sudo systemctl enable --now paws-runner.service
 sudo systemctl status paws-runner.service --no-pager
 ```
 

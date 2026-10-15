@@ -17,12 +17,11 @@ observations = []
 actors = []
 root = pathlib.Path("/state")
 root.mkdir(mode=0o755)
-for name, uid in (("paws-runner", 17001), ("paws-agent", 17002), ("paws-check", 17005)):
+for name, uid in (("paws-runner", 17001), ("paws-agent", 17002)):
     subprocess.run(["/usr/sbin/groupadd", "--gid", str(uid), name], check=True)
     subprocess.run(["/usr/sbin/useradd", "--uid", str(uid), "--gid", str(uid), "--no-create-home", "--home-dir", f"/var/lib/{name}", "--shell", "/usr/sbin/nologin", name], check=True)
 subprocess.run(["/usr/sbin/groupadd", "--gid", "17003", "paws-results"], check=True)
-subprocess.run(["/usr/sbin/groupadd", "--gid", "17006", "paws-check-input"], check=True)
-for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/paws-runner", 17001, 17001, 0o700), ("/var/lib/paws-agent", 17002, 17002, 0o700), ("/var/lib/paws-runner-spool", 17001, 17002, 0o2750), ("/var/lib/paws-agent-results", 0, 17003, 0o750), ("/var/lib/paws-check-input", 17001, 17006, 0o2750), ("/var/lib/paws-check-attempts", 0, 17005, 0o750), ("/var/lib/paws-check-results", 0, 17001, 0o750), ("/etc/paws-runner", 0, 0, 0o755), ("/opt/paws-runner/bin", 0, 0, 0o755)):
+for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/paws-runner", 17001, 17001, 0o700), ("/var/lib/paws-agent", 17002, 17002, 0o700), ("/var/lib/paws-runner-spool", 17001, 17002, 0o2750), ("/var/lib/paws-agent-results", 0, 17003, 0o750), ("/etc/paws-runner", 0, 0, 0o755), ("/opt/paws-runner/bin", 0, 0, 0o755)):
     target = pathlib.Path(path)
     target.mkdir(parents=True, exist_ok=True)
     os.chown(target, uid, gid)
@@ -30,7 +29,7 @@ for path, uid, gid, mode in (("/state/server", 17004, 17004, 0o700), ("/var/lib/
 
 
 def actor(arguments, uid):
-    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "HOME": "/var/lib/paws-agent" if uid == 17002 else "/var/lib/paws-runner", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent", "GH_TOKEN": "synthetic-parent", "AWS_ACCESS_KEY_ID": "synthetic-parent", "SSH_AUTH_SOCK": "/synthetic-parent"}, user=uid, group=uid, extra_groups=[17003] if uid == 17002 else [17002, 17003, 17006] if uid == 17001 else [], start_new_session=True)
+    process = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={"PATH": "/usr/bin:/bin", "HOME": "/var/lib/paws-agent" if uid == 17002 else "/var/lib/paws-runner", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent", "GH_TOKEN": "synthetic-parent", "AWS_ACCESS_KEY_ID": "synthetic-parent", "SSH_AUTH_SOCK": "/synthetic-parent"}, user=uid, group=uid, extra_groups=[17003] if uid == 17002 else [17002, 17003] if uid == 17001 else [], start_new_session=True)
     actors.append(process)
     return process
 
@@ -87,50 +86,8 @@ try:
         baseline = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
         assert line(baseline)["phase"] == "pending"
         raise AssertionError("Baseline unexpectedly supported runner pairing")
-    if len(sys.argv) > 1 and sys.argv[1] == "verifier-baseline":
-        baseline = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
-        assert line(baseline)["phase"] == "pending"
-        raise AssertionError("Baseline enrolled without an installed verifier identity")
-    command(arguments, 17001)
-    public = pathlib.Path("/var/lib/paws-check-verifier-public.pem")
-    identity = json.loads(subprocess.run(["/usr/bin/python3", "-I", "-B", "/proof/check-verifier.py", "initialize"], check=True, capture_output=True).stdout)
-    repeated = json.loads(subprocess.run(["/usr/bin/python3", "-I", "-B", "/proof/check-verifier.py", "initialize"], check=True, capture_output=True).stdout)
-    assert repeated == identity
-    original_public = public.read_bytes()
-    for uid in (17001, 17002):
-        denied = actor(["/bin/cat", "/var/lib/paws-check-verifier/key.pem"], uid)
-        denied.communicate(timeout=5)
-        assert denied.returncode != 0
-    for invalid in ("owner", "group", "mode", "oversized", "malformed", "symlink", "hardlink", "fifo"):
-        public.unlink()
-        public.write_bytes(original_public)
-        os.chown(public, 0, 0)
-        public.chmod(0o644)
-        if invalid == "owner":
-            os.chown(public, 17001, 0)
-        elif invalid == "group":
-            os.chown(public, 0, 17001)
-        elif invalid == "mode":
-            public.chmod(0o666)
-        elif invalid == "oversized":
-            public.write_bytes(b"x" * 257)
-        elif invalid == "malformed":
-            public.write_bytes(original_public + b"\n")
-        elif invalid == "symlink":
-            public.unlink()
-            public.symlink_to(ready)
-        elif invalid == "hardlink":
-            os.link(public, root / "linked-public.pem")
-        else:
-            public.unlink()
-            os.mkfifo(public, 0o644)
-        command(arguments, 17001)
-    public.unlink()
-    public.write_bytes(original_public)
-    public.chmod(0o644)
-    observe("privileged installed verifier identity is stable and unsafe or missing public identities cannot enroll")
     command(arguments, 0)
-    command(["worker", "--execution-id", "01J00000000000000000000001"], 17001)
+    command(["worker", "--execution-id", "01J00000000000000000000001"], 17002)
     observe("pairing and worker reject the wrong real service UIDs")
     for invalid in ("mode", "oversized", "field", "symlink", "hardlink", "fifo"):
         install_config()
@@ -171,34 +128,26 @@ try:
     pair = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
     pending = line(pair)
     assert pending["phase"] == "pending" and len(pending["code"]) == 16
-    assert "claim" not in pending and "certificate" not in pending
-    assert pending["verifierFingerprint"] == identity["fingerprint"]
+    assert "claim" not in pending and "certificate" not in pending and "verifierFingerprint" not in pending
     pair.send_signal(signal.SIGTERM)
     output, errors = pair.communicate(timeout=15)
     assert pair.returncode == 130, (pair.returncode, errors)
-    replacement = subprocess.run(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519"], check=True, capture_output=True).stdout
-    public.write_bytes(subprocess.run(["/usr/bin/openssl", "pkey", "-pubout"], input=replacement, check=True, capture_output=True).stdout)
-    command(arguments, 17001)
-    public.write_bytes(original_public)
     restarted = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", *arguments], 17001)
     assert line(restarted) == pending
     inspected = http("/api/runners/pairings/inspect", {"code": pending["code"]})
-    assert inspected["requestFingerprint"] == pending["requestFingerprint"]
-    assert inspected["verifierFingerprint"] == identity["fingerprint"]
-    for wrong in (None, "0" * 64):
-        try:
-            http("/api/runners/pairings/approve", {"code": pending["code"], **({"verifierFingerprint": wrong} if wrong else {})})
-        except urllib.error.HTTPError as failure:
-            assert failure.code == 403
-        else:
-            raise AssertionError("Pairing approved a different verifier fingerprint")
-    http("/api/runners/pairings/approve", {"code": pending["code"], "verifierFingerprint": identity["fingerprint"]})
+    assert inspected["requestFingerprint"] == pending["requestFingerprint"] and "verifierFingerprint" not in inspected
+    try:
+        http("/api/runners/pairings/approve", {"code": pending["code"], "verifierFingerprint": "0" * 64})
+    except urllib.error.HTTPError as failure:
+        assert failure.code == 403
+    else:
+        raise AssertionError("Pairing approved an unexpected field")
+    http("/api/runners/pairings/approve", {"code": pending["code"]})
     paired = line(restarted)
-    assert paired["paired"] is True and paired["verifierFingerprint"] == identity["fingerprint"]
+    assert paired["paired"] is True and "verifierFingerprint" not in paired
     output, errors = restarted.communicate(timeout=15)
     assert restarted.returncode == 0, errors
     observe("real CLI pairing survives process interruption and claims only after administrator approval")
-    observe("actual HTTPS enrollment pins the installed verifier and rejects changed keys or mismatched approval")
     private_key = pathlib.Path("/var/lib/paws-runner/identity/runner-key.pem")
     assert private_key.is_file() and private_key.stat().st_size > 0
     denied = actor(["/bin/cat", str(private_key)], 17002)
@@ -211,21 +160,21 @@ try:
     execution = "01J00000000000000000000001"
     results = pathlib.Path("/var/lib/paws-agent-results") / execution
     results.mkdir(mode=0o750)
-    os.chown(results, 17002, 17003)
+    os.chown(results, 17001, 17003)
     pathlib.Path("/proof/package.json").write_text(json.dumps({"name": "paws"}))
     pathlib.Path("/proof/node_modules/.bin").mkdir(parents=True)
     launcher = pathlib.Path("/proof/node_modules/.bin/claude-agent-acp")
     launcher.write_text("#!/bin/sh\nexec /proof/bun --no-env-file /proof/fake-agent.js /var/lib/paws-agent/agent.json /proof/script.json\n")
     launcher.chmod(0o755)
-    command(["worker", "--execution-id", execution], 17002, 0)
+    command(["worker", "--execution-id", execution], 17001, 0)
     result = json.loads((results / "result.json").read_text())
     assert result["executionId"] == execution and result["run"]["agentExited"] is True
     info = (results / "result.json").stat()
-    assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (17002, 17003, 0o640)
+    assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (17001, 17003, 0o640)
     recorded = json.loads(pathlib.Path("/var/lib/paws-agent/agent.json").read_text())
     assert "initialize" in recorded["methods"] and "session/new" in recorded["methods"]
     assert recorded["env"] == {"xaiApiKey": False, "ghToken": False, "sshAuthSock": False, "aws": False}
-    command(["worker", "--execution-id", execution], 17002)
+    command(["worker", "--execution-id", execution], 17001)
     command(["worker", "--execution-id", "../../escape"], 17002)
     observe("production worker entrypoint uses fixed paths, isolated ACP credentials and immutable execution results")
     cancelled_execution = "01J00000000000000000000002"
@@ -234,10 +183,10 @@ try:
     assert publisher.returncode == 0, errors
     cancelled_results = pathlib.Path("/var/lib/paws-agent-results") / cancelled_execution
     cancelled_results.mkdir(mode=0o750)
-    os.chown(cancelled_results, 17002, 17003)
+    os.chown(cancelled_results, 17001, 17003)
     pathlib.Path("/var/lib/paws-agent/hang.json").write_text(json.dumps({"steps": [], "hangInitialize": True}))
     launcher.write_text("#!/bin/sh\nexec /proof/bun --no-env-file /proof/fake-agent.js /var/lib/paws-agent/cancelled-agent.json /var/lib/paws-agent/hang.json\n")
-    worker = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "worker", "--execution-id", cancelled_execution], 17002)
+    worker = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "worker", "--execution-id", cancelled_execution], 17001)
     record = pathlib.Path("/var/lib/paws-agent/cancelled-agent.json")
     deadline = time.monotonic() + 10
     while not record.exists():
@@ -261,15 +210,6 @@ try:
                 recorded.append(int(text[0]))
         return recorded
     launcher.write_text("#!/bin/sh\nexec /proof/bun --no-env-file /proof/fake-agent.js /var/lib/paws-agent/health-agent.json /proof/script.json\n")
-    check_root = pathlib.Path("/var/lib/paws-runner/checks")
-    check_root.mkdir(mode=0o700)
-    os.chown(check_root, 17001, 17001)
-    invalid_database = check_root / "checks.db"
-    invalid_database.mkdir(mode=0o700)
-    os.chown(invalid_database, 17001, 17001)
-    command(["daemon", "--config", str(path)], 17001)
-    invalid_database.rmdir()
-    observe("later runtime construction failure joins previously initialized runtimes and exits the real daemon CLI")
     command_id = http(f"/api/runners/{paired['runnerId']}/health", {"type": "probe", "profile": {"agent": "claude", "model": None}})["commandId"]
     daemon_arguments = ["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "daemon", "--config", str(path)]
     daemon = actor(daemon_arguments, 17001)
@@ -289,7 +229,7 @@ try:
     output, errors = daemon.communicate(timeout=15)
     assert daemon.returncode == 130, errors
     assert all(not pathlib.Path("/proc", str(pid)).exists() for pid in started)
-    for directory, name, table, count in (("runtime", "executions.db", "execution", 0), ("health", "health.db", "health_execution", 1), ("checks", "checks.db", "check_execution", 0)):
+    for directory, name, table, count in (("runtime", "executions.db", "execution", 0), ("health", "health.db", "health_execution", 1)):
         database = sqlite3.connect(pathlib.Path("/var/lib/paws-runner") / directory / name)
         assert database.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == count
         database.close()

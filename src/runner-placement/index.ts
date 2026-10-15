@@ -2,7 +2,7 @@ import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-
 
 export { quotaSignal, type QuotaSignal } from "./quota";
 
-export type PlacementPurpose = "prepare" | "work" | "check" | "helper";
+export type PlacementPurpose = "prepare" | "work" | "helper";
 export type PlacementProfile = Pick<RunnerProfile, "agent"> & { model?: string | null };
 export type PlacementRequest = {
   itemId?: string;
