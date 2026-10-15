@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
-  chownSync,
   closeSync,
   constants,
+  fchmodSync,
+  fchownSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { ExecutionIdSchema } from "./jobs";
 import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
@@ -32,14 +32,50 @@ function startTime(pid: number): string | undefined {
   }
 }
 
-function ensureDirectory(path: string, uid: number, gid: number, mode: number): void {
+function openDirectory(path: string): number {
+  if (!isAbsolute(path) || path.split("/").some((part) => part === "." || part === ".."))
+    throw new Error("Invalid runner directory");
+  let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
   try {
-    mkdirSync(path, { mode });
+    for (const part of path.split("/").filter(Boolean)) {
+      const next = openSync(
+        `/proc/self/fd/${fd}/${part}`,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      closeSync(fd);
+      fd = next;
+    }
+    return fd;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    closeSync(fd);
+    throw error;
   }
-  chmodSync(path, mode);
-  chownSync(path, uid, gid);
+}
+
+function ensureDirectory(path: string, uid: number, gid: number, mode: number): void {
+  const parent = openDirectory(dirname(path));
+  try {
+    const name = basename(path);
+    try {
+      mkdirSync(`/proc/self/fd/${parent}/${name}`, { mode });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const directory = openSync(
+      `/proc/self/fd/${parent}/${name}`,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      fchmodSync(directory, mode);
+      fchownSync(directory, uid, gid);
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    fsyncSync(parent);
+  } finally {
+    closeSync(parent);
+  }
 }
 
 function syncDirectory(path: string): void {
@@ -136,15 +172,25 @@ export function createDirectWorkerSupervisor(options: {
         child.unref();
         return { alreadyAdmitted: false };
       } catch (error) {
+        try {
+          unlinkSync(path);
+        } catch (unlinkError) {
+          if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
+        }
+        syncDirectory(options.stateRoot);
         if (child?.pid !== undefined) {
           try {
             process.kill(-child.pid, "SIGKILL");
           } catch (killError) {
-            if ((killError as NodeJS.ErrnoException).code !== "ESRCH") throw killError;
+            if ((killError as NodeJS.ErrnoException).code !== "ESRCH") {
+              try {
+                process.kill(child.pid, "SIGKILL");
+              } catch (directError) {
+                if ((directError as NodeJS.ErrnoException).code !== "ESRCH") throw directError;
+              }
+            }
           }
         }
-        unlinkSync(path);
-        syncDirectory(options.stateRoot);
         throw error;
       } finally {
         closeSync(fd);
