@@ -11,6 +11,7 @@ import {
   type PublishArtifactRequest,
 } from "./artifacts";
 import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
+import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
 import { decidePermission, type GuardContext } from "./permissions";
 
 export type AskTeamOption = string | { label?: string; value: string };
@@ -227,6 +228,23 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
         options.onHookEnd?.();
       }
       socket.end(`${JSON.stringify({ id, answer })}\n`);
+      return;
+    }
+    if (parsed.tool === "closeout_finish") {
+      options.onHookStart?.();
+      try {
+        const answer =
+          options.closeout && options.allowCloseoutRun !== false
+            ? closeoutFinishLine(await options.closeout.report())
+            : CLOSEOUT_FINISH_UNAVAILABLE;
+        if (!socket.destroyed) socket.end(`${JSON.stringify({ id, answer })}\n`);
+      } catch {
+        if (!socket.destroyed) {
+          socket.end(`${JSON.stringify({ id, answer: CLOSEOUT_FINISH_UNAVAILABLE })}\n`);
+        }
+      } finally {
+        options.onHookEnd?.();
+      }
       return;
     }
     if (parsed.tool === "update_plan") {
