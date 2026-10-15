@@ -205,7 +205,8 @@ describe("streamed activity", () => {
     });
     expect(JSON.stringify(posted)).not.toContain("private-input-value");
     expect(JSON.stringify(posted)).not.toContain("private-output-value");
-    expect(posted[0]?.action?.result).toContain("[redacted]");
+    expect(posted.at(-1)?.action?.result).toContain("[redacted]");
+    expect(posted[0]?.body).toContain("[redacted]");
   });
 
   test("an already completed tool starts as a durable result", () => {
@@ -258,6 +259,10 @@ describe("streamed activity", () => {
         kind: "action",
         body: "Run checks",
         action: { action: "Run checks", parameter: "" },
+      },
+      {
+        kind: "thought",
+        body: 'Tool output: Run checks\n\n```text\n{"secret":"[redacted]"}\n```',
       },
       {
         kind: "action",

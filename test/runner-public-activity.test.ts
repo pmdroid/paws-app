@@ -2,6 +2,12 @@ import { expect, test } from "bun:test";
 import { tempHome } from "./helpers";
 import { RunnerEventSchema } from "../src/runner-protocol";
 import { probeRunnerPublicActivity } from "./local/runner-public-activity";
+import { probeRunnerLinearOutput } from "./local/runner-linear-output";
+
+test("remote tool output reaches the Linear conversation as complete readable blocks", async () => {
+  const observations = await probeRunnerLinearOutput(tempHome());
+  expect(observations.passed).toBe(true);
+}, 15000);
 
 test("remote public tool and message history survives restart and remains fully readable", async () => {
   const observations = await probeRunnerPublicActivity(tempHome());

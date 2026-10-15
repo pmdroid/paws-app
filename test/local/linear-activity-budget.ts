@@ -151,16 +151,23 @@ export async function probeLinearActivityBudget(
     db = openDatabase(path);
     migrate(db);
     outbox = dispatcher();
-    for (let n = 61; n < eventCount + 1; n++) {
+    for (let n = 61; n < eventCount * 2 + 1; n++) {
       outbox.tick();
       await outbox.idle();
     }
-    assert.equal(activities.size, eventCount + 1);
+    assert.equal(activities.size, eventCount * 2 + 1);
     const delivered = [...activities.values()];
     for (let n = 0; n < eventCount; n++) {
-      const content = delivered[n]!["content"] as Record<string, unknown>;
+      const output = delivered[n * 2]!["content"] as Record<string, unknown>;
+      assert.equal(output["type"], "thought");
+      assert.equal(
+        output["body"],
+        `Tool output: Run a useful check\n\n\`\`\`text\nResult ${n}\n\`\`\``,
+      );
+      assert.equal(delivered[n * 2]!["ephemeral"], false);
+      const content = delivered[n * 2 + 1]!["content"] as Record<string, unknown>;
       assert.equal(content["result"], `Result ${n}`);
-      assert.equal(delivered[n]!["ephemeral"], false);
+      assert.equal(delivered[n * 2 + 1]!["ephemeral"], false);
     }
     assert.equal(getOutbox(db, final)?.status, "sent");
     observe("Every ACP tool result survives SQLite reopen and precedes the final response", true, {
