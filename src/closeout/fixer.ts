@@ -18,7 +18,9 @@ export type FixRequest = {
   summary: string;
 };
 
-export type FixResult = { ok: true; head: string } | { ok: false; reason: string };
+export type FixResult =
+  | { ok: true; head: string; closeoutReport?: string }
+  | { ok: false; reason: string };
 
 export interface FixRunner {
   applyFix(request: FixRequest): Promise<FixResult>;

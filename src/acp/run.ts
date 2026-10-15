@@ -572,6 +572,15 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         await emit({ type: "error", message });
       }
     }
+    if (bridge && options.readOnly !== true) {
+      try {
+        const report = await bridge.closeoutReport();
+        if (report !== undefined && Buffer.byteLength(report) <= 65_536)
+          result.closeoutReport = report;
+      } catch {
+        result.closeoutReport = undefined;
+      }
+    }
     await bridge?.close();
     await emitQueue.catch(() => undefined);
     options.signal?.removeEventListener("abort", onAbort);

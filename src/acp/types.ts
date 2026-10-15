@@ -131,6 +131,7 @@ export interface RunAgentResult {
   transcriptPath?: string;
   authRequired: boolean;
   errorMessage?: string;
+  closeoutReport?: string;
   pid?: number;
   agentExited: boolean;
 }

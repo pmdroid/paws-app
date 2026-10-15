@@ -42,6 +42,7 @@ export const RunnerResultSchema = z.strictObject({
       "Runner review exceeds the maximum JSON request size",
     )
     .optional(),
+  closeoutReport: z.string().max(65_536).optional(),
 });
 
 export type RunnerResult = z.infer<typeof RunnerResultSchema>;
@@ -49,6 +50,7 @@ export type RunnerResult = z.infer<typeof RunnerResultSchema>;
 export const RunnerHelperResultSchema = RunnerResultSchema.omit({
   candidateSha: true,
   reviewText: true,
+  closeoutReport: true,
 }).extend({
   role: z.literal("implementer"),
   text: z

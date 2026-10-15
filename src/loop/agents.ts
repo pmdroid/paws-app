@@ -189,7 +189,11 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         return { ok: false, reason: "fix did not move HEAD to a new commit" };
       }
       deps.onCandidate?.(result.identity);
-      return { ok: true, head };
+      return {
+        ok: true,
+        head,
+        ...(result.closeoutReport ? { closeoutReport: result.closeoutReport } : {}),
+      };
     },
   };
 }
