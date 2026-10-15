@@ -492,6 +492,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
           db,
+          discoverModels: true,
           root: runnerConfig.root,
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
