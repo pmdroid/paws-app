@@ -154,6 +154,7 @@ export async function intakeDelegatedIssue(
           ),
           edges,
           now,
+          sessionKey: sessionId.length > 0 ? sessionId : null,
         });
         const admitted = {
           ok: true,

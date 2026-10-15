@@ -6,7 +6,7 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
-  linearSessionForEpic,
+  delegatedLinearUserId,
   workspaceMember,
 } from "../db";
 import type { LinearIssueLifecycle, TrackerAdapter } from "../linear";
@@ -97,8 +97,7 @@ export function createRunnerPlacement(options: {
     const item = input.itemId ? getWorkItem(db, input.itemId) : null;
     if (input.itemId && (!item || item.cancelRequested))
       throw new Error("Runner task is unavailable");
-    const sessionId =
-      input.sessionId ?? item?.sessionKey ?? (item ? linearSessionForEpic(db, item.epicId) : null);
+    const sessionId = input.sessionId ?? item?.sessionKey ?? null;
     const session = sessionId ? getLinearSession(db, sessionId) : null;
     if (
       !session ||
@@ -128,11 +127,7 @@ export function createRunnerPlacement(options: {
           .get(item.id) ?? { ownerUserId: null, projectApprovalId: null })
       : null;
     const ownership = item
-      ? db
-          .query<{ actorId: string | null }, [string, string]>(
-            "SELECT owner_actor_id AS actorId FROM linear_session_task WHERE session_id=? AND epic_id=?",
-          )
-          .get(session.sessionId, item.epicId)?.actorId
+      ? delegatedLinearUserId(db, item.id)
       : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
     return { item, session, workspace, repository, issueId, ownership, placement };
   }

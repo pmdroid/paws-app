@@ -133,6 +133,10 @@ export function bindLinearSessionTask(
       "UPDATE linear_session SET current_epic_id = ?, active_item_id = CASE WHEN current_epic_id = ? THEN active_item_id ELSE NULL END WHERE session_id = ?",
       [epicId, epicId, sessionId],
     );
+    db.run(
+      "UPDATE work_item SET session_key = ? WHERE epic_id = ? AND (session_key IS NULL OR session_key = ?)",
+      [sessionId, epicId, sessionId],
+    );
   });
 }
 
@@ -144,7 +148,7 @@ export function activateLinearItem(db: Database, sessionId: string, itemId: stri
         "SELECT epic_id, session_key FROM work_item WHERE id = ?",
       )
       .get(itemId);
-    if (!session || !item || session.epicId !== item.epic_id)
+    if (!session || !item || (session.epicId !== null && session.epicId !== item.epic_id))
       throw new Error("Linear task route changed");
     if (session.activeItemId && session.activeItemId !== itemId) {
       if (listInFlightItems(db).some((entry) => entry.id === session.activeItemId))
@@ -158,6 +162,42 @@ export function activateLinearItem(db: Database, sessionId: string, itemId: stri
     ]);
     db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [sessionId, itemId]);
   });
+}
+
+export function workItemForSession(
+  db: Database,
+  sessionId: string,
+): { id: string; epicId: string; state: string; ownerUserId: string | null } | null {
+  const row = db
+    .query<{ id: string; epic_id: string; state: string; owner_user_id: string | null }, [string]>(
+      `SELECT id, epic_id, state, owner_user_id FROM work_item
+       WHERE session_key = ?
+       ORDER BY CASE
+         WHEN state IN ('running','verifying','recovering','awaiting_input','awaiting_signoff','paused','merge_queue') THEN 0
+         WHEN state IN ('queued','planning') THEN 1
+         WHEN state IN ('failed','exhausted','manual') THEN 2
+         ELSE 3 END,
+                created_at DESC, position DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(sessionId);
+  return row
+    ? { id: row.id, epicId: row.epic_id, state: row.state, ownerUserId: row.owner_user_id }
+    : null;
+}
+
+export function delegatedLinearUserId(db: Database, itemId: string): string | null {
+  return (
+    db
+      .query<{ actorId: string | null }, [string]>(
+        `SELECT COALESCE(u.linear_user_id, s.creator_id) AS actorId
+         FROM work_item w
+         LEFT JOIN workspace_user u ON u.id = w.owner_user_id
+         LEFT JOIN linear_session s ON s.session_id = w.session_key
+         WHERE w.id = ?`,
+      )
+      .get(itemId)?.actorId ?? null
+  );
 }
 
 export function linearSessionForEpic(db: Database, epicId: string): string | null {
@@ -233,8 +273,12 @@ export function applyLinearTurns(
   itemId: string,
 ): void {
   immediate(db, () => {
-    const session = getLinearSession(db, sessionId);
-    if (session?.activeItemId !== itemId) throw new Error("Linear turn route is no longer active");
+    const linked = db
+      .query<{ session_key: string | null }, [string]>(
+        "SELECT session_key FROM work_item WHERE id = ?",
+      )
+      .get(itemId);
+    if (linked?.session_key !== sessionId) throw new Error("Linear turn route is no longer active");
     for (const key of eventKeys)
       db.run(
         "UPDATE linear_turn SET state = 'applied', item_id = ? WHERE event_key = ? AND session_id = ? AND state = 'pending'",

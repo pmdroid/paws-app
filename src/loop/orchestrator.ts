@@ -105,7 +105,7 @@ import {
   bindLinearSessionTask,
   ensureLinearSession,
   activateLinearItem,
-  linearSessionForEpic,
+  workItemForSession,
   recordLinearTurn,
   applyLinearTurns,
   saveLinearSessionContext,
@@ -413,7 +413,7 @@ export class Orchestrator {
         const questionEpicId = open ? getWorkItem(this.db, open.itemId)?.epicId : null;
         await this.handleLinearEvent(event);
         if (event.action === "prompted" && event.sessionId) {
-          const epicId = getLinearSession(this.db, event.sessionId)?.epicId ?? questionEpicId;
+          const epicId = workItemForSession(this.db, event.sessionId)?.epicId ?? questionEpicId;
           if (epicId) this.reconcileExecution();
         }
       });
@@ -499,7 +499,7 @@ export class Orchestrator {
       const linearPrompt = this.options.channel !== "comments" && event.sessionId;
       if (linearPrompt && event.sessionId && event.body) {
         const session = recordLinearSessionEvent(this.db, event, this.now());
-        if (questionItem && session && !session.epicId) {
+        if (questionItem && session && !workItemForSession(this.db, event.sessionId)) {
           bindLinearSessionTask(this.db, event.sessionId, questionItem.epicId);
           activateLinearItem(this.db, event.sessionId, questionItem.id);
         }
@@ -696,20 +696,8 @@ export class Orchestrator {
         [this.now(), previous.id],
       );
     };
-    const assignUnownedItems = (
-      boundSessionId: string,
-      epicId: string,
-      items: readonly { id: string }[],
-    ) => {
-      if (items.length === 0) return;
-      const actorId =
-        this.db
-          .query<{ actorId: string | null }, [string, string]>(
-            "SELECT owner_actor_id AS actorId FROM linear_session_task WHERE session_id=? AND epic_id=?",
-          )
-          .get(boundSessionId, epicId)?.actorId ??
-        getLinearSession(this.db, boundSessionId)?.creatorId;
-      if (!actorId) return;
+    const assignUnownedItems = (actorId: string | null, items: readonly { id: string }[]) => {
+      if (items.length === 0 || !actorId) return;
       const ownerId = this.db
         .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
         .get(actorId)?.id;
@@ -739,13 +727,15 @@ export class Orchestrator {
                 saveConversation(this.db, child.id, options.conversation, null);
             }
           if (sessionId !== null) {
+            const actorId =
+              this.options.linearIntakeActor?.(sessionId) ??
+              getLinearSession(this.db, sessionId)?.creatorId ??
+              null;
             if (initialSession)
-              bindLinearSessionTask(this.db, sessionId, accepted.epic.id, {
-                actorId: this.options.linearIntakeActor?.(sessionId),
-              });
+              bindLinearSessionTask(this.db, sessionId, accepted.epic.id, { actorId });
             this.assignSession(accepted.epic.id, sessionId);
             this.options.onLinearIntake?.(sessionId, accepted);
-            if (accepted.ok) assignUnownedItems(sessionId, accepted.epic.id, accepted.items);
+            if (accepted.ok) assignUnownedItems(actorId, accepted.items);
           }
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)
@@ -872,8 +862,7 @@ export class Orchestrator {
       ) {
         const itemId =
           readString(message.payload, "itemId") ??
-          getLinearSession(this.db, message.orderingKey)?.activeItemId ??
-          undefined;
+          (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
         const issueId =
           readString(message.payload, "linearIssueId") ??
           readString(message.payload, "issueId") ??
@@ -907,8 +896,9 @@ export class Orchestrator {
     )
       return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
-    const sessionId = linearSessionForEpic(this.db, loaded.epicId);
-    if (sessionId) activateLinearItem(this.db, sessionId, loaded.id);
+    const sessionId = loaded.sessionKey;
+    if (sessionId && getLinearSession(this.db, sessionId))
+      activateLinearItem(this.db, sessionId, loaded.id);
     if (loaded.state === "queued") applyWorkItemEvent(this.db, loaded.id, "dispatched");
     if (loaded.state === "recovering") applyWorkItemEvent(this.db, loaded.id, "recovered");
     let item = getWorkItem(this.db, loaded.id);
@@ -1879,13 +1869,13 @@ export class Orchestrator {
           : !this.blockersClear(item)
       )
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
-      const sessionId = linearSessionForEpic(this.db, item.epicId);
-      if (!sessionId) return;
-      const activeItemId = getLinearSession(this.db, sessionId)?.activeItemId;
+      const sessionId = item.sessionKey;
+      if (!sessionId || !getLinearSession(this.db, sessionId)) return;
+      const active = workItemForSession(this.db, sessionId);
       if (
-        activeItemId &&
-        activeItemId !== item.id &&
-        listInFlightItems(this.db).some((active) => active.id === activeItemId)
+        active &&
+        active.id !== item.id &&
+        listInFlightItems(this.db).some((entry) => entry.id === active.id)
       )
         throw new LinearReconciliationPendingError("Another Linear task owns this session");
       activateLinearItem(this.db, sessionId, item.id);
@@ -2203,7 +2193,7 @@ export class Orchestrator {
       return "rejected";
     if (this.githubAuth?.owns(open.id)) {
       const accepted = await this.githubAuth.retry(open.id, answeredBy, () => {
-        if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
+        if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
           applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
       });
       await this.flush();
@@ -2232,7 +2222,7 @@ export class Orchestrator {
           );
           return "rejected";
         }
-        if (getLinearSession(this.db, sessionId)?.activeItemId === item.id)
+        if (item.sessionKey === sessionId)
           applyLinearTurns(this.db, sessionId, [event.dedupeKey], item.id);
         applyWorkItemEvent(this.db, item.id, "answer_received");
         if (parsed.kind === "bypass") {
@@ -2305,7 +2295,7 @@ export class Orchestrator {
           if (live.itemId === open.itemId) live.controller.abort(FOLLOW_UP_INTERRUPTION);
         return "redirect" as const;
       }
-      if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
+      if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
       if (this.waiters.has(open.id)) return "answered" as const;
       enqueueJobOnce(this.db, {
@@ -2723,7 +2713,7 @@ export class Orchestrator {
     return (
       this.db
         .query<{ id: string }, [string]>(
-          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN linear_session_task t ON t.session_id=s.session_id WHERE t.epic_id=? LIMIT 1`,
+          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.epic_id=? LIMIT 1`,
         )
         .get(epicId)?.id ?? null
     );
@@ -3083,7 +3073,8 @@ export class Orchestrator {
     }
     if (!session?.issueId)
       throw new Error("Linear session has no issue; user update remains pending");
-    let item = session.activeItemId ? getWorkItem(this.db, session.activeItemId) : null;
+    const routed = workItemForSession(this.db, sessionId);
+    let item = routed ? getWorkItem(this.db, routed.id) : null;
     if (
       !item ||
       item.state === "completed" ||
@@ -3148,10 +3139,7 @@ export class Orchestrator {
   }
 
   private itemsForSession(sessionId: string): WorkItemRecord[] {
-    return this.allItems().filter(
-      (item) =>
-        item.sessionKey === sessionId || linearSessionForEpic(this.db, item.epicId) === sessionId,
-    );
+    return this.allItems().filter((item) => item.sessionKey === sessionId);
   }
 
   private allItems(includeArchived = false): WorkItemRecord[] {
@@ -3228,14 +3216,15 @@ export class Orchestrator {
     if (!hasLinearSessionSnapshotContext(this.db, sessionId) && this.tracker?.getSession) {
       const session = await this.tracker.getSession(sessionId, { signal });
       signal.throwIfAborted();
-      const durable = ensureLinearSession(this.db, {
+      ensureLinearSession(this.db, {
         sessionId,
         issueId: session.issue?.id,
         appUserId: session.appUserId,
         creatorId: session.creatorId,
         now: this.now(),
       });
-      if (durable.epicId) bindLinearSessionTask(this.db, sessionId, durable.epicId);
+      const linked = workItemForSession(this.db, sessionId);
+      if (linked) bindLinearSessionTask(this.db, sessionId, linked.epicId);
       saveLinearSessionSnapshotContext(
         this.db,
         sessionId,
