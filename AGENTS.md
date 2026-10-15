@@ -47,7 +47,7 @@ For branch or PR work, set `BASE_REF` to the successfully fetched target ref, th
 | `src/core`      | Domain types, states, `transition()` / `transitionEpic()` | nothing in `src`                    |
 | `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`   | `core`                              |
 | `src/linear`    | `TrackerAdapter`, webhook route, fake                     | `core`                              |
-| `src/intake`    | Delegated issues and `blocks` order                       | `core`, `linear`                    |
+| `src/intake`    | Delegated issues and `blocks` order                       | `core`, `db`, `linear`              |
 | `src/acp`       | ACP executor, worktrees, fake agent                       | `core`                              |
 | `src/closeout`  | `CloseoutGate`, fake                                      | nothing in `src`                    |
 | `src/github`    | GitHub App token, pull requests, serial merge, fake       | nothing in `src`                    |
