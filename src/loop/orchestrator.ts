@@ -133,6 +133,7 @@ import {
 import { intakeDelegatedIssue, readyItems, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
+  DependencyEdge,
   EpicSnapshot,
   ProgressUpdate,
   SessionPlanStep,
@@ -207,6 +208,11 @@ export type OrchestratorOptions = {
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
   linearIntakeActor?: (sessionId: string) => string | undefined;
   onLinearIntake?: (sessionId: string, result: IntakeResult) => void;
+  adoptLinearParent?: (
+    sessionId: string,
+    snapshot: EpicSnapshot,
+    edges: readonly DependencyEdge[],
+  ) => boolean;
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
@@ -737,6 +743,7 @@ export class Orchestrator {
       },
       ...(taskKey ? { taskKey } : {}),
       ...(classification && classification.mode !== "code" ? { singleIssue: true } : {}),
+      adoptParent: this.options.adoptLinearParent,
     });
     if (!isCurrent()) throw new Error("The Linear request changed during intake");
     if (result.ok && classification && classification.mode !== "clarify") {
