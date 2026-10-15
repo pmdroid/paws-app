@@ -59,6 +59,8 @@ function* readFile(
     if (start) lines.shift();
     let pending: StatusActivity | undefined;
     let message = false;
+    let messageBoundary = start === 0;
+    const terminal = new Map<string, { at: string; title: string; text: string }>();
     const tools = new Map<string, { title?: string; kind?: string }>();
     for (const line of lines) {
       try {
@@ -105,7 +107,18 @@ function* readFile(
                   text += `\n${part.content.text}`;
             for (const key of ["terminal_output", "terminal_output_delta"])
               if (typeof update["_meta"]?.[key]?.data === "string")
-                text += `\n${update["_meta"][key].data}`;
+                terminal.set(update.toolCallId, {
+                  at,
+                  title: tool.title ?? "Tool output",
+                  text: (terminal.get(update.toolCallId)?.text ?? "") + update["_meta"][key].data,
+                });
+            if (
+              ["completed", "failed"].includes(update.status) &&
+              terminal.has(update.toolCallId)
+            ) {
+              text += `\n${terminal.get(update.toolCallId)!.text}`;
+              terminal.delete(update.toolCallId);
+            }
           }
         } else if (event?.type === "ask_team") {
           kind = "elicitation";
@@ -116,19 +129,31 @@ function* readFile(
         } else if (event?.type === "prompt_complete")
           text = `Agent turn ended: ${event.stopReason}`;
         if (typeof text !== "string" || !text.length || (!chunk && !text.trim())) continue;
-        const publicText = redactTranscriptText(full ? text : text.slice(0, 65_536), env);
-        if (chunk && message && pending)
-          pending.text = full
-            ? `${pending.text}${publicText}`
-            : `${pending.text}${publicText}`.slice(-65_536);
+        if (chunk && !messageBoundary) continue;
+        if (!chunk) messageBoundary = true;
+        const entryText = text;
+        if (chunk && message && pending) pending.text += entryText;
         else {
-          if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
-          pending = { at, kind, text: publicText };
+          if (pending)
+            yield {
+              ...pending,
+              text: redactTranscriptText(pending.text, env).slice(full ? 0 : -65_536),
+            };
+          pending = { at, kind, text: entryText };
         }
         message = chunk;
       } catch {}
     }
-    if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
+    if (pending)
+      yield { ...pending, text: redactTranscriptText(pending.text, env).slice(full ? 0 : -65_536) };
+    for (const output of terminal.values())
+      yield {
+        at: output.at,
+        kind: "tool",
+        text: redactTranscriptText(`${output.title}\n${output.text}`, env).slice(
+          full ? 0 : -65_536,
+        ),
+      };
   } catch {
     return;
   } finally {

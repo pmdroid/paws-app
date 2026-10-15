@@ -70,7 +70,7 @@ export function createAcpActivityReporter(
   const tools = new Map<string, ToolActivity>();
 
   function flushPublicMessage() {
-    const activity = clip("thought", publicMessage);
+    const activity = clip("thought", publicToolText(publicMessage));
     publicMessage = "";
     if (activity) post(activity);
   }
@@ -78,7 +78,7 @@ export function createAcpActivityReporter(
   function flush(): boolean {
     flushPublicMessage();
     const body = pending.trim();
-    const activity = clip("thought", body);
+    const activity = clip("thought", publicToolText(body));
     pending = "";
     if (activity === null) return false;
     resultBody = body;
@@ -243,8 +243,9 @@ function publicToolText(value: unknown): string {
       )
       .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, "$1 [redacted]")
       .replace(
-        /\b([\w-]*(?:api[_-]?key|password|secret|token|authorization|cookie)[\w-]*\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-        "$1[redacted]",
+        /\b([\w-]*(?:api[_-]?key|password|secret|token|authorization|cookie)[\w-]*["']?\s*[:=]\s*)(\[redacted\]|"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+        (_match, prefix: string, credentialValue: string) =>
+          `${prefix}${credentialValue.startsWith('"') ? '"[redacted]"' : credentialValue.startsWith("'") ? "'[redacted]'" : "[redacted]"}`,
       )
       .replace(/https?:\/\/[^\s<>"']+/g, (raw) => {
         try {
