@@ -57,6 +57,7 @@ const MODULES = [
   "runner-placement",
   "runner-results",
   "runner-health",
+  "runner-models",
   "runner-helpers",
   "runner-runtime",
   "runner-health-runtime",
@@ -255,6 +256,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-protocol",
   ],
   "runner-coordinator": [
+    "runner-models",
     "runner-login",
     "runner-inputs",
     "runner-helpers",
@@ -271,6 +273,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-health",
     "workspace",
   ],
+  "runner-models": ["db", "runner-work", "runner-protocol"],
 };
 
 describe("module boundaries", () => {
