@@ -38,6 +38,45 @@ describe("startup recovery", () => {
     });
   });
 
+  test.each(["answer", "artifact"] as const)(
+    "resumes %s without a Git checkpoint once",
+    (taskMode) => {
+      expect(
+        decideStartup({ itemState: "recovering", recoveryAttempts: 0, checkpoint: null, taskMode }),
+      ).toEqual({ type: "resume", freshSession: true, checkpoint: null });
+      expect(
+        decideStartup({ itemState: "recovering", recoveryAttempts: 1, checkpoint: null, taskMode }),
+      ).toEqual({ type: "fail", reason: "resume_already_attempted" });
+      expect(
+        decideStartup({
+          itemState: "awaiting_input",
+          recoveryAttempts: 0,
+          checkpoint: null,
+          taskMode,
+        }),
+      ).toEqual({ type: "none" });
+      expect(
+        decideStartup({
+          itemState: "merge_queue",
+          recoveryAttempts: 0,
+          checkpoint: null,
+          taskMode,
+        }),
+      ).toEqual({ type: "reverify" });
+    },
+  );
+
+  test("code tasks still require a checkpoint", () => {
+    expect(
+      decideStartup({
+        itemState: "running",
+        recoveryAttempts: 0,
+        checkpoint: null,
+        taskMode: "code",
+      }),
+    ).toEqual({ type: "fail", reason: "no_checkpoint" });
+  });
+
   test("fails a merge closed instead of continuing it", () => {
     expect(
       decideStartup({

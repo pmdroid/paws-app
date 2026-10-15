@@ -89,7 +89,7 @@ export function postPauseNote(
 function applyResume(
   db: Database,
   item: WorkItemRecord,
-  checkpoint: Checkpoint,
+  checkpoint: Checkpoint | null,
   now: number,
 ): void {
   if (item.state === "running" || item.state === "verifying") {
