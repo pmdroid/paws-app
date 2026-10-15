@@ -50,10 +50,6 @@ export async function probeLinearSessionStop(root: string) {
       beginImplementRun(db, old.id, clock.now());
       applyWorkItemEvent(db, old.id, "blocking_question");
       const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
-      db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [
-        old.linearIssueId,
-        replacement.id,
-      ]);
       ensureLinearSession(db, {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
@@ -161,10 +157,6 @@ export async function probeLinearSessionStop(root: string) {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
       });
-      db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [
-        old.linearIssueId,
-        replacement.id,
-      ]);
       ensureLinearSession(db, {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
