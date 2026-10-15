@@ -96,3 +96,48 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+html.light {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+html.light :where(button, input, select, textarea, summary) {
+  color-scheme: light;
+}
+html.dark :where(button, input, select, textarea, summary) {
+  color-scheme: dark;
+}
+html.light
+  :where(
+    button,
+    input:not([type="checkbox"], [type="radio"], [type="file"]),
+    select,
+    textarea,
+    summary
+  ),
+html.dark
+  :where(
+    button,
+    input:not([type="checkbox"], [type="radio"], [type="file"]),
+    select,
+    textarea,
+    summary
+  ) {
+  appearance: none;
+}
+
+.workspace-identities {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.workspace-identities > h3 {
+  font-size: 1rem;
+  font-weight: var(--font-weight-heading);
+}
+.workspace-identities > h3:not(:first-child) {
+  margin-top: 2rem;
+}
