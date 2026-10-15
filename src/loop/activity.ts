@@ -65,12 +65,20 @@ export function createAcpActivityReporter(
   resultBody(): string;
 } {
   let pending = "";
+  let publicMessage = "";
   let resultBody = "";
   const tools = new Map<string, ToolActivity>();
 
+  function flushPublicMessage() {
+    const activity = clip("thought", publicToolText(publicMessage));
+    publicMessage = "";
+    if (activity) post(activity);
+  }
+
   function flush(): boolean {
+    flushPublicMessage();
     const body = pending.trim();
-    const activity = clip("thought", body);
+    const activity = clip("thought", publicToolText(body));
     pending = "";
     if (activity === null) return false;
     resultBody = body;
@@ -80,6 +88,10 @@ export function createAcpActivityReporter(
 
   return {
     onEvent(event) {
+      if (event.type === "progress" && event.messageChunk) {
+        publicMessage += event.text;
+        return;
+      }
       if (event.type === "session_update") {
         const update = event.update;
         if (update.sessionUpdate === "plan") {
@@ -107,6 +119,7 @@ export function createAcpActivityReporter(
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
+          flushPublicMessage();
           pending += textOf(update.content);
           return;
         }
@@ -230,8 +243,9 @@ function publicToolText(value: unknown): string {
       )
       .replace(/\b(Bearer|Basic)\s+[^\s"'<>]+/gi, "$1 [redacted]")
       .replace(
-        /\b([\w-]*(?:api[_-]?key|password|secret|token|authorization|cookie)[\w-]*\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-        "$1[redacted]",
+        /\b([\w-]*(?:api[_-]?key|password|secret|token|authorization|cookie)[\w-]*["']?\s*[:=]\s*)(\[redacted\]|"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+        (_match, prefix: string, credentialValue: string) =>
+          `${prefix}${credentialValue.startsWith('"') ? '"[redacted]"' : credentialValue.startsWith("'") ? "'[redacted]'" : "[redacted]"}`,
       )
       .replace(/https?:\/\/[^\s<>"']+/g, (raw) => {
         try {

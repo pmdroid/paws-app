@@ -55,8 +55,12 @@ const server = Bun.serve({
       return Response.json({ ok: true });
     }
     return (
-      (await handleStatusRequest(request, { provider, db })) ??
-      new Response("Not found", { status: 404 })
+      (await handleStatusRequest(request, {
+        provider,
+        db,
+        closeoutHome: root,
+        sessionIds: ["transcript-session"],
+      })) ?? new Response("Not found", { status: 404 })
     );
   },
 });

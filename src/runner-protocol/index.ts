@@ -56,3 +56,5 @@ export {
   type RunnerLoginUpdate,
   type RunnerLoginInput,
 } from "./login";
+
+export { RunnerActivitySchema } from "./activity";

@@ -251,6 +251,9 @@ function viewRuns(
   const item = findItem(snapshot, selected.itemId);
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
+  const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
+  const transcriptPath = `/api/runs/transcript?run=${encodeURIComponent(selected.id)}`;
+  const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
   return `${pageHeading("runs")}${picker}
     <div class="split"><div>
       <div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}${agentChip(selected.agent)}</div>
@@ -259,6 +262,7 @@ function viewRuns(
       ${phaseStrip(item, selected, verdict)}
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
       <h3>Agent transcript</h3>
+      ${snapshot.source === "live" ? `<p><a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full transcript</a></p>` : ""}
       <div class="log" role="log" aria-label="Agent transcript" data-log="transcript-${esc(selected.id)}">${selected.transcript?.length ? selected.transcript.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind === "system" ? "agent" : line.kind)}</span><span class="tx whitespace-pre-wrap break-words">${esc(line.text)}</span></div>`).join("") : '<p class="muted">Waiting for agent output.</p>'}</div>
       <h3>Task activity</h3>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
