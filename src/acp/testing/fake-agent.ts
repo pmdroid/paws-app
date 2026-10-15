@@ -81,7 +81,9 @@ const configOptions = () => {
             name: "Model",
             category: "model",
             currentValue: currentModel,
-            options: (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
+            options:
+              script.modelOptions ??
+              (script.models ?? [currentModel]).map((value) => ({ value, name: value })),
           },
         ];
   const efforts = (currentModel && script.modelEfforts?.[currentModel]) ?? script.efforts;

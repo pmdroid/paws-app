@@ -1309,6 +1309,86 @@ test("ACP selects the advertised model and returns real session identity", async
   });
 });
 
+for (const recommendation of ["Sonnet 5.5", "claude-sonnet-5-5"]) {
+  test(`ACP confirms the concrete default model described as ${recommendation} before preflight`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      model: "default",
+      modelOptions: [
+        { value: "default", name: "Default (recommended)", description: recommendation },
+        { value: "claude-sonnet-5-5", name: "Sonnet 5.5" },
+        { value: "claude-opus-5-5", name: "Opus 5.5" },
+      ],
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: null },
+      itemId: "ENG-1",
+      runId: "default-model-preflight",
+      prompt: "",
+      prepareOnly: true,
+      checkpoint: false,
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.identity?.model).toBe("claude-sonnet-5-5");
+    const trace = await readResult(files.resultPath);
+    expect(trace.modelSelection).toEqual({
+      sessionId: result.sessionId,
+      configId: "model",
+      value: "claude-sonnet-5-5",
+    });
+    expect(trace.methods).toEqual(["initialize", "session/new", "session/set_config_option"]);
+  });
+}
+
+for (const failure of ["missing", "unknown", "ambiguous", "rejected", "unconfirmed"]) {
+  test(`ACP does not invent a model for a ${failure} default recommendation`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      model: "default",
+      modelOptions: [
+        {
+          value: "default",
+          name: "Default (recommended)",
+          ...(failure === "missing"
+            ? {}
+            : { description: failure === "unknown" ? "Unknown" : "Sonnet 5.5" }),
+        },
+        { value: "claude-sonnet-5-5", name: "Sonnet 5.5" },
+        { value: "other-model", name: failure === "ambiguous" ? "Sonnet 5.5" : "Other" },
+      ],
+      ...(failure === "rejected" ? { modelError: "model unavailable" } : {}),
+      ...(failure === "unconfirmed" ? { confirmModel: "default" } : {}),
+      steps: [{ type: "end" }],
+    });
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: null },
+      itemId: "ENG-1",
+      runId: "invalid-default-preflight",
+      prompt: "",
+      prepareOnly: true,
+      checkpoint: false,
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+    });
+    expect(result.identity).toBeUndefined();
+    const trace = await readResult(files.resultPath);
+    expect(trace.methods).not.toContain("session/prompt");
+    if (["rejected", "unconfirmed"].includes(failure)) {
+      expect(result.stopReason).toBe("error");
+      expect(result.errorMessage).toContain("model");
+    } else expect(trace.modelSelection).toBeUndefined();
+  });
+}
+
 for (const failure of ["unadvertised", "rejected", "unconfirmed"] as const) {
   test(`ACP refuses ${failure} model selection before prompting`, async () => {
     const layout = await layoutRepo();
