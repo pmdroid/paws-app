@@ -892,7 +892,7 @@ test.each([
   ["answer", "terminal_output"],
   ["artifact", "terminal_output_delta"],
 ] as const)(
-  "%s ACP %s tool details reach Linear with transient starts and durable results",
+  "%s ACP %s tool details reach Linear with durable starts and results",
   async (mode, format) => {
     const f = setup(mode, undefined, false, "ok", undefined, undefined, false, false, [
       {
@@ -937,7 +937,7 @@ test.each([
         (update) => update.action?.action === "Check the requested output",
       );
       expect(actions).toHaveLength(format === "raw" ? 2 : 4);
-      expect(actions[0]?.ephemeral).toBe(true);
+      expect(actions.every((activity) => !activity.ephemeral)).toBe(true);
       expect(actions[0]?.action?.parameter).toContain("bun test output.test.ts");
       expect(actions.at(-1)?.action?.parameter).toBe(actions[0]?.action?.parameter);
       expect(actions.at(-1)?.action?.result).toContain("Output verified");

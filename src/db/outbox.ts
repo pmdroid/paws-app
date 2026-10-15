@@ -133,11 +133,13 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
   const workerId = options.workerId ?? "outbox";
   const limit = options.limit ?? 32;
   const rows = db
-    .query<OutboxSqlRow, [string, number, string, number, number, number, number, number]>(
+    .query<OutboxSqlRow, [string, number, string, number, number, number, number]>(
       `WITH ranked AS (
        SELECT o.id, ROW_NUMBER() OVER (
          PARTITION BY o.target, COALESCE('key:' || o.ordering_key, 'row:' || o.id)
-         ORDER BY o.priority, o.id
+         ORDER BY CASE WHEN o.target='linear' AND (
+           o.delivery_kind IN ('terminal','status') OR o.op='elicitation'
+         ) THEN 5 ELSE o.priority END, o.id
        ) AS position
        FROM outbox o
        LEFT JOIN outbox_session_fence f ON f.target = o.target AND f.ordering_key = o.ordering_key
@@ -152,18 +154,9 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
              AND terminal.status IN ('pending', 'sent') AND terminal.priority <= o.priority
          ))
      ), eligible AS (
-       SELECT o.*, ROW_NUMBER() OVER (
-         PARTITION BY CASE WHEN o.target='linear' AND o.delivery_kind='progress'
-           AND o.op IN ('activity','linear.activity')
-           AND json_extract(o.payload,'$.kind') IN ('thought','action')
-         THEN json_array(o.activity_run_id,
-           CASE WHEN o.activity_run_id IS NULL THEN o.ordering_key END,
-           CASE WHEN o.activity_run_id IS NULL THEN o.delivery_generation END)
-         ELSE CAST(o.id AS TEXT) END
-         ORDER BY o.priority,o.id
-       ) AS budget_position
-       FROM outbox o JOIN ranked r ON r.id=o.id AND r.position=1
-       WHERE o.status='pending' AND o.not_before<=?4
+       SELECT o.*
+       FROM ranked r CROSS JOIN outbox o ON r.id=o.id
+       WHERE r.position=1 AND o.status='pending' AND o.not_before<=?4
          AND (o.locked_until IS NULL OR o.locked_until<=?5)
          AND (o.target<>'linear' OR NOT EXISTS(
            SELECT 1 FROM linear_outbox_backoff WHERE not_before>?4
@@ -179,32 +172,10 @@ export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {})
      UPDATE outbox SET locked_by = ?1, locked_until = ?2, attempts = attempts + 1
      WHERE id IN (
        SELECT o.id FROM eligible o
-       WHERE NOT (o.target='linear' AND o.delivery_kind='progress'
-         AND o.op IN ('activity','linear.activity')
-         AND COALESCE(json_extract(o.payload,'$.kind'),'') IN ('thought','action'))
-       OR o.budget_position+(
-         SELECT COUNT(*) FROM outbox b WHERE b.target='linear' AND b.delivery_kind='progress'
-           AND b.op IN ('activity','linear.activity')
-           AND json_extract(b.payload,'$.kind') IN ('thought','action')
-           AND b.activity_run_id IS o.activity_run_id
-           AND (o.activity_run_id IS NOT NULL OR (
-             b.ordering_key IS o.ordering_key AND b.delivery_generation=o.delivery_generation
-           ))
-           AND (b.sent_at>?8 OR (b.status='pending' AND b.locked_until>?4))
-       )<=60
        ORDER BY o.priority, o.id LIMIT ?7
      ) RETURNING *`,
     )
-    .all(
-      workerId,
-      now + leaseMs,
-      JSON.stringify(options.blockedKeys ?? []),
-      now,
-      now,
-      now,
-      limit,
-      now - 3_600_000,
-    );
+    .all(workerId, now + leaseMs, JSON.stringify(options.blockedKeys ?? []), now, now, now, limit);
   return rows.map(mapOutbox);
 }
 
@@ -423,6 +394,7 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
         `UPDATE outbox SET status='dropped',error='Superseded by a newer canonical run.'
          WHERE target='linear' AND ordering_key=? AND status='pending' AND locked_by IS NULL
            AND delivery_kind='progress' AND op IN ('activity','linear.activity')
+           AND COALESCE(json_extract(payload,'$.ephemeral'),0)=1
            AND activity_run_id IS NOT NULL AND activity_run_id<>(
              SELECT activity_run_id FROM outbox WHERE id=?
            )`,
@@ -459,8 +431,11 @@ function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | nu
     db.run(
       `UPDATE outbox SET status = 'dropped', error = 'Superseded by a critical session update.'
       WHERE target = ? AND ordering_key = ? AND id < ? AND status IN ('pending', 'dead')
-        AND (delivery_kind = 'progress' OR (? = 'terminal' AND delivery_kind = 'critical'
-          AND (op = 'elicitation' OR json_extract(payload, '$.kind') IN ('thought', 'action'))))`,
+        AND ((delivery_kind = 'progress' AND (op NOT IN ('activity','linear.activity')
+          OR COALESCE(json_extract(payload,'$.ephemeral'),0)=1
+          OR COALESCE(json_extract(payload,'$.kind'),'') NOT IN ('thought','action')))
+          OR (? = 'terminal' AND delivery_kind = 'critical'
+          AND (op='elicitation' OR json_extract(payload,'$.kind') IN ('thought','action'))))`,
       [row.target, row.orderingKey, inserted.id, delivery],
     );
     return inserted.id;
