@@ -87,6 +87,8 @@ test("conversation outcomes, queued prompts, publication failures and files rema
     ],
   };
   const html = renderConversations(model, "session/thread");
+  expect(html).toContain('<span class="lin-id">ENG-1</span> <span>Explain &lt;chart&gt;</span>');
+  expect(html).toContain('<span class="muted">image/png · 2 KB</span>');
   expect(html).toContain("Completed");
   expect(html).not.toContain("Merged");
   expect(html).toContain("Interrupted");
