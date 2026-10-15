@@ -27,14 +27,15 @@ missing grok: Run `grok login`
 
 The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts.
 
-| Path                  | What it is                                                                                                       |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `~/.paws/paws.db`     | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
-| `~/.paws/config.toml` | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
-| `~/.paws/secrets/`    | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
-| `~/.paws/worktrees/`  | One git worktree per item                                                                                        |
-| `~/.paws/runs/`       | Transcripts and Closeout reports                                                                                 |
-| `~/.paws/logs/`       | Process logs                                                                                                     |
+| Path                          | What it is                                                                                                       |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `~/.paws/paws.db`             | SQLite queue (WAL, `synchronous=FULL`)                                                                           |
+| `~/.paws/config.toml`         | Linear credentials and team, GitHub auth and repo, caps, and `agents.implementer`                                |
+| `~/.paws/secrets/`            | OAuth token file when Keychain or libsecret is unavailable, plus any Linear token or GitHub App key. Mode `0700` |
+| `~/.paws/worktrees/`          | One git worktree per item                                                                                        |
+| `~/.paws/runs/`               | Transcripts and Closeout reports                                                                                 |
+| `~/.paws/runner-transcripts/` | Paired runner transcripts, stored locally by default                                                             |
+| `~/.paws/logs/`               | Process logs                                                                                                     |
 
 Paws can leave selected folders out of its worktrees. Add literal repository-relative folder paths to `~/.paws/config.toml`:
 

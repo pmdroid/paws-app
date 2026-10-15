@@ -86,7 +86,9 @@ test("local transcript reads reject symlinks, hard links and unsafe permissions"
   const directory = join(root, "objects");
   try {
     const objects = createLocalRunnerTranscriptObjects(directory);
+    await objects.write("key", new Blob(["owned"]));
     const path = fileURLToPath(objects.uri("key"));
+    rmSync(path);
     const outside = join(root, "outside");
     writeFileSync(outside, "private", { mode: 0o600 });
     symlinkSync(outside, path);
@@ -100,10 +102,10 @@ test("local transcript reads reject symlinks, hard links and unsafe permissions"
     expect(() => objects.read("key")).toThrow("Unsafe transcript file");
     chmodSync(directory, 0o755);
     expect(() => objects.read("key")).toThrow("Unsafe transcript directory");
-    expect(() => createLocalRunnerTranscriptObjects(directory)).toThrow();
+    expect(() => createLocalRunnerTranscriptObjects(directory).read("key")).toThrow();
     const alias = join(root, "alias");
     symlinkSync(directory, alias);
-    expect(() => createLocalRunnerTranscriptObjects(alias)).toThrow();
+    expect(() => createLocalRunnerTranscriptObjects(alias).read("key")).toThrow();
     expect(readFileSync(outside, "utf8")).toBe("private");
   } finally {
     rmSync(root, { recursive: true, force: true });
