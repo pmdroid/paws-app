@@ -111,8 +111,9 @@ export function createRemoteSessionAgentRunner(options: {
                     ? "The runner agent requires sign-in."
                     : "The runner agent exhausted its observed quota.",
                 );
-              const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
-              mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
+              const transcriptRunId = command.purpose === "classify" ? input.runId : command.id;
+              const transcript = `${runDir(input.pawsRoot, transcriptRunId)}/acp.jsonl`;
+              mkdirSync(runDir(input.pawsRoot, transcriptRunId), { recursive: true, mode: 0o700 });
               const events: AcpEvent[] = [
                 {
                   type: "session_update",
