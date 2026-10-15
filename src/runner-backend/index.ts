@@ -337,7 +337,7 @@ export function createRemoteAgentRunner(options: {
         let previousTranscript = Buffer.alloc(0);
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
         const emit = async (event: AcpEvent) => {
-          const line = `${JSON.stringify({ event })}\n`;
+          const line = `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`;
           transcriptBytes += Buffer.byteLength(line);
           if (transcriptBytes > 16_777_216) throw new Error("Remote transcript exceeds limit");
           appendFileSync(transcript, line, { mode: 0o600 });
