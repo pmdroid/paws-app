@@ -596,7 +596,7 @@ test("get_closeout lists the pending check and run_closeout runs it", async () =
       { type: "end" },
     ],
   });
-  await runAgent({
+  const result = await runAgent({
     role: "implementer",
     itemId: "ENG-1",
     runId: "run-closeout-tool",
@@ -621,6 +621,10 @@ test("get_closeout lists the pending check and run_closeout runs it", async () =
   expect(trace.closeouts?.[1]).toBe("check passed.");
   expect(second.pending).toEqual([]);
   expect(second.required?.find((item) => item.id === "check")?.status).toBe("passed");
+  expect(JSON.parse(result.closeoutReport ?? "null")).toMatchObject({
+    pending: [],
+    blocked: null,
+  });
 });
 
 test("a read-only session lists get_closeout and not run_closeout", async () => {
@@ -1833,7 +1837,7 @@ test("Codex refuses finish through a trusted stop hook in a session home", async
 test("a read-only session does not install a closeout stop hook", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
-  await runAgent({
+  const result = await runAgent({
     role: "reviewer",
     profile: { agent: "claude", model: null },
     itemId: "ENG-1",
@@ -1848,6 +1852,7 @@ test("a read-only session does not install a closeout stop hook", async () => {
     readOnly: true,
     updatePlan: { update: async () => undefined },
   });
+  expect(result.closeoutReport).toBeUndefined();
   const trace = await readResult(files.resultPath);
   expect(trace.sessionMeta).toBeUndefined();
   const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop");

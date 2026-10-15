@@ -58,6 +58,7 @@ export interface AskTeamHook {
 
 export interface AskTeamBridge {
   mcpServer: McpServerStdio;
+  closeoutReport(): Promise<string | undefined>;
   close(): Promise<void>;
 }
 
@@ -157,6 +158,10 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             .join(","),
         },
       ],
+    },
+    async closeoutReport() {
+      if (!closeout) return undefined;
+      return closeout.report();
     },
     async close() {
       options.signal.removeEventListener("abort", onAbort);
