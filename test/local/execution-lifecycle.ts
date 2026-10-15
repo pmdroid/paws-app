@@ -13,7 +13,6 @@ import {
   bindLinearSessionTask,
   ensureLinearSession,
   recordLinearInstallation,
-  failWorkItem,
   getWorkItem,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
@@ -26,7 +25,7 @@ export async function probeExecutionLifecycle(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const clock = new FakeClock(1000);
-  let db = openDatabase(join(root, "paws.sqlite"));
+  const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const create = (
     dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void,
@@ -86,13 +85,8 @@ export async function probeExecutionLifecycle(
       state("mixed"),
     );
     observe(
-      "all cancelled work finishes with the abandoned outcome",
-      state("abandoned") === "done" &&
-        db
-          .query<{ outcome: string }, []>(
-            "SELECT outcome FROM epic_execution_control WHERE epic_id='abandoned'",
-          )
-          .get()?.outcome === "abandoned",
+      "every cancelled item cancels the epic",
+      state("abandoned") === "cancelled",
       state("abandoned"),
     );
     observe(
@@ -105,55 +99,18 @@ export async function probeExecutionLifecycle(
       state("failed") === "running",
       state("failed"),
     );
-    clock.advance(599999);
+    clock.advance(10 * 60 * 1000);
     orchestrator.reconcileExecution();
+    const stallQuestions = db
+      .query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM question WHERE body LIKE '%made no progress%'",
+      )
+      .get()!.n;
     observe(
-      "blocked epics do not notify before ten minutes",
-      state("failed") === "running" && notices("failed") === 0,
-      state("failed"),
+      "a held item no longer produces a stall question after ten minutes",
+      state("failed") === "running" && notices("failed") === 0 && stallQuestions === 0,
+      { state: state("failed"), notices: notices("failed"), stallQuestions },
     );
-    await orchestrator.shutdown();
-    db.close();
-    db = openDatabase(join(root, "paws.sqlite"));
-    orchestrator = create();
-    clock.advance(1);
-    orchestrator.reconcileExecution();
-    orchestrator.reconcileExecution();
-    observe(
-      "the persisted stall deadline survives restart and notifies once",
-      state("failed") === "stalled" && notices("failed") === 1,
-      { state: state("failed"), notices: notices("failed") },
-    );
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      db.run("UPDATE work_item SET state='queued' WHERE id='failed-0'");
-      orchestrator.reconcileExecution();
-      db.run("UPDATE work_item SET state='failed' WHERE id='failed-0'");
-      clock.advance(600000);
-      orchestrator.reconcileExecution();
-    }
-    observe(
-      "three automatic retries do not flap or repeat the DRI question",
-      state("failed") === "stalled" &&
-        notices("failed") === 1 &&
-        db
-          .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM question WHERE item_id='failed-0'")
-          .get()?.n === 1,
-      { state: state("failed"), notices: notices("failed") },
-    );
-    db.run("UPDATE work_item SET state='queued' WHERE id='failed-0'");
-    orchestrator.reconcileExecution({ humanEpicId: "failed" });
-
-    observe("ready work wakes a stalled epic", state("failed") === "running", state("failed"));
-    db.run("UPDATE work_item SET state='awaiting_input' WHERE id='failed-0'");
-    orchestrator.reconcileExecution();
-    clock.advance(600000);
-    orchestrator.reconcileExecution();
-    observe(
-      "a later human blocked period receives its own notice",
-      state("failed") === "stalled" && notices("failed") === 2,
-      { state: state("failed"), notices: notices("failed") },
-    );
-    db.run("UPDATE work_item SET state='failed' WHERE id='failed-0'");
     seed("handoff", ["merged", "queued"]);
     db.run(
       "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff','handoff-0','handoff-1')",
@@ -249,48 +206,6 @@ export async function probeExecutionLifecycle(
       captured,
     );
     await orchestrator.shutdown();
-    orchestrator = create(
-      ({ legacyReadyItemIds }) => captured.push([...legacyReadyItemIds]),
-      "comments",
-    );
-    for (const [id, answer] of [
-      ["real-failure-retry", "Retry"],
-      ["real-failure-pause", "Keep paused"],
-    ] as const) {
-      seed(id, ["failed"]);
-      failWorkItem(
-        db,
-        getWorkItem(db, `${id}-0`)!,
-        "native-failure",
-        "Actual canonical failure",
-        clock.now(),
-      );
-      orchestrator.reconcileExecution();
-      clock.advance(600001);
-      orchestrator.reconcileExecution();
-      await orchestrator.onLinearEvent({
-        dedupeKey: `${id}-reply`,
-        deliveryId: null,
-        source: "webhook",
-        action: "prompted",
-        sessionId: `${id}-0`,
-        issueId: `${id}-0`,
-        activityId: `${id}-activity`,
-        actorId: "verified-human",
-        body: answer,
-        signal: null,
-        updatedAtMs: clock.now() + 1,
-        payload: "{}",
-      });
-      const item = getWorkItem(db, `${id}-0`)!;
-      observe(
-        `public Linear ${answer} applies to an actual canonical failed task`,
-        answer === "Retry"
-          ? item.state === "queued" && !item.cancelRequested && state(id) === "running"
-          : item.state === "failed" && item.cancelRequested && state(id) === "stalled",
-        { itemState: item.state, cancelRequested: item.cancelRequested, epicState: state(id) },
-      );
-    }
     const guardDb = openDatabase(join(root, "admission.sqlite"));
     migrate(guardDb);
     const guardJobs = new JobLoop(guardDb, clock);
