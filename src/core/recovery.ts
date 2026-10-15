@@ -1,6 +1,7 @@
 import { LONG_SLEEP_MS } from "./limits";
 import type { WorkItemState } from "./states";
 import type { Checkpoint } from "./types";
+import type { TaskMode } from "./task";
 
 export const IN_FLIGHT_ITEM_STATES = [
   "running",
@@ -36,7 +37,7 @@ export function isAwakeItemState(state: WorkItemState): boolean {
 
 export type StartupDecision =
   | { type: "none" }
-  | { type: "resume"; freshSession: true; checkpoint: Checkpoint }
+  | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null }
   | { type: "fail"; reason: "resume_already_attempted" | "no_checkpoint" }
   | { type: "reverify" };
 
@@ -60,11 +61,13 @@ export function decideStartup(input: {
   itemState: WorkItemState;
   recoveryAttempts: number;
   checkpoint: Checkpoint | null;
+  taskMode?: TaskMode | null;
 }): StartupDecision {
   if (!RESUMABLE.has(input.itemState)) return { type: "none" };
   if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
   if (input.recoveryAttempts >= 1) return { type: "fail", reason: "resume_already_attempted" };
-  if (!input.checkpoint) return { type: "fail", reason: "no_checkpoint" };
+  if (!input.checkpoint && input.taskMode !== "answer" && input.taskMode !== "artifact")
+    return { type: "fail", reason: "no_checkpoint" };
   return { type: "resume", freshSession: true, checkpoint: input.checkpoint };
 }
 
