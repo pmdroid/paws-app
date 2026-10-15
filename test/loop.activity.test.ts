@@ -152,7 +152,6 @@ describe("streamed activity", () => {
         kind: "action",
         body: "Run checks",
         action: { action: "Run checks", parameter: "" },
-        ephemeral: true,
       },
     ]);
     reporter.onEvent(chunk("Verified"));
@@ -163,13 +162,14 @@ describe("streamed activity", () => {
     expect(reporter.resultBody()).toBe("Verified locally.");
   });
 
-  test("retains the entire final message while clipping public progress", () => {
+  test("retains the entire public message across ordered Linear activities", () => {
     const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     const body = "a".repeat(4000) + " Required final detail.";
     reporter.onEvent(chunk(body));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
-    expect(posted[0]?.body.length).toBe(3500);
+    expect(posted.map((activity) => activity.body).join("")).toBe(body);
+    expect(posted.every((activity) => activity.body.length <= 3500)).toBe(true);
     expect(reporter.resultBody()).toBe(body);
   });
 
@@ -258,7 +258,6 @@ describe("streamed activity", () => {
         kind: "action",
         body: "Run checks",
         action: { action: "Run checks", parameter: "" },
-        ephemeral: true,
       },
       {
         kind: "action",

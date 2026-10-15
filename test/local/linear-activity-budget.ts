@@ -135,30 +135,49 @@ export async function probeLinearActivityBudget(
         });
       }
     });
+    const final = activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
       outbox.tick();
       await outbox.idle();
     }
-    assert.equal(activities.size, 60);
-    observe(
-      "Three thousand actual ACP tool events publish sixty normal activities per run-hour",
-      true,
-      {
-        events: 3_000,
-        published: activities.size,
-      },
-    );
+    assert.equal(activities.size, 61);
+    assert.equal(getOutbox(db, final)?.status, "pending");
+    observe("Public tool history passes the former hourly cap before the final response", true, {
+      events: eventCount,
+      published: activities.size,
+      finalWaitsForHistory: true,
+    });
+    db.close();
+    db = openDatabase(path);
+    migrate(db);
+    outbox = dispatcher();
+    for (let n = 61; n < eventCount + 1; n++) {
+      outbox.tick();
+      await outbox.idle();
+    }
+    assert.equal(activities.size, eventCount + 1);
+    const delivered = [...activities.values()];
+    for (let n = 0; n < eventCount; n++) {
+      const content = delivered[n]!["content"] as Record<string, unknown>;
+      assert.equal(content["result"], `Result ${n}`);
+      assert.equal(delivered[n]!["ephemeral"], false);
+    }
+    assert.equal(getOutbox(db, final)?.status, "sent");
+    observe("Every ACP tool result survives SQLite reopen and precedes the final response", true, {
+      published: activities.size,
+      orderedTools: eventCount,
+      noClockAdvance: true,
+    });
     clock.advance(600_000);
     const keepalive = enqueueOutbox(db, {
       target: "linear",
       op: "activity",
-      orderingKey: "chatty",
+      orderingKey: "chatty-keepalive",
       delivery: "critical",
       idempotencyKey: "chatty-keepalive",
       now: clock.now(),
       payload: {
-        sessionId: "chatty",
-        itemId: item.id,
+        sessionId: "chatty-keepalive",
         kind: "thought",
         body: "Still working.",
         ephemeral: true,
@@ -167,29 +186,9 @@ export async function probeLinearActivityBudget(
     outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, keepalive)?.status, "sent");
-    assert.equal(activities.size, 61);
-    observe(
-      "Ten-minute keepalives remain deliverable after the normal run budget is exhausted",
-      true,
-      { keepaliveSent: true },
-    );
-    activity("chatty", "thought", item.id);
-    db.close();
-    db = openDatabase(path);
-    migrate(db);
-    outbox = dispatcher();
-    assert.equal(outbox.tick().length, 0);
-    clock.advance(3_000_000);
-    outbox.tick();
-    await outbox.idle();
-    assert.equal(activities.size, 62);
-    observe(
-      "The hourly limit survives a real database reopen and releases at the window boundary",
-      true,
-      {
-        published: activities.size,
-      },
-    );
+    observe("Keepalives remain deliverable alongside complete public history", true, {
+      keepaliveSent: true,
+    });
     const nextRun = insertRun(db, {
       itemId: item.id,
       status: "active",
@@ -198,7 +197,7 @@ export async function probeLinearActivityBudget(
       now: clock.now(),
     });
     setCurrentRun(db, item.id, nextRun.id);
-    const nextId = activity("chatty", "thought", item.id);
+    const nextId = activity("next-run-session", "thought", item.id);
     outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, nextId)?.status, "sent");
@@ -206,20 +205,24 @@ export async function probeLinearActivityBudget(
     observe("A new canonical run gets its first update without replaying stale progress", true, {
       runChanged: true,
     });
-    const question = activity("chatty", "elicitation", item.id);
-    outbox.tick();
-    await outbox.idle();
-    const final = activity("chatty", "response", item.id);
+    const question = activity("question-session", "elicitation", item.id);
     outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, question)?.status, "sent");
-    assert.equal(getOutbox(db, final)?.status, "sent");
-    observe("Questions and the final response bypass normal progress limits exactly once", true, {
-      questionSent: true,
-      responseSent: true,
-    });
+    const questionFinal = activity("question-session", "response", item.id);
+    outbox.tick();
+    await outbox.idle();
+    assert.equal(getOutbox(db, questionFinal)?.status, "sent");
+    observe(
+      "Questions and the final response are delivered exactly once after queued history",
+      true,
+      {
+        questionSent: true,
+        responseSent: true,
+      },
+    );
     limited = true;
-    const critical = activity("rate-limited", "elicitation");
+    const critical = activity("rate-limited", "thought");
     for (let n = 0; n < 7; n++) {
       outbox.tick();
       await outbox.idle();
@@ -250,7 +253,7 @@ export async function probeLinearActivityBudget(
     assert.equal(getOutbox(db, critical)?.status, "sent");
     assert.equal(getOutbox(db, critical)?.attempts, 8);
     observe(
-      "Actual HTTP429 Retry-After persists across restart and preserves critical replies through seven limits",
+      "Actual HTTP429 Retry-After persists across restart and preserves normal history through seven limits",
       true,
       {
         attempts: getOutbox(db, critical)?.attempts,
@@ -266,12 +269,12 @@ export async function probeLinearActivityBudget(
       const first = claimOutboxHeads(db, { now: clock.now(), limit: 59, workerId: "one" });
       const rest = claimOutboxHeads(second, { now: clock.now(), limit: 80, workerId: "two" });
       assert.equal(first.length, 59);
-      assert.equal(rest.length, 1);
+      assert.equal(rest.length, 21);
       for (const row of first) completeOutbox(db, row, clock.now());
       for (const row of rest) completeOutbox(second, row, clock.now());
       assert.equal(claimOutboxHeads(db, { now: clock.now() }).length, 0);
       observe(
-        "Two actual SQLite connections reserve at most sixty concurrent progress deliveries for the same run",
+        "Two SQLite connections claim all eighty independent sessions without duplicate delivery",
         true,
         {
           first: first.length,

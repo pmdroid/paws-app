@@ -29,7 +29,7 @@ function setup(path = ":memory:") {
       op: "activity",
       orderingKey: "A",
       idempotencyKey: key,
-      payload: { sessionId: "A", kind: "thought", body: key },
+      payload: { sessionId: "A", kind: "thought", body: key, ephemeral: true },
       now: clock.now(),
       ...options,
     });
