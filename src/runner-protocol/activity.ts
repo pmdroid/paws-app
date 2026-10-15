@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-const textContent = z.object({ type: z.literal("text"), text: z.string().max(262_144) });
+const textContent = z.object({ type: z.literal("text"), text: publicString(262_144) });
 const tool = {
   toolCallId: z.string().min(1).max(1024),
-  title: z.string().max(4096).optional(),
+  title: publicString(4096).optional(),
   kind: z
     .enum([
       "read",
@@ -27,22 +27,22 @@ const tool = {
     .optional(),
   _meta: z
     .object({
-      terminal_output: z.object({ data: z.string().max(262_144) }).optional(),
-      terminal_output_delta: z.object({ data: z.string().max(262_144) }).optional(),
+      terminal_output: z.object({ data: publicString(262_144) }).optional(),
+      terminal_output_delta: z.object({ data: publicString(262_144) }).optional(),
     })
     .optional(),
 };
 
 const activity = z.discriminatedUnion("sessionUpdate", [
   z.object({ sessionUpdate: z.literal("agent_message_chunk"), content: textContent }),
-  z.object({ ...tool, sessionUpdate: z.literal("tool_call"), title: z.string().max(4096) }),
+  z.object({ ...tool, sessionUpdate: z.literal("tool_call"), title: publicString(4096) }),
   z.object({ ...tool, sessionUpdate: z.literal("tool_call_update") }),
   z.object({
     sessionUpdate: z.literal("plan"),
     entries: z
       .array(
         z.object({
-          content: z.string().max(16_384),
+          content: publicString(16_384),
           priority: z.enum(["high", "medium", "low"]),
           status: z.enum(["pending", "in_progress", "completed"]),
         }),
@@ -50,6 +50,13 @@ const activity = z.discriminatedUnion("sessionUpdate", [
       .max(256),
   }),
 ]);
+
+function publicString(limit: number) {
+  return z
+    .string()
+    .transform(publicText)
+    .pipe(z.string().max(limit * 3));
+}
 
 export const RunnerActivitySchema = activity.transform((update) => {
   if (update.sessionUpdate === "agent_message_chunk")

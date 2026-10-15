@@ -50,7 +50,7 @@ export async function probeRunnerPublicActivity(root: string) {
       {
         sessionUpdate: "tool_call",
         toolCallId: `tool-${index}`,
-        title: `Read source ${index}`,
+        title: index === 0 ? "token=x ".repeat(512) : `Read source ${index}`,
         kind: "read",
         status: "in_progress",
         rawInput: {
@@ -68,7 +68,7 @@ export async function probeRunnerPublicActivity(root: string) {
             type: "content",
             content: {
               type: "text",
-              text: `${index === 599 ? "x".repeat(100_000) : ""}Source ${index} inspected`,
+              text: `${index === 599 ? "x".repeat(100_000) : index === 0 ? "token=x ".repeat(32_000) : ""}Source ${index} inspected`,
             },
           },
         ],

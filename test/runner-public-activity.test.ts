@@ -36,3 +36,19 @@ test("public activity redaction stays identical across durable replay", () => {
   for (const value of ["input-secret", "output-secret", "plain-secret", "private-value"])
     expect(JSON.stringify(first)).not.toContain(value);
 });
+
+test("near-limit public fields remain replayable after redaction expands their content", () => {
+  const first = RunnerEventSchema.parse({
+    type: "activity",
+    update: {
+      sessionUpdate: "tool_call",
+      toolCallId: "expanded-output",
+      title: "token=x ".repeat(512),
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "token=x ".repeat(32_000) } }],
+    },
+  });
+  expect(RunnerEventSchema.parse(first)).toEqual(first);
+  expect(RunnerEventSchema.parse(RunnerEventSchema.parse(first))).toEqual(first);
+  expect(JSON.stringify(first)).not.toContain("token=x");
+});
