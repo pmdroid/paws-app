@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { createRunnerInputStore } from "../runner-inputs";
 import type { Database } from "bun:sqlite";
+import { createRunnerModels } from "../runner-models";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import { createRunnerControl, createRunnerHttp } from "../runner-control";
 import {
@@ -93,6 +94,7 @@ export async function openRunnerCoordinator(options: {
   const results = createRunnerResults({ db: options.db, work, now: options.now });
   const login = createRunnerLogin({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const models = createRunnerModels({ db: options.db, work, now: options.now });
   const checks = createRunnerChecks({ db: options.db, work, now: options.now });
   const checksHttp = createRunnerChecksHttp(checks);
   const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
@@ -144,6 +146,16 @@ export async function openRunnerCoordinator(options: {
     }
   }, 1000);
   timer.unref();
+  const refreshModels = () => {
+    try {
+      models.refresh();
+    } catch (error) {
+      options.onError(error);
+    }
+  };
+  const modelTimer = setInterval(refreshModels, 15_000);
+  modelTimer.unref();
+  refreshModels();
   return {
     port: listener.port,
     signingKeys: signing.signingKeys,
@@ -151,6 +163,7 @@ export async function openRunnerCoordinator(options: {
     work,
     results,
     health,
+    models,
     login,
     helpers,
     checks,
@@ -159,6 +172,7 @@ export async function openRunnerCoordinator(options: {
     transcripts,
     async browser(request: Request, principal: WorkspacePrincipal) {
       return (
+        (await models.browser(request, principal)) ??
         (await http.browser(request, principal)) ??
         (await health.browser(request, principal)) ??
         login.browser(request, principal)
@@ -170,6 +184,7 @@ export async function openRunnerCoordinator(options: {
     async stop() {
       login.stop();
       clearInterval(timer);
+      clearInterval(modelTimer);
       await listener?.stop();
     },
   };
