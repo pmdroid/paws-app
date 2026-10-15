@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { DependencyEdge, EpicSnapshot } from "../linear";
 import type { createApprovedProjects } from "./runtime";
 
 type Runtime = ReturnType<typeof createApprovedProjects>;
@@ -11,6 +12,7 @@ type Access = Pick<
   | "accepted"
   | "authorizeEvent"
   | "scopeSnapshot"
+  | "adoptParent"
 >;
 
 export function createProjectExecutionGuard(db: Database, current: () => Runtime | null): Access {
@@ -65,6 +67,9 @@ export function createProjectExecutionGuard(db: Database, current: () => Runtime
       if (active) return active.scopeSnapshot(sessionId, snapshot, signal);
       ordinary(sessionId);
       return snapshot;
+    },
+    adoptParent(sessionId: string, snapshot: EpicSnapshot, edges: readonly DependencyEdge[]) {
+      return current()?.adoptParent(sessionId, snapshot, edges) ?? false;
     },
   };
 }

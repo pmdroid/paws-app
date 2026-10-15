@@ -17,6 +17,7 @@ export type ProjectApproval = {
   actorId: string;
   leadUserId: string;
   generation: string;
+  source: "project" | "parent";
   preview: ProjectPreview;
   createdAt: number;
   expiresAt: number;
@@ -29,7 +30,7 @@ export type ProjectApproval = {
 type Actor = { workspaceId: string; userId: string };
 type ApprovalRow = Omit<ProjectApproval, "preview"> & { preview: string };
 const SELECT = `SELECT id,workspace_id AS workspaceId,project_id AS projectId,
- actor_id AS actorId,lead_user_id AS leadUserId,generation,preview,created_at AS createdAt,
+ actor_id AS actorId,lead_user_id AS leadUserId,generation,source,preview,created_at AS createdAt,
  expires_at AS expiresAt,approved_at AS approvedAt,paused_at AS pausedAt,stopped_at AS stoppedAt,last_error AS lastError
  FROM project_approval`;
 
@@ -64,29 +65,37 @@ export function assertProjectTeamAccess(db: Database, actor: Actor, preview: Pro
   return { member, workspace };
 }
 
-export function assertProjectAuthority(db: Database, actor: Actor, preview: ProjectPreview) {
+export function assertProjectAuthority(
+  db: Database,
+  actor: Actor,
+  preview: ProjectPreview,
+  source: ProjectApproval["source"] = "project",
+) {
   const { member, workspace } = assertProjectTeamAccess(db, actor, preview);
   const lead = workspaceMember(db, actor.workspaceId, preview.selection.leadUserId);
-  const mappings = listWorkspaceRepositories(db, actor.workspaceId);
+  const mappings = source === "parent" ? [] : listWorkspaceRepositories(db, actor.workspaceId);
   if (!lead?.active || lead.role === "observer")
     throw new Error("Current workspace membership and an active lead are required.");
   const ids = new Set(preview.includedIssueIds);
   for (const issue of preview.project.issues.filter((candidate) =>
     ids.has(candidate.linearIssueId),
   )) {
-    const repositories = [
-      preview.selection.repository,
-      ...(preview.selection.blockers ?? []).flatMap((policy) =>
-        policy.outcome === "merge" &&
-        preview.edges.some(
-          (edge) =>
-            edge.blockedLinearIssueId === issue.linearIssueId &&
-            edge.blockerLinearIssueId === policy.blockerLinearIssueId,
-        )
-          ? [policy.repository]
-          : [],
-      ),
-    ];
+    const repositories =
+      source === "parent"
+        ? []
+        : [
+            preview.selection.repository,
+            ...(preview.selection.blockers ?? []).flatMap((policy) =>
+              policy.outcome === "merge" &&
+              preview.edges.some(
+                (edge) =>
+                  edge.blockedLinearIssueId === issue.linearIssueId &&
+                  edge.blockerLinearIssueId === policy.blockerLinearIssueId,
+              )
+                ? [policy.repository]
+                : [],
+            ),
+          ];
     if (
       !lead.teamIds.includes(issue.teamId) ||
       repositories.some(
