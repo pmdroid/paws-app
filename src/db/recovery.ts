@@ -5,6 +5,7 @@ import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./
 import type { WorkItemRecord } from "./items";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
+import { getTaskMode } from "./tasks";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
 export type ShutdownWipCommit = (item: WorkItemRecord) => void;
@@ -26,6 +27,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
+        taskMode: getTaskMode(db, item.id),
       });
       applyDecision(db, item, decision, now);
       decisions.push(decision);
