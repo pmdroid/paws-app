@@ -88,6 +88,93 @@ describe("intake", () => {
     db.close();
   });
 
+  test("adopting a parent finishes the epic without items and announces separate sessions", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "parent",
+        identifier: "ENG-1",
+        title: "Parent",
+        description: null,
+        subIssues: [{ linearIssueId: "only", identifier: "ENG-2", title: "Only child" }],
+      },
+    ]);
+    let epicExisted = true;
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      adoptParent: () => {
+        epicExisted = db.query("SELECT 1 FROM epic").get() !== null;
+        return true;
+      },
+    });
+    expect(epicExisted).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.items).toEqual([]);
+    expect(result.epic.state).toBe("done");
+    expect(tracker.progress.map((update) => update.body)).toEqual([
+      "Picked up 1 sub-issue. Each one runs in its own session.",
+    ]);
+    const again = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      adoptParent: () => {
+        throw new Error("replay must not adopt again");
+      },
+    });
+    expect(again.ok && again.alreadyExisted).toBe(true);
+    if (!again.ok) return;
+    expect(again.items).toEqual([]);
+    expect(again.epic.id).toBe(result.epic.id);
+    expect(tracker.progress).toHaveLength(1);
+    db.close();
+  });
+
+  test("adoptParent false keeps the ordered multi-item epic", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([parent]);
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      adoptParent: () => false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.epic.state).toBe("running");
+    expect(result.items.map((item) => item.linearIdentifier)).toEqual(["ENG-2", "ENG-3", "ENG-4"]);
+    expect(tracker.progress.map((update) => update.body)).toEqual([
+      queueMessage(["ENG-2", "ENG-3", "ENG-4"], false),
+    ]);
+    expect(db.query("SELECT id FROM project_approval").all()).toHaveLength(0);
+    db.close();
+  });
+
+  test("a blocks cycle does not adopt a parent project", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([parent]);
+    tracker.deps.set("a", [
+      { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
+      { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
+    ]);
+    let called = false;
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      adoptParent: () => {
+        called = true;
+        return true;
+      },
+    });
+    expect(called).toBe(false);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("cycle");
+    expect(db.query("SELECT id FROM project_approval").all()).toHaveLength(0);
+    db.close();
+  });
+
   test("a blocks cycle is reported and nothing is queued", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([parent]);
