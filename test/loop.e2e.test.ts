@@ -1830,6 +1830,220 @@ for (const movedHead of [false, true]) {
   }, 30_000);
 }
 
+const REBASE_INSTRUCTION =
+  "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+const REBASE_THOUGHT = "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
+
+test("a conflicting rebase sends the item back to the agent and then merges", async () => {
+  const result = await runRebaseConflict("resolve");
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.merged, result.detail).toBe(1);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toEqual([REBASE_THOUGHT]);
+  expect(
+    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toHaveLength(1);
+  expect(result.handoffs, result.detail).toEqual([REBASE_INSTRUCTION]);
+}, 90_000);
+
+test("after 3 rebase conflict returns the item fails", async () => {
+  const result = await runRebaseConflict("repeat");
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.merged, result.detail).toBe(0);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toHaveLength(3);
+  expect(result.handoffs, result.detail).toEqual([
+    REBASE_INSTRUCTION,
+    REBASE_INSTRUCTION,
+    REBASE_INSTRUCTION,
+  ]);
+  expect(
+    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toHaveLength(3);
+  expect(result.thoughts, result.detail).toContain("rebase conflict");
+}, 120_000);
+
+test("a rebase_failed merge fails the item", async () => {
+  const result = await runRebaseConflict("rebase-failed");
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.merged, result.detail).toBe(0);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toEqual([]);
+  expect(result.handoffs, result.detail).toEqual([]);
+  expect(
+    result.prompts.some((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toBe(false);
+  expect(result.thoughts, result.detail).toContain("rebase failed");
+}, 60_000);
+
+async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): Promise<{
+  state: string | null;
+  thoughts: string[];
+  prompts: string[];
+  handoffs: string[];
+  merged: number;
+  detail: string;
+}> {
+  const layout = await repoLayout();
+  const identifier = mode === "resolve" ? "ENG-70" : mode === "repeat" ? "ENG-71" : "ENG-72";
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: `rebase-${mode}`,
+      identifier,
+      title: "Rebase onto main",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const implementResults: string[] = [];
+  let sequence = 0;
+  let implementTurns = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `rebase-${mode}-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement"
+          ? path.join(layout.root, `rebase-${mode}-result-${sequence}.json`)
+          : "";
+      if (resultPath) implementResults.push(resultPath);
+      let steps: FakeScript["steps"];
+      if (input.purpose === "review" || input.purpose === "prepare") steps = emptyReview().steps;
+      else if (mode === "resolve" && implementTurns > 0) steps = rebaseOntoMainSteps();
+      else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
+      if (input.purpose === "implement") implementTurns += 1;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, `rebase-${mode}`));
+    await jobs.tick();
+    expect(stateOf(db, identifier), debug(layout, db)).toBe("merge_queue");
+    if (mode === "rebase-failed") {
+      await commitOnMain(layout.bare, "side\n", "side.txt");
+      await installRebaseHook(layout.pawsRoot);
+    } else await commitOnMain(layout.bare, "from-main\n");
+    for (let turn = 0; turn < 40; turn += 1) {
+      const state = stateOf(db, identifier);
+      if (state === "merged" || state === "failed") break;
+      const job = await jobs.tick();
+      const next = stateOf(db, identifier);
+      if (job === null && (next === "merged" || next === "failed" || next === state)) break;
+    }
+    while (outbox.tick().length > 0) await outbox.idle();
+    const prompts: string[] = [];
+    for (const file of implementResults) {
+      if (!existsSync(file)) continue;
+      prompts.push(
+        JSON.stringify((JSON.parse(await readFile(file, "utf8")) as FakeResult).prompts ?? []),
+      );
+    }
+    return {
+      state: stateOf(db, identifier),
+      thoughts: tracker.progress.map((update) => update.body),
+      prompts,
+      handoffs: listJobs(db)
+        .filter((job) => job.queue === JOB_KIND.resume)
+        .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
+      merged: github.merged.length,
+      detail: debug(layout, db),
+    };
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}
+
+function rebaseOntoMainSteps(): FakeScript["steps"] {
+  return [
+    {
+      type: "terminal",
+      command: "sh",
+      args: [
+        "-c",
+        [
+          "export GIT_EDITOR=true",
+          "export GIT_SEQUENCE_EDITOR=true",
+          "onto=origin/main",
+          "if git rev-parse --verify --quiet refs/paws/upstream-main >/dev/null 2>&1; then",
+          "onto=refs/paws/upstream-main",
+          "fi",
+          'git_c() { git -c user.email=paws-test@example.com -c user.name=Paws -c commit.gpgsign=false -c core.editor=true "$@"; }',
+          'if ! git_c rebase "$onto"; then',
+          "printf 'ok\\n' > ok.txt",
+          "git add ok.txt",
+          "git_c rebase --continue",
+          "fi",
+        ].join("\n"),
+      ],
+    },
+    { type: "end", stopReason: "end_turn" },
+  ];
+}
+
+async function commitOnMain(bare: string, content: string, file = "ok.txt"): Promise<void> {
+  const dir = await mkdtemp(path.join(tmpdir(), "paws-main-"));
+  try {
+    await exec("git", ["clone", bare, dir]);
+    await gitIdentity(dir);
+    await writeFile(path.join(dir, file), content);
+    await exec("git", ["-C", dir, "add", file]);
+    await exec("git", ["-C", dir, "commit", "-m", "main moves"]);
+    await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function installRebaseHook(pawsRoot: string): Promise<void> {
+  const mirror = path.join(pawsRoot, "repos", "pmdroid", "paws-demo.git");
+  const hooks = path.join(mirror, "hooks");
+  await mkdir(hooks, { recursive: true });
+  const hook = path.join(hooks, "pre-rebase");
+  await writeFile(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await exec("chmod", ["755", hook]);
+  await exec("git", ["--git-dir", mirror, "config", "core.hooksPath", hooks]);
+}
+
 function emptyReview(): FakeScript {
   return {
     steps: [
