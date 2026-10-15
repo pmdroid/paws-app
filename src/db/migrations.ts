@@ -1474,4 +1474,20 @@ CREATE INDEX agent_model_probe_refresh ON agent_model_probe(runner_id,user_id,ag
 CREATE UNIQUE INDEX agent_model_probe_pending ON agent_model_probe(runner_id) WHERE finished_at IS NULL;
 `,
   },
+  {
+    id: "057_task_block",
+    sql: `
+CREATE TABLE task_block (
+ blocker_linear_issue_id TEXT NOT NULL,
+ blocked_linear_issue_id TEXT NOT NULL,
+ PRIMARY KEY(blocked_linear_issue_id,blocker_linear_issue_id),
+ CHECK(blocker_linear_issue_id <> blocked_linear_issue_id)
+) STRICT;
+CREATE INDEX task_block_blocker ON task_block(blocker_linear_issue_id);
+ALTER TABLE work_item ADD COLUMN owner_user_id TEXT REFERENCES workspace_user(id);
+ALTER TABLE work_item ADD COLUMN project_approval_id TEXT REFERENCES project_approval(id);
+CREATE INDEX work_item_project_approval ON work_item(project_approval_id) WHERE project_approval_id IS NOT NULL;
+ALTER TABLE project_approval ADD COLUMN source TEXT NOT NULL DEFAULT 'project' CHECK(source IN ('project','parent'));
+`,
+  },
 ];
