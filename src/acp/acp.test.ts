@@ -289,7 +289,7 @@ test.each([
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
   expect(trace.askTeam).toEqual({ ok: true, text: "yes" });
-  expect(trace.tools).toEqual(["ask_team"]);
+  expect(trace.tools).toEqual(["ask_team", "get_closeout", "run_closeout"]);
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
 });
@@ -385,7 +385,7 @@ test("publish_artifact publishes a snapshot through MCP without an ask_team hook
   expect(context?.worktreePath).toBe(layout.worktree);
   expect(context?.role).toBe("implementer");
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["publish_artifact"]);
+  expect(trace.tools).toEqual(["publish_artifact", "get_closeout", "run_closeout"]);
   expect(trace.artifact).toEqual({
     ok: true,
     text: "![shot\\[1\\].png](<https://uploads.example/asset.png>)",
@@ -500,7 +500,7 @@ test("update_plan replaces the working checklist through the host tool", async (
     },
   });
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["update_plan"]);
+  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
   expect(trace.plan).toEqual({ ok: true, text: "Plan updated." });
   expect(plans).toEqual([
     [
@@ -567,9 +567,136 @@ test("ask_team and publish_artifact share one MCP server", async () => {
   });
   const trace = await readResult(files.resultPath);
   expect(trace.mcpServers).toHaveLength(1);
-  expect(trace.tools).toEqual(["ask_team", "publish_artifact"]);
+  expect(trace.tools).toEqual(["ask_team", "publish_artifact", "get_closeout", "run_closeout"]);
   expect(trace.askTeam?.text).toBe("yes");
   expect(trace.artifact?.ok).toBe(true);
+});
+
+test("get_closeout lists the pending check and run_closeout runs it", async () => {
+  const layout = await layoutRepo();
+  await mkdir(join(layout.worktree, ".agents"), { recursive: true });
+  await writeFile(
+    join(layout.worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: check",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["true"]',
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "get_closeout" },
+      { type: "run_closeout", id: "check" },
+      { type: "get_closeout" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-tool",
+    prompt: "Verify the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
+  const first = JSON.parse(trace.closeouts?.[0] ?? "{}") as { pending?: string[] };
+  const second = JSON.parse(trace.closeouts?.[2] ?? "{}") as {
+    pending?: string[];
+    required?: Array<{ id: string; status: string }>;
+  };
+  expect(first.pending).toEqual(["check"]);
+  expect(trace.closeouts?.[1]).toBe("check passed.");
+  expect(second.pending).toEqual([]);
+  expect(second.required?.find((item) => item.id === "check")?.status).toBe("passed");
+});
+
+test("a read-only session lists get_closeout and not run_closeout", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "get_closeout" }, { type: "end" }],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-readonly",
+    prompt: "Answer.",
+    readOnly: true,
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    askTeam: { ask: async () => ({ answer: "yes" }) },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["ask_team", "get_closeout"]);
+});
+
+test("run_closeout refuses a command the terminal guard denies", async () => {
+  const layout = await layoutRepo();
+  const secret = join(layout.home, ".ssh", "id_rsa");
+  await writeFile(secret, "secret-key\n");
+  await mkdir(join(layout.worktree, ".agents"), { recursive: true });
+  await writeFile(
+    join(layout.worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: leak",
+      "    kind: command",
+      "    gate: beforePR",
+      `    exec: ${JSON.stringify(["cat", secret])}`,
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "get_closeout" },
+      { type: "run_closeout", id: "leak" },
+      { type: "get_closeout" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-denied",
+    prompt: "Verify the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.closeouts?.[1]).toContain("path is under ~/.ssh");
+  expect(trace.closeouts?.join("\n")).not.toContain("secret-key");
+  const second = JSON.parse(trace.closeouts?.[2] ?? "{}") as {
+    required?: Array<{ id: string; status: string; failed_attempts: number }>;
+  };
+  expect(second.required?.find((item) => item.id === "leak")).toMatchObject({
+    status: "missing",
+    failed_attempts: 0,
+  });
 });
 
 test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {

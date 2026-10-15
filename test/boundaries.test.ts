@@ -86,7 +86,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "execution-controls": ["core", "db", "workspace"],
   "project-execution": ["core", "db", "workspace", "linear", "intake"],
   scheduler: ["core", "db", "intake"],
-  acp: ["core", "config", "process", "worktree-checkout"],
+  acp: ["core", "config", "process", "worktree-checkout", "closeout-spec"],
   closeout: ["closeout-spec"],
   "closeout-spec": ["core", "worktree-checkout"],
   github: ["process"],

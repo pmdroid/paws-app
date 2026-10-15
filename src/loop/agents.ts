@@ -50,6 +50,21 @@ export type AcpAgentDeps = {
   timeoutMs?: number;
 };
 
+export function closeoutPrompt(): string {
+  return [
+    "After changes and before finishing, call get_closeout.",
+    "It returns the required checks, matched paths, statuses, and the pending ids to run with run_closeout.",
+    "It does not run checks.",
+    "Run each pending id in order with run_closeout, then call get_closeout again.",
+    "run_closeout runs matching setup steps first.",
+    "Further edits can make passed checks stale.",
+    "If blocked is non-null, stop retrying and report the blocker.",
+    "If a required check fails, fix it and call run_closeout again.",
+    "If you cannot fix it, call ask_team with the error and what you tried.",
+    "Reviews stay in required and are not pending. An independent reviewer runs those.",
+  ].join(" ");
+}
+
 export function implementPrompt(input: {
   identifier: string;
   title: string;
@@ -62,6 +77,7 @@ export function implementPrompt(input: {
     "Work only in this repository.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
+    closeoutPrompt(),
     "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
@@ -182,6 +198,7 @@ export function fixPrompt(request: FixRequest, brief?: string): string {
   return [
     "Fix Closeout findings.",
     "Call update_plan with the full working checklist as the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
+    closeoutPrompt(),
     ...(brief ? [brief] : []),
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
     request.summary,

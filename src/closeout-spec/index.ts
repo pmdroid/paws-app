@@ -105,3 +105,8 @@ export type {
 } from "./review/index";
 
 export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";
+export {
+  createCloseoutSession,
+  type CloseoutSession,
+  type CloseoutSessionOptions,
+} from "./session";

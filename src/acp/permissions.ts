@@ -52,7 +52,12 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
-  if (subject.name === "ask_team" || subject.name === "update_plan") {
+  if (
+    subject.name === "ask_team" ||
+    subject.name === "update_plan" ||
+    subject.name === "get_closeout" ||
+    subject.name === "run_closeout"
+  ) {
     return { allow: true, reason: `${subject.name} is handled by the injected hook` };
   }
 
