@@ -27,11 +27,13 @@ import {
   getLinearSession,
   ensureLinearSession,
   bindLinearSessionTask,
+  saveCheckpoint,
+  type WorkItemRecord,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness } from "../../src/github";
-import { attachOrchestrator } from "../../src/loop";
+import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
 import { dispatchReadyItems, saveSchedulingContext } from "../../src/scheduler";
 
 export async function probeRunnerOrchestration(
@@ -137,6 +139,7 @@ export async function probeRunnerOrchestration(
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: { role: string; prepare: boolean; prompt: string }[] = [];
     const checks: { argv: string[]; active: boolean }[] = [];
+    const appChecks: { currentRunId: string | null; checkpoint: unknown }[] = [];
     let commandCount = 0;
     let implementationCount = 0;
     let reverifying = false;
@@ -217,6 +220,26 @@ export async function probeRunnerOrchestration(
       home,
       tracker,
       repository: { owner: "acme", repo: "fixture", remoteUrl: origin },
+      ...(scenario === "success"
+        ? {
+            channel: "agent-session" as const,
+            githubAuth: Object.assign(new FakeHostGitHubAuth(), {
+              integration: {
+                check: async (current: WorkItemRecord) => {
+                  appChecks.push({
+                    currentRunId: current.currentRunId,
+                    checkpoint: current.checkpoint,
+                  });
+                  return true;
+                },
+                identity: () => "workspace-installation-repository",
+                administrators: () => [],
+                recoveryUrl: "https://paws.example/status/#/settings/integrations",
+              },
+            }),
+            repositoryToken: async () => "fixture",
+          }
+        : {}),
       linearTaskModes: mergeDependencyYield,
       ...(mergeDependencyYield
         ? {
@@ -298,6 +321,42 @@ export async function probeRunnerOrchestration(
             if (unavailable) throw new Error("fixture remote transport unavailable");
             if (initialLease && !options.prepareOnly && options.role === "implementer")
               await reclaim(options.signal);
+            if (
+              scenario === "success" &&
+              !options.prepareOnly &&
+              options.role === "implementer" &&
+              implementationCount === 0
+            ) {
+              const baseSha = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
+              const checkpoint = { phase: "running" as const, baseSha, wipCommit: baseSha };
+              saveCheckpoint(db, item.id, checkpoint);
+              assert(options.networkGit);
+              const before = appChecks.length;
+              await options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]);
+              assert(appChecks.length > before);
+              for (const check of appChecks.slice(before))
+                assert.deepEqual(check, { currentRunId: item.currentRunId, checkpoint });
+              setCurrentRun(db, item.id, null);
+              try {
+                await assert.rejects(
+                  options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]),
+                  /obsolete task/,
+                );
+              } finally {
+                setCurrentRun(db, item.id, item.currentRunId);
+              }
+              observe(
+                "candidate import revalidates the current checkpoint with the workspace App",
+                true,
+                {
+                  itemId,
+                  currentRunId: item.currentRunId,
+                  baseSha,
+                  appRechecks: appChecks.length - before,
+                  supersededRunRejected: true,
+                },
+              );
+            }
             const script = join(home, `agent-${calls.length}.json`);
             const reviewer = options.role === "reviewer";
             const answer = mergeDependencyYield && itemId === "new-blocker";

@@ -3265,16 +3265,19 @@ export class Orchestrator {
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
         signal.throwIfAborted();
+        const current = getWorkItem(this.db, item.id);
         if (
+          !current ||
           this.stopped(item.id) ||
+          current.currentRunId !== item.currentRunId ||
           (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
         )
           throw new Error("The repository read belongs to an obsolete task.");
-        await this.taskAccess()?.assert(item, signal, {
+        await this.taskAccess()?.assert(current, signal, {
           allowTerminalIssue: access === "read",
         });
-        const auth = this.authorization(item);
-        if (auth && !(await auth.ensure(item, "initial", signal)))
+        const auth = this.authorization(current);
+        if (auth && !(await auth.ensure(current, "initial", signal)))
           throw new Error("GitHub sign-in is required before reading the repository.");
       },
     });
