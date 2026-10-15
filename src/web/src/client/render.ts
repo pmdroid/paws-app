@@ -258,6 +258,9 @@ function viewRuns(
       <p class="muted">${esc(selected.summary)}</p>
       ${phaseStrip(item, selected, verdict)}
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+      <h3>Agent transcript</h3>
+      <div class="log" role="log" aria-label="Agent transcript" data-log="transcript-${esc(selected.id)}">${selected.transcript?.length ? selected.transcript.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind === "system" ? "agent" : line.kind)}</span><span class="tx whitespace-pre-wrap break-words">${esc(line.text)}</span></div>`).join("") : '<p class="muted">Waiting for agent output.</p>'}</div>
+      <h3>Task activity</h3>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
       ${runCloseout(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>
