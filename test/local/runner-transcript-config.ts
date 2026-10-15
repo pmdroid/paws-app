@@ -199,12 +199,12 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   }
   symlinkSync(home, join(root, "symlink-home"));
   assert.throws(() => loadRunnerTranscriptObjects(join(root, "symlink-home")));
-  assert.throws(() => loadRunnerTranscriptObjects(join(root, "missing")));
+  assert(loadRunnerTranscriptObjects(join(root, "missing")).uri("proof").startsWith("file://"));
   assert(!existsSync(join(root, "missing")));
   observe(
     "unsafe filesystem objects, plaintext and missing envelope keys fail closed without blocking",
     true,
-    { rejectedFilesystemCases: cases.length + 2, fifoNonblocking: true, noImplicitCreation: true },
+    { rejectedFilesystemCases: cases.length + 1, fifoNonblocking: true, noImplicitCreation: true },
   );
 
   const names = [
@@ -261,7 +261,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   const missing = join(root, "startup-missing");
   assert.throws(
     () => startPaws({ PAWS_HOME: missing, PAWS_PORT: "0", PAWS_EXECUTION: "remote" }),
-    /configuration is missing or invalid/,
+    /Remote execution requires runner HTTPS/,
   );
   assert(!existsSync(missing));
   const started = startPaws({
@@ -290,7 +290,7 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
   );
   assert(!existsSync(join(root, "startup-injected")));
   observe(
-    "explicit remote storage and runner prerequisites fail before opening files; startup without a runner answers health",
+    "remote runner prerequisites fail before opening files; startup without a runner answers health",
     true,
     { missingHomeUnchanged: true, health: 200, injectedRemotePrerequisitesRejected: true },
   );
@@ -339,6 +339,19 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
     true,
     await probeActualStorage(root),
   );
+  for (const layout of ["missing-home", "missing-secrets", "missing-config"]) {
+    const target = join(root, layout);
+    if (layout !== "missing-home") mkdirSync(target, { mode: 0o700 });
+    if (layout === "missing-config") mkdirSync(join(target, "secrets"), { mode: 0o700 });
+    const defaults = loadRunnerTranscriptObjects(target);
+    assert(!existsSync(join(target, "runner-transcripts")));
+    await defaults.write("default", new Blob([layout]));
+    assert.equal(
+      await new Response(loadRunnerTranscriptObjects(target).read("default")).text(),
+      layout,
+    );
+    assert(!existsSync(join(target, "secrets", "runner-transcript-storage.json")));
+  }
   const localHome = join(root, "local-home");
   assert.equal((await cli('{"kind":"local"}', localHome)).code, 0);
   const local = loadRunnerTranscriptObjects(localHome);
@@ -364,6 +377,52 @@ export async function probeRunnerTranscriptStorage(root: string, observe: Observ
       transcriptObservations: localObservations,
       storage: "local",
       directoryMode: statSync(join(localHome, "runner-transcripts")).mode & 0o777,
+    },
+  );
+  configureRunnerTranscriptStorage(localHome, JSON.stringify(config));
+  const remote = loadRunnerTranscriptObjects(localHome);
+  const uploaded = new Map<string, string>();
+  let downloads = 0;
+  try {
+    S3Client.prototype.file = function (key, ...args) {
+      return Object.assign(nativeFile.call(this, key, ...args), {
+        async write(payload: Blob | Response) {
+          const text = await payload.text();
+          uploaded.set(key, text);
+          return Buffer.byteLength(text);
+        },
+        stream() {
+          downloads++;
+          assert(uploaded.has(key));
+          return new Blob([uploaded.get(key)!]).stream();
+        },
+      });
+    };
+    assert.equal(await new Response(remote.read("restart")).text(), "persistent transcript");
+    assert.equal(downloads, 0);
+    await remote.write("remote-only", new Blob(["S3 transcript"]));
+    assert(!existsSync(new URL(local.uri("remote-only"))));
+    assert.equal(remote.uri("remote-only"), "s3://fixture-transcripts/remote-only");
+    assert.equal(await new Response(remote.read("remote-only")).text(), "S3 transcript");
+    chmodSync(join(localHome, "runner-transcripts"), 0o755);
+    assert.equal(await new Response(remote.read("remote-only")).text(), "S3 transcript");
+    assert.throws(() => remote.read("restart"), /Unsafe transcript directory/);
+    chmodSync(join(localHome, "runner-transcripts"), 0o700);
+    chmodSync(new URL(local.uri("restart")), 0o644);
+    assert.throws(() => remote.read("restart"), /Unsafe transcript file/);
+    assert.equal(downloads, 2);
+  } finally {
+    S3Client.prototype.file = nativeFile;
+  }
+  observe(
+    "missing configuration defaults to local and S3 replaces new writes while preserving local history",
+    true,
+    {
+      missingLayouts: 3,
+      remoteUploads: uploaded.size,
+      remoteDownloads: downloads,
+      localHistoryReadable: true,
+      unsafeLocalHistoryRejected: true,
     },
   );
 }

@@ -20,7 +20,6 @@ import { RUNNER_TRANSCRIPT_MAX_BYTES } from "./schema";
 
 export function createLocalRunnerTranscriptObjects(root: string): RunnerTranscriptObjects {
   if (!isAbsolute(root)) throw new Error("Transcript directory must be absolute");
-  mkdirSync(root, { recursive: true, mode: 0o700 });
   function directory() {
     const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const info = fstatSync(fd);
@@ -34,11 +33,10 @@ export function createLocalRunnerTranscriptObjects(root: string): RunnerTranscri
     if (!key || key.length > 2048) throw new Error("Invalid transcript key");
     return createHash("sha256").update(key).digest("hex") + ".jsonl";
   }
-  const checked = directory();
-  closeSync(checked);
   return {
     async write(key, bytes) {
       const filename = name(key);
+      mkdirSync(root, { recursive: true, mode: 0o700 });
       const rootFd = directory();
       const temporary = `/proc/self/fd/${rootFd}/${randomUUID()}.tmp`;
       let fd: number | undefined;
