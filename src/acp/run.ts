@@ -38,6 +38,7 @@ import {
   type AgentRole,
 } from "./adapters";
 import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
+import { installCloseoutStopHook } from "./closeout-hook";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
 import { sessionModel, selectSessionProfile, providerFor } from "./model";
 import { minimalAgentEnv } from "./env";
@@ -185,14 +186,26 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents, profile.agent);
   if (grok) rejectAutoApprove(adapter.args);
   const graceMs = options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
-  const transcript = `${runDir(options.pawsRoot, options.runId)}/acp.jsonl`;
-  await mkdir(runDir(options.pawsRoot, options.runId), { recursive: true, mode: 0o700 });
+  const directory = runDir(options.pawsRoot, options.runId);
+  const transcript = `${directory}/acp.jsonl`;
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const socketPath = `${directory}/ask-team.sock`;
+  const stopHook =
+    (options.askTeam || options.updatePlan || options.publishArtifact) && options.readOnly !== true
+      ? await installCloseoutStopHook({
+          agent: profile.agent,
+          runDirectory: directory,
+          socketPath,
+          sourceEnv,
+        })
+      : undefined;
   const child = spawnAgent(
     adapter.command,
     adapter.args,
     {
       ...minimalAgentEnv(sourceEnv, { allowXaiApiKey: grok && agents.grok.allowApiKey }),
       ...attributionEnv,
+      ...stopHook?.env,
     },
     {
       ...(grok ? { cwd: options.worktreePath } : {}),
@@ -315,7 +328,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   try {
     if (options.askTeam || options.updatePlan || options.publishArtifact) {
       bridge = await startHostToolBridge({
-        socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
+        socketPath,
         hook: options.askTeam,
         updatePlan: options.updatePlan,
         publishArtifact: options.publishArtifact,
@@ -404,6 +417,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
             ctx.request(methods.agent.session.new, {
               cwd: options.worktreePath,
               mcpServers: bridge ? [bridge.mcpServer] : [],
+              ...(stopHook?.sessionMeta ? { _meta: stopHook.sessionMeta } : {}),
             }),
             30_000,
             phaseSignal,

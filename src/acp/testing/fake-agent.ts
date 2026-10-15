@@ -163,6 +163,9 @@ async function handle(message: {
         env: recordServer.env,
       };
     });
+    const sessionMeta = message.params?.["_meta"];
+    if (sessionMeta) state.sessionMeta = sessionMeta;
+    if (process.env.CODEX_HOME) state.codexHome = process.env.CODEX_HOME;
     persist();
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: configOptions() } });
     return;

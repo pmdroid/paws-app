@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -1754,6 +1754,104 @@ test("connection probe fails when the agent cannot identify its default model", 
     if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
     else process.env.PAWS_CODEX_ACP = prior;
   }
+});
+
+test("Claude refuses finish through a session stop hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  const result = await runAgent({
+    role: "implementer",
+    profile: { agent: "claude", model: null },
+    itemId: "ENG-1",
+    runId: "claude-stop",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  expect(result.stopReason).toBe("end_turn");
+  const trace = await readResult(files.resultPath);
+  const meta = trace.sessionMeta as {
+    claudeCode: {
+      options: {
+        settingSources: string[];
+        env: { CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: string };
+        settings: {
+          hooks: {
+            Stop: Array<{ hooks: Array<{ command: string; args: string[]; type: string }> }>;
+          };
+        };
+      };
+    };
+  };
+  const hook = meta.claudeCode.options.settings.hooks.Stop[0]?.hooks[0];
+  const scriptPath = join(layout.pawsRoot, "runs", "claude-stop", "closeout-stop");
+  expect(meta.claudeCode.options.settingSources).toEqual(["user", "project"]);
+  expect(meta.claudeCode.options.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP).toBe("100");
+  expect(hook).toMatchObject({ type: "command", args: [scriptPath] });
+  expect(await readFile(scriptPath, "utf8")).toContain(
+    join(layout.pawsRoot, "runs", "claude-stop", "ask-team.sock"),
+  );
+  expect(trace.codexHome).toBe(process.env.CODEX_HOME);
+});
+
+test("Codex refuses finish through a trusted stop hook in a session home", async () => {
+  const layout = await layoutRepo();
+  const source = join(layout.root, "codex-source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "auth.json"), '{"token":"keep"}\n');
+  await writeFile(join(source, "config.toml"), "[features]\nhooks = false\n");
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  await runAgent({
+    role: "implementer",
+    profile: { agent: "codex", model: null },
+    itemId: "ENG-1",
+    runId: "codex-stop",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: { ...agentEnv(), CODEX_HOME: source },
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  const overlay = join(layout.pawsRoot, "runs", "codex-stop", "codex-home");
+  expect(trace.codexHome).toBe(overlay);
+  expect(trace.sessionMeta).toBeUndefined();
+  expect(await readlink(join(overlay, "auth.json"))).toBe(join(source, "auth.json"));
+  expect(await readFile(join(source, "config.toml"), "utf8")).toContain("hooks = false");
+  expect(await readFile(join(overlay, "config.toml"), "utf8")).toContain("hooks = true");
+  expect(await readFile(join(source, "auth.json"), "utf8")).toBe('{"token":"keep"}\n');
+});
+
+test("a read-only session does not install a closeout stop hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  await runAgent({
+    role: "reviewer",
+    profile: { agent: "claude", model: null },
+    itemId: "ENG-1",
+    runId: "readonly-stop",
+    prompt: "review",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    readOnly: true,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.sessionMeta).toBeUndefined();
+  const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop");
+  await expect(lstat(script)).rejects.toThrow();
 });
 
 async function writeGrokConfig(pawsRoot: string, allowApiKey: boolean): Promise<void> {
