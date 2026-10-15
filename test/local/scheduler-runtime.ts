@@ -52,7 +52,7 @@ export async function probeSchedulerRuntime(
   ensureLinearSession(db, { sessionId: "session", issueId: "parent", now: clock.now() });
   bindLinearSessionTask(db, "session", "epic");
   activateLinearItem(db, "session", "original");
-  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"], concurrency: 1 });
+  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"] });
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
   registerScheduler(heldLoop, options, () => {

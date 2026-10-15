@@ -244,7 +244,7 @@ export async function probeRunnerOrchestration(
       ...(mergeDependencyYield
         ? {
             dispatchReady({ legacyReadyItemIds }: { legacyReadyItemIds: readonly string[] }) {
-              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds, concurrency: 1 });
+              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds });
             },
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
