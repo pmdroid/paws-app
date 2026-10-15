@@ -14,6 +14,7 @@ import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-a
 import { handleGitHubAuthRequest, injectCsrf, type GitHubSignIn } from "./github-auth";
 import { handleLinearConversationsRequest } from "./conversations";
 import { handleSessionStartRequest, type StartLinearSession } from "./session-start";
+import { handleAgentTranscriptRequest } from "./transcript";
 
 export interface StatusProvider {
   snapshot(): StatusSnapshot | Promise<StatusSnapshot>;
@@ -79,6 +80,8 @@ export async function handleStatusRequest(
       headers: { Location: `${STATUS_PAGE_PATH}/${url.search}`, "Cache-Control": "no-store" },
     });
   }
+  const transcript = handleAgentTranscriptRequest(request, options);
+  if (transcript !== null) return transcript;
   const artifact = await handleLinearArtifactRequest(
     request,
     options.readLinearArtifact,

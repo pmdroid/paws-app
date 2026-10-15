@@ -65,10 +65,18 @@ export function createAcpActivityReporter(
   resultBody(): string;
 } {
   let pending = "";
+  let publicMessage = "";
   let resultBody = "";
   const tools = new Map<string, ToolActivity>();
 
+  function flushPublicMessage() {
+    const activity = clip("thought", publicMessage);
+    publicMessage = "";
+    if (activity) post(activity);
+  }
+
   function flush(): boolean {
+    flushPublicMessage();
     const body = pending.trim();
     const activity = clip("thought", body);
     pending = "";
@@ -80,6 +88,10 @@ export function createAcpActivityReporter(
 
   return {
     onEvent(event) {
+      if (event.type === "progress" && event.messageChunk) {
+        publicMessage += event.text;
+        return;
+      }
       if (event.type === "session_update") {
         const update = event.update;
         if (update.sessionUpdate === "plan") {
@@ -107,6 +119,7 @@ export function createAcpActivityReporter(
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
         if (update.sessionUpdate === "agent_message_chunk") {
+          flushPublicMessage();
           pending += textOf(update.content);
           return;
         }

@@ -44,7 +44,7 @@ export function createRunnerWorkHttp(work: RunnerWork) {
         const authorization = request.headers.get("authorization");
         if (!authorization || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization))
           return json({ error: "A run grant is required." }, 403);
-        const input = event.parse(await body(request));
+        const input = event.parse(await body(request, 1_048_576));
         return json(work.event({ ...input, runnerId, token: authorization.slice(7) }));
       }
       return null;
@@ -56,7 +56,7 @@ export function createRunnerWorkHttp(work: RunnerWork) {
   };
 }
 
-async function body(request: Request) {
+async function body(request: Request, limit = 73_728) {
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/json")
     throw new Error("JSON is required.");
   const reader = request.body?.getReader();
@@ -74,7 +74,7 @@ async function body(request: Request) {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > 73_728) throw new Error("Runner work input is too large");
+      if (bytes > limit) throw new Error("Runner work input is too large");
       chunks.push(part.value);
     }
     timeout.throwIfAborted();
