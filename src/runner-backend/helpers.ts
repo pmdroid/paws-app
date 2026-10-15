@@ -111,8 +111,8 @@ export function createRemoteSessionAgentRunner(options: {
                     ? "The runner agent requires sign-in."
                     : "The runner agent exhausted its observed quota.",
                 );
-              const transcript = `${runDir(input.pawsRoot, command.id)}/acp.jsonl`;
-              mkdirSync(runDir(input.pawsRoot, command.id), { recursive: true, mode: 0o700 });
+              const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
+              mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
               const events: AcpEvent[] = [
                 {
                   type: "session_update",
@@ -127,7 +127,11 @@ export function createRemoteSessionAgentRunner(options: {
               for (const event of events) {
                 input.signal?.throwIfAborted();
                 options.helpers.current(command.id);
-                appendFileSync(transcript, `${JSON.stringify({ event })}\n`, { mode: 0o600 });
+                appendFileSync(
+                  transcript,
+                  `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`,
+                  { mode: 0o600 },
+                );
                 await input.onEvent?.(event);
               }
               input.signal?.throwIfAborted();

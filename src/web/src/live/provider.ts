@@ -56,6 +56,7 @@ import {
   type CloseoutStepRecord,
 } from "../../../db";
 import { redactCloseoutText } from "../server/artifact";
+import { readAgentTranscript } from "./transcript";
 import {
   STATUS_API_VERSION,
   type ActivityKind,
@@ -168,7 +169,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const blocks = listWorkItemBlocks(db);
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
-  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
+  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME, env);
   const items = records.map((record) =>
     toItem(record, rows, runs, options.project?.repo, blocks, records),
   );
@@ -251,6 +252,7 @@ function runsFor(
   generatedAt: string,
   db: Database,
   pawsHome: string | undefined,
+  env: NodeJS.ProcessEnv,
 ): StatusRun[] {
   const byItem = new Map(records.map((record) => [record.id, record]));
   const runs: StatusRun[] = [];
@@ -270,6 +272,7 @@ function runsFor(
       attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
+      transcript: readAgentTranscript(pawsHome, stored.id, iso(stored.createdAt), env),
       links: [],
     });
   }

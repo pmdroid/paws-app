@@ -172,3 +172,42 @@ test("answer receipts require delivered questions and preserve gaps over progres
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("live deliveries include tool status and output while private thoughts stay local", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-tool-progress-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const updates = [
+      {
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "private reasoning" },
+      },
+      { sessionUpdate: "tool_call", title: "Run browser", status: "in_progress" },
+      {
+        sessionUpdate: "tool_call_update",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "Screenshot saved" } }],
+      },
+    ];
+    journal.ingest(
+      execution.id,
+      Buffer.from(
+        updates
+          .map(
+            (update) =>
+              JSON.stringify({ type: "acp", event: { type: "session_update", update } }) + "\n",
+          )
+          .join(""),
+      ),
+    );
+    const events = journal.pending(execution.id).map((row) => row.event);
+    expect(events).toEqual([
+      { type: "progress", text: "Tool: Run browser\nin_progress" },
+      { type: "progress", text: "Tool: completed\nScreenshot saved" },
+    ]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
