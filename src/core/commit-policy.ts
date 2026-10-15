@@ -8,14 +8,16 @@ import {
 export type VerifiedGitHubCoauthor = GitCommitIdentity & { id: number; login: string };
 export type GitCommitPolicy = {
   bot: AppBotIdentity;
-  projectLead: VerifiedGitHubCoauthor;
+  projectLead: VerifiedGitHubCoauthor | null;
   taskSteerer: VerifiedGitHubCoauthor;
 };
 
 export function policyCoauthors(policy: GitCommitPolicy): VerifiedGitHubCoauthor[] {
   appBotCommitIdentity(policy.bot);
   const result: VerifiedGitHubCoauthor[] = [];
-  for (const human of [policy.projectLead, policy.taskSteerer]) {
+  for (const human of policy.projectLead === null
+    ? [policy.taskSteerer]
+    : [policy.projectLead, policy.taskSteerer]) {
     if (
       !human ||
       !Number.isSafeInteger(human.id) ||
@@ -23,7 +25,7 @@ export function policyCoauthors(policy: GitCommitPolicy): VerifiedGitHubCoauthor
       !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(human.login)
     )
       throw new Error(
-        "Link consenting verified GitHub identities for both project lead and task steerer before running App work.",
+        "Link consenting verified GitHub identities for the task steerer and any project lead before running App work.",
       );
     commitIdentityEnv(human);
     if (!/^[^\s<>@]+@[^\s<>@]+$/.test(human.email))
@@ -66,13 +68,20 @@ export function validateCommitAttribution(
     .sort();
   if (JSON.stringify([...trailers].sort()) !== JSON.stringify(expected))
     throw new Error(
-      "Candidate attribution rejected: add exactly the verified project lead and task steerer Co-authored-by trailers before verification. No candidate was rewritten.",
+      "Candidate attribution rejected: add exactly the verified task steerer and any project lead Co-authored-by trailers before verification. No candidate was rewritten.",
     );
 }
 
 export function policyPullRequestCredit(policy: GitCommitPolicy): string {
   policyCoauthors(policy);
-  return `Project lead: [@${policy.projectLead.login}](https://github.com/${policy.projectLead.login})\nTask steerer: [@${policy.taskSteerer.login}](https://github.com/${policy.taskSteerer.login})`;
+  return [
+    ...(policy.projectLead
+      ? [
+          `Project lead: [@${policy.projectLead.login}](https://github.com/${policy.projectLead.login})`,
+        ]
+      : []),
+    `Task steerer: [@${policy.taskSteerer.login}](https://github.com/${policy.taskSteerer.login})`,
+  ].join("\n");
 }
 
 export function commitCoauthorTrailers(message: string): string[] {

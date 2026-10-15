@@ -17,7 +17,7 @@ import type {
 } from "../linear";
 
 export class MissingCommitAttributionError extends Error {
-  constructor(readonly missing: "project" | "projectLead" | "taskSteerer" | "verifiedConsent") {
+  constructor(readonly missing: "projectLead" | "taskSteerer" | "verifiedConsent") {
     super(`Commit attribution requires ${missing}.`);
   }
 }
@@ -40,7 +40,7 @@ export function createCommitPolicyForItem<Bot>(options: {
     item: WorkItemRecord,
   ): Promise<{
     bot: Bot;
-    projectLead: VerifiedGitHubAttribution;
+    projectLead: VerifiedGitHubAttribution | null;
     taskSteerer: VerifiedGitHubAttribution;
   }> => {
     const scope = attributionItemScope(options.db, item.id);
@@ -61,12 +61,13 @@ export function createCommitPolicyForItem<Bot>(options: {
       context.teamId !== scope.teamId
     )
       throw new Error("Linear returned another attribution workspace.");
-    if (context.projectId === null) throw new MissingCommitAttributionError("project");
-    if (context.leadId === null) throw new MissingCommitAttributionError("projectLead");
+    const leadId = context.projectId === null ? null : context.leadId;
+    if (context.projectId !== null && leadId === null)
+      throw new MissingCommitAttributionError("projectLead");
     const actorId = getTaskLinearActor(options.db, item.id);
     if (!actorId) throw new MissingCommitAttributionError("taskSteerer");
     const members = new Map<string, string>();
-    for (const linearId of new Set([context.leadId, actorId])) {
+    for (const linearId of new Set(leadId === null ? [actorId] : [leadId, actorId])) {
       const member = workspaceLinearMember(options.db, scope.workspaceId, linearId);
       if (!member?.active || member.role === "observer")
         throw new Error("Active permitted workspace members are required for attribution.");
@@ -115,7 +116,7 @@ export function createCommitPolicyForItem<Bot>(options: {
     }
     return {
       bot: options.bot,
-      projectLead: identities.get(context.leadId)!,
+      projectLead: leadId === null ? null : identities.get(leadId)!,
       taskSteerer: identities.get(actorId)!,
     };
   };
