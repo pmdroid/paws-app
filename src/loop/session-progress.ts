@@ -42,12 +42,7 @@ export function createLinearSessionProgress(
         0,
         hostSteps.length ? -hostSteps.length : undefined,
       )
-    : [
-        {
-          content: `${mode === "code" ? "Implement" : mode === "answer" ? "Answer" : "Create files for"} ${identifier}`,
-          status: "inProgress" as const,
-        },
-      ];
+    : [];
   let phase: Phase = mode === "code" ? "implementing" : "working";
 
   function enqueue(op: string, update: SessionUpdate, replace = false) {

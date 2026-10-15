@@ -233,3 +233,41 @@ test("live deliveries include tool status and output while private thoughts stay
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("plan records replace the checklist without waiting for an answer", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-plan-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const valid = `${JSON.stringify({
+      type: "plan",
+      steps: [
+        { content: "Read the export", status: "completed" },
+        { content: "Write the parser", status: "inProgress" },
+      ],
+    })}\n`;
+    journal.ingest(execution.id, Buffer.from(valid));
+    expect(journal.pending(execution.id)).toEqual([
+      {
+        sequence: 1,
+        event: {
+          type: "plan",
+          steps: [
+            { content: "Read the export", status: "completed" },
+            { content: "Write the parser", status: "inProgress" },
+          ],
+        },
+      },
+    ]);
+    expect(journal.requestId(execution.id, 1)).toBeNull();
+    expect(() =>
+      journal.ingest(
+        execution.id,
+        Buffer.from(valid + `${JSON.stringify({ type: "plan", steps: [] })}\n`),
+      ),
+    ).toThrow("Invalid runner plan");
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

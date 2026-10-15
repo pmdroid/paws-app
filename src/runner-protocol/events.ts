@@ -2,10 +2,30 @@ import { z } from "zod";
 import { RunnerArtifactSchema } from "./artifacts";
 import { RunnerActivitySchema } from "./activity";
 
+export const RunnerPlanStepSchema = z.strictObject({
+  content: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      (content) =>
+        content.trim() === content &&
+        [...content].every((character) => {
+          const code = character.charCodeAt(0);
+          return code >= 32 && code !== 127;
+        }),
+    ),
+  status: z.enum(["pending", "inProgress", "completed", "canceled"]),
+});
+
 export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("artifact"), artifact: RunnerArtifactSchema }),
   z.strictObject({ type: z.literal("progress"), text: z.string().max(65536) }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
+  z.strictObject({
+    type: z.literal("plan"),
+    steps: z.array(RunnerPlanStepSchema).min(1).max(16),
+  }),
   z.strictObject({
     type: z.literal("question"),
     text: z.string().min(1).max(16384),
