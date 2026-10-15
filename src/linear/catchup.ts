@@ -8,8 +8,8 @@ import { isRecord, readString } from "./read";
  */
 const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDuration!, $issueAfter: String, $commentAfter: String, $activityAfter: String, $sessionAfter: String, $includeIssues: Boolean!, $includeComments: Boolean!, $includeActivities: Boolean!, $includeSessions: Boolean!) {
   viewer { id }
-  agentSessions(first: 50, after: $sessionAfter, orderBy: createdAt) @include(if: $includeSessions) {
-    nodes { id createdAt updatedAt endedAt dismissedAt appUser { id } issue { id team { id key } } }
+  agentSessions(first: 50, after: $sessionAfter, orderBy: createdAt, includeArchived: true) @include(if: $includeSessions) {
+    nodes { id status createdAt updatedAt endedAt dismissedAt archivedAt appUser { id } issue { id team { id key } } }
     pageInfo { hasNextPage endCursor }
   }
   issues(
@@ -80,6 +80,8 @@ export type PolledSession = {
   issueId: string;
   createdAtMs: number;
   updatedAtMs: number;
+  endedAtMs?: number | null;
+  stoppedAtMs?: number | null;
 };
 
 export type PolledActivity = {
@@ -177,7 +179,7 @@ export function createIntakePollSource(
       if (!finished.has("sessions")) {
         for (const session of readSessions(root, appUserId, teamId)) {
           const prior = latestSessions.get(session.id);
-          if (prior === undefined || session.createdAtMs > prior.createdAtMs) {
+          if (prior === undefined || session.updatedAtMs > prior.updatedAtMs) {
             latestSessions.set(session.id, session);
           }
         }
@@ -253,7 +255,6 @@ function readSessions(
 ): PolledSession[] {
   const latest = new Map<string, PolledSession>();
   for (const node of readConnection(root, "agentSessions").nodes) {
-    if (readString(node, "endedAt") !== null || readString(node, "dismissedAt") !== null) continue;
     const user = isRecord(node["appUser"]) ? node["appUser"] : null;
     const issue = isRecord(node["issue"]) ? node["issue"] : null;
     const team = issue !== null && isRecord(issue["team"]) ? issue["team"] : null;
@@ -266,8 +267,18 @@ function readSessions(
     const updatedAtMs = readTime(node, "updatedAt");
     if (id === null || issueId === null || createdAtMs === null || updatedAtMs === null) continue;
     const prior = latest.get(id);
-    if (prior === undefined || createdAtMs > prior.createdAtMs) {
-      latest.set(id, { id, issueId, createdAtMs, updatedAtMs });
+    if (prior === undefined || updatedAtMs > prior.updatedAtMs) {
+      latest.set(id, {
+        id,
+        issueId,
+        createdAtMs,
+        updatedAtMs,
+        endedAtMs: readTime(node, "endedAt"),
+        stoppedAtMs:
+          readTime(node, "dismissedAt") ??
+          readTime(node, "archivedAt") ??
+          (readString(node, "status") === "stopping" ? updatedAtMs : null),
+      });
     }
   }
   return [...latest.values()];
