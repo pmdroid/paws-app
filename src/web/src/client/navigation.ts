@@ -5,26 +5,21 @@ export const PAGES = {
     title: "Overview",
     description: "Work delegated in Linear, verified and delivered by Paws.",
   },
-  epics: { title: "Epics", description: "Related work delegated from Linear." },
+  issues: {
+    title: "Issues",
+    description: "Every issue delegated to Paws, who owns it and what blocks it.",
+  },
   projects: {
     title: "Projects",
     description: "Approve selected Linear issues and supervise delivery.",
   },
   runs: {
     title: "Runs",
-    description: "Inspect agent activity, execution controls, and verification output.",
+    description: "Agent activity, execution controls and verification evidence.",
   },
   questions: {
     title: "Questions",
     description: "Review blocked work and answer questions in Linear.",
-  },
-  verdicts: {
-    title: "Verification",
-    description: "Inspect Closeout checks and the evidence for each candidate.",
-  },
-  queue: {
-    title: "Merge queue",
-    description: "Follow pull requests through serial verification and delivery.",
   },
   sessions: {
     title: "Conversations",
@@ -43,7 +38,7 @@ export const PAGES = {
 export const NAVIGATION = [
   {
     label: "Work",
-    views: ["overview", "projects", "epics", "runs", "questions", "verdicts", "queue", "sessions"],
+    views: ["overview", "issues", "projects", "questions", "runs", "sessions"],
   },
   { label: "Manage", views: ["runners"] },
 ] as const;

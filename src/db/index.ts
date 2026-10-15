@@ -96,8 +96,10 @@ export {
 export {
   listOpenQuestions,
   listWorkItemBlocks,
+  listWorkItemFacts,
   type OpenQuestionRecord,
   type WorkItemBlockRecord,
+  type WorkItemFact,
 } from "./reads";
 export { immediate } from "./tx";
 export {

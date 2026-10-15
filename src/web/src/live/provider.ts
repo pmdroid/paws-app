@@ -7,18 +7,12 @@
  * reader is missing, this file uses the closest exported row and leaves the
  * gap empty rather than querying a table directly:
  *
- * - No `listEpics` / `getEpic`. Epic title, Linear identifier, description,
- *   DRI, and epic state are not on an exported row. Epics are one group per
- *   `WorkItemRecord.epicId`; the id is the title; the state is derived from
- *   the child items.
  * - `listRuns` supplies every stored run for the visible items. The run row
  *   has no reviewer, summary, or activity log; those still come from outbox
  *   activity. `currentRunId` is the item's linked run.
  * - `listOpenQuestions` supplies open question rows. An outbox elicitation
  *   is still used when the question table has no row for that item.
  *   Recommended option and claim are not stored.
- * - `listWorkItemBlocks` supplies blockers. A blocker is shown when that
- *   Linear issue is another item in the same epic.
  * - No Closeout table. Verdicts are parsed from outbox activity
  *   (`${itemId}:verdict:${head}:${outcome}` and `${itemId}:exhausted`) and
  *   from `github.merge` job payloads. Checks are parsed from the evidence
@@ -28,21 +22,12 @@
  * - No enqueue timestamp on the work item. Merge `enqueuedAt` is the merge
  *   job's `createdAt`, or the snapshot time when no job exists. Step state
  *   follows that job's status.
- * - No project, assignee, or DRI columns. Name defaults to "Paws", team to
- *   the Linear identifier prefix, repo to "local", assignee to "Unassigned",
- *   DRI to "Paws". `LiveStatusOptions.project` overrides the project.
  */
 
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type {
-  Job,
-  OpenQuestionRecord,
-  OutboxRow,
-  WorkItemBlockRecord,
-  WorkItemRecord,
-} from "../../../db";
+import type { Job, OpenQuestionRecord, OutboxRow, WorkItemFact, WorkItemRecord } from "../../../db";
 import {
   getLinearConversationSource,
   listCloseoutProgress,
@@ -50,7 +35,8 @@ import {
   listOpenQuestions,
   listOutbox,
   listRuns,
-  listWorkItemBlocks,
+  listTaskBlockers,
+  listWorkItemFacts,
   listWorkItemsByStates,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
@@ -64,15 +50,12 @@ import {
   type CheckState,
   type EventLevel,
   type ItemState,
-  type NoteKind,
   type RunState,
   type StatusActivity,
   type StatusCheck,
-  type StatusEpic,
   type StatusEvent,
   type StatusItem,
   type StatusMergeEntry,
-  type StatusNote,
   type StatusProject,
   type StatusPullRequest,
   type StatusQuestion,
@@ -139,7 +122,6 @@ export function emptyLiveSnapshot(
     source: "live",
     generatedAt: now.toISOString(),
     project: projectOf([], project),
-    epics: [],
     items: [],
     runs: [],
     questions: [],
@@ -152,13 +134,14 @@ export function emptyLiveSnapshot(
 function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnapshot {
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
+  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
   const records = listWorkItemsByStates(db, WORK_ITEM_STATES)
     .filter(
       (record) =>
         options.sessionIds === undefined ||
         (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
     )
-    .sort(byPosition);
+    .sort((left, right) => compareNewest(left, right, facts));
   if (records.length === 0) return emptyLiveSnapshot(now, options.project);
   const rows = listOutbox(db).filter(
     (row) =>
@@ -166,12 +149,12 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
       (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
   );
   const jobs = listJobs(db);
-  const blocks = listWorkItemBlocks(db);
+  const itemsByIssue = latestByLinearIssue(records, facts);
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME, env);
   const items = records.map((record) =>
-    toItem(record, rows, runs, options.project?.repo, blocks, records),
+    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts),
   );
   const progress = listCloseoutProgress(db);
   return {
@@ -179,7 +162,6 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     source: "live",
     generatedAt,
     project: projectOf(records, options.project),
-    epics: epicsFor(records, rows),
     items,
     runs,
     questions: questionsFor(db, records, rows, runs, openQuestions),
@@ -191,53 +173,28 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   };
 }
 
-function epicsFor(records: readonly WorkItemRecord[], rows: readonly OutboxRow[]): StatusEpic[] {
-  const groups = new Map<string, WorkItemRecord[]>();
-  for (const record of records) {
-    const group = groups.get(record.epicId) ?? [];
-    group.push(record);
-    groups.set(record.epicId, group);
-  }
-  return [...groups.entries()].map(([id, group]) => ({
-    id,
-    title: id,
-    description: "",
-    state: epicState(group),
-    delegated: true,
-    dri: "Paws",
-    session: notesFor(group, rows),
-    links: [],
-  }));
-}
-
-function epicState(group: readonly WorkItemRecord[]): StatusEpic["state"] {
-  if (group.every((item) => ["completed", "merged", "cancelled"].includes(item.state)))
-    return "done";
-  if (group.some((item) => item.state === "awaiting_input")) return "awaiting_input";
-  if (group.every((item) => item.state === "queued" || item.state === "planning"))
-    return "planning";
-  return "running";
-}
-
 function toItem(
+  db: Database,
   record: WorkItemRecord,
   rows: readonly OutboxRow[],
   runs: readonly StatusRun[],
   repo: string | undefined,
-  blocks: readonly WorkItemBlockRecord[],
-  records: readonly WorkItemRecord[],
+  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
+  facts: ReadonlyMap<string, WorkItemFact>,
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
+  const fact = facts.get(record.id);
   return {
     id,
-    epicId: record.epicId,
     title: textOr(record.title, id),
     state: itemState(record.state),
     agent: runs.find((run) => run.id === runId)?.agent ?? "Paws",
     assignee: "Unassigned",
-    blockers: blockersFor(record, blocks, records),
+    owner: ownerName(fact),
+    project: itemProject(fact),
+    blockers: blockersFor(db, record, itemsByIssue),
     attempts: record.turnCount,
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
@@ -293,23 +250,66 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
 }
 
 function blockersFor(
+  db: Database,
   record: WorkItemRecord,
-  blocks: readonly WorkItemBlockRecord[],
-  records: readonly WorkItemRecord[],
+  itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
 ): string[] {
   const ids: string[] = [];
-  for (const block of blocks) {
-    if (block.epicId !== record.epicId || block.blockedLinearIssueId !== record.linearIssueId) {
-      continue;
-    }
-    const blocker = records.find(
-      (item) => item.epicId === record.epicId && item.linearIssueId === block.blockerLinearIssueId,
-    );
+  for (const issueId of listTaskBlockers(db, record.linearIssueId)) {
+    const blocker = itemsByIssue.get(issueId);
     if (blocker === undefined) continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
   }
   return ids;
+}
+
+function latestByLinearIssue(
+  records: readonly WorkItemRecord[],
+  facts: ReadonlyMap<string, WorkItemFact>,
+): Map<string, WorkItemRecord> {
+  const itemsByIssue = new Map<string, WorkItemRecord>();
+  for (const record of records) {
+    const current = itemsByIssue.get(record.linearIssueId);
+    if (current === undefined || newerItem(record, current, facts)) {
+      itemsByIssue.set(record.linearIssueId, record);
+    }
+  }
+  return itemsByIssue;
+}
+
+function newerItem(
+  candidate: WorkItemRecord,
+  current: WorkItemRecord,
+  facts: ReadonlyMap<string, WorkItemFact>,
+): boolean {
+  const candidateAt = facts.get(candidate.id)?.createdAt ?? 0;
+  const currentAt = facts.get(current.id)?.createdAt ?? 0;
+  if (candidateAt !== currentAt) return candidateAt > currentAt;
+  return candidate.id > current.id;
+}
+
+function compareNewest(
+  left: WorkItemRecord,
+  right: WorkItemRecord,
+  facts: ReadonlyMap<string, WorkItemFact>,
+): number {
+  const delta = (facts.get(right.id)?.createdAt ?? 0) - (facts.get(left.id)?.createdAt ?? 0);
+  if (delta !== 0) return delta;
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? 1 : -1;
+}
+
+function ownerName(fact: WorkItemFact | undefined): string | null {
+  const name = fact?.owner?.trim() ?? "";
+  return name.length > 0 ? name : null;
+}
+
+function itemProject(fact: WorkItemFact | undefined): StatusItem["project"] {
+  const id = fact?.projectId?.trim() ?? "";
+  const name = fact?.projectName?.trim() ?? "";
+  if (id.length === 0 || name.length === 0) return null;
+  return { id, name };
 }
 
 function questionsFor(
@@ -658,6 +658,10 @@ function impliedDecision(state: WorkItemRecord["state"]): VerdictDecision | null
   }
 }
 
+function byPosition(left: WorkItemRecord, right: WorkItemRecord): number {
+  return left.position - right.position || publicId(left).localeCompare(publicId(right));
+}
+
 function mergeQueueFor(
   records: readonly WorkItemRecord[],
   jobs: readonly Job[],
@@ -720,25 +724,6 @@ function mergeSteps(job: Job | undefined): StatusMergeEntry["steps"] {
     { name: MERGE_STEPS[1], state: "done", detail: null },
     { name: MERGE_STEPS[2], state: "run", detail: null },
   ];
-}
-
-function notesFor(group: readonly WorkItemRecord[], rows: readonly OutboxRow[]): StatusNote[] {
-  const sessions = new Set(group.flatMap((item) => (item.sessionKey ? [item.sessionKey] : [])));
-  const notes: StatusNote[] = [];
-  for (const row of rows) {
-    if (row.orderingKey === null || !sessions.has(row.orderingKey)) continue;
-    const note = toNote(row);
-    if (note) notes.push(note);
-  }
-  return notes;
-}
-
-function toNote(row: OutboxRow): StatusNote | null {
-  const body = readString(row.payload, "body")?.trim() ?? "";
-  if (!body) return null;
-  const kind = noteKind(row.op === "elicitation" ? "elicitation" : readString(row.payload, "kind"));
-  if (kind === null) return null;
-  return { at: iso(row.createdAt), kind, actor: "Paws", text: body };
 }
 
 function activityFor(
@@ -909,10 +894,6 @@ function agentName(agent: string): string {
   return known[trimmed.toLowerCase()] ?? trimmed;
 }
 
-function byPosition(left: WorkItemRecord, right: WorkItemRecord): number {
-  return left.position - right.position || publicId(left).localeCompare(publicId(right));
-}
-
 function isMergeJob(queue: string): boolean {
   return queue === MERGE_QUEUE || queue.startsWith(`${MERGE_QUEUE}.`);
 }
@@ -1041,19 +1022,6 @@ function lineField(summary: string, label: string): string | null {
   if (line === undefined) return null;
   const value = line.slice(prefix.length).trim();
   return value || null;
-}
-
-function noteKind(kind: string | null): NoteKind | null {
-  if (
-    kind === "thought" ||
-    kind === "action" ||
-    kind === "elicitation" ||
-    kind === "error" ||
-    kind === "response"
-  ) {
-    return kind;
-  }
-  return null;
 }
 
 function activityKind(kind: string | null): ActivityKind {

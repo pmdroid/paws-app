@@ -1,6 +1,7 @@
 import type { StatusSnapshot } from "./contract";
 
 const AT = "2026-10-09T22:15:00.000Z";
+const AUDIT = { id: "approval-audit", name: "Audit log export" };
 
 const DEMO: StatusSnapshot = {
   version: 1,
@@ -12,102 +13,19 @@ const DEMO: StatusSnapshot = {
     repo: "acme/platform",
     workspace: "acme",
   },
-  epics: [
-    {
-      id: "ENG-98",
-      title: "Audit log export",
-      description:
-        "Admins can export audit logs as CSV or JSON to a signed URL. Retention rules stay in force.",
-      state: "running",
-      delegated: true,
-      dri: "Jonas Berg",
-      session: [
-        {
-          at: "2026-10-09T18:15:00.000Z",
-          kind: "thought",
-          actor: "Paws",
-          text: "Plan approved by Jonas: 6 work items, blockers respected.",
-        },
-        {
-          at: "2026-10-09T20:15:00.000Z",
-          kind: "action",
-          actor: "Paws",
-          text: "Merged ENG-99 (PR #474). Unblocked ENG-100, ENG-101, ENG-102, and ENG-103.",
-        },
-        {
-          at: "2026-10-09T20:40:00.000Z",
-          kind: "error",
-          actor: "Paws",
-          text: "ENG-100 exhausted its Closeout retry budget (3/3). Asked the team (Q-40).",
-        },
-        {
-          at: "2026-10-09T22:01:00.000Z",
-          kind: "elicitation",
-          actor: "Paws",
-          text: "ENG-103 asked how long export download links should stay valid (Q-41).",
-        },
-      ],
-      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-98" }],
-    },
-    {
-      id: "ENG-120",
-      title: "Team billing",
-      description:
-        "Let teams buy a plan with N seats, assign seats, and sync prices. Not delegated yet.",
-      state: "idle",
-      delegated: false,
-      dri: "Maria Chen",
-      session: [],
-      links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-120" }],
-    },
-  ],
   items: [
     item({
-      id: "ENG-99",
-      title: "Audit event schema v2",
-      state: "merged",
-      agent: "Claude",
-      assignee: "Jonas Berg",
-      blockers: [],
-      attempts: 1,
-      branch: "jonas/eng-99-audit-event-schema",
-      runId: "r-99",
-      pr: 474,
-    }),
-    item({
-      id: "ENG-100",
-      title: "Retention policy enforcement job",
-      state: "exhausted",
-      agent: "Claude",
-      assignee: "Jonas Berg",
-      blockers: ["ENG-99"],
-      attempts: 3,
-      branch: "jonas/eng-100-retention-policy",
-      runId: "r-100",
-      pr: null,
-    }),
-    item({
-      id: "ENG-101",
-      title: "Export job worker",
-      state: "merge_queue",
-      agent: "Codex",
-      assignee: "Jonas Berg",
-      blockers: ["ENG-99"],
-      attempts: 1,
-      branch: "jonas/eng-101-export-job-worker",
-      runId: "r-101",
-      pr: 479,
-    }),
-    item({
-      id: "ENG-102",
-      title: "CSV / JSON formatters",
-      state: "running",
+      id: "ENG-104",
+      title: "Admin export UI",
+      state: "queued",
       agent: "Gemini",
       assignee: "Aisha Khan",
-      blockers: ["ENG-99"],
+      owner: "Aisha Khan",
+      project: AUDIT,
+      blockers: ["ENG-101", "ENG-102", "ENG-103"],
       attempts: 0,
-      branch: "aisha/eng-102-formatters",
-      runId: "r-102",
+      branch: "aisha/eng-104-admin-export-ui",
+      runId: null,
       pr: null,
     }),
     item({
@@ -116,6 +34,8 @@ const DEMO: StatusSnapshot = {
       state: "awaiting_input",
       agent: "Claude",
       assignee: "Jonas Berg",
+      owner: "Jonas Berg",
+      project: AUDIT,
       blockers: ["ENG-99"],
       attempts: 0,
       branch: "jonas/eng-103-signed-url",
@@ -123,16 +43,60 @@ const DEMO: StatusSnapshot = {
       pr: null,
     }),
     item({
-      id: "ENG-104",
-      title: "Admin export UI",
-      state: "queued",
+      id: "ENG-102",
+      title: "CSV / JSON formatters",
+      state: "running",
       agent: "Gemini",
       assignee: "Aisha Khan",
-      blockers: ["ENG-101", "ENG-102", "ENG-103"],
+      owner: "Aisha Khan",
+      project: null,
+      blockers: ["ENG-99"],
       attempts: 0,
-      branch: "aisha/eng-104-admin-export-ui",
-      runId: null,
+      branch: "aisha/eng-102-formatters",
+      runId: "r-102",
       pr: null,
+    }),
+    item({
+      id: "ENG-101",
+      title: "Export job worker",
+      state: "merge_queue",
+      agent: "Codex",
+      assignee: "Jonas Berg",
+      owner: "Jonas Berg",
+      project: AUDIT,
+      blockers: ["ENG-99"],
+      attempts: 1,
+      branch: "jonas/eng-101-export-job-worker",
+      runId: "r-101",
+      pr: 479,
+    }),
+    item({
+      id: "ENG-100",
+      title: "Retention policy enforcement job",
+      state: "exhausted",
+      agent: "Claude",
+      assignee: "Jonas Berg",
+      owner: "Jonas Berg",
+      project: AUDIT,
+      blockers: ["ENG-99"],
+      attempts: 3,
+      branch: "jonas/eng-100-retention-policy",
+      runId: "r-100",
+      pr: null,
+    }),
+    item({
+      id: "ENG-99",
+      title: "Audit event schema v2",
+      state: "merged",
+      agent: "Claude",
+      assignee: "Jonas Berg",
+      owner: "Jonas Berg",
+      project: null,
+      blockers: [],
+      attempts: 1,
+      branch: "jonas/eng-99-audit-event-schema",
+      runId: "r-99",
+      pr: 474,
     }),
   ],
   runs: [
@@ -379,28 +343,35 @@ function item(input: {
   state: StatusSnapshot["items"][number]["state"];
   agent: string;
   assignee: string;
+  owner: string | null;
+  project: { id: string; name: string } | null;
   blockers: string[];
   attempts: number;
   branch: string | null;
   runId: string | null;
   pr: number | null;
 }): StatusSnapshot["items"][number] {
+  const pr =
+    input.pr === null
+      ? null
+      : { number: input.pr, url: `https://github.com/acme/platform/pull/${input.pr}` };
   return {
     id: input.id,
-    epicId: "ENG-98",
     title: input.title,
     state: input.state,
     agent: input.agent,
     assignee: input.assignee,
+    owner: input.owner,
+    project: input.project,
     blockers: input.blockers,
     attempts: input.attempts,
     branch: input.branch,
     runId: input.runId,
-    pr:
-      input.pr === null
-        ? null
-        : { number: input.pr, url: `https://github.com/acme/platform/pull/${input.pr}` },
-    links: [{ label: "Linear", href: `https://linear.app/acme/issue/${input.id}` }],
+    pr,
+    links: [
+      { label: "Linear", href: `https://linear.app/acme/issue/${input.id}` },
+      ...(pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }]),
+    ],
   };
 }
 
