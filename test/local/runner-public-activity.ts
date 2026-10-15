@@ -53,6 +53,7 @@ export async function probeRunnerPublicActivity(root: string) {
         title: index === 0 ? "token=x ".repeat(512) : `Read source ${index}`,
         kind: "read",
         status: "in_progress",
+        _meta: index === 0 ? { terminal_output_delta: { data: 'token="split' } } : undefined,
         rawInput: {
           command: `cat source-${index}.ts`,
           token: "tool-secret-fixture",
@@ -63,6 +64,7 @@ export async function probeRunnerPublicActivity(root: string) {
         sessionUpdate: "tool_call_update",
         toolCallId: `tool-${index}`,
         status: "completed",
+        _meta: index === 0 ? { terminal_output_delta: { data: '-credential"' } } : undefined,
         content: [
           {
             type: "content",
@@ -179,6 +181,7 @@ export async function probeRunnerPublicActivity(root: string) {
       "hidden-input-reasoning",
       "hidden-tool-reasoning",
       "tool-secret-fixture",
+      "-credential",
     ])
       assert(!text.includes(hidden), hidden);
     assert.equal(
@@ -225,7 +228,7 @@ export async function probeRunnerPublicActivity(root: string) {
         events: events.length,
         tools: 600,
         messageWhitespacePreserved: true,
-        publicFramesSanitizedBeforeStorage: true,
+        structuredInputsSanitizedBeforeStorage: true,
         rawByteBound: true,
       },
       {
