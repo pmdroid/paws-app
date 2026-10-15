@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   bindWorkItemRepository,
+  beginImplementRun,
+  markRun,
+  saveTaskClassification,
   enqueueJob,
   getWorkItem,
   insertQueuedItem,
@@ -18,7 +21,7 @@ import { FakeHostGitHubAuth, Orchestrator } from "../../src/loop";
 export async function probeCurrentRunStartup(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const observations = [];
-  for (const mode of ["code", "artifact"] as const) {
+  for (const mode of ["code", "artifact", "clarified-artifact"] as const) {
     const home = join(root, mode);
     mkdirSync(home, { mode: 0o700 });
     const db = openDatabase(join(home, "paws.db"));
@@ -26,12 +29,19 @@ export async function probeCurrentRunStartup(root: string) {
     const clock = new FakeClock(1000);
     const jobs = new JobLoop(db, clock);
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
-    saveTaskMode(db, item.id, mode, 0, mode === "artifact");
-    bindWorkItemRepository(db, item.id, {
+    if (mode === "clarified-artifact") {
+      const taskKey = "clarification-task";
+      db.run("UPDATE epic SET task_key=? WHERE id=?", [taskKey, item.epicId]);
+      saveTaskClassification(db, taskKey, { mode: "clarify", question: "Which page?" });
+      const previous = beginImplementRun(db, item.id, clock.now());
+      markRun(db, previous.run.id, "ended", clock.now());
+    } else saveTaskMode(db, item.id, mode, 0, mode === "artifact");
+    const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "/unused-fixture-repository",
-    });
+    };
+    if (mode !== "clarified-artifact") bindWorkItemRepository(db, item.id, repository);
     let probes = 0;
     let launches = 0;
     const host = Object.assign(new FakeHostGitHubAuth(), {
@@ -50,6 +60,42 @@ export async function probeCurrentRunStartup(root: string) {
       pawsRoot: home,
       home,
       githubAuth: host,
+      repositories: [repository],
+      ...(mode === "clarified-artifact"
+        ? {
+            remoteExecution: {
+              agentForSession: () => async (input: import("../../src/acp").RunAgentOptions) => {
+                await input.onEvent?.({
+                  type: "session_update",
+                  sessionId: "classifier",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: {
+                      type: "text",
+                      text: JSON.stringify({ mode: "artifact", repository: true }),
+                    },
+                  },
+                });
+                return {
+                  role: input.role,
+                  stopReason: "end_turn" as const,
+                  timedOut: false,
+                  cancelled: false,
+                  authRequired: false,
+                  agentExited: true,
+                };
+              },
+              agentForItem: () => async () => {
+                throw new Error("Unavailable installation must prevent remote work");
+              },
+              closeoutForItem: () => ({
+                runLogged: async () => {
+                  throw new Error("No closeout is expected");
+                },
+              }),
+            },
+          }
+        : {}),
       linearTaskModes: true,
       channel: "agent-session",
       launch: () => {
@@ -58,7 +104,14 @@ export async function probeCurrentRunStartup(root: string) {
       },
     });
     try {
-      enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: item.id }, now: clock.now() });
+      enqueueJob(db, {
+        queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
+        payload: {
+          itemId: item.id,
+          ...(mode === "clarified-artifact" ? { handoff: "Capture the create VM dialog" } : {}),
+        },
+        now: clock.now(),
+      });
       await jobs.tick();
       const current = getWorkItem(db, item.id)!;
       const hold = db
