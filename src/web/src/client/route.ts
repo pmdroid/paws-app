@@ -1,18 +1,17 @@
+import type { StatusSnapshot } from "../contract";
 import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 
 export type Route =
   | { view: "overview" }
   | { view: "runners" }
   | { view: "projects" }
-  | { view: "epics"; id: string | null }
+  | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
   | { view: "sessions"; id: string | null }
   | { view: "questions"; id: string | null }
-  | { view: "verdicts"; id: string | null }
-  | { view: "queue" }
   | { view: "settings"; page?: SettingsPage };
 
-export function parseRoute(hash: string): Route {
+export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Route {
   const parts = hash
     .replace(/^#/, "")
     .split("/")
@@ -28,8 +27,10 @@ export function parseRoute(hash: string): Route {
       return { view: "runners" };
     case "projects":
       return { view: "projects" };
+    case "issues":
+      return { view: "issues", id };
     case "epics":
-      return { view: "epics", id };
+      return { view: "issues", id: null };
     case "runs":
       return { view: "runs", id };
     case "sessions":
@@ -37,9 +38,9 @@ export function parseRoute(hash: string): Route {
     case "questions":
       return { view: "questions", id };
     case "verdicts":
-      return { view: "verdicts", id };
+      return { view: "runs", id: runForVerdict(id, snapshot) ?? (snapshot ? id : null) };
     case "queue":
-      return { view: "queue" };
+      return { view: "overview" };
     case "settings":
       return SETTINGS_PAGES.some((entry) => entry.id === id)
         ? { view: "settings", page: id as SettingsPage }
@@ -52,9 +53,23 @@ export function parseRoute(hash: string): Route {
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "#/";
   if (route.view === "settings") return route.page ? `#/settings/${route.page}` : "#/settings";
-  if (route.view === "queue" || route.view === "runners" || route.view === "projects")
-    return `#/${route.view}`;
+  if (route.view === "runners" || route.view === "projects") return `#/${route.view}`;
   return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
+}
+
+function runForVerdict(
+  id: string | null,
+  snapshot: StatusSnapshot | null | undefined,
+): string | null {
+  if (!id || !snapshot) return null;
+  const item = snapshot.items.find((entry) => entry.id === id);
+  if (item?.runId && snapshot.runs.some((run) => run.id === item.runId)) return item.runId;
+  let match: StatusSnapshot["runs"][number] | undefined;
+  for (const run of snapshot.runs) {
+    if (run.itemId !== id) continue;
+    if (!match || run.startedAt > match.startedAt) match = run;
+  }
+  return match?.id ?? null;
 }
 
 function decodePart(part: string): string {

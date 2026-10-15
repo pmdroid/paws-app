@@ -1,7 +1,6 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusCheck,
-  StatusEpic,
   StatusItem,
   StatusMergeEntry,
   StatusQuestion,
@@ -15,7 +14,6 @@ import {
   avatar,
   clock,
   durationLabel,
-  epicLabel,
   esc,
   itemLabel,
   linkList,
@@ -101,16 +99,12 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   switch (model.route.view) {
     case "overview":
       return viewOverview(snapshot);
-    case "epics":
-      return viewEpics(snapshot, model.route.id);
+    case "issues":
+      return viewIssues(snapshot, model.route.id);
     case "runs":
       return viewRuns(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
     case "questions":
       return viewQuestions(snapshot, model.route.id);
-    case "verdicts":
-      return viewVerdicts(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
-    case "queue":
-      return viewQueue(snapshot);
     case "runners":
       return '<div id="runner-settings"></div>';
     case "projects":
@@ -130,26 +124,25 @@ function viewOverview(snapshot: StatusSnapshot): string {
   const work = snapshot.items.filter(
     (item) => !["merged", "completed", "stopped"].includes(item.state),
   );
-  const visible = (work.length ? work : [...snapshot.items].reverse()).slice(0, 12);
+  const visible = (work.length ? work : snapshot.items).slice(0, 12);
   return `${pageHeading("overview")}
     <section class="overview-section" aria-labelledby="attention-heading"><div class="between"><h2 id="attention-heading">Needs attention</h2><a href="${routeHref({ view: "questions", id: null })}">Open questions</a></div>
       ${snapshot.questions.map((question) => questionRow(snapshot, question)).join("")}
-      ${attention.map((item) => `<div class="it"><a href="${routeHref(item.runId ? { view: "runs", id: item.runId } : { view: "epics", id: item.epicId })}"><b>${esc(item.id)}</b> ${esc(item.title)}</a> ${statePill(item.state, itemLabel(item.state))}<div>${linkList(item.links)}</div></div>`).join("")}
+      ${attention.map((item) => `<div class="it"><a href="${routeHref({ view: "issues", id: item.id })}"><b>${esc(item.id)}</b> ${esc(item.title)}</a> ${statePill(item.state, itemLabel(item.state))}<div>${linkList(item.links)}</div></div>`).join("")}
       ${!snapshot.questions.length && !attention.length ? '<p class="muted">No work needs your attention.</p>' : ""}
     </section>
     <div class="overview-columns"><section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">${work.length ? "Work in progress" : "Recent work"}</h2><a href="${routeHref({ view: "runs", id: null })}">${active} active runs</a></div>
-      <div class="overview-epics">${snapshot.epics.map((epic) => `<a href="${routeHref({ view: "epics", id: epic.id })}">${esc(epic.title)}</a>`).join("")}</div>
       <ul class="overview-work" role="list">${visible
         .map((item) => {
-          const run = snapshot.runs.find((entry) => entry.id === item.runId);
-          const blockers = item.blockers.filter(
-            (id) => !["merged", "completed"].includes(findItem(snapshot, id)?.state ?? "queued"),
-          );
-          return `<li><div class="between"><a class="work-title" href="${routeHref(run ? { view: "runs", id: run.id } : { view: "epics", id: item.epicId })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
+          const run = item.runId
+            ? snapshot.runs.find((entry) => entry.id === item.runId)
+            : undefined;
+          const blockers = unmergedBlockers(snapshot, item);
+          return `<li><div class="between"><a class="work-title" href="${routeHref(run ? { view: "runs", id: run.id } : { view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
         })
         .join("")}</ul>
-      <a href="${routeHref({ view: "epics", id: null })}">View epics and dependencies</a>
-    </section><section class="overview-section" aria-labelledby="delivery-heading"><div class="between"><h2 id="delivery-heading">Delivery</h2><a href="${routeHref({ view: "queue" })}">Merge queue${snapshot.mergeQueue.length ? ` · ${snapshot.mergeQueue.length}` : ""}</a></div>
+      <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
+    </section><section class="overview-section" aria-labelledby="delivery-heading"><div class="between"><h2 id="delivery-heading">Delivery</h2></div>
       ${
         snapshot.mergeQueue.length
           ? [...snapshot.mergeQueue]
@@ -162,70 +155,86 @@ function viewOverview(snapshot: StatusSnapshot): string {
     </section></div>`;
 }
 
-function viewEpics(snapshot: StatusSnapshot, id: string | null): string {
-  const selected = snapshot.epics.find((epic) => epic.id === id);
+const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
+
+function viewIssues(snapshot: StatusSnapshot, id: string | null): string {
+  const selected = id ? findItem(snapshot, id) : undefined;
   if (id && !selected)
-    return `${pageHeading("epics")}<div class="empty">Epic not found. Choose an epic from the list.</div>${entityPicker(
-      "Epic",
-      snapshot.epics.map((epic) => ({
-        value: routeHref({ view: "epics", id: epic.id }),
-        label: `${epic.id} · ${epic.title}`,
+    return `${pageHeading("issues")}<div class="empty">Issue not found. Choose an issue from the list.</div>${entityPicker(
+      "Issue",
+      snapshot.items.map((item) => ({
+        value: routeHref({ view: "issues", id: item.id }),
+        label: `${item.id} · ${item.title}`,
       })),
       "",
     )}`;
-  if (selected) return epicDetail(snapshot, selected);
-  if (!snapshot.epics.length)
-    return `${pageHeading("epics")}<div class="empty">No epics yet. Delegate a parent issue in Linear to see its work here.</div>`;
-  return `${pageHeading("epics")}
-    <div class="epic-filters" role="group" aria-label="Filter epics">
-      <button type="button" class="btn on" data-action="epic-filter" data-epic-filter="all" aria-pressed="true">All</button>
-      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="active" aria-pressed="false">Active</button>
-      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="needs" aria-pressed="false">Needs attention</button>
-      <button type="button" class="btn" data-action="epic-filter" data-epic-filter="done" aria-pressed="false">Done</button>
+  if (selected) return issueDetail(snapshot, selected);
+  if (!snapshot.items.length)
+    return `${pageHeading("issues")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
+  return `${pageHeading("issues")}
+    <div class="issue-filters" role="group" aria-label="Filter issues">
+      <button type="button" class="btn on" data-action="issue-filter" data-issue-filter="all" aria-pressed="true">All</button>
+      <button type="button" class="btn" data-action="issue-filter" data-issue-filter="active" aria-pressed="false">Active</button>
+      <button type="button" class="btn" data-action="issue-filter" data-issue-filter="needs" aria-pressed="false">Needs attention</button>
+      <button type="button" class="btn" data-action="issue-filter" data-issue-filter="done" aria-pressed="false">Done</button>
     </div>
-    <ul class="epic-list" role="list">${snapshot.epics.map((epic) => epicRow(snapshot, epic)).join("")}</ul>
-    <p class="empty epic-filter-empty" hidden>No epics match this filter.</p>`;
+    <ul class="issue-list" role="list">${snapshot.items.map((item) => issueRow(snapshot, item)).join("")}</ul>
+    <p class="empty issue-filter-empty" hidden>No issues match this filter.</p>`;
 }
 
-function epicDetail(snapshot: StatusSnapshot, selected: StatusEpic): string {
-  const items = snapshot.items.filter((item) => item.epicId === selected.id);
-  const state = selected.delegated
-    ? statePill(selected.state === "done" ? "merged" : selected.state, epicLabel(selected.state))
-    : '<span class="tag">Not delegated</span>';
-  return `${pageHeading("epics")}
-    <a href="${routeHref({ view: "epics", id: null })}">All epics</a>
-    <div class="epic-head">
-      <div class="row"><span class="lin-id">${esc(selected.id)}</span>${state}</div>
-      <h2>${esc(selected.title)}</h2>
-      <p class="muted">${esc(selected.description)}</p>
-      <div class="row">${linkList(selected.links)}</div>
-    </div>
-    ${items.length ? `<ul class="epic-items" role="list">${items.map((item) => epicItem(item)).join("")}</ul>` : `<div class="empty">No items yet.</div>`}`;
-}
-
-function epicRow(snapshot: StatusSnapshot, epic: StatusEpic): string {
-  const items = snapshot.items.filter((item) => item.epicId === epic.id);
-  const open = items.filter((item) => !["merged", "completed", "stopped"].includes(item.state));
-  const needs = items.some((item) =>
-    ["needs_human", "exhausted", "awaiting_input"].includes(item.state),
+function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
+  const runs = itemRuns(snapshot, item.id);
+  const blocked = snapshot.items.filter(
+    (entry) => entry.id !== item.id && entry.blockers.includes(item.id),
   );
-  const state = epic.delegated
-    ? statePill(epic.state === "done" ? "merged" : epic.state, epicLabel(epic.state))
-    : '<span class="tag">Not delegated</span>';
-  return `<li class="epic-row" data-epic-state="${esc(epicFilter(epic, needs, open.length))}"><a class="work-title" href="${routeHref({ view: "epics", id: epic.id })}"><span class="lin-id">${esc(epic.id)}</span> <b>${esc(epic.title)}</b></a><div class="row wrap">${state}<span class="muted">${open.length} open · ${items.length} items</span></div></li>`;
+  return `${pageHeading("issues")}
+    <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
+    <div class="issue-head">
+      <div class="row"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
+      <h2>${esc(item.title)}</h2>
+      <div class="row wrap">${issueMeta(item)}</div>
+      <div class="row">${linkList(item.links)}</div>
+    </div>
+    <h3>Runs</h3>
+    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a> ${statePill(run.state, runLabel(run.state))}</li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
+    <h3>Blocked by</h3>
+    ${relatedIssues(item.blockers)}
+    <h3>Blocks</h3>
+    ${relatedIssues(blocked.map((entry) => entry.id))}`;
 }
 
-function epicFilter(epic: StatusEpic, needs: boolean, open: number): string {
-  if (needs || epic.state === "awaiting_input") return "needs";
-  if (epic.delegated && epic.state === "done" && open === 0) return "done";
+function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
+  const blockers = unmergedBlockers(snapshot, item);
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><div class="row wrap">${statePill(item.state, itemLabel(item.state))}${issueMeta(item)}${blockers.length ? `<span>Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
+}
+
+function issueMeta(item: StatusItem): string {
+  const facts = [item.owner, item.project?.name ?? "Solo"].filter(Boolean);
+  return `<span class="muted">${esc(facts.join(" · "))}</span>`;
+}
+
+function issueBucket(item: StatusItem): "needs" | "done" | "active" {
+  if (["needs_human", "exhausted", "awaiting_input", "signoff"].includes(item.state))
+    return "needs";
+  if (item.state === "merged" || item.state === "completed") return "done";
   return "active";
 }
 
-function epicItem(item: StatusItem): string {
-  const href = item.runId
-    ? routeHref({ view: "runs", id: item.runId })
-    : routeHref({ view: "epics", id: item.epicId });
-  return `<li><div class="between"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${item.blockers.length ? `<span>Waiting on ${esc(item.blockers.join(", "))}</span>` : ""}</div></li>`;
+function relatedIssues(ids: readonly string[]): string {
+  if (!ids.length) return `<p class="muted">None.</p>`;
+  return `<div class="row wrap">${ids.map((id) => `<a href="${routeHref({ view: "issues", id })}">${esc(id)}</a>`).join("")}</div>`;
+}
+
+function itemRuns(snapshot: StatusSnapshot, itemId: string): StatusRun[] {
+  return snapshot.runs
+    .filter((run) => run.itemId === itemId)
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+}
+
+function unmergedBlockers(snapshot: StatusSnapshot, item: StatusItem): string[] {
+  return item.blockers.filter(
+    (id) => !["merged", "completed"].includes(findItem(snapshot, id)?.state ?? "queued"),
+  );
 }
 
 function viewRuns(
@@ -266,7 +275,7 @@ function viewRuns(
       <div class="log" role="log" aria-label="Agent transcript" data-log="transcript-${esc(selected.id)}">${selected.transcript?.length ? selected.transcript.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind === "system" ? "agent" : line.kind)}</span><span class="tx whitespace-pre-wrap break-words">${esc(line.text)}</span></div>`).join("") : '<p class="muted">Waiting for agent output.</p>'}</div>
       <h3>Task activity</h3>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-      ${runCloseout(snapshot, selected.itemId, selectedCheck, engineUrl)}
+      ${verificationSection(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>
     <div class="card"><h3>Run</h3><div class="kv">
       <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>
@@ -286,100 +295,6 @@ function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
     .join("");
   return `${pageHeading("questions")}
     ${cards || '<div class="empty">No open questions.</div>'}`;
-}
-
-function viewVerdicts(
-  snapshot: StatusSnapshot,
-  id: string | null,
-  selectedCheck: { itemId: string; checkId: string } | null,
-  engineUrl: string | null,
-): string {
-  const verdicts = snapshot.verdicts;
-  const selected =
-    verdicts.find((verdict) => verdict.itemId === id) ?? (id === null ? verdicts[0] : undefined);
-  const picker = entityPicker(
-    "Candidate",
-    verdicts.map((verdict) => ({
-      value: routeHref({ view: "verdicts", id: verdict.itemId }),
-      label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}`,
-    })),
-    selected ? routeHref({ view: "verdicts", id: selected.itemId }) : "",
-  );
-  if (!selected)
-    return `${pageHeading("verdicts")}${picker}<div class="empty">${id ? "Candidate not found. Choose another verification result." : "No Closeout verdicts yet. Verification results appear here after an agent produces a candidate."}</div>`;
-  const item = findItem(snapshot, selected.itemId);
-  const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
-    const n = index + 1;
-    const cls = n < selected.attempt ? "f" : n > selected.attempt ? "" : barClass(selected);
-    return `<i class="${cls}"></i>`;
-  }).join("");
-  const fail =
-    selected.failingCheck && selected.decision !== "accepted"
-      ? `<div class="mono">${esc(selected.failingCheck)}</div>`
-      : "";
-  return `${pageHeading("verdicts")}${picker}
-    <div class="between closeout-head"><div>
-      <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
-      <h2>${esc(item?.title ?? selected.itemId)}</h2>
-      ${item ? phaseStrip(item, runForItem(snapshot, item.id), selected) : ""}
-      <div class="muted">${esc(selected.summary)}</div>
-    </div>
-    <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
-    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card">${checks(selected, selectedCheck, engineUrl)}</div>
-    <div class="card"><h3>Report</h3><div class="kv">
-      <span class="k">Base</span><span class="mono">${esc(selected.baseSha ?? "—")}</span>
-      <span class="k">Head</span><span class="mono">${esc(selected.headSha ?? "—")}</span>
-      <span class="k">Policy</span><span class="mono">${esc(policyLabel(selected))}</span>
-      <span class="k">Sealed</span><span>${selected.sealed ? "yes" : "no"}</span>
-      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div>`;
-}
-
-function viewQueue(snapshot: StatusSnapshot): string {
-  const entries = [...snapshot.mergeQueue].sort((a, b) => a.position - b.position);
-  const merged = snapshot.items.filter((item) => item.state === "merged");
-  const body = entries.length
-    ? entries
-        .map((entry, index) => {
-          const item = findItem(snapshot, entry.itemId);
-          const processing = index === 0;
-          const steps = entry.steps
-            .map((step) => {
-              const cls = processing ? step.state : "wait";
-              const mark =
-                processing && step.state === "done"
-                  ? "✓"
-                  : processing && step.state === "run"
-                    ? "●"
-                    : "○";
-              const detail =
-                processing && step.detail
-                  ? ` <span class="mono dim">${esc(step.detail)}</span>`
-                  : "";
-              return `<div class="step ${cls}">${mark} ${esc(step.name)}${detail}</div>`;
-            })
-            .join("");
-          return `<div class="qe"><div class="pos">${entry.position}</div><div>
-          <div class="between"><div class="row">${itemLink(item)}<b>${esc(item?.title ?? entry.itemId)}</b>${item?.pr ? `<span class="mono muted">PR #${item.pr.number}</span>` : ""}${item ? agentChip(item.agent) : ""}</div>
-          <span class="muted">${processing ? "processing" : "waiting"} · queued ${esc(ago(entry.enqueuedAt, snapshot.generatedAt))}</span></div>
-          <div class="steps">${steps}</div></div></div>`;
-        })
-        .join("")
-    : '<div class="empty">Queue is empty.</div>';
-  const recent = merged.length
-    ? `<div class="card"><h2>Recently merged</h2><div class="tw"><table><tr><th>Item</th><th>PR</th><th class="hide-phone">Agent</th><th>Assignee</th></tr>
-        ${merged
-          .map(
-            (item) =>
-              `<tr><td>${itemLink(item)} ${esc(item.title)}</td><td class="mono">${item.pr ? `#${item.pr.number}` : "—"}</td><td class="hide-phone">${agentChip(item.agent)}</td><td>${avatar(item.assignee, true)} ${esc(item.assignee)}</td></tr>`,
-          )
-          .join("")}
-      </table></div></div>`
-    : "";
-  return `${pageHeading("queue")}
-    <div class="sub">Serial. Each pull request is rebased onto main and Closeout runs again, because old evidence goes stale on a new base.</div>
-    ${body}${recent}`;
 }
 
 function questionCard(
@@ -420,7 +335,7 @@ function questionRow(snapshot: StatusSnapshot, question: StatusQuestion): string
 
 function queueRow(snapshot: StatusSnapshot, entry: StatusMergeEntry): string {
   const item = findItem(snapshot, entry.itemId);
-  return `<div class="it"><a href="${routeHref({ view: "queue" })}"><b>#${entry.position}</b> ${esc(item?.title ?? entry.itemId)}</a><div class="dim">${esc(entry.itemId)} · ${esc(ago(entry.enqueuedAt, snapshot.generatedAt))}</div></div>`;
+  return `<div class="it"><a href="${routeHref({ view: "issues", id: entry.itemId })}"><b>#${entry.position}</b> ${esc(item?.title ?? entry.itemId)}</a><div class="dim">${esc(entry.itemId)} · ${esc(ago(entry.enqueuedAt, snapshot.generatedAt))}</div></div>`;
 }
 
 function events(snapshot: StatusSnapshot): string {
@@ -590,25 +505,67 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   return statePill(run.state, runLabel(run.state));
 }
 
-function runCloseout(
+function verificationSection(
   snapshot: StatusSnapshot,
   itemId: string,
   selectedCheck: { itemId: string; checkId: string } | null,
   engineUrl: string | null,
 ): string {
-  const verdict = snapshot.verdicts.find((entry) => entry.itemId === itemId);
-  if (!verdict || verdict.checks.length === 0) return "";
-  const check = chosenCheck(verdict, selectedCheck);
-  if (!check) return "";
-  return `<div class="card"><div class="between"><h3>Closeout</h3><a href="${routeHref({ view: "verdicts", id: itemId })}">All checks</a></div>${checkDetail(verdict, check, engineUrl)}</div>`;
+  const selected = snapshot.verdicts.find((verdict) => verdict.itemId === itemId);
+  const picker = entityPicker(
+    "Candidate",
+    snapshot.verdicts.flatMap((verdict) => {
+      const href = runHrefForItem(snapshot, verdict.itemId);
+      return href
+        ? [{ value: href, label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}` }]
+        : [];
+    }),
+    selected ? (runHrefForItem(snapshot, selected.itemId) ?? "") : "",
+  );
+  if (!selected)
+    return `<h3>Verification</h3>${picker}<div class="empty">No verification for this run yet. Results appear after the agent produces a candidate.</div>`;
+  const item = findItem(snapshot, selected.itemId);
+  const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
+    const n = index + 1;
+    const cls = n < selected.attempt ? "f" : n > selected.attempt ? "" : barClass(selected);
+    return `<i class="${cls}"></i>`;
+  }).join("");
+  const fail =
+    selected.failingCheck && selected.decision !== "accepted"
+      ? `<div class="mono">${esc(selected.failingCheck)}</div>`
+      : "";
+  return `<h3>Verification</h3>${picker}
+    <div class="between closeout-head"><div>
+      <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
+      <div class="muted">${esc(selected.summary)}</div>
+    </div>
+    <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
+    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
+    <div class="card">${checks(selected, selectedCheck, engineUrl)}</div>
+    <div class="card"><h3>Report</h3><div class="kv">
+      <span class="k">Base</span><span class="mono">${esc(selected.baseSha ?? "—")}</span>
+      <span class="k">Head</span><span class="mono">${esc(selected.headSha ?? "—")}</span>
+      <span class="k">Policy</span><span class="mono">${esc(policyLabel(selected))}</span>
+      <span class="k">Sealed</span><span>${selected.sealed ? "yes" : "no"}</span>
+      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
+    </div></div>`;
+}
+
+function runHrefForItem(snapshot: StatusSnapshot, itemId: string): string | null {
+  const item = findItem(snapshot, itemId);
+  if (item?.runId && snapshot.runs.some((run) => run.id === item.runId)) {
+    return routeHref({ view: "runs", id: item.runId });
+  }
+  let match: StatusRun | undefined;
+  for (const run of snapshot.runs) {
+    if (run.itemId !== itemId) continue;
+    if (!match || run.startedAt > match.startedAt) match = run;
+  }
+  return match ? routeHref({ view: "runs", id: match.id }) : null;
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
   return snapshot.verdicts.find((entry) => entry.itemId === itemId);
-}
-
-function runForItem(snapshot: StatusSnapshot, itemId: string): StatusRun | undefined {
-  return snapshot.runs.find((run) => run.itemId === itemId);
 }
 
 function policyLabel(verdict: StatusVerdict): string {
@@ -620,7 +577,7 @@ function policyLabel(verdict: StatusVerdict): string {
 
 function itemLink(item: StatusItem | undefined): string {
   if (!item) return "";
-  return `<a class="lin-id" href="${routeHref({ view: "epics", id: item.epicId })}">${esc(item.id)}</a>`;
+  return `<a class="lin-id" href="${routeHref({ view: "issues", id: item.id })}">${esc(item.id)}</a>`;
 }
 
 function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined {

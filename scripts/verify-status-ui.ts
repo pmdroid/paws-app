@@ -58,11 +58,10 @@ const browser = await chromium.launch({
 const errors: string[] = [];
 const pages = [
   ["Overview", "#/"],
-  ["Epics", "#/epics"],
-  ["Runs", "#/runs"],
+  ["Issues", "#/issues"],
+  ["Projects", "#/projects"],
   ["Questions", "#/questions"],
-  ["Verification", "#/verdicts"],
-  ["Merge queue", "#/queue"],
+  ["Runs", "#/runs"],
   ["Conversations", "#/sessions"],
   ["Runners", "#/runners"],
   ["Agents", "#/settings/agents"],
@@ -139,27 +138,32 @@ try {
         ).toHaveText(name);
       await expect(page.locator("#content h1")).toHaveCount(1);
     }
-    await navigate(page, "Epics", width);
+    await navigate(page, "Issues", width);
     await expect(page.getByRole("button", { name: "All", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Active", exact: true }).click();
     await expect(page.getByRole("button", { name: "Active", exact: true })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    snapshot.epics[0]!.description += " Refreshed.";
+    snapshot.items[0]!.title += " Refreshed.";
     await page.reload();
     await expect(page.getByRole("button", { name: "All", exact: true })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
     await page.screenshot({
-      path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `epics-${width}.png`),
+      path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `issues-${width}.png`),
       fullPage: true,
     });
-    await page.getByRole("link", { name: "Team billing" }).click();
-    await expect(page).toHaveURL(/#\/epics\//);
+    await page.locator(".issue-list a").first().click();
+    await expect(page).toHaveURL(/#\/issues\//);
+    await expect(page.locator(".issue-head")).toBeVisible();
+    await page.screenshot({
+      path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `issue-detail-${width}.png`),
+      fullPage: true,
+    });
     await page.goBack();
-    await expect(page.locator("#content h1")).toHaveText("Epics");
+    await expect(page.locator("#content h1")).toHaveText("Issues");
     if (width < 768) {
       await page.getByRole("button", { name: "Open navigation" }).click();
       await expect(page.getByRole("dialog", { name: "Paws navigation" })).toBeVisible();
@@ -183,7 +187,11 @@ try {
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `runs-${width}.png`),
       fullPage: true,
     });
-    await navigate(page, "Verification", width);
+    const verified = snapshot.runs.find((run) =>
+      snapshot.verdicts.some((verdict) => verdict.itemId === run.itemId),
+    )!;
+    await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/${verified.id}`);
+    await expect(page.getByRole("heading", { name: "Verification" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Candidate", exact: true })).toBeVisible();
     await page.locator('[data-action="select-check"]').last().click();
     await expect(page.locator('[data-action="select-check"][aria-current="true"]')).toHaveCount(1);
@@ -236,7 +244,6 @@ try {
     await expect(page.locator("#content")).not.toContainText("Run not found");
     const empty = {
       ...snapshot,
-      epics: [],
       items: [],
       runs: [],
       questions: [],
@@ -246,15 +253,7 @@ try {
     };
     await page.route("**/api/status", (route) => route.fulfill({ json: empty }));
     await page.reload();
-    for (const name of [
-      "Overview",
-      "Epics",
-      "Runs",
-      "Questions",
-      "Verification",
-      "Merge queue",
-      "Conversations",
-    ]) {
+    for (const name of ["Overview", "Issues", "Questions", "Runs", "Conversations"]) {
       await navigate(page, name, width);
       await expect(page.locator("#content .empty")).toBeVisible();
     }
@@ -363,7 +362,7 @@ try {
   expect(settings.defaults.implementer).not.toHaveProperty("effort");
   expect(errors).toEqual([]);
   console.log(
-    "PASS: all thirteen pages via sidebar/mobile menu, active links, Back, deep links, epic filters, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
+    "PASS: all eleven pages via sidebar/mobile menu, active links, Back, deep links, issue filters, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
   );
 } finally {
   await browser.close();

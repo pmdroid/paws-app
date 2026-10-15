@@ -49,7 +49,7 @@ let workspaceReady = false;
 let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const sourceDialog = createSourceDialog(applyChoice);
-let epicFilter: "all" | "active" | "needs" | "done" = "all";
+let issueFilter: "all" | "active" | "needs" | "done" = "all";
 
 document.addEventListener("click", onClick);
 window.addEventListener("hashchange", () => {
@@ -62,7 +62,7 @@ document.addEventListener("change", (event) => {
   if (
     target instanceof HTMLSelectElement &&
     target.dataset.routePicker !== undefined &&
-    /^#\/(epics|runs|verdicts|sessions)(\/|$)/.test(target.value)
+    /^#\/(issues|runs|sessions)(\/|$)/.test(target.value)
   )
     location.hash = target.value;
 });
@@ -152,7 +152,6 @@ function showLocalEmpty(): void {
     source: "live",
     generatedAt: new Date().toISOString(),
     project: { name: "Paws", team: "Paws", repo: "local", workspace: null },
-    epics: [],
     items: [],
     runs: [],
     questions: [],
@@ -181,7 +180,7 @@ function schedule(): void {
 function paint(): void {
   if (!workspaceReady) return;
   const model: RenderModel = {
-    route: parseRoute(location.hash),
+    route: parseRoute(location.hash, snapshot),
     phase,
     snapshot,
     via,
@@ -215,7 +214,7 @@ function paint(): void {
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
-  applyEpicFilter();
+  applyIssueFilter();
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
@@ -355,11 +354,11 @@ function onClick(event: Event): void {
     if (parseRoute(location.hash).view === "projects") void projects.refresh();
   }
   if (action === "source") openDialog();
-  if (action === "epic-filter") {
-    const filter = target.closest("[data-epic-filter]")?.getAttribute("data-epic-filter");
+  if (action === "issue-filter") {
+    const filter = target.closest("[data-issue-filter]")?.getAttribute("data-issue-filter");
     if (filter === "all" || filter === "active" || filter === "needs" || filter === "done") {
-      epicFilter = filter;
-      applyEpicFilter();
+      issueFilter = filter;
+      applyIssueFilter();
     }
   }
   if (action === "select-check") {
@@ -423,21 +422,21 @@ function openDialog(): void {
   sourceDialog.open(sourceHelp());
 }
 
-function applyEpicFilter(): void {
+function applyIssueFilter(): void {
   const root = document.querySelector("#content");
   if (!root) return;
-  const rows = [...root.querySelectorAll<HTMLElement>("[data-epic-state]")];
+  const rows = [...root.querySelectorAll<HTMLElement>("[data-issue-state]")];
   if (!rows.length) return;
   let visible = 0;
   for (const row of rows) {
-    const show = epicFilter === "all" || row.dataset.epicState === epicFilter;
+    const show = issueFilter === "all" || row.dataset.issueState === issueFilter;
     row.hidden = !show;
     if (show) visible += 1;
   }
-  const empty = root.querySelector<HTMLElement>(".epic-filter-empty");
+  const empty = root.querySelector<HTMLElement>(".issue-filter-empty");
   if (empty) empty.hidden = visible > 0;
-  for (const button of root.querySelectorAll<HTMLButtonElement>("[data-epic-filter]")) {
-    const on = button.dataset.epicFilter === epicFilter;
+  for (const button of root.querySelectorAll<HTMLButtonElement>("[data-issue-filter]")) {
+    const on = button.dataset.issueFilter === issueFilter;
     button.setAttribute("aria-pressed", on ? "true" : "false");
     button.classList.toggle("bg-main", on);
     button.classList.toggle("text-main-foreground", on);
