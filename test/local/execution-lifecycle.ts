@@ -113,7 +113,7 @@ export async function probeExecutionLifecycle(
     );
     seed("handoff", ["merged", "queued"]);
     db.run(
-      "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff','handoff-0','handoff-1')",
+      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );
     const run = insertRun(db, {
       itemId: "handoff-0",

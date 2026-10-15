@@ -701,8 +701,8 @@ export async function probePublicationStop(
         }
       }
       db.run(
-        "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
-        [epicId, `${epicId}-issue`, `${epicId}-consumer`],
+        "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
+        [`${epicId}-issue`, `${epicId}-consumer`],
       );
     }
     current.orchestrator.reconcileExecution();

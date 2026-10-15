@@ -84,8 +84,7 @@ test("sync stores internal and external edges in task_block and readiness matche
       { blockerLinearIssueId: "a", blockedLinearIssueId: "outside" },
     ]);
     await refresh();
-    expect(count(db, "work_item_block")).toBe(1);
-    expect(count(db, "external_dep")).toBe(1);
+    expect(count(db, "task_block")).toBe(2);
     expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
     expect(listTaskBlockers(db, "outside")).toEqual([]);
     const ready = () => readyItems(db, target).readyItemIds;
@@ -109,16 +108,14 @@ test("a blocker stored only in task_block holds the dependent", async () => {
     expect(readyItems(db, target).readyItemIds.sort()).toEqual(
       [ids.get("a")!, ids.get("b")!].sort(),
     );
-    expect(count(db, "work_item_block")).toBe(0);
-    expect(count(db, "external_dep")).toBe(0);
+    expect(count(db, "task_block")).toBe(0);
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('a', 'b')",
     );
     const ready = readyItems(db, target).readyItemIds;
     expect(ready).toContain(ids.get("a")!);
     expect(ready).not.toContain(ids.get("b")!);
-    expect(count(db, "work_item_block")).toBe(0);
-    expect(count(db, "external_dep")).toBe(0);
+    expect(count(db, "task_block")).toBe(1);
   } finally {
     db.close();
   }
