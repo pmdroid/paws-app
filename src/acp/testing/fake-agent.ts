@@ -313,6 +313,22 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "update_plan") {
+      const server = state.mcpServers[0];
+      if (!server?.command) {
+        state.plan = { ok: false, error: "no mcp server" };
+        persist();
+        continue;
+      }
+      try {
+        const text = await callHostTool(server, "update_plan", { steps: step.steps });
+        state.plan = { ok: true, text };
+      } catch (error) {
+        state.plan = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      persist();
+      continue;
+    }
     if (step.type === "ask_team") {
       const server = state.mcpServers[0];
       if (!server?.command) {

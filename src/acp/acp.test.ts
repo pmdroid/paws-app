@@ -466,6 +466,80 @@ test.each(["hook failure", "signed URL"])(
   },
 );
 
+test("update_plan replaces the working checklist through the host tool", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      {
+        type: "update_plan",
+        steps: [
+          { content: " Read the export ", status: "completed" },
+          { content: "Write the parser", status: "in_progress" },
+        ],
+      },
+      { type: "end" },
+    ],
+  });
+  const plans: unknown[] = [];
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-plan",
+    prompt: "Set the plan.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: {
+      update: async (steps) => {
+        plans.push(steps);
+      },
+    },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["update_plan"]);
+  expect(trace.plan).toEqual({ ok: true, text: "Plan updated." });
+  expect(plans).toEqual([
+    [
+      { content: "Read the export", status: "completed" },
+      { content: "Write the parser", status: "inProgress" },
+    ],
+  ]);
+});
+
+test("update_plan rejects an empty checklist before calling the hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "update_plan", steps: [] }, { type: "end" }],
+  });
+  let called = false;
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-plan-empty",
+    prompt: "Set the plan.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: {
+      update: async () => {
+        called = true;
+      },
+    },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.plan?.ok).toBe(false);
+  expect(trace.plan?.error).toContain("1 to 16 steps");
+  expect(called).toBe(false);
+});
+
 test("ask_team and publish_artifact share one MCP server", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {

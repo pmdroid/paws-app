@@ -655,6 +655,22 @@ export function createRemoteAgentRunner(options: {
                   answer: JSON.stringify(publication),
                 });
               }
+              if (event.type === "plan")
+                await emit({
+                  type: "session_update",
+                  sessionId: assigned.id,
+                  update: {
+                    sessionUpdate: "plan",
+                    entries: event.steps.map((step) => ({
+                      content: step.content,
+                      priority: "medium" as const,
+                      status: (step.status === "inProgress" ? "in_progress" : step.status) as
+                        | "pending"
+                        | "in_progress"
+                        | "completed",
+                    })),
+                  },
+                });
               if (event.type === "question") {
                 if (question) throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");

@@ -48,8 +48,10 @@ import { readRunnerAnswer } from "../runner-answers";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import {
   RunnerArtifactSchema,
+  RunnerEventSchema,
   RunnerHelperResultSchema,
   type RunnerArtifact,
+  type RunnerEvent,
 } from "../runner-protocol";
 
 export interface RunnerWorkerOptions {
@@ -71,7 +73,8 @@ export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
-  | { type: "artifact"; requestId: string; artifact: RunnerArtifact };
+  | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
+  | Extract<RunnerEvent, { type: "plan" }>;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -439,6 +442,17 @@ export async function executeRunnerCommand(
             },
           }
         : undefined,
+      updatePlan:
+        command.type === "run" || command.type === "task"
+          ? {
+              async update(steps) {
+                const parsed = RunnerEventSchema.safeParse({ type: "plan", steps });
+                if (!parsed.success || parsed.data.type !== "plan")
+                  throw new Error("update_plan requires 1 to 16 steps with content and status");
+                emit(parsed.data);
+              },
+            }
+          : undefined,
       askTeam:
         command.type === "helper"
           ? undefined
