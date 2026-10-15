@@ -2,7 +2,11 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { runRunnerCli } from "../../src/runner-cli";
 import { publishRunnerAnswer } from "../../src/runner-answers";
-import { publishRunnerJob, RunnerJobSchema } from "../../src/runner-execution";
+import {
+  createDirectWorkerSupervisor,
+  publishRunnerJob,
+  RunnerJobSchema,
+} from "../../src/runner-execution";
 
 const [mode, ...args] = process.argv.slice(2);
 if (mode === "agent") {
@@ -30,6 +34,32 @@ if (mode === "agent") {
     publishRunnerJob(spool, job, args[2] ? { repositorySnapshot: args[2] } : {});
   } else {
     publishRunnerAnswer(spool, args[1]!, { requestId: args[2]!, answer: args[3]! });
+  }
+} else if (mode === "supervise") {
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: "/var/lib/paws-runner/workers",
+    spool: {
+      root: "/var/lib/paws-runner-spool",
+      runnerUid: process.getuid!(),
+      agentGid: Number(args[0]),
+    },
+    results: {
+      root: "/var/lib/paws-agent-results",
+      agentUid: process.getuid!(),
+      resultsGid: Number(args[2]),
+    },
+    taskRoot: "/var/lib/paws-agent-tasks",
+  });
+  if (args[3] === "stop") {
+    await supervisor.stop(args[1]!);
+    console.log(JSON.stringify({ ok: true }));
+  } else {
+    try {
+      const receipt = await supervisor.start(args[1]!);
+      console.log(JSON.stringify({ ok: true, alreadyAdmitted: receipt.alreadyAdmitted }));
+    } catch {
+      console.log(JSON.stringify({ ok: false }));
+    }
   }
 } else {
   process.exit(await runRunnerCli(process.argv.slice(3)));

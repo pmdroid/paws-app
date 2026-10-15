@@ -20,7 +20,6 @@ PROVIDER_EXECUTABLES = {
 CODEX_PLATFORM_PACKAGE = f"node_modules/@openai/codex-linux-{ARCHITECTURE[0]}/package.json"
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 ASSETS = {
-    "runner-broker.py",
     "check-broker.py",
     "check-child.py",
     "check-status.py",

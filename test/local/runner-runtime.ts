@@ -102,8 +102,6 @@ const output = await run(
       [join(repository, "src/process/process-anchor.ts"), "/proof/process-anchor.ts"],
       [join(repository, "src/acp/ask-team-mcp.ts"), "/proof/ask-team-mcp.ts"],
       [join(repository, "test/local/runner-runtime-proof.py"), "/proof/proof.py"],
-      [join(repository, "deploy/linux/runner-broker.py"), "/proof/runner-broker.py"],
-      [join(repository, "deploy/linux/paws-agent@.service"), "/proof/paws-agent@.service"],
     ].flatMap(([sourcePath, target]) => [
       "--mount",
       `type=bind,src=${sourcePath},dst=${target},readonly`,

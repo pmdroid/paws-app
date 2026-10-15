@@ -1,13 +1,13 @@
 [Unit]
-Description=Paws fixed runner execution broker
+Description=Paws check broker
 Requires=paws-runner-broker.socket
 After=paws-runner-broker.socket
 
 [Service]
-ExecStart=/usr/bin/python3 -I /opt/paws-runner/current/deploy/linux/runner-broker.py
+ExecStart=/usr/bin/python3 -I /opt/paws-runner/current/deploy/linux/check-broker.py
 User=root
 Group=root
-SupplementaryGroups=paws-agent paws-results paws-check-input paws-check-metadata
+SupplementaryGroups=paws-check-input paws-check-metadata
 UMask=0077
 Restart=on-failure
 NoNewPrivileges=yes
@@ -22,4 +22,4 @@ RestrictAddressFamilies=AF_UNIX
 RestrictSUIDSGID=yes
 LockPersonality=yes
 InaccessiblePaths=-/var/lib/paws-runner
-ReadWritePaths=/var/lib/paws-runner-members /var/lib/paws-agent-tasks /var/lib/paws-runner-broker /var/lib/paws-agent-results /var/lib/paws-check-control /var/lib/paws-check-attempts /var/lib/paws-check-metadata /var/lib/paws-check-broker /run/systemd/system
+ReadWritePaths=/var/lib/paws-check-control /var/lib/paws-check-attempts /var/lib/paws-check-metadata /var/lib/paws-check-broker /run/systemd/system

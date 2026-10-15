@@ -4,38 +4,25 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const repository = resolve(import.meta.dir, "../..");
-const daemonService = process.argv.includes("--daemon-service");
 const root = mkdtempSync(join(tmpdir(), "paws-broker-vm-verification-"));
 const base = process.env.PAWS_BROKER_VM_BASE;
 const expectedDigest = process.env.PAWS_BROKER_VM_SHA512;
 if (!base || !expectedDigest || !/^[a-f0-9]{128}$/.test(expectedDigest))
   throw new Error("Set PAWS_BROKER_VM_BASE and its trusted PAWS_BROKER_VM_SHA512");
-const files = daemonService
-  ? [
-      "paws-runner.service",
-      "paws-runner-broker.service",
-      "paws-runner-broker.socket",
-      "paws-runner.sysusers",
-      "paws-runner.tmpfiles",
-    ]
-  : [
-      "runner-broker.py",
-      "paws-agent@.service",
-      "paws-runner-broker.service",
-      "paws-runner-broker.socket",
-      "paws-runner.sysusers",
-      "paws-runner.tmpfiles",
-    ];
+const files = [
+  "paws-runner.service",
+  "paws-runner-broker.service",
+  "paws-runner-broker.socket",
+  "paws-runner.sysusers",
+  "paws-runner.tmpfiles",
+];
 const digest = (path: string, algorithm = "sha256") =>
   createHash(algorithm).update(readFileSync(path)).digest("hex");
 if (digest(base, "sha512") !== expectedDigest) throw new Error("VM base digest mismatch");
 const hashes = Object.fromEntries(
   files.map((name) => [name, digest(join(repository, "deploy/linux", name))]),
 );
-const probe = join(
-  repository,
-  daemonService ? "test/local/runner-daemon-service-vm.py" : "test/local/runner-broker-vm.py",
-);
+const probe = join(repository, "test/local/runner-daemon-service-vm.py");
 const probeHash = digest(probe);
 const env = { HOME: root, PATH: "/usr/bin:/bin" };
 async function run(args: string[], name: string) {
@@ -121,7 +108,7 @@ await run(
     "timeout",
     "-k",
     "5s",
-    daemonService ? "600s" : "300s",
+    "600s",
     "qemu-system-x86_64",
     "-accel",
     "tcg,thread=multi",
@@ -147,13 +134,13 @@ await run(
   ],
   "qemu",
 );
-const marker = daemonService ? "PAWS_DAEMON_SERVICE_PROOF " : "PAWS_BROKER_VM_PROOF ";
+const marker = "PAWS_DAEMON_SERVICE_PROOF ";
 const line = readFileSync(join(root, "serial.log"), "utf8")
   .split(/\r?\n/)
   .find((entry) => entry.includes(marker));
 if (!line) throw new Error(`No completed runner broker proof; evidence ${root}`);
 const observations = JSON.parse(line.slice(line.indexOf(marker) + marker.length));
-if (observations.passed !== true || observations.observations.length !== (daemonService ? 4 : 2))
+if (observations.passed !== true || observations.observations.length !== 4)
   throw new Error("Incomplete runner broker proof");
 for (const name of files)
   if (
@@ -176,8 +163,4 @@ writeFileSync(
     2,
   ),
 );
-console.log(
-  daemonService
-    ? `VERIFIED daemon service shutdown, restart and crash exit policy; evidence ${root}`
-    : `VERIFIED concurrent runner stop, immediate cgroup fencing and delayed-start denial; evidence ${root}`,
-);
+console.log(`VERIFIED daemon service shutdown, restart and crash exit policy; evidence ${root}`);

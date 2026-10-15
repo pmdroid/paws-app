@@ -42,14 +42,7 @@ for (const [entry, output] of binaries) {
 }
 copyFileSync(process.execPath, join(seed, "bun"));
 copyFileSync(join(repository, "package.json"), join(seed, "package.json"));
-const assets = [
-  "runner-broker.py",
-  "paws-agent@.service",
-  "paws-runner-broker.service",
-  "paws-runner-broker.socket",
-  "paws-runner.sysusers",
-  "paws-runner.tmpfiles",
-];
+const assets = ["paws-runner.sysusers", "paws-runner.tmpfiles"];
 const proof = join(repository, "test/local/runner-task-worker-vm.py");
 const cloud = {
   write_files: [
