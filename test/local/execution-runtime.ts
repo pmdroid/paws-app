@@ -7,12 +7,15 @@ import {
   bindLinearSessionTask,
   enqueueJob,
   getWorkItem,
+  getLinearSession,
+  acceptLinearStop,
+  insertQueuedItem,
   recordLinearInstallation,
   saveCheckpoint,
   saveTaskMode,
 } from "../../src/db";
 import { hasPendingEpicChanges, intakeDelegatedIssue, readyItems } from "../../src/intake";
-import { createFakeTracker } from "../../src/linear";
+import { createFakeTracker, createInboxStore } from "../../src/linear";
 import { runtimeLinear } from "../fixtures/workspace-runtime-linear";
 
 export async function probeExecutionRuntime(input: {
@@ -21,6 +24,7 @@ export async function probeExecutionRuntime(input: {
   secret: string;
   post(body: unknown, headers: Record<string, string>): Promise<{ status: number }>;
   advance(ms: number): void;
+  catchUp(): Promise<void>;
   observe(name: string, observed: unknown): void;
 }) {
   const { db, observe } = input;
@@ -56,6 +60,18 @@ export async function probeExecutionRuntime(input: {
   const page = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
   runtimeLinear.graph = async (query, variables) => {
     const id = variables["id"];
+    if (query.includes("PawsSessionInstallation"))
+      return Response.json({
+        data: {
+          viewer: { id: "app", app: true, organization: { id: "org" } },
+          agentSession: {
+            id,
+            appUser: { id: "app", app: true, organization: { id: "org" } },
+            issue: { id: "runtime-issue", team: { id: "team" } },
+          },
+        },
+      });
+    if (query.includes("PawsTeamAccess")) return Response.json({ data: { team: { id: "team" } } });
     if (query.includes("IssueSnapshot")) {
       assert(id === "runtime-issue" || id === "lin-startup-controlled");
       if (id === "runtime-issue") {
@@ -290,5 +306,96 @@ export async function probeExecutionRuntime(input: {
       sweepFires: timers().find((row) => row.queue === "linear.epics.reconcile")!.fires,
       revision: 2,
     },
+  );
+  acceptLinearStop(db, sessionId, JSON.stringify(["activity", "runtime-session-late"]), Date.now());
+  applyWorkItemEvent(db, itemId, "cancel");
+  db.run("UPDATE epic SET state='done' WHERE id=?", [target.epicId]);
+  const late = {
+    type: "AgentSessionEvent",
+    action: "prompted",
+    organizationId: "org",
+    oauthClientId: "client",
+    appUserId: "app",
+    webhookTimestamp: Date.now(),
+    agentSession: { id: sessionId, issue: { id: "runtime-issue", team: { id: "team" } } },
+    agentActivity: {
+      id: "runtime-session-late",
+      userId: "owner",
+      body: "stop",
+      signal: "stop",
+      createdAt: new Date(Date.now()).toISOString(),
+    },
+  };
+  assert.equal((await post(late, "runtime-session-late")).status, 200);
+  await until(
+    () =>
+      db
+        .query<{ handled: number }, []>(
+          "SELECT handled FROM inbox_event WHERE delivery_id='runtime-session-late'",
+        )
+        .get()?.handled === 1,
+  );
+  assert.equal(getWorkItem(db, itemId)!.state, "cancelled");
+  observe("Signed Stop replay drains without reconciling or reviving its stopped epic", {
+    cancelled: true,
+    handled: true,
+  });
+  const terminal = insertQueuedItem(db, {
+    id: "runtime-terminal",
+    sessionKey: "runtime-terminal-session",
+  });
+  for (const nextSession of ["runtime-terminal-session", "runtime-fresh-session"])
+    recordLinearInstallation(db, {
+      sessionId: nextSession,
+      organizationId: "org",
+      teamId: "team",
+      oauthClientId: "client",
+      appUserId: "app",
+      observedAtMs: Date.now(),
+    });
+  bindLinearSessionTask(db, "runtime-terminal-session", terminal.epicId, { actorId: "owner" });
+  applyWorkItemEvent(db, terminal.id, "cancel");
+  db.run("UPDATE epic SET state='done' WHERE id=?", [terminal.epicId]);
+  const store = createInboxStore(db);
+  const replayKeys = [];
+  for (const [nextSession, body] of [
+    [sessionId, "stop"],
+    ["runtime-terminal-session", " "],
+    ["runtime-fresh-session", " "],
+  ] as const) {
+    const dedupeKey = `runtime-replay:${nextSession}`;
+    replayKeys.push(dedupeKey);
+    store.commit({
+      dedupeKey,
+      deliveryId: null,
+      source: "poll",
+      action: "prompted",
+      sessionId: nextSession,
+      issueId: "runtime-issue",
+      activityId: nextSession === sessionId ? "runtime-session-late" : dedupeKey,
+      actorId: "owner",
+      activityCreatedAtMs: Date.now(),
+      body,
+      signal: nextSession === sessionId ? "stop" : null,
+      updatedAtMs: Date.now(),
+      payload: JSON.stringify({ actorId: "owner", activityCreatedAtMs: Date.now(), body }),
+    });
+  }
+  await input.catchUp();
+  assert(
+    replayKeys.every(
+      (key) =>
+        db
+          .query<{ handled: number }, [string]>(
+            "SELECT handled FROM inbox_event WHERE dedupe_key=?",
+          )
+          .get(key)?.handled === 1,
+    ),
+  );
+  assert.equal(getWorkItem(db, itemId)!.state, "cancelled");
+  assert.equal(getLinearSession(db, "runtime-fresh-session")!.stoppedAt, null);
+  observe(
+    "Production catch-up drains stopped and terminal session replays before delivering a fresh session activity",
+    { handled: replayKeys.length, oldCancelled: true, freshSessionActive: true },
   );
 }

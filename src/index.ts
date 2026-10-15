@@ -259,12 +259,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const accepted = await orchestrator.onLinearEvent(event);
     if (accepted !== false && reconciler && event.sessionId) {
       const session = getLinearSession(db, event.sessionId);
-      if (session?.epicId && session.organizationId) {
+      if (session?.epicId && session.organizationId && session.stoppedAt === null) {
         const workspace = db
-          .query<{ id: string }, [string]>(
-            "SELECT id FROM workspace WHERE linear_organization_id=?",
+          .query<{ id: string }, [string, string]>(
+            "SELECT w.id FROM workspace w JOIN epic e ON e.id=? AND e.state IN ('running','stalled') WHERE w.linear_organization_id=?",
           )
-          .get(session.organizationId);
+          .get(session.epicId, session.organizationId);
         if (workspace)
           await reconciler.reconcile({
             epicId: session.epicId,
