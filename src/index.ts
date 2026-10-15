@@ -990,7 +990,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             enqueueMissingSnapshots();
             return {
               now: Date.now(),
-              concurrency: 2,
               defaultRepository: repository,
               legacyReadyItemIds,
               canDispatchEpic: managedEpicReady,
