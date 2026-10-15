@@ -179,8 +179,14 @@ export function parseAgentEvent(
     activity === null
       ? null
       : (readString(activity, "body") ?? (content === null ? null : readString(content, "body")));
-  const signal = activity === null ? null : readString(activity, "signal");
-  const action = agentAction(type, actionName);
+  const closed =
+    type === "AgentSessionEvent" &&
+    session !== null &&
+    (readString(session, "archivedAt") !== null ||
+      readString(session, "dismissedAt") !== null ||
+      readString(session, "status") === "stopping");
+  const signal = closed ? "stop" : activity === null ? null : readString(activity, "signal");
+  const action = closed ? "prompted" : agentAction(type, actionName);
   const dedupeKey = dedupeFor(action, sessionId, activityId, deliveryId);
   return {
     dedupeKey,

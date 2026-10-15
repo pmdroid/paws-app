@@ -48,6 +48,7 @@ import {
   type EpicState,
   type RepositoryBinding,
   systemClock,
+  parseLinearCommand,
 } from "../core";
 import {
   getTaskMode,
@@ -72,7 +73,6 @@ import {
   resolveTaskClassification,
   applyWorkItemEvent,
   configureWorkItem,
-  drainCommands,
   enqueueJobOnce,
   enqueueJob,
   enqueueOutboxOnce,
@@ -761,8 +761,15 @@ export class Orchestrator {
 
   private register(): void {
     const jobs = this.options.jobs;
-    jobs.register(JOB_KIND.command, (_job) => {
-      drainCommands(this.db, this.bus, this.now());
+    jobs.register(JOB_KIND.command, async (job, context) => {
+      if (!context.isCurrent()) return;
+      const command = parseLinearCommand(job.payload);
+      if (!command || !applyLinearCommand(this.db, command, this.now()).applied) return;
+      try {
+        this.bus.emit(command);
+      } finally {
+        await this.interruptItem(command.itemId);
+      }
     });
     jobs.register(JOB_KIND.catchup, (job) => {
       enqueueOutboxOnce(this.db, {
