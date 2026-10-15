@@ -99,6 +99,7 @@ import {
   saveCloseoutRecovery,
   type CloseoutRecovery,
   markRun,
+  releaseRunCapacity,
   saveCheckpoint,
   saveRunResult,
   saveRunCommitPolicy,
@@ -282,6 +283,7 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly waiters = new Map<string, AnswerWaiter>();
+  private readonly askedRuns = new Set<string>();
   private readonly live = new Map<
     string,
     {
@@ -1191,7 +1193,7 @@ export class Orchestrator {
         onEvent: activity.onEvent,
       });
       controller.signal.throwIfAborted();
-      if (this.stopped(item.id)) return;
+      if (this.stopped(item.id) || this.askedRuns.has(run.id)) return;
       if (
         result.stopReason !== "end_turn" ||
         result.authRequired ||
@@ -1218,6 +1220,7 @@ export class Orchestrator {
       this.pump();
     } catch (error) {
       if (
+        !this.askedRuns.has(run.id) &&
         !this.stopped(item.id) &&
         !controller.signal.aborted &&
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
@@ -1225,6 +1228,7 @@ export class Orchestrator {
         this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
     } finally {
       clearInterval(keepAlive);
+      this.releaseAskedRun(run.id);
       this.live.delete(run.id);
       live.finish();
       await this.flush();
@@ -1370,6 +1374,10 @@ export class Orchestrator {
         return;
       }
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
+      if (this.askedRuns.has(run.id)) {
+        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        return;
+      }
       if (executed.run.stopReason !== "end_turn") {
         this.fail(
           finished,
@@ -1395,6 +1403,7 @@ export class Orchestrator {
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
       if (
+        !this.askedRuns.has(run.id) &&
         !controller.signal.aborted &&
         current &&
         current.state !== "cancelled" &&
@@ -1408,6 +1417,7 @@ export class Orchestrator {
       activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
+      this.releaseAskedRun(run.id);
       if (this.options.remoteExecution && (this.jobContexts.get(item.id)?.isCurrent() ?? true))
         markRunEnded(this.db, run.id, this.now());
       this.conversations.delete(item.id);
@@ -2078,8 +2088,9 @@ export class Orchestrator {
         if (sessionId === null) {
           throw new Error("ask_team has no Linear session");
         }
+        if (context.signal.aborted) throw new Error("cancelled");
         const options = request.options ?? [];
-        const question = immediate(this.db, () => {
+        immediate(this.db, () => {
           const opened = openQuestion(this.db, {
             itemId: item.id,
             runId,
@@ -2127,30 +2138,57 @@ export class Orchestrator {
             },
             now: this.now(),
           });
-          return opened;
         });
-        const answer = await new Promise<string>((resolve, reject) => {
-          const onAbort = () => {
-            this.waiters.delete(question.id);
-            reject(new Error("cancelled"));
-          };
-          if (context.signal.aborted) {
-            onAbort();
-            return;
-          }
-          context.signal.addEventListener("abort", onAbort, { once: true });
-          this.waiters.set(question.id, (value) => {
-            context.signal.removeEventListener("abort", onAbort);
-            resolve(value);
-          });
-          void this.flush().catch((error: unknown) => {
-            this.waiters.delete(question.id);
-            reject(error instanceof Error ? error : new Error(String(error)));
-          });
-        });
-        return { answer };
+        this.askedRuns.add(runId);
+        await this.flush();
+        return {
+          answer:
+            "Question posted to the team. End your turn now without further changes; you will be resumed with the answer as your next message.",
+        };
       },
     };
+  }
+
+  private releaseAskedRun(runId: string): void {
+    if (!this.askedRuns.delete(runId)) return;
+    releaseRunCapacity(this.db, runId, this.now());
+  }
+
+  private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
+    let current = getWorkItem(this.db, itemId);
+    if (!current || current.state === "cancelled" || current.cancelRequested) return;
+    const sessionId = this.activitySession(current);
+    if (
+      current.state === "running" &&
+      sessionId !== null &&
+      findOpenQuestion(this.db, sessionId)?.runId === runId
+    ) {
+      applyWorkItemEvent(this.db, itemId, "blocking_question");
+      current = getWorkItem(this.db, itemId);
+      if (!current) return;
+    }
+    const phase =
+      current.state === "awaiting_input" ||
+      current.state === "verifying" ||
+      current.state === "merge_queue" ||
+      current.state === "running"
+        ? current.state
+        : null;
+    if (phase === null) return;
+    let head = "";
+    let base = current.checkpoint?.baseSha ?? "";
+    try {
+      head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+      if (base === "")
+        base = (await git(["-C", worktree, "merge-base", "HEAD", "origin/main"])).trim();
+    } catch {
+      return;
+    }
+    saveCheckpoint(this.db, itemId, {
+      phase,
+      ...(head === "" ? {} : { wipCommit: head }),
+      ...(base === "" ? {} : { baseSha: base }),
+    });
   }
 
   private async deliverPrompt(
