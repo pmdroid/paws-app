@@ -151,7 +151,7 @@ import {
   openQuestion,
   questionReplyConsumed,
 } from "../questions";
-import { enqueueVerifiedMerge } from "./merge-jobs";
+import { ciWaitVerification, enqueueVerifiedMerge, parkMergeForCi } from "./merge-jobs";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -800,10 +800,13 @@ export class Orchestrator {
         this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
       ),
     );
-    jobs.register(JOB_KIND.merge, (job, context) =>
-      this.runLeasedJob(job.payload, context, async () => {
+    jobs.register(JOB_KIND.merge, async (job, context) => {
+      let waiting: { message: string; base?: string; head?: string; summary?: string } | undefined;
+      await this.runLeasedJob(job.payload, context, async () => {
         try {
-          await this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id));
+          await this.runOwnedJob(job.payload, async () => {
+            waiting = await this.merge(job.payload, job.id);
+          });
         } catch (error) {
           if (!(error instanceof LinearReconciliationPendingError)) throw error;
           immediate(this.db, () => {
@@ -822,8 +825,20 @@ export class Orchestrator {
             });
           });
         }
-      }),
-    );
+      });
+      if (waiting === undefined) return;
+      if (
+        parkMergeForCi(this.db, job, this.now(), {
+          base: waiting.base,
+          head: waiting.head,
+          summary: waiting.summary,
+        }) !== "expired"
+      )
+        return;
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId ? getWorkItem(this.db, itemId) : null;
+      if (item) this.fail(item, "merge", `merge timed out waiting for GitHub: ${waiting.message}`);
+    });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
@@ -1828,7 +1843,10 @@ export class Orchestrator {
     });
   }
 
-  private async merge(payload: unknown, jobId: number): Promise<void> {
+  private async merge(
+    payload: unknown,
+    jobId: number,
+  ): Promise<{ message: string; base?: string; head?: string; summary?: string } | undefined> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
@@ -1883,6 +1901,9 @@ export class Orchestrator {
       item.checkpoint?.wipCommit && item.checkpoint.baseSha
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
+    const priorVerification = ciWaitVerification(payload);
+    if (priorVerification)
+      publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -1976,6 +1997,8 @@ export class Orchestrator {
       ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
+      releaseWhilePending: true,
+      ...(priorVerification === undefined ? {} : { priorVerification }),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
@@ -2006,6 +2029,15 @@ export class Orchestrator {
         };
       },
     });
+    if (merged.outcome === "waiting") {
+      if (this.stopped(item.id)) return;
+      return {
+        message: merged.message ?? "Waiting for CI on the candidate commit.",
+        ...(merged.base === undefined ? {} : { base: merged.base }),
+        ...(merged.head === undefined ? {} : { head: merged.head }),
+        ...(merged.summary === undefined ? {} : { summary: merged.summary }),
+      };
+    }
     if (merged.merged)
       recordConfirmedRemoteMerge(this.db, {
         itemId: item.id,
