@@ -369,7 +369,7 @@ test("a follow-up on an adopted parent session does not queue its sub-issues aga
   }
 });
 
-test("a sub-issue already managed in another session keeps the multi-item epic", async () => {
+test("a sub-issue already managed in another session is rejected", async () => {
   const fixture = createProjectFixture();
   try {
     publish(fixture.tracker, parent);
@@ -395,14 +395,15 @@ test("a sub-issue already managed in another session keeps the multi-item epic",
       creatorId: "lead",
       now: fixture.clock.now(),
     });
-    const result = await fixture.orchestrator.intakeLinearTask(
-      "parent",
-      "parent-session",
-      "parent-task",
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.epic.state).toBe("running");
+    await expect(
+      fixture.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task"),
+    ).rejects.toThrow("PAR-2 is already being worked on in another session.");
+    expect(fixture.db.query<{ id: string }, []>("SELECT id FROM epic").all()).toEqual([
+      { id: "other-epic" },
+    ]);
+    expect(fixture.db.query<{ id: string }, []>("SELECT id FROM work_item").all()).toEqual([
+      { id: "other-item" },
+    ]);
     expect(fixture.db.query("SELECT id FROM project_approval").all()).toEqual([]);
   } finally {
     await fixture.close();

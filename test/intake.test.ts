@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EPIC_STATES, WORK_ITEM_STATES } from "../src/core";
-import { migrations } from "../src/db";
+import { listTaskBlockers, migrations } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
@@ -208,6 +208,148 @@ describe("intake", () => {
       ],
     );
     expect(ordered.ok).toBe(false);
+    db.close();
+  });
+
+  test("intake stores internal and external task blocks for the queued issues", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([parent]);
+    tracker.deps.set("parent", [
+      { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
+      { blockerLinearIssueId: "outside", blockedLinearIssueId: "b" },
+      { blockerLinearIssueId: "b", blockedLinearIssueId: "outside" },
+    ]);
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+    });
+    expect(result.ok).toBe(true);
+    expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
+    expect(listTaskBlockers(db, "a")).toEqual([]);
+    expect(listTaskBlockers(db, "outside")).toEqual([]);
+    expect(
+      db
+        .query<{ blocker: string; blocked: string }, []>(
+          "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM work_item_block",
+        )
+        .all(),
+    ).toEqual([{ blocker: "a", blocked: "b" }]);
+    db.close();
+  });
+
+  test("an issue already active in another session is rejected and creates nothing", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "only",
+        identifier: "ENG-9",
+        title: "Fix the header",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const first = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_1",
+      taskKey: "first",
+    });
+    expect(first.ok).toBe(true);
+    const message = "ENG-9 is already being worked on in another session.";
+    await expect(
+      intakeDelegatedIssue(db, tracker, {
+        linearIssueId: "only",
+        sessionId: "ses_2",
+        taskKey: "second",
+      }),
+    ).rejects.toThrow(message);
+    expect(tracker.progress).toContainEqual(
+      expect.objectContaining({ sessionId: "ses_2", kind: "error", body: message }),
+    );
+    expect(db.query("SELECT id FROM epic").all()).toHaveLength(1);
+    expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+    expect(db.query<{ state: string }, []>("SELECT state FROM work_item").get()?.state).toBe(
+      "queued",
+    );
+    db.close();
+  });
+
+  test.each(["merged", "completed", "cancelled"] as const)(
+    "delegating an issue whose earlier item is %s creates a new item",
+    async (state) => {
+      const db = tempDb();
+      const tracker = createFakeTracker([
+        {
+          linearIssueId: "only",
+          identifier: "ENG-9",
+          title: "Fix the header",
+          description: null,
+          subIssues: [],
+        },
+      ]);
+      const first = await intakeDelegatedIssue(db, tracker, {
+        linearIssueId: "only",
+        sessionId: "ses_1",
+        taskKey: "first",
+      });
+      if (!first.ok) throw new Error("expected intake");
+      db.run("UPDATE work_item SET state = ? WHERE id = ?", [state, first.items[0]!.id]);
+      const second = await intakeDelegatedIssue(db, tracker, {
+        linearIssueId: "only",
+        sessionId: "ses_2",
+        taskKey: "second",
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.alreadyExisted).toBe(false);
+      expect(second.items).toHaveLength(1);
+      expect(second.items[0]?.state).toBe("queued");
+      expect(second.items[0]?.id).not.toBe(first.items[0]?.id);
+      expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
+      db.close();
+    },
+  );
+
+  test("beforeAdmit cancels the previous item before the replacement is inserted", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "only",
+        identifier: "ENG-9",
+        title: "Fix the header",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const first = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_1",
+      taskKey: "first",
+    });
+    if (!first.ok) throw new Error("expected intake");
+    let activeBefore = -1;
+    const second = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_1",
+      taskKey: "second",
+      beforeAdmit: () => {
+        activeBefore = db
+          .query<{ n: number }, []>(
+            "SELECT COUNT(*) AS n FROM work_item WHERE state NOT IN ('completed', 'merged', 'cancelled')",
+          )
+          .get()!.n;
+        db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.items[0]!.id]);
+      },
+    });
+    expect(activeBefore).toBe(1);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(
+      db
+        .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
+        .get(first.items[0]!.id)?.state,
+    ).toBe("cancelled");
+    expect(second.items[0]?.state).toBe("queued");
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
     db.close();
   });
 });
