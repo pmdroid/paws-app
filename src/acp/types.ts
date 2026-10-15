@@ -17,7 +17,7 @@ export type RunOutcome = StopReason | "timeout" | "error";
 
 /** Events the Linear module can map onto agent activities. */
 export type AcpEvent =
-  | { type: "progress"; text: string }
+  | { type: "progress"; text: string; messageChunk?: boolean }
   | {
       type: "auth_checked";
       role: AgentRole;
