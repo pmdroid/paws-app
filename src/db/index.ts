@@ -101,6 +101,15 @@ export {
 } from "./reads";
 export { immediate } from "./tx";
 export {
+  createProjectRun,
+  getProjectRun,
+  listTaskBlockers,
+  saveTaskBlocks,
+  type ProjectRun,
+  type ProjectRunSource,
+  type TaskBlock,
+} from "./project-runs";
+export {
   createRunnerPairing,
   expireRunnerPairings,
   findRunnerPairing,
