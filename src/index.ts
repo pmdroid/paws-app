@@ -308,18 +308,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             const issueEvent = acceptedIssueChange(event);
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
-              for (const target of targets) {
-                const actor = issueEvent.actorId
-                  ? workspaceLinearMember(db, target.workspaceId, issueEvent.actorId)
-                  : null;
-                orchestrator?.reconcileExecution(
-                  actor?.active &&
-                    actor.role !== "observer" &&
-                    issueEvent.actorId !== runtime.linearViewerId
-                    ? { humanEpicId: target.epicId }
-                    : {},
-                );
-              }
+              if (targets.length > 0) orchestrator?.reconcileExecution();
               return false;
             }
             if (
