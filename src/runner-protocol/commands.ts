@@ -64,7 +64,7 @@ const coauthor = z.strictObject({
 });
 export const RunnerCommitPolicySchema = z.strictObject({
   bot: RunnerCheckpointBotSchema,
-  projectLead: coauthor,
+  projectLead: coauthor.nullable(),
   taskSteerer: coauthor,
 });
 
