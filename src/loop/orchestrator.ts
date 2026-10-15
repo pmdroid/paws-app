@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { AskTeamHook, AgentIdentity } from "../acp";
+import type { AskTeamHook, AgentIdentity, UpdatePlanHook } from "../acp";
 import {
   executeItem,
   validateCandidateAttribution,
@@ -135,6 +135,7 @@ import type {
   AcceptedLinearEvent,
   EpicSnapshot,
   ProgressUpdate,
+  SessionPlanStep,
   TrackerAdapter,
   TrackerRequestOptions,
   LinearActivitySnapshot,
@@ -1145,6 +1146,7 @@ export class Orchestrator {
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
           : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
         "Use ask_team when a product decision is required.",
+        "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled.",
         repositoryContext,
         this.workContext(item),
         handoff ?? "",
@@ -1176,6 +1178,7 @@ export class Orchestrator {
         checkpoint: false,
         signal: controller.signal,
         askTeam: this.askHook(item, run.id),
+        updatePlan: this.planHook(item, sessionProgress),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
       });
@@ -1343,6 +1346,7 @@ export class Orchestrator {
         signal: controller.signal,
         promptRunner,
         askTeam,
+        updatePlan: this.planHook(item, sessionProgress),
         publishArtifact: this.artifactPublisher(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
@@ -1611,7 +1615,11 @@ export class Orchestrator {
       Object.assign(candidate, identity);
       onCandidate?.(identity);
     };
-    const fixer = createAcpFixRunner({ ...deps, onEvent: activity.onEvent });
+    const fixer = createAcpFixRunner({
+      ...deps,
+      onEvent: activity.onEvent,
+      updatePlan: this.planHook(item, sessionProgress),
+    });
     const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
       checkoutExclusions,
@@ -3057,6 +3065,21 @@ export class Orchestrator {
       this.post(current, "error", text, `fail:${current.id}:${reason}`);
     }
     this.pump();
+  }
+
+  private planHook(
+    item: WorkItemRecord,
+    progress: { plan(steps: readonly SessionPlanStep[]): void } | null,
+  ): UpdatePlanHook | undefined {
+    if (!progress) return undefined;
+    return {
+      update: async (steps) => {
+        if (!this.canReportProgress(item.id))
+          throw new Error("Plan updates are closed for this run");
+        progress.plan(steps);
+        await this.flush();
+      },
+    };
   }
 
   private sessionProgress(item: WorkItemRecord, mode: "code" | "answer" | "artifact" = "code") {

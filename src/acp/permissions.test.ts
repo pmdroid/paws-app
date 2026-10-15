@@ -23,6 +23,10 @@ describe("permission guard", () => {
       decidePermission({ kind: "execute", rawInput: { command: "git status" } }, ctx).allow,
     ).toBe(true);
     expect(decidePermission({ kind: "execute", title: "npm install" }, ctx).allow).toBe(true);
+    expect(decidePermission({ name: "update_plan" }, ctx)).toEqual({
+      allow: true,
+      reason: "update_plan is handled by the injected hook",
+    });
   });
 
   test("denies the Paws home, ssh, gh config, keychains, git push, and gh", () => {

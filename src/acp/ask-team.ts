@@ -14,6 +14,18 @@ import {
 export type AskTeamOption = string | { label?: string; value: string };
 
 export const ASK_TEAM_TOOL_NAME = "ask_team";
+export const UPDATE_PLAN_TOOL_NAME = "update_plan";
+
+export type PlanStepStatus = "pending" | "inProgress" | "completed" | "canceled";
+
+export interface PlanStep {
+  content: string;
+  status: PlanStepStatus;
+}
+
+export interface UpdatePlanHook {
+  update(steps: readonly PlanStep[]): Promise<void>;
+}
 
 /** Question the agent sends. QM-07 turns this into a Linear elicitation. */
 export interface AskTeamRequest {
@@ -66,6 +78,7 @@ export function askTeamMcpEntry(): { command: string; args: string[] } {
 interface HostToolBridgeOptions {
   socketPath: string;
   hook?: AskTeamHook;
+  updatePlan?: UpdatePlanHook;
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
@@ -116,7 +129,11 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         { name: "PAWS_ASK_TEAM_SOCKET", value: options.socketPath },
         {
           name: "PAWS_HOST_TOOLS",
-          value: [options.hook ? "ask_team" : "", options.publishArtifact ? "publish_artifact" : ""]
+          value: [
+            options.hook ? "ask_team" : "",
+            options.updatePlan ? "update_plan" : "",
+            options.publishArtifact ? "publish_artifact" : "",
+          ]
             .filter(Boolean)
             .join(","),
         },
@@ -173,6 +190,13 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
     };
     id = parsed.id ?? 0;
     options.signal.throwIfAborted();
+    if (parsed.tool === "update_plan") {
+      if (!options.updatePlan) throw new Error("update_plan is unavailable");
+      const steps = parsePlan(parsed.arguments ?? {});
+      await options.updatePlan.update(steps);
+      socket.end(`${JSON.stringify({ id, answer: "Plan updated." })}\n`);
+      return;
+    }
     if (parsed.tool === "publish_artifact") {
       if (!options.publishArtifact || !options.context.worktreePath) {
         throw new Error("publish_artifact is unavailable");
@@ -254,6 +278,41 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
     const message = error instanceof Error ? error.message : String(error);
     if (!socket.destroyed) socket.end(`${JSON.stringify({ id, error: message })}\n`);
   }
+}
+
+function oneLine(content: string): boolean {
+  return [...content].every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  });
+}
+
+const PLAN_STATUS: Record<string, PlanStepStatus> = {
+  pending: "pending",
+  inProgress: "inProgress",
+  in_progress: "inProgress",
+  completed: "completed",
+  canceled: "canceled",
+  cancelled: "canceled",
+};
+
+function parsePlan(value: { steps?: unknown }): PlanStep[] {
+  if (!Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > 16)
+    throw new Error("update_plan requires 1 to 16 steps");
+  return value.steps.map((step) => {
+    if (typeof step !== "object" || step === null || Array.isArray(step))
+      throw new Error("update_plan steps require content and status");
+    const record = step as Record<string, unknown>;
+    if (typeof record.content !== "string" || typeof record.status !== "string")
+      throw new Error("update_plan steps require content and status");
+    const content = record.content.trim();
+    const status = PLAN_STATUS[record.status];
+    if (content.length < 1 || content.length > 200 || !oneLine(content) || status === undefined)
+      throw new Error(
+        "update_plan steps require one line of content and a pending, inProgress, completed, or canceled status",
+      );
+    return { content, status };
+  });
 }
 
 function parseAsk(value: {

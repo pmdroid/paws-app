@@ -170,7 +170,12 @@ export function openExecutionJournal(root: string) {
             event = { type: "question", text: q.data.question, options: q.data.options };
             requestId = q.data.requestId;
           } else {
-            if (
+            if (raw && typeof raw === "object" && "type" in raw && raw.type === "plan") {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "plan")
+                throw new Error("Invalid runner plan");
+              event = parsed.data;
+            } else if (
               raw &&
               typeof raw === "object" &&
               "type" in raw &&

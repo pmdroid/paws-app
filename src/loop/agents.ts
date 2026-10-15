@@ -4,6 +4,7 @@ import type {
   PublishArtifactHook,
   RunAgentOptions,
   RunAgentResult,
+  UpdatePlanHook,
 } from "../acp";
 import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
@@ -36,6 +37,7 @@ export type AcpAgentDeps = {
   publishArtifact?: PublishArtifactHook;
   prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
   onEvent?: RunAgentOptions["onEvent"];
+  updatePlan?: UpdatePlanHook;
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -59,6 +61,7 @@ export function implementPrompt(input: {
     ...(input.brief ? [input.brief] : []),
     "Work only in this repository.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
+    "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
@@ -145,6 +148,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         repository: deps.repository,
         prepareInputFiles: deps.prepareInputFiles,
         onEvent: deps.onEvent,
+        updatePlan: deps.updatePlan,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,
@@ -177,6 +181,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
 export function fixPrompt(request: FixRequest, brief?: string): string {
   return [
     "Fix Closeout findings.",
+    "Call update_plan with the full working checklist as the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     ...(brief ? [brief] : []),
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
     request.summary,
