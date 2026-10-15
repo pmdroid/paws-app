@@ -1,0 +1,178 @@
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  chownSync,
+  closeSync,
+  constants,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
+import { ExecutionIdSchema } from "./jobs";
+import { readRunnerJob, type RunnerSpool } from "./spool";
+import type { RunnerResults } from "./results";
+import type { RunnerBrokerClient } from "./broker";
+
+const MEMBER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function startTime(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const command = stat.lastIndexOf(")");
+    if (command < 0) return;
+    return stat.slice(command + 2).split(" ")[19];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function ensureDirectory(path: string, uid: number, gid: number, mode: number): void {
+  try {
+    mkdirSync(path, { mode });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  chmodSync(path, mode);
+  chownSync(path, uid, gid);
+}
+
+function syncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function workerLaunch(executionId: string, home: string) {
+  const script = process.argv[1];
+  const args =
+    script && /\.(ts|js|mjs|cjs)$/.test(script)
+      ? [script, "runner", "worker", "--execution-id", executionId]
+      : ["runner", "worker", "--execution-id", executionId];
+  const env: NodeJS.ProcessEnv = {
+    HOME: home,
+    PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    LANG: "C.UTF-8",
+  };
+  for (const key of ["USER", "LOGNAME"] as const) {
+    const value = process.env[key];
+    if (value) env[key] = value;
+  }
+  return spawn(process.execPath, args, {
+    cwd: home,
+    detached: true,
+    stdio: "ignore",
+    env,
+  });
+}
+
+export function createDirectWorkerSupervisor(options: {
+  stateRoot: string;
+  spool?: RunnerSpool;
+  results?: RunnerResults;
+  taskRoot?: string;
+  memberHomes?: string;
+  launch?: (executionId: string, home: string) => { pid?: number; unref(): void };
+}): RunnerBrokerClient {
+  const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
+  const memberHomes = options.memberHomes ?? "/var/lib/paws-runner-members";
+  const launch = options.launch ?? workerLaunch;
+  mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
+  function homeFor(executionId: string): string {
+    if (!options.spool || !options.results) return process.env.HOME ?? "/var/lib/paws-agent";
+    const job = readRunnerJob(options.spool, executionId);
+    ensureDirectory(
+      join(options.results.root, executionId),
+      options.results.agentUid,
+      options.results.resultsGid,
+      0o750,
+    );
+    const gid = process.getgid?.() ?? options.results.agentUid;
+    if (job.command.type === "task")
+      ensureDirectory(join(taskRoot, executionId), options.results.agentUid, gid, 0o700);
+    const member = job.command.memberId;
+    if (member === undefined) return "/var/lib/paws-agent";
+    if (!MEMBER.test(member) || !MEMBER.test(job.command.workspaceId))
+      throw new Error("Invalid member identity");
+    const identity = createHash("sha256")
+      .update(JSON.stringify([job.command.workspaceId, member]))
+      .digest("hex");
+    const home = join(memberHomes, identity);
+    ensureDirectory(home, options.results.agentUid, gid, 0o700);
+    return home;
+  }
+  function receipt(executionId: string): string {
+    ExecutionIdSchema.parse(executionId);
+    return join(options.stateRoot, `${executionId}.pid`);
+  }
+  return {
+    async start(executionId) {
+      const path = receipt(executionId);
+      const home = homeFor(executionId);
+      let fd: number;
+      try {
+        fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
+        throw error;
+      }
+      let child: { pid?: number; unref(): void } | undefined;
+      try {
+        child = launch(executionId, home);
+        if (child.pid === undefined) throw new Error("Runner worker did not start");
+        const born = startTime(child.pid);
+        if (born === undefined) throw new Error("Runner worker did not start");
+        writeSync(fd, `${child.pid} ${born}\n`);
+        fsyncSync(fd);
+        syncDirectory(options.stateRoot);
+        child.unref();
+        return { alreadyAdmitted: false };
+      } catch (error) {
+        if (child?.pid !== undefined) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch (killError) {
+            if ((killError as NodeJS.ErrnoException).code !== "ESRCH") throw killError;
+          }
+        }
+        unlinkSync(path);
+        syncDirectory(options.stateRoot);
+        throw error;
+      } finally {
+        closeSync(fd);
+      }
+    },
+    async stop(executionId) {
+      let recorded: string;
+      try {
+        recorded = readFileSync(receipt(executionId), "utf8").trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      const [pidText, born] = recorded.split(" ");
+      const pid = Number(pidText);
+      if (!born || !Number.isSafeInteger(pid) || pid <= 1 || startTime(pid) !== born) return;
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        throw error;
+      }
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (startTime(pid) !== born) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error("Runner worker did not exit");
+    },
+  };
+}
