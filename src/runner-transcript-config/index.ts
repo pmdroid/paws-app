@@ -1,5 +1,13 @@
 import { S3Client } from "bun";
-import { constants, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { decodeSecretEnvelope, writeSecretFile } from "../credentials";
@@ -48,14 +56,16 @@ const s3Schema = z
 const schema = z.union([z.strictObject({ kind: z.literal("local") }), s3Schema]);
 
 export function loadRunnerTranscriptObjects(home: string) {
-  return withSecrets(home, false, (directory) => {
-    const encrypted = readProtected(directory, FILE, MAX_BYTES)!.toString("utf8");
+  const local = createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
+  const remote = withSecrets(home, false, (directory) => {
+    const stored = readProtected(directory, FILE, MAX_BYTES, true);
+    if (stored === null) return null;
+    const encrypted = stored.toString("utf8");
     if (!encrypted.startsWith("paws-envelope-v1\n")) throw new Error();
     const key = readProtected(directory, ".envelope-key", 32)!;
     if (key.length !== 32) throw new Error();
     const config = schema.parse(JSON.parse(decodeSecretEnvelope(FILE, encrypted, key)));
-    if ("kind" in config)
-      return createLocalRunnerTranscriptObjects(join(home, "runner-transcripts"));
+    if ("kind" in config) return null;
     const client = new S3Client({ ...config, sessionToken: config.sessionToken ?? "" });
     const token = new URL(client.presign("paws-config-check")).searchParams.get(
       "X-Amz-Security-Token",
@@ -63,6 +73,13 @@ export function loadRunnerTranscriptObjects(home: string) {
     if (token !== (config.sessionToken ?? null)) throw new Error();
     return createS3RunnerTranscriptObjects({ client, bucket: config.bucket });
   });
+  if (remote === null) return local;
+  return {
+    ...remote,
+    read(key: string) {
+      return existsSync(new URL(local.uri(key))) ? local.read(key) : remote.read(key);
+    },
+  };
 }
 
 export function configureRunnerTranscriptStorage(home: string, text: string): void {
@@ -102,13 +119,14 @@ export async function runRunnerTranscriptStorageCli(args: string[], home: string
   }
 }
 
-function withSecrets<T>(home: string, create: boolean, action: (directory: string) => T): T {
-  let homeFd: number | undefined;
-  let secretsFd: number | undefined;
+function withSecrets<T>(home: string, create: boolean, action: (directory: string) => T): T | null {
+  let homeFd: number | null = null;
+  let secretsFd: number | null = null;
   try {
     if (!isAbsolute(home)) throw new Error();
     if (create) mkdirSync(home, { recursive: true, mode: 0o700 });
-    homeFd = openDirectory(home);
+    homeFd = openDirectory(home, !create);
+    if (homeFd === null) return null;
     const secrets = `/proc/self/fd/${homeFd}/secrets`;
     if (create) {
       try {
@@ -117,18 +135,25 @@ function withSecrets<T>(home: string, create: boolean, action: (directory: strin
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     }
-    secretsFd = openDirectory(secrets);
+    secretsFd = openDirectory(secrets, !create);
+    if (secretsFd === null) return null;
     return action(`/proc/self/fd/${secretsFd}`);
   } catch {
     throw new Error(FAILURE);
   } finally {
-    if (secretsFd !== undefined) closeSync(secretsFd);
-    if (homeFd !== undefined) closeSync(homeFd);
+    if (secretsFd !== null) closeSync(secretsFd);
+    if (homeFd !== null) closeSync(homeFd);
   }
 }
 
-function openDirectory(path: string): number {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+function openDirectory(path: string, optional: boolean): number | null {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
   const info = fstatSync(fd);
   if (!info.isDirectory() || info.uid !== process.getuid!() || (info.mode & 0o7777) !== 0o700) {
     closeSync(fd);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:https";
 import { createConnection } from "node:net";
 import { join } from "node:path";
@@ -19,7 +19,6 @@ import { startPaws } from "../../src/index";
 import { createRunnerKey } from "../../src/runner-identity";
 import { createFakeGitHub } from "../../src/github";
 import { createFakeRunnerTranscriptObjects } from "../../src/runner-transcripts";
-import { configureRunnerTranscriptStorage } from "../../src/runner-transcript-config";
 import {
   issueWorkspaceBootstrap,
   issueWorkspaceSession,
@@ -96,7 +95,7 @@ if (mode === "transcripts-later") {
     await paws.stop();
   }
   observe(
-    "runner and GitHub App configuration still serves the dashboard before transcript storage exists",
+    "runner and GitHub App configuration serves the dashboard with default local transcripts",
     { health: 200 },
   );
   console.log(JSON.stringify(observations));
@@ -144,7 +143,22 @@ if (enabled || mode === "pending") {
 }
 const pending = Promise.withResolvers<void>();
 if (mode === "pending") runtimeLinear.installation = pending.promise;
-if (mode === "remote") configureRunnerTranscriptStorage(root, '{"kind":"local"}');
+if (mode === "remote") {
+  const config = join(root, "secrets", "runner-transcript-storage.json");
+  writeFileSync(config, "invalid", { mode: 0o600 });
+  assert.throws(
+    () =>
+      startPaws(source, {
+        runnerRepositoryAccess: {
+          github: createFakeGitHub(),
+          installationForRepository: () => "fixture-installation",
+        },
+      }),
+    /configuration is missing or invalid/,
+  );
+  assert(!existsSync(join(root, "paws.db")));
+  rmSync(config);
+}
 const paws = startPaws(source, {
   noTunnel: true,
   ...(enabled
