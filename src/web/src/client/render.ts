@@ -314,17 +314,17 @@ function questionCard(
     })
     .join("");
   const claimed = question.claimedBy
-    ? `${avatar(question.claimedBy, true)} ${esc(question.claimedBy)} claimed`
-    : "unclaimed";
+    ? `${avatar(question.claimedBy, true)}<span>${esc(question.claimedBy)} claimed</span>`
+    : "<span>unclaimed</span>";
   return `<article class="q${highlight ? " hl" : ""}" id="q-${esc(question.id)}">
-    <div class="qh"><div>
-      <div class="row wrap"><span class="lin-id">${esc(question.id)}</span><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span>${itemLink(item)}${item ? agentChip(item.agent) : ""}</div>
-      <div class="title">${esc(question.title)}</div>
+    <div class="qh">
+      <div class="row wrap min-w-0"><span class="lin-id">${esc(question.id)}</span><span class="tag${question.kind === "exhausted" ? " bad" : ""}">${esc(question.kind)}</span><span class="tag">${esc(question.urgency)}</span>${itemLink(item)}${item ? agentChip(item.agent) : ""}</div>
+      <div class="claim">${claimed}<span class="dim">${esc(ago(question.askedAt, snapshot.generatedAt))}</span></div>
+      <div class="title min-w-0">${esc(question.title)}</div>
     </div>
-    <div class="dim">${claimed}<div>${esc(ago(question.askedAt, snapshot.generatedAt))}</div></div></div>
     <div class="qb"><div class="muted">${esc(question.body)}</div>
       ${question.context ? `<div class="ctx">${esc(question.context)}</div>` : ""}
-      ${options}
+      ${options ? `<div class="opts">${options}</div>` : ""}
       <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
 }
