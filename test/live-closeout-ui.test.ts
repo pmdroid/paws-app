@@ -143,8 +143,14 @@ function verdictOf(snapshot: StatusSnapshot, id: string): StatusVerdict {
 }
 
 function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
+  const item = snapshot.items.find((entry) => entry.id === id);
+  const runId =
+    item?.runId && snapshot.runs.some((run) => run.id === item.runId)
+      ? item.runId
+      : snapshot.runs.find((run) => run.itemId === id)?.id;
+  if (!runId) throw new Error(`missing run for ${id}`);
   const model: RenderModel = {
-    route: { view: "verdicts", id },
+    route: { view: "runs", id: runId },
     phase: "ready",
     snapshot,
     via: "engine",
