@@ -882,13 +882,15 @@ export class Orchestrator {
     if (sessionId) activateLinearItem(this.db, sessionId, loaded.id);
     if (loaded.state === "queued") applyWorkItemEvent(this.db, loaded.id, "dispatched");
     if (loaded.state === "recovering") applyWorkItemEvent(this.db, loaded.id, "recovered");
-    const item = getWorkItem(this.db, loaded.id);
+    let item = getWorkItem(this.db, loaded.id);
     if (item === null || item.state !== "running") return;
 
     {
       const handoff = readString(payload, "handoff") ?? undefined;
       if (this.options.linearTaskModes && item.sessionKey && this.options.channel !== "comments") {
         if (!(await this.resolveTaskMode(item, handoff))) return;
+        item = getWorkItem(this.db, loaded.id);
+        if (!item || item.state !== "running" || item.cancelRequested) return;
         const mode = getTaskMode(this.db, item.id);
         if (mode === "answer" || mode === "artifact") {
           if (
