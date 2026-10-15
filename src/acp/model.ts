@@ -8,6 +8,10 @@ import type { AgentProfile, ImplementerName } from "../config";
 
 type ModelSelection = { model: string | null; models: Array<{ id: string; name: string }> };
 
+function concreteModel(model: string): boolean {
+  return !["default", "auto", "claude", "codex", "grok"].includes(model.toLowerCase());
+}
+
 function modelOption(options: SessionConfigOption[] | null | undefined) {
   return options?.find(
     (option) => option.type === "select" && (option.category === "model" || option.id === "model"),
@@ -22,10 +26,7 @@ export function sessionModel(session: Pick<NewSessionResponse, "configOptions">)
     ? option.currentValue
     : null;
   return {
-    model:
-      model && !["default", "auto", "claude", "codex", "grok"].includes(model.toLowerCase())
-        ? model
-        : null,
+    model: model && concreteModel(model) ? model : null,
     models: options.map(({ value, name }) => ({ id: value, name })),
   };
 }
@@ -47,18 +48,39 @@ export async function selectSessionProfile(
   ModelSelection & { effort: string | null; efforts: Array<{ id: string; name: string }> }
 > {
   let configuration = session;
-  if (profile.model !== null) {
-    const option = modelOption(configuration.configOptions);
-    if (!option || !sessionModel(configuration).models.some((model) => model.id === profile.model))
-      throw new Error(`Agent does not advertise model ${profile.model}`);
+  const modelConfig = modelOption(configuration.configOptions);
+  let selectedModel = profile.model;
+  if (
+    selectedModel === null &&
+    sessionModel(session).model === null &&
+    modelConfig?.type === "select"
+  ) {
+    const models = modelConfig.options.flatMap((value) =>
+      "group" in value ? value.options : [value],
+    );
+    const description = models.find(
+      (value) => value.value === modelConfig.currentValue,
+    )?.description;
+    const matches = models.filter(
+      (value) =>
+        concreteModel(value.value) && (value.value === description || value.name === description),
+    );
+    if (matches.length === 1) selectedModel = matches[0]!.value;
+  }
+  if (selectedModel !== null) {
+    if (
+      !modelConfig ||
+      !sessionModel(configuration).models.some((model) => model.id === selectedModel)
+    )
+      throw new Error(`Agent does not advertise model ${selectedModel}`);
     const response = await ctx.request(methods.agent.session.setConfigOption, {
       sessionId: session.sessionId,
-      configId: option.id,
-      value: profile.model,
+      configId: modelConfig.id,
+      value: selectedModel,
     });
     configuration = { ...session, ...response };
-    if (sessionModel(configuration).model !== profile.model)
-      throw new Error(`Agent did not confirm model ${profile.model}`);
+    if (sessionModel(configuration).model !== selectedModel)
+      throw new Error(`Agent did not confirm model ${selectedModel}`);
   }
   const model = sessionModel(configuration);
   let option = effortOption(configuration.configOptions);
