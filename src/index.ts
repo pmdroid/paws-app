@@ -190,9 +190,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw new Error("PAWS_EXECUTION must be remote.");
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
-  const explicitTranscripts =
-    options?.runnerTranscriptObjects ??
-    (execution === "remote" ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
@@ -218,23 +215,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (runtime.linearClientId === null || runtime.linearMode !== "agent-session")
       throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
-  let placeOnRunner = execution === "remote";
-  let transcriptObjects = explicitTranscripts;
-  if (!placeOnRunner && remotePlacementReady) {
-    if (transcriptObjects !== undefined) placeOnRunner = true;
-    else {
-      try {
-        transcriptObjects = loadRunnerTranscriptObjects(runtime.env.home);
-        placeOnRunner = true;
-      } catch (error) {
-        if (
-          !(error instanceof Error) ||
-          error.message !== "Runner transcript storage configuration is missing or invalid."
-        )
-          throw error;
-      }
-    }
-  }
+  const placeOnRunner = remotePlacementReady;
+  const transcriptObjects =
+    options?.runnerTranscriptObjects ??
+    (placeOnRunner ? loadRunnerTranscriptObjects(runtime.env.home) : undefined);
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
   assertLinearQueue(paths.db);
