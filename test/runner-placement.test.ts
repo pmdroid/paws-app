@@ -17,7 +17,7 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
-async function placeItem(project: boolean) {
+async function placeItem(project: boolean, bindTask = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-owner-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -67,7 +67,7 @@ async function placeItem(project: boolean) {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.epicId, { actorId: "owner" });
+  if (bindTask) bindLinearSessionTask(db, "session", item.epicId, { actorId: "owner" });
   db.run(
     `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
      VALUES('approval',?,'project',?,?,'placement','{}',?,?,?)`,
@@ -149,6 +149,19 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
 test("a solo item runs on its owner's runner and not another member's shared runner", async () => {
   const placed = await placeItem(false);
   try {
+    expect(await placed.ids()).toEqual(["own", "fallback"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("runner placement resolves its item through session_key with no linear_session_task row", async () => {
+  const placed = await placeItem(false, false);
+  try {
+    expect(
+      placed.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_session_task").get()?.n,
+    ).toBe(0);
     expect(await placed.ids()).toEqual(["own", "fallback"]);
   } finally {
     placed.db.close();
