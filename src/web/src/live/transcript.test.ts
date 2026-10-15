@@ -59,7 +59,8 @@ test("run transcript refreshes unfinished ACP output, tools and classification t
       message("Opening create VM dialog <script>bad()</script>"),
       hidden,
       tool,
-      message("fixture-secret-value"),
+      message("fixture-secret-"),
+      message("value"),
     ]
       .map((x) => JSON.stringify(x) + "\n")
       .join("") + "{unfinished",
@@ -90,7 +91,9 @@ test("run transcript refreshes unfinished ACP output, tools and classification t
   expect(html).toContain("&lt;script&gt;");
   expect(html).not.toContain("private reasoning");
   appendFileSync(file, "}\n" + JSON.stringify(message("Screenshot captured")) + "\n");
-  expect((await provider.snapshot()).runs[0]!.transcript!.at(-1)?.text).toBe("Screenshot captured");
+  expect((await provider.snapshot()).runs[0]!.transcript!.at(-1)?.text).toContain(
+    "Screenshot captured",
+  );
   expect(
     (await createLiveStatusProvider(db, { pawsHome: home, sessionIds: ["other"] }).snapshot()).runs,
   ).toEqual([]);

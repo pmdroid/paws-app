@@ -22,7 +22,8 @@ const message = (text: string) =>
   }) + "\n";
 writeFileSync(
   file,
-  message("Opening the create VM dialog") +
+  message("Opening ") +
+    message("the create VM dialog") +
     JSON.stringify({
       event: {
         type: "session_update",

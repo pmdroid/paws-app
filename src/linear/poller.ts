@@ -155,14 +155,19 @@ export function startCatchUpPoller(options: {
         sessionByIssue.set(activity.issueId, activity.sessionId);
       }
     }
-    for (const session of sighting.sessions) sessionByIssue.set(session.issueId, session.id);
+    for (const session of sighting.sessions)
+      if (!session.stoppedAtMs && !session.endedAtMs)
+        sessionByIssue.set(session.issueId, session.id);
     const issueEvents = sighting.issues
       .map((issue) => issueEvent(issue, sessionByIssue, options.store))
       .filter((event): event is AcceptedLinearEvent => event !== null);
     const events = [
       ...issueEvents,
       ...sighting.sessions
-        .filter((session) => !issueEvents.some((event) => event.sessionId === session.id))
+        .filter(
+          (session) =>
+            session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id),
+        )
         .map((session) => sessionEvent(session, since, options.store)),
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),
@@ -258,6 +263,20 @@ function sessionEvent(
   store: InboxStore,
 ): AcceptedLinearEvent | null {
   const prior = store.get(`issue:${session.issueId}:intake`);
+  if (session.stoppedAtMs != null) {
+    if (!store.get(`session:${session.id}:created`) && prior?.sessionId !== session.id) return null;
+    return inboxEvent({
+      dedupeKey: `session:${session.id}:stop:${session.stoppedAtMs}`,
+      action: "prompted",
+      sessionId: session.id,
+      issueId: session.issueId,
+      body: null,
+      signal: "stop",
+      updatedAtMs: session.stoppedAtMs,
+      payload: { kind: "stop", reason: "session" },
+    });
+  }
+  if (session.endedAtMs != null) return null;
   if (prior?.sessionId === session.id) return null;
   if (prior === null && session.updatedAtMs < since) return null;
   return inboxEvent({
@@ -440,7 +459,7 @@ function stopTargets(
     if (!ids.includes(id)) ids.push(id);
   };
   try {
-    if (linearIssueId !== null) {
+    if (linearIssueId !== null && sessionId === null) {
       const rows = db
         .query<{ id: string }, [string, string]>(
           `SELECT work_item.id AS id
@@ -464,9 +483,9 @@ function stopTargets(
       for (const row of rows) push(row.id);
     }
   } catch {
-    return linearIssueId === null ? [] : [linearIssueId];
+    return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];
   }
-  if (ids.length === 0 && linearIssueId !== null) ids.push(linearIssueId);
+  if (ids.length === 0 && linearIssueId !== null && sessionId === null) ids.push(linearIssueId);
   return ids;
 }
 

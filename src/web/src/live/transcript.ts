@@ -28,7 +28,7 @@ function readFile(
   try {
     const root = realpathSync(join(home, "runs"));
     const directory = realpathSync(join(root, runId));
-    if (!directory.startsWith(`${root}${sep}`)) return [];
+    if (!directory.startsWith(`${root}${sep}`) || directory !== join(root, runId)) return [];
     fd = openSync(
       join(directory, "acp.jsonl"),
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -42,6 +42,7 @@ function readFile(
     const lines = source.split("\n");
     if (start) lines.shift();
     const result: StatusActivity[] = [];
+    let message = false;
     for (const line of lines) {
       try {
         const record = JSON.parse(line);
@@ -52,14 +53,17 @@ function readFile(
             : fallbackAt;
         let kind: StatusActivity["kind"] = "system";
         let text = "";
+        let chunk = false;
         if (event?.type === "progress") {
           text = event.text;
           if (typeof text === "string" && text.startsWith("Tool: ")) kind = "tool";
+          else chunk = true;
         } else if (event?.type === "session_update") {
           const update = event.update;
-          if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text")
+          if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") {
             text = update.content.text;
-          else if (["tool_call", "tool_call_update"].includes(update?.sessionUpdate)) {
+            chunk = true;
+          } else if (["tool_call", "tool_call_update"].includes(update?.sessionUpdate)) {
             kind = "tool";
             text = [update.title, update.status]
               .filter((value) => typeof value === "string")
@@ -77,10 +81,17 @@ function readFile(
         } else if (event?.type === "prompt_complete")
           text = `Agent turn ended: ${event.stopReason}`;
         if (typeof text !== "string" || !text.trim()) continue;
-        result.push({ at, kind, text: redactCloseoutText(text.slice(0, 8192), env) });
+        const publicText = redactCloseoutText(text.slice(0, 8192), env);
+        const previous = result.at(-1);
+        if (chunk && message && previous)
+          previous.text = `${previous.text}${publicText}`.slice(-65_536);
+        else result.push({ at, kind, text: publicText });
+        message = chunk;
       } catch {}
     }
-    return result.slice(-200);
+    return result
+      .slice(-200)
+      .map((line) => ({ ...line, text: redactCloseoutText(line.text, env) }));
   } catch {
     return [];
   } finally {

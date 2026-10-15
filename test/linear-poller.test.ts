@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
+import { configureWorkItem } from "../src/db";
 import {
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_IDLE_MS,
@@ -388,7 +389,10 @@ describe("linear intake poll", () => {
       db,
       onEvent: async (event) => {
         if (event.action !== "created" || event.issueId === null) return;
-        await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
+        const result = await intakeDelegatedIssue(db, tracker, { linearIssueId: event.issueId });
+        if (result.ok)
+          for (const item of result.items)
+            configureWorkItem(db, item.id, { sessionKey: "ses_stop" });
       },
       submitCommand: (command) => {
         commands.push({ type: command.type, itemId: command.itemId });
