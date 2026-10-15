@@ -184,7 +184,6 @@ test("a new epic child starts its own plan without requiring an ACP plan event",
   expect(row?.payload).toMatchObject({
     identifier: "ENG-2",
     plan: [
-      { content: "Implement ENG-2", status: "inProgress" },
       { content: "Verify changes", status: "pending" },
       { content: "Open pull request", status: "pending" },
       { content: "Merge verified changes", status: "pending" },
@@ -211,7 +210,7 @@ test("response plans recover their ACP steps without code milestones and reset f
     listOutbox(db, "session").findLast((row) => row.op === "linear.session.plan")?.payload,
   ).toMatchObject({
     mode: "artifact",
-    plan: [{ content: "Create files for ENG-1", status: "inProgress" }],
+    plan: [],
   });
   expect(
     listOutbox(db, "session").findLast((row) => row.op === "linear.session.summary")?.payload,

@@ -52,8 +52,8 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
-  if (subject.name === "ask_team") {
-    return { allow: true, reason: "ask_team is handled by the injected hook" };
+  if (subject.name === "ask_team" || subject.name === "update_plan") {
+    return { allow: true, reason: `${subject.name} is handled by the injected hook` };
   }
 
   const command = commandText(subject);

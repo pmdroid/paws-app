@@ -19,7 +19,7 @@ export {
   type RunnerCommandVerifier,
 } from "./signature";
 
-export { RunnerEventSchema, type RunnerEvent } from "./events";
+export { RunnerEventSchema, RunnerPlanStepSchema, type RunnerEvent } from "./events";
 
 export {
   RUNNER_RESULT_BODY_LIMIT,

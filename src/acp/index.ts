@@ -22,6 +22,7 @@ export {
 } from "./adapters";
 export {
   ASK_TEAM_TOOL_NAME,
+  UPDATE_PLAN_TOOL_NAME,
   startAskTeamBridge,
   startHostToolBridge,
   type AskTeamBridge,
@@ -30,6 +31,9 @@ export {
   type AskTeamOption,
   type AskTeamRequest,
   type AskTeamResponse,
+  type PlanStep,
+  type PlanStepStatus,
+  type UpdatePlanHook,
 } from "./ask-team";
 export {
   DEFAULT_MAX_ARTIFACT_BYTES,

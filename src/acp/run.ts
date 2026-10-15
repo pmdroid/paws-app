@@ -313,10 +313,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
 
   try {
-    if (options.askTeam || options.publishArtifact) {
+    if (options.askTeam || options.updatePlan || options.publishArtifact) {
       bridge = await startHostToolBridge({
         socketPath: `${runDir(options.pawsRoot, options.runId)}/ask-team.sock`,
         hook: options.askTeam,
+        updatePlan: options.updatePlan,
         publishArtifact: options.publishArtifact,
         artifactLimits: options.artifactLimits,
         context: {

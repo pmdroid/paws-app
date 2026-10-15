@@ -39,6 +39,36 @@ const TOOL = {
   },
 };
 
+const PLAN_TOOL = {
+  name: "update_plan",
+  description:
+    "Replace the working checklist for this session. Send every step and its current status.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      steps: {
+        type: "array",
+        minItems: 1,
+        maxItems: 16,
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string", minLength: 1, maxLength: 200 },
+            status: {
+              type: "string",
+              enum: ["pending", "inProgress", "completed", "canceled"],
+            },
+          },
+          required: ["content", "status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["steps"],
+    additionalProperties: false,
+  },
+};
+
 const ARTIFACT_TOOL = {
   name: "publish_artifact",
   description: "Publish a file from the workspace and return a link to share with the user.",
@@ -140,7 +170,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
       return;
     case "tools/list":
       respond(message.id, {
-        tools: [TOOL, ARTIFACT_TOOL].filter((tool) => enabledTools.has(tool.name)),
+        tools: [TOOL, PLAN_TOOL, ARTIFACT_TOOL].filter((tool) => enabledTools.has(tool.name)),
       });
       return;
     case "prompts/list":
