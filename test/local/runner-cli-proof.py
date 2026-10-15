@@ -1,5 +1,4 @@
 import json
-import importlib.util
 import os
 import pathlib
 import selectors
@@ -7,12 +6,10 @@ import shutil
 import signal
 import ssl
 import sqlite3
-import socket
 import stat
 import subprocess
 import sys
 import time
-import threading
 import urllib.request
 
 
@@ -253,39 +250,16 @@ try:
     cancelled = json.loads((cancelled_results / "result.json").read_text())
     assert cancelled["run"]["cancelled"] is True and cancelled["run"]["agentExited"] is True
     observe("SIGTERM joins the owned ACP process and retains the cancelled immutable result")
-    spec = importlib.util.spec_from_file_location("broker", "/proof/runner-broker.py")
-    broker = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(broker)
-    receipts = pathlib.Path("/var/lib/paws-runner-broker")
-    receipts.mkdir(mode=0o700)
-    shutil.copyfile("/proof/paws-agent@.service", root / "paws-agent@.service")
-    (root / "paws-agent@.service").chmod(0o644)
-    broker.UNIT = str(root / "paws-agent@.service")
-    workers = {}
-    started = []
-
-    def control(operation, execution_id, template="paws-agent"):
-        assert template == "paws-agent"
-        if operation == "start":
-            assert execution_id not in workers
-            workers[execution_id] = actor(["/proof/bun", "--no-env-file", "/proof/paws.js", "runner", "worker", "--execution-id", execution_id], 17002)
-            started.append(execution_id)
-        elif operation in ("kill", "stop"):
-            owned = workers.get(execution_id)
-            if owned and owned.poll() is None:
-                os.killpg(owned.pid, signal.SIGKILL)
-                owned.wait(timeout=5)
-        elif operation == "show":
-            assert not workers.get(execution_id) or workers[execution_id].poll() is not None
-        return subprocess.CompletedProcess([], 0, stdout=b"")
-
-    broker.control_unit = control
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind("/run/paws-runner-broker.sock")
-    os.chown("/run/paws-runner-broker.sock", 17001, 17001)
-    os.chmod("/run/paws-runner-broker.sock", 0o600)
-    listener.listen(16)
-    threading.Thread(target=broker.serve, args=(listener, 17001, 17002, 17002, 17003), daemon=True).start()
+    def recorded_workers():
+        directory = pathlib.Path("/var/lib/paws-runner/health/workers")
+        if not directory.is_dir():
+            return []
+        recorded = []
+        for receipt in directory.glob("*.pid"):
+            text = receipt.read_text().split()
+            if text and text[0].isdigit():
+                recorded.append(int(text[0]))
+        return recorded
     launcher.write_text("#!/bin/sh\nexec /proof/bun --no-env-file /proof/fake-agent.js /var/lib/paws-agent/health-agent.json /proof/script.json\n")
     check_root = pathlib.Path("/var/lib/paws-runner/checks")
     check_root.mkdir(mode=0o700)
@@ -309,24 +283,25 @@ try:
         assert time.monotonic() < deadline
         time.sleep(0.05)
     assert completed["result"]["agentExited"] is True
+    started = recorded_workers()
     assert len(started) == 1
     daemon.send_signal(signal.SIGTERM)
     output, errors = daemon.communicate(timeout=15)
     assert daemon.returncode == 130, errors
-    assert all(worker.poll() is not None for worker in workers.values())
+    assert all(not pathlib.Path("/proc", str(pid)).exists() for pid in started)
     for directory, name, table, count in (("runtime", "executions.db", "execution", 0), ("health", "health.db", "health_execution", 1), ("checks", "checks.db", "check_execution", 0)):
         database = sqlite3.connect(pathlib.Path("/var/lib/paws-runner") / directory / name)
         assert database.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == count
         database.close()
-    observe("installed daemon receives signed commands over real mTLS and publishes health receipts through the fixed Unix broker and agent CLI")
+    observe("installed daemon receives signed commands over real mTLS and publishes health receipts")
     restarted_daemon = actor(daemon_arguments, 17001)
     time.sleep(2.5)
     assert restarted_daemon.poll() is None, restarted_daemon.stderr.read().decode()
-    assert len(started) == 1
+    assert recorded_workers() == started
     restarted_daemon.send_signal(signal.SIGTERM)
     output, errors = restarted_daemon.communicate(timeout=15)
     assert restarted_daemon.returncode == 130, errors
-    assert len(started) == 1
+    assert recorded_workers() == started
     observe("daemon restart retains paired identity and terminal receipts without relaunching the consumed worker")
     server.send_signal(signal.SIGTERM)
     server.communicate(timeout=15)

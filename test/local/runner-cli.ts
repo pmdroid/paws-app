@@ -114,8 +114,6 @@ const child = Bun.spawn(
       [join(root, "script.json"), "/proof/script.json"],
       [join(repository, "src/process/process-anchor.ts"), "/proof/process-anchor.ts"],
       [join(repository, "deploy/linux/check-verifier.py"), "/proof/check-verifier.py"],
-      [join(repository, "deploy/linux/runner-broker.py"), "/proof/runner-broker.py"],
-      [join(repository, "deploy/linux/paws-agent@.service"), "/proof/paws-agent@.service"],
       [join(repository, "test/local/runner-cli-proof.py"), "/proof/proof.py"],
     ].flatMap(([from, to]) => ["--mount", `type=bind,src=${from},dst=${to},readonly`]),
     "--entrypoint",

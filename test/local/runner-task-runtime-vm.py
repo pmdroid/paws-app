@@ -44,14 +44,10 @@ def main():
     scripts = ROOT / 'scripts'
     scripts.mkdir(mode=0o755)
     os.chown(scripts, runner.pw_uid, runner.pw_gid)
-    for name in ('paws-agent@.service', 'paws-runner-broker.service', 'paws-runner-broker.socket'):
-        (pathlib.Path('/etc/systemd/system') / name).write_bytes((ASSETS / name).read_bytes())
     (APP / 'node_modules/.bin').mkdir(parents=True)
     launcher = APP / 'node_modules/.bin/claude-agent-acp'
     launcher.write_text('#!/opt/paws-runner/bin/bun\nprocess.argv.splice(2,0,"agent");await import("../../src/index.ts");\n')
     launcher.chmod(0o755)
-    run('/usr/bin/systemctl', 'daemon-reload')
-    run('/usr/bin/systemctl', 'start', 'paws-runner-broker.socket')
     logs = []
     actors = []
     def actor(mode, daemon=False):
@@ -105,7 +101,7 @@ def main():
             if config['commands'][index].get('repository'):
                 assert trace['fs'][0]['content'] == 'authorized source' and not trace['fs'][1]['ok']
                 assert (pathlib.Path('/var/lib/paws-runner-spool') / execution_id / 'repository/tracked').read_text() == 'authorized source'
-            assert len(list(pathlib.Path('/var/lib/paws-runner-broker').glob(execution_id + '.launched'))) == 1
+            assert (pathlib.Path('/var/lib/paws-runner/runtime/workers') / (execution_id + '.pid')).is_file()
         db.close()
         journal = sqlite3.connect(runtime / 'executions.db')
         assert journal.execute("SELECT COUNT(*) FROM execution WHERE phase='complete' AND consumed=transcript_offset AND consumed>0").fetchone()[0] == 4
@@ -120,8 +116,6 @@ def main():
             log.close()
         for path in ROOT.glob('*.log'):
             print(str(path) + '\n' + path.read_text(), flush=True)
-        print(run('/usr/bin/journalctl','-u','paws-runner-broker.service','--no-pager').stdout, flush=True)
-        print(run('/usr/bin/journalctl','-u','paws-agent@*.service','--no-pager','-n','100').stdout, flush=True)
         for path in pathlib.Path('/var/lib/paws-agent-results').glob('*/result.json'):
             print(str(path) + '\n' + path.read_text(), flush=True)
 

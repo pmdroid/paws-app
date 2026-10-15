@@ -16,7 +16,7 @@ import {
 import { createFakeGitHub } from "../../src/github";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
-import { createRunnerBrokerClient, readRunnerJob } from "../../src/runner-execution";
+import { createDirectWorkerSupervisor, readRunnerJob } from "../../src/runner-execution";
 import { openExecutionJournal } from "../../src/runner-journal";
 import { openRunnerRuntime } from "../../src/runner-runtime";
 import { runRunnerCli } from "../../src/runner-cli";
@@ -24,6 +24,7 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../
 import type { RunnerCommand } from "../../src/runner-protocol";
 
 const [mode, ...args] = process.argv.slice(2);
+if (mode === "runner") process.exit(await runRunnerCli(args));
 const root = "/var/lib/paws-task-proof";
 const home = "/var/lib/paws-runner";
 const server = join(root, "server");
@@ -89,9 +90,7 @@ async function coordinator(port: number) {
   });
   return { db, service };
 }
-if (mode === "runner") {
-  process.exit(await runRunnerCli(args));
-} else if (mode === "agent") {
+if (mode === "agent") {
   const script = join(root, "scripts", "current.json");
   const { executionId } = JSON.parse(readFileSync(script, "utf8"));
   const child = Bun.spawn(
@@ -301,7 +300,16 @@ if (mode === "runner") {
   assert.equal(mode, "runtime");
   const configuration = config();
   const daemon = openRunnerDaemon(daemonOptions(configuration));
-  const broker = createRunnerBrokerClient();
+  const workers = createDirectWorkerSupervisor({
+    stateRoot: join(home, "runtime", "workers"),
+    spool,
+    results: {
+      root: "/var/lib/paws-agent-results",
+      agentUid: Number(args[0]),
+      resultsGid: Number(args[3]),
+    },
+    taskRoot: "/var/lib/paws-agent-tasks",
+  });
   const lost = {
     grant: false,
     credential: false,
@@ -321,7 +329,7 @@ if (mode === "runner") {
     spool,
     results: {
       root: "/var/lib/paws-agent-results",
-      agentUid: Number(args[2]),
+      agentUid: Number(args[0]),
       resultsGid: Number(args[3]),
     },
     daemon: {
@@ -389,7 +397,7 @@ if (mode === "runner") {
       },
     },
     broker: {
-      ...broker,
+      stop: (id) => workers.stop(id),
       async start(id) {
         const job = readRunnerJob(spool, id);
         assert(job.command.type === "task");
@@ -424,7 +432,7 @@ if (mode === "runner") {
             promptCapabilities: { embeddedContext: true },
           }),
         );
-        const receipt = await broker.start(id);
+        const receipt = await workers.start(id);
         assert.equal(receipt.alreadyAdmitted, false);
         assert(!started.has(id));
         started.add(id);

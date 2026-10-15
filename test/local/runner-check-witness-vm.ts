@@ -11,7 +11,6 @@ const expectedDigest = process.env.PAWS_BROKER_VM_SHA512;
 if (!base || !expectedDigest || !/^[a-f0-9]{128}$/.test(expectedDigest))
   throw new Error("Set PAWS_BROKER_VM_BASE and its trusted PAWS_BROKER_VM_SHA512");
 const files = [
-  "runner-broker.py",
   "check-broker.py",
   "check-child.py",
   "check-status.py",
