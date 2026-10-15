@@ -87,6 +87,20 @@ function syncDirectory(path: string): void {
   }
 }
 
+function killRecorded(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ESRCH" && code !== "EPERM") throw error;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (direct) {
+      if ((direct as NodeJS.ErrnoException).code !== "ESRCH") throw direct;
+    }
+  }
+}
+
 function workerLaunch(executionId: string, home: string) {
   const script = process.argv[1];
   const args =
@@ -178,19 +192,7 @@ export function createDirectWorkerSupervisor(options: {
           if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
         }
         syncDirectory(options.stateRoot);
-        if (child?.pid !== undefined) {
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch (killError) {
-            if ((killError as NodeJS.ErrnoException).code !== "ESRCH") {
-              try {
-                process.kill(child.pid, "SIGKILL");
-              } catch (directError) {
-                if ((directError as NodeJS.ErrnoException).code !== "ESRCH") throw directError;
-              }
-            }
-          }
-        }
+        if (child?.pid !== undefined) killRecorded(child.pid);
         throw error;
       } finally {
         closeSync(fd);
@@ -207,12 +209,7 @@ export function createDirectWorkerSupervisor(options: {
       const [pidText, born] = recorded.split(" ");
       const pid = Number(pidText);
       if (!born || !Number.isSafeInteger(pid) || pid <= 1 || startTime(pid) !== born) return;
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
-        throw error;
-      }
+      killRecorded(pid);
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         if (startTime(pid) !== born) return;
