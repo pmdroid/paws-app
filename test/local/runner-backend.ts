@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -19,7 +20,7 @@ import {
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
 import { initializeRunnerAuthority, createRunnerKey } from "../../src/runner-identity";
-import { createRunnerWork } from "../../src/runner-work";
+import { createRunnerWork, createRunnerWorkHttp } from "../../src/runner-work";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerArtifactStore } from "../../src/runner-artifacts";
@@ -532,6 +533,8 @@ export async function probeRunnerBackend(
             .join(""),
         );
         const taskEvents: AcpEvent[] = [];
+        const publicActivities: { body: string; action?: unknown }[] = [];
+        const reporter = createAcpActivityReporter((activity) => publicActivities.push(activity));
         const beforeFetch: number = fetched;
         const response = sealedBackend.forItem(task.id)(
           input(task, {
@@ -540,6 +543,7 @@ export async function probeRunnerBackend(
             networkGit: undefined,
             onEvent(event) {
               taskEvents.push(event);
+              reporter.onEvent(event);
             },
             askTeam: {
               async ask(request) {
@@ -628,6 +632,48 @@ export async function probeRunnerBackend(
           taskEvents.filter((event) => event.type === "progress"),
           [{ type: "progress", text: "Bounded progress" }],
         );
+        let activitySequence = purpose === "artifact" ? 3 : 2;
+        for (const update of [
+          { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Set" } },
+          {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "ting up the frontend." },
+          },
+          {
+            sessionUpdate: "tool_call",
+            toolCallId: "browser",
+            title: "Run browser",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { command: "chromium", token: "private-typed-input" },
+          },
+          {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "browser",
+            status: "completed",
+            rawOutput:
+              'Screenshot saved {"access_token":"private-typed-output"} ' + "x".repeat(100_000),
+          },
+        ] as const)
+          assert.equal(
+            (await createRunnerWorkHttp(work)(
+              new Request("https://runner.example/v1/events", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  authorization: `Bearer ${taskGrant.token}`,
+                },
+                body: JSON.stringify({
+                  runId: command.runId,
+                  generation: command.generation,
+                  sequence: ++activitySequence,
+                  event: { type: "activity", update },
+                }),
+              }),
+              runnerId,
+            ))!.status,
+            200,
+          );
         const receipt = result(command);
         await seal(command, taskGrant.token, receipt.executionId, raw);
         results.submit({
@@ -638,6 +684,26 @@ export async function probeRunnerBackend(
           result: receipt,
         });
         const taskCompleted = await response;
+        reporter.flush();
+        assert.deepEqual(
+          taskEvents
+            .filter((event) => event.type === "progress" && event.messageChunk)
+            .map((event) => (event.type === "progress" ? event.text : "")),
+          ["Set", "ting up the frontend."],
+        );
+        assert.equal(
+          publicActivities.filter((activity) => activity.body === "Setting up the frontend.")
+            .length,
+          1,
+        );
+        assert(
+          publicActivities.some((activity) =>
+            JSON.stringify(activity.action ?? {}).includes("Screenshot saved"),
+          ),
+        );
+        assert(!JSON.stringify(publicActivities).includes("private-typed-input"));
+        assert(!JSON.stringify(publicActivities).includes("private-typed-output"));
+
         const messages = taskEvents.filter(
           (event) =>
             event.type === "session_update" && event.update.sessionUpdate === "agent_message_chunk",

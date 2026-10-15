@@ -183,9 +183,15 @@ test("live deliveries include tool status and output while private thoughts stay
         sessionUpdate: "agent_thought_chunk",
         content: { type: "text", text: "private reasoning" },
       },
-      { sessionUpdate: "tool_call", title: "Run browser", status: "in_progress" },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "browser",
+        title: "Run browser",
+        status: "in_progress",
+      },
       {
         sessionUpdate: "tool_call_update",
+        toolCallId: "browser",
         status: "completed",
         content: [{ type: "content", content: { type: "text", text: "Screenshot saved" } }],
       },
@@ -203,8 +209,24 @@ test("live deliveries include tool status and output while private thoughts stay
     );
     const events = journal.pending(execution.id).map((row) => row.event);
     expect(events).toEqual([
-      { type: "progress", text: "Tool: Run browser\nin_progress" },
-      { type: "progress", text: "Tool: completed\nScreenshot saved" },
+      {
+        type: "activity",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "browser",
+          title: "Run browser",
+          status: "in_progress",
+        },
+      },
+      {
+        type: "activity",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "browser",
+          status: "completed",
+          content: [{ type: "content", content: { type: "text", text: "Screenshot saved" } }],
+        },
+      },
     ]);
   } finally {
     journal.close();

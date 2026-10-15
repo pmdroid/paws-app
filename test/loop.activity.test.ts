@@ -92,6 +92,36 @@ describe("streamed activity", () => {
     ]);
   });
 
+  test("remote public fragments join at tool boundaries without entering the final answer", () => {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    for (const text of ["Set", "ting", " ", "up."])
+      reporter.onEvent({ type: "progress", text, messageChunk: true });
+    expect(posted).toEqual([]);
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "t",
+        title: "Run browser",
+        kind: "execute",
+        status: "in_progress",
+        rawInput: { command: "chromium" },
+      },
+    });
+    expect(posted[0]).toEqual({ kind: "thought", body: "Setting up." });
+    expect(posted[1]?.action).toMatchObject({
+      action: "Run browser",
+      parameter: '{"command":"chromium"}',
+    });
+    expect(reporter.resultBody()).toBe("");
+    reporter.onEvent(chunk("The screenshot is ready."));
+    reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
+    expect(reporter.resultBody()).toBe("The screenshot is ready.");
+    expect(posted.filter((activity) => activity.body === "Setting up.")).toHaveLength(1);
+  });
+
   function chunk(text: string, thought = false): AcpEvent {
     return {
       type: "session_update",
@@ -156,6 +186,26 @@ describe("streamed activity", () => {
       { kind: "thought", body: "Partially done." },
       { kind: "error", body: "Run timed out." },
     ]);
+  });
+
+  test("quoted credentials in tool output remain private", () => {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "secret-output",
+        title: "Run browser",
+        status: "completed",
+        rawInput: { token: "private-input-value" },
+        rawOutput: '{"access_token":"private-output-value"}',
+      },
+    });
+    expect(JSON.stringify(posted)).not.toContain("private-input-value");
+    expect(JSON.stringify(posted)).not.toContain("private-output-value");
+    expect(posted[0]?.action?.result).toContain("[redacted]");
   });
 
   test("an already completed tool starts as a durable result", () => {

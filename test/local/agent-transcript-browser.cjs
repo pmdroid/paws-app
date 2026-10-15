@@ -51,12 +51,27 @@ const assert = require("node:assert/strict");
       await transcript
         .getByText("Screenshot captured on the runner", { exact: true })
         .waitFor({ timeout: 15000 });
+      const [fullTranscript] = await Promise.all([
+        context.waitForEvent("page"),
+        page.getByRole("link", { name: "Open full transcript" }).click(),
+      ]);
+      await fullTranscript.waitForURL(
+        `${manifest.origin}/api/runs/transcript?run=${manifest.runId}`,
+      );
+      await fullTranscript.waitForLoadState();
+      const fullText = await fullTranscript.locator("body").innerText();
+      assert(fullText.includes("Opening the create VM dialog"));
+      assert(fullText.includes("Launch Chromium"));
+      assert(fullText.includes("Screenshot captured on the runner"));
+      assert(!fullText.includes("private reasoning"));
+      await fullTranscript.close();
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(root, `${name}.png`), fullPage: true });
       observations.push({
         name,
         liveOutput: true,
         toolVisible: true,
+        fullTranscriptLink: true,
         privateReasoningHidden: true,
         noHorizontalOverflow: true,
         passed: true,

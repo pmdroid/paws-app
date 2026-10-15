@@ -5,6 +5,7 @@ import { z } from "zod";
 import { openDatabase, immediate } from "../db";
 import {
   RunnerArtifactSchema,
+  RunnerActivitySchema,
   RunnerCommandSchema,
   RunnerEventSchema,
   type RunnerCommand,
@@ -110,6 +111,7 @@ export function openExecutionJournal(root: string) {
       return changed === 1;
     },
     ingest(id: string, bytes: Buffer) {
+      if (bytes.length > 16_777_216) throw new Error("Runner event journal exceeds size limit");
       immediate(db, () => {
         const row = db
           .query<{ consumed: number; prefix_hash: string; phase: string }, [string]>(
@@ -132,6 +134,24 @@ export function openExecutionJournal(root: string) {
             "SELECT COALESCE(MAX(sequence),0) AS sequence FROM delivery WHERE execution_id=?",
           )
           .get(id)!.sequence;
+        let message = "";
+        function append(event: z.infer<typeof RunnerEventSchema>, requestId: string | null = null) {
+          db.run(
+            "INSERT INTO delivery(execution_id,sequence,payload,request_id) VALUES (?,?,?,?)",
+            [id, ++sequence, JSON.stringify(RunnerEventSchema.parse(event)), requestId],
+          );
+        }
+        function flushMessage() {
+          if (!message) return;
+          append({
+            type: "activity",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: message },
+            },
+          });
+          message = "";
+        }
         while (offset < bytes.length) {
           const end = bytes.indexOf(10, offset);
           if (end < 0) break;
@@ -157,59 +177,48 @@ export function openExecutionJournal(root: string) {
               ["question", "artifact"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
-            const progress = z
+            const acp = z
               .object({
                 type: z.literal("acp"),
                 event: z.object({
                   type: z.literal("session_update"),
-                  update: z.object({
-                    sessionUpdate: z.literal("agent_message_chunk"),
-                    content: z.object({ type: z.literal("text"), text: z.string().max(65_536) }),
-                  }),
+                  update: z.record(z.string(), z.unknown()),
                 }),
               })
               .safeParse(raw);
-            if (progress.success && sequence < 128)
-              event = { type: "progress", text: progress.data.event.update.content.text };
-            const tool = z
-              .object({
-                type: z.literal("acp"),
-                event: z.object({
-                  type: z.literal("session_update"),
-                  update: z.object({
-                    sessionUpdate: z.enum(["tool_call", "tool_call_update"]),
-                    title: z.string().max(4096).optional(),
-                    status: z.string().max(256).optional(),
-                    content: z.array(z.unknown()).optional(),
-                  }),
-                }),
-              })
-              .safeParse(raw);
-            if (tool.success && sequence < 128) {
-              const update = tool.data.event.update;
-              const text = [update.title, update.status].filter(Boolean);
-              for (const part of update.content ?? []) {
-                const content = z
-                  .object({
-                    type: z.literal("content"),
-                    content: z.object({ type: z.literal("text"), text: z.string().max(65_536) }),
-                  })
-                  .safeParse(part);
-                if (content.success) text.push(content.data.content.text);
+            if (acp.success) {
+              const input = acp.data.event.update;
+              if (Array.isArray(input.content))
+                input.content = input.content.filter(
+                  (part) =>
+                    z
+                      .object({
+                        type: z.literal("content"),
+                        content: z.object({ type: z.literal("text") }),
+                      })
+                      .safeParse(part).success,
+                );
+              const update = RunnerActivitySchema.safeParse(input);
+              if (update.success) {
+                if (update.data.sessionUpdate === "agent_message_chunk") {
+                  let text = update.data.content.text;
+                  while (text.length) {
+                    const count = Math.min(65_536 - message.length, text.length);
+                    message += text.slice(0, count);
+                    text = text.slice(count);
+                    if (message.length === 65_536) flushMessage();
+                  }
+                } else event = { type: "activity", update: update.data };
               }
-              if (text.length)
-                event = { type: "progress", text: `Tool: ${text.join("\n")}`.slice(0, 65_536) };
             }
           }
           if (event) {
-            if (sequence >= 1024) throw new Error("Runner event count exceeds limit");
-            db.run(
-              "INSERT INTO delivery(execution_id,sequence,payload,request_id) VALUES (?,?,?,?)",
-              [id, ++sequence, JSON.stringify(RunnerEventSchema.parse(event)), requestId],
-            );
+            flushMessage();
+            append(event, requestId);
           }
           offset = end + 1;
         }
+        flushMessage();
         db.run("UPDATE execution SET consumed=?,prefix_hash=? WHERE id=?", [
           offset,
           createHash("sha256").update(bytes.subarray(0, offset)).digest("hex"),
