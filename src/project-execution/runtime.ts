@@ -435,13 +435,7 @@ export function createApprovedProjects(input: {
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
             .get(event.actorId ?? "");
           const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
-          if (
-            !member?.active ||
-            member.role === "observer" ||
-            (member.userId !== approval.leadUserId &&
-              !approval.preview.selection.steeringRoles.includes(member.role))
-          )
-            return deny();
+          if (!member?.active || member.role === "observer") return deny();
         }
         if (event.signal === "stop") return true;
         await refreshAuthority(approval, AbortSignal.timeout(30_000));
@@ -484,9 +478,7 @@ export function createApprovedProjects(input: {
         !saved ||
         saved.workspaceId !== actor.workspaceId ||
         !member?.active ||
-        member.role === "observer" ||
-        (actor.userId !== saved.leadUserId &&
-          !saved.preview.selection.steeringRoles.includes(member.role))
+        member.role === "observer"
       ) {
         auditWorkspaceAccess(db, {
           ...actor,
@@ -521,8 +513,6 @@ export function createApprovedProjects(input: {
           return (
             current.stoppedAt === null &&
             currentMember.role !== "observer" &&
-            (actor.userId === current.leadUserId ||
-              current.preview.selection.steeringRoles.includes(currentMember.role)) &&
             (action === "pause" ? current.pausedAt !== null : current.pausedAt === null)
           );
         } catch {
