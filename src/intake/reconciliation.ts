@@ -357,7 +357,11 @@ export function createEpicReconciler(input: {
          AND (? IS NULL OR s.organization_id=?)
          AND (? IS NULL OR e.linear_issue_id=?
           OR EXISTS(SELECT 1 FROM work_item i WHERE i.epic_id=e.id AND i.linear_issue_id=?5)
-          OR EXISTS(SELECT 1 FROM external_dep d WHERE d.epic_id=e.id AND d.blocker_linear_issue_id=?5)
+          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND e.id=(
+            SELECT i.epic_id FROM work_item i
+            WHERE i.linear_issue_id=b.blocked_linear_issue_id AND i.state<>'cancelled'
+            AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
+            ORDER BY i.created_at DESC, i.id DESC LIMIT 1))
           OR e.linear_issue_id=?6)`,
       )
       .all(
