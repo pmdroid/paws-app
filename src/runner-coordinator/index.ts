@@ -64,6 +64,7 @@ export async function openRunnerCoordinator(options: {
   onError(error: unknown): void;
   repositoryAccess?: RunnerRepositoryAccessOptions;
   transcriptObjects?: RunnerTranscriptObjects;
+  discoverModels?: boolean;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -153,9 +154,9 @@ export async function openRunnerCoordinator(options: {
       options.onError(error);
     }
   };
-  const modelTimer = setInterval(refreshModels, 15_000);
-  modelTimer.unref();
-  refreshModels();
+  const modelTimer = options.discoverModels ? setInterval(refreshModels, 15_000) : undefined;
+  modelTimer?.unref();
+  if (options.discoverModels) refreshModels();
   return {
     port: listener.port,
     signingKeys: signing.signingKeys,
