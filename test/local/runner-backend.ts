@@ -634,10 +634,13 @@ export async function probeRunnerBackend(
         );
         let activitySequence = purpose === "artifact" ? 3 : 2;
         for (const update of [
-          { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Set" } },
           {
             sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "ting up the frontend." },
+            content: { type: "text", text: 'Setting up the frontend. token="split' },
+          },
+          {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: '-credential".' },
           },
           {
             sessionUpdate: "tool_call",
@@ -646,13 +649,19 @@ export async function probeRunnerBackend(
             kind: "execute",
             status: "in_progress",
             rawInput: { command: "chromium", token: "private-typed-input" },
+            _meta: { terminal_output_delta: { data: 'token="split' } },
           },
           {
             sessionUpdate: "tool_call_update",
             toolCallId: "browser",
             status: "completed",
-            rawOutput:
-              'Screenshot saved {"access_token":"private-typed-output"} ' + "x".repeat(100_000),
+            _meta: {
+              terminal_output_delta: {
+                data:
+                  '-credential". Screenshot saved {"access_token":"private-typed-output"} ' +
+                  "x".repeat(100_000),
+              },
+            },
           },
         ] as const)
           assert.equal(
@@ -689,11 +698,12 @@ export async function probeRunnerBackend(
           taskEvents
             .filter((event) => event.type === "progress" && event.messageChunk)
             .map((event) => (event.type === "progress" ? event.text : "")),
-          ["Set", "ting up the frontend."],
+          ['Setting up the frontend. token="split', '-credential".'],
         );
         assert.equal(
-          publicActivities.filter((activity) => activity.body === "Setting up the frontend.")
-            .length,
+          publicActivities.filter(
+            (activity) => activity.body === 'Setting up the frontend. token="[redacted]".',
+          ).length,
           1,
         );
         assert(
@@ -703,6 +713,7 @@ export async function probeRunnerBackend(
         );
         assert(!JSON.stringify(publicActivities).includes("private-typed-input"));
         assert(!JSON.stringify(publicActivities).includes("private-typed-output"));
+        assert(!JSON.stringify(publicActivities).includes("-credential"));
 
         const messages = taskEvents.filter(
           (event) =>

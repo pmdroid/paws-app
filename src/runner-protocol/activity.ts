@@ -27,14 +27,17 @@ const tool = {
     .optional(),
   _meta: z
     .object({
-      terminal_output: z.object({ data: publicString(262_144) }).optional(),
-      terminal_output_delta: z.object({ data: publicString(262_144) }).optional(),
+      terminal_output: z.object({ data: z.string().max(262_144) }).optional(),
+      terminal_output_delta: z.object({ data: z.string().max(262_144) }).optional(),
     })
     .optional(),
 };
 
 const activity = z.discriminatedUnion("sessionUpdate", [
-  z.object({ sessionUpdate: z.literal("agent_message_chunk"), content: textContent }),
+  z.object({
+    sessionUpdate: z.literal("agent_message_chunk"),
+    content: z.object({ type: z.literal("text"), text: z.string().max(262_144) }),
+  }),
   z.object({ ...tool, sessionUpdate: z.literal("tool_call"), title: publicString(4096) }),
   z.object({ ...tool, sessionUpdate: z.literal("tool_call_update") }),
   z.object({
@@ -59,8 +62,7 @@ function publicString(limit: number) {
 }
 
 export const RunnerActivitySchema = activity.transform((update) => {
-  if (update.sessionUpdate === "agent_message_chunk")
-    return { ...update, content: { ...update.content, text: publicText(update.content.text) } };
+  if (update.sessionUpdate === "agent_message_chunk") return update;
   if (update.sessionUpdate === "plan")
     return {
       ...update,
@@ -79,9 +81,6 @@ export const RunnerActivitySchema = activity.transform((update) => {
             content: { ...part.content, text: publicText(part.content.text) },
           })),
         }),
-    ...(update["_meta"] === undefined
-      ? {}
-      : { _meta: publicValue(update["_meta"]) as (typeof update)["_meta"] }),
   };
 });
 
