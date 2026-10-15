@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentSettings } from "../agent-settings";
+import type { AgentModelCatalog, AgentSettings } from "../agent-settings";
 import { renderAgentSettings, settingsProblems, settingsRequest } from "./agent-settings";
 import { render } from "./render";
 import { parseRoute, routeHref } from "./route";
@@ -15,7 +15,28 @@ function settings(): AgentSettings {
 }
 
 function view(data: AgentSettings | null = settings()) {
-  return { data, busy: null, error: null, saved: false };
+  const catalogs: AgentModelCatalog[] = [
+    {
+      agent: "claude",
+      updatedAt: 1,
+      efforts: [{ id: "high", name: "High" }],
+      models: [{ id: "sonnet", name: "Sonnet", efforts: [{ id: "high", name: "High" }] }],
+    },
+    {
+      agent: "codex",
+      updatedAt: 1,
+      efforts: [{ id: "medium", name: "Medium" }],
+      models: [
+        { id: "gpt-5.4", name: "GPT 5.4", efforts: [{ id: "high", name: "High" }] },
+        {
+          id: "another-model",
+          name: "Another model",
+          efforts: [{ id: "xhigh", name: "Extra high" }],
+        },
+      ],
+    },
+  ];
+  return { data, busy: null, error: null, saved: false, catalogs };
 }
 
 describe("agent settings", () => {
@@ -51,7 +72,8 @@ describe("agent settings", () => {
     const html = renderAgentSettings(view());
     expect(html).toContain('name="0-reviewer-inherit" checked');
     expect(html).toContain('name="0-reviewer-agent" disabled');
-    expect(html).toContain('placeholder="Agent default"');
+    expect(html).toContain('<option value="" selected>Agent default</option>');
+    expect(html).toContain('<select id="defaults-implementer-model"');
     expect(html).toContain("Agents run on an installed runner");
     expect(html).toContain('href="#/runners"');
     expect(html).not.toContain("Test connection");
@@ -65,11 +87,27 @@ describe("agent settings", () => {
     const state = view();
     state.data!.defaults.reviewer.effort = "high";
     const saved = renderAgentSettings(state);
-    expect(saved).toContain('name="defaults-reviewer-effort" value="high"');
-    expect(saved).toContain(
-      'name="0-reviewer-effort" value="high" placeholder="Agent default" maxlength="100" pattern="[A-Za-z0-9_-]*" autocapitalize="none" spellcheck="false" disabled',
-    );
+    expect(saved).toContain('<option value="high" selected>High</option>');
+    expect(saved).toContain('id="0-reviewer-effort" name="0-reviewer-effort" disabled');
     expect(saved).not.toContain("Test connection");
+  });
+
+  test("effort choices follow the cached selected model", () => {
+    const state = view();
+    state.data!.defaults.reviewer.model = "another-model";
+    const html = renderAgentSettings(state);
+    const effort = html.match(/<select id="defaults-reviewer-effort"[\s\S]*?<\/select>/)?.[0];
+    expect(effort).toContain('<option value="xhigh" >Extra high</option>');
+    expect(effort).not.toContain('<option value="high"');
+  });
+
+  test("missing catalogs retain saved choices and show a sign-in action", () => {
+    const state = view();
+    state.catalogs = [];
+    const html = renderAgentSettings(state);
+    expect(html).toContain('id="defaults-reviewer-model" name="defaults-reviewer-model" disabled');
+    expect(html).toContain('<option value="gpt-5.4" selected>gpt-5.4</option>');
+    expect(html).toContain("Sign in on a runner to load model choices.");
   });
 
   test("persisted values escape untrusted text", () => {

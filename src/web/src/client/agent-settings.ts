@@ -1,5 +1,5 @@
 import { renderMarkup } from "./theme";
-import type { AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
+import type { AgentModelCatalog, AgentProfile, AgentRole, AgentSettings } from "../agent-settings";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
@@ -56,11 +56,14 @@ type SettingsView = {
   error: string | null;
   saved: boolean;
   denied?: boolean;
+  catalogs?: AgentModelCatalog[];
+  catalogError?: string | null;
+  repoDraft?: string;
 };
 
 export function renderAgentSettings(view: SettingsView): string {
   if (view.denied) return '<p class="sub">Only workspace owners can change agent profiles.</p>';
-  const intro = `<p class="sub">Agents run on an installed runner. Sign in on that host, then check the connection from <a href="#/runners">Runners</a>.</p>`;
+  const intro = `<p class="sub">Agents run on an installed runner. Model and effort choices refresh automatically from your signed-in <a href="#/runners">Runners</a>.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
   const problems = settingsProblems(view.data);
@@ -69,12 +72,12 @@ export function renderAgentSettings(view: SettingsView): string {
     : view.saved
       ? '<p class="settings-message" role="status">Agent settings saved. New work will use these profiles.</p>'
       : "";
-  return `${intro}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
+  return `${intro}${view.catalogError ? `<p class="settings-message err" role="status">${esc(view.catalogError)} <button class="btn" type="button" data-settings="models">Reload choices</button></p>` : ""}<form id="agent-settings-form"><div id="settings-feedback">${feedback}</div>
     <fieldset class="settings-fields" ${view.busy ? "disabled" : ""}>
-      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by projects that inherit these roles. The reviewer must use a different agent or model.</p></div><div>${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], null)).join("")}</div></section>
-      <section class="settings-section"><div class="settings-label"><h2>Project overrides</h2><p class="sub">Set a profile for an individual repository, or inherit its global default.</p></div><div>
-      ${view.data.projects.length ? view.data.projects.map((project, index) => `<section class="settings-project"><h3>${esc(project.repo)}</h3>${ROLES.map((role) => profileFields(String(index), role, project[role] ?? view.data!.defaults[role], project[role] === undefined)).join("")}</section>`).join("") : '<p class="sub">No project overrides.</p>'}
-      <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Global defaults</h2><p class="sub">Used by projects that inherit these roles. The reviewer must use a different agent or model.</p></div><div>${ROLES.map((role) => profileFields("defaults", role, view.data!.defaults[role], null, view.catalogs)).join("")}</div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Project overrides</h2><p class="sub">Set a profile for an individual repository, or inherit its global default.</p></div><div class="col">
+      ${view.data.projects.length ? view.data.projects.map((project, index) => `<section class="settings-project"><h3>${esc(project.repo)}</h3>${ROLES.map((role) => profileFields(String(index), role, project[role] ?? view.data!.defaults[role], project[role] === undefined, view.catalogs)).join("")}</section>`).join("") : '<p class="sub">No project overrides.</p>'}
+      <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
@@ -85,10 +88,28 @@ function profileFields(
   role: AgentRole,
   profile: AgentProfile,
   inherited: boolean | null,
+  catalogs: AgentModelCatalog[] = [],
 ): string {
   const key = `${scope}-${role}`;
   const disabled = inherited ? "disabled" : "";
   const label = role === "implementer" ? "Implementer" : "Reviewer";
+  const catalog = catalogs.find((value) => value.agent === profile.agent);
+  const efforts =
+    profile.model === null
+      ? catalog?.efforts
+      : catalog?.models.find((model) => model.id === profile.model)?.efforts;
+  const choices = (
+    field: "model" | "effort",
+    value: string | null | undefined,
+    options: { id: string; name: string }[] | null | undefined,
+  ) => {
+    const available = (options ?? []).filter(
+      (option) => field !== "effort" || !["default", "auto"].includes(option.id),
+    );
+    if (value && !available.some((option) => option.id === value))
+      available.unshift({ id: value, name: value });
+    return `<select id="${key}-${field}" name="${key}-${field}" ${disabled || (options == null ? "disabled" : "")}><option value="" ${value ? "" : "selected"}>Agent default</option>${available.map((option) => `<option value="${esc(option.id)}" ${option.id === value ? "selected" : ""}>${esc(option.name)}</option>`).join("")}</select>`;
+  };
   return `<div class="settings-profile"><div class="settings-role"><h3>${label}</h3>${inherited !== null ? `<label class="settings-inherit"><input type="checkbox" name="${key}-inherit" ${inherited ? "checked" : ""}>Use global default</label>` : ""}</div>
     <div class="settings-controls"><div class="settings-field"><label for="${key}-agent">Agent</label><select id="${key}-agent" name="${key}-agent" ${disabled}>${Object.entries(
       AGENTS,
@@ -98,8 +119,8 @@ function profileFields(
           `<option value="${id}" ${id === profile.agent ? "selected" : ""}>${name}</option>`,
       )
       .join("")}</select></div>
-    <div class="settings-field"><label for="${key}-model">Model</label><input id="${key}-model" name="${key}-model" value="${esc(profile.model ?? "")}" placeholder="Agent default" autocapitalize="none" spellcheck="false" ${disabled}></div>
-    <div class="settings-field"><label for="${key}-effort">Effort</label><input id="${key}-effort" name="${key}-effort" value="${esc(profile.effort ?? "")}" placeholder="Agent default" maxlength="100" pattern="[A-Za-z0-9_-]*" autocapitalize="none" spellcheck="false" ${disabled}></div></div></div>`;
+    <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
+    <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
 }
 
 export function createAgentSettings(invalidate: () => void): {
@@ -108,6 +129,7 @@ export function createAgentSettings(invalidate: () => void): {
   let root: HTMLElement | null = null;
   let engine: string | null = null;
   let generation = 0;
+  let catalogTimer: ReturnType<typeof setTimeout> | undefined;
   let view: SettingsView = {
     data: null,
     busy: null,
@@ -137,11 +159,11 @@ export function createAgentSettings(invalidate: () => void): {
     const form = root.querySelector("form");
     if (!form) return;
     const read = (key: string, previous: AgentProfile): AgentProfile => {
-      const effort = form.querySelector<HTMLInputElement>(`[name="${key}-effort"]`)?.value.trim();
+      const effort = form.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`)?.value.trim();
       return {
         agent: (form.querySelector<HTMLSelectElement>(`[name="${key}-agent"]`)?.value ??
           previous.agent) as AgentProfile["agent"],
-        model: form.querySelector<HTMLInputElement>(`[name="${key}-model"]`)?.value.trim() || null,
+        model: form.querySelector<HTMLSelectElement>(`[name="${key}-model"]`)?.value.trim() || null,
         ...(effort ? { effort } : {}),
       };
     };
@@ -155,8 +177,45 @@ export function createAgentSettings(invalidate: () => void): {
         else project[role] = read(key, project[role] ?? view.data!.defaults[role]);
       }
     });
+    view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;
+  };
+  const loadCatalog = async () => {
+    if (!engine || !root?.isConnected) return;
+    const started = generation;
+    const before = JSON.stringify({ catalogs: view.catalogs, error: view.catalogError });
+    try {
+      const response = await fetch(new URL("/api/runners/models", engine), {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        if ([401, 403].includes(response.status)) view.catalogs = [];
+        throw new Error("Model choices could not be loaded.");
+      }
+      const data = (await response.json()) as { catalogs: AgentModelCatalog[] };
+      if (started !== generation) return;
+      view.catalogs = data.catalogs;
+      view.catalogError = null;
+    } catch (error) {
+      if (started !== generation) return;
+      view.catalogError =
+        error instanceof Error ? error.message : "Model choices could not be loaded.";
+    }
+    if (
+      !view.busy &&
+      before !== JSON.stringify({ catalogs: view.catalogs, error: view.catalogError })
+    ) {
+      const saved = view.saved,
+        error = view.error;
+      draft();
+      view.saved = saved;
+      view.error = error;
+      paint();
+    }
+    clearTimeout(catalogTimer);
+    catalogTimer = setTimeout(() => void loadCatalog(), 10_000);
   };
   const request = async (busy: string, operation: () => Promise<void>) => {
     const started = generation;
@@ -200,6 +259,10 @@ export function createAgentSettings(invalidate: () => void): {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-settings]");
     if (!button || view.busy || !engine) return;
     const action = button.dataset.settings;
+    if (action === "models") {
+      void loadCatalog();
+      return;
+    }
     if (action === "reload") {
       void load();
       return;
@@ -212,7 +275,10 @@ export function createAgentSettings(invalidate: () => void): {
         view.error = "Enter a repository as owner/repository.";
       else if (view.data.projects.some((project) => project.repo === repo))
         view.error = "This project is already listed.";
-      else view.data.projects.push({ repo });
+      else {
+        view.data.projects.push({ repo });
+        view.repoDraft = "";
+      }
       paint();
     }
   };
@@ -257,8 +323,11 @@ export function createAgentSettings(invalidate: () => void): {
         scope === "defaults"
           ? view.data?.defaults[role]
           : view.data?.projects[Number(scope)]?.[role];
-      if (profile) delete profile.effort;
-      const effort = root?.querySelector<HTMLInputElement>(`[name="${key}-effort"]`);
+      if (profile) {
+        delete profile.effort;
+        if (name.endsWith("-agent")) profile.model = null;
+      }
+      const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) effort.value = "";
     }
     if (target instanceof HTMLInputElement && target.type !== "checkbox") {
@@ -282,6 +351,7 @@ export function createAgentSettings(invalidate: () => void): {
   return {
     mount(next, nextEngine) {
       if (root === next && engine === nextEngine) return;
+      clearTimeout(catalogTimer);
       root?.removeEventListener("click", click);
       root?.removeEventListener("submit", submit);
       root?.removeEventListener("change", change);
@@ -306,8 +376,11 @@ export function createAgentSettings(invalidate: () => void): {
           button.dataset.action = "source";
           button.textContent = "Connect engine";
         }
-      } else if (!view.data && !view.busy && !view.denied) void load();
-      else paint();
+      } else {
+        if (!view.data && !view.busy && !view.denied) void load();
+        else paint();
+        void loadCatalog();
+      }
     },
   };
 }

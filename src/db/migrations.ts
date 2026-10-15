@@ -1449,4 +1449,29 @@ CREATE TABLE runner_capacity (
 ) STRICT;
 `,
   },
+  {
+    id: "056_agent_model_catalog",
+    sql: `
+CREATE TABLE agent_model_catalog (
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
+ model TEXT NOT NULL,
+ result_json TEXT NOT NULL CHECK(json_valid(result_json)),
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(runner_id,user_id,agent,model)
+) STRICT;
+CREATE TABLE agent_model_probe (
+ command_id TEXT PRIMARY KEY REFERENCES runner_command(id),
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
+ model TEXT NOT NULL,
+ requested_at INTEGER NOT NULL,
+ finished_at INTEGER
+) STRICT;
+CREATE INDEX agent_model_probe_refresh ON agent_model_probe(runner_id,user_id,agent,model,requested_at);
+CREATE UNIQUE INDEX agent_model_probe_pending ON agent_model_probe(runner_id) WHERE finished_at IS NULL;
+`,
+  },
 ];
