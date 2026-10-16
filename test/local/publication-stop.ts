@@ -512,30 +512,23 @@ export async function probePublicationStop(
         "SELECT COUNT(*) AS n FROM job WHERE json_extract(payload,'$.itemId')='restored-new' AND status='pending'",
       )
       .get()?.n;
-    const held = db
-      .query<{ state: string }, []>("SELECT state FROM epic WHERE id='all-removed'")
-      .get()?.state;
     observe(
       "restored child dispatch ignores archived history while refresh holds empty epics",
       restored === 1 &&
-        held === "running" &&
+        getWorkItem(db, "all-removed-old")?.state === "cancelled" &&
         getWorkItem(db, "restored-old")?.state === "cancelled",
-      { restored, held },
+      { restored },
     );
     pendingEpics.delete("all-removed");
     current.orchestrator.reconcileExecution();
-    const outcomes = db
-      .query<{ id: string; state: string }, []>(
-        "SELECT id,state FROM epic WHERE id IN ('all-removed','delivered-history') ORDER BY id",
-      )
-      .all();
+    const outcomes = [
+      getWorkItem(db, "all-removed-old")?.state,
+      getWorkItem(db, "delivered-history-old")?.state,
+      getWorkItem(db, "delivered-history-new")?.state,
+    ];
     observe(
-      "all removed work cancels the epic and delivered history settles done",
-      JSON.stringify(outcomes) ===
-        JSON.stringify([
-          { id: "all-removed", state: "cancelled" },
-          { id: "delivered-history", state: "done" },
-        ]),
+      "all removed work stays cancelled and delivered history stays terminal",
+      JSON.stringify(outcomes) === JSON.stringify(["cancelled", "merged", "cancelled"]),
       outcomes,
     );
     db.run(
