@@ -1,4 +1,4 @@
-import { getRun, getWorkItem, linearSessionForEpic } from "../../../db";
+import { getRun, getWorkItem } from "../../../db";
 import { fullAgentTranscript } from "../live/transcript";
 import { dashboardOrigin } from "./request-origin";
 import type { StatusServerOptions } from "./handler";
@@ -24,7 +24,7 @@ export function handleAgentTranscriptRequest(
     return new Response("Not found", { status: 404, headers });
   const run = getRun(options.db, runId);
   const item = run ? getWorkItem(options.db, run.itemId) : null;
-  const session = item ? (item.sessionKey ?? linearSessionForEpic(options.db, item.epicId)) : null;
+  const session = item?.sessionKey ?? null;
   if (
     !run ||
     !item ||

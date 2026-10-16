@@ -59,7 +59,7 @@ function permitted(
     JOIN workspace w ON w.linear_organization_id=s.organization_id
     JOIN workspace_member m ON m.workspace_id=w.id AND m.user_id=?
     JOIN workspace_user_team t ON t.workspace_id=w.id AND t.user_id=m.user_id AND t.team_id=s.team_id
-    WHERE w.id=? AND s.current_epic_id=? AND s.stopped_at IS NULL
+    WHERE w.id=? AND EXISTS(SELECT 1 FROM work_item i WHERE i.epic_id=? AND i.session_key=s.session_id) AND s.stopped_at IS NULL
     AND m.active=1 AND m.role IN ('owner','admin','member')
     AND (? IS NULL OR EXISTS(SELECT 1 FROM workspace_repository r
       WHERE r.workspace_id=w.id AND r.team_id=s.team_id AND lower(r.repository)=lower(?)))`)
@@ -141,7 +141,7 @@ export function managedBlockerSatisfied(
     >(
       `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha
      FROM work_item i JOIN epic e ON e.id=i.epic_id
-     JOIN linear_session_task st ON st.epic_id=e.id JOIN linear_session s ON s.session_id=st.session_id
+     JOIN linear_session s ON s.session_id=i.session_key
      JOIN workspace w ON w.linear_organization_id=s.organization_id
      LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
      WHERE w.id=? AND i.linear_issue_id=? AND i.epic_id<>?

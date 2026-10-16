@@ -45,12 +45,23 @@ function authority(db: Database, target: Target) {
     .query<Identity, [string, string]>(
       `SELECT e.linear_issue_id AS issueId,e.task_key AS taskKey,s.session_id AS sessionId,
        s.organization_id AS organizationId,s.team_id AS teamId,s.app_user_id AS appUserId,
-       s.oauth_client_id AS clientId,s.creator_id AS creatorId,t.owner_actor_id AS actorId,
-       s.generation FROM epic e JOIN linear_session_task t ON t.epic_id=e.id
-       JOIN linear_session s ON s.session_id=t.session_id
+       s.oauth_client_id AS clientId,s.creator_id AS creatorId,
+       COALESCE((SELECT u.linear_user_id FROM workspace_user u
+         JOIN work_item oi ON oi.owner_user_id=u.id
+         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id
+         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
+       (SELECT oi.delegated_by FROM work_item oi
+         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
+         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS actorId,
+       s.generation FROM epic e
+       JOIN linear_session s ON s.session_id=(
+         SELECT i.session_key FROM work_item i
+         JOIN linear_session ls ON ls.session_id=i.session_key AND ls.stopped_at IS NULL
+         WHERE i.epic_id=e.id
+         ORDER BY i.created_at, i.position, i.id LIMIT 1)
        JOIN workspace w ON w.linear_organization_id=s.organization_id
        WHERE e.id=? AND w.id=? AND e.state IN ('running','stalled')
-       AND s.current_epic_id=e.id AND s.stopped_at IS NULL
+       AND s.stopped_at IS NULL
        AND s.team_id IS NOT NULL AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
     )
     .get(target.epicId, target.workspaceId);
@@ -351,7 +362,8 @@ export function createEpicReconciler(input: {
         [string | null, string | null, string | null, string | null, string | null, string | null]
       >(
         `SELECT DISTINCT e.id AS epicId,w.id AS workspaceId FROM epic e
-         JOIN linear_session s ON s.current_epic_id=e.id
+         JOIN work_item linked ON linked.epic_id=e.id AND linked.session_key IS NOT NULL
+         JOIN linear_session s ON s.session_id=linked.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
          AND (? IS NULL OR s.organization_id=?)

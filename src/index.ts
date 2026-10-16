@@ -45,7 +45,7 @@ import {
   getLinearSessionInstallation,
   isLinearAppRevoked,
   getLinearSessionAccess,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   getWorkItemRepositoryAnswer,
@@ -53,7 +53,6 @@ import {
   taskRequiresRepository,
   listWorkItemsByStates,
   listWorkItems,
-  linearSessionForEpic,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -289,7 +288,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
-      if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
+      if (item.sessionKey !== sessionId) continue;
       if (["cancelled", "completed", "merged"].includes(item.state)) continue;
       submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
     }
@@ -660,8 +659,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               canDispatchEpic: managedEpicReady,
               canAdvanceItem: (itemId: string) => {
                 const item = getWorkItem(db, itemId);
-                const sessionId =
-                  item?.sessionKey ?? (item ? linearSessionForEpic(db, item.epicId) : null);
+                const sessionId = item?.sessionKey ?? null;
                 const session = sessionId ? getLinearSession(db, sessionId) : null;
                 const currentWorkspace = session?.organizationId
                   ? db
@@ -743,7 +741,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
                     ? "read"
                     : "write",
-                actorForItem: (item) => getTaskLinearActor(db, item.id),
+                actorForItem: (item) => delegatedLinearUserId(db, item.id),
                 attributionReady: async (item) => {
                   try {
                     if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item);
@@ -766,7 +764,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const currentWorkspace = session?.organizationId
                     ? workspaceForOrganization(db, session.organizationId)
                     : null;
-                  const actorId = getTaskLinearActor(db, item.id);
+                  const actorId = delegatedLinearUserId(db, item.id);
                   if (!currentWorkspace || !actorId || !session?.teamId || !linear?.memberships)
                     return false;
                   const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
@@ -814,7 +812,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const currentWorkspace = session?.organizationId
                     ? workspaceForOrganization(db, session.organizationId)
                     : null;
-                  const actorId = getTaskLinearActor(db, item.id);
+                  const actorId = delegatedLinearUserId(db, item.id);
                   if (!currentWorkspace || !actorId || !session?.teamId) return false;
                   const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
                   return (
@@ -826,7 +824,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 },
                 integrationIdentity: (item) =>
                   JSON.stringify([
-                    getTaskLinearActor(db, item.id),
+                    delegatedLinearUserId(db, item.id),
                     getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
                     db
                       .query(
@@ -955,8 +953,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             .query<
               { epicId: string; workspaceId: string },
               []
-            >(`SELECT e.id AS epicId,w.id AS workspaceId FROM epic e
-            JOIN linear_session_task t ON t.epic_id=e.id JOIN linear_session s ON s.session_id=t.session_id AND s.current_epic_id=e.id
+            >(`SELECT DISTINCT e.id AS epicId,w.id AS workspaceId FROM epic e
+            JOIN work_item i ON i.epic_id=e.id AND i.session_key IS NOT NULL
+            JOIN linear_session s ON s.session_id=i.session_key
             JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
             AND NOT EXISTS(SELECT 1 FROM epic_dependency_snapshot p WHERE p.epic_id=e.id)`)
             .all();

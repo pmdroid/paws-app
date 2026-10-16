@@ -4,7 +4,7 @@ export function linearSessionsForIssueContext(db: Database, issueId: string): st
   return db
     .query<{ session_id: string }, [string, string]>(
       `SELECT session_id FROM linear_session WHERE issue_id = ?
-    UNION SELECT t.session_id FROM linear_session_task t JOIN work_item w ON w.epic_id = t.epic_id WHERE w.linear_issue_id = ?`,
+    UNION SELECT session_key AS session_id FROM work_item WHERE linear_issue_id = ? AND session_key IS NOT NULL`,
     )
     .all(issueId, issueId)
     .map((row) => row.session_id);
