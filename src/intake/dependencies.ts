@@ -269,15 +269,6 @@ export async function syncEpicDependencies(
         (snapshot(db, target)?.generation ?? 0) !== expectedGeneration
       )
         throw new Error("Dependency snapshot changed");
-      db.run("DELETE FROM work_item_block WHERE epic_id=?", [epicId]);
-      db.run("DELETE FROM external_dep WHERE epic_id=?", [epicId]);
-      for (const edge of edges.values()) {
-        const table = ids.has(edge.blockerLinearIssueId) ? "work_item_block" : "external_dep";
-        db.run(
-          `INSERT INTO ${table}(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)`,
-          [epicId, edge.blockerLinearIssueId, edge.blockedLinearIssueId],
-        );
-      }
       saveTaskBlocks(db, [...ids], [...edges.values()]);
       db.run(
         `INSERT INTO epic_dependency_snapshot(epic_id,workspace_id,generation,scope,linear_states,external_evidence)
