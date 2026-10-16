@@ -404,7 +404,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -451,7 +451,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     expect(kinds.has("thought")).toBe(true);
     expect(kinds.has("action")).toBe(true);
     expect(kinds.has("response")).toBe(false);
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
     expect(github.opened.map((pull) => pull.head)).toEqual([
@@ -654,7 +654,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
     await orchestrator.onLinearEvent(created);
     const deadline = Date.now() + 90_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -681,7 +681,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
           comment.parentId === question?.id && comment.userId === "human" && comment.body === "yes",
       ),
     ).toBe(true);
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(
       children.map((child) => stateOf(db, child.identifier)),
       debug(layout, db),
@@ -1295,7 +1295,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -1344,7 +1344,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
       expect(line).not.toContain("always-approve");
       expect(line).not.toContain("yolo");
     }
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
@@ -2170,6 +2170,11 @@ function stateOf(db: Database, identifier: string): string | null {
 
 function epicState(db: Database): string | null {
   return db.query<{ state: string }, []>("SELECT state FROM epic LIMIT 1").get()?.state ?? null;
+}
+
+function delegationMerged(db: Database): boolean {
+  const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+  return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
 function debug(layout: { pawsRoot: string }, db: Database): string {
