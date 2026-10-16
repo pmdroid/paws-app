@@ -15,29 +15,21 @@ type Item = {
   cancelRequested: number;
   liveRun: number;
   liveJob: number;
-  brief: string | null;
   workspaceId: string | null;
   sessionId: string | null;
-  projectId: string | null;
-  projectKnown: number | null;
   priority: number | null;
-  savedPaths: string | null;
   owner: string | null;
   repo: string | null;
 };
 type Admission = {
   itemId: string;
-  projectKey: string;
   repositoryKey: string;
   sessionId: string | null;
-  paths: string[];
-  hot: number;
 };
 export type SchedulerOptions = {
   now?: number;
   legacyReadyItemIds?: readonly string[];
   defaultRepository?: RepositoryBinding | null;
-  concurrency?: number;
   canDispatchEpic?: (epicId: string) => boolean;
   handoffForItem?: (itemId: string) => string | undefined;
 };
@@ -108,31 +100,16 @@ export function hintedPaths(brief: string | null): string[] {
   }
 }
 
-function isHot(paths: readonly string[]): boolean {
-  return paths.some(
-    (path) =>
-      path === "*" ||
-      /(^|\/)(package\.json|[^/]*lock[^/]*|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/.test(
-        path,
-      ) ||
-      /(^|\/)(migrations?|routes?)(\/|\.|$)/.test(path),
-  );
-}
-
-function conflicts(left: Admission, right: Admission): boolean {
-  return Boolean(left.sessionId && left.sessionId === right.sessionId);
-}
-
 function allItems(db: Database, now: number): Item[] {
   return db
     .query<Item, [number]>(`SELECT i.id,i.epic_id AS epicId,i.linear_issue_id AS issueId,
-    i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,i.brief,
+    i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
     EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
       AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
         OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
-    w.id AS workspaceId,t.session_id AS sessionId,c.project_id AS projectId,c.project_known AS projectKnown,c.priority,c.paths AS savedPaths,r.owner,r.repo
+    w.id AS workspaceId,t.session_id AS sessionId,c.priority,r.owner,r.repo
     FROM work_item i JOIN epic e ON e.id=i.epic_id
     LEFT JOIN linear_session_task t ON t.epic_id=e.id
     LEFT JOIN linear_session s ON s.session_id=t.session_id
@@ -163,35 +140,30 @@ function footprint(item: Item, options: SchedulerOptions): Admission {
       : options.defaultRepository
         ? `${options.defaultRepository.owner}/${options.defaultRepository.repo}`
         : "unbound";
-  const repositoryKey = repository.toLowerCase();
-  const paths =
-    item.savedPaths === null
-      ? hintedPaths(item.brief)
-      : schedulerPaths(JSON.parse(item.savedPaths));
   return {
     itemId: item.id,
-    projectKey: JSON.stringify([
-      item.workspaceId,
-      item.projectKnown ? (item.projectId ?? `repository:${repositoryKey}`) : "unknown-project",
-    ]),
-    repositoryKey,
+    repositoryKey: repository.toLowerCase(),
     sessionId: item.sessionId,
-    paths,
-    hot: Number(isHot(paths)),
   };
 }
 
 function depths(db: Database, items: Item[]): Map<string, number> {
-  const ids = new Map(items.map((item) => [JSON.stringify([item.epicId, item.issueId]), item.id]));
+  const ids = new Map<string, string>();
+  for (const item of items) {
+    const terminal =
+      item.state === "completed" || item.state === "merged" || item.state === "cancelled";
+    if (terminal && ids.has(item.issueId)) continue;
+    ids.set(item.issueId, item.id);
+  }
   const edges = db
-    .query<{ epicId: string; blocker: string; blocked: string }, []>(
-      "SELECT epic_id AS epicId,blocker_linear_issue_id AS blocker,blocked_linear_issue_id AS blocked FROM work_item_block",
+    .query<{ blocker: string; blocked: string }, []>(
+      "SELECT blocker_linear_issue_id AS blocker,blocked_linear_issue_id AS blocked FROM task_block",
     )
     .all();
   const children = new Map<string, string[]>();
   for (const edge of edges) {
-    const parent = ids.get(JSON.stringify([edge.epicId, edge.blocker])),
-      child = ids.get(JSON.stringify([edge.epicId, edge.blocked]));
+    const parent = ids.get(edge.blocker),
+      child = ids.get(edge.blocked);
     if (parent && child) children.set(parent, [...(children.get(parent) ?? []), child]);
   }
   const result = new Map<string, number>();
@@ -209,8 +181,6 @@ function depths(db: Database, items: Item[]): Map<string, number> {
 }
 
 export function dispatchReadyItems(db: Database, options: SchedulerOptions = {}): string[] {
-  const cap = options.concurrency ?? 2;
-  if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("Invalid project concurrency");
   const now = options.now ?? Date.now();
   return immediate(db, () => {
     const items = allItems(db, now);
@@ -237,17 +207,9 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       } else if (options.legacyReadyItemIds?.includes(item.id)) ready.add(item.id);
     }
     const saved = db
-      .query<
-        Omit<Admission, "paths"> & {
-          paths: string;
-          jobId: number;
-          status: string;
-          lockedUntil: number | null;
-        },
-        []
-      >(
-        `SELECT a.item_id AS itemId,a.job_id AS jobId,a.project_key AS projectKey,
-       a.repository_key AS repositoryKey,a.session_id AS sessionId,a.paths,a.hot,j.status,j.locked_until AS lockedUntil FROM scheduler_admission a JOIN job j ON j.id=a.job_id`,
+      .query<Admission & { jobId: number; status: string; lockedUntil: number | null }, []>(
+        `SELECT a.item_id AS itemId,a.job_id AS jobId,a.repository_key AS repositoryKey,
+       a.session_id AS sessionId,j.status,j.locked_until AS lockedUntil FROM scheduler_admission a JOIN job j ON j.id=a.job_id`,
       )
       .all();
     const held: Admission[] = [];
@@ -257,7 +219,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
         (item && holdsSession(item)) ||
         (row.status === "running" && (row.lockedUntil === null || row.lockedUntil > now))
       ) {
-        held.push({ ...row, paths: JSON.parse(row.paths) });
+        held.push(row);
         continue;
       }
       if (
@@ -266,14 +228,8 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
         ["pending", "running"].includes(row.status)
       ) {
         const current = footprint(item, options);
-        if (
-          current.projectKey === row.projectKey &&
-          current.repositoryKey === row.repositoryKey &&
-          current.sessionId === row.sessionId &&
-          JSON.stringify(current.paths) === row.paths &&
-          current.hot === row.hot
-        ) {
-          held.push({ ...row, paths: current.paths });
+        if (current.repositoryKey === row.repositoryKey) {
+          held.push(current);
           continue;
         }
       }
@@ -301,19 +257,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
       const next = footprint(item, options);
-      if (
-        held.filter((entry) => {
-          const current = byId.get(entry.itemId);
-          return (
-            entry.projectKey === next.projectKey &&
-            (!current || current.state === "queued" || holdsExecution(current))
-          );
-        }).length >= cap ||
-        held.some(
-          (entry) => conflicts(entry, next) || byId.get(entry.itemId)?.issueId === item.issueId,
-        )
-      )
-        continue;
+      if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       db.run(
         `UPDATE job SET status='cancelled',finished_at=? WHERE queue=?
         AND status='pending' AND json_extract(payload,'$.itemId')=?`,
@@ -328,16 +272,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       db.run(
         `INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
         VALUES(?,?,?,?,?,?,?,?)`,
-        [
-          item.id,
-          jobId,
-          next.projectKey,
-          next.repositoryKey,
-          next.sessionId,
-          JSON.stringify(next.paths),
-          next.hot,
-          now,
-        ],
+        [item.id, jobId, "*", next.repositoryKey, next.sessionId, "[]", 0, now],
       );
       held.push(next);
       admitted.push(item.id);
