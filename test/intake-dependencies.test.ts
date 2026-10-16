@@ -239,7 +239,7 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
     tracker.deps.set("item", [
       { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
