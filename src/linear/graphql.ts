@@ -58,12 +58,12 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
             ? first["message"]
             : "request failed";
       }
+      if (message !== null && message.startsWith("Entity not found: "))
+        throw new LinearEntityNotFoundError(message);
       if (!response.ok) {
         const detail = message !== null ? `: ${message}` : "";
         throw new Error(`Linear GraphQL HTTP ${response.status}${detail}`);
       }
-      if (message !== null && message.startsWith("Entity not found: "))
-        throw new LinearEntityNotFoundError(message);
       if (message !== null) throw new Error(`Linear GraphQL: ${message}`);
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       if (json["data"] === undefined) throw new Error("Linear GraphQL returned no data");
