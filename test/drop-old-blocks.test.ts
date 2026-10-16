@@ -35,7 +35,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
   });
   let closeReconciler: (() => Promise<void>) | undefined;
   try {
-    expect(migrations.at(-1)?.id).toBe("059_drop_old_blocks");
+    expect(migrations.some((migration) => migration.id === "059_drop_old_blocks")).toBe(true);
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '059_drop_old_blocks'").get(),
     ).toBeTruthy();
@@ -196,8 +196,11 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("059_drop_old_blocks");
+    expect(ids.at(-1)).toBe("060_session_link_on_item");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
+    expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
+      ids.indexOf("060_session_link_on_item"),
+    );
   } finally {
     db.close();
   }

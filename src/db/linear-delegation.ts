@@ -73,8 +73,7 @@ export function linearSessionsForDelegatedTeams(
     .query<{ session_id: string }, [string, string, string, string]>(
       `SELECT DISTINCT s.session_id FROM linear_task_delegation d
     JOIN work_item w ON w.id = d.item_id
-    JOIN linear_session_task task ON task.epic_id = w.epic_id
-    JOIN linear_session s ON s.session_id = task.session_id
+    JOIN linear_session s ON s.session_id = w.session_key
     JOIN linear_team_access a ON a.organization_id = s.organization_id
       AND a.oauth_client_id = s.oauth_client_id AND a.app_user_id = s.app_user_id
       AND a.team_id = d.team_id AND a.allowed = 0

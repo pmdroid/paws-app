@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { ensureLinearSession, type StoredLinearSession } from "../db";
+import { ensureLinearSession, workItemForSession, type StoredLinearSession } from "../db";
 import type { AcceptedLinearEvent } from "../linear";
 
 export function recordLinearSessionEvent(
@@ -34,10 +34,11 @@ export function recordLinearSessionEvent(
 }
 
 export function sessionTaskKey(db: Database, session: StoredLinearSession): string {
-  if (session.epicId) {
+  const epicId = workItemForSession(db, session.sessionId)?.epicId ?? session.epicId;
+  if (epicId) {
     const row = db
       .query<{ task_key: string | null }, [string]>("SELECT task_key FROM epic WHERE id = ?")
-      .get(session.epicId);
+      .get(epicId);
     if (row?.task_key) return row.task_key;
   }
   return `session:${session.sessionId}`;
