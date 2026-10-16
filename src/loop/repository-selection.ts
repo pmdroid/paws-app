@@ -142,3 +142,27 @@ export async function interpretRepositoryAnswer(options: {
     return null;
   }
 }
+
+const CONFIDENT = 0.8;
+const LEAD = 0.2;
+const OFFERED = 3;
+
+export function chooseRepository(
+  candidates: readonly RepositoryBinding[],
+  suggestions: readonly RepositorySuggestion[],
+): { bind: RepositoryBinding } | { ask: RepositoryBinding[] } {
+  const known = suggestions
+    .filter((suggestion) =>
+      candidates.some(
+        (candidate) =>
+          `${candidate.owner}/${candidate.repo}`.toLowerCase() ===
+          suggestion.repositoryFullName.toLowerCase(),
+      ),
+    )
+    .sort((left, right) => right.confidence - left.confidence);
+  const ranked = rankRepositories(candidates, known);
+  const [top, next] = known;
+  if (top && top.confidence >= CONFIDENT && top.confidence - (next?.confidence ?? 0) >= LEAD)
+    return { bind: ranked[0]! };
+  return { ask: ranked.slice(0, OFFERED) };
+}
