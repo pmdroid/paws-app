@@ -2152,6 +2152,37 @@ export class Orchestrator {
   private releaseAskedRun(runId: string): void {
     if (!this.askedRuns.delete(runId)) return;
     releaseRunCapacity(this.db, runId, this.now());
+    const answered = this.db
+      .query<
+        { id: string; itemId: string; body: string; options: string | null; answer: string },
+        [string]
+      >(
+        `SELECT q.id, q.item_id AS itemId, q.body, q.options, q.answer FROM question q
+         JOIN work_item i ON i.id = q.item_id
+         WHERE q.run_id = ? AND q.status = 'answered' AND q.cancelled_at IS NULL
+         AND q.answer IS NOT NULL AND i.state = 'running'
+         ORDER BY q.answered_at DESC, q.id DESC LIMIT 1`,
+      )
+      .get(runId);
+    if (!answered) return;
+    enqueueJobOnce(this.db, {
+      queue: JOB_KIND.resume,
+      jobKey: `resume:answer:${answered.id}`,
+      payload: {
+        itemId: answered.itemId,
+        freshSession: true,
+        handoff: handoffNote({
+          question: answered.body,
+          options:
+            answered.options === null
+              ? []
+              : (JSON.parse(answered.options) as (string | { label?: string; value: string })[]),
+          answer: answered.answer,
+        }),
+        reason: "answer",
+      },
+      now: this.now(),
+    });
   }
 
   private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
@@ -2179,11 +2210,14 @@ export class Orchestrator {
     let base = current.checkpoint?.baseSha ?? "";
     try {
       head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-      if (base === "")
-        base = (await git(["-C", worktree, "merge-base", "HEAD", "origin/main"])).trim();
     } catch {
       return;
     }
+    if (base === "")
+      base = await git(["-C", worktree, "merge-base", "HEAD", "origin/main"]).then(
+        (out) => out.trim(),
+        () => "",
+      );
     saveCheckpoint(this.db, itemId, {
       phase,
       ...(head === "" ? {} : { wipCommit: head }),
@@ -2369,7 +2403,8 @@ export class Orchestrator {
       }
       if (getLinearSession(this.db, sessionId)?.activeItemId === open.itemId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      if (this.waiters.has(open.id)) return "answered" as const;
+      if (this.waiters.has(open.id) || (open.runId !== null && this.askedRuns.has(open.runId)))
+        return "answered" as const;
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `resume:answer:${open.id}`,
