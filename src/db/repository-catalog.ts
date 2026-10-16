@@ -46,3 +46,23 @@ export async function refreshRepositoryCatalog(
   });
   return true;
 }
+
+export function teamRepositoryAllowedSql(
+  workspaceSql: string,
+  teamSql: string,
+  repositorySql: string,
+): string {
+  return `(EXISTS (SELECT 1 FROM workspace_repository scope_link WHERE scope_link.workspace_id = ${workspaceSql} AND scope_link.team_id = ${teamSql} AND lower(scope_link.repository) = ${repositorySql}) OR (NOT EXISTS (SELECT 1 FROM workspace_repository scope_team WHERE scope_team.workspace_id = ${workspaceSql} AND scope_team.team_id = ${teamSql}) AND EXISTS (SELECT 1 FROM repository_catalog scope_catalog WHERE scope_catalog.repository = ${repositorySql})))`;
+}
+
+export function listTeamRepositories(db: Database, sessionId: string): string[] {
+  return db
+    .query<{ repository: string }, [string]>(
+      `SELECT lower(p.repository) AS repository FROM workspace_repository p
+       JOIN workspace w ON w.id=p.workspace_id
+       JOIN linear_session s ON s.organization_id=w.linear_organization_id AND s.team_id=p.team_id
+       WHERE s.session_id=? ORDER BY repository`,
+    )
+    .all(sessionId)
+    .map((row) => row.repository);
+}

@@ -123,6 +123,7 @@ import {
   setCurrentRun,
   applyLinearCommand,
   listRepositoryCatalog,
+  listTeamRepositories,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
@@ -3757,6 +3758,7 @@ export class Orchestrator {
           (this.options.repository ? [this.options.repository] : [])),
         ...catalog,
       ];
+      const teamLinks = item.sessionKey ? listTeamRepositories(this.db, item.sessionKey) : [];
       const configured = available.filter(
         (candidate, index) =>
           available.findIndex(
@@ -3765,6 +3767,14 @@ export class Orchestrator {
               `${candidate.owner}/${candidate.repo}`.toLowerCase(),
           ) === index,
       );
+      if (teamLinks.length)
+        configured.splice(
+          0,
+          configured.length,
+          ...configured.filter((candidate) =>
+            teamLinks.includes(`${candidate.owner}/${candidate.repo}`.toLowerCase()),
+          ),
+        );
       const listed = (candidate: RepositoryBinding) =>
         catalog.some((entry) => sameRepository(entry, candidate));
       const candidates: RepositoryBinding[] = auth ? [...configured] : [];

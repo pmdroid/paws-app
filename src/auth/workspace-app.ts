@@ -57,9 +57,14 @@ export function createWorkspaceGitHubActivation(
     resolve(repository: string): ActiveGitHubApp {
       const rows = db
         .query<{ secret_id: string | null; generation: number; repositories: string }, [string]>(
-          "SELECT DISTINCT c.secret_id,c.generation,c.repositories FROM workspace_github_connection c JOIN workspace_repository r ON r.workspace_id=c.workspace_id WHERE lower(r.repository)=lower(?)",
+          `SELECT DISTINCT c.secret_id,c.generation,c.repositories FROM workspace_github_connection c
+           WHERE EXISTS(SELECT 1 FROM workspace_repository r WHERE r.workspace_id=c.workspace_id AND lower(r.repository)=lower(?1))
+           OR EXISTS(SELECT 1 FROM repository_catalog k WHERE k.repository=lower(?1))`,
         )
         .all(repository);
+      const catalogued =
+        db.query("SELECT 1 FROM repository_catalog WHERE repository=lower(?)").get(repository) !==
+        null;
       if (rows.length === 0) {
         if (db.query("SELECT 1 FROM workspace LIMIT 1").get())
           throw new Error("Connect the workspace GitHub App first.");
@@ -68,9 +73,10 @@ export function createWorkspaceGitHubActivation(
       if (
         rows.length !== 1 ||
         !rows[0]!.secret_id ||
-        !(JSON.parse(rows[0]!.repositories) as string[]).some(
-          (entry) => entry.toLowerCase() === repository.toLowerCase(),
-        )
+        (!catalogued &&
+          !(JSON.parse(rows[0]!.repositories) as string[]).some(
+            (entry) => entry.toLowerCase() === repository.toLowerCase(),
+          ))
       )
         throw new Error("Workspace GitHub App scope is unavailable.");
       return {

@@ -1,3 +1,4 @@
+import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
   getLinearSession,
@@ -193,9 +194,7 @@ export function createRunnerPlacement(options: {
       if (
         current.repository &&
         !db
-          .query(
-            "SELECT 1 FROM workspace_repository WHERE workspace_id=? AND team_id=? AND repository=?",
-          )
+          .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
           .get(
             current.workspace.id,
             issue.teamId,
