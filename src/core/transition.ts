@@ -1,11 +1,4 @@
-import {
-  isTerminalEpicState,
-  isTerminalWorkItemState,
-  type EpicEvent,
-  type EpicState,
-  type WorkItemEvent,
-  type WorkItemState,
-} from "./states";
+import { isTerminalWorkItemState, type WorkItemEvent, type WorkItemState } from "./states";
 
 export type TransitionOk<State extends string, Event extends string> = {
   ok: true;
@@ -82,18 +75,7 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "manual", event: "human_completed", to: "merged" },
 ];
 
-export const EPIC_EDGES: readonly Edge<EpicState, EpicEvent>[] = [
-  { from: "planning", event: "proposal_persisted", to: "awaiting_plan_approval" },
-  { from: "awaiting_plan_approval", event: "request_changes", to: "planning" },
-  { from: "awaiting_plan_approval", event: "plan_approved", to: "running" },
-  { from: "running", event: "stalled", to: "stalled" },
-  { from: "stalled", event: "resumed", to: "running" },
-  { from: "running", event: "completed", to: "done" },
-  { from: "stalled", event: "completed", to: "done" },
-];
-
 const workItemTable = edgeTable(WORK_ITEM_EDGES);
-const epicTable = edgeTable(EPIC_EDGES);
 
 /**
  * The only way a work item changes state. Pure: no database and no side effects.
@@ -110,20 +92,6 @@ export function transition(
     return { ok: true, from: state, to: "cancelled", event };
   }
   return lookup(workItemTable, state, event);
-}
-
-/** Epic-level machine. Intake of human-written sub-issues creates the epic already `running`. */
-export function transitionEpic(
-  state: EpicState,
-  event: EpicEvent,
-): TransitionResult<EpicState, EpicEvent> {
-  if (event === "cancel") {
-    if (isTerminalEpicState(state)) {
-      return { ok: false, from: state, event, reason: "terminal" };
-    }
-    return { ok: true, from: state, to: "cancelled", event };
-  }
-  return lookup(epicTable, state, event);
 }
 
 function edgeTable<State extends string, Event extends string>(

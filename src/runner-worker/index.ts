@@ -610,11 +610,8 @@ export async function runRunnerWorker(options: {
   home: string;
   signal?: AbortSignal;
 }): Promise<RunnerWorkerResult> {
-  if (
-    process.getuid?.() !== options.results.agentUid ||
-    options.results.agentUid === options.spool.runnerUid
-  )
-    throw new Error("Runner worker must use the separate agent identity");
+  if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
+    throw new Error("Runner worker identity is invalid");
   const spool = options.spool;
   const job = readRunnerJob(spool, options.executionId);
   return executeRunnerCommand({

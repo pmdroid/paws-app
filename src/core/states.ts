@@ -74,26 +74,6 @@ export const EPIC_STATES = [
 
 export type EpicState = (typeof EPIC_STATES)[number];
 
-export const TERMINAL_EPIC_STATES = ["done", "cancelled"] as const;
-
-export type TerminalEpicState = (typeof TERMINAL_EPIC_STATES)[number];
-
-export const EPIC_EVENTS = [
-  "proposal_persisted",
-  "request_changes",
-  "plan_approved",
-  "stalled",
-  "resumed",
-  "completed",
-  "cancel",
-] as const;
-
-export type EpicEvent = (typeof EPIC_EVENTS)[number];
-
 export function isTerminalWorkItemState(state: WorkItemState): state is TerminalWorkItemState {
   return state === "completed" || state === "merged" || state === "cancelled";
-}
-
-export function isTerminalEpicState(state: EpicState): state is TerminalEpicState {
-  return state === "done" || state === "cancelled";
 }

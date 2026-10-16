@@ -1511,4 +1511,203 @@ INSERT OR IGNORE INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id
 CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
 `,
   },
+  {
+    id: "059_drop_old_blocks",
+    sql: `
+DROP TABLE work_item_block;
+DROP TABLE external_dep;
+DROP TABLE epic_execution_control;
+`,
+  },
+  {
+    id: "060_session_link_on_item",
+    sql: `
+CREATE TEMP TABLE session_link_backfill AS
+SELECT w.id AS item_id, COALESCE(
+  (SELECT s.session_id FROM linear_session s
+    WHERE s.current_epic_id = w.epic_id
+    ORDER BY s.created_at, s.session_id LIMIT 1),
+  (SELECT s.session_id FROM linear_session_task t
+    JOIN linear_session s ON s.session_id = t.session_id
+    WHERE t.epic_id = w.epic_id
+    ORDER BY s.created_at, s.session_id LIMIT 1)
+) AS session_id
+FROM work_item w WHERE w.session_key IS NULL;
+UPDATE work_item SET
+  session_key = (SELECT b.session_id FROM session_link_backfill b WHERE b.item_id = work_item.id),
+  owner_user_id = COALESCE(work_item.owner_user_id, (
+    SELECT u.id FROM session_link_backfill b
+    JOIN linear_session_task t ON t.session_id = b.session_id AND t.epic_id = work_item.epic_id
+    JOIN workspace_user u ON u.linear_user_id = t.owner_actor_id
+    WHERE b.item_id = work_item.id
+  ))
+WHERE id IN (SELECT item_id FROM session_link_backfill WHERE session_id IS NOT NULL);
+DROP TABLE session_link_backfill;
+`,
+  },
+  {
+    id: "061_drop_old_session_link",
+    foreignKeys: false,
+    sql: `
+ALTER TABLE work_item ADD COLUMN delegated_by TEXT;
+UPDATE work_item SET delegated_by=(
+  SELECT t.owner_actor_id FROM linear_session_task t
+  WHERE t.epic_id=work_item.epic_id);
+DROP TABLE linear_session_task;
+ALTER TABLE linear_session DROP COLUMN current_epic_id;
+`,
+  },
+  {
+    id: "062_item_dependency_snapshot",
+    sql: `
+CREATE TABLE item_dependency_snapshot (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  scope TEXT NOT NULL CHECK(json_valid(scope)),
+  linear_states TEXT NOT NULL CHECK(json_valid(linear_states)),
+  external_evidence TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(external_evidence))
+) STRICT;
+`,
+  },
+  {
+    id: "063_item_reconciliation",
+    sql: `
+CREATE TABLE item_reconciliation_request (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  token TEXT NOT NULL
+) STRICT;
+CREATE TABLE item_reconciliation_effect (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  kind TEXT NOT NULL CHECK(kind IN ('spec','removed','canceled')),
+  token TEXT NOT NULL,
+  PRIMARY KEY(item_id,kind)
+) STRICT;
+CREATE TABLE item_blocker_policy (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  blocker_issue_id TEXT NOT NULL,
+  policy TEXT NOT NULL CHECK(json_valid(policy)),
+  user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  revision INTEGER NOT NULL,
+  PRIMARY KEY(item_id,blocker_issue_id)
+) STRICT;
+INSERT INTO item_reconciliation_request(item_id,workspace_id,token)
+SELECT i.id,r.workspace_id,r.token FROM epic_reconciliation_request r
+JOIN work_item i ON i.epic_id=r.epic_id
+WHERE i.state NOT IN ('completed','merged','cancelled');
+INSERT INTO item_reconciliation_effect(item_id,kind,token)
+SELECT item_id,kind,token FROM epic_reconciliation_effect;
+INSERT INTO item_blocker_policy(workspace_id,item_id,blocker_issue_id,policy,user_id,revision)
+SELECT p.workspace_id,i.id,p.blocker_issue_id,p.policy,p.user_id,p.revision
+FROM external_blocker_policy p
+JOIN work_item i ON i.epic_id=p.epic_id
+WHERE i.state NOT IN ('completed','merged','cancelled');
+`,
+  },
+  {
+    id: "064_work_item_without_epic_fk",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE work_item_delegation (
+  id TEXT PRIMARY KEY,
+  epic_id TEXT NOT NULL,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'exhausted',
+    'failed',
+    'awaiting_signoff',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief)),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  project_approval_id TEXT REFERENCES project_approval(id),
+  delegated_by TEXT
+) STRICT;
+INSERT INTO work_item_delegation (
+  id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  project_approval_id, delegated_by
+)
+SELECT
+  id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  project_approval_id, delegated_by
+FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_delegation RENAME TO work_item;
+CREATE INDEX work_item_epic_position ON work_item (epic_id, position);
+CREATE INDEX work_item_project_approval ON work_item(project_approval_id) WHERE project_approval_id IS NOT NULL;
+CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
+CREATE TABLE project_approval_issue_delegation (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  issue_id TEXT NOT NULL,
+  approval_id TEXT NOT NULL REFERENCES project_approval(id),
+  session_id TEXT UNIQUE,
+  epic_id TEXT,
+  released_at INTEGER,
+  PRIMARY KEY(approval_id, issue_id)
+) STRICT;
+INSERT INTO project_approval_issue_delegation (
+  workspace_id, issue_id, approval_id, session_id, epic_id, released_at
+)
+SELECT workspace_id, issue_id, approval_id, session_id, epic_id, released_at
+FROM project_approval_issue;
+DROP TABLE project_approval_issue;
+ALTER TABLE project_approval_issue_delegation RENAME TO project_approval_issue;
+CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(workspace_id, issue_id) WHERE released_at IS NULL;
+`,
+  },
+  {
+    id: "065_drop_epic",
+    sql: `
+UPDATE work_item SET brief=json_set(work_item.brief,
+  '$.epic', json_object(
+    'source','linear','issueId',e.linear_issue_id,'identifier',e.linear_identifier,
+    'title',e.title,'description',NULL,'acceptanceCriteria',NULL))
+FROM epic e
+WHERE e.id=work_item.epic_id AND e.linear_issue_id<>work_item.linear_issue_id
+AND work_item.brief IS NOT NULL AND json_extract(work_item.brief,'$.epic.issueId') IS NULL;
+ALTER TABLE work_item RENAME COLUMN epic_id TO delegation_id;
+ALTER TABLE project_approval_issue RENAME COLUMN epic_id TO delegation_id;
+DROP INDEX work_item_epic_position;
+CREATE INDEX work_item_delegation_position ON work_item (delegation_id, position);
+DROP TABLE epic_dependency_snapshot;
+DROP TABLE epic_reconciliation_request;
+DROP TABLE epic_reconciliation_effect;
+DROP TABLE external_blocker_policy;
+DROP TABLE epic;
+`,
+  },
 ];

@@ -14,6 +14,7 @@ import {
   type GitExec,
   type GitHubClient,
   type GitHubResponse,
+  type SerialMergeResult,
 } from "./types";
 
 const exec = promisify(execFile);
@@ -311,6 +312,136 @@ describe("pull requests and serial merge", () => {
     await repo.cleanup();
   });
 
+  test("pending CI returns without sleeping when the lane should be released", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const client = mergingClient(repo.bare, []);
+      let merges = 0;
+      let sleeps = 0;
+      const result = await serialMerge({
+        ...creds({
+          async request(req) {
+            if (req.path === "/graphql") {
+              const { head } = (req.body as { variables: { head: string } }).variables;
+              const body = fakeMergeReadiness(head);
+              body.data.repository.object.statusCheckRollup.state = "PENDING";
+              return { status: 200, body };
+            }
+            if (req.path.endsWith("/merge")) merges += 1;
+            return client.request(req);
+          },
+        }),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        releaseWhilePending: true,
+        sleep: async () => {
+          sleeps += 1;
+        },
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(result.merged).toBe(false);
+      expect(result.outcome).toBe("waiting");
+      expect(result.message).toBe("Waiting for CI on the candidate commit.");
+      expect(result.summary).toBe("accepted");
+      expect(sleeps).toBe(0);
+      expect(merges).toBe(0);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("a merge parked on pending CI skips reverify when claimed again with main unchanged and reverifies when main moves", async () => {
+    const unchanged = await oneClone();
+    try {
+      await commitFile(unchanged.work, "file.txt", "candidate\n");
+      let pending = true;
+      let checks = 0;
+      const first = await serialMerge({
+        ...creds(ciClient(unchanged.bare, () => pending)),
+        worktree: unchanged.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: unchanged.bare,
+        releaseWhilePending: true,
+        reverify: async () => {
+          checks += 1;
+          return { accepted: true, outcome: "merged", summary: "accepted once" };
+        },
+      });
+      expect(first.outcome).toBe("waiting");
+      expect(checks).toBe(1);
+      const recorded = recordedVerification(first);
+      pending = false;
+      const second = await serialMerge({
+        ...creds(ciClient(unchanged.bare, () => pending)),
+        worktree: unchanged.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: unchanged.bare,
+        releaseWhilePending: true,
+        priorVerification: recorded,
+        reverify: async () => {
+          checks += 1;
+          return { accepted: true, outcome: "merged", summary: "should not run" };
+        },
+      });
+      expect(checks).toBe(1);
+      expect(second.merged).toBe(true);
+      expect(second.summary).toBe("accepted once");
+    } finally {
+      await unchanged.cleanup();
+    }
+
+    const moved = await twoClones();
+    try {
+      await commitFile(moved.wtA, "file.txt", "candidate\n");
+      let pending = true;
+      let checks = 0;
+      const heads: string[] = [];
+      const first = await serialMerge({
+        ...creds(ciClient(moved.bare, () => pending)),
+        worktree: moved.wtA,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: moved.bare,
+        releaseWhilePending: true,
+        reverify: async ({ head }) => {
+          checks += 1;
+          heads.push(head);
+          return { accepted: true, outcome: "merged", summary: "accepted once" };
+        },
+      });
+      expect(first.outcome).toBe("waiting");
+      const recorded = recordedVerification(first);
+      await commitFile(moved.wtB, "other.txt", "new main\n");
+      await exec("git", ["-C", moved.wtB, "push", "origin", "HEAD:main"]);
+      pending = false;
+      const second = await serialMerge({
+        ...creds(ciClient(moved.bare, () => pending)),
+        worktree: moved.wtA,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: moved.bare,
+        releaseWhilePending: true,
+        priorVerification: recorded,
+        reverify: async ({ head }) => {
+          checks += 1;
+          heads.push(head);
+          return { accepted: true, outcome: "merged", summary: "accepted again" };
+        },
+      });
+      expect(checks).toBe(2);
+      expect(heads[1]).not.toBe(heads[0]);
+      expect(second.merged).toBe(true);
+      expect(second.summary).toBe("accepted again");
+    } finally {
+      await moved.cleanup();
+    }
+  });
+
   test("re-verifies a moved main after waiting for CI before merging", async () => {
     const repo = await twoClones();
     try {
@@ -454,6 +585,32 @@ describe("pull requests and serial merge", () => {
     await repo.cleanup();
   });
 });
+
+function recordedVerification(result: SerialMergeResult): {
+  base: string;
+  head: string;
+  summary: string;
+} {
+  if (result.base === undefined || result.head === undefined || result.summary === undefined) {
+    throw new Error("parked merge did not record a verification");
+  }
+  return { base: result.base, head: result.head, summary: result.summary };
+}
+
+function ciClient(bare: string, pending: () => boolean): GitHubClient {
+  const client = mergingClient(bare, []);
+  return {
+    async request(req) {
+      if (req.path === "/graphql" && pending()) {
+        const { head } = (req.body as { variables: { head: string } }).variables;
+        const body = fakeMergeReadiness(head);
+        body.data.repository.object.statusCheckRollup.state = "PENDING";
+        return { status: 200, body };
+      }
+      return client.request(req);
+    },
+  };
+}
 
 function creds(client: GitHubClient) {
   return {

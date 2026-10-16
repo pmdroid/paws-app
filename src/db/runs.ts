@@ -80,6 +80,14 @@ export function markRun(db: Database, id: string, status: RunStatus, now: number
   db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
 }
 
+export function releaseRunCapacity(db: Database, runId: string, now: number): void {
+  const run = getRun(db, runId);
+  if (run && (run.status === "active" || run.status === "provisioning"))
+    markRun(db, runId, "ended", now);
+  db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [now, runId]);
+  db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [runId]);
+}
+
 export function saveRunResult(db: Database, id: string, resultBody: string, now: number): void {
   const run = getRun(db, id);
   if (run === null) throw new Error(`run ${id} not found`);

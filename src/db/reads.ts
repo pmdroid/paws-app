@@ -17,7 +17,7 @@ export type OpenQuestionRecord = {
 };
 
 type BlockSql = {
-  epic_id: string;
+  delegation_id: string;
   blocker_linear_issue_id: string;
   blocked_linear_issue_id: string;
 };
@@ -34,28 +34,30 @@ type QuestionSql = {
 
 /** `blocks` edges. Pass `epicId` to read one epic. */
 export function listWorkItemBlocks(db: Database, epicId?: string): WorkItemBlockRecord[] {
-  const rows =
-    epicId === undefined
-      ? db
-          .query<BlockSql, []>(
-            `SELECT epic_id, blocker_linear_issue_id, blocked_linear_issue_id
-             FROM work_item_block
-             ORDER BY epic_id, blocked_linear_issue_id, blocker_linear_issue_id`,
-          )
-          .all()
-      : db
-          .query<BlockSql, [string]>(
-            `SELECT epic_id, blocker_linear_issue_id, blocked_linear_issue_id
-             FROM work_item_block
-             WHERE epic_id = ?
-             ORDER BY blocked_linear_issue_id, blocker_linear_issue_id`,
-          )
-          .all(epicId);
-  return rows.map((row) => ({
-    epicId: row.epic_id,
-    blockerLinearIssueId: row.blocker_linear_issue_id,
-    blockedLinearIssueId: row.blocked_linear_issue_id,
-  }));
+  return db
+    .query<BlockSql, [string | null, string | null]>(
+      `SELECT i.delegation_id, b.blocker_linear_issue_id, b.blocked_linear_issue_id
+       FROM task_block b
+       JOIN work_item i ON i.id = (
+         SELECT candidate.id FROM work_item candidate
+         WHERE candidate.linear_issue_id = b.blocked_linear_issue_id
+           AND candidate.state <> 'cancelled'
+           AND NOT EXISTS (
+             SELECT 1 FROM work_item_specification spec
+             WHERE spec.item_id = candidate.id AND spec.present = 0
+           )
+         ORDER BY candidate.created_at DESC, candidate.id DESC
+         LIMIT 1
+       )
+       WHERE (? IS NULL OR i.delegation_id = ?)
+       ORDER BY i.delegation_id, b.blocked_linear_issue_id, b.blocker_linear_issue_id`,
+    )
+    .all(epicId ?? null, epicId ?? null)
+    .map((row) => ({
+      epicId: row.delegation_id,
+      blockerLinearIssueId: row.blocker_linear_issue_id,
+      blockedLinearIssueId: row.blocked_linear_issue_id,
+    }));
 }
 
 export type WorkItemFact = {

@@ -39,10 +39,10 @@ function accounts() {
   if (process.platform !== "linux") throw new Error("Runner commands require Linux");
   const runnerUid = account("user", "paws-runner");
   const agentUid = account("user", "paws-agent");
-  if (runnerUid === agentUid) throw new Error("Runner identities must differ");
+  if (runnerUid === 0 || agentUid === 0) throw new Error("Runner identities must be non-root");
   return {
     runnerUid,
-    agentUid,
+    agentUid: runnerUid,
     agentGid: account("group", "paws-agent"),
     resultsGid: account("group", "paws-results"),
   };

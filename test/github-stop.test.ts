@@ -45,16 +45,15 @@ for (const target of ["child", "child-before-progress"] as const) {
     const db = openDatabase(path.join(pawsRoot, "paws.db"));
     migrate(db);
     const item = insertQueuedItem(db, { id: "durable-child", sessionKey: epicIssue });
-    db.run("UPDATE epic SET linear_issue_id = ? WHERE id = ?", [epicIssue, item.epicId]);
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [childIssue, item.id]);
     const sibling = insertQueuedItem(db, { id: "durable-sibling", sessionKey: epicIssue });
-    db.run("UPDATE work_item SET epic_id = ?, linear_issue_id = ? WHERE id = ?", [
+    db.run("UPDATE work_item SET delegation_id = ?, linear_issue_id = ? WHERE id = ?", [
       item.epicId,
       "child-3",
       sibling.id,
     ]);
     const merged = insertQueuedItem(db, { id: "durable-merged", sessionKey: epicIssue });
-    db.run("UPDATE work_item SET epic_id = ?, state = 'merged' WHERE id = ?", [
+    db.run("UPDATE work_item SET delegation_id = ?, state = 'merged' WHERE id = ?", [
       item.epicId,
       merged.id,
     ]);
@@ -129,11 +128,6 @@ for (const target of ["child", "child-before-progress"] as const) {
       expect(getWorkItem(db, sibling.id)?.state).toBe("queued");
       expect(getWorkItem(db, unrelated.id)?.state).toBe("queued");
       expect(getWorkItem(db, merged.id)?.state).toBe("merged");
-      expect(
-        db
-          .query<{ state: string }, [string]>("SELECT state FROM epic WHERE id = ?")
-          .get(item.epicId)?.state,
-      ).toBe("running");
       await waitFor(() => !alive(pid));
       await running;
       running = null;

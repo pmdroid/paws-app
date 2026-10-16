@@ -411,35 +411,19 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         pageInfo: { hasNextPage: false, endCursor: null },
       });
       const metadata = { team: { id: "team" }, project: null, assignee: null, priority: 0 };
-      if (query.includes("IssueSnapshot")) {
-        const epic = db
-          .query<{ id: string; identifier: string; title: string }, [string]>(
-            "SELECT id,linear_identifier AS identifier,title FROM epic WHERE linear_issue_id=?",
-          )
-          .get(variables.id!);
-        const children = epic
-          ? db
-              .query<
-                { id: string; identifier: string; title: string; description: string | null },
-                [string]
-              >(
-                "SELECT linear_issue_id AS id,linear_identifier AS identifier,title,brief AS description FROM work_item WHERE epic_id=? ORDER BY position",
-              )
-              .all(epic.id)
-          : [];
+      if (query.includes("IssueSnapshot"))
         return Response.json({
           data: {
             issue: {
               id: variables.id,
-              identifier: epic?.identifier ?? variables.id,
-              title: epic?.title ?? "Export rows",
+              identifier: variables.id,
+              title: "Export rows",
               description: null,
               ...metadata,
-              children: connection(children.map((child) => ({ ...child, ...metadata }))),
+              children: connection([]),
             },
           },
         });
-      }
       if (query.includes("IssueRelations"))
         return Response.json({
           data: {
@@ -648,6 +632,15 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         "SELECT count(*) AS count FROM workspace_access_audit WHERE action='access.denied'",
       )
       .get()!.count;
+  const startup = Date.now() + 3000;
+  while (
+    ["scheduler.tick", "execution.reconcile", "linear.epics.reconcile"].some(
+      (queue) => !listJobs(db).some((job) => job.queue === queue && job.fireCount >= 1),
+    )
+  ) {
+    if (Date.now() > startup) throw new Error("Startup reconcile did not settle");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   try {
     const invalid = task("observer");
     const invalidStatus = await send(invalid.payload, false);

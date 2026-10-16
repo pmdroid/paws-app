@@ -2,7 +2,7 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { systemClock } from "../src/core";
+import { parentTaskKeySql, systemClock } from "../src/core";
 import type { Database } from "bun:sqlite";
 import type { FakeStep } from "../src/acp/testing/script";
 import {
@@ -265,7 +265,8 @@ test("a parent discussion classifies before fanout and completes without Git, is
     expect(getWorkItem(f.db, item.id)?.checkpoint?.wipCommit).toBeUndefined();
     await f.orchestrator.onLinearEvent(event());
     expect(f.launches).toEqual(["classify", "answer"]);
-    expect(f.db.query<{ state: string }, []>("SELECT state FROM epic").get()?.state).toBe("done");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
+    expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
   } finally {
     f.db.close();
   }
@@ -455,7 +456,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     expect(f.launches).toEqual(["classify", "classify"]);
     const children = db
       .query<{ id: string; linear_issue_id: string; state: string }, [string]>(
-        "SELECT id,linear_issue_id,state FROM work_item WHERE epic_id = ? ORDER BY position",
+        "SELECT id,linear_issue_id,state FROM work_item WHERE delegation_id = ? ORDER BY position",
       )
       .all(session.epicId!);
     expect(children.map((child) => child.linear_issue_id)).toEqual(["child", "second-child"]);
@@ -464,7 +465,9 @@ test("clarified parent code requests recover the ordered child queue and every c
     ).toBe(true);
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
     const originalKey = db
-      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
+      .query<{ task_key: string }, [string]>(
+        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY position, id LIMIT 1`,
+      )
       .get(previous.epicId)!.task_key;
     const resolved = getTaskClassification(db, originalKey)!;
     expect(resolved.mode).toBe("code");

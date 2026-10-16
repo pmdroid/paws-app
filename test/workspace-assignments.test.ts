@@ -20,7 +20,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
-import { syncEpicDependencies } from "../src/intake";
+import { readyItems, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator } from "../src/loop";
 import { FakeClock } from "../src/core";
 import {
@@ -165,22 +165,24 @@ function fixture() {
         }
         await orchestrator.onLinearEvent(value);
         const epicId = getLinearSession(db, "session")!.epicId!;
-        const saved = db
-          .query<{ generation: number }, [string]>(
-            "SELECT generation FROM epic_dependency_snapshot WHERE epic_id=?",
+        const itemIds = db
+          .query<{ id: string }, [string]>(
+            "SELECT id FROM work_item WHERE delegation_id=? ORDER BY position,id",
           )
-          .get(epicId);
-        await syncEpicDependencies(db, {
-          epicId,
-          workspaceId: "workspace",
-          expectedGeneration: saved?.generation ?? 0,
-          tracker,
-          lifecycle: {
-            async inspect() {
-              return structuredClone(ownership);
+          .all(epicId);
+        for (const item of itemIds)
+          await syncItemDependencies(db, {
+            itemId: item.id,
+            workspaceId: "workspace",
+            expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+              .generation,
+            tracker,
+            lifecycle: {
+              async inspect() {
+                return structuredClone(ownership);
+              },
             },
-          },
-        });
+          });
         orchestrator.reconcileExecution();
         if (!continuations.includes(value.dedupeKey)) continuations.push(value.dedupeKey);
       },

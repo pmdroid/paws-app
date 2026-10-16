@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND, retryBackoffMs, type LinearCommand } from "../core";
+import { JOB_KIND, parentIssueIdSql, retryBackoffMs, type LinearCommand } from "../core";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
 import type {
   IntakePollSource,
@@ -464,9 +464,8 @@ function stopTargets(
         .query<{ id: string }, [string, string]>(
           `SELECT work_item.id AS id
            FROM work_item
-           LEFT JOIN epic ON epic.id = work_item.epic_id
            WHERE work_item.state NOT IN ('completed', 'merged', 'cancelled')
-             AND (work_item.linear_issue_id = ? OR epic.linear_issue_id = ?)
+             AND (work_item.linear_issue_id = ? OR ${parentIssueIdSql("work_item")} = ?)
            ORDER BY work_item.position, work_item.id`,
         )
         .all(linearIssueId, linearIssueId);

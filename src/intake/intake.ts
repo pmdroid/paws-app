@@ -3,14 +3,9 @@ import type { IssueBrief } from "../core";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
-import {
-  insertDoneEpic,
-  insertRunningQueue,
-  insertStalledEpic,
-  listWorkItems,
-  readEpicByLinearId,
-} from "./store";
+import { findAcceptedIntake, insertRunningQueue, readAdoptedParent } from "./store";
 import type { StoredEpic, StoredWorkItem } from "./store";
+import { ulid } from "./ulid";
 
 export type IntakeResult =
   | {
@@ -70,9 +65,9 @@ export async function intakeDelegatedIssue(
 ): Promise<IntakeResult> {
   const now = input.now ?? Date.now();
   const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
-  const existing = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  const existing = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (existing !== null) {
-    const result = replay(db, existing);
+    const result = { ok: true as const, ...existing, alreadyExisted: true as const };
     input.onAccepted?.(result);
     return result;
   }
@@ -83,25 +78,25 @@ export async function intakeDelegatedIssue(
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
   if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
-  const accepted = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
-    const result = replay(db, accepted);
+    const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
     input.onAccepted?.(result);
     return result;
   }
   if (!ordered.ok) {
-    const epic = insertStalledEpic(db, {
-      taskKey,
-      linearIssueId: snapshot.linearIssueId,
-      identifier: snapshot.identifier,
-      title: snapshot.title,
-      now,
-    });
     const identifiers = ordered.remaining.map((node) => node.identifier);
     const result = {
       ok: false,
       reason: "cycle",
-      epic,
+      epic: {
+        id: ulid(now),
+        linearIssueId: snapshot.linearIssueId,
+        linearIdentifier: snapshot.identifier,
+        title: snapshot.title,
+        state: "stalled",
+        version: 0,
+      },
       identifiers,
       alreadyExisted: false,
     } as const;
@@ -122,13 +117,8 @@ export async function intakeDelegatedIssue(
           input.adoptParent?.(sessionId, snapshot, edges)
         ) {
           adopted = true;
-          const epic = insertDoneEpic(db, {
-            taskKey,
-            linearIssueId: snapshot.linearIssueId,
-            identifier: snapshot.identifier,
-            title: snapshot.title,
-            now,
-          });
+          const epic = readAdoptedParent(db, snapshot.linearIssueId);
+          if (epic === null) throw new Error("Adopted parent was not recorded");
           const admitted = {
             ok: true,
             epic,
@@ -154,6 +144,7 @@ export async function intakeDelegatedIssue(
           ),
           edges,
           now,
+          sessionKey: sessionId.length > 0 ? sessionId : null,
         });
         const admitted = {
           ok: true,
@@ -220,14 +211,6 @@ function issueBrief(issue: {
     description: issue.description ?? null,
     acceptanceCriteria: issue.acceptanceCriteria ?? null,
   };
-}
-
-function replay(db: Database, epic: StoredEpic): IntakeResult {
-  const items = listWorkItems(db, epic.id);
-  if (epic.state === "stalled" && items.length === 0) {
-    return { ok: false, reason: "cycle", epic, identifiers: [], alreadyExisted: true };
-  }
-  return { ok: true, epic, items, alreadyExisted: true };
 }
 
 function workNodes(snapshot: EpicSnapshot): OrderNode[] {

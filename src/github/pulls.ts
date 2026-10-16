@@ -36,12 +36,13 @@ export async function pushBranch(
   const gitExec = input.gitExec ?? defaultGitExec();
   const token = await acquireOperationToken(input, "push");
   try {
+    const remote = await remoteBranchTip(input.worktree, url, branch, token, gitExec);
     await withCredential(token, gitExec, async (helper) => {
+      const args = [...helper.argsPrefix, "push"];
+      if (remote) args.push(`--force-with-lease=refs/heads/${branch}:${remote}`);
+      args.push(url, `HEAD:refs/heads/${branch}`);
       try {
-        await helper.exec([...helper.argsPrefix, "push", url, `HEAD:refs/heads/${branch}`], {
-          cwd: input.worktree,
-          env: helper.env,
-        });
+        await helper.exec(args, { cwd: input.worktree, env: helper.env });
       } catch (error) {
         const stderr = error instanceof GitCommandError ? error.stderr : "";
         throw new Error(redact(token, `push failed: ${stderr}`), { cause: error });
@@ -54,6 +55,30 @@ export async function pushBranch(
   }
   const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
   return { branch, head };
+}
+
+async function remoteBranchTip(
+  worktree: string,
+  url: string,
+  branch: string,
+  token: string,
+  gitExec: GitExec,
+): Promise<string | null> {
+  return withCredential(token, gitExec, async (helper) => {
+    const result = await helper.exec(
+      [...helper.argsPrefix, "ls-remote", url, `refs/heads/${branch}`],
+      { cwd: worktree, env: helper.env },
+    );
+    const lines = result.stdout
+      .trim()
+      .split("\n")
+      .filter((entry) => entry !== "");
+    if (lines.length === 0) return null;
+    if (lines.length !== 1) throw new Error("ls-remote returned more than one branch");
+    const sha = lines[0]?.split("\t")[0];
+    if (!sha) throw new Error("ls-remote returned an empty sha");
+    return sha;
+  });
 }
 
 export async function openPullRequest(

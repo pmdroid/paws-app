@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { EPIC_STATES, WORK_ITEM_STATES } from "../src/core";
+import { WORK_ITEM_STATES } from "../src/core";
 import { listTaskBlockers, migrations } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
@@ -18,12 +18,14 @@ const parent: EpicSnapshot = {
 };
 
 describe("intake", () => {
-  test("the migrated schema accepts every epic and work-item state", () => {
+  test("the migrated schema accepts every work-item state", () => {
     const db = tempDb();
     const schema = (name: string) =>
       db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE name = ?").get(name)
         ?.sql;
-    for (const state of EPIC_STATES) expect(schema("epic")).toContain(`'${state}'`);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     for (const state of WORK_ITEM_STATES) expect(schema("work_item")).toContain(`'${state}'`);
     expect(migrations[0]?.id).toBe("001_jobs_outbox");
     db.close();
@@ -48,7 +50,7 @@ describe("intake", () => {
     ]);
     const blocks = db
       .query<{ blocker: string; blocked: string }, []>(
-        "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM work_item_block",
+        "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM task_block",
       )
       .all();
     expect(blocks).toEqual([{ blocker: "a", blocked: "b" }]);
@@ -104,7 +106,18 @@ describe("intake", () => {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => {
-        epicExisted = db.query("SELECT 1 FROM epic").get() !== null;
+        epicExisted =
+          db
+            .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
+            .get() !== null;
+        db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+        db.run(
+          "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
+        );
+        db.run(
+          `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
+           VALUES('approval','workspace','parent','person','person','parent:ses_1','{"project":{"name":"Parent","identifier":"ENG-1"}}',1,1,1,'parent')`,
+        );
         return true;
       },
     });
@@ -114,6 +127,10 @@ describe("intake", () => {
     expect(result.alreadyExisted).toBe(false);
     expect(result.items).toEqual([]);
     expect(result.epic.state).toBe("done");
+    expect(result.epic.id).toBe("approval");
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     expect(tracker.progress.map((update) => update.body)).toEqual([
       "Picked up 1 sub-issue. Each one runs in its own session.",
     ]);
@@ -227,13 +244,6 @@ describe("intake", () => {
     expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
     expect(listTaskBlockers(db, "a")).toEqual([]);
     expect(listTaskBlockers(db, "outside")).toEqual([]);
-    expect(
-      db
-        .query<{ blocker: string; blocked: string }, []>(
-          "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM work_item_block",
-        )
-        .all(),
-    ).toEqual([{ blocker: "a", blocked: "b" }]);
     db.close();
   });
 
@@ -265,7 +275,9 @@ describe("intake", () => {
     expect(tracker.progress).toContainEqual(
       expect.objectContaining({ sessionId: "ses_2", kind: "error", body: message }),
     );
-    expect(db.query("SELECT id FROM epic").all()).toHaveLength(1);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toHaveLength(0);
     expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(db.query<{ state: string }, []>("SELECT state FROM work_item").get()?.state).toBe(
       "queued",
@@ -350,6 +362,154 @@ describe("intake", () => {
     ).toBe("cancelled");
     expect(second.items[0]?.state).toBe("queued");
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
+    db.close();
+  });
+
+  test("a repeated delegation of the same issue replays without an epic row", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "only",
+        identifier: "ENG-9",
+        title: "Fix the header",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_9",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.epic.state).toBe("running");
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_9",
+    });
+    expect(again.ok && again.alreadyExisted).toBe(true);
+    if (!again.ok) return;
+    expect(again.epic.id).toBe(result.epic.id);
+    expect(again.items.map((item) => item.id)).toEqual(result.items.map((item) => item.id));
+    expect(tracker.progress).toHaveLength(1);
+    db.run("UPDATE work_item SET state = 'cancelled'");
+    const cancelled = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_9",
+    });
+    expect(cancelled.ok && cancelled.epic.state).toBe("cancelled");
+    db.run("UPDATE work_item SET state = 'merged'");
+    const done = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "only",
+      sessionId: "ses_9",
+    });
+    expect(done.ok && done.epic.state).toBe("done");
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
+    db.close();
+  });
+
+  test("an adopted parent replays from its project approval", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "parent",
+        identifier: "ENG-1",
+        title: "Parent",
+        description: null,
+        subIssues: [{ linearIssueId: "only", identifier: "ENG-2", title: "Only child" }],
+      },
+    ]);
+    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+    db.run(
+      "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
+    );
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      taskKey: "parent-task",
+      adoptParent: () => {
+        db.run(
+          `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
+           VALUES('approval','workspace','parent','person','person','parent:ses_1','{"project":{"name":"Parent","identifier":"ENG-1"}}',1,1,1,'parent')`,
+        );
+        return true;
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.alreadyExisted).toBe(false);
+    expect(result.items).toEqual([]);
+    expect(result.epic).toMatchObject({
+      id: "approval",
+      linearIssueId: "parent",
+      linearIdentifier: "ENG-1",
+      title: "Parent",
+      state: "done",
+    });
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+      taskKey: "parent-followup",
+      adoptParent: () => {
+        throw new Error("replay must not adopt again");
+      },
+    });
+    expect(again.ok && again.alreadyExisted).toBe(true);
+    if (!again.ok) return;
+    expect(again.epic.id).toBe("approval");
+    expect(again.items).toEqual([]);
+    expect(tracker.progress).toHaveLength(1);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
+    db.close();
+  });
+
+  test("a cycle stores no epic row and reports the cycle again", async () => {
+    const db = tempDb();
+    const tracker = createFakeTracker([parent]);
+    tracker.deps.set("a", [
+      { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
+      { blockerLinearIssueId: "b", blockedLinearIssueId: "a" },
+    ]);
+    const result = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("cycle");
+    expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
+    expect(result.epic.state).toBe("stalled");
+    expect(result.alreadyExisted).toBe(false);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
+    expect(db.query("SELECT id FROM work_item").all()).toEqual([]);
+    const again = await intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "parent",
+      sessionId: "ses_1",
+    });
+    expect(again.ok).toBe(false);
+    if (again.ok) return;
+    expect(again.reason).toBe("cycle");
+    expect(again.identifiers).toEqual(["ENG-2", "ENG-3"]);
+    expect(again.alreadyExisted).toBe(false);
+    expect(tracker.progress.map((update) => update.body)).toEqual([
+      cycleMessage(["ENG-2", "ENG-3"]),
+      cycleMessage(["ENG-2", "ENG-3"]),
+    ]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     db.close();
   });
 });

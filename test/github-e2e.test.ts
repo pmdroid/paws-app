@@ -126,11 +126,11 @@ test("a Linear epic publishes and merges three GitHub pull requests with one pla
 
   try {
     const appeared = Date.now() + 10_000;
-    while (Date.now() < appeared && epicState(db) === null) await Bun.sleep(20);
-    expect(epicState(db), debug(layout, db)).not.toBeNull();
+    while (Date.now() < appeared && stateOf(db, "DEMO-2") === null) await Bun.sleep(20);
+    expect(stateOf(db, "DEMO-2"), debug(layout, db)).not.toBeNull();
     const deadline = Date.now() + 90_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -144,7 +144,7 @@ test("a Linear epic publishes and merges three GitHub pull requests with one pla
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("merged/merged/awaiting_input");
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(
       ["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id)),
       debug(layout, db),
@@ -175,7 +175,9 @@ test("a Linear epic publishes and merges three GitHub pull requests with one pla
     expect(reply?.issueId).toBe(question?.issueId);
     expect(reply?.body).not.toContain("<!--");
     expect(reply?.body.startsWith("Paws:")).toBe(false);
-    expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(true);
+    expect(comments.comments.some((comment) => comment.body.includes("Epic complete."))).toBe(
+      false,
+    );
     expect(comments.comments.some((comment) => comment.body.includes("Picked up 3"))).toBe(true);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
@@ -221,7 +223,12 @@ function reviewScript(text: string): FakeScript {
   };
 }
 
-function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+function demoScript(input: {
+  purpose: string;
+  itemId: string;
+  worktree: string;
+  prompt: string;
+}): FakeScript {
   if (input.purpose === "review") {
     return reviewScript(reviewText(input.worktree, input.itemId.endsWith("-2")));
   }
@@ -243,22 +250,29 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
     };
   }
   if (input.itemId.endsWith("-4")) {
+    if (input.prompt.includes("Handoff from the previous session.")) {
+      return {
+        steps: [
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "archived.txt"),
+            content: "yes\n",
+          },
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "ok.txt"),
+            content: "ok\n",
+          },
+          { type: "end", stopReason: "end_turn" },
+        ],
+      };
+    }
     return {
       steps: [
         {
           type: "ask_team",
           question: "Include archived rows?",
           options: ["yes", "no"],
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "archived.txt"),
-          content: "yes\n",
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "ok.txt"),
-          content: "ok\n",
         },
         { type: "end", stopReason: "end_turn" },
       ],
@@ -478,8 +492,9 @@ function stateOf(db: Database, identifier: string): string | null {
   return getWorkItem(db, row.id)?.state ?? null;
 }
 
-function epicState(db: Database): string | null {
-  return db.query<{ state: string }, []>("SELECT state FROM epic LIMIT 1").get()?.state ?? null;
+function delegationMerged(db: Database): boolean {
+  const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+  return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
 function debug(layout: { pawsRoot: string }, db: Database): string {
@@ -490,7 +505,7 @@ function debug(layout: { pawsRoot: string }, db: Database): string {
         "SELECT linear_identifier, state FROM work_item ORDER BY position",
       )
       .all();
-    return JSON.stringify({ paws: layout.pawsRoot, epic: epicState(db), items, jobs });
+    return JSON.stringify({ paws: layout.pawsRoot, items, jobs });
   } catch {
     return "db closed";
   }
