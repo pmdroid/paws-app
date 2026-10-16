@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { FakeClock, type RepositoryBinding } from "../src/core";
 import {
+  refreshRepositoryCatalog,
   JobLoop,
   OutboxDispatcher,
   enqueueJob,
@@ -71,6 +72,7 @@ function fixture(
     defaultRepository?: boolean;
     auth?: FakeHostGitHubAuth;
     interpretation?: { output: string; hang?: boolean; removeAccess?: string };
+    confidence?: number;
   } = {},
 ) {
   const db = tempDb();
@@ -88,7 +90,11 @@ function fixture(
     },
   ]);
   tracker.repositorySuggestions.set("issue", [
-    { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.99 },
+    {
+      hostname: "github.com",
+      repositoryFullName: "acme/two",
+      confidence: options.confidence ?? 0.6,
+    },
   ]);
   const denied = new Set(["private"]);
   const unavailable = new Set<string>();
@@ -518,6 +524,94 @@ test("a persisted cleanup fence prevents another repository interpreter or selec
     expect(f.launches()).toBe(0);
     expect(findOpenQuestion(f.db, "session")).toBeNull();
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a confident Linear suggestion binds the repository without a question", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+    expect(f.tracker.progress.map((update) => update.body)).toContain("Working in acme/two.");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("close Linear suggestions ask with the top three repositories", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    f.denied.delete("private");
+    f.tracker.repositorySuggestions.set("issue", [
+      { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.85 },
+      { hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.8 },
+    ]);
+    await refreshRepositoryCatalog(f.db, async () => [
+      {
+        owner: "acme",
+        repo: "four",
+        remoteUrl: "/synthetic-paws-remotes/four.git",
+        defaultBranch: "main",
+      },
+    ]);
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(findOpenQuestion(f.db, "session")!.options).toEqual([
+      "https://github.com/acme/two",
+      "https://github.com/acme/one",
+      "https://github.com/acme/private",
+    ]);
+    expect(
+      f.tracker.repositorySuggestionRequests[0]!.candidateRepositories.map(
+        (candidate) => candidate.repositoryFullName,
+      ),
+    ).toContain("acme/four");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a repository the app can access is chosen from Linear's suggestion without configuring it", async () => {
+  const f = fixture();
+  try {
+    await refreshRepositoryCatalog(f.db, async () => [
+      {
+        owner: "acme",
+        repo: "four",
+        remoteUrl: "/synthetic-paws-remotes/four.git",
+        defaultBranch: "main",
+      },
+    ]);
+    f.tracker.repositorySuggestions.set("issue", [
+      { hostname: "github.com", repositoryFullName: "acme/four", confidence: 0.95 },
+    ]);
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    expect(
+      f.tracker.repositorySuggestionRequests[0]!.candidateRepositories.map(
+        (candidate) => candidate.repositoryFullName,
+      ),
+    ).toEqual(["acme/one", "acme/two", "acme/four"]);
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual({
+      owner: "acme",
+      repo: "four",
+      remoteUrl: "/synthetic-paws-remotes/four.git",
+    });
+    expect(f.checked).toEqual(["one", "two", "private", "four"]);
   } finally {
     f.db.close();
   }
