@@ -223,7 +223,12 @@ function reviewScript(text: string): FakeScript {
   };
 }
 
-function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+function demoScript(input: {
+  purpose: string;
+  itemId: string;
+  worktree: string;
+  prompt: string;
+}): FakeScript {
   if (input.purpose === "review") {
     return reviewScript(reviewText(input.worktree, input.itemId.endsWith("-2")));
   }
@@ -245,22 +250,29 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
     };
   }
   if (input.itemId.endsWith("-4")) {
+    if (input.prompt.includes("Handoff from the previous session.")) {
+      return {
+        steps: [
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "archived.txt"),
+            content: "yes\n",
+          },
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "ok.txt"),
+            content: "ok\n",
+          },
+          { type: "end", stopReason: "end_turn" },
+        ],
+      };
+    }
     return {
       steps: [
         {
           type: "ask_team",
           question: "Include archived rows?",
           options: ["yes", "no"],
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "archived.txt"),
-          content: "yes\n",
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "ok.txt"),
-          content: "ok\n",
         },
         { type: "end", stopReason: "end_turn" },
       ],
