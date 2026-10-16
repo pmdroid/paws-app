@@ -25,7 +25,10 @@ export async function refreshRepositoryCatalog(
   let entries: readonly CatalogEntry[];
   try {
     entries = await list();
-  } catch {
+  } catch (error) {
+    console.error(
+      `repository catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return false;
   }
   immediate(db, () => {
