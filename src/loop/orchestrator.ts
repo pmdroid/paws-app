@@ -3906,10 +3906,10 @@ export class Orchestrator {
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;
       };
       candidates.sort((left, right) => recency(left) - recency(right));
-      let suggestions: readonly RepositorySuggestion[] = [];
+      const best = new Map<string, RepositorySuggestion>();
       for (let attempt = 1; this.tracker?.issueRepositorySuggestions && attempt <= 3; attempt++) {
         try {
-          suggestions = await this.tracker.issueRepositorySuggestions(
+          const read = await this.tracker.issueRepositorySuggestions(
             {
               issueId: item.linearIssueId,
               candidateRepositories: candidates.map((candidate) => ({
@@ -3919,7 +3919,11 @@ export class Orchestrator {
             },
             { signal: controller.signal },
           );
-          break;
+          for (const suggestion of read) {
+            const key = suggestion.repositoryFullName.toLowerCase();
+            if ((best.get(key)?.confidence ?? -1) < suggestion.confidence)
+              best.set(key, suggestion);
+          }
         } catch (error) {
           controller.signal.throwIfAborted();
           console.error(
@@ -3931,7 +3935,7 @@ export class Orchestrator {
         }
       }
       if (this.stopped(item.id)) return false;
-      const choice = chooseRepository(candidates, suggestions);
+      const choice = chooseRepository(candidates, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
