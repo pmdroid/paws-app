@@ -11,6 +11,7 @@ import {
   createIntakePollSource,
   createLinearClient,
   createLinearTracker,
+  LinearEntityNotFoundError,
   linearBudget,
   linearWorkIsHot,
   openLinear,
@@ -70,6 +71,41 @@ describe("linear intake poll", () => {
     await poller.settled;
     db.close();
     expect(seen.map((event) => event.sessionId)).toEqual(["session-old", "session-new"]);
+  });
+
+  test("a session deleted in Linear is skipped and does not block later sessions", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const seen: (string | null)[] = [];
+    const attempts: (string | null)[] = [];
+    const { client } = scripted(() => ({
+      ...page([issue("iss_gone", "ENG-8", [], "app_1"), issue("iss_live", "ENG-9", [], "app_1")]),
+      agentSessions: {
+        nodes: [
+          session("session-gone", "iss_gone", NOW - 1_000),
+          session("session-live", "iss_live", NOW),
+        ],
+      },
+    }));
+    const poller = startCatchUpPoller({
+      source: createIntakePollSource(client, { teamId: TEAM }),
+      store,
+      onEvent: (event) => {
+        attempts.push(event.sessionId);
+        if (event.sessionId === "session-gone")
+          throw new LinearEntityNotFoundError("Entity not found: AgentSession");
+        seen.push(event.sessionId);
+      },
+      sleeper: blockedSleeper(),
+      now: () => NOW,
+    });
+    await waitFor(() => seen.length > 0);
+    await poller.pollNow();
+    await poller.stop();
+    await poller.settled;
+    db.close();
+    expect(seen).toEqual(["session-live"]);
+    expect(attempts.filter((id) => id === "session-gone")).toEqual(["session-gone"]);
   });
 
   test.each([true, false])(
