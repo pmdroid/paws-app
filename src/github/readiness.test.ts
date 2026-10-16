@@ -178,3 +178,20 @@ test("a failed read right after the pull request opens is retried", async () => 
   expect(result.outcome).toBe("ready");
   expect(f.sleeps()).toBe(1);
 });
+
+test("a failed read logs the error message with GitHub tokens redacted", async () => {
+  const token = `ghs_${"a".repeat(36)}`;
+  const f = fixture(() => {
+    throw new Error(`The Linear publication was superseded. ${token}`);
+  });
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (message: string) => logged.push(message);
+  try {
+    await waitForMergeReadiness(f.input);
+  } finally {
+    console.error = original;
+  }
+  expect(logged[0]).toContain("The Linear publication was superseded.");
+  expect(logged.join("\n")).not.toContain(token);
+});
