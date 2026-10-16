@@ -3,20 +3,25 @@ export type { IssueBrief, WorkBrief } from "./brief";
 export { TASK_MODES, type TaskMode } from "./task";
 export type { RepositoryBinding } from "./repository";
 export {
-  EPIC_STATES,
+  DELEGATION_STATES,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
   isTerminalWorkItemState,
 } from "./states";
-export type { EpicState, TerminalWorkItemState, WorkItemEvent, WorkItemState } from "./states";
+export type {
+  DelegationState,
+  TerminalWorkItemState,
+  WorkItemEvent,
+  WorkItemState,
+} from "./states";
 export { WORK_ITEM_EDGES, transition } from "./transition";
 export type { TransitionErr, TransitionOk, TransitionResult } from "./transition";
 export type {
   Checkpoint,
   CheckpointPhase,
-  Epic,
-  EpicId,
+  Delegation,
+  DelegationId,
   ItemId,
   RiskTier,
   Run,

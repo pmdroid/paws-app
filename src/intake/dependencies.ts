@@ -21,7 +21,7 @@ import {
 type Target = { itemId: string; workspaceId: string };
 type Item = {
   id: string;
-  epicId: string;
+  delegationId: string;
   linearIssueId: string;
   identifier: string;
   title: string;
@@ -32,7 +32,7 @@ type Item = {
   projectApprovalId: string | null;
 };
 type Identity = {
-  epicIssueId: string;
+  delegationIssueId: string;
   sessionId: string;
   organizationId: string;
   clientId: string;
@@ -63,7 +63,7 @@ export type DependencyReadiness = {
   cycleHeldItemIds: string[];
 };
 
-const itemColumns = `i.id,i.delegation_id AS epicId,i.linear_issue_id AS linearIssueId,
+const itemColumns = `i.id,i.delegation_id AS delegationId,i.linear_issue_id AS linearIssueId,
   i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
   t.mode,i.brief,i.project_approval_id AS projectApprovalId`;
 
@@ -78,7 +78,7 @@ function scope(db: Database, target: Target): Scope | null {
   if (located.present === 0) return null;
   const row = db
     .query<Item & Identity, [string, string]>(
-      `SELECT ${itemColumns},${parentIssueIdSql("i")} AS epicIssueId,s.session_id AS sessionId,
+      `SELECT ${itemColumns},${parentIssueIdSql("i")} AS delegationIssueId,s.session_id AS sessionId,
        s.organization_id AS organizationId,s.oauth_client_id AS clientId,s.app_user_id AS appUserId,
        s.generation AS sessionGeneration,s.team_id AS teamId,
        COALESCE((SELECT u.linear_user_id FROM workspace_user u
@@ -106,7 +106,7 @@ function scope(db: Database, target: Target): Scope | null {
     .get(target.itemId, target.workspaceId);
   if (!row) throw new Error("Dependency workspace or task ownership changed");
   const {
-    epicIssueId,
+    delegationIssueId,
     sessionId,
     organizationId,
     clientId,
@@ -118,7 +118,7 @@ function scope(db: Database, target: Target): Scope | null {
     ...item
   } = row;
   const identity: Identity = {
-    epicIssueId,
+    delegationIssueId,
     sessionId,
     organizationId,
     clientId,
@@ -135,7 +135,7 @@ function scope(db: Database, target: Target): Scope | null {
        LEFT JOIN work_item_specification p ON p.item_id=i.id
        WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
-    .all(item.epicId);
+    .all(item.delegationId);
   if (new Set(siblings.map((entry) => entry.linearIssueId)).size !== siblings.length)
     throw new Error("Dependency task identities are incomplete");
   return {
@@ -144,10 +144,10 @@ function scope(db: Database, target: Target): Scope | null {
     identity,
     token: JSON.stringify([
       item.id,
-      item.epicId,
+      item.delegationId,
       target.workspaceId,
       {
-        issueId: identity.epicIssueId,
+        issueId: identity.delegationIssueId,
         sessionId: identity.sessionId,
         organizationId: identity.organizationId,
         clientId: identity.clientId,
@@ -181,7 +181,7 @@ function snapshot(db: Database, target: Target): Snapshot | null {
   return saved;
 }
 
-export function epicSnapshotsComplete(db: Database, epicId: string): boolean {
+export function delegationSnapshotsComplete(db: Database, delegationId: string): boolean {
   return (
     db
       .query(
@@ -189,18 +189,18 @@ export function epicSnapshotsComplete(db: Database, epicId: string): boolean {
          AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
          AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot s WHERE s.item_id=i.id)`,
       )
-      .get(epicId) === null
+      .get(delegationId) === null
   );
 }
 
-export function hasPendingEpicChanges(db: Database, epicId: string): boolean {
+export function hasPendingDelegationChanges(db: Database, delegationId: string): boolean {
   return (
     db
       .query(
         `SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=?
          UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=? LIMIT 1`,
       )
-      .get(epicId, epicId) !== null
+      .get(delegationId, delegationId) !== null
   );
 }
 
@@ -245,7 +245,7 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
     heldItemIds: candidate ? [item.id] : [],
     cycleHeldItemIds: [],
   });
-  if (!saved || saved.scope !== current.token || hasPendingEpicChanges(db, item.epicId))
+  if (!saved || saved.scope !== current.token || hasPendingDelegationChanges(db, item.delegationId))
     return held();
   const issueIds = current.siblings.map((entry) => entry.linearIssueId);
   const blocks = blocksFor(db, issueIds);
@@ -328,7 +328,7 @@ export async function syncItemDependencies(
     throw new Error("Dependency snapshot changed");
   const issueIds = new Set(initial.siblings.map((item) => item.linearIssueId));
   const edges = new Map<string, DependencyEdge>();
-  for (const id of new Set([initial.identity.epicIssueId, ...issueIds])) {
+  for (const id of new Set([initial.identity.delegationIssueId, ...issueIds])) {
     signal?.throwIfAborted();
     for (const edge of await tracker.listDeps(id)) {
       if (

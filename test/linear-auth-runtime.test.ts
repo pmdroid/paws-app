@@ -30,7 +30,7 @@ function fixture(launch?: AgentLaunch) {
   const clock = new FakeClock(1_000);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   ensureLinearSession(db, { sessionId: "session", issueId: "ENG-1", now: clock.now() });
-  bindLinearSessionTask(db, "session", item.epicId, { actorId: "linear-owner" });
+  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "linear-owner" });
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const host = new FakeHostGitHubAuth();

@@ -253,7 +253,7 @@ export type OrchestratorOptions = {
     signal?: AbortSignal,
     candidate?: { sha: string; baseSha: string },
   ) => boolean | Promise<boolean>;
-  canDispatchEpic?: (epicId: string) => boolean;
+  canDispatchDelegation?: (delegationId: string) => boolean;
   canAdvanceItem?: (itemId: string) => boolean;
   dispatchReady?: (input: { legacyReadyItemIds: readonly string[] }) => void;
   clock?: Clock;
@@ -263,7 +263,7 @@ export type OrchestratorOptions = {
 };
 
 export type ExecutionChanges = {
-  epicId: string;
+  delegationId: string;
   sessionId: string;
   addedItemIds: readonly string[];
   removedItemIds: readonly string[];
@@ -421,11 +421,12 @@ export class Orchestrator {
           return false;
         }
         const open = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
-        const questionEpicId = open ? getWorkItem(this.db, open.itemId)?.epicId : null;
+        const questionDelegationId = open ? getWorkItem(this.db, open.itemId)?.delegationId : null;
         await this.handleLinearEvent(event);
         if (event.action === "prompted" && event.sessionId) {
-          const epicId = workItemForSession(this.db, event.sessionId)?.epicId ?? questionEpicId;
-          if (epicId) this.reconcileExecution();
+          const delegationId =
+            workItemForSession(this.db, event.sessionId)?.delegationId ?? questionDelegationId;
+          if (delegationId) this.reconcileExecution();
         }
       });
     this.sessionEvents.set(key, done);
@@ -511,7 +512,7 @@ export class Orchestrator {
       if (linearPrompt && event.sessionId && event.body) {
         const session = recordLinearSessionEvent(this.db, event, this.now());
         if (questionItem && session && !workItemForSession(this.db, event.sessionId)) {
-          bindLinearSessionTask(this.db, event.sessionId, questionItem.epicId);
+          bindLinearSessionTask(this.db, event.sessionId, questionItem.delegationId);
           activateLinearItem(this.db, event.sessionId, questionItem.id);
         }
         const turn = this.recordTurn(event);
@@ -739,8 +740,8 @@ export class Orchestrator {
               getLinearSession(this.db, sessionId)?.creatorId ??
               null;
             if (initialSession)
-              bindLinearSessionTask(this.db, sessionId, accepted.epic.id, { actorId });
-            this.assignSession(accepted.epic.id, sessionId);
+              bindLinearSessionTask(this.db, sessionId, accepted.delegation.id, { actorId });
+            this.assignSession(accepted.delegation.id, sessionId);
             this.options.onLinearIntake?.(sessionId, accepted);
             if (accepted.ok) assignUnownedItems(actorId, accepted.items);
           }
@@ -914,7 +915,8 @@ export class Orchestrator {
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
     if (
       loaded.state === "queued" &&
-      (this.options.canDispatchEpic?.(loaded.epicId) === false || !this.blockersClear(loaded))
+      (this.options.canDispatchDelegation?.(loaded.delegationId) === false ||
+        !this.blockersClear(loaded))
     )
       return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
@@ -1901,7 +1903,7 @@ export class Orchestrator {
     if (item.state !== "merge_queue") return;
     immediate(this.db, () => {
       if (
-        this.workspaceForEpic(item.epicId)
+        this.workspaceForDelegation(item.delegationId)
           ? this.options.canAdvanceItem?.(item.id) !== true
           : !this.blockersClear(item)
       )
@@ -2525,7 +2527,7 @@ export class Orchestrator {
   }
 
   private assertReconciled(item: WorkItemRecord): void {
-    if (this.options.canDispatchEpic?.(item.epicId) === false)
+    if (this.options.canDispatchDelegation?.(item.delegationId) === false)
       throw new LinearReconciliationPendingError(
         "Linear execution changes are still being reconciled",
       );
@@ -2545,12 +2547,16 @@ export class Orchestrator {
     this.assertReconciled(item);
   }
 
-  applyEpicChanges(changes: ExecutionChanges): void {
+  applyDelegationChanges(changes: ExecutionChanges): void {
     immediate(this.db, () => {
       for (const itemId of changes.addedItemIds) {
         const item = getWorkItem(this.db, itemId);
-        if (!item || item.epicId !== changes.epicId || item.sessionKey !== changes.sessionId)
-          throw new Error("Changed task ownership does not match the epic");
+        if (
+          !item ||
+          item.delegationId !== changes.delegationId ||
+          item.sessionKey !== changes.sessionId
+        )
+          throw new Error("Changed task ownership does not match the delegation");
         saveTaskMode(
           this.db,
           itemId,
@@ -2562,12 +2568,18 @@ export class Orchestrator {
       const canceled = new Set([
         ...changes.removedItemIds,
         ...changes.canceledItemIds,
-        ...(changes.parentCanceled ? this.epicItems(changes.epicId).map((item) => item.id) : []),
+        ...(changes.parentCanceled
+          ? this.delegationItems(changes.delegationId).map((item) => item.id)
+          : []),
       ]);
       for (const itemId of new Set([...canceled, ...changes.specChangedItemIds])) {
         const item = getWorkItem(this.db, itemId);
-        if (!item || item.epicId !== changes.epicId || item.sessionKey !== changes.sessionId)
-          throw new Error("Changed task ownership does not match the epic");
+        if (
+          !item ||
+          item.delegationId !== changes.delegationId ||
+          item.sessionKey !== changes.sessionId
+        )
+          throw new Error("Changed task ownership does not match the delegation");
         if (["merged", "completed", "cancelled"].includes(item.state)) continue;
         if (canceled.has(itemId)) {
           applyLinearCommand(this.db, {
@@ -2580,7 +2592,7 @@ export class Orchestrator {
             .query<{ id: string; identifier: string }, [string, string]>(
               `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.delegation_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
             )
-            .all(changes.epicId, item.linearIssueId);
+            .all(changes.delegationId, item.linearIssueId);
           if (dependents.length)
             enqueueOutboxOnce(this.db, {
               target: "linear",
@@ -2652,12 +2664,14 @@ export class Orchestrator {
     });
   }
 
-  async finishEpicChanges(changes: ExecutionChanges): Promise<void> {
+  async finishDelegationChanges(changes: ExecutionChanges): Promise<void> {
     const affected = new Set([
       ...changes.removedItemIds,
       ...changes.canceledItemIds,
       ...changes.specChangedItemIds,
-      ...(changes.parentCanceled ? this.epicItems(changes.epicId).map((item) => item.id) : []),
+      ...(changes.parentCanceled
+        ? this.delegationItems(changes.delegationId).map((item) => item.id)
+        : []),
     ]);
     await this.joinChangedItems([...affected]);
     if (changes.parentCanceled) await this.stopTaskPlanning(changes.sessionId);
@@ -2744,8 +2758,8 @@ export class Orchestrator {
          WHERE b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
          ORDER BY i.position,i.id`,
       )
-      .all(item.epicId, item.linearIssueId);
-    const active = new Set(this.epicItems(item.epicId).map((entry) => entry.id));
+      .all(item.delegationId, item.linearIssueId);
+    const active = new Set(this.delegationItems(item.delegationId).map((entry) => entry.id));
     const results = blockers
       .filter((blocker) => active.has(blocker.id))
       .map((blocker) => {
@@ -2764,7 +2778,7 @@ export class Orchestrator {
   private pump(): void {
     this.yieldIdleMergeSessions();
     const items = this.allItems();
-    const epicIds = new Set(
+    const delegationIds = new Set(
       this.db
         .query<{ id: string }, []>(
           `SELECT DISTINCT delegation_id AS id FROM work_item WHERE ${delegationHasOpenWork("work_item.delegation_id")}`,
@@ -2772,11 +2786,13 @@ export class Orchestrator {
         .all()
         .map((row) => row.id),
     );
-    for (const epicId of epicIds) this.questionDependencyCycle(epicId);
+    for (const delegationId of delegationIds) this.questionDependencyCycle(delegationId);
     const queued = items.filter((item) => item.state === "queued" && !item.cancelRequested);
     queued.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
     const ready = queued.filter(
-      (item) => this.options.canDispatchEpic?.(item.epicId) !== false && this.blockersClear(item),
+      (item) =>
+        this.options.canDispatchDelegation?.(item.delegationId) !== false &&
+        this.blockersClear(item),
     );
     if (this.options.dispatchReady) {
       this.options.dispatchReady({ legacyReadyItemIds: ready.map((item) => item.id) });
@@ -2808,9 +2824,9 @@ export class Orchestrator {
       for (const item of this.allItems()) {
         if (
           item.state !== "merge_queue" ||
-          this.options.canDispatchEpic?.(item.epicId) === false ||
+          this.options.canDispatchDelegation?.(item.delegationId) === false ||
           [...this.live.values()].some((live) => live.itemId === item.id) ||
-          !this.epicItems(item.epicId).some(
+          !this.delegationItems(item.delegationId).some(
             (other) =>
               other.id !== item.id && other.state === "queued" && this.blockersClear(other),
           )
@@ -2829,12 +2845,12 @@ export class Orchestrator {
     });
   }
 
-  private questionDependencyCycle(epicId: string): void {
-    const workspace = this.workspaceForEpic(epicId);
-    if (!workspace || this.options.canDispatchEpic?.(epicId) === false) return;
+  private questionDependencyCycle(delegationId: string): void {
+    const workspace = this.workspaceForDelegation(delegationId);
+    if (!workspace || this.options.canDispatchDelegation?.(delegationId) === false) return;
     const ids: string[] = [];
     try {
-      for (const item of this.epicItems(epicId))
+      for (const item of this.delegationItems(delegationId))
         ids.push(
           ...readyItems(this.db, { itemId: item.id, workspaceId: workspace }).cycleHeldItemIds,
         );
@@ -2845,12 +2861,12 @@ export class Orchestrator {
     const items = ids
       .map((id) => getWorkItem(this.db, id))
       .filter((item): item is WorkItemRecord => item !== null);
-    const session = this.epicSession(items);
+    const session = this.delegationSession(items);
     if (!session) return;
     const digest = createHash("sha256")
       .update(JSON.stringify([...ids].sort()))
       .digest("hex");
-    const key = `dependency-cycle:${epicId}:${digest}`;
+    const key = `dependency-cycle:${delegationId}:${digest}`;
     if (this.db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
     immediate(this.db, () => {
       const body = `Linear dependencies contain a cycle. Update the dependencies in Linear to release this work: ${items.map((item) => item.linearIdentifier).join(", ")}. Unaffected work can continue.`;
@@ -2865,19 +2881,19 @@ export class Orchestrator {
     });
   }
 
-  private workspaceForEpic(epicId: string): string | null {
+  private workspaceForDelegation(delegationId: string): string | null {
     return (
       this.db
         .query<{ id: string }, [string]>(
           `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.delegation_id=? LIMIT 1`,
         )
-        .get(epicId)?.id ?? null
+        .get(delegationId)?.id ?? null
     );
   }
 
   private blockersClear(item: WorkItemRecord): boolean {
     if (item.cancelRequested) return false;
-    const workspace = this.workspaceForEpic(item.epicId);
+    const workspace = this.workspaceForDelegation(item.delegationId);
     if (workspace) {
       try {
         return readyItems(this.db, {
@@ -2897,9 +2913,9 @@ export class Orchestrator {
            WHERE delegation_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
          )`,
       )
-      .all(item.linearIssueId, item.epicId);
+      .all(item.linearIssueId, item.delegationId);
     const active = new Map(
-      this.epicItems(item.epicId).map((entry) => [entry.linearIssueId, entry]),
+      this.delegationItems(item.delegationId).map((entry) => [entry.linearIssueId, entry]),
     );
     for (const row of rows) {
       const blocker = active.get(row.blocker_linear_issue_id);
@@ -3026,8 +3042,8 @@ export class Orchestrator {
     });
   }
 
-  private assignSession(epicId: string, sessionId: string): void {
-    const items = this.epicItems(epicId);
+  private assignSession(delegationId: string, sessionId: string): void {
+    const items = this.delegationItems(delegationId);
     if (this.options.channel === "comments") {
       for (const item of items) configureWorkItem(this.db, item.id, { sessionKey: sessionId });
       return;
@@ -3220,7 +3236,9 @@ export class Orchestrator {
         { followupBodies: turns.map((turn) => turn.body), conversation },
       );
       if (!result.ok) throw new Error("Follow-up task intake failed");
-      bindLinearSessionTask(this.db, sessionId, result.epic.id, { actorId: turns[0]!.actorId });
+      bindLinearSessionTask(this.db, sessionId, result.delegation.id, {
+        actorId: turns[0]!.actorId,
+      });
       item = getWorkItem(this.db, result.items[0]!.id);
       if (item) activateLinearItem(this.db, sessionId, item.id);
     }
@@ -3288,9 +3306,9 @@ export class Orchestrator {
     return items;
   }
 
-  private epicItems(epicId: string): WorkItemRecord[] {
+  private delegationItems(delegationId: string): WorkItemRecord[] {
     return this.allItems()
-      .filter((item) => item.epicId === epicId)
+      .filter((item) => item.delegationId === delegationId)
       .sort((left, right) => left.position - right.position);
   }
 
@@ -3363,7 +3381,7 @@ export class Orchestrator {
         now: this.now(),
       });
       const linked = workItemForSession(this.db, sessionId);
-      if (linked) bindLinearSessionTask(this.db, sessionId, linked.epicId);
+      if (linked) bindLinearSessionTask(this.db, sessionId, linked.delegationId);
       saveLinearSessionSnapshotContext(
         this.db,
         sessionId,
@@ -3554,7 +3572,7 @@ export class Orchestrator {
     return session;
   }
 
-  private epicSession(items: readonly WorkItemRecord[]): string | null {
+  private delegationSession(items: readonly WorkItemRecord[]): string | null {
     for (const item of items) {
       const session = this.activitySession(item);
       if (session !== null) return session;

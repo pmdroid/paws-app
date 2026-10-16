@@ -63,7 +63,7 @@ export const WORK_ITEM_EVENTS = [
 export type WorkItemEvent = (typeof WORK_ITEM_EVENTS)[number];
 
 /** Epic states. Budget hold is a flag on the row, not a state. */
-export const EPIC_STATES = [
+export const DELEGATION_STATES = [
   "planning",
   "awaiting_plan_approval",
   "running",
@@ -72,7 +72,7 @@ export const EPIC_STATES = [
   "cancelled",
 ] as const;
 
-export type EpicState = (typeof EPIC_STATES)[number];
+export type DelegationState = (typeof DELEGATION_STATES)[number];
 
 export function isTerminalWorkItemState(state: WorkItemState): state is TerminalWorkItemState {
   return state === "completed" || state === "merged" || state === "cancelled";

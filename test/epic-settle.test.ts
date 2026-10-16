@@ -68,7 +68,7 @@ function summaryActivities(db: Database): number {
   }).length;
 }
 
-test("when an epic's only item merges, that item stays merged and no epic summary activity is enqueued", async () => {
+test("when a delegation's only item merges, that item stays merged and no delegation summary activity is enqueued", async () => {
   const { db, clock, orchestrator } = harness();
   try {
     seed(db, clock.now(), "merged", ["merged"]);
@@ -155,7 +155,9 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
     expect(finished.ok).toBe(true);
     expect(open.ok).toBe(true);
     if (!finished.ok || !open.ok) return;
-    db.run("UPDATE work_item SET state = 'merged' WHERE delegation_id = ?", [finished.epic.id]);
+    db.run("UPDATE work_item SET state = 'merged' WHERE delegation_id = ?", [
+      finished.delegation.id,
+    ]);
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
@@ -215,7 +217,7 @@ test("a follow-up session turn routes by the item's task key without the epic ro
       creatorId: "human",
       now: clock.now(),
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "human" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
     saveTaskClassification(db, "session:session", {
       mode: "code",
       redirect: { taskKey: "resolved:session:session", itemId: parentId },

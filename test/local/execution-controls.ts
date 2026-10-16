@@ -87,13 +87,13 @@ export function createExecutionControlsFixture(root: string) {
       appUserId: "app",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, item.sessionKey!, item.epicId);
+    bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
   }
   const item = getWorkItem(db, "controlled")!;
   db.run(
     `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
-    [item.epicId, now, item.sessionKey],
+    [item.delegationId, now, item.sessionKey],
   );
   bindWorkItemRepository(db, "unmapped", {
     owner: "fixture",

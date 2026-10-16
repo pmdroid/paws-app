@@ -196,7 +196,7 @@ if (mode === "prepare") {
         teamId: "team",
         observedAtMs: now,
       });
-      bindLinearSessionTask(db, session, item.epicId, { actorId: "owner" });
+      bindLinearSessionTask(db, session, item.delegationId, { actorId: "owner" });
       const repository = {
         owner: "fixture",
         repo: "repository",

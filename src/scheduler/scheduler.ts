@@ -13,7 +13,7 @@ const TICK = "scheduler.tick";
 const ACTIVE = new Set<string>(IN_FLIGHT_ITEM_STATES);
 type Item = {
   id: string;
-  epicId: string;
+  delegationId: string;
   issueId: string;
   state: string;
   version: number;
@@ -36,7 +36,7 @@ export type SchedulerOptions = {
   now?: number;
   legacyReadyItemIds?: readonly string[];
   defaultRepository?: RepositoryBinding | null;
-  canDispatchEpic?: (epicId: string) => boolean;
+  canDispatchDelegation?: (delegationId: string) => boolean;
   handoffForItem?: (itemId: string) => string | undefined;
 };
 
@@ -108,7 +108,10 @@ export function hintedPaths(brief: string | null): string[] {
 
 function allItems(db: Database, now: number): Item[] {
   return db
-    .query<Item, [number]>(`SELECT i.id,i.delegation_id AS epicId,i.linear_issue_id AS issueId,
+    .query<
+      Item,
+      [number]
+    >(`SELECT i.id,i.delegation_id AS delegationId,i.linear_issue_id AS issueId,
     i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
     EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
@@ -195,7 +198,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       if (
         item.state !== "queued" ||
         item.cancelRequested ||
-        options.canDispatchEpic?.(item.epicId) === false
+        options.canDispatchDelegation?.(item.delegationId) === false
       )
         continue;
       if (item.workspaceId) {

@@ -37,7 +37,7 @@ test("private conversation state survives reopening without exposing raw private
     now: 1,
   });
   ensureLinearSession(db, { sessionId: "session", issueId: "issue", creatorId: "human", now: 1 });
-  bindLinearSessionTask(db, "session", item.epicId);
+  bindLinearSessionTask(db, "session", item.delegationId);
   activateLinearItem(db, "session", item.id);
   const run = beginImplementRun(db, item.id, 1).run;
   saveTaskMode(db, item.id, "answer");

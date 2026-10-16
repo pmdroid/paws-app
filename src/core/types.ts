@@ -1,8 +1,8 @@
 import type { GitCommitPolicy } from "./commit-policy";
-import type { EpicState, WorkItemState } from "./states";
+import type { DelegationState, WorkItemState } from "./states";
 
 export type ItemId = string;
-export type EpicId = string;
+export type DelegationId = string;
 export type RunId = string;
 
 export type RunKind = "plan" | "implement" | "fix" | "rebase" | "review";
@@ -14,7 +14,7 @@ export type RiskTier = "low" | "medium" | "high";
 /** Execution record for one delegated issue. Linear remains the source of the brief. */
 export type WorkItem = {
   id: ItemId;
-  epicId: EpicId;
+  delegationId: DelegationId;
   linearIssueId: string;
   linearIdentifier: string;
   title: string;
@@ -24,12 +24,12 @@ export type WorkItem = {
 };
 
 /** Parent issue delegated to Paws. Sub-issues are human-written in the quick MVP. */
-export type Epic = {
-  id: EpicId;
+export type Delegation = {
+  id: DelegationId;
   linearIssueId: string;
   linearIdentifier: string;
   title: string;
-  state: EpicState;
+  state: DelegationState;
   version: number;
 };
 

@@ -172,12 +172,12 @@ export async function probeScheduler(
     assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), ids);
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const first = (claimed.payload as { itemId: string }).itemId;
-    const canDispatchEpic = (epicId: string) => epicId !== `epic-${first}`;
+    const canDispatchDelegation = (delegationId: string) => delegationId !== `epic-${first}`;
     assert.deepEqual(
       dispatchReadyItems(db, {
         now: 1001,
         legacyReadyItemIds: ids,
-        canDispatchEpic,
+        canDispatchDelegation,
       }),
       [],
     );
@@ -189,7 +189,7 @@ export async function probeScheduler(
       dispatchReadyItems(db, {
         now: 1002,
         legacyReadyItemIds: ids,
-        canDispatchEpic,
+        canDispatchDelegation,
       }),
       [],
     );
@@ -354,7 +354,7 @@ export async function probeScheduler(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
     const ids = intake.items.map((item) => item.id);
     assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), []);
     const lifecycle = createFakeLinearIssueLifecycle({
@@ -425,7 +425,7 @@ export async function probeScheduler(
         teamId: "team",
         observedAtMs: 1000,
       });
-      bindLinearSessionTask(db, sessionId, intake.epic.id, { actorId: "owner" });
+      bindLinearSessionTask(db, sessionId, intake.delegation.id, { actorId: "owner" });
       sessions.set(
         sessionId,
         intake.items.map((item) => item.id),
@@ -467,13 +467,21 @@ export async function probeScheduler(
   {
     const { db, ids } = setup("effects", 2);
     assert.deepEqual(
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, canDispatchEpic: () => false }),
+      dispatchReadyItems(db, {
+        now: 1000,
+        legacyReadyItemIds: ids,
+        canDispatchDelegation: () => false,
+      }),
       [],
     );
     assert.equal(count(db, "job"), 0);
     assert.equal(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids }).length, 2);
     assert.deepEqual(
-      dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids, canDispatchEpic: () => false }),
+      dispatchReadyItems(db, {
+        now: 1002,
+        legacyReadyItemIds: ids,
+        canDispatchDelegation: () => false,
+      }),
       [],
     );
     assert.equal(count(db, "scheduler_admission"), 0);

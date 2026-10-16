@@ -121,7 +121,7 @@ import {
 import {
   createItemReconciler,
   createPublicationReadiness,
-  hasPendingEpicChanges,
+  hasPendingDelegationChanges,
   canAdvanceItem,
 } from "./intake";
 import { createExecutionControls } from "./execution-controls";
@@ -130,7 +130,7 @@ import {
   createProjectHttp,
   createProjectExecutionGuard,
 } from "./project-execution";
-import { epicSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
+import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
@@ -245,10 +245,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let projects: ReturnType<typeof createApprovedProjects> | null = null;
   let projectHttp: ReturnType<typeof createProjectHttp> | null = null;
   const projectExecution = createProjectExecutionGuard(db, () => projects);
-  const managedEpicReady = (epicId: string): boolean =>
-    projectExecution.canDispatch(epicId) &&
-    !hasPendingEpicChanges(db, epicId) &&
-    epicSnapshotsComplete(db, epicId);
+  const managedDelegationReady = (delegationId: string): boolean =>
+    projectExecution.canDispatch(delegationId) &&
+    !hasPendingDelegationChanges(db, delegationId) &&
+    delegationSnapshotsComplete(db, delegationId);
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -297,7 +297,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           .query<{ id: string }, [string, string]>(
             `SELECT w.id FROM workspace w WHERE w.linear_organization_id=? AND ${delegationHasOpenWork("?")}`,
           )
-          .get(session.organizationId, linked.epicId);
+          .get(session.organizationId, linked.delegationId);
         if (workspace)
           await reconciler.reconcile({
             itemId: linked.id,
@@ -663,10 +663,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearTaskModes: true,
         remoteExecution,
         linearAccess: linearTaskAccess ?? undefined,
-        canDispatchEpic: projectExecution.canDispatch,
+        canDispatchDelegation: projectExecution.canDispatch,
         publicationReady: (itemId) => {
           const item = getWorkItem(db, itemId);
-          return !!item && projectExecution.canDispatch(item.epicId);
+          return !!item && projectExecution.canDispatch(item.delegationId);
         },
         authorizeLinearIntake: projectExecution.authorizeIntake,
         linearIntakeScope: projectExecution.scope,
@@ -677,7 +677,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           (await projectExecution.authorizeEvent(event)) ?? true,
         ...(workspace && linear?.tracker && linear.issueLifecycle
           ? {
-              canDispatchEpic: managedEpicReady,
+              canDispatchDelegation: managedDelegationReady,
               canAdvanceItem: (itemId: string) => {
                 const item = getWorkItem(db, itemId);
                 const sessionId = item?.sessionKey ?? null;
@@ -691,7 +691,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   : null;
                 return (
                   item !== null &&
-                  projectExecution.canDispatch(item.epicId) &&
+                  projectExecution.canDispatch(item.delegationId) &&
                   currentWorkspace !== null &&
                   canAdvanceItem(db, {
                     itemId,
@@ -710,7 +710,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   (publicationAllowed) => {
                     const item = getWorkItem(db, args[0]);
                     return (
-                      publicationAllowed && !!item && projectExecution.canDispatch(item.epicId)
+                      publicationAllowed &&
+                      !!item &&
+                      projectExecution.canDispatch(item.delegationId)
                     );
                   },
                 ),
@@ -963,9 +965,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 ...("projectId" in issue ? { projectId: issue.projectId } : {}),
                 priority: issue.priority,
               });
-            attached.applyEpicChanges(changes);
+            attached.applyDelegationChanges(changes);
           },
-          afterChanges: (changes) => attached.finishEpicChanges(changes),
+          afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });
         publication = createPublicationReadiness({ db, reconciler });
         const enqueueMissingSnapshots = () => {
@@ -1024,7 +1026,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               now: Date.now(),
               defaultRepository: repository,
               legacyReadyItemIds,
-              canDispatchEpic: managedEpicReady,
+              canDispatchDelegation: managedDelegationReady,
               handoffForItem: (itemId) => attached.dependencyHandoff(itemId),
             };
           },

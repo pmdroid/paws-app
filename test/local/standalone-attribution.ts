@@ -94,7 +94,7 @@ export async function probeStandaloneAttribution(root: string) {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.epicId, { actorId: "steerer" });
+  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
   const { run } = beginImplementRun(db, item.id, now);
   let project: { id: string; lead: null } | null = null;
   const server = Bun.serve({

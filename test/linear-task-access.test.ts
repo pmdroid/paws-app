@@ -64,7 +64,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   db.run("UPDATE work_item SET session_key = ?, owner_user_id = ? WHERE delegation_id = ?", [
     "session",
     ownerId,
-    task.epic.id,
+    task.delegation.id,
   ]);
   const access = createFakeLinearAccessReads({
     installation: scope,

@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 
 export type WorkItemBlockRecord = {
-  epicId: string;
+  delegationId: string;
   blockerLinearIssueId: string;
   blockedLinearIssueId: string;
 };
@@ -33,7 +33,7 @@ type QuestionSql = {
 };
 
 /** `blocks` edges. Pass `epicId` to read one epic. */
-export function listWorkItemBlocks(db: Database, epicId?: string): WorkItemBlockRecord[] {
+export function listWorkItemBlocks(db: Database, delegationId?: string): WorkItemBlockRecord[] {
   return db
     .query<BlockSql, [string | null, string | null]>(
       `SELECT i.delegation_id, b.blocker_linear_issue_id, b.blocked_linear_issue_id
@@ -52,9 +52,9 @@ export function listWorkItemBlocks(db: Database, epicId?: string): WorkItemBlock
        WHERE (? IS NULL OR i.delegation_id = ?)
        ORDER BY i.delegation_id, b.blocked_linear_issue_id, b.blocker_linear_issue_id`,
     )
-    .all(epicId ?? null, epicId ?? null)
+    .all(delegationId ?? null, delegationId ?? null)
     .map((row) => ({
-      epicId: row.delegation_id,
+      delegationId: row.delegation_id,
       blockerLinearIssueId: row.blocker_linear_issue_id,
       blockedLinearIssueId: row.blocked_linear_issue_id,
     }));

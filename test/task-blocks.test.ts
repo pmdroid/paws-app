@@ -122,19 +122,19 @@ describe("task blocks", () => {
       if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = ON");
     }
     const insertLegacyQueued = (id: string, now: number) => {
-      const epicId = `epic-${id}`;
+      const delegationId = `epic-${id}`;
       db.run(
         `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, created_at)
          VALUES (?, ?, ?, 'Work item', 'running', ?)`,
-        [epicId, `lin-${id}`, id, now],
+        [delegationId, `lin-${id}`, id, now],
       );
       db.run(
         `INSERT INTO work_item (
            id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at, session_key
          ) VALUES (?, ?, ?, ?, 'Work item', 'queued', ?, 0, ?, 'session')`,
-        [id, epicId, `lin-item-${id}`, id, `paws/${id}`, now],
+        [id, delegationId, `lin-item-${id}`, id, `paws/${id}`, now],
       );
-      return epicId;
+      return delegationId;
     };
     const retiredEpic = insertLegacyQueued("m-older", 1);
     const survivingEpic = insertLegacyQueued("a-newer", 2);
