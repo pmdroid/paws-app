@@ -369,6 +369,41 @@ test("a follow-up on an adopted parent session does not queue its sub-issues aga
   }
 });
 
+test("stopping the parent session stops its adoption so the parent can be delegated again", async () => {
+  const fixture = createProjectFixture();
+  try {
+    publish(fixture.tracker, parent);
+    ensureLinearSession(fixture.db, {
+      sessionId: "parent-session",
+      issueId: "parent",
+      organizationId: "org",
+      creatorId: "lead",
+      now: fixture.clock.now(),
+    });
+    await fixture.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
+    await fixture.orchestrator.onLinearEvent({
+      dedupeKey: "activity:parent-stop",
+      deliveryId: null,
+      source: "webhook",
+      action: "prompted",
+      sessionId: "parent-session",
+      issueId: "parent",
+      activityId: "parent-stop",
+      body: null,
+      signal: "stop",
+      updatedAtMs: fixture.clock.now(),
+      payload: "{}",
+    });
+    expect(
+      fixture.db
+        .query<{ stopped_at: number | null }, []>("SELECT stopped_at FROM project_approval")
+        .get()?.stopped_at,
+    ).not.toBeNull();
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a sub-issue already managed in another session is rejected", async () => {
   const fixture = createProjectFixture();
   try {
