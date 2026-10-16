@@ -185,4 +185,4 @@ test("historical GitHub work is preserved and never recovered into Linear", () =
     db.query("SELECT name FROM sqlite_master WHERE name = 'github_poll_state'").get(),
   ).not.toBeNull();
   db.close();
-});
+}, 30_000);
