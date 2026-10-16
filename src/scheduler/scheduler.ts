@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { IN_FLIGHT_ITEM_STATES, JOB_KIND, type RepositoryBinding, type WorkBrief } from "../core";
+import {
+  IN_FLIGHT_ITEM_STATES,
+  JOB_KIND,
+  delegationHasOpenWork,
+  type RepositoryBinding,
+  type WorkBrief,
+} from "../core";
 import { enqueueJob, enqueueJobOnce, immediate, type JobLoop } from "../db";
 import { readyItems } from "../intake";
 
@@ -110,12 +116,12 @@ function allItems(db: Database, now: number): Item[] {
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
         OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
     w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo
-    FROM work_item i JOIN epic e ON e.id=i.epic_id
+    FROM work_item i
     LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
     LEFT JOIN work_item_scheduling c ON c.item_id=i.id
     LEFT JOIN work_item_repository r ON r.item_id=i.id
-    WHERE e.state IN ('running','stalled') OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
+    WHERE ${delegationHasOpenWork("i.epic_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
     .all(now);
 }
