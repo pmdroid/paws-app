@@ -1710,4 +1710,17 @@ DROP TABLE external_blocker_policy;
 DROP TABLE epic;
 `,
   },
+  {
+    id: "066_repository_catalog",
+    sql: `
+CREATE TABLE repository_catalog (
+  repository TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  default_branch TEXT NOT NULL,
+  refreshed_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
