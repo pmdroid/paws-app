@@ -88,6 +88,7 @@ export {
   insertRun,
   listRuns,
   markRun,
+  releaseRunCapacity,
   saveRunResult,
   saveRunCommitPolicy,
   getItemRunCommitPolicy,
@@ -154,7 +155,8 @@ export {
   ensureLinearSession,
   bindLinearSessionTask,
   activateLinearItem,
-  linearSessionForEpic,
+  workItemForSession,
+  delegatedLinearUserId,
   recordLinearTurn,
   listPendingLinearTurns,
   listLinearTurnsForItem,
@@ -164,7 +166,6 @@ export {
   discardLinearTurns,
   applyLinearTurns,
   getLinearSessionGeneration,
-  getTaskLinearActor,
   advanceLinearSessionGeneration,
   type StoredLinearSession,
   type StoredLinearTurn,
@@ -286,8 +287,6 @@ export {
   workspaceIdentityLinks,
 } from "./workspace-links";
 export type { WorkspaceIdentityLink } from "./workspace-links";
-
-export { getRunnerVerifier } from "./runners";
 
 export {
   requireAttributionSession,

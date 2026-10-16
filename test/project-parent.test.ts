@@ -70,9 +70,9 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     expect(admitted.alreadyExisted).toBe(false);
     expect(admitted.items).toEqual([]);
     expect(admitted.epic.state).toBe("done");
-    expect(db.query("SELECT id FROM work_item WHERE epic_id=?").all(admitted.epic.id)).toHaveLength(
-      0,
-    );
+    expect(
+      db.query("SELECT id FROM work_item WHERE delegation_id=?").all(admitted.epic.id),
+    ).toHaveLength(0);
     const approval = db
       .query<
         {
@@ -210,11 +210,11 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
           linear_issue_id: string;
           project_approval_id: string;
           owner_user_id: string;
-          epic_id: string;
+          delegation_id: string;
         },
         []
       >(
-        "SELECT linear_issue_id,project_approval_id,owner_user_id,epic_id FROM work_item ORDER BY linear_issue_id",
+        "SELECT linear_issue_id,project_approval_id,owner_user_id,delegation_id FROM work_item ORDER BY linear_issue_id",
       )
       .all();
     expect(items).toHaveLength(2);
@@ -222,20 +222,20 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     for (const item of items) {
       expect(item.project_approval_id).toBe(approval.id);
       expect(item.owner_user_id).toBe("lead");
-      expect(item.epic_id).not.toBe(admitted.epic.id);
-      expect(db.query("SELECT id FROM work_item WHERE epic_id=?").all(item.epic_id)).toHaveLength(
-        1,
-      );
+      expect(item.delegation_id).not.toBe(admitted.epic.id);
+      expect(
+        db.query("SELECT id FROM work_item WHERE delegation_id=?").all(item.delegation_id),
+      ).toHaveLength(1);
     }
     const claims = db
-      .query<{ issue_id: string; epic_id: string }, []>(
-        "SELECT issue_id,epic_id FROM project_approval_issue ORDER BY issue_id",
+      .query<{ issue_id: string; delegation_id: string }, []>(
+        "SELECT issue_id,delegation_id FROM project_approval_issue ORDER BY issue_id",
       )
       .all();
     const blocked = claims.find((claim) => claim.issue_id === "child-b")!;
     const blocker = claims.find((claim) => claim.issue_id === "child-a")!;
-    expect(projects.canDispatch(blocker.epic_id)).toBe(true);
-    expect(projects.canDispatch(blocked.epic_id)).toBe(false);
+    expect(projects.canDispatch(blocker.delegation_id)).toBe(true);
+    expect(projects.canDispatch(blocked.delegation_id)).toBe(false);
     const live = await tracker.loadEpic("child-a");
     expect(
       projects.scope("session-child-a", {
@@ -250,7 +250,7 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     ]);
     expect((await projects.scopeSnapshot("session-child-a", live)).subIssues).toEqual([]);
     db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id='child-a'");
-    expect(projects.canDispatch(blocked.epic_id)).toBe(true);
+    expect(projects.canDispatch(blocked.delegation_id)).toBe(true);
   } finally {
     await fixture.close();
   }
@@ -381,11 +381,7 @@ test("a sub-issue already managed in another session is rejected", async () => {
       now: fixture.clock.now(),
     });
     fixture.db.run(
-      `INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,version,created_at,task_key)
-       VALUES('other-epic','child-a','PAR-2','Child A','running',0,0,'initial:child-a')`,
-    );
-    fixture.db.run(
-      `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
        VALUES('other-item','other-epic','child-a','PAR-2','Child A','running','paws/par-2',0,0,'child-session')`,
     );
     ensureLinearSession(fixture.db, {
@@ -398,9 +394,11 @@ test("a sub-issue already managed in another session is rejected", async () => {
     await expect(
       fixture.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task"),
     ).rejects.toThrow("PAR-2 is already being worked on in another session.");
-    expect(fixture.db.query<{ id: string }, []>("SELECT id FROM epic").all()).toEqual([
-      { id: "other-epic" },
-    ]);
+    expect(
+      fixture.db
+        .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
+        .get(),
+    ).toBeNull();
     expect(fixture.db.query<{ id: string }, []>("SELECT id FROM work_item").all()).toEqual([
       { id: "other-item" },
     ]);

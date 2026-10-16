@@ -11,7 +11,8 @@ ROOT = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("installer", ROOT / "install.py")
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
-UNITS = ("paws-runner-broker.socket", "paws-runner-broker.service", "paws-runner.service")
+UNITS = ("paws-runner.service",)
+RETIRED = ("paws-runner-broker.socket", "paws-runner-broker.service")
 RESTART = installer.STATE / "debian-services.json"
 
 
@@ -54,10 +55,11 @@ def restore():
         active = json.loads(installer.release.read_regular(RESTART, 65536))
     except FileNotFoundError:
         active = []
-    if not isinstance(active, list) or any(unit not in UNITS for unit in active):
+    if not isinstance(active, list) or any(unit not in {*UNITS, *RETIRED} for unit in active):
         raise ValueError("Invalid runner restart state")
-    if active:
-        installer.release.command(["/usr/bin/systemctl", "start", "--", *active])
+    start = [unit for unit in active if unit in UNITS]
+    if start:
+        installer.release.command(["/usr/bin/systemctl", "start", "--", *start])
     RESTART.unlink(missing_ok=True)
 
 

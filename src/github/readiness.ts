@@ -66,6 +66,7 @@ type ReadinessInput = {
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
+  releaseWhilePending?: boolean;
 };
 
 export async function waitForMergeReadiness(input: ReadinessInput): Promise<Readiness> {
@@ -80,6 +81,7 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
       await input.onWait?.(result.message);
       previous = result.message;
     }
+    if (input.releaseWhilePending) return result;
     if (attempt < 269) await sleep(10_000);
   }
   return { outcome: "blocked", message: `merge timed out waiting for GitHub: ${previous}` };

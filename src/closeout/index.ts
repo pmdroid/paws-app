@@ -10,6 +10,13 @@ export type { VerdictRecorder } from "./report";
 export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
+export {
+  loggedSessionCloseout,
+  readSessionCloseout,
+  sessionCloseoutAccepted,
+  sessionCloseoutPath,
+  writeSessionCloseout,
+} from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
 export type {
   CloseoutOutputStream,

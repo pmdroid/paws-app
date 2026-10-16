@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type { EpicState, WorkBrief, WorkItemState } from "../core";
+import {
+  delegationIssueIdSql,
+  parentTaskKeySql,
+  type EpicState,
+  type WorkBrief,
+  type WorkItemState,
+} from "../core";
 import { saveTaskBlocks } from "../db";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
@@ -26,18 +32,9 @@ export type StoredWorkItem = {
   version: number;
 };
 
-type EpicRow = {
-  id: string;
-  linear_issue_id: string;
-  linear_identifier: string;
-  title: string;
-  state: EpicState;
-  version: number;
-};
-
 type ItemRow = {
   id: string;
-  epic_id: string;
+  delegation_id: string;
   linear_issue_id: string;
   linear_identifier: string;
   title: string;
@@ -47,25 +44,71 @@ type ItemRow = {
   version: number;
 };
 
-export function readEpicByLinearId(
+type DelegationRow = {
+  delegation_id: string;
+  linear_identifier: string;
+  title: string;
+};
+
+type ApprovalRow = {
+  id: string;
+  project_id: string;
+  preview: string;
+};
+
+export function findAcceptedIntake(
   db: Database,
   linearIssueId: string,
-  taskKey = `initial:${linearIssueId}`,
-): StoredEpic | null {
-  const row = db
-    .query<EpicRow, [string, string, string]>(
-      `SELECT id, linear_issue_id, linear_identifier, title, state, version
-       FROM epic WHERE linear_issue_id = ? AND (task_key = ? OR (task_key IS NULL AND ? = 'initial:' || linear_issue_id)) ORDER BY created_at, id LIMIT 1`,
+  taskKey: string,
+): { epic: StoredEpic; items: StoredWorkItem[] } | null {
+  const delegated = db
+    .query<DelegationRow, [string, string]>(
+      `SELECT delegation_id,
+              COALESCE(json_extract(brief, '$.epic.identifier'), linear_identifier) AS linear_identifier,
+              COALESCE(json_extract(brief, '$.epic.title'), title) AS title
+       FROM work_item
+       WHERE ${delegationIssueIdSql("work_item")} = ?
+         AND ${parentTaskKeySql("work_item")} = ?
+       ORDER BY created_at, id
+       LIMIT 1`,
     )
-    .get(linearIssueId, taskKey, taskKey);
-  return row === null ? null : mapEpic(row);
+    .get(linearIssueId, taskKey);
+  if (delegated) {
+    const items = listWorkItems(db, delegated.delegation_id);
+    return {
+      epic: {
+        id: delegated.delegation_id,
+        linearIssueId,
+        linearIdentifier: delegated.linear_identifier,
+        title: delegated.title,
+        state: delegationState(items),
+        version: 0,
+      },
+      items,
+    };
+  }
+  const adopted = readAdoptedParent(db, linearIssueId);
+  return adopted === null ? null : { epic: adopted, items: [] };
+}
+
+export function readAdoptedParent(db: Database, linearIssueId: string): StoredEpic | null {
+  const row = db
+    .query<ApprovalRow, [string]>(
+      `SELECT id, project_id, preview
+       FROM project_approval
+       WHERE source = 'parent' AND project_id = ? AND stopped_at IS NULL
+       ORDER BY created_at, id
+       LIMIT 1`,
+    )
+    .get(linearIssueId);
+  return row === null ? null : epicFromApproval(row);
 }
 
 export function listWorkItems(db: Database, epicId: string): StoredWorkItem[] {
   return db
     .query<ItemRow, [string]>(
-      `SELECT id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version
-       FROM work_item WHERE epic_id = ? ORDER BY position, linear_identifier`,
+      `SELECT id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version
+       FROM work_item WHERE delegation_id = ? ORDER BY position, linear_identifier`,
     )
     .all(epicId)
     .map(mapItem);
@@ -82,6 +125,7 @@ export function insertRunningQueue(
     briefs: ReadonlyMap<string, WorkBrief>;
     edges: readonly DependencyEdge[];
     now: number;
+    sessionKey?: string | null;
   },
 ): { epic: StoredEpic; items: StoredWorkItem[] } {
   const epicId = ulid(input.now);
@@ -96,25 +140,13 @@ export function insertRunningQueue(
     position,
     version: 0,
   }));
-  const inQueue = new Set(items.map((item) => item.linearIssueId));
+  const blockedIssues = new Set(items.map((item) => item.linearIssueId));
   const write = db.transaction(() => {
-    db.run(
-      `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
-       VALUES (?, ?, ?, ?, 'running', 0, ?, ?)`,
-      [
-        epicId,
-        input.linearIssueId,
-        input.identifier,
-        input.title,
-        input.now,
-        input.taskKey ?? `initial:${input.linearIssueId}`,
-      ],
-    );
     for (const item of items) {
       db.run(
         `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key
-         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?)`,
+           id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key, session_key
+         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?, ?)`,
         [
           item.id,
           item.epicId,
@@ -126,22 +158,14 @@ export function insertRunningQueue(
           input.now,
           JSON.stringify(input.briefs.get(item.linearIssueId)),
           `${input.taskKey ?? `initial:${input.linearIssueId}`}:item:${item.linearIssueId}`,
+          input.sessionKey ?? null,
         ],
-      );
-    }
-    for (const edge of input.edges) {
-      if (!inQueue.has(edge.blockerLinearIssueId) || !inQueue.has(edge.blockedLinearIssueId))
-        continue;
-      db.run(
-        `INSERT OR IGNORE INTO work_item_block (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
-         VALUES (?, ?, ?)`,
-        [epicId, edge.blockerLinearIssueId, edge.blockedLinearIssueId],
       );
     }
     saveTaskBlocks(
       db,
       items.map((item) => item.linearIssueId),
-      input.edges.filter((edge) => inQueue.has(edge.blockedLinearIssueId)),
+      input.edges.filter((edge) => blockedIssues.has(edge.blockedLinearIssueId)),
     );
   });
   write.immediate();
@@ -151,94 +175,17 @@ export function insertRunningQueue(
       linearIssueId: input.linearIssueId,
       linearIdentifier: input.identifier,
       title: input.title,
-      state: "running",
+      state: delegationState(items),
       version: 0,
     },
     items,
   };
 }
 
-export function insertDoneEpic(
-  db: Database,
-  input: {
-    linearIssueId: string;
-    identifier: string;
-    title: string;
-    now: number;
-    taskKey?: string;
-  },
-): StoredEpic {
-  const id = ulid(input.now);
-  db.run(
-    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
-     VALUES (?, ?, ?, ?, 'done', 0, ?, ?)`,
-    [
-      id,
-      input.linearIssueId,
-      input.identifier,
-      input.title,
-      input.now,
-      input.taskKey ?? `initial:${input.linearIssueId}`,
-    ],
-  );
-  return {
-    id,
-    linearIssueId: input.linearIssueId,
-    linearIdentifier: input.identifier,
-    title: input.title,
-    state: "done",
-    version: 0,
-  };
-}
-
-export function insertStalledEpic(
-  db: Database,
-  input: {
-    linearIssueId: string;
-    identifier: string;
-    title: string;
-    now: number;
-    taskKey?: string;
-  },
-): StoredEpic {
-  const id = ulid(input.now);
-  db.run(
-    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
-     VALUES (?, ?, ?, ?, 'stalled', 0, ?, ?)`,
-    [
-      id,
-      input.linearIssueId,
-      input.identifier,
-      input.title,
-      input.now,
-      input.taskKey ?? `initial:${input.linearIssueId}`,
-    ],
-  );
-  return {
-    id,
-    linearIssueId: input.linearIssueId,
-    linearIdentifier: input.identifier,
-    title: input.title,
-    state: "stalled",
-    version: 0,
-  };
-}
-
-function mapEpic(row: EpicRow): StoredEpic {
-  return {
-    id: row.id,
-    linearIssueId: row.linear_issue_id,
-    linearIdentifier: row.linear_identifier,
-    title: row.title,
-    state: row.state,
-    version: row.version,
-  };
-}
-
 function mapItem(row: ItemRow): StoredWorkItem {
   return {
     id: row.id,
-    epicId: row.epic_id,
+    epicId: row.delegation_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,
     title: row.title,
@@ -251,4 +198,32 @@ function mapItem(row: ItemRow): StoredWorkItem {
 
 function branchName(identifier: string): string {
   return `paws/${identifier.toLowerCase()}`;
+}
+
+function delegationState(items: readonly StoredWorkItem[]): EpicState {
+  if (
+    items.some(
+      (item) => item.state !== "completed" && item.state !== "merged" && item.state !== "cancelled",
+    )
+  )
+    return "running";
+  if (items.length > 0 && items.every((item) => item.state === "cancelled")) return "cancelled";
+  return "done";
+}
+
+function epicFromApproval(row: ApprovalRow): StoredEpic {
+  const preview = JSON.parse(row.preview) as {
+    project?: { name?: unknown; identifier?: unknown };
+  };
+  const name = preview.project?.name;
+  const identifier = preview.project?.identifier;
+  return {
+    id: row.id,
+    linearIssueId: row.project_id,
+    linearIdentifier:
+      typeof identifier === "string" && identifier.length > 0 ? identifier : row.project_id,
+    title: typeof name === "string" && name.length > 0 ? name : row.project_id,
+    state: "done",
+    version: 0,
+  };
 }

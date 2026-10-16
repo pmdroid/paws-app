@@ -163,6 +163,9 @@ async function handle(message: {
         env: recordServer.env,
       };
     });
+    const sessionMeta = message.params?.["_meta"];
+    if (sessionMeta) state.sessionMeta = sessionMeta;
+    if (process.env.CODEX_HOME) state.codexHome = process.env.CODEX_HOME;
     persist();
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: configOptions() } });
     return;
@@ -311,6 +314,27 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      persist();
+      continue;
+    }
+    if (step.type === "get_closeout" || step.type === "run_closeout") {
+      const server = state.mcpServers[0];
+      try {
+        if (!server?.command) throw new Error("no mcp server");
+        const text = await callHostTool(
+          server,
+          step.type,
+          step.type === "run_closeout"
+            ? { id: step.id, ...(step.model ? { model: step.model } : {}) }
+            : {},
+        );
+        state.closeouts = [...(state.closeouts ?? []), text];
+      } catch (error) {
+        state.closeouts = [
+          ...(state.closeouts ?? []),
+          error instanceof Error ? error.message : String(error),
+        ];
       }
       persist();
       continue;

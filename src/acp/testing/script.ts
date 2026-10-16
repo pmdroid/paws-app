@@ -29,6 +29,8 @@ export type FakeStep =
       mimeType?: string;
       attachToIssue?: boolean;
     }
+  | { type: "get_closeout" }
+  | { type: "run_closeout"; id: string; model?: string }
   | { type: "hang" }
   | {
       type: "end";
@@ -75,6 +77,8 @@ export interface FakeResult {
     args?: string[];
     env?: Array<{ name: string; value: string }>;
   }>;
+  sessionMeta?: unknown;
+  codexHome?: string;
   permissions: Array<{ toolCallId?: string; outcome: unknown }>;
   fs: Array<{ op: "read" | "write"; path: string; ok: boolean; error?: string; content?: string }>;
   terminals: Array<{
@@ -85,6 +89,7 @@ export interface FakeResult {
     exitCode?: number | null;
   }>;
   askTeam?: { ok: boolean; text?: string; error?: string };
+  closeouts?: string[];
   plan?: { ok: boolean; text?: string; error?: string };
   artifact?: { ok: boolean; text?: string; error?: string };
   tools?: string[];

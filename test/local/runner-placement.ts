@@ -65,6 +65,15 @@ export async function probeRunnerPlacement(
     "fixture/repository",
     "team",
   ]);
+  db.run(
+    `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
+     VALUES('approval',?,'project',?,?,'placement','{}',?,?,?)`,
+    [workspace.id, owner, owner, now, now, now],
+  );
+  db.run("UPDATE work_item SET owner_user_id=?, project_approval_id='approval' WHERE id=?", [
+    owner,
+    item.id,
+  ]);
   for (const [id, user] of [
     ["own", "owner"],
     ["shared", "colleague"],
@@ -162,7 +171,7 @@ export async function probeRunnerPlacement(
     role: PlacementRequest["role"] = "implementer",
     model = "implementation-model",
   ) => {
-    const profile = purpose === "check" ? undefined : { agent: "codex" as const, model };
+    const profile = { agent: "codex" as const, model };
     await placement.candidates({ ...request, purpose, role, profile });
     observeInstallation("team");
     const commandId = workspaceId();
@@ -461,17 +470,16 @@ export async function probeRunnerPlacement(
     let selected = (await placement.candidates(request)).find((runner) => runner.id === "own");
     assert.equal(selected?.memberId, owner);
     lifecycle.issue.assigneeId = "colleague";
-    assert(!(await ids()).includes("own"));
-    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
     selected = (await placement.candidates(request)).find((runner) => runner.id === "own");
-    assert.equal(selected?.memberId, colleague);
+    assert.equal(selected?.memberId, owner);
+    lifecycle.issue.assigneeId = "owner";
     const personalCommand = await start("own");
     const personalUsage = db
       .query<{ owner: string; seat: string }, [string]>(
         "SELECT owner_user_id AS owner,seat FROM runner_execution_usage WHERE command_id=?",
       )
       .get(personalCommand)!;
-    assert.equal(personalUsage.owner, colleague);
+    assert.equal(personalUsage.owner, owner);
     assert.equal(personalUsage.seat, "personal");
     placement.finished({
       commandId: personalCommand,
@@ -483,12 +491,17 @@ export async function probeRunnerPlacement(
       }),
     });
     assert(!(await ids()).includes("own"));
-    lifecycle.issue.assigneeId = "owner";
+    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
+    assert(!(await ids()).includes("own"));
+    db.run(
+      "UPDATE runner_member_account SET cooldown_until=0 WHERE runner_id='own' AND user_id=?",
+      [owner],
+    );
     assert((await ids()).includes("own"));
     db.run("UPDATE runner_member_account SET connected=0 WHERE user_id=?", [owner]);
     assert(!(await ids()).includes("own"));
     observe(
-      "Per-member accounts follow the assignee, host consent and individual quota without shared credential fallback",
+      "Per-member accounts follow the item owner, host consent and individual quota without shared credential fallback",
       true,
       { owner, colleague },
     );

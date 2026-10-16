@@ -35,7 +35,8 @@ export function createProjectExecutionGuard(db: Database, current: () => Runtime
       const active = current();
       return active
         ? active.canDispatch(epicId)
-        : db.query("SELECT 1 FROM project_approval_issue WHERE epic_id=?").get(epicId) === null;
+        : db.query("SELECT 1 FROM project_approval_issue WHERE delegation_id=?").get(epicId) ===
+            null;
     },
     authorizeIntake(sessionId, snapshot) {
       return current()?.authorizeIntake(sessionId, snapshot) ?? !reserved(sessionId);

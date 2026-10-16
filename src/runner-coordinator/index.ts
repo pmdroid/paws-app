@@ -16,7 +16,6 @@ import { createRunnerResults } from "../runner-results";
 import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
-import { createRunnerChecks, createRunnerChecksHttp } from "../runner-checks";
 import type { WorkspacePrincipal } from "../workspace";
 import { createRunnerWork, createRunnerWorkHttp } from "../runner-work";
 import type { GitHubApp } from "../github";
@@ -96,8 +95,6 @@ export async function openRunnerCoordinator(options: {
   const login = createRunnerLogin({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
   const models = createRunnerModels({ db: options.db, work, now: options.now });
-  const checks = createRunnerChecks({ db: options.db, work, now: options.now });
-  const checksHttp = createRunnerChecksHttp(checks);
   const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
@@ -129,7 +126,6 @@ export async function openRunnerCoordinator(options: {
         (await helpers.fetch(request, runnerId)) ??
         (await health.fetch(request, runnerId)) ??
         (await login.fetch(request, runnerId)) ??
-        (await checksHttp(request, runnerId)) ??
         (await repository?.(request, runnerId)) ??
         (await artifacts.fetch(request, runnerId)) ??
         (await inputs.fetch(request, runnerId)) ??
@@ -167,7 +163,6 @@ export async function openRunnerCoordinator(options: {
     models,
     login,
     helpers,
-    checks,
     artifacts,
     inputs,
     transcripts,

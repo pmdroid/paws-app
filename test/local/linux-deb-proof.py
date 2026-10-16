@@ -82,13 +82,11 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
         config.chmod(0o640)
         os.chown(config, 0, runner.pw_gid)
         observations.append({"name": "native Debian package installs real Bun and provider launchers with separate accounts", "passed": True})
-        verifier_files = {str(path): path.read_bytes() for path in pathlib.Path("/var/lib/paws-check-control").rglob("*") if path.is_file()}
         inode = pathlib.Path("/opt/paws-runner/current").resolve().stat().st_ino
         install(first)
         assert pathlib.Path("/opt/paws-runner/current").resolve().stat().st_ino == inode
-        assert all(pathlib.Path(path).read_bytes() == content for path, content in verifier_files.items())
-        observations.append({"name": "same-version dpkg reinstall preserves verified runtime inode and verification identity", "passed": True})
-        active = ["paws-runner.service", "paws-runner-broker.socket"]
+        observations.append({"name": "same-version dpkg reinstall preserves the runtime inode", "passed": True})
+        active = ["paws-runner.service"]
         services.write_text(json.dumps(active))
         run(["/usr/bin/python3", "-I", "-B", "/usr/lib/paws-runner-package/deb-control.py", "configure"])
         assert set(json.loads(services.read_text())) == set(active)

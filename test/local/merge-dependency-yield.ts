@@ -29,10 +29,7 @@ export async function probeMergeDependencyYield(
     const clock = new FakeClock(1000);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','parent','WS-1','Workspace','running',1000)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','WS-2','Guarded','merge_queue','paws/ws-2',0,1000,'session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','WS-2','Guarded','merge_queue','paws/ws-2',0,1000,'session')",
     );
     recordLinearInstallation(db, {
       organizationId: "org",

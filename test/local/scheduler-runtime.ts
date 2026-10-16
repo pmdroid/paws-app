@@ -34,25 +34,24 @@ export async function probeSchedulerRuntime(
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   };
-  db.run(
-    "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','parent','TICK-1','Tick','running',1000)",
-  );
   for (const [id, state, position] of [
     ["original", "merge_queue", 0],
     ["blocker", "queued", 1],
   ] as const) {
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
       [id, id, id, id, state, `paws/${id}`, position],
     );
     bindWorkItemRepository(db, id, repository);
     saveSchedulingContext(db, { itemId: id, projectId: "project", paths: ["src/shared"] });
   }
-  db.run("INSERT INTO work_item_block VALUES('epic','blocker','original')");
+  db.run(
+    "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','original')",
+  );
   ensureLinearSession(db, { sessionId: "session", issueId: "parent", now: clock.now() });
   bindLinearSessionTask(db, "session", "epic");
   activateLinearItem(db, "session", "original");
-  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"], concurrency: 1 });
+  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"] });
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
   registerScheduler(heldLoop, options, () => {

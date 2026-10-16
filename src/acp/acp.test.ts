@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -289,7 +289,7 @@ test.each([
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
   expect(trace.askTeam).toEqual({ ok: true, text: "yes" });
-  expect(trace.tools).toEqual(["ask_team"]);
+  expect(trace.tools).toEqual(["ask_team", "get_closeout", "run_closeout"]);
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
 });
@@ -385,7 +385,7 @@ test("publish_artifact publishes a snapshot through MCP without an ask_team hook
   expect(context?.worktreePath).toBe(layout.worktree);
   expect(context?.role).toBe("implementer");
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["publish_artifact"]);
+  expect(trace.tools).toEqual(["publish_artifact", "get_closeout", "run_closeout"]);
   expect(trace.artifact).toEqual({
     ok: true,
     text: "![shot\\[1\\].png](<https://uploads.example/asset.png>)",
@@ -500,7 +500,7 @@ test("update_plan replaces the working checklist through the host tool", async (
     },
   });
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["update_plan"]);
+  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
   expect(trace.plan).toEqual({ ok: true, text: "Plan updated." });
   expect(plans).toEqual([
     [
@@ -567,9 +567,140 @@ test("ask_team and publish_artifact share one MCP server", async () => {
   });
   const trace = await readResult(files.resultPath);
   expect(trace.mcpServers).toHaveLength(1);
-  expect(trace.tools).toEqual(["ask_team", "publish_artifact"]);
+  expect(trace.tools).toEqual(["ask_team", "publish_artifact", "get_closeout", "run_closeout"]);
   expect(trace.askTeam?.text).toBe("yes");
   expect(trace.artifact?.ok).toBe(true);
+});
+
+test("get_closeout lists the pending check and run_closeout runs it", async () => {
+  const layout = await layoutRepo();
+  await mkdir(join(layout.worktree, ".agents"), { recursive: true });
+  await writeFile(
+    join(layout.worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: check",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["true"]',
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "get_closeout" },
+      { type: "run_closeout", id: "check" },
+      { type: "get_closeout" },
+      { type: "end" },
+    ],
+  });
+  const result = await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-tool",
+    prompt: "Verify the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
+  const first = JSON.parse(trace.closeouts?.[0] ?? "{}") as { pending?: string[] };
+  const second = JSON.parse(trace.closeouts?.[2] ?? "{}") as {
+    pending?: string[];
+    required?: Array<{ id: string; status: string }>;
+  };
+  expect(first.pending).toEqual(["check"]);
+  expect(trace.closeouts?.[1]).toBe("check passed.");
+  expect(second.pending).toEqual([]);
+  expect(second.required?.find((item) => item.id === "check")?.status).toBe("passed");
+  expect(JSON.parse(result.closeoutReport ?? "null")).toMatchObject({
+    pending: [],
+    blocked: null,
+  });
+});
+
+test("a read-only session lists get_closeout and not run_closeout", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "get_closeout" }, { type: "end" }],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-readonly",
+    prompt: "Answer.",
+    readOnly: true,
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    askTeam: { ask: async () => ({ answer: "yes" }) },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["ask_team", "get_closeout"]);
+});
+
+test("run_closeout refuses a command the terminal guard denies", async () => {
+  const layout = await layoutRepo();
+  const secret = join(layout.home, ".ssh", "id_rsa");
+  await writeFile(secret, "secret-key\n");
+  await mkdir(join(layout.worktree, ".agents"), { recursive: true });
+  await writeFile(
+    join(layout.worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: leak",
+      "    kind: command",
+      "    gate: beforePR",
+      `    exec: ${JSON.stringify(["cat", secret])}`,
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "get_closeout" },
+      { type: "run_closeout", id: "leak" },
+      { type: "get_closeout" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-denied",
+    prompt: "Verify the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.closeouts?.[1]).toContain("path is under ~/.ssh");
+  expect(trace.closeouts?.join("\n")).not.toContain("secret-key");
+  const second = JSON.parse(trace.closeouts?.[2] ?? "{}") as {
+    required?: Array<{ id: string; status: string; failed_attempts: number }>;
+  };
+  expect(second.required?.find((item) => item.id === "leak")).toMatchObject({
+    status: "missing",
+    failed_attempts: 0,
+  });
 });
 
 test("timeout kills an agent that ignores cancel and leaves changes uncommitted", async () => {
@@ -1627,6 +1758,105 @@ test("connection probe fails when the agent cannot identify its default model", 
     if (prior === undefined) delete process.env.PAWS_CODEX_ACP;
     else process.env.PAWS_CODEX_ACP = prior;
   }
+});
+
+test("Claude refuses finish through a session stop hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  const result = await runAgent({
+    role: "implementer",
+    profile: { agent: "claude", model: null },
+    itemId: "ENG-1",
+    runId: "claude-stop",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  expect(result.stopReason).toBe("end_turn");
+  const trace = await readResult(files.resultPath);
+  const meta = trace.sessionMeta as {
+    claudeCode: {
+      options: {
+        settingSources: string[];
+        env: { CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: string };
+        settings: {
+          hooks: {
+            Stop: Array<{ hooks: Array<{ command: string; args: string[]; type: string }> }>;
+          };
+        };
+      };
+    };
+  };
+  const hook = meta.claudeCode.options.settings.hooks.Stop[0]?.hooks[0];
+  const scriptPath = join(layout.pawsRoot, "runs", "claude-stop", "closeout-stop");
+  expect(meta.claudeCode.options.settingSources).toEqual(["user", "project"]);
+  expect(meta.claudeCode.options.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP).toBe("100");
+  expect(hook).toMatchObject({ type: "command", args: [scriptPath] });
+  expect(await readFile(scriptPath, "utf8")).toContain(
+    join(layout.pawsRoot, "runs", "claude-stop", "ask-team.sock"),
+  );
+  expect(trace.codexHome).toBe(process.env.CODEX_HOME);
+});
+
+test("Codex refuses finish through a trusted stop hook in a session home", async () => {
+  const layout = await layoutRepo();
+  const source = join(layout.root, "codex-source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "auth.json"), '{"token":"keep"}\n');
+  await writeFile(join(source, "config.toml"), "[features]\nhooks = false\n");
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  await runAgent({
+    role: "implementer",
+    profile: { agent: "codex", model: null },
+    itemId: "ENG-1",
+    runId: "codex-stop",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: { ...agentEnv(), CODEX_HOME: source },
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  const overlay = join(layout.pawsRoot, "runs", "codex-stop", "codex-home");
+  expect(trace.codexHome).toBe(overlay);
+  expect(trace.sessionMeta).toBeUndefined();
+  expect(await readlink(join(overlay, "auth.json"))).toBe(join(source, "auth.json"));
+  expect(await readFile(join(source, "config.toml"), "utf8")).toContain("hooks = false");
+  expect(await readFile(join(overlay, "config.toml"), "utf8")).toContain("hooks = true");
+  expect(await readFile(join(source, "auth.json"), "utf8")).toBe('{"token":"keep"}\n');
+});
+
+test("a read-only session does not install a closeout stop hook", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  const result = await runAgent({
+    role: "reviewer",
+    profile: { agent: "claude", model: null },
+    itemId: "ENG-1",
+    runId: "readonly-stop",
+    prompt: "review",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    readOnly: true,
+    updatePlan: { update: async () => undefined },
+  });
+  expect(result.closeoutReport).toBeUndefined();
+  const trace = await readResult(files.resultPath);
+  expect(trace.sessionMeta).toBeUndefined();
+  const script = join(layout.pawsRoot, "runs", "readonly-stop", "closeout-stop");
+  await expect(lstat(script)).rejects.toThrow();
 });
 
 async function writeGrokConfig(pawsRoot: string, allowApiKey: boolean): Promise<void> {

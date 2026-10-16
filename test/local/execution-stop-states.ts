@@ -323,9 +323,6 @@ export async function probeExecutionStopStates(root: string) {
                 agentForItem() {
                   throw new Error("Unexpected item dispatch");
                 },
-                closeoutForItem() {
-                  throw new Error("Unexpected verification dispatch");
-                },
               },
             }
           : {}),

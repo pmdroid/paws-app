@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLinearSession, getWorkItem, getTaskLinearActor } from "../src/db";
+import {
+  ensureLinearSession,
+  getWorkItem,
+  delegatedLinearUserId,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+} from "../src/db";
 import { createProjectFixture } from "./local/project-fixture";
 import type { AcceptedLinearEvent } from "../src/linear";
 
@@ -19,7 +25,7 @@ test("approved project sessions use canonical single-issue intake, dependency ho
     const first = progress.find((claim) => claim.issueId === "one")!;
     const second = progress.find((claim) => claim.issueId === "two")!;
     expect(db.query("SELECT * FROM work_item").all()).toHaveLength(2);
-    expect(getTaskLinearActor(db, first.items[0]!.id)).toBe("lead");
+    expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("actor");
     expect(projects.actor("session-one")).toBe("lead");
     expect(projects.canDispatch(second.epicId!)).toBe(false);
     expect(projects.canDispatch(first.epicId!)).toBe(true);
@@ -50,9 +56,23 @@ test("approved project sessions use canonical single-issue intake, dependency ho
   }
 });
 
-test("Linear project stop requires an approved steering role even while paused", async () => {
+test("a plain project member can answer or stop and an observer cannot", async () => {
   const f = createProjectFixture();
   try {
+    for (const [id, role] of [
+      ["plain", "member"],
+      ["observer", "observer"],
+    ] as const) {
+      putWorkspaceUser(f.db, { id, linearUserId: id, name: id, email: `${id}@example.test` });
+      syncWorkspaceMember(f.db, {
+        workspaceId: "workspace",
+        userId: id,
+        role,
+        active: true,
+        teamIds: ["team"],
+        now: f.clock.now(),
+      });
+    }
     const approval = await f.projects.preview(
       f.actor,
       {
@@ -69,30 +89,51 @@ test("Linear project stop requires an approved steering role even while paused",
     );
     f.projects.register(f.jobs);
     await f.jobs.tick();
-    const lead = { ...f.actor, userId: "lead" };
-    await f.projects.control(lead, approval.id, "pause");
-    const event: AcceptedLinearEvent = {
-      dedupeKey: "stop",
+    const owners = f.db
+      .query<{ owner_user_id: string }, []>("SELECT owner_user_id FROM work_item")
+      .all();
+    expect(owners).toHaveLength(2);
+    expect(owners.every((row) => row.owner_user_id === "actor")).toBe(true);
+    await f.orchestrator.intakeLinearTask("one", "session-one", "task-one");
+    expect(
+      f.db
+        .query<{ owner_user_id: string }, []>("SELECT owner_user_id FROM work_item")
+        .all()
+        .every((row) => row.owner_user_id === "actor"),
+    ).toBe(true);
+    const prompted: AcceptedLinearEvent = {
+      dedupeKey: "answer",
       deliveryId: null,
       source: "poll",
       action: "prompted",
       sessionId: "session-one",
       issueId: "one",
-      activityId: "activity",
-      actorId: "actor",
-      body: "Stop",
-      signal: "stop",
+      activityId: "answer",
+      actorId: "plain",
+      body: "Ship it",
+      signal: null,
       updatedAtMs: f.clock.now(),
       payload: "{}",
     };
-    expect(await f.projects.authorizeEvent(event)).toBe(false);
-    expect(await f.projects.authorizeEvent({ ...event, actorId: "lead" })).toBe(true);
-    await expect(f.projects.control(f.actor, approval.id, "stop")).rejects.toThrow(
-      "steering access",
-    );
-    expect(
-      f.db.query("SELECT 1 FROM workspace_access_audit WHERE action='access.denied'").all(),
-    ).toHaveLength(2);
+    const stop: AcceptedLinearEvent = {
+      ...prompted,
+      dedupeKey: "stop",
+      activityId: "stop",
+      body: "Stop",
+      signal: "stop",
+    };
+    expect(await f.projects.authorizeEvent(prompted)).toBe(true);
+    expect(await f.projects.authorizeEvent({ ...prompted, actorId: "observer" })).toBe(false);
+    await f.projects.control({ ...f.actor, userId: "lead" }, approval.id, "pause");
+    expect(await f.projects.authorizeEvent(stop)).toBe(true);
+    expect(await f.projects.authorizeEvent({ ...stop, actorId: "observer" })).toBe(false);
+    await expect(
+      f.projects.control({ workspaceId: "workspace", userId: "observer" }, approval.id, "stop"),
+    ).rejects.toThrow("steering access");
+    const itemId = f.projects.progress(approval.id).find((claim) => claim.issueId === "one")!
+      .items[0]!.id;
+    await f.projects.control({ workspaceId: "workspace", userId: "plain" }, approval.id, "stop");
+    expect(getWorkItem(f.db, itemId)?.state).toBe("cancelled");
   } finally {
     await f.close();
   }

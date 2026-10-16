@@ -205,6 +205,7 @@ export async function probeRunnerBackend(
       observedAtMs: now,
     });
     bindLinearSessionTask(db, sessionId, record.epicId, { actorId: "owner" });
+    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     bindWorkItemRepository(db, id, {
       owner: "fixture",
       repo: "repository",

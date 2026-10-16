@@ -42,7 +42,7 @@ export type WorkItemRecord = {
 type ItemSql = {
   id: string;
   task_key: string | null;
-  epic_id: string;
+  delegation_id: string;
   linear_issue_id: string;
   linear_identifier: string;
   title: string;
@@ -321,7 +321,7 @@ function mapItem(row: ItemSql): WorkItemRecord {
   return {
     id: row.id,
     taskKey: row.task_key,
-    epicId: row.epic_id,
+    epicId: row.delegation_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,
     title: row.title,
