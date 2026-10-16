@@ -38,7 +38,7 @@ Watch the issue comments (each one starts with `Paws:`):
 2. ENG-2 fails Closeout once, the implementer commits a fix, Closeout accepts, a pull request opens (`Fixes ENG-2` on the first line, `Fix attempts: 1` in the body), and Paws squash-merges it.
 3. ENG-3 opens and merges after ENG-2.
 4. ENG-4 parks on a question comment. Reply in that thread with `yes` or `no`, or with your own words. The run continues with that answer.
-5. ENG-4 merges. The thread gets `Epic complete.`
+5. ENG-4 merges.
 
 With gh authentication and the Claude implementer, doctor includes `git`, `bun`, `home`, `linear`, `linear-mode`, `linear-team`, `linear-label`, `gh-login`, `gh-push`, `claude-acp`, `codex-acp`, `claude`, `codex`, `closeout`, and `repository`. `linear-webhook`, `public-url`, `ngrok`, and `github-app` appear only when webhooks or GitHub App auth are turned on.
 

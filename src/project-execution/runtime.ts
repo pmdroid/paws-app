@@ -58,7 +58,7 @@ export function createApprovedProjects(input: {
   repository: (name: string) => RepositoryBinding | null;
   saveBlockerPolicies: (input: {
     workspaceId: string;
-    epicId: string;
+    itemId: string;
     userId: string;
     policies: readonly ProjectBlockerPolicy[];
   }) => void;
@@ -70,13 +70,13 @@ export function createApprovedProjects(input: {
   function claims(id: string) {
     return db
       .query<Claim, [string]>(`SELECT approval_id AS approvalId,issue_id AS issueId,
-      session_id AS sessionId,epic_id AS epicId FROM project_approval_issue WHERE approval_id=? ORDER BY issue_id`)
+      session_id AS sessionId,delegation_id AS epicId FROM project_approval_issue WHERE approval_id=? ORDER BY issue_id`)
       .all(id);
   }
   function claimForSession(sessionId: string) {
     return db
       .query<Claim, [string]>(`SELECT approval_id AS approvalId,issue_id AS issueId,
-      session_id AS sessionId,epic_id AS epicId FROM project_approval_issue WHERE session_id=?`)
+      session_id AS sessionId,delegation_id AS epicId FROM project_approval_issue WHERE session_id=?`)
       .get(sessionId);
   }
   function authority(approval: ProjectApproval) {
@@ -171,7 +171,7 @@ export function createApprovedProjects(input: {
   function canDispatch(epicId: string): boolean {
     const claim = db
       .query<{ approvalId: string; issueId: string }, [string]>(
-        "SELECT approval_id AS approvalId,issue_id AS issueId FROM project_approval_issue WHERE epic_id=?",
+        "SELECT approval_id AS approvalId,issue_id AS issueId FROM project_approval_issue WHERE delegation_id=?",
       )
       .get(epicId);
     if (!claim) return true;
@@ -186,7 +186,7 @@ export function createApprovedProjects(input: {
           continue;
         if (
           !db
-            .query(`SELECT 1 FROM project_approval_issue c JOIN work_item i ON i.epic_id=c.epic_id
+            .query(`SELECT 1 FROM project_approval_issue c JOIN work_item i ON i.delegation_id=c.delegation_id
           LEFT JOIN work_item_task t ON t.item_id=i.id WHERE c.approval_id=? AND c.issue_id=?
           AND i.linear_issue_id=c.issue_id AND i.cancel_requested=0
           AND (i.state='merged' OR (i.state='completed' AND t.mode IN ('answer','artifact')))`)
@@ -344,7 +344,7 @@ export function createApprovedProjects(input: {
         items: claim.epicId
           ? db
               .query<{ id: string; state: string; title: string }, [string]>(
-                "SELECT id,state,title FROM work_item WHERE epic_id=? ORDER BY position",
+                "SELECT id,state,title FROM work_item WHERE delegation_id=? ORDER BY position",
               )
               .all(claim.epicId)
           : [],
@@ -388,14 +388,14 @@ export function createApprovedProjects(input: {
         approval.actorId,
         item.id,
       ]);
-      db.run("UPDATE project_approval_issue SET epic_id=? WHERE session_id=?", [
+      db.run("UPDATE project_approval_issue SET delegation_id=? WHERE session_id=?", [
         result.epic.id,
         sessionId,
       ]);
       if (approval.source === "parent") return;
       input.saveBlockerPolicies({
         workspaceId: approval.workspaceId,
-        epicId: result.epic.id,
+        itemId: item.id,
         userId: approval.actorId,
         policies: (approval.preview.selection.blockers ?? []).filter((policy) =>
           approval.preview.edges.some(
@@ -413,7 +413,7 @@ export function createApprovedProjects(input: {
         .query<
           Claim,
           [string, string]
-        >(`SELECT c.approval_id AS approvalId,c.issue_id AS issueId,c.session_id AS sessionId,c.epic_id AS epicId
+        >(`SELECT c.approval_id AS approvalId,c.issue_id AS issueId,c.session_id AS sessionId,c.delegation_id AS epicId
         FROM project_approval_issue c JOIN workspace w ON w.id=c.workspace_id WHERE c.issue_id=? AND c.released_at IS NULL AND w.linear_organization_id=?`)
         .get(event.issueId, session?.organizationId ?? "");
       if (!claim) return undefined;
@@ -435,13 +435,7 @@ export function createApprovedProjects(input: {
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
             .get(event.actorId ?? "");
           const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
-          if (
-            !member?.active ||
-            member.role === "observer" ||
-            (member.userId !== approval.leadUserId &&
-              !approval.preview.selection.steeringRoles.includes(member.role))
-          )
-            return deny();
+          if (!member?.active || member.role === "observer") return deny();
         }
         if (event.signal === "stop") return true;
         await refreshAuthority(approval, AbortSignal.timeout(30_000));
@@ -484,9 +478,7 @@ export function createApprovedProjects(input: {
         !saved ||
         saved.workspaceId !== actor.workspaceId ||
         !member?.active ||
-        member.role === "observer" ||
-        (actor.userId !== saved.leadUserId &&
-          !saved.preview.selection.steeringRoles.includes(member.role))
+        member.role === "observer"
       ) {
         auditWorkspaceAccess(db, {
           ...actor,
@@ -521,8 +513,6 @@ export function createApprovedProjects(input: {
           return (
             current.stoppedAt === null &&
             currentMember.role !== "observer" &&
-            (actor.userId === current.leadUserId ||
-              current.preview.selection.steeringRoles.includes(currentMember.role)) &&
             (action === "pause" ? current.pausedAt !== null : current.pausedAt === null)
           );
         } catch {
@@ -555,7 +545,7 @@ export function createApprovedProjects(input: {
             if (!claim.epicId) continue;
             for (const item of db
               .query<{ id: string }, [string]>(
-                "SELECT id FROM work_item WHERE epic_id=? AND state NOT IN ('merged','completed','cancelled')",
+                "SELECT id FROM work_item WHERE delegation_id=? AND state NOT IN ('merged','completed','cancelled')",
               )
               .all(claim.epicId))
               submitCommand(db, input.bus, {
@@ -569,7 +559,7 @@ export function createApprovedProjects(input: {
       for (const claim of currentClaims) {
         if (!claim.epicId) continue;
         for (const item of db
-          .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE epic_id=?")
+          .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE delegation_id=?")
           .all(claim.epicId)) {
           if (action === "stop") await port.interruptItem(item.id);
           else if (action === "pause" && getWorkItem(db, item.id)?.state === "running")

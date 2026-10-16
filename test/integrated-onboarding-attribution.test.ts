@@ -226,7 +226,7 @@ test("onboarded authoritative creator resumes once only with current App and con
     expect(continuations).toBe(1);
     expect(dbApi.listWorkItems(db)).toHaveLength(1);
     const itemId = dbApi.listWorkItems(db)[0]!.id;
-    expect(dbApi.getTaskLinearActor(db, itemId)).toBe("creator");
+    expect(dbApi.delegatedLinearUserId(db, itemId)).toBe("creator");
     expect(
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);

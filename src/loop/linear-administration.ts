@@ -11,7 +11,6 @@ import {
   listLinearInstallationSessions,
   immediate,
   hasLinearNotification,
-  linearSessionForEpic,
   linearSessionsForDelegatedTeams,
   listWorkItems,
   recordLinearNotification,
@@ -105,7 +104,7 @@ export async function handleLinearAdministration(
       interrupted.add(id);
     }
     for (const item of listWorkItems(db)) {
-      const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId);
+      const sessionId = item.sessionKey;
       if (
         sessionId === null ||
         !affected.has(sessionId) ||

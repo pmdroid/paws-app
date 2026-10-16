@@ -27,13 +27,8 @@ export function insertQueuedItem(
   const now = input.now ?? 0;
   const epicId = `epic-${id}`;
   db.run(
-    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, created_at)
-     VALUES (?, ?, ?, ?, 'running', ?)`,
-    [epicId, `lin-${id}`, id, input.title ?? "Work item", now],
-  );
-  db.run(
     `INSERT INTO work_item (
-       id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at
+       id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at
      ) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?)`,
     [
       id,

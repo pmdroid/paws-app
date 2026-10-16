@@ -3,24 +3,14 @@ export type { IssueBrief, WorkBrief } from "./brief";
 export { TASK_MODES, type TaskMode } from "./task";
 export type { RepositoryBinding } from "./repository";
 export {
-  EPIC_EVENTS,
   EPIC_STATES,
-  TERMINAL_EPIC_STATES,
   TERMINAL_WORK_ITEM_STATES,
   WORK_ITEM_EVENTS,
   WORK_ITEM_STATES,
-  isTerminalEpicState,
   isTerminalWorkItemState,
 } from "./states";
-export type {
-  EpicEvent,
-  EpicState,
-  TerminalEpicState,
-  TerminalWorkItemState,
-  WorkItemEvent,
-  WorkItemState,
-} from "./states";
-export { EPIC_EDGES, WORK_ITEM_EDGES, transition, transitionEpic } from "./transition";
+export type { EpicState, TerminalWorkItemState, WorkItemEvent, WorkItemState } from "./states";
+export { WORK_ITEM_EDGES, transition } from "./transition";
 export type { TransitionErr, TransitionOk, TransitionResult } from "./transition";
 export type {
   Checkpoint,
@@ -72,6 +62,7 @@ export {
   type StartupDecision,
   type WakeDecision,
 } from "./recovery";
+export { handoffNote } from "./handoff";
 
 export {
   appBotCommitIdentity,
@@ -89,3 +80,10 @@ export {
   type GitCommitPolicy,
   type VerifiedGitHubCoauthor,
 } from "./commit-policy";
+
+export {
+  delegationHasOpenWork,
+  delegationIssueIdSql,
+  parentIssueIdSql,
+  parentTaskKeySql,
+} from "./delegation";

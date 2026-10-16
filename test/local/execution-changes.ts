@@ -92,15 +92,11 @@ export async function probeExecutionChanges(
     ...patch,
   });
   const seed = (id: string, states: readonly string[]) => {
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,?,?)",
-      [id, id, id, id, "running", clock.now()],
-    );
     ensureLinearSession(db, { sessionId: `${id}-session`, issueId: id, now: clock.now() });
     bindLinearSessionTask(db, `${id}-session`, id);
     states.forEach((state, index) =>
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
         [
           `${id}-${index}`,
           id,
@@ -232,7 +228,7 @@ export async function probeExecutionChanges(
     );
     seed("blocker", ["queued", "queued"]);
     db.run(
-      "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','blocker-0','blocker-1')",
+      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker-0','blocker-1')",
     );
     orchestrator.applyEpicChanges(changes("blocker", { canceledItemIds: ["blocker-0"] }));
     observe(

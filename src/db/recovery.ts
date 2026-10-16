@@ -1,9 +1,16 @@
 import type { Database } from "bun:sqlite";
-import { decideStartup, type StartupDecision, type WorkItemState } from "../core";
+import {
+  decideStartup,
+  handoffNote,
+  JOB_KIND,
+  type StartupDecision,
+  type WorkItemState,
+} from "../core";
 import { applyDecision } from "./decisions";
+import { enqueueJobOnce } from "./jobs";
 import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
-import { markRun } from "./runs";
+import { markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
 import { getTaskMode } from "./tasks";
 
@@ -23,6 +30,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     const items = listWorkItemsByStates(db, STARTUP_STATES);
     const decisions: StartupDecision[] = [];
     for (const item of items) {
+      if (hasPendingAnswerResume(db, item.id)) continue;
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
@@ -32,7 +40,63 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
       applyDecision(db, item, decision, now);
       decisions.push(decision);
     }
+    for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
+      if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
+      resumeAnsweredQuestion(db, item, now);
+    }
     return decisions;
+  });
+}
+
+function hasPendingAnswerResume(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE status IN ('pending', 'running') AND job_key LIKE 'resume:answer:%'
+         AND json_extract(payload, '$.itemId') = ?`,
+      )
+      .get(itemId) !== null
+  );
+}
+
+function resumeAnsweredQuestion(db: Database, item: WorkItemRecord, now: number): void {
+  const row = db
+    .query<
+      { id: string; body: string; options: string | null; status: string; answer: string | null },
+      [string]
+    >(
+      `SELECT id, body, options, status, answer FROM question
+       WHERE item_id = ? AND cancelled_at IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(item.id);
+  if (row?.status !== "answered" || row.answer === null) return;
+  const held = db
+    .query<{ n: number }, [string, string, string]>(
+      `SELECT (
+         EXISTS(SELECT 1 FROM closeout_recovery WHERE question_id = ?) +
+         EXISTS(SELECT 1 FROM linear_github_auth WHERE question_id = ?) +
+         EXISTS(SELECT 1 FROM github_integration_hold WHERE question_id = ?)
+       ) AS n`,
+    )
+    .get(row.id, row.id, row.id);
+  if ((held?.n ?? 0) > 0) return;
+  applyWorkItemEvent(db, item.id, "answer_received");
+  enqueueJobOnce(db, {
+    queue: JOB_KIND.resume,
+    jobKey: `resume:answer:${row.id}`,
+    payload: {
+      itemId: item.id,
+      freshSession: true,
+      handoff: handoffNote({
+        question: row.body,
+        answer: row.answer,
+        ...(row.options === null ? {} : { options: JSON.parse(row.options) }),
+      }),
+      reason: "answer",
+    },
+    now,
   });
 }
 

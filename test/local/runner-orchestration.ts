@@ -244,7 +244,7 @@ export async function probeRunnerOrchestration(
       ...(mergeDependencyYield
         ? {
             dispatchReady({ legacyReadyItemIds }: { legacyReadyItemIds: readonly string[] }) {
-              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds, concurrency: 1 });
+              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds });
             },
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
@@ -597,7 +597,7 @@ export async function probeRunnerOrchestration(
         }
         if (mergeDependencyYield) {
           db.run(
-            `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+            `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
             [item.epicId, clock.now()],
           );
@@ -612,11 +612,10 @@ export async function probeRunnerOrchestration(
             projectId: "project",
             paths: ["src/shared"],
           });
-          db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
-            item.epicId,
-            "new-blocker",
-            item.linearIssueId,
-          ]);
+          db.run(
+            "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
+            ["new-blocker", item.linearIssueId],
+          );
           const before = getLinearSession(db, "session")?.activeItemId;
           assert.equal(before, item.id);
           const deferred = await jobs.tick();
