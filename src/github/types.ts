@@ -83,6 +83,7 @@ export type SerialMergeResult = {
   merged: boolean;
   outcome:
     | "merged"
+    | "waiting"
     | "rejected"
     | "blocked"
     | "invalid"
