@@ -157,7 +157,7 @@ function scope(db: Database, target: Target): Scope | null {
         entry.brief,
         entry.projectApprovalId,
       ]),
-      externalPolicyBinding(db, { epicId: item.epicId, workspaceId: target.workspaceId }),
+      externalPolicyBinding(db, { itemId: item.id, workspaceId: target.workspaceId }),
     ]),
   };
 }
@@ -191,7 +191,8 @@ export function hasPendingEpicChanges(db: Database, epicId: string): boolean {
   return (
     db
       .query(
-        "SELECT 1 FROM epic_reconciliation_request WHERE epic_id=? UNION ALL SELECT 1 FROM epic_reconciliation_effect WHERE epic_id=? LIMIT 1",
+        `SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.epic_id=?
+         UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.epic_id=? LIMIT 1`,
       )
       .get(epicId, epicId) !== null
   );
@@ -251,7 +252,7 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
   const evidence = JSON.parse(saved.externalEvidence) as Record<string, BlockerEvidence>;
   const policies = new Map(
-    readExternalBlockerPolicies(db, { epicId: item.epicId, workspaceId: target.workspaceId }).map(
+    readExternalBlockerPolicies(db, { itemId: item.id, workspaceId: target.workspaceId }).map(
       (policy) => [policy.blockerLinearIssueId, policy],
     ),
   );
@@ -273,11 +274,8 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
       }
       if (!blocker)
         return (
-          managedBlockerSatisfied(
-            db,
-            { epicId: item.epicId, workspaceId: target.workspaceId },
-            id,
-          ) ?? states.get(id) === "completed"
+          managedBlockerSatisfied(db, { itemId: item.id, workspaceId: target.workspaceId }, id) ??
+          states.get(id) === "completed"
         );
     }
     if (!blocker || blocker.cancelRequested || blocker.state === "cancelled") return false;
@@ -351,7 +349,7 @@ export async function syncItemDependencies(
   }
   signal?.throwIfAborted();
   const evidence = await inspectExternalBlockers(db, {
-    epicId: initial.item.epicId,
+    itemId: initial.item.id,
     workspaceId,
     issues: [...states.keys()],
     inspectMerge: input.inspectMerge,

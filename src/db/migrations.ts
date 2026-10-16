@@ -1570,4 +1570,40 @@ CREATE TABLE item_dependency_snapshot (
 ) STRICT;
 `,
   },
+  {
+    id: "063_item_reconciliation",
+    sql: `
+CREATE TABLE item_reconciliation_request (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  token TEXT NOT NULL
+) STRICT;
+CREATE TABLE item_reconciliation_effect (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  kind TEXT NOT NULL CHECK(kind IN ('spec','removed','canceled')),
+  token TEXT NOT NULL,
+  PRIMARY KEY(item_id,kind)
+) STRICT;
+CREATE TABLE item_blocker_policy (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  blocker_issue_id TEXT NOT NULL,
+  policy TEXT NOT NULL CHECK(json_valid(policy)),
+  user_id TEXT NOT NULL REFERENCES workspace_user(id),
+  revision INTEGER NOT NULL,
+  PRIMARY KEY(item_id,blocker_issue_id)
+) STRICT;
+INSERT INTO item_reconciliation_request(item_id,workspace_id,token)
+SELECT i.id,r.workspace_id,r.token FROM epic_reconciliation_request r
+JOIN work_item i ON i.epic_id=r.epic_id
+WHERE i.state NOT IN ('completed','merged','cancelled');
+INSERT INTO item_reconciliation_effect(item_id,kind,token)
+SELECT item_id,kind,token FROM epic_reconciliation_effect;
+INSERT INTO item_blocker_policy(workspace_id,item_id,blocker_issue_id,policy,user_id,revision)
+SELECT p.workspace_id,i.id,p.blocker_issue_id,p.policy,p.user_id,p.revision
+FROM external_blocker_policy p
+JOIN work_item i ON i.epic_id=p.epic_id
+WHERE i.state NOT IN ('completed','merged','cancelled');
+`,
+  },
 ];
