@@ -1847,6 +1847,7 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
     result.detail,
   ).toHaveLength(1);
   expect(result.handoffs, result.detail).toEqual([REBASE_INSTRUCTION]);
+  expect(result.returnPhases, result.detail).toEqual(["running"]);
 }, 90_000);
 
 test("after 3 rebase conflict returns the item fails", async () => {
@@ -1890,6 +1891,7 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
   thoughts: string[];
   prompts: string[];
   handoffs: string[];
+  returnPhases: (string | null)[];
   merged: number;
   detail: string;
 }> {
@@ -1961,11 +1963,14 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
       await commitOnMain(layout.bare, "side\n", "side.txt");
       await installRebaseHook(layout.pawsRoot);
     } else await commitOnMain(layout.bare, "from-main\n");
+    const returnPhases: (string | null)[] = [];
     for (let turn = 0; turn < 40; turn += 1) {
       const state = stateOf(db, identifier);
       if (state === "merged" || state === "failed") break;
       const job = await jobs.tick();
       const next = stateOf(db, identifier);
+      if (state === "merge_queue" && next === "running")
+        returnPhases.push(checkpointPhaseOf(db, identifier));
       if (job === null && (next === "merged" || next === "failed" || next === state)) break;
     }
     while (outbox.tick().length > 0) await outbox.idle();
@@ -1983,6 +1988,7 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
       handoffs: listJobs(db)
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
+      returnPhases,
       merged: github.merged.length,
       detail: debug(layout, db),
     };
@@ -2385,6 +2391,13 @@ async function seedCloseoutPolicy(seed: string): Promise<void> {
   );
   await writeFile(path.join(seed, "check.test.ts"), SEEDED_TEST);
   await writeFile(path.join(seed, "README.md"), "paws demo\n");
+}
+
+function checkpointPhaseOf(db: Database, identifier: string): string | null {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  return row ? (getWorkItem(db, row.id)?.checkpoint?.phase ?? null) : null;
 }
 
 function stateOf(db: Database, identifier: string): string | null {
