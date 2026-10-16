@@ -26,7 +26,18 @@ function epicReadyItemIds(db: Database, epicId: string, workspaceId: string): st
        WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
     .all(epicId)
-    .flatMap((item) => readyItems(db, { itemId: item.id, workspaceId }).readyItemIds);
+    .flatMap((item) => {
+      try {
+        return readyItems(db, { itemId: item.id, workspaceId }).readyItemIds;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "Dependency workspace or task ownership changed"
+        )
+          return [];
+        throw error;
+      }
+    });
 }
 
 export async function probeEpicReconciliation(root: string) {
@@ -326,18 +337,20 @@ export async function probeEpicReconciliation(root: string) {
     observe("Ownership changes fence delayed publications before canonical effects", {
       owner: "new-owner",
     });
+    const keepIssue = { linearIssueId: "keep", identifier: "SYNC-4", title: "Keep" };
+    tracker.epics.get("parent")!.subIssues = [
+      { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
+      keepIssue,
+    ];
+    lifecycle.issues.set("keep", { ...lifecycle.issue, id: "keep", stateType: "started" });
+    await reconciler.reconcile(target);
+    const keep = recorded.at(-1)!.addedItemIds[0]!;
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [keep]);
     lifecycle.issues.get("b")!.stateType = "canceled";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.canceledItemIds, [b]);
     assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
-    lifecycle.issue.stateType = "canceled";
-    await reconciler.reconcile(target);
-    assert(recorded.at(-1)!.parentCanceled);
-    observe(
-      "Linear child and parent cancellation reach canonical cancellation effects",
-      recorded.at(-1),
-    );
-    tracker.epics.get("parent")!.subIssues = [];
+    tracker.epics.get("parent")!.subIssues = [keepIssue];
     lifecycle.issue.stateType = "started";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.addedItemIds, []);
@@ -348,13 +361,14 @@ export async function probeEpicReconciliation(root: string) {
     );
     lifecycle.issues.get("b")!.stateType = "started";
     tracker.epics.get("parent")!.subIssues = [
+      keepIssue,
       { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
     ];
     await reconciler.reconcile(target);
     assert.equal(recorded.at(-1)!.addedItemIds.length, 1);
     const firstRestoration = recorded.at(-1)!.addedItemIds[0]!;
     assert.notEqual(firstRestoration, b);
-    tracker.epics.get("parent")!.subIssues = [];
+    tracker.epics.get("parent")!.subIssues = [keepIssue];
     const pendingRemoval = createItemReconciler({
       db,
       tracker,
@@ -368,6 +382,7 @@ export async function probeEpicReconciliation(root: string) {
     });
     await assert.rejects(pendingRemoval.reconcile(target), /removed child join/);
     tracker.epics.get("parent")!.subIssues = [
+      keepIssue,
       { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
     ];
     await reconciler.reconcile(target);
@@ -448,6 +463,13 @@ export async function probeEpicReconciliation(root: string) {
     observe("Shutdown rejects new work and joins held tracker reads before database closure", {
       joined,
     });
+    lifecycle.issue.stateType = "canceled";
+    await reconciler.reconcile(target);
+    assert(recorded.at(-1)!.parentCanceled);
+    observe(
+      "Linear child and parent cancellation reach canonical cancellation effects",
+      recorded.at(-1),
+    );
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
     return observations;
   } finally {
