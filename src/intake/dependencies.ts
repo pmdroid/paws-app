@@ -6,7 +6,7 @@ import {
   type WorkItemState,
   type TaskMode,
 } from "../core";
-import { saveTaskBlocks } from "../db";
+import { enqueueOutboxOnce, saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 import {
@@ -346,12 +346,14 @@ export async function syncItemDependencies(
     }
   }
   const states = new Map<string, string>();
+  const identifiers = new Map<string, string>();
   for (const id of new Set([...edges.values()].map((edge) => edge.blockerLinearIssueId))) {
     signal?.throwIfAborted();
     const issue = await lifecycle.inspect(id, { signal });
     if (issue.id !== id || typeof issue.stateType !== "string" || !issue.stateType)
       throw new Error("Linear returned another dependency issue");
     states.set(id, issue.stateType);
+    identifiers.set(id, issue.identifier ?? id);
   }
   signal?.throwIfAborted();
   const evidence = await inspectExternalBlockers(db, {
@@ -388,6 +390,23 @@ export async function syncItemDependencies(
           JSON.stringify(evidence),
         ],
       );
+      const waiting = [...states]
+        .filter(([id, state]) => state !== "completed" && !evidence[id]?.satisfied)
+        .map(([id]) => identifiers.get(id) ?? id)
+        .sort();
+      if (waiting.length && initial.item.state === "queued")
+        enqueueOutboxOnce(db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: initial.identity.sessionId,
+          idempotencyKey: `waiting:${itemId}:${waiting.join(",")}`,
+          payload: {
+            sessionId: initial.identity.sessionId,
+            kind: "thought",
+            body: `Waiting for ${waiting.join(", ")} before starting.`,
+          },
+          now: Date.now(),
+        });
       return readyItems(db, target);
     })
     .immediate();
