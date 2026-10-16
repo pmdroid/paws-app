@@ -93,7 +93,7 @@ function fixture(
     {
       hostname: "github.com",
       repositoryFullName: "acme/two",
-      confidence: options.confidence ?? 0.6,
+      confidence: options.confidence ?? 0.5,
     },
   ]);
   const denied = new Set(["private"]);
@@ -563,6 +563,32 @@ test("a failed Linear suggestion read is retried before asking", async () => {
     ).toBeNull();
     const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
     expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("noisy Linear suggestions are sampled and the best clear leader binds", async () => {
+  const f = fixture();
+  try {
+    const answers = [
+      [{ hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.58 }],
+      [
+        { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.7 },
+        { hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.58 },
+      ],
+      [{ hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.58 }],
+    ];
+    f.tracker.issueRepositorySuggestions = async () => answers.shift()!;
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+    expect(answers).toEqual([]);
   } finally {
     f.db.close();
   }
