@@ -185,7 +185,6 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
     const ready = new Set<string>();
-    const refreshed = new Set<string>();
     for (const item of items) {
       if (
         item.state !== "queued" ||
@@ -194,10 +193,8 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       )
         continue;
       if (item.workspaceId) {
-        if (refreshed.has(item.epicId)) continue;
-        refreshed.add(item.epicId);
         try {
-          for (const id of readyItems(db, { epicId: item.epicId, workspaceId: item.workspaceId })
+          for (const id of readyItems(db, { itemId: item.id, workspaceId: item.workspaceId })
             .readyItemIds)
             ready.add(id);
         } catch {

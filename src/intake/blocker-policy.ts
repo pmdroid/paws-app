@@ -115,7 +115,10 @@ export function saveExternalBlockerPolicies(
       if (!policies.some((policy) => policy.blockerLinearIssueId === row.blockerLinearIssueId))
         throw new Error("An approved blocker policy must be replaced explicitly.");
     }
-    db.run("DELETE FROM epic_dependency_snapshot WHERE epic_id=?", [input.epicId]);
+    db.run(
+      "DELETE FROM item_dependency_snapshot WHERE item_id IN (SELECT id FROM work_item WHERE epic_id=?)",
+      [input.epicId],
+    );
     db.run(
       `INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at)
       VALUES(?,?,'dependency.policy.approved',?,?)`,
@@ -169,12 +172,16 @@ export function readExternalBlockerEvidence(
   db: Database,
   target: Target,
 ): Record<string, BlockerEvidence> {
-  const row = db
+  const rows = db
     .query<{ evidence: string }, [string, string]>(
-      "SELECT external_evidence AS evidence FROM epic_dependency_snapshot WHERE workspace_id=? AND epic_id=?",
+      `SELECT s.external_evidence AS evidence FROM item_dependency_snapshot s
+       JOIN work_item i ON i.id=s.item_id
+       WHERE s.workspace_id=? AND i.epic_id=? ORDER BY s.generation,i.position,i.id`,
     )
-    .get(target.workspaceId, target.epicId);
-  return row ? JSON.parse(row.evidence) : {};
+    .all(target.workspaceId, target.epicId);
+  const evidence: Record<string, BlockerEvidence> = {};
+  for (const row of rows) Object.assign(evidence, JSON.parse(row.evidence));
+  return evidence;
 }
 
 export async function inspectExternalBlockers(
