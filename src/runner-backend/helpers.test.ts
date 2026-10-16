@@ -412,3 +412,19 @@ test("Human continuation time does not exhaust the remote execution retry budget
   expect(attempts).toBe(3);
   expect(result.stopReason).toBe("end_turn");
 });
+
+test("a helper waits for the runner's busy helper slot instead of failing", async () => {
+  const f = fixture();
+  const helperCount = () =>
+    f.db.query<{ n: number }, []>("SELECT count(*) AS n FROM runner_helper").get()!.n;
+  const first = f.backend.forSession("session", "classify")(f.input);
+  while (helperCount() < 1) await Bun.sleep(1);
+  const second = f.backend.forSession("session", "select_repository")(f.input);
+  await Bun.sleep(20);
+  expect(helperCount()).toBe(1);
+  f.reply();
+  await first;
+  while (helperCount() < 2) await Bun.sleep(1);
+  f.reply();
+  expect((await second).stopReason).toBe("end_turn");
+});
