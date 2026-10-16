@@ -73,6 +73,23 @@ describe("linear intake poll", () => {
     expect(seen.map((event) => event.sessionId)).toEqual(["session-old", "session-new"]);
   });
 
+  test.each([200, 400])(
+    "the Linear client reports a missing entity with HTTP %i as LinearEntityNotFoundError",
+    async (status) => {
+      const client = createLinearClient({
+        auth: AUTH,
+        fetch: async () =>
+          new Response(
+            JSON.stringify({ errors: [{ message: "Entity not found: AgentSession" }] }),
+            { status, headers: { "content-type": "application/json" } },
+          ),
+      });
+      const failure = await client.query("query { x }", {}).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(LinearEntityNotFoundError);
+      expect((failure as LinearEntityNotFoundError).entity).toBe("AgentSession");
+    },
+  );
+
   test("a session deleted in Linear is skipped and does not block later sessions", async () => {
     const db = tempDb();
     const store = createInboxStore(db);
