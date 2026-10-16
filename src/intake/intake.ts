@@ -3,7 +3,13 @@ import type { IssueBrief } from "../core";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
-import { insertRunningQueue, insertStalledEpic, listWorkItems, readEpicByLinearId } from "./store";
+import {
+  insertDoneEpic,
+  insertRunningQueue,
+  insertStalledEpic,
+  listWorkItems,
+  readEpicByLinearId,
+} from "./store";
 import type { StoredEpic, StoredWorkItem } from "./store";
 
 export type IntakeResult =
@@ -34,6 +40,11 @@ export function cycleMessage(identifiers: readonly string[]): string {
   return `Cycle in blocks relations (${identifiers.join(" → ")}). Nothing will run.`;
 }
 
+function parentAdoptionMessage(count: number): string {
+  const noun = count === 1 ? "sub-issue" : "sub-issues";
+  return `Picked up ${count} ${noun}. Each one runs in its own session.`;
+}
+
 /**
  * Load a delegated issue. A parent with sub-issues becomes an ordered queue;
  * a lone issue is a queue of one. A blocks cycle is reported and nothing is queued.
@@ -49,6 +60,11 @@ export async function intakeDelegatedIssue(
     singleIssue?: boolean;
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
+    adoptParent?: (
+      sessionId: string,
+      snapshot: EpicSnapshot,
+      edges: readonly DependencyEdge[],
+    ) => boolean;
   },
 ): Promise<IntakeResult> {
   const now = input.now ?? Date.now();
@@ -92,8 +108,32 @@ export async function intakeDelegatedIssue(
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
+  const sessionId = input.sessionId ?? "";
+  let adopted = false;
   const result = db
     .transaction(() => {
+      if (
+        snapshot.subIssues.length > 0 &&
+        sessionId.length > 0 &&
+        input.adoptParent?.(sessionId, snapshot, edges)
+      ) {
+        adopted = true;
+        const epic = insertDoneEpic(db, {
+          taskKey,
+          linearIssueId: snapshot.linearIssueId,
+          identifier: snapshot.identifier,
+          title: snapshot.title,
+          now,
+        });
+        const admitted = {
+          ok: true,
+          epic,
+          items: [],
+          alreadyExisted: false,
+        } as const;
+        input.onAccepted?.(admitted);
+        return admitted;
+      }
       const saved = insertRunningQueue(db, {
         taskKey,
         linearIssueId: snapshot.linearIssueId,
@@ -123,10 +163,12 @@ export async function intakeDelegatedIssue(
     tracker,
     input.sessionId,
     "thought",
-    queueMessage(
-      result.items.map((item) => item.linearIdentifier),
-      delegatedAlone,
-    ),
+    adopted
+      ? parentAdoptionMessage(snapshot.subIssues.length)
+      : queueMessage(
+          result.items.map((item) => item.linearIdentifier),
+          delegatedAlone,
+        ),
   );
   return result;
 }
