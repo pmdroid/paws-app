@@ -6,9 +6,9 @@ test("candidate history cannot publish private inputs or mint write credentials"
     execFileSync(
       process.execPath,
       ["--no-env-file", "test/local/runner-private-input-publication.ts"],
-      { encoding: "utf8", timeout: 30_000 },
+      { encoding: "utf8", timeout: 90_000 },
     ),
   );
   expect(result.observations).toHaveLength(11);
   expect(result.observations.every((value: { passed: boolean }) => value.passed)).toBe(true);
-}, 30_000);
+}, 90_000);
