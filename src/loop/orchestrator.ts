@@ -708,6 +708,30 @@ export class Orchestrator {
         [this.now(), previous.id],
       );
     };
+    const assignUnownedItems = (
+      boundSessionId: string,
+      epicId: string,
+      items: readonly { id: string }[],
+    ) => {
+      if (items.length === 0) return;
+      const actorId =
+        this.db
+          .query<{ actorId: string | null }, [string, string]>(
+            "SELECT owner_actor_id AS actorId FROM linear_session_task WHERE session_id=? AND epic_id=?",
+          )
+          .get(boundSessionId, epicId)?.actorId ??
+        getLinearSession(this.db, boundSessionId)?.creatorId;
+      if (!actorId) return;
+      const ownerId = this.db
+        .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
+        .get(actorId)?.id;
+      if (!ownerId) return;
+      for (const item of items)
+        this.db.run("UPDATE work_item SET owner_user_id=? WHERE id=? AND owner_user_id IS NULL", [
+          ownerId,
+          item.id,
+        ]);
+    };
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
@@ -733,6 +757,7 @@ export class Orchestrator {
               });
             this.assignSession(accepted.epic.id, sessionId);
             this.options.onLinearIntake?.(sessionId, accepted);
+            if (accepted.ok) assignUnownedItems(sessionId, accepted.epic.id, accepted.items);
           }
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)
