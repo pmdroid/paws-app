@@ -143,8 +143,8 @@ export async function interpretRepositoryAnswer(options: {
   }
 }
 
-const CONFIDENT = 0.8;
-const LEAD = 0.2;
+const CONFIDENT = 0.6;
+const LEAD = 0.1;
 const OFFERED = 3;
 
 export function chooseRepository(

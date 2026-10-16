@@ -306,15 +306,14 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
     ]);
     expect(getWorkItem(f.db, question.itemId)?.state).toBe("awaiting_input");
     expect(f.checked).toEqual(["one", "two", "private"]);
-    expect(f.tracker.repositorySuggestionRequests).toEqual([
-      {
-        issueId: "issue",
-        candidateRepositories: [
-          { hostname: "github.com", repositoryFullName: "acme/one" },
-          { hostname: "github.com", repositoryFullName: "acme/two" },
-        ],
-      },
-    ]);
+    const request = {
+      issueId: "issue",
+      candidateRepositories: [
+        { hostname: "github.com", repositoryFullName: "acme/one" },
+        { hostname: "github.com", repositoryFullName: "acme/two" },
+      ],
+    };
+    expect(f.tracker.repositorySuggestionRequests).toEqual([request, request, request]);
     expect(f.launches()).toBe(0);
     expect(f.tracker.statuses).toEqual([]);
     expect(existsSync(join(f.pawsRoot, "worktrees"))).toBe(false);
