@@ -109,6 +109,7 @@ export async function openRunnerRuntime(options: {
     options.onError?.(
       error instanceof Error ? error : new Error("Runner runtime operation failed"),
     );
+  const deniedReported = new Set<string>();
   const settle = (work: readonly (Promise<unknown> | undefined)[]) =>
     Promise.race([
       Promise.allSettled(work),
@@ -546,7 +547,16 @@ export async function openRunnerRuntime(options: {
   async function step() {
     await pulse().catch(report);
     if (closed) return;
-    await options.daemon.pollCommands();
+    const polled = await options.daemon.pollCommands();
+    for (const repository of polled.deniedRepositories) {
+      if (deniedReported.has(repository)) continue;
+      deniedReported.add(repository);
+      report(
+        new Error(
+          `Runner refused a run for ${repository}. Add it to allowedRepositories in the runner config.`,
+        ),
+      );
+    }
     if (closed) return;
     const commands = options.daemon.pendingCommands();
     for (const command of commands) {

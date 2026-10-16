@@ -120,10 +120,10 @@ for (const loss of ["before-start", "after-start", "running", "expiry", "stop"] 
           }),
           pendingCommands: () => [input],
           async pollCommands() {
-            return { commands: [], rejected: [] };
+            return { commands: [], rejected: [], deniedRepositories: [] };
           },
           async pollHelperCommands() {
-            return { commands: [input], rejected: [] };
+            return { commands: [input], rejected: [], deniedRepositories: [] };
           },
           async helperLease() {
             calls.push("lease");
