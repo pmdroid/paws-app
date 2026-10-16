@@ -82,7 +82,7 @@ export async function probeParallelRuntime(root: string) {
           };
         },
         async pollCommands() {
-          return { commands: pending, rejected: [] };
+          return { commands: pending, rejected: [], deniedRepositories: [] };
         },
         pendingCommands: () => pending,
         async acknowledgeCommand(id) {
