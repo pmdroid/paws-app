@@ -100,6 +100,7 @@ import {
   saveCloseoutRecovery,
   type CloseoutRecovery,
   markRun,
+  releaseRunCapacity,
   saveCheckpoint,
   saveRunResult,
   saveRunCommitPolicy,
@@ -152,7 +153,7 @@ import {
   openQuestion,
   questionReplyConsumed,
 } from "../questions";
-import { enqueueVerifiedMerge } from "./merge-jobs";
+import { ciWaitVerification, enqueueVerifiedMerge, parkMergeForCi } from "./merge-jobs";
 import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
@@ -272,6 +273,12 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
+const MAX_REBASE_CONFLICT_RETURNS = 3;
+const REBASE_CONFLICT_INSTRUCTION =
+  "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+const REBASE_CONFLICT_THOUGHT =
+  "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
+
 type AnswerWaiter = (answer: string) => void;
 
 /**
@@ -283,6 +290,7 @@ export class Orchestrator {
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly waiters = new Map<string, AnswerWaiter>();
+  private readonly askedRuns = new Set<string>();
   private readonly live = new Map<
     string,
     {
@@ -801,10 +809,13 @@ export class Orchestrator {
         this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
       ),
     );
-    jobs.register(JOB_KIND.merge, (job, context) =>
-      this.runLeasedJob(job.payload, context, async () => {
+    jobs.register(JOB_KIND.merge, async (job, context) => {
+      let waiting: { message: string; base?: string; head?: string; summary?: string } | undefined;
+      await this.runLeasedJob(job.payload, context, async () => {
         try {
-          await this.runOwnedJob(job.payload, () => this.merge(job.payload, job.id));
+          await this.runOwnedJob(job.payload, async () => {
+            waiting = await this.merge(job.payload, job.id);
+          });
         } catch (error) {
           if (!(error instanceof LinearReconciliationPendingError)) throw error;
           immediate(this.db, () => {
@@ -823,8 +834,20 @@ export class Orchestrator {
             });
           });
         }
-      }),
-    );
+      });
+      if (waiting === undefined) return;
+      if (
+        parkMergeForCi(this.db, job, this.now(), {
+          base: waiting.base,
+          head: waiting.head,
+          summary: waiting.summary,
+        }) !== "expired"
+      )
+        return;
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId ? getWorkItem(this.db, itemId) : null;
+      if (item) this.fail(item, "merge", `merge timed out waiting for GitHub: ${waiting.message}`);
+    });
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const item = itemId ? getWorkItem(this.db, itemId) : null;
@@ -1190,7 +1213,7 @@ export class Orchestrator {
         onEvent: activity.onEvent,
       });
       controller.signal.throwIfAborted();
-      if (this.stopped(item.id)) return;
+      if (this.stopped(item.id) || this.askedRuns.has(run.id)) return;
       if (
         result.stopReason !== "end_turn" ||
         result.authRequired ||
@@ -1217,6 +1240,7 @@ export class Orchestrator {
       this.pump();
     } catch (error) {
       if (
+        !this.askedRuns.has(run.id) &&
         !this.stopped(item.id) &&
         !controller.signal.aborted &&
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
@@ -1224,6 +1248,7 @@ export class Orchestrator {
         this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
     } finally {
       clearInterval(keepAlive);
+      this.releaseAskedRun(run.id);
       this.live.delete(run.id);
       live.finish();
       await this.flush();
@@ -1369,6 +1394,10 @@ export class Orchestrator {
         return;
       }
       if (executed.run.cancelled || executed.run.stopReason === "cancelled") return;
+      if (this.askedRuns.has(run.id)) {
+        await this.keepAskedWork(finished.id, run.id, executed.worktreePath);
+        return;
+      }
       if (executed.run.stopReason !== "end_turn") {
         this.fail(
           finished,
@@ -1394,6 +1423,7 @@ export class Orchestrator {
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
       if (
+        !this.askedRuns.has(run.id) &&
         !controller.signal.aborted &&
         current &&
         current.state !== "cancelled" &&
@@ -1407,6 +1437,7 @@ export class Orchestrator {
       activity.flush();
       clearTimeout(first);
       clearInterval(keepAlive);
+      this.releaseAskedRun(run.id);
       if (this.options.remoteExecution && (this.jobContexts.get(item.id)?.isCurrent() ?? true))
         markRunEnded(this.db, run.id, this.now());
       this.conversations.delete(item.id);
@@ -1827,7 +1858,10 @@ export class Orchestrator {
     });
   }
 
-  private async merge(payload: unknown, jobId: number): Promise<void> {
+  private async merge(
+    payload: unknown,
+    jobId: number,
+  ): Promise<{ message: string; base?: string; head?: string; summary?: string } | undefined> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = getWorkItem(this.db, itemId);
@@ -1882,6 +1916,9 @@ export class Orchestrator {
       item.checkpoint?.wipCommit && item.checkpoint.baseSha
         ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
         : undefined;
+    const priorVerification = ciWaitVerification(payload);
+    if (priorVerification)
+      publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -1975,6 +2012,8 @@ export class Orchestrator {
       ...(github.tokenProvider ? { tokenProvider: github.tokenProvider } : {}),
       remoteUrl: repository.remoteUrl,
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
+      releaseWhilePending: true,
+      ...(priorVerification === undefined ? {} : { priorVerification }),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
@@ -2005,6 +2044,15 @@ export class Orchestrator {
         };
       },
     });
+    if (merged.outcome === "waiting") {
+      if (this.stopped(item.id)) return;
+      return {
+        message: merged.message ?? "Waiting for CI on the candidate commit.",
+        ...(merged.base === undefined ? {} : { base: merged.base }),
+        ...(merged.head === undefined ? {} : { head: merged.head }),
+        ...(merged.summary === undefined ? {} : { summary: merged.summary }),
+      };
+    }
     if (merged.merged)
       recordConfirmedRemoteMerge(this.db, {
         itemId: item.id,
@@ -2034,6 +2082,7 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, failure.result, failure.summary);
         return;
       }
+      if (merged.outcome === "conflict" && this.returnForRebaseConflict(item)) return;
       this.post(
         item,
         "thought",
@@ -2070,6 +2119,46 @@ export class Orchestrator {
     await this.flush();
   }
 
+  private returnForRebaseConflict(item: WorkItemRecord): boolean {
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
+      const returns = this.rebaseConflictReturns(current.id);
+      if (returns >= MAX_REBASE_CONFLICT_RETURNS) return false;
+      const running = applyWorkItemEvent(this.db, current.id, "ejected");
+      if (current.checkpoint)
+        saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
+      enqueueJobOnce(this.db, {
+        queue: JOB_KIND.resume,
+        jobKey: `rebase-conflict:${current.id}:${returns}`,
+        payload: {
+          itemId: current.id,
+          handoff: REBASE_CONFLICT_INSTRUCTION,
+          reason: "rebase-conflict",
+        },
+        now: this.now(),
+      });
+      this.post(
+        running,
+        "thought",
+        REBASE_CONFLICT_THOUGHT,
+        `${current.id}:rebase-conflict:${returns}`,
+      );
+      return true;
+    });
+  }
+
+  private rebaseConflictReturns(itemId: string): number {
+    const row = this.db
+      .query<{ n: number }, [string, string]>(
+        `SELECT COUNT(*) AS n FROM job
+         WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
+           AND json_extract(payload, '$.reason') = 'rebase-conflict'`,
+      )
+      .get(JOB_KIND.resume, itemId);
+    return Number(row?.n ?? 0);
+  }
+
   private askHook(item: WorkItemRecord, runId: string): AskTeamHook {
     return {
       ask: async (request, context) => {
@@ -2077,8 +2166,9 @@ export class Orchestrator {
         if (sessionId === null) {
           throw new Error("ask_team has no Linear session");
         }
+        if (context.signal.aborted) throw new Error("cancelled");
         const options = request.options ?? [];
-        const question = immediate(this.db, () => {
+        immediate(this.db, () => {
           const opened = openQuestion(this.db, {
             itemId: item.id,
             runId,
@@ -2126,30 +2216,91 @@ export class Orchestrator {
             },
             now: this.now(),
           });
-          return opened;
         });
-        const answer = await new Promise<string>((resolve, reject) => {
-          const onAbort = () => {
-            this.waiters.delete(question.id);
-            reject(new Error("cancelled"));
-          };
-          if (context.signal.aborted) {
-            onAbort();
-            return;
-          }
-          context.signal.addEventListener("abort", onAbort, { once: true });
-          this.waiters.set(question.id, (value) => {
-            context.signal.removeEventListener("abort", onAbort);
-            resolve(value);
-          });
-          void this.flush().catch((error: unknown) => {
-            this.waiters.delete(question.id);
-            reject(error instanceof Error ? error : new Error(String(error)));
-          });
-        });
-        return { answer };
+        this.askedRuns.add(runId);
+        await this.flush();
+        return {
+          answer:
+            "Question posted to the team. End your turn now without further changes; you will be resumed with the answer as your next message.",
+        };
       },
     };
+  }
+
+  private releaseAskedRun(runId: string): void {
+    if (!this.askedRuns.delete(runId)) return;
+    releaseRunCapacity(this.db, runId, this.now());
+    const answered = this.db
+      .query<
+        { id: string; itemId: string; body: string; options: string | null; answer: string },
+        [string]
+      >(
+        `SELECT q.id, q.item_id AS itemId, q.body, q.options, q.answer FROM question q
+         JOIN work_item i ON i.id = q.item_id
+         WHERE q.run_id = ? AND q.status = 'answered' AND q.cancelled_at IS NULL
+         AND q.answer IS NOT NULL AND i.state = 'running'
+         ORDER BY q.answered_at DESC, q.id DESC LIMIT 1`,
+      )
+      .get(runId);
+    if (!answered) return;
+    enqueueJobOnce(this.db, {
+      queue: JOB_KIND.resume,
+      jobKey: `resume:answer:${answered.id}`,
+      payload: {
+        itemId: answered.itemId,
+        freshSession: true,
+        handoff: handoffNote({
+          question: answered.body,
+          options:
+            answered.options === null
+              ? []
+              : (JSON.parse(answered.options) as (string | { label?: string; value: string })[]),
+          answer: answered.answer,
+        }),
+        reason: "answer",
+      },
+      now: this.now(),
+    });
+  }
+
+  private async keepAskedWork(itemId: string, runId: string, worktree: string): Promise<void> {
+    let current = getWorkItem(this.db, itemId);
+    if (!current || current.state === "cancelled" || current.cancelRequested) return;
+    const sessionId = this.activitySession(current);
+    if (
+      current.state === "running" &&
+      sessionId !== null &&
+      findOpenQuestion(this.db, sessionId)?.runId === runId
+    ) {
+      applyWorkItemEvent(this.db, itemId, "blocking_question");
+      current = getWorkItem(this.db, itemId);
+      if (!current) return;
+    }
+    const phase =
+      current.state === "awaiting_input" ||
+      current.state === "verifying" ||
+      current.state === "merge_queue" ||
+      current.state === "running"
+        ? current.state
+        : null;
+    if (phase === null) return;
+    let head = "";
+    let base = current.checkpoint?.baseSha ?? "";
+    try {
+      head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+    } catch {
+      return;
+    }
+    if (base === "")
+      base = await git(["-C", worktree, "merge-base", "HEAD", "origin/main"]).then(
+        (out) => out.trim(),
+        () => "",
+      );
+    saveCheckpoint(this.db, itemId, {
+      phase,
+      ...(head === "" ? {} : { wipCommit: head }),
+      ...(base === "" ? {} : { baseSha: base }),
+    });
   }
 
   private async deliverPrompt(
@@ -2293,7 +2444,8 @@ export class Orchestrator {
       }
       if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
         applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
-      if (this.waiters.has(open.id)) return "answered" as const;
+      if (this.waiters.has(open.id) || (open.runId !== null && this.askedRuns.has(open.runId)))
+        return "answered" as const;
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `resume:answer:${open.id}`,

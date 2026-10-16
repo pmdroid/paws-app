@@ -861,6 +861,19 @@ export function createRemoteAgentRunner(options: {
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
           return { ...complete, transcriptPath: transcript };
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "cancelled" || !signal.aborted) {
+            throw error;
+          }
+          return {
+            role: input.role,
+            stopReason: "cancelled",
+            timedOut: false,
+            cancelled: true,
+            authRequired: false,
+            agentExited: true,
+            transcriptPath: transcript,
+          };
         } finally {
           if (command) {
             try {
