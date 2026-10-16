@@ -12,6 +12,7 @@ import {
   getWorkItemRepositoryChoice,
   listJobs,
   saveConversation,
+  type WorkItemRecord,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, FakeHostGitHubAuth, repositoryAnswer } from "../src/loop";
@@ -659,6 +660,33 @@ test("a repository the app can access is chosen from Linear's suggestion without
       remoteUrl: "/synthetic-paws-remotes/four.git",
     });
     expect(f.checked).toEqual(["one", "two", "private", "four"]);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a confident suggestion passes an integration that checks the item's repository", async () => {
+  const host = Object.assign(new FakeHostGitHubAuth(), {
+    integration: {
+      check: async () => true,
+      authorize: async (item: WorkItemRecord) => getWorkItemRepository(f.db, item.id) !== null,
+      administrators: () => [],
+      recoveryUrl: "http://127.0.0.1:8787/status",
+      identity: () => "human",
+    },
+  });
+  host.actorId = "human";
+  host.account = { id: 7, login: "owner" };
+  const f = fixture({ auth: host, confidence: 0.95 });
+  try {
+    await f.attach().onLinearEvent(event());
+    await f.jobs.tick();
+    const item = f.db.query("SELECT id, state FROM work_item").get() as {
+      id: string;
+      state: string;
+    };
+    expect(item.state).not.toBe("cancelled");
+    expect(getWorkItemRepository(f.db, item.id)).toEqual(repositories[1]!);
   } finally {
     f.db.close();
   }

@@ -3938,10 +3938,6 @@ export class Orchestrator {
       const choice = chooseRepository(candidates, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
-        if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
-          await this.flush();
-          return false;
-        }
         const accessible =
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(choice.bind, controller.signal, access));
@@ -3955,6 +3951,10 @@ export class Orchestrator {
             `Working in ${choice.bind.owner}/${choice.bind.repo}.`,
             `${item.id}:repository`,
           );
+          if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
+            await this.flush();
+            return false;
+          }
           await this.flush();
           return true;
         }
