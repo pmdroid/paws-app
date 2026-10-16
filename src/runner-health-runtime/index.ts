@@ -153,7 +153,8 @@ export async function openRunnerHealthRuntime(options: {
   let ticking: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
   let pulsing: Promise<void> | undefined;
-  const report = () => options.onError?.(new Error("Runner health operation failed"));
+  const report = (error?: unknown) =>
+    options.onError?.(error instanceof Error ? error : new Error("Runner health operation failed"));
   function readLogin(id: string): RunnerLoginUpdate | null {
     let journal: string;
     try {

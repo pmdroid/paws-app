@@ -137,7 +137,9 @@ export async function runRunnerCli(
     });
     try {
       if (daemonCommand) {
-        await runPairedDaemon(daemon, ids, abort.signal, () => error("Runner operation failed."));
+        await runPairedDaemon(daemon, ids, abort.signal, (failure) =>
+          error(`Runner operation failed: ${failure.message.slice(0, 300)}`),
+        );
         abort.signal.throwIfAborted();
         return 0;
       }
