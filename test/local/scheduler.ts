@@ -306,8 +306,14 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("duplicate-issue", 2, () => []);
-    db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [`lin-item-${ids[0]!}`, ids[1]!]);
-    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), [ids[0]!]);
+    assert.throws(
+      () =>
+        db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [
+          `lin-item-${ids[0]!}`,
+          ids[1]!,
+        ]),
+      /UNIQUE/,
+    );
     observed("Separate sessions cannot execute the same Linear issue concurrently", { ids });
     db.close();
   }

@@ -60,6 +60,7 @@ export async function intakeDelegatedIssue(
     singleIssue?: boolean;
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
+    beforeAdmit?: () => void;
     adoptParent?: (
       sessionId: string,
       snapshot: EpicSnapshot,
@@ -110,55 +111,65 @@ export async function intakeDelegatedIssue(
   }
   const sessionId = input.sessionId ?? "";
   let adopted = false;
-  const result = db
-    .transaction(() => {
-      if (
-        snapshot.subIssues.length > 0 &&
-        sessionId.length > 0 &&
-        input.adoptParent?.(sessionId, snapshot, edges)
-      ) {
-        adopted = true;
-        const epic = insertDoneEpic(db, {
+  let result: IntakeResult;
+  try {
+    result = db
+      .transaction(() => {
+        input.beforeAdmit?.();
+        if (
+          snapshot.subIssues.length > 0 &&
+          sessionId.length > 0 &&
+          input.adoptParent?.(sessionId, snapshot, edges)
+        ) {
+          adopted = true;
+          const epic = insertDoneEpic(db, {
+            taskKey,
+            linearIssueId: snapshot.linearIssueId,
+            identifier: snapshot.identifier,
+            title: snapshot.title,
+            now,
+          });
+          const admitted = {
+            ok: true,
+            epic,
+            items: [],
+            alreadyExisted: false,
+          } as const;
+          input.onAccepted?.(admitted);
+          return admitted;
+        }
+        const conflict = activeElsewhere(db, ordered.ordered);
+        if (conflict) throw new ActiveIssueError(conflict.identifier);
+        const saved = insertRunningQueue(db, {
           taskKey,
           linearIssueId: snapshot.linearIssueId,
           identifier: snapshot.identifier,
           title: snapshot.title,
+          ordered: ordered.ordered,
+          briefs: new Map(
+            (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+              issue.linearIssueId,
+              { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+            ]),
+          ),
+          edges,
           now,
         });
         const admitted = {
           ok: true,
-          epic,
-          items: [],
+          epic: saved.epic,
+          items: saved.items,
           alreadyExisted: false,
         } as const;
         input.onAccepted?.(admitted);
         return admitted;
-      }
-      const saved = insertRunningQueue(db, {
-        taskKey,
-        linearIssueId: snapshot.linearIssueId,
-        identifier: snapshot.identifier,
-        title: snapshot.title,
-        ordered: ordered.ordered,
-        briefs: new Map(
-          (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
-            issue.linearIssueId,
-            { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
-          ]),
-        ),
-        edges,
-        now,
-      });
-      const admitted = {
-        ok: true,
-        epic: saved.epic,
-        items: saved.items,
-        alreadyExisted: false,
-      } as const;
-      input.onAccepted?.(admitted);
-      return admitted;
-    })
-    .immediate();
+      })
+      .immediate();
+  } catch (error) {
+    if (error instanceof ActiveIssueError)
+      await announce(tracker, input.sessionId, "error", error.message);
+    throw error;
+  }
   await announce(
     tracker,
     input.sessionId,
@@ -171,6 +182,27 @@ export async function intakeDelegatedIssue(
         ),
   );
   return result;
+}
+
+export class ActiveIssueError extends Error {
+  constructor(identifier: string) {
+    super(`${identifier} is already being worked on in another session.`);
+    this.name = "ActiveIssueError";
+  }
+}
+
+function activeElsewhere(db: Database, nodes: readonly OrderNode[]): OrderNode | undefined {
+  for (const node of nodes) {
+    const active = db
+      .query<{ id: string }, [string]>(
+        `SELECT id FROM work_item
+         WHERE linear_issue_id = ? AND state NOT IN ('completed', 'merged', 'cancelled')
+         LIMIT 1`,
+      )
+      .get(node.linearIssueId);
+    if (active) return node;
+  }
+  return undefined;
 }
 
 function issueBrief(issue: {
