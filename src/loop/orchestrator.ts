@@ -2085,6 +2085,8 @@ export class Orchestrator {
       const returns = this.rebaseConflictReturns(current.id);
       if (returns >= MAX_REBASE_CONFLICT_RETURNS) return false;
       const running = applyWorkItemEvent(this.db, current.id, "ejected");
+      if (current.checkpoint)
+        saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey: `rebase-conflict:${current.id}:${returns}`,
