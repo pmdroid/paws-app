@@ -34,8 +34,13 @@ export async function listAppRepositories(input: {
       `repository list token request failed with status ${response.status}`,
     );
   const token = assertListToken(response.body, now);
-  return pages(input.client, "/installation/repositories?", token, input.signal, (body) =>
-    isRecord(body) && Array.isArray(body.repositories) ? body.repositories : null,
+  return pages(
+    input.client,
+    "/installation/repositories?",
+    token,
+    input.signal,
+    (body) => (isRecord(body) && Array.isArray(body.repositories) ? body.repositories : null),
+    false,
   );
 }
 
@@ -44,8 +49,13 @@ export async function listUserRepositories(input: {
   token: string;
   signal?: AbortSignal;
 }): Promise<CatalogRepository[]> {
-  return pages(input.client, `${USER_REPOS}&`, input.token, input.signal, (body) =>
-    Array.isArray(body) ? body : null,
+  return pages(
+    input.client,
+    `${USER_REPOS}&`,
+    input.token,
+    input.signal,
+    (body) => (Array.isArray(body) ? body : null),
+    true,
   );
 }
 
@@ -55,6 +65,7 @@ async function pages(
   token: string,
   signal: AbortSignal | undefined,
   items: (body: unknown) => unknown[] | null,
+  pushableOnly: boolean,
 ): Promise<CatalogRepository[]> {
   const listed: CatalogRepository[] = [];
   for (let page = 1; ; page += 1) {
@@ -68,16 +79,16 @@ async function pages(
     if (entries === null)
       throw new Error(`GitHub repositories could not be read (status ${response.status})`);
     for (const entry of entries) {
-      const repository = catalogEntry(entry);
+      const repository = catalogEntry(entry, pushableOnly);
       if (repository) listed.push(repository);
     }
     if (entries.length < PAGE_SIZE) return listed;
   }
 }
 
-function catalogEntry(entry: unknown): CatalogRepository | null {
+function catalogEntry(entry: unknown, pushableOnly: boolean): CatalogRepository | null {
   if (!isRecord(entry) || entry.archived === true) return null;
-  if (isRecord(entry.permissions) && entry.permissions.push === false) return null;
+  if (pushableOnly && isRecord(entry.permissions) && entry.permissions.push === false) return null;
   const owner = isRecord(entry.owner) ? entry.owner.login : null;
   if (
     typeof owner !== "string" ||
