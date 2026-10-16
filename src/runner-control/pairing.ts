@@ -7,7 +7,7 @@ import {
   findRunnerPairing,
   getRunnerCertificate,
   immediate,
-  listRunners,
+  listRunnerStatuses,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
@@ -16,6 +16,7 @@ import {
   type RunnerRecord,
 } from "../db";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
+import { releaseVersion } from "../runner-protocol";
 import {
   workspaceId,
   workspaceSecret,
@@ -29,9 +30,13 @@ export function createRunnerControl(options: {
   certificateRoot: string;
   disconnect(fingerprint: string): void;
   now?: () => number;
+  /** Version reported to the runner list. Defaults to the installed release this process runs from. */
+  serverVersion?: string | null;
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
+  const serverVersion =
+    options.serverVersion === undefined ? releaseVersion(import.meta.dir) : options.serverVersion;
   function admin(principal: WorkspacePrincipal, at: number) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!member?.active || !["owner", "admin"].includes(member.role))
@@ -167,7 +172,10 @@ export function createRunnerControl(options: {
     list(principal: WorkspacePrincipal) {
       if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
         throw new Error("Workspace membership is required.");
-      return listRunners(db, principal.workspaceId);
+      return listRunnerStatuses(db, principal.workspaceId, now());
+    },
+    serverVersion() {
+      return serverVersion;
     },
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {

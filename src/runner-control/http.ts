@@ -39,7 +39,10 @@ export function createRunnerHttp(control: RunnerControl) {
       const path = new URL(request.url).pathname;
       try {
         if (path === "/api/runners" && request.method === "GET")
-          return json({ runners: control.list(principal) });
+          return json({
+            runners: control.list(principal),
+            serverVersion: control.serverVersion(),
+          });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
         if (path === "/api/runners/pairings/approve" && request.method === "POST")
