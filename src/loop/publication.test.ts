@@ -4,13 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchGitHubClient, type GitExec } from "../github";
-import {
-  bindLinearSessionTask,
-  getWorkItem,
-  migrate,
-  openDatabase,
-  recordLinearInstallation,
-} from "../db";
+import { getWorkItem, migrate, openDatabase, recordLinearInstallation } from "../db";
 import { intakeDelegatedIssue } from "../intake";
 import {
   createFakeLinearAccessReads,
@@ -90,7 +84,7 @@ test.each(["push", "pr", "merge"] as const)(
         teamId: "team",
         observedAtMs: 1,
       });
-      bindLinearSessionTask(db, "session", task.epic.id, { actorId: "human" });
+      db.run("UPDATE work_item SET session_key = ? WHERE epic_id = ?", ["session", task.epic.id]);
       const access = createFakeLinearAccessReads({
         installation: scope,
         sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],

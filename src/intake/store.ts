@@ -82,6 +82,7 @@ export function insertRunningQueue(
     briefs: ReadonlyMap<string, WorkBrief>;
     edges: readonly DependencyEdge[];
     now: number;
+    sessionKey?: string | null;
   },
 ): { epic: StoredEpic; items: StoredWorkItem[] } {
   const epicId = ulid(input.now);
@@ -113,8 +114,8 @@ export function insertRunningQueue(
     for (const item of items) {
       db.run(
         `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key
-         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?)`,
+           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key, session_key
+         ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?, ?)`,
         [
           item.id,
           item.epicId,
@@ -126,6 +127,7 @@ export function insertRunningQueue(
           input.now,
           JSON.stringify(input.briefs.get(item.linearIssueId)),
           `${input.taskKey ?? `initial:${input.linearIssueId}`}:item:${item.linearIssueId}`,
+          input.sessionKey ?? null,
         ],
       );
     }

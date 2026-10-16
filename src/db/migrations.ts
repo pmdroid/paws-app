@@ -1519,4 +1519,30 @@ DROP TABLE external_dep;
 DROP TABLE epic_execution_control;
 `,
   },
+  {
+    id: "060_session_link_on_item",
+    sql: `
+CREATE TEMP TABLE session_link_backfill AS
+SELECT w.id AS item_id, COALESCE(
+  (SELECT s.session_id FROM linear_session s
+    WHERE s.current_epic_id = w.epic_id
+    ORDER BY s.created_at, s.session_id LIMIT 1),
+  (SELECT s.session_id FROM linear_session_task t
+    JOIN linear_session s ON s.session_id = t.session_id
+    WHERE t.epic_id = w.epic_id
+    ORDER BY s.created_at, s.session_id LIMIT 1)
+) AS session_id
+FROM work_item w WHERE w.session_key IS NULL;
+UPDATE work_item SET
+  session_key = (SELECT b.session_id FROM session_link_backfill b WHERE b.item_id = work_item.id),
+  owner_user_id = COALESCE(work_item.owner_user_id, (
+    SELECT u.id FROM session_link_backfill b
+    JOIN linear_session_task t ON t.session_id = b.session_id AND t.epic_id = work_item.epic_id
+    JOIN workspace_user u ON u.linear_user_id = t.owner_actor_id
+    WHERE b.item_id = work_item.id
+  ))
+WHERE id IN (SELECT item_id FROM session_link_backfill WHERE session_id IS NOT NULL);
+DROP TABLE session_link_backfill;
+`,
+  },
 ];

@@ -3,12 +3,12 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGeneration,
-  bindLinearSessionTask,
   changeLinearTeamAccess,
   getLinearTaskDelegation,
   getWorkItem,
   migrate,
   openDatabase,
+  putWorkspaceUser,
   recordLinearInstallation,
   revokeLinearInstallation,
 } from "../src/db";
@@ -52,7 +52,20 @@ async function fixture(child = false, actorId: string | null = "human") {
     teamId: "parent-team",
     observedAtMs: 1,
   });
-  bindLinearSessionTask(db, "session", task.epic.id, { actorId });
+  const ownerId =
+    actorId === null
+      ? null
+      : putWorkspaceUser(db, {
+          id: `user-${actorId}`,
+          linearUserId: actorId,
+          name: actorId,
+          email: `${actorId}@example.invalid`,
+        });
+  db.run("UPDATE work_item SET session_key = ?, owner_user_id = ? WHERE epic_id = ?", [
+    "session",
+    ownerId,
+    task.epic.id,
+  ]);
   const access = createFakeLinearAccessReads({
     installation: scope,
     sessions: [{ ...scope, sessionId: "session", issueId: "parent", teamId: "parent-team" }],
