@@ -946,11 +946,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             WHERE picked.id=(
               SELECT i.id FROM work_item i
               JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
-              WHERE i.epic_id=picked.epic_id AND i.state NOT IN ('completed','merged','cancelled')
+              WHERE i.delegation_id=picked.delegation_id AND i.state NOT IN ('completed','merged','cancelled')
               AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
               ORDER BY i.position,i.id LIMIT 1)
-            AND ${delegationHasOpenWork("picked.epic_id")} AND s.stopped_at IS NULL
-            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.epic_id=picked.epic_id AND gap.state NOT IN ('completed','merged','cancelled')
+            AND ${delegationHasOpenWork("picked.delegation_id")} AND s.stopped_at IS NULL
+            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.delegation_id=picked.delegation_id AND gap.state NOT IN ('completed','merged','cancelled')
               AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
               AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
             )
@@ -973,7 +973,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           const item = db
             .query<{ id: string }, [string]>(
               `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-               WHERE i.epic_id=? AND s.stopped_at IS NULL
+               WHERE i.delegation_id=? AND s.stopped_at IS NULL
                AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
             )
             .get(legacy.epicId);

@@ -95,4 +95,4 @@ Stay inside the directory your issue owns. Shared files are `src/index.ts` (wire
 
 QM-09 is the owner of the edge table and the job claim. Other issues call `transition()`, `enqueueJob()`, and `enqueueOutbox()` without editing those files. `claimNextJob` and `dispatchOutbox` throw on purpose.
 
-Domain rows (`epic`, `work_item`, `run`, `inbox_event`) are not created yet. The issue that first writes them adds the next migration and uses the unions in `src/core/states.ts` for any `state` column.
+Domain rows are `work_item`, `run`, and `inbox_event`. Sibling items share `work_item.delegation_id`. `work_item.state` uses the unions in `src/core/states.ts`, and `transition()` is the work-item edge table.

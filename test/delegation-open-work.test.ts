@@ -60,7 +60,9 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     expect(readyItems(db, target).heldItemIds).toEqual([itemId]);
     await reconciler.reconcile(target);
     db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [itemId]);
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     expect(() => readyItems(db, target)).toThrow(/Dependency workspace or task ownership changed/);
     await expect(reconciler.reconcile(target)).rejects.toThrow(
       /Item reconciliation authority changed/,
@@ -129,10 +131,9 @@ test("the scheduler admits an item without reading the epic table", async () => 
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "only", now: 1 });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
-    db.run("PRAGMA foreign_keys = OFF");
-    db.run("DELETE FROM epic WHERE id=?", [intake.epic.id]);
-    db.run("PRAGMA foreign_keys = ON");
-    expect(db.query("SELECT id FROM epic").get()).toBeNull();
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     expect(
       dispatchReadyItems(db, {
         now: 2,

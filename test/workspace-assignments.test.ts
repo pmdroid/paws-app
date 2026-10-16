@@ -167,7 +167,7 @@ function fixture() {
         const epicId = getLinearSession(db, "session")!.epicId!;
         const itemIds = db
           .query<{ id: string }, [string]>(
-            "SELECT id FROM work_item WHERE epic_id=? ORDER BY position,id",
+            "SELECT id FROM work_item WHERE delegation_id=? ORDER BY position,id",
           )
           .all(epicId);
         for (const item of itemIds)
