@@ -39,13 +39,12 @@ See the [signed Linux release](https://github.com/pmdroid/paws-app/pull/237), [v
 
 ## Keep process identities separate
 
-The host installation contract uses distinct non-root `paws-runner`, `paws-agent`, and `paws-check` accounts. The daemon runs agent work as `paws-runner`. Provider login state stays in `/var/lib/paws-agent`.
+The host installation contract uses distinct non-root `paws-runner` and `paws-agent` accounts. The daemon runs agent work as `paws-runner`. Provider login state stays in `/var/lib/paws-agent`.
 
 - `/opt/paws-runner/releases/{version}` contains versioned application and runtime assets. Owner `root`, mode `0755`.
 - `/var/lib/paws-runner-install` holds the installation lock and release state. Owner `root`, mode `0700`.
 - `/var/lib/paws-runner` is the runner home and private state directory. Owner `paws-runner:paws-runner`, mode `0700`.
 - `/var/lib/paws-agent` is the agent home and provider login directory. Owner `paws-runner:paws-runner`, mode `0700`.
-- `/var/lib/paws-check` is the check account home. Owner `paws-check:paws-check`, mode `0700`.
 - `/var/lib/paws-runner-spool` delivers jobs. Owner `paws-runner:paws-agent`, mode `2750`.
 - `/var/lib/paws-agent-results` is the agent result root. Owner `paws-runner:paws-results`, mode `0750`.
 

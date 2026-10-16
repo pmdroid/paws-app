@@ -74,23 +74,6 @@ export const RunnerProfileSchema = z.strictObject({
   effort: z.string().trim().min(1).max(64).optional(),
 });
 
-const executionId = z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
-const checkText = (limit: number) =>
-  z
-    .string()
-    .refine(
-      (value) =>
-        !value.includes("\0") &&
-        Buffer.byteLength(value) <= limit &&
-        Buffer.from(value, "utf8").toString("utf8") === value,
-    );
-const checkDirectory = checkText(4096).refine(
-  (value) =>
-    value === "." ||
-    (!value.startsWith("/") &&
-      value.split("/").every((part) => part !== "" && part !== "." && part !== "..")),
-);
-
 const common = {
   id,
   runnerId: id,
@@ -137,24 +120,6 @@ export const RunnerCommandSchema = z
       prompt: work.prompt,
       inputFiles: work.inputFiles,
       promptContext: work.promptContext,
-    }),
-    z.strictObject({
-      ...common,
-      type: z.literal("check"),
-      runId: id,
-      itemId: id,
-      generation,
-      repository: RunnerRepositorySchema,
-      executionId,
-      verificationAttemptId: executionId,
-      candidateSha: z.string().regex(/^[a-f0-9]{40}$/),
-      argv: z
-        .array(checkText(8192))
-        .min(1)
-        .max(128)
-        .refine((value) => value[0]!.length > 0),
-      cwd: checkDirectory,
-      timeoutMs: z.number().int().min(1).max(900_000),
     }),
     z.strictObject({
       ...common,
@@ -207,10 +172,7 @@ export const RunnerCommandSchema = z
   )
   .refine((command) => command.expiresAt > command.issuedAt)
   .refine((command) => command.type !== "login" || command.expiresAt - command.issuedAt <= 600_000)
-  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000)
-  .refine(
-    (command) => command.type !== "check" || command.repository.baseSha === command.candidateSha,
-  );
+  .refine((command) => command.type !== "helper" || command.expiresAt - command.issuedAt <= 60_000);
 
 export const SignedRunnerCommandSchema = z.strictObject({
   keyId: id,

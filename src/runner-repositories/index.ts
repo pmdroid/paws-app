@@ -14,7 +14,7 @@ import { isAbsolute, join } from "node:path";
 import { defaultGitExec, runGitHubGit } from "../github";
 import { RunnerCommandSchema, type RunnerCommand } from "../runner-protocol";
 
-type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "check" }>;
+type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" }>;
 type NetworkOperation = {
   operation: "clone" | "fetch" | "push";
   remoteUrl: string;
@@ -69,7 +69,7 @@ export function createRunnerRepositories(options: {
   }
   function parse(input: WorkCommand): WorkCommand {
     const command = RunnerCommandSchema.parse(input);
-    if (command.type !== "run" && command.type !== "review" && command.type !== "check")
+    if (command.type !== "run" && command.type !== "review")
       throw new Error("Repository work command is required");
     return command;
   }

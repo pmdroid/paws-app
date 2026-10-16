@@ -27,16 +27,13 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "../acp";
-import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import type { RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
 import type { RunnerCommand, RunnerResult } from "../runner-protocol";
-import type { RunnerChecks } from "../runner-checks";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
-import { createRemoteCloseoutCommandRunner } from "../runner-closeout";
-import { workspaceId } from "../workspace";
 import { createRemoteCancellation } from "./cancel";
 import { RetryableRunnerError, runWithFailover } from "./failover";
 import type { RunnerPlacement } from "../runner-placement";
@@ -81,7 +78,6 @@ export function createRemoteAgentRunner(options: {
   results: RunnerResults;
   health: RunnerHealth;
   artifacts?: RunnerArtifactStore;
-  checks?: RunnerChecks;
   transcripts?: Pick<RunnerTranscripts, "download">;
   inputs?: Pick<RunnerInputStore, "stage" | "stagePrompt">;
   fetchCandidate(input: {
@@ -161,140 +157,6 @@ export function createRemoteAgentRunner(options: {
   const cancelItem = createRemoteCancellation(options);
   return {
     cancelItem,
-    closeoutForItem(itemId: string, signal?: AbortSignal, checkoutExclusions?: readonly string[]) {
-      const attempts = new Map<
-        string,
-        { id: string; runnerId: string; runId: string; workspaceId: string; fence: number }
-      >();
-      return createRemoteCloseoutCommandRunner({
-        signal,
-        checkoutExclusions,
-        async execute(request) {
-          signal?.throwIfAborted();
-          if (!options.checks) throw new Error("Trusted runner verification is unavailable");
-          const checks = options.checks;
-          const previous = attempts.get(request.candidateSha);
-          const waitingDeadline = performance.now() + Math.min(request.timeoutMs, 60_000);
-          const selectRunner = async () => {
-            while (true) {
-              signal?.throwIfAborted();
-              if (previous) {
-                const identity = work.identity(previous.runnerId);
-                if (
-                  identity.fence !== previous.fence ||
-                  identity.status !== "active" ||
-                  getWorkItem(db, itemId)?.currentRunId !== previous.runId
-                )
-                  throw new RunnerWorkFencedError("Runner verification authority changed");
-                work.scope(previous.runId, previous.workspaceId);
-              }
-              try {
-                return await select(
-                  itemId,
-                  { itemId, role: "reviewer", purpose: "check", signal },
-                  previous?.runnerId,
-                );
-              } catch (error) {
-                if (
-                  !previous ||
-                  !(error instanceof RunnerUnavailableError) ||
-                  performance.now() >= waitingDeadline
-                )
-                  throw error;
-                await delay(
-                  Math.min(interval, Math.max(1, waitingDeadline - performance.now())),
-                  undefined,
-                  { signal },
-                );
-              }
-            }
-          };
-          const selected = await selectRunner();
-          let executionId: string | undefined;
-          let completed = false;
-          try {
-            signal?.throwIfAborted();
-            const attempt = previous ?? {
-              id: workspaceId(now()),
-              runnerId: selected.id,
-              runId: selected.runId,
-              workspaceId: selected.workspaceId,
-              fence: work.identity(selected.id).fence,
-            };
-            const dispatched = immediate(db, () => {
-              const execution = checks.dispatch({
-                runnerId: selected.id,
-                runId: selected.runId,
-                verificationAttemptId: attempt.id,
-                ...request,
-              });
-              const row = db
-                .query<{ commandId: string }, [string]>(
-                  "SELECT command_id AS commandId FROM runner_check_execution WHERE id=?",
-                )
-                .get(execution.input.executionId)!;
-              options.placement?.started({
-                commandId: row.commandId,
-                runnerId: selected.id,
-                itemId,
-                runId: selected.runId,
-                role: "reviewer",
-                purpose: "check",
-                startedAt: now(),
-              });
-              return execution;
-            });
-            attempts.set(request.candidateSha, attempt);
-            executionId = dispatched.input.executionId;
-            const assignment = db
-              .query<{ generation: number; runnerFence: number }, [string]>(
-                "SELECT generation,runner_fence AS runnerFence FROM runner_work WHERE run_id=?",
-              )
-              .get(selected.runId)!;
-            const deadline = now() + request.timeoutMs + 60_000;
-            while (now() < deadline) {
-              signal?.throwIfAborted();
-              work.scope(selected.runId, selected.workspaceId);
-              if (
-                work.identity(selected.id).fence !== assignment.runnerFence ||
-                db
-                  .query<{ generation: number }, [string]>(
-                    "SELECT generation FROM runner_work WHERE run_id=?",
-                  )
-                  .get(selected.runId)?.generation !== assignment.generation
-              )
-                throw new RunnerWorkFencedError("Runner verification authority changed");
-              const receipt = checks.result(executionId);
-              if (receipt) {
-                completed = true;
-                const row = db
-                  .query<{ commandId: string }, [string]>(
-                    "SELECT command_id AS commandId FROM runner_check_execution WHERE id=?",
-                  )
-                  .get(executionId)!;
-                immediate(db, () =>
-                  options.placement?.finished({
-                    commandId: row.commandId,
-                    runnerId: selected.id,
-                    finishedAt: now(),
-                  }),
-                );
-                return receipt;
-              }
-              work.current(selected.runId, assignment.generation);
-              await delay(interval, undefined, { signal });
-            }
-            throw new Error("Trusted runner verification timed out");
-          } finally {
-            try {
-              if (executionId && !completed) checks.cancel(executionId);
-            } finally {
-              reservations.delete(selected.runId);
-            }
-          }
-        },
-      });
-    },
     forItem(itemId: string) {
       const attempt = async (
         input: RunAgentOptions,

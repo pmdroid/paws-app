@@ -39,9 +39,6 @@ export async function probeExecutionChanges(
     agentForSession: () => {
       throw new Error("Unexpected helper call");
     },
-    closeoutForItem: () => {
-      throw new Error("Unexpected verification call");
-    },
     agentForItem:
       () =>
       async (options: RunAgentOptions): Promise<RunAgentResult> => {

@@ -288,8 +288,6 @@ export {
 } from "./workspace-links";
 export type { WorkspaceIdentityLink } from "./workspace-links";
 
-export { getRunnerVerifier } from "./runners";
-
 export {
   requireAttributionSession,
   beginGitHubAttribution,

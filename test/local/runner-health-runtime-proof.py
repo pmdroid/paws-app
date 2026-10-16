@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import pathlib
@@ -25,15 +24,6 @@ for directory, uid, gid, mode in (("server", 1004, 1004, 0o700), ("daemon", 1001
     target.chmod(mode)
 (root / "agent" / "work").mkdir(mode=0o700)
 os.chown(root / "agent" / "work", 1002, 1002)
-spec = importlib.util.spec_from_file_location("broker", "/proof/runner-broker.py")
-broker = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(broker)
-broker.SPOOL = str(root / "spool")
-broker.RESULTS = str(root / "results")
-pathlib.Path(broker.RECEIPTS).mkdir(mode=0o700, parents=True)
-shutil.copyfile("/proof/paws-agent@.service", root / "paws-agent@.service")
-os.chmod(root / "paws-agent@.service", 0o644)
-broker.UNIT = str(root / "paws-agent@.service")
 workers = {}
 started = []
 stopped = []
@@ -78,13 +68,55 @@ def wait_for(predicate, process=None):
         time.sleep(0.02)
 
 
-broker.control_unit = control
+def serve_workers(listener):
+    admitted = set()
+    finished = set()
+    def dispatch(connection):
+        try:
+            payload = bytearray()
+            while b"\n" not in payload:
+                chunk = connection.recv(1025 - len(payload))
+                if not chunk or len(payload) > 1024:
+                    raise ValueError("Invalid worker request")
+                payload.extend(chunk)
+            request = json.loads(payload)
+            execution_id = request["executionId"]
+            if request["operation"] == "start":
+                if execution_id in admitted or execution_id in finished:
+                    response = {"ok": True, "alreadyAdmitted": True}
+                else:
+                    directory = root / "results" / execution_id
+                    directory.mkdir(mode=0o750)
+                    os.chown(directory, 1002, 1003)
+                    directory.chmod(0o750)
+                    response = {"ok": False} if control("start", execution_id).returncode else {"ok": True, "alreadyAdmitted": False}
+                    if response["ok"]:
+                        admitted.add(execution_id)
+            elif request["operation"] == "stop":
+                finished.add(execution_id)
+                admitted.add(execution_id)
+                response = {"ok": control("stop", execution_id).returncode == 0}
+            else:
+                response = {"ok": False}
+            connection.sendall((json.dumps(response) + "\n").encode())
+        except Exception:
+            try:
+                connection.sendall(b'{"ok":false}\n')
+            except OSError:
+                pass
+        finally:
+            connection.close()
+    while True:
+        connection, _ = listener.accept()
+        threading.Thread(target=dispatch, args=(connection,), daemon=True).start()
+
+
 listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 listener.bind(str(root / "broker.sock"))
 os.chown(root / "broker.sock", 1001, 1001)
 os.chmod(root / "broker.sock", 0o600)
 listener.listen(16)
-threading.Thread(target=broker.serve, args=(listener, 1001, 1002, 1002, 1003), daemon=True).start()
+threading.Thread(target=serve_workers, args=(listener,), daemon=True).start()
 try:
     coordinator = actor("coordinator", 1004)
     wait_for(lambda: (root / "server" / "ready").exists(), coordinator)
@@ -154,7 +186,7 @@ try:
         assert not (root / "agent" / "forbidden-helper-write").exists()
         assert not list((root / "spool").glob("**/*.bundle"))
         db.close()
-        print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedHelperCommands": 3, "generationChangeStopsActualWorker": True, "mTlsReceipts": 1, "actualPromptReadOnly": True, "persistedBeforeNetwork": True, "normalPollRetriesStoredHelperAck": True, "terminalHelperAckCannotBlockNextAssignment": True, "lostResultReceiptAfterSigkillDrainsWithoutRelaunch": True, "repositoryBundles": 0, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": len(started), "relaunches": 0, "serviceBackend": "recording process-group backend with production Unix broker"}))
+        print(json.dumps({"passed": True, "network": "none", "uids": {"coordinator": 1004, "daemon": 1001, "agent": 1002}, "signedHelperCommands": 3, "generationChangeStopsActualWorker": True, "mTlsReceipts": 1, "actualPromptReadOnly": True, "persistedBeforeNetwork": True, "normalPollRetriesStoredHelperAck": True, "terminalHelperAckCannotBlockNextAssignment": True, "lostResultReceiptAfterSigkillDrainsWithoutRelaunch": True, "repositoryBundles": 0, "crashedDaemonLeavesWorkerAlive": True, "reopenStopsInterruptedWorker": True, "executionsStarted": len(started), "relaunches": 0, "serviceBackend": "recording process-group backend"}))
     else:
         rows = db.execute("SELECT result_json FROM runner_health_result ORDER BY rowid").fetchall()
         db.close()

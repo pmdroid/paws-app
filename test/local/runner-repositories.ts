@@ -182,7 +182,7 @@ export async function probeRunnerRepositories(
   assert.notEqual(parallelSnapshots[0]!.bundle, parallelSnapshots[1]!.bundle);
   for (const snapshot of parallelSnapshots)
     assert((await invoke(["bundle", "list-heads", snapshot.bundle])).startsWith(baseSha));
-  observe("independent execution and check adapters serialize the same real Git cache", true, {
+  observe("independent work commands serialize the same real Git cache", true, {
     operations: parallelCalls,
     independentBundles: 2,
   });
@@ -199,9 +199,9 @@ export async function probeRunnerRepositories(
     true,
     { baseSha, bundleMode: "0600", operation: calls[0]?.operation },
   );
-  const check: Extract<RunnerCommand, { type: "check" }> = {
+  const review: Extract<RunnerCommand, { type: "review" }> = {
     id: randomUUID(),
-    type: "check",
+    type: "review",
     runnerId: command.runnerId,
     workspaceId: command.workspaceId,
     issuedAt: now,
@@ -210,15 +210,11 @@ export async function probeRunnerRepositories(
     itemId: command.itemId,
     generation: 1,
     repository: command.repository,
-    executionId: "01K00000000000000000000001",
-    verificationAttemptId: "01K00000000000000000000002",
-    candidateSha: baseSha,
-    argv: ["/usr/bin/true"],
-    cwd: ".",
-    timeoutMs: 10_000,
+    profile: command.profile,
+    prompt: command.prompt,
   };
-  const checkSnapshot = await repositories.prepare(check);
-  assert((await invoke(["bundle", "list-heads", checkSnapshot.bundle])).startsWith(baseSha));
+  const reviewSnapshot = await repositories.prepare(review);
+  assert((await invoke(["bundle", "list-heads", reviewSnapshot.bundle])).startsWith(baseSha));
   assert.equal(calls.at(-1)?.token, "fixture-read");
   writeFileSync(join(tree, "candidate.txt"), "change\n");
   await invoke(["-C", tree, "add", "."]);
@@ -316,13 +312,11 @@ export async function probeRunnerRepositories(
     repositories.publish({ ...command, type: "review" }, candidate),
     /Only a run/,
   );
-  await assert.rejects(repositories.publish(check, candidate), /Only a run/);
   assert.equal(calls.filter((call) => call.operation === "push").length, pushes);
-  observe(
-    "mismatched candidates, protected branches, reviewers and checks fail before push",
-    true,
-    { rejected: 4, pushes, checkSnapshotExactCandidate: true },
-  );
+  observe("mismatched candidates, protected branches, and reviewers fail before push", true, {
+    rejected: 3,
+    pushes,
+  });
   const headerEnd = candidate.bundle.indexOf("\n\n");
   assert(headerEnd > 0);
   const extraRefs = Array.from(

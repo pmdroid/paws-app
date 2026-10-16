@@ -132,9 +132,9 @@ module.main()
             raise RuntimeError("Selected recovery created a temporary file that blocks exact retry after SIGKILL")
         after = {path.name: {"inode": path.stat().st_ino, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in deployed.iterdir()}
         recovered = json.loads(output)
-        if before != after or selected.stat().st_ino != inode or json.loads(state.read_bytes())["status"] != "installed" or recovered["verifierIdentity"] != first["verifierIdentity"]:
-            raise RuntimeError("Selected recovery changed its already verified release or identity")
-        print(json.dumps({"verified": True, "actualSigkillDanglingPublication": True, "actualSigkillCurrentCheckpoint": True, "exactSelectedRecoveryCompleted": True, "selectedFilesNotRewritten": True, "selectedAssetCount": len(before), "selectedDirectoryInodePreserved": True, "verifierIdentityPreserved": True, "artifactSha256": source["artifactSha256"], "systemctlBackend": "recording fixture", "daemonStarted": False}))
+        if before != after or selected.stat().st_ino != inode or json.loads(state.read_bytes())["status"] != "installed":
+            raise RuntimeError("Selected recovery changed its already verified release")
+        print(json.dumps({"verified": True, "actualSigkillDanglingPublication": True, "actualSigkillCurrentCheckpoint": True, "exactSelectedRecoveryCompleted": True, "selectedFilesNotRewritten": True, "selectedAssetCount": len(before), "selectedDirectoryInodePreserved": True, "artifactSha256": source["artifactSha256"], "systemctlBackend": "recording fixture", "daemonStarted": False}))
 
 
 if __name__ == "__main__":

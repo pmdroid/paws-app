@@ -91,11 +91,6 @@ export async function probeCurrentRunStartup(root: string) {
               agentForItem: () => async () => {
                 throw new Error("Unavailable installation must prevent remote work");
               },
-              closeoutForItem: () => ({
-                runLogged: async () => {
-                  throw new Error("No closeout is expected");
-                },
-              }),
             },
           }
         : {}),
