@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { UserFacingError } from "../src/core";
 import { FIRST_ACTIVITY_BODY, acknowledgeNewSession, createLinearTracker } from "../src/linear";
 import { createFakeTracker, type LinearClient } from "../src/linear";
 
@@ -147,5 +148,55 @@ describe("linear tracker", () => {
     });
     await prompted;
     expect(tracker.progress).toHaveLength(1);
+  });
+
+  const created = (deliveryId: string) => ({
+    dedupeKey: `session:ses_2:created:${deliveryId}`,
+    deliveryId,
+    source: "webhook" as const,
+    action: "created" as const,
+    sessionId: "ses_2",
+    issueId: "iss_2",
+    activityId: null,
+    body: null,
+    signal: null,
+    updatedAtMs: 1,
+    payload: "{}",
+  });
+
+  test("a session delivered twice is picked up once", async () => {
+    const tracker = createFakeTracker();
+    const acknowledged = new Set<string>();
+    await acknowledgeNewSession(tracker, created("webhook"), async () => {}, undefined, {
+      acknowledged,
+    });
+    await acknowledgeNewSession(tracker, created("poll"), async () => {}, undefined, {
+      acknowledged,
+    });
+    expect(tracker.progress.map((update) => update.body)).toEqual([FIRST_ACTIVITY_BODY]);
+  });
+
+  test("a refused session says why nothing starts", async () => {
+    const tracker = createFakeTracker();
+    expect(await acknowledgeNewSession(tracker, created("webhook"), async () => false)).toBe(false);
+    expect(tracker.progress.map((update) => [update.kind, update.body])).toEqual([
+      ["thought", FIRST_ACTIVITY_BODY],
+      [
+        "error",
+        "Paws did not start this work. Only an active member of the Paws workspace can delegate issues to Paws.",
+      ],
+    ]);
+  });
+
+  test("a start failure with a user-facing reason reports that reason", async () => {
+    const tracker = createFakeTracker();
+    await expect(
+      acknowledgeNewSession(tracker, created("webhook"), async () => {
+        throw new UserFacingError("No paired runner can run claude for this issue.");
+      }),
+    ).rejects.toThrow();
+    expect(tracker.progress.at(-1)?.body).toBe(
+      "Paws could not start work on this issue: No paired runner can run claude for this issue.",
+    );
   });
 });
