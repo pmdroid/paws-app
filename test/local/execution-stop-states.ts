@@ -420,7 +420,15 @@ export async function probeExecutionStopStates(root: string) {
         ),
       );
       assert(questionWithdrawn, "Stop must withdraw those same canonical question rows");
-      if (remote) assert(remote.acknowledgements.length > 0);
+      if (remote)
+        assert(
+          db
+            .query(
+              "SELECT 1 FROM runner_command c JOIN run r ON r.id=c.run_id WHERE r.item_id='controlled' AND c.kind='cancel' AND c.acknowledged_at IS NOT NULL",
+            )
+            .get() !== null,
+          "Stop must return after the persisted remote cancel acknowledgement",
+        );
       observations.push({
         name: `Selected Stop from ${state} joins within ten seconds and preserves unrelated work`,
         passed: true,
