@@ -163,7 +163,13 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
   } catch (error) {
     console.error(
-      `GitHub readiness read failed: ${error instanceof Error ? error.name : "unknown error"}`,
+      `GitHub readiness read failed: ${
+        error instanceof Error
+          ? error.message
+              .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
+              .slice(0, 300)
+          : "unknown error"
+      }`,
     );
     return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
   }
