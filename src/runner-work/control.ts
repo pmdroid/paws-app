@@ -1,3 +1,4 @@
+import { teamRepositoryAllowedSql } from "../db";
 import { authorizeRunnerAccount } from "../runner-accounts";
 import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -99,7 +100,7 @@ export function createRunnerWork(options: {
     if (!repository) throw new Error("Run repository is not bound.");
     const mapped = db
       .query(
-        "SELECT 1 FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN workspace_repository p ON p.workspace_id=w.id AND p.team_id=s.team_id WHERE w.id=? AND s.session_id=? AND p.repository=?",
+        `SELECT 1 FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE w.id=?1 AND s.session_id=?2 AND ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(?3)")}`,
       )
       .get(workspaceId, sessionId, `${repository.owner}/${repository.repo}`);
     if (!mapped) throw new Error("Run is outside the runner workspace repository access.");

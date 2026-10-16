@@ -22,7 +22,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
   section.dataset.settingsPage = "integrations";
   renderMarkup(
     section,
-    '<div><h2>GitHub</h2><p class="sub">Connect GitHub, then choose repositories for your Linear teams.</p></div><div class="settings-account w-full"><p data-status role="status">Checking GitHub…</p><div class="row" data-actions></div><p data-feedback role="alert" class="empty:hidden"></p><div data-repository-editor class="w-full min-w-0"></div></div>',
+    '<div><h2>GitHub</h2><p class="sub">Connect GitHub. Paws picks the repository from Linear\'s suggestion among those the app can access. Add repositories to a Linear team to limit that team to them.</p></div><div class="settings-account w-full"><p data-status role="status">Checking GitHub…</p><div class="row" data-actions></div><p data-feedback role="alert" class="empty:hidden"></p><div data-repository-editor class="w-full min-w-0"></div></div>',
   );
   root.append(section);
   const status = section.querySelector<HTMLElement>("[data-status]")!;
