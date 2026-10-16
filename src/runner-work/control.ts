@@ -10,7 +10,6 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
-  linearSessionForEpic,
   taskRequiresRepository,
   workspaceSessionIds,
 } from "../db";
@@ -84,7 +83,7 @@ export function createRunnerWork(options: {
       !["running", "verifying", "awaiting_input"].includes(item.state)
     )
       throw new Error("Run is no longer active.");
-    const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId);
+    const sessionId = item.sessionKey;
     if (!sessionId || getLinearSessionAccess(db, sessionId) !== "allowed")
       throw new Error("Linear task access is unavailable.");
     if (item.state === "awaiting_input" && !allowPendingQuestion) {

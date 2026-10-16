@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   ensureLinearSession,
   getWorkItem,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   putWorkspaceUser,
   syncWorkspaceMember,
 } from "../src/db";
@@ -25,7 +25,7 @@ test("approved project sessions use canonical single-issue intake, dependency ho
     const first = progress.find((claim) => claim.issueId === "one")!;
     const second = progress.find((claim) => claim.issueId === "two")!;
     expect(db.query("SELECT * FROM work_item").all()).toHaveLength(2);
-    expect(getTaskLinearActor(db, first.items[0]!.id)).toBe("lead");
+    expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("actor");
     expect(projects.actor("session-one")).toBe("lead");
     expect(projects.canDispatch(second.epicId!)).toBe(false);
     expect(projects.canDispatch(first.epicId!)).toBe(true);

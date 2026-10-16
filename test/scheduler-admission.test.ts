@@ -55,16 +55,14 @@ test("three ready items in one project and repository are all admitted", () => {
 test("two ready items that share a Linear session are both admitted", () => {
   const db = tempDb();
   try {
-    insertQueuedItem(db, { id: "one", now: 1 });
-    insertQueuedItem(db, { id: "two", now: 2 });
+    insertQueuedItem(db, { id: "one", now: 1, sessionKey: "shared" });
+    insertQueuedItem(db, { id: "two", now: 2, sessionKey: "shared" });
     db.run("UPDATE work_item SET epic_id=? WHERE id=?", ["epic-one", "two"]);
     ensureLinearSession(db, { sessionId: "shared", issueId: "lin-one", now: 1000 });
     bindLinearSessionTask(db, "shared", "epic-one");
     const sessions = db
       .query<{ id: string; sessionId: string | null }, []>(
-        `SELECT i.id, t.session_id AS sessionId FROM work_item i
-         JOIN epic e ON e.id=i.epic_id
-         LEFT JOIN linear_session_task t ON t.epic_id=e.id ORDER BY i.id`,
+        "SELECT id, session_key AS sessionId FROM work_item ORDER BY id",
       )
       .all();
     assert.deepEqual(sessions, [

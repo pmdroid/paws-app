@@ -17,7 +17,6 @@ import {
   noteJobError,
 } from "./jobs";
 import { enqueueOutboxOnce, stopOutboxSession } from "./outbox";
-import { linearSessionForEpic } from "./linear-sessions";
 import { markRun } from "./runs";
 import { immediate } from "./tx";
 
@@ -75,7 +74,7 @@ export function applyLinearCommand(
         now,
       });
 
-    const sessionId = item.sessionKey ?? linearSessionForEpic(db, item.epicId) ?? item.id;
+    const sessionId = item.sessionKey ?? item.id;
     const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
     const text = command.type === "stop" ? `Stopped from ${origin}.` : `Cancelled from ${origin}.`;

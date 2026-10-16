@@ -109,10 +109,9 @@ function allItems(db: Database, now: number): Item[] {
       AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
       AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
         OR held.queue LIKE 'github.merge.%' OR held.lane='merge')) AS liveJob,
-    w.id AS workspaceId,t.session_id AS sessionId,c.priority,r.owner,r.repo
+    w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo
     FROM work_item i JOIN epic e ON e.id=i.epic_id
-    LEFT JOIN linear_session_task t ON t.epic_id=e.id
-    LEFT JOIN linear_session s ON s.session_id=t.session_id
+    LEFT JOIN linear_session s ON s.session_id=i.session_key
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
     LEFT JOIN work_item_scheduling c ON c.item_id=i.id
     LEFT JOIN work_item_repository r ON r.item_id=i.id

@@ -33,7 +33,6 @@ type SessionRow = {
   organization_id: string | null;
   app_user_id: string | null;
   creator_id: string | null;
-  current_epic_id: string | null;
   active_item_id: string | null;
   generation: number;
   stopped_at: number | null;
@@ -53,21 +52,24 @@ type TurnRow = {
 
 export function getLinearSession(db: Database, sessionId: string): StoredLinearSession | null {
   const row = db
-    .query<SessionRow, [string]>("SELECT * FROM linear_session WHERE session_id = ?")
+    .query<SessionRow, [string]>(
+      `SELECT session_id, issue_id, organization_id, app_user_id, creator_id, active_item_id, generation, stopped_at
+       FROM linear_session WHERE session_id = ?`,
+    )
     .get(sessionId);
-  return row
-    ? {
-        sessionId: row.session_id,
-        issueId: row.issue_id,
-        organizationId: row.organization_id,
-        appUserId: row.app_user_id,
-        creatorId: row.creator_id,
-        epicId: row.current_epic_id,
-        activeItemId: row.active_item_id,
-        generation: row.generation,
-        stoppedAt: row.stopped_at,
-      }
-    : null;
+  if (!row) return null;
+  const linked = workItemForSession(db, sessionId);
+  return {
+    sessionId: row.session_id,
+    issueId: row.issue_id,
+    organizationId: row.organization_id,
+    appUserId: row.app_user_id,
+    creatorId: row.creator_id,
+    epicId: linked?.epicId ?? null,
+    activeItemId: row.active_item_id,
+    generation: row.generation,
+    stoppedAt: row.stopped_at,
+  };
 }
 
 export function ensureLinearSession(
@@ -124,19 +126,33 @@ export function bindLinearSessionTask(
           )
           .get(current.epicId)?.n ?? 0;
       if (active) throw new Error("Linear session already owns active work");
+      db.run("UPDATE linear_session SET active_item_id = NULL WHERE session_id = ?", [sessionId]);
     }
-    db.run(
-      "INSERT INTO linear_session_task (session_id, epic_id, owner_actor_id) VALUES (?, ?, ?) ON CONFLICT (session_id,epic_id) DO UPDATE SET owner_actor_id = COALESCE(linear_session_task.owner_actor_id, excluded.owner_actor_id)",
-      [sessionId, epicId, options.actorId ?? current.creatorId],
-    );
-    db.run(
-      "UPDATE linear_session SET current_epic_id = ?, active_item_id = CASE WHEN current_epic_id = ? THEN active_item_id ELSE NULL END WHERE session_id = ?",
-      [epicId, epicId, sessionId],
-    );
     db.run(
       "UPDATE work_item SET session_key = ? WHERE epic_id = ? AND (session_key IS NULL OR session_key = ?)",
       [sessionId, epicId, sessionId],
     );
+    const actorId = options.actorId ?? current.creatorId;
+    const owner = actorId
+      ? db
+          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
+          .get(actorId)
+      : null;
+    const columns = db
+      .query<{ name: string }, []>("PRAGMA table_info(work_item)")
+      .all()
+      .map((column) => column.name);
+    const ownerColumn = columns.includes("owner_user_id");
+    if (columns.includes("delegated_by"))
+      db.run(
+        "UPDATE work_item SET delegated_by = COALESCE(delegated_by, ?) WHERE epic_id = ? AND session_key = ?",
+        [actorId, epicId, sessionId],
+      );
+    if (owner && ownerColumn)
+      db.run(
+        "UPDATE work_item SET owner_user_id = ? WHERE epic_id = ? AND session_key = ? AND owner_user_id IS NULL",
+        [owner.id, epicId, sessionId],
+      );
   });
 }
 
@@ -167,10 +183,10 @@ export function activateLinearItem(db: Database, sessionId: string, itemId: stri
 export function workItemForSession(
   db: Database,
   sessionId: string,
-): { id: string; epicId: string; state: string; ownerUserId: string | null } | null {
+): { id: string; epicId: string; state: string } | null {
   const row = db
-    .query<{ id: string; epic_id: string; state: string; owner_user_id: string | null }, [string]>(
-      `SELECT id, epic_id, state, owner_user_id FROM work_item
+    .query<{ id: string; epic_id: string; state: string }, [string]>(
+      `SELECT id, epic_id, state FROM work_item
        WHERE session_key = ?
        ORDER BY CASE
          WHEN state IN ('running','verifying','recovering','awaiting_input','awaiting_signoff','paused','merge_queue') THEN 0
@@ -181,32 +197,20 @@ export function workItemForSession(
        LIMIT 1`,
     )
     .get(sessionId);
-  return row
-    ? { id: row.id, epicId: row.epic_id, state: row.state, ownerUserId: row.owner_user_id }
-    : null;
+  return row ? { id: row.id, epicId: row.epic_id, state: row.state } : null;
 }
 
 export function delegatedLinearUserId(db: Database, itemId: string): string | null {
   return (
     db
       .query<{ actorId: string | null }, [string]>(
-        `SELECT COALESCE(u.linear_user_id, s.creator_id) AS actorId
+        `SELECT COALESCE(u.linear_user_id, w.delegated_by, s.creator_id) AS actorId
          FROM work_item w
          LEFT JOIN workspace_user u ON u.id = w.owner_user_id
          LEFT JOIN linear_session s ON s.session_id = w.session_key
          WHERE w.id = ?`,
       )
       .get(itemId)?.actorId ?? null
-  );
-}
-
-export function linearSessionForEpic(db: Database, epicId: string): string | null {
-  return (
-    db
-      .query<{ session_id: string }, [string]>(
-        "SELECT session_id FROM linear_session WHERE current_epic_id = ? ORDER BY created_at, session_id LIMIT 1",
-      )
-      .get(epicId)?.session_id ?? null
   );
 }
 
@@ -326,16 +330,6 @@ function mapTurn(row: TurnRow): StoredLinearTurn {
     itemId: row.item_id,
     state: row.state,
   };
-}
-
-export function getTaskLinearActor(db: Database, itemId: string): string | null {
-  return (
-    db
-      .query<{ owner_actor_id: string | null }, [string]>(
-        "SELECT t.owner_actor_id FROM linear_session_task t JOIN work_item w ON w.epic_id = t.epic_id WHERE w.id = ?",
-      )
-      .get(itemId)?.owner_actor_id ?? null
-  );
 }
 
 export function listLinearTurnsForItem(db: Database, itemId: string): StoredLinearTurn[] {

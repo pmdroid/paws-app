@@ -46,12 +46,12 @@ export function createPublicationReadiness(input: {
          p.hash AS specificationHash,p.revision AS specificationRevision,
          s.session_id AS sessionId,s.generation AS sessionGeneration,
          s.organization_id AS organizationId,s.team_id AS teamId,s.oauth_client_id AS clientId,
-         s.app_user_id AS appUserId,s.creator_id AS creatorId,t.owner_actor_id AS actorId
+         s.app_user_id AS appUserId,s.creator_id AS creatorId,
+         COALESCE((SELECT u.linear_user_id FROM workspace_user u WHERE u.id=i.owner_user_id), i.delegated_by, s.creator_id) AS actorId
          FROM work_item i JOIN work_item_specification p ON p.item_id=i.id AND p.present=1
          JOIN run r ON r.id=i.current_run_id AND r.item_id=i.id
          JOIN epic e ON e.id=i.epic_id AND e.state IN ('running','stalled')
-         JOIN linear_session_task t ON t.epic_id=e.id
-         JOIN linear_session s ON s.session_id=t.session_id AND s.current_epic_id=e.id
+         JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          WHERE i.id=? AND i.state IN ('verifying','merge_queue') AND i.cancel_requested=0
          AND s.stopped_at IS NULL AND s.team_id IS NOT NULL
