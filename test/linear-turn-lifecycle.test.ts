@@ -87,7 +87,7 @@ test("discarding rejected replies is session-scoped, idempotent and preserves ap
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     for (const key of ["applied", "rejected", "pending"]) turn(db, key);
-    bindLinearSessionTask(db, "session", item.epicId);
+    bindLinearSessionTask(db, "session", item.delegationId);
     activateLinearItem(db, "session", item.id);
     applyLinearTurns(db, "session", ["applied"], item.id);
     discardLinearTurns(db, "other", ["pending"]);

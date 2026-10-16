@@ -140,7 +140,7 @@ export async function probeRunnerRepositoryAccess(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionId, item.epicId, { actorId: "fixture-owner" });
+    bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "fixture-owner" });
     const repository = {
       owner: "fixture",
       repo: "repository",

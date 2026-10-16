@@ -482,7 +482,7 @@ export async function probeRunnerOrchestration(
         });
         assert(intake.ok);
         ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
-        bindLinearSessionTask(db, "session", intake.epic.id);
+        bindLinearSessionTask(db, "session", intake.delegation.id);
       } else
         await orchestrator.onLinearEvent({
           dedupeKey: "created:issue",
@@ -585,7 +585,7 @@ export async function probeRunnerOrchestration(
           db.run(
             `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
-            [item.epicId, clock.now()],
+            [item.delegationId, clock.now()],
           );
           saveTaskMode(db, "new-blocker", "answer");
           bindWorkItemRepository(db, "new-blocker", {

@@ -54,7 +54,7 @@ export async function probeRunnerPlacement(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.epicId, { actorId: "owner" });
+  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
   bindWorkItemRepository(db, item.id, {
     owner: "fixture",
     repo: "repository",

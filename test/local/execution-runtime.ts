@@ -14,7 +14,7 @@ import {
   saveCheckpoint,
   saveTaskMode,
 } from "../../src/db";
-import { hasPendingEpicChanges, intakeDelegatedIssue, readyItems } from "../../src/intake";
+import { hasPendingDelegationChanges, intakeDelegatedIssue, readyItems } from "../../src/intake";
 import { createFakeTracker, createInboxStore } from "../../src/linear";
 import { runtimeLinear } from "../fixtures/workspace-runtime-linear";
 
@@ -170,7 +170,7 @@ export async function probeExecutionRuntime(input: {
   const accepted = await intakeDelegatedIssue(db, tracker, { linearIssueId: "runtime-issue" });
   assert(accepted.ok);
   const itemId = accepted.items[0]!.id;
-  const target = { epicId: accepted.epic.id, workspaceId: input.workspaceId };
+  const target = { delegationId: accepted.delegation.id, workspaceId: input.workspaceId };
   const itemTarget = { itemId, workspaceId: input.workspaceId };
   const sessionId = "runtime-execution-session";
   recordLinearInstallation(db, {
@@ -181,7 +181,7 @@ export async function probeExecutionRuntime(input: {
     appUserId: "app",
     observedAtMs: Date.now(),
   });
-  bindLinearSessionTask(db, sessionId, target.epicId, { actorId: "owner" });
+  bindLinearSessionTask(db, sessionId, target.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET session_key=? WHERE id=?", [sessionId, itemId]);
   saveTaskMode(db, itemId, "code", 0, true);
   beginImplementRun(db, itemId, Date.now());
@@ -231,7 +231,7 @@ export async function probeExecutionRuntime(input: {
   assert.equal((await post(issueEvent(), "runtime-unsigned", false)).status, 401);
   assert.equal(generation(), 0);
   assert.equal((await post(issueEvent(), "runtime-initial")).status, 200);
-  await until(() => generation() > 0 && !hasPendingEpicChanges(db, target.epicId));
+  await until(() => generation() > 0 && !hasPendingDelegationChanges(db, target.delegationId));
   assert.equal(spec()!.revision, 1);
   const first = { ...spec()! };
   observe(
@@ -244,7 +244,7 @@ export async function probeExecutionRuntime(input: {
   changed = true;
   try {
     assert.equal((await post(issueEvent(), "runtime-criteria-edit")).status, 200);
-    await until(() => fetching && hasPendingEpicChanges(db, target.epicId));
+    await until(() => fetching && hasPendingDelegationChanges(db, target.delegationId));
     const before = timers().find((row) => row.queue === "scheduler.tick")!.fires;
     db.run("UPDATE job SET run_at=? WHERE queue='scheduler.tick' AND status='pending'", [
       Date.now(),
@@ -262,7 +262,9 @@ export async function probeExecutionRuntime(input: {
   } finally {
     release.resolve();
   }
-  await until(() => spec()?.revision === 2 && !hasPendingEpicChanges(db, target.epicId));
+  await until(
+    () => spec()?.revision === 2 && !hasPendingDelegationChanges(db, target.delegationId),
+  );
   assert.notEqual(spec()!.hash, first.hash);
   assert.equal(getWorkItem(db, itemId)!.currentRunId, null);
   assert.equal(getWorkItem(db, itemId)!.checkpoint, null);
@@ -295,7 +297,7 @@ export async function probeExecutionRuntime(input: {
     () =>
       timers().find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
       generation() > beforeGeneration &&
-      !hasPendingEpicChanges(db, target.epicId),
+      !hasPendingDelegationChanges(db, target.delegationId),
   );
   assert.equal(spec()!.revision, 2);
   assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
@@ -353,7 +355,9 @@ export async function probeExecutionRuntime(input: {
       appUserId: "app",
       observedAtMs: Date.now(),
     });
-  bindLinearSessionTask(db, "runtime-terminal-session", terminal.epicId, { actorId: "owner" });
+  bindLinearSessionTask(db, "runtime-terminal-session", terminal.delegationId, {
+    actorId: "owner",
+  });
   applyWorkItemEvent(db, terminal.id, "cancel");
   const store = createInboxStore(db);
   const replayKeys = [];

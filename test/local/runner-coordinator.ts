@@ -204,7 +204,7 @@ export async function probeRunnerCoordinator(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "coordinator-session", item.epicId);
+    bindLinearSessionTask(db, "coordinator-session", item.delegationId);
     const repository = {
       owner: "fixture",
       repo: "repository",

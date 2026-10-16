@@ -35,13 +35,14 @@ export function recordLinearSessionEvent(
 }
 
 export function sessionTaskKey(db: Database, session: StoredLinearSession): string {
-  const epicId = workItemForSession(db, session.sessionId)?.epicId ?? session.epicId;
-  if (epicId) {
+  const delegationId =
+    workItemForSession(db, session.sessionId)?.delegationId ?? session.delegationId;
+  if (delegationId) {
     const row = db
       .query<{ task_key: string | null }, [string]>(
         `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY created_at, position, id LIMIT 1`,
       )
-      .get(epicId);
+      .get(delegationId);
     if (row?.task_key) return row.task_key;
   }
   return `session:${session.sessionId}`;

@@ -1,13 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, delegationHasOpenWork } from "../core";
-import { canAdvanceItem, hasPendingEpicChanges } from "./dependencies";
+import { canAdvanceItem, hasPendingDelegationChanges } from "./dependencies";
 import type { createItemReconciler } from "./reconciliation";
 
 export type PublicationPhase = "publish" | "merge";
 export type PublicationCandidate = { sha: string; baseSha: string };
 
 type Identity = {
-  epicId: string;
+  delegationId: string;
   workspaceId: string;
   checkpoint: string | null;
   runId: string;
@@ -41,7 +41,7 @@ export function createPublicationReadiness(input: {
       .transaction(() => {
         const identity = db
           .query<Identity, [string]>(
-            `SELECT i.delegation_id AS epicId,w.id AS workspaceId,i.checkpoint,
+            `SELECT i.delegation_id AS delegationId,w.id AS workspaceId,i.checkpoint,
          r.id AS runId,r.agent,r.kind AS runKind,r.status AS runStatus,
          p.hash AS specificationHash,p.revision AS specificationRevision,
          s.session_id AS sessionId,s.generation AS sessionGeneration,
@@ -107,7 +107,7 @@ export function createPublicationReadiness(input: {
     if (
       saved?.binding === key &&
       (saved.phase === phase || saved.phase === "merge") &&
-      !hasPendingEpicChanges(db, before.identity.epicId) &&
+      !hasPendingDelegationChanges(db, before.identity.delegationId) &&
       canAdvanceItem(db, {
         workspaceId: before.identity.workspaceId,
         itemId,
@@ -131,7 +131,7 @@ export function createPublicationReadiness(input: {
     if (
       !after ||
       after.binding !== before.binding ||
-      hasPendingEpicChanges(db, after.identity.epicId) ||
+      hasPendingDelegationChanges(db, after.identity.delegationId) ||
       !canAdvanceItem(db, {
         workspaceId: after.identity.workspaceId,
         itemId,

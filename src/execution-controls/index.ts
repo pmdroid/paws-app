@@ -47,7 +47,7 @@ export function createExecutionControls(input: {
       workspace &&
       client &&
       session.stoppedAt === null &&
-      session.epicId === item.epicId &&
+      session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
       sessionIds.includes(session.sessionId) &&
       workspaceSessionIds(input.db, workspace.id, member.userId, client.id).includes(

@@ -153,7 +153,7 @@ test("a spec change on the item's issue is reconciled through the item", async (
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "linear-person" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
     const changed: string[][] = [];
     const reconciler = createItemReconciler({
       db,

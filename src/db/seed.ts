@@ -25,14 +25,14 @@ export function insertQueuedItem(
 ): WorkItemRecord {
   const id = input.id ?? "item-1";
   const now = input.now ?? 0;
-  const epicId = `epic-${id}`;
+  const delegationId = `epic-${id}`;
   db.run(
     `INSERT INTO work_item (
        id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at
      ) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?)`,
     [
       id,
-      epicId,
+      delegationId,
       `lin-item-${id}`,
       id,
       input.title ?? "Work item",

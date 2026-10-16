@@ -63,7 +63,7 @@ export async function probeDependencySnapshots(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
     saveTaskMode(db, ids.get("a")!, "code");
     const refresh = async () => {
       for (const itemId of ids.values())
@@ -151,7 +151,7 @@ export async function probeDependencySnapshots(
     );
     tracker.deps.clear();
     tracker.deps.set("parent", [edge("a", "b"), edge("b", "a"), edge("b", "c")]);
-    db.run("UPDATE work_item SET state='queued' WHERE delegation_id=?", [intake.epic.id]);
+    db.run("UPDATE work_item SET state='queued' WHERE delegation_id=?", [intake.delegation.id]);
     await refresh();
     assert.deepEqual(readyIds(), [ids.get("free")!]);
     assert.deepEqual(new Set(cycleIds()), new Set(["a", "b", "c"].map((id) => ids.get(id)!)));

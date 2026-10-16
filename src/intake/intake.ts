@@ -4,20 +4,20 @@ import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
 import { findAcceptedIntake, insertRunningQueue, readAdoptedParent } from "./store";
-import type { StoredEpic, StoredWorkItem } from "./store";
+import type { StoredDelegation, StoredWorkItem } from "./store";
 import { ulid } from "./ulid";
 
 export type IntakeResult =
   | {
       ok: true;
-      epic: StoredEpic;
+      delegation: StoredDelegation;
       items: readonly StoredWorkItem[];
       alreadyExisted: boolean;
     }
   | {
       ok: false;
       reason: "cycle";
-      epic: StoredEpic;
+      delegation: StoredDelegation;
       identifiers: readonly string[];
       alreadyExisted: boolean;
     };
@@ -89,7 +89,7 @@ export async function intakeDelegatedIssue(
     const result = {
       ok: false,
       reason: "cycle",
-      epic: {
+      delegation: {
         id: ulid(now),
         linearIssueId: snapshot.linearIssueId,
         linearIdentifier: snapshot.identifier,
@@ -117,11 +117,11 @@ export async function intakeDelegatedIssue(
           input.adoptParent?.(sessionId, snapshot, edges)
         ) {
           adopted = true;
-          const epic = readAdoptedParent(db, snapshot.linearIssueId);
-          if (epic === null) throw new Error("Adopted parent was not recorded");
+          const delegation = readAdoptedParent(db, snapshot.linearIssueId);
+          if (delegation === null) throw new Error("Adopted parent was not recorded");
           const admitted = {
             ok: true,
-            epic,
+            delegation,
             items: [],
             alreadyExisted: false,
           } as const;
@@ -148,7 +148,7 @@ export async function intakeDelegatedIssue(
         });
         const admitted = {
           ok: true,
-          epic: saved.epic,
+          delegation: saved.delegation,
           items: saved.items,
           alreadyExisted: false,
         } as const;

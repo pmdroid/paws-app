@@ -24,7 +24,7 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
-test("a Linear epic publishes and merges three GitHub pull requests with one plain reply and one fix", async () => {
+test("a Linear delegation publishes and merges three GitHub pull requests with one plain reply and one fix", async () => {
   const seed = JSON.parse(
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;

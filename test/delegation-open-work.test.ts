@@ -18,7 +18,7 @@ const issue = {
   subIssues: [],
 };
 
-function install(db: ReturnType<typeof tempDb>, epicId: string): void {
+function install(db: ReturnType<typeof tempDb>, delegationId: string): void {
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
   db.run(
     "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
@@ -31,7 +31,7 @@ function install(db: ReturnType<typeof tempDb>, epicId: string): void {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", epicId, { actorId: "linear-person" });
+  bindLinearSessionTask(db, "session", delegationId, { actorId: "linear-person" });
 }
 
 test("a delegation whose only item is cancelled is no longer treated as running by reconciliation and readiness", async () => {
@@ -55,7 +55,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     const itemId = intake.items[0]!.id;
-    install(db, intake.epic.id);
+    install(db, intake.delegation.id);
     const target = { itemId, workspaceId: "workspace" };
     expect(readyItems(db, target).heldItemIds).toEqual([itemId]);
     await reconciler.reconcile(target);
@@ -104,7 +104,7 @@ test("a project item reads its parent issue from project_approval", async () => 
     });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
-    install(db, intake.epic.id);
+    install(db, intake.delegation.id);
     db.run(
       `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
        VALUES('approval','workspace','parent-issue','person','person','1','{}',1000,9000,1000,'parent')`,

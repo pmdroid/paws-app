@@ -60,7 +60,7 @@ const itemId = task.items[0]!.id;
 db.run("UPDATE work_item SET state = 'awaiting_input' WHERE id = ?", [itemId]);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-bindLinearSessionTask(db, "session", task.epic.id, { actorId: "human" });
+bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
 requireLinearTaskDelegation(db, {
   itemId,
   issueId: "issue",

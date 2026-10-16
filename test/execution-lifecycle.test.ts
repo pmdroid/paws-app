@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { probeExecutionLifecycle } from "./local/execution-lifecycle";
 
-test("epic execution finishes terminal work without a queue stall question", async () => {
+test("delegation execution finishes terminal work without a queue stall question", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-lifecycle-"));
   const names: string[] = [];
   try {

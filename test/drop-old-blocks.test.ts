@@ -65,7 +65,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('hold-0','hold-1')",
     );
     const edge = {
-      epicId: "hold",
+      delegationId: "hold",
       blockerLinearIssueId: "hold-0",
       blockedLinearIssueId: "hold-1",
     };
@@ -103,8 +103,8 @@ test("migration 059 drops the old block tables and task_block holds each depende
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('notice-0','notice-1')",
     );
-    orchestrator.applyEpicChanges({
-      epicId: "notice",
+    orchestrator.applyDelegationChanges({
+      delegationId: "notice",
       sessionId: "notice-session",
       addedItemIds: [],
       removedItemIds: [],
@@ -149,7 +149,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
     const blocked = intake.items.find((item) => item.linearIssueId === "b");
     expect(blocked).toBeDefined();
     db.run(

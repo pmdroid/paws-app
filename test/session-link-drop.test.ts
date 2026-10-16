@@ -71,7 +71,7 @@ test("binding a session keeps an actor that has no workspace user", () => {
   try {
     const item = insertQueuedItem(db, { id: "bound-item", sessionKey: "bound-session", now: 1 });
     ensureLinearSession(db, { sessionId: "bound-session", creatorId: "linear-creator", now: 1 });
-    bindLinearSessionTask(db, "bound-session", item.epicId, { actorId: "linear-actor" });
+    bindLinearSessionTask(db, "bound-session", item.delegationId, { actorId: "linear-actor" });
     expect(delegatedLinearUserId(db, item.id)).toBe("linear-actor");
   } finally {
     db.close();
