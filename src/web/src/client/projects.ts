@@ -200,7 +200,26 @@ export function createProjects() {
                 "",
               )}</fieldset>${policyFields()}<button class="btn" type="submit"${disabled}>Preview selected scope</button></form>`
           : ""
-      }${preview ? `<section class="space-y-4" aria-label="Approval preview"><h3>Review ${preview.preview.includedIssueIds.length} issues</h3><p>${preview.preview.excludedIssueIds.length} project issues excluded.</p><ol>${preview.preview.order.map((id) => `<li>${esc(names.get(id) ?? id)}</li>`).join("")}</ol>${preview.preview.problems.map((problem) => `<p class="err">${esc(problem)}</p>`).join("")}${preview.preview.externalBlockerIds.length ? "<p>Confirm each external blocker's required outcome, then preview the scope again.</p>" : ""}<button class="btn primary" data-project-approve${busy || !previewCurrent || preview.preview.problems.length || !policyComplete ? " disabled" : ""}>Approve ${preview.preview.includedIssueIds.length} issues</button></section>` : ""}</section><section class="card space-y-6"><h2>Approved projects</h2>${approvals.length ? approvals.map((entry) => `<article class="space-y-3"><div class="between"><h3>${esc(entry.preview.project.name)}</h3><span class="pill">${entry.stoppedAt !== null ? "Stopped" : entry.pausedAt !== null ? "Paused" : "Approved"}</span></div>${entry.lastError ? `<p role="status">${esc(entry.lastError)}</p>` : ""}<p>${esc(entry.preview.selection.repository)} · ${entry.preview.includedIssueIds.length} approved issues</p><ul>${entry.progress.map((claim) => `<li>${esc(entry.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)?.identifier ?? claim.issueId)}: ${claim.items.length ? claim.items.map((item) => `<a href="#/epics/${encodeURIComponent(claim.epicId ?? "")}">${esc(item.state)}</a>`).join(", ") : "Waiting for intake"}${claim.blockedReasons.map((reason) => `<p class="muted">${esc(reason)}</p>`).join("")}</li>`).join("")}</ul>${entry.stoppedAt === null ? `<div class="flex flex-wrap gap-3"><button class="btn" data-project-control="${esc(entry.id)}" data-control="${entry.pausedAt === null ? "pause" : "resume"}"${disabled}>${entry.pausedAt === null ? "Pause" : "Resume"}</button><details><summary>Stop project</summary><p>Stop unfinished work in this approved scope.</p><button class="btn" data-project-control="${esc(entry.id)}" data-control="stop"${disabled}>Confirm stop</button></details></div>` : ""}</article>`).join("") : "<p>No project scope has been approved yet.</p>"}</section>`,
+      }${preview ? `<section class="space-y-4" aria-label="Approval preview"><h3>Review ${preview.preview.includedIssueIds.length} issues</h3><p>${preview.preview.excludedIssueIds.length} project issues excluded.</p><ol>${preview.preview.order.map((id) => `<li>${esc(names.get(id) ?? id)}</li>`).join("")}</ol>${preview.preview.problems.map((problem) => `<p class="err">${esc(problem)}</p>`).join("")}${preview.preview.externalBlockerIds.length ? "<p>Confirm each external blocker's required outcome, then preview the scope again.</p>" : ""}<button class="btn primary" data-project-approve${busy || !previewCurrent || preview.preview.problems.length || !policyComplete ? " disabled" : ""}>Approve ${preview.preview.includedIssueIds.length} issues</button></section>` : ""}</section><section class="card space-y-6"><h2>Approved projects</h2>${
+        approvals.length
+          ? approvals
+              .map(
+                (entry) =>
+                  `<article class="space-y-3"><div class="between"><h3>${esc(entry.preview.project.name)}</h3><span class="pill">${entry.stoppedAt !== null ? "Stopped" : entry.pausedAt !== null ? "Paused" : "Approved"}</span></div>${entry.lastError ? `<p role="status">${esc(entry.lastError)}</p>` : ""}<p>${esc(entry.preview.selection.repository)} · ${entry.preview.includedIssueIds.length} approved issues</p><ul>${entry.progress
+                    .map((claim) => {
+                      const identifier =
+                        entry.preview.project.issues.find(
+                          (issue) => issue.linearIssueId === claim.issueId,
+                        )?.identifier ?? claim.issueId;
+                      return `<li>${esc(identifier)}: ${claim.items.length ? claim.items.map((item) => `<a href="#/issues/${encodeURIComponent(identifier)}">${esc(stateLabel(item.state))}</a>`).join(", ") : "Waiting for intake"}${claim.blockedReasons.map((reason) => `<p class="muted">${esc(reason)}</p>`).join("")}</li>`;
+                    })
+                    .join(
+                      "",
+                    )}</ul>${entry.stoppedAt === null ? `<div class="flex flex-wrap gap-3"><button class="btn" data-project-control="${esc(entry.id)}" data-control="${entry.pausedAt === null ? "pause" : "resume"}"${disabled}>${entry.pausedAt === null ? "Pause" : "Resume"}</button><details><summary>Stop project</summary><p>Stop unfinished work in this approved scope.</p><button class="btn" data-project-control="${esc(entry.id)}" data-control="stop"${disabled}>Confirm stop</button></details></div>` : ""}</article>`,
+              )
+              .join("")
+          : "<p>No project scope has been approved yet.</p>"
+      }</section>`,
     );
     if (busy)
       for (const control of root.querySelectorAll<
@@ -292,4 +311,9 @@ export function createProjects() {
     },
     refresh: () => change(load),
   };
+}
+
+function stateLabel(state: string): string {
+  const words = state.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

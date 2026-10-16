@@ -323,13 +323,14 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("status-meta")) return styled("flex min-w-0 flex-wrap items-center gap-3");
   if (has("status-actions"))
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
-  if (has("epic-head")) return styled("space-y-3");
-  if (has("epic-filters")) return styled("flex flex-wrap gap-2");
-  if (name === "ul" && has("epic-list", "epic-items"))
+  if (has("issue-head")) return styled("space-y-3");
+  if (has("issue-filters")) return styled("flex flex-wrap gap-2");
+  if (name === "ul" && has("issue-list", "issue-items"))
     return styled(
       "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
     );
-  if (has("epic-row")) return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
+  if (has("issue-row"))
+    return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
   if (has("overview-columns"))
@@ -388,7 +389,6 @@ function replace(node: DOMNode): ReactElement | undefined {
       "phs",
       "legend",
       "artifact",
-      "overview-epics",
       "settings-inherit",
       "conversation-tabs",
       "conversation-links",

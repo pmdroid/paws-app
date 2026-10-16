@@ -12,6 +12,7 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  saveTaskBlocks,
 } from "../../../db";
 import { parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -195,7 +196,6 @@ describe("live status provider", () => {
     if (!parsed.ok) return;
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.items).toEqual([]);
-    expect(parsed.snapshot.epics).toEqual([]);
     expect(parsed.snapshot.runs).toEqual([]);
     expect(parsed.snapshot.questions).toEqual([]);
     expect(parsed.snapshot.verdicts).toEqual([]);
@@ -296,10 +296,13 @@ describe("live status provider", () => {
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.project.team).toBe("ENG");
     expect(parsed.snapshot.items.map((item) => [item.id, item.state])).toEqual([
-      ["ENG-2", "awaiting_input"],
       ["ENG-3", "merge_queue"],
+      ["ENG-2", "awaiting_input"],
     ]);
     expect(parsed.snapshot.items.every((item) => item.blockers.length === 0)).toBe(true);
+    expect(
+      parsed.snapshot.items.every((item) => item.owner === null && item.project === null),
+    ).toBe(true);
     expect(parsed.snapshot.runs.map((run) => run.itemId).sort()).toEqual(["ENG-2", "ENG-3"]);
     const parked = parsed.snapshot.runs.find((run) => run.itemId === "ENG-2");
     expect(parked?.state).toBe("awaiting_input");
@@ -337,6 +340,39 @@ describe("live status provider", () => {
       url: "https://github.com/pmdroid/paws-demo/pull/7",
     });
     expect(JSON.stringify(snapshot)).not.toContain("Audit log export");
+  });
+
+  test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
+    const db = database();
+    const older = insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
+    const newer = insertQueuedItem(db, { id: "newer", title: "New", now: 20 });
+    const blocked = insertQueuedItem(db, { id: "blocked", title: "Blocked", now: 30 });
+    db.run("UPDATE work_item SET state = 'completed', linear_identifier = 'ENG-OLD' WHERE id = ?", [
+      older.id,
+    ]);
+    db.run("UPDATE work_item SET linear_issue_id = ?, linear_identifier = 'ENG-NEW' WHERE id = ?", [
+      older.linearIssueId,
+      newer.id,
+    ]);
+    db.run("UPDATE work_item SET linear_identifier = 'ENG-BLOCK' WHERE id = ?", [blocked.id]);
+    saveTaskBlocks(
+      db,
+      [blocked.linearIssueId],
+      [
+        {
+          blockerLinearIssueId: older.linearIssueId,
+          blockedLinearIssueId: blocked.linearIssueId,
+        },
+        {
+          blockerLinearIssueId: "lin-missing",
+          blockedLinearIssueId: blocked.linearIssueId,
+        },
+      ],
+    );
+    const snapshot = createLiveStatusProvider(db, { now: () => new Date(30) }).snapshot();
+    expect(snapshot.items.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
+    expect(snapshot.items.some((item) => item.id === "ENG-OLD")).toBe(true);
+    expect(statusIntegrity(snapshot)).toEqual([]);
   });
 
   test("demo is opt-in and does not replace a live database unless asked", async () => {
