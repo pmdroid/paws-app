@@ -631,25 +631,7 @@ export async function probeRunnerWork(
       work.finish(released.runId, 3);
       work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
-      const check: Extract<RunnerCommand, { type: "check" }> = {
-        id: workspaceId(),
-        runnerId: firstRunner,
-        workspaceId: workspace.id,
-        issuedAt: now,
-        expiresAt: now + 60_000,
-        type: "check",
-        runId: waiting.runId,
-        itemId: waiting.itemId,
-        generation: 3,
-        repository,
-        executionId: workspaceId(),
-        verificationAttemptId: workspaceId(),
-        candidateSha: repository.baseSha,
-        argv: ["bun", "test"],
-        cwd: ".",
-        timeoutMs: 30_000,
-      };
-      work.assign(check);
+      work.assign(review);
       const commandCount = db
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runner_command")
         .get()!.count;

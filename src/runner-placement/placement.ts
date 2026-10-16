@@ -160,10 +160,7 @@ export function createRunnerPlacement(options: {
   return {
     async candidates(input) {
       input.signal?.throwIfAborted();
-      if (input.purpose !== "check" && !input.profile)
-        throw new Error("Runner agent profile is required");
-      if (input.purpose === "check" && input.profile)
-        throw new Error("Trusted checks do not use an agent profile");
+      if (!input.profile) throw new Error("Runner agent profile is required");
       const before = scope(input);
       const binding = authority(before);
       const issue = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
@@ -449,10 +446,7 @@ export function createRunnerPlacement(options: {
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
         if (usage.endedAt !== null) return { retryable: false };
         const result = input.result;
-        if (
-          (!result && !input.failure && usage.purpose !== "check") ||
-          (result && result.commandId !== input.commandId)
-        )
+        if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
           throw new Error("Runner result is not bound to its command");
         const quota = result?.errorMessage
           ? quotaSignal(result.errorMessage, input.finishedAt)

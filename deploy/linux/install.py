@@ -76,12 +76,12 @@ def write_atomic(path, content, mode):
 def validate_identity_separation():
     accounts = {}
     groups = {}
-    for name in ("paws-runner", "paws-agent", "paws-check"):
+    for name in ("paws-runner", "paws-agent"):
         try:
             accounts[name] = pwd.getpwnam(name)
         except KeyError:
             pass
-    for name in ("paws-runner", "paws-agent", "paws-check", "paws-results", "paws-check-input", "paws-check-metadata"):
+    for name in ("paws-runner", "paws-agent", "paws-results", "paws-check-input"):
         try:
             groups[name] = grp.getgrnam(name).gr_gid
         except KeyError:
@@ -90,11 +90,9 @@ def validate_identity_separation():
     if any(identifier <= 0 for identifier in identifiers) or len(set(identifiers)) != len(identifiers) or any(identifier <= 0 for identifier in groups.values()) or len(set(groups.values())) != len(groups):
         raise ValueError("Runner service identities must be distinct")
     private_groups = {groups[name] for name in ("paws-runner", "paws-check-input") if name in groups}
-    allowed_names = {"paws-runner": ("paws-runner", "paws-agent", "paws-results", "paws-check-input"), "paws-agent": ("paws-agent", "paws-results"), "paws-check": ("paws-check",)}
+    allowed_names = {"paws-runner": ("paws-runner", "paws-agent", "paws-results", "paws-check-input"), "paws-agent": ("paws-agent", "paws-results")}
     for name, account in accounts.items():
         membership = set(os.getgrouplist(name, account.pw_gid))
-        if groups.get("paws-check-metadata") in membership:
-            raise ValueError("Service identity belongs to the trusted metadata group")
         if name != "paws-runner" and private_groups & membership:
             raise ValueError("Untrusted service identity belongs to a private runner group")
         allowed = {groups[group] for group in allowed_names[name] if group in groups}
@@ -303,19 +301,9 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             runner_group = grp.getgrnam("paws-runner")
             agent_group = grp.getgrnam("paws-agent")
             results_group = grp.getgrnam("paws-results")
-            check = pwd.getpwnam("paws-check")
-            check_group = grp.getgrnam("paws-check")
-            input_group = grp.getgrnam("paws-check-input")
-            metadata_group = grp.getgrnam("paws-check-metadata")
             if runner.pw_uid <= 0 or agent.pw_uid <= 0 or runner.pw_uid == agent.pw_uid or runner.pw_gid != runner_group.gr_gid or agent.pw_gid != agent_group.gr_gid or runner.pw_gid == agent.pw_gid or runner.pw_shell != "/usr/sbin/nologin" or agent.pw_shell != "/usr/sbin/nologin" or runner.pw_dir != "/var/lib/paws-runner" or agent.pw_dir != "/var/lib/paws-agent" or "paws-agent" in runner_group.gr_mem:
                 raise ValueError("Unsafe runner service identities")
-            if check.pw_uid <= 0 or check.pw_uid in (runner.pw_uid, agent.pw_uid) or check.pw_gid != check_group.gr_gid or check.pw_gid in (runner.pw_gid, agent.pw_gid, input_group.gr_gid) or check.pw_shell != "/usr/sbin/nologin" or check.pw_dir != "/var/lib/paws-check" or "paws-runner" not in input_group.gr_mem or {"paws-agent", "paws-check"} & set(input_group.gr_mem) or {"paws-agent", "paws-check"} & set(runner_group.gr_mem):
-                raise ValueError("Unsafe verification service identities")
-            for path, uid, gid, mode in (("/var/lib/paws-check", check.pw_uid, check.pw_gid, 0o700), ("/var/lib/paws-check-input", runner.pw_uid, input_group.gr_gid, 0o2750), ("/var/lib/paws-check-attempts", 0, check.pw_gid, 0o750), ("/var/lib/paws-check-results", 0, runner.pw_gid, 0o750), ("/var/lib/paws-check-control", 0, 0, 0o700), ("/var/lib/paws-check-metadata", 0, metadata_group.gr_gid, 0o750), ("/var/lib/paws-check-broker", 0, 0, 0o700)):
-                info = pathlib.Path(path).lstat()
-                if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
-                    raise ValueError(f"Unsafe verification installation state directory: {path}")
-            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750), ("/var/lib/paws-runner-members", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-runner-broker", 0, 0, 0o700)):
+            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750), ("/var/lib/paws-runner-members", runner.pw_uid, runner.pw_gid, 0o711)):
                 info = pathlib.Path(path).lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
                     raise ValueError(f"Unsafe runner installation state directory: {path}")
@@ -330,13 +318,22 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             temporary_pointer.symlink_to(destination)
             os.replace(temporary_pointer, current)
             sync_directory(BASE)
-            verifier_identity = json.loads(release.command(["/usr/bin/python3", "-I", "-B", str(deployed_assets / "check-verifier.py"), "initialize"]))
             release.command(["/usr/bin/systemctl", "daemon-reload"])
-            release.command(["/usr/bin/systemctl", "enable", "paws-runner-broker.socket"])
+            retired = ("paws-runner-broker.socket", "paws-runner-broker.service", "paws-check@.service", "paws-check-witness@.service")
+            present = [name for name in retired if pathlib.Path("/etc/systemd/system", name).exists()]
+            if present:
+                if "paws-runner-broker.socket" in present:
+                    release.command(["/usr/bin/systemctl", "disable", "--now", "--", "paws-runner-broker.socket"])
+                stop = [name for name in present if "@" not in name and name != "paws-runner-broker.socket"]
+                if stop:
+                    release.command(["/usr/bin/systemctl", "stop", "--", *stop])
+                for name in present:
+                    pathlib.Path("/etc/systemd/system", name).unlink()
+                release.command(["/usr/bin/systemctl", "daemon-reload"])
             write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
         login_prefix = "/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
         login_commands = {"claude": login_prefix + "/opt/paws-runner/bin/claude auth login", "codex": login_prefix + "/opt/paws-runner/bin/codex login --device-auth"}
-        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "verifierIdentity": verifier_identity, "providerLoginCommands": login_commands}
+        return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "providerLoginCommands": login_commands}
     finally:
         os.close(lock)
 

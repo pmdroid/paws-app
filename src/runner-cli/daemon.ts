@@ -4,28 +4,22 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRuntime } from "../runner-runtime";
-import { openRunnerCheckRuntime } from "../runner-check-runtime";
 
 export async function runPairedDaemon(
   daemon: RunnerDaemon,
   ids: {
     runnerUid: number;
-    runnerGid: number;
     agentUid: number;
     agentGid: number;
     resultsGid: number;
-    inputGid: number;
-    checkUid: number;
-    checkGid: number;
   },
-  verifierPublicKeyPem: string,
   signal: AbortSignal,
   report: () => void,
 ): Promise<void> {
   signal.throwIfAborted();
   if (daemon.status().phase !== "paired") throw new Error("Runner must be paired");
   const root = "/var/lib/paws-runner";
-  for (const name of ["runtime", "health", "checks", "repositories"]) {
+  for (const name of ["runtime", "health", "repositories"]) {
     const path = join(root, name);
     mkdirSync(path, { recursive: true, mode: 0o700 });
     const info = lstatSync(path);
@@ -50,11 +44,10 @@ export async function runPairedDaemon(
     concurrency: daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
-  let check: Awaited<ReturnType<typeof openRunnerCheckRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
   const stop = () =>
     (stopping ??= (async () => {
-      const results = await Promise.allSettled([runtime.stop(), health?.stop(), check?.stop()]);
+      const results = await Promise.allSettled([runtime.stop(), health?.stop()]);
       if (results.some((result) => result.status === "rejected"))
         throw new Error("Runner shutdown failed");
     })());
@@ -65,29 +58,9 @@ export async function runPairedDaemon(
     signal.throwIfAborted();
     health = await openRunnerHealthRuntime({ ...shared, root: join(root, "health") });
     signal.throwIfAborted();
-    check = await openRunnerCheckRuntime({
-      root: join(root, "checks"),
-      daemon,
-      paths: {
-        inputRoot: "/var/lib/paws-check-input",
-        workRoot: "/var/lib/paws-check-attempts",
-        resultRoot: "/var/lib/paws-check-results",
-        runnerUid: ids.runnerUid,
-        runnerGid: ids.runnerGid,
-        inputGid: ids.inputGid,
-        checkUid: ids.checkUid,
-        checkGid: ids.checkGid,
-      },
-      repositoryRoot: join(root, "repositories"),
-      home: root,
-      verifierPublicKeyPem,
-      onError: report,
-    });
-    signal.throwIfAborted();
     signal.addEventListener("abort", interrupt, { once: true });
     while (!signal.aborted) {
       try {
-        await check.tick();
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
       } catch {

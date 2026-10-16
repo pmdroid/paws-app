@@ -28,10 +28,13 @@ import {
   reviewRequirements,
   bypassable,
   snapshotRetryBaseline,
+  loggedSessionCloseout,
+  readSessionCloseout,
+  sessionCloseoutPath,
+  writeSessionCloseout,
   type GateResult,
   type CloseoutVerdict,
   type CandidateIdentity,
-  type CloseoutGateOptions,
 } from "../closeout";
 import {
   CommandBus,
@@ -240,11 +243,6 @@ export type OrchestratorOptions = {
     cancelItem?(itemId: string): Promise<void>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
-    closeoutForItem(
-      itemId: string,
-      signal?: AbortSignal,
-      checkoutExclusions?: readonly string[],
-    ): NonNullable<CloseoutGateOptions["commandRunner"]>;
   };
   publicationReady?: (
     itemId: string,
@@ -1418,7 +1416,13 @@ export class Orchestrator {
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
       saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
-      if (!this.options.remoteExecution) markRunEnded(this.db, run.id, this.now());
+      if (this.options.remoteExecution)
+        writeSessionCloseout(
+          sessionCloseoutPath(this.options.pawsRoot, pathId),
+          head,
+          executed.run.closeoutReport,
+        );
+      else markRunEnded(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
@@ -1621,11 +1625,18 @@ export class Orchestrator {
           return result;
         };
     }
-    const commands = this.options.remoteExecution?.closeoutForItem(
-      item.id,
-      deps.signal,
-      checkoutExclusions,
-    );
+    const sessionPath = sessionCloseoutPath(this.options.pawsRoot, itemPathId(item));
+    const commands = this.options.remoteExecution
+      ? {
+          async runLogged(request: Parameters<typeof loggedSessionCloseout>[1]) {
+            assertCurrent();
+            const saved = readSessionCloseout(sessionPath);
+            const result = loggedSessionCloseout(saved?.report, request);
+            assertCurrent();
+            return result;
+          },
+        }
+      : undefined;
     const live = [...this.live.values()].find((entry) => entry.itemId === item.id);
     const key = `${item.currentRunId ?? item.id}:closeout:${crypto.randomUUID()}`;
     const report = (body: string) => {
@@ -1662,16 +1673,7 @@ export class Orchestrator {
     const gate = createCloseoutGate({
       checkoutExclusions,
       candidate,
-      commandRunner: commands
-        ? {
-            async runLogged(request) {
-              assertCurrent();
-              const result = await commands.runLogged(request);
-              assertCurrent();
-              return result;
-            },
-          }
-        : undefined,
+      ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
           await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));
@@ -1702,6 +1704,8 @@ export class Orchestrator {
               undefined,
               deps.signal,
             );
+          if (result.ok && this.options.remoteExecution)
+            writeSessionCloseout(sessionPath, result.head, result.closeoutReport);
           if (result.ok && !this.stopped(item.id)) {
             sessionProgress?.phase("verifying");
             report(

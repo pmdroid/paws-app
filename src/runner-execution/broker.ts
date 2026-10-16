@@ -6,15 +6,10 @@ export interface RunnerBrokerClient {
   stop(executionId: string): Promise<void>;
 }
 
-export interface RunnerCheckBrokerClient {
-  startCheck(executionId: string): Promise<{ alreadyAdmitted: boolean }>;
-  stopCheck(executionId: string): Promise<void>;
-}
-
 function createBrokerRequest(options: { socketPath?: string } = {}) {
   const socketPath = options.socketPath ?? "/run/paws-runner-broker.sock";
   function request(
-    operation: "start" | "stop" | "start-check" | "stop-check",
+    operation: "start" | "stop",
     executionId: string,
   ): Promise<{ alreadyAdmitted: boolean }> {
     ExecutionIdSchema.parse(executionId);
@@ -88,18 +83,6 @@ export function createRunnerBrokerClient(
     start: (id) => request("start", id),
     stop: async (id) => {
       await request("stop", id);
-    },
-  };
-}
-
-export function createRunnerCheckBrokerClient(
-  options: { socketPath?: string } = {},
-): RunnerCheckBrokerClient {
-  const request = createBrokerRequest(options);
-  return {
-    startCheck: (id) => request("start-check", id),
-    stopCheck: async (id) => {
-      await request("stop-check", id);
     },
   };
 }
