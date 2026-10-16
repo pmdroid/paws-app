@@ -168,6 +168,7 @@ function shareEvents(
   progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
 ): ((event: AcceptedLinearEvent) => Promise<void | boolean>) & { close(): Promise<void> } {
   const inflight = new Map<string, Promise<void | boolean>>();
+  const acknowledged = new Set<string>();
   let closed = false;
   const deliver = (event: AcceptedLinearEvent) => {
     if (closed) return Promise.reject(new Error("Linear event delivery is shutting down"));
@@ -190,6 +191,7 @@ function shareEvents(
         event,
         (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
         request,
+        { acknowledged },
       );
     })().finally(() => {
       inflight.delete(event.dedupeKey);

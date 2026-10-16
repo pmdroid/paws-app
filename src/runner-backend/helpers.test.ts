@@ -188,7 +188,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   const f = fixture();
   f.db.run("UPDATE runner SET status='paused'");
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
-    /No available/,
+    /No paired runner can run/,
   );
   f.db.run("UPDATE runner SET status='active'");
   const pending = f.backend.forSession("session", "classify")(f.input);
@@ -276,7 +276,7 @@ test("Rejected placement admission rolls back the signed helper command", async 
     },
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
-    /No available paired runner/,
+    /No paired runner can run/,
   );
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
 });
@@ -294,7 +294,7 @@ test("An empty placement decision cannot fall back to another paired host", asyn
     },
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
-    /No available paired runner/,
+    /No paired runner can run/,
   );
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(0);
 });

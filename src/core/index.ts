@@ -87,3 +87,5 @@ export {
   parentIssueIdSql,
   parentTaskKeySql,
 } from "./delegation";
+
+export { UserFacingError } from "./user-facing-error";
