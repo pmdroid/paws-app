@@ -22,12 +22,12 @@ import {
   setCurrentRun,
 } from "../../src/db";
 import {
-  createEpicReconciler,
+  createItemReconciler,
   createPublicationReadiness,
   hasPendingEpicChanges,
   intakeDelegatedIssue,
   readyItems,
-  type EpicChanges,
+  type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 
@@ -88,9 +88,9 @@ export async function probePublicationReadiness(root: string) {
     bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "human" });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
     const target = { epicId: intake.epic.id, workspaceId: "workspace" };
-    let onChanges = (_changes: EpicChanges) => {};
-    let afterChanges = async (_changes: EpicChanges) => {};
-    const reconciler = createEpicReconciler({
+    let onChanges = (_changes: ItemChanges) => {};
+    let afterChanges = async (_changes: ItemChanges) => {};
+    const reconciler = createItemReconciler({
       db,
       tracker,
       lifecycle,
@@ -98,7 +98,7 @@ export async function probePublicationReadiness(root: string) {
       afterChanges: (changes) => afterChanges(changes),
       now: () => clock.now(),
     });
-    await reconciler.reconcile(target);
+    await reconciler.reconcile({ itemId, workspaceId: target.workspaceId });
     applyWorkItemEvent(db, itemId, "dispatched");
     applyWorkItemEvent(db, itemId, "turn_ended");
     applyWorkItemEvent(db, itemId, "closeout_accepted");

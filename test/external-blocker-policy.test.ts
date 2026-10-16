@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { bindLinearSessionTask, migrate, recordLinearInstallation, saveTaskMode } from "../src/db";
 import {
   intakeDelegatedIssue,
+  readExternalBlockerPolicies,
   readyItems,
   saveExternalBlockerPolicies,
   syncItemDependencies,
@@ -57,7 +58,7 @@ async function fixture() {
   bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "linear-person" });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
-  const policyTarget = { workspaceId: "workspace", epicId: intake.epic.id };
+  const policyTarget = { workspaceId: "workspace", itemId };
   const policy: ExternalBlockerPolicy = {
     blockerLinearIssueId: "a",
     outcome: "merge",
@@ -110,6 +111,36 @@ async function fixture() {
     },
   };
 }
+
+test("a policy saved for an item is read back for that item only", async () => {
+  const f = await fixture();
+  try {
+    f.save([f.policy]);
+    expect(readExternalBlockerPolicies(f.db, f.target)).toEqual([f.policy]);
+    f.db.run(
+      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
+      [
+        f.db
+          .query<{ epicId: string }, [string]>("SELECT epic_id AS epicId FROM work_item WHERE id=?")
+          .get(f.target.itemId)!.epicId,
+      ],
+    );
+    expect(
+      readExternalBlockerPolicies(f.db, {
+        workspaceId: f.target.workspaceId,
+        itemId: "other-item",
+      }),
+    ).toEqual([]);
+    expect(
+      f.db.query<{ itemId: string }, []>("SELECT item_id AS itemId FROM item_blocker_policy").all(),
+    ).toEqual([{ itemId: f.target.itemId }]);
+    expect(
+      f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM external_blocker_policy").get()!.n,
+    ).toBe(0);
+  } finally {
+    f.db.close();
+  }
+});
 
 test("External code blockers require the approved merged PR and retain evidence", async () => {
   const f = await fixture();
