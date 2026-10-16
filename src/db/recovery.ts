@@ -30,6 +30,7 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     const items = listWorkItemsByStates(db, STARTUP_STATES);
     const decisions: StartupDecision[] = [];
     for (const item of items) {
+      if (hasPendingAnswerResume(db, item.id)) continue;
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
@@ -45,6 +46,17 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     }
     return decisions;
   });
+}
+
+function hasPendingAnswerResume(db: Database, itemId: string): boolean {
+  return (
+    db
+      .query(
+        `SELECT 1 FROM job WHERE status IN ('pending', 'running') AND job_key LIKE 'resume:answer:%'
+         AND json_extract(payload, '$.itemId') = ?`,
+      )
+      .get(itemId) !== null
+  );
 }
 
 function resumeAnsweredQuestion(db: Database, item: WorkItemRecord, now: number): void {
