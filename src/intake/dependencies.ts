@@ -63,7 +63,7 @@ export type DependencyReadiness = {
   cycleHeldItemIds: string[];
 };
 
-const itemColumns = `i.id,i.epic_id AS epicId,i.linear_issue_id AS linearIssueId,
+const itemColumns = `i.id,i.delegation_id AS epicId,i.linear_issue_id AS linearIssueId,
   i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
   t.mode,i.brief,i.project_approval_id AS projectApprovalId`;
 
@@ -83,22 +83,22 @@ function scope(db: Database, target: Target): Scope | null {
        s.generation AS sessionGeneration,s.team_id AS teamId,
        COALESCE((SELECT u.linear_user_id FROM workspace_user u
          JOIN work_item oi ON oi.owner_user_id=u.id
-         WHERE oi.epic_id=i.epic_id AND oi.session_key=s.session_id
+         WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id
          ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
        (SELECT oi.delegated_by FROM work_item oi
-         WHERE oi.epic_id=i.epic_id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
+         WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
          ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS ownerActorId,
        s.creator_id AS creatorId
        FROM work_item i
        JOIN linear_session s ON s.session_id=(
          SELECT si.session_key FROM work_item si
          JOIN linear_session ls ON ls.session_id=si.session_key AND ls.stopped_at IS NULL
-         WHERE si.epic_id=i.epic_id
+         WHERE si.delegation_id=i.delegation_id
          ORDER BY si.created_at, si.position, si.id LIMIT 1)
        JOIN workspace w ON w.linear_organization_id=s.organization_id
        LEFT JOIN work_item_task t ON t.item_id=i.id
        LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.epic_id")}
+       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.delegation_id")}
        AND s.stopped_at IS NULL
        AND s.oauth_client_id IS NOT NULL AND s.app_user_id IS NOT NULL
        AND s.team_id IS NOT NULL AND COALESCE(p.present,1)=1`,
@@ -133,7 +133,7 @@ function scope(db: Database, target: Target): Scope | null {
       `SELECT ${itemColumns} FROM work_item i
        LEFT JOIN work_item_task t ON t.item_id=i.id
        LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+       WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
     .all(item.epicId);
   if (new Set(siblings.map((entry) => entry.linearIssueId)).size !== siblings.length)
@@ -185,7 +185,7 @@ export function epicSnapshotsComplete(db: Database, epicId: string): boolean {
   return (
     db
       .query(
-        `SELECT 1 FROM work_item i WHERE i.epic_id=? AND i.state NOT IN ('completed','merged','cancelled')
+        `SELECT 1 FROM work_item i WHERE i.delegation_id=? AND i.state NOT IN ('completed','merged','cancelled')
          AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
          AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot s WHERE s.item_id=i.id)`,
       )
@@ -197,8 +197,8 @@ export function hasPendingEpicChanges(db: Database, epicId: string): boolean {
   return (
     db
       .query(
-        `SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.epic_id=?
-         UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.epic_id=? LIMIT 1`,
+        `SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=?
+         UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=? LIMIT 1`,
       )
       .get(epicId, epicId) !== null
   );

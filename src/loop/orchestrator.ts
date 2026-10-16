@@ -2419,7 +2419,7 @@ export class Orchestrator {
           });
           const dependents = this.db
             .query<{ id: string; identifier: string }, [string, string]>(
-              `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.epic_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
+              `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.delegation_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
             )
             .all(changes.epicId, item.linearIssueId);
           if (dependents.length)
@@ -2577,7 +2577,7 @@ export class Orchestrator {
         `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM task_block b
          JOIN work_item i ON i.id=(
            SELECT candidate.id FROM work_item candidate
-           WHERE candidate.linear_issue_id=b.blocker_linear_issue_id AND candidate.epic_id=?
+           WHERE candidate.linear_issue_id=b.blocker_linear_issue_id AND candidate.delegation_id=?
            AND candidate.state<>'cancelled'
            AND NOT EXISTS(SELECT 1 FROM work_item_specification spec WHERE spec.item_id=candidate.id AND spec.present=0)
            ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1)
@@ -2608,7 +2608,7 @@ export class Orchestrator {
     const epicIds = new Set(
       this.db
         .query<{ id: string }, []>(
-          `SELECT DISTINCT epic_id AS id FROM work_item WHERE ${delegationHasOpenWork("work_item.epic_id")}`,
+          `SELECT DISTINCT delegation_id AS id FROM work_item WHERE ${delegationHasOpenWork("work_item.delegation_id")}`,
         )
         .all()
         .map((row) => row.id),
@@ -2710,7 +2710,7 @@ export class Orchestrator {
     return (
       this.db
         .query<{ id: string }, [string]>(
-          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.epic_id=? LIMIT 1`,
+          `SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id JOIN work_item i ON i.session_key=s.session_id WHERE i.delegation_id=? LIMIT 1`,
         )
         .get(epicId)?.id ?? null
     );
@@ -2735,7 +2735,7 @@ export class Orchestrator {
          WHERE blocked_linear_issue_id = ?
          AND EXISTS (
            SELECT 1 FROM work_item
-           WHERE epic_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
+           WHERE delegation_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
          )`,
       )
       .all(item.linearIssueId, item.epicId);

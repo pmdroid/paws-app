@@ -1689,4 +1689,18 @@ ALTER TABLE project_approval_issue_delegation RENAME TO project_approval_issue;
 CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(workspace_id, issue_id) WHERE released_at IS NULL;
 `,
   },
+  {
+    id: "065_drop_epic",
+    sql: `
+ALTER TABLE work_item RENAME COLUMN epic_id TO delegation_id;
+ALTER TABLE project_approval_issue RENAME COLUMN epic_id TO delegation_id;
+DROP INDEX work_item_epic_position;
+CREATE INDEX work_item_delegation_position ON work_item (delegation_id, position);
+DROP TABLE epic_dependency_snapshot;
+DROP TABLE epic_reconciliation_request;
+DROP TABLE epic_reconciliation_effect;
+DROP TABLE external_blocker_policy;
+DROP TABLE epic;
+`,
+  },
 ];

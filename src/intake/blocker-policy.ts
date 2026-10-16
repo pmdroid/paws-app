@@ -144,7 +144,7 @@ export function managedBlockerSatisfied(
      JOIN linear_session s ON s.session_id=i.session_key
      JOIN workspace w ON w.linear_organization_id=s.organization_id
      LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
-     WHERE w.id=? AND i.linear_issue_id=? AND i.epic_id<>(SELECT epic_id FROM work_item WHERE id=?)
+     WHERE w.id=? AND i.linear_issue_id=? AND i.delegation_id<>(SELECT delegation_id FROM work_item WHERE id=?)
      AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)`,
     )
     .all(target.workspaceId, issue, target.itemId);
@@ -173,7 +173,7 @@ export function readExternalBlockerEvidence(
     .query<{ evidence: string }, [string, string]>(
       `SELECT s.external_evidence AS evidence FROM item_dependency_snapshot s
        JOIN work_item i ON i.id=s.item_id
-       WHERE s.workspace_id=? AND i.epic_id=? ORDER BY s.generation,i.position,i.id`,
+       WHERE s.workspace_id=? AND i.delegation_id=? ORDER BY s.generation,i.position,i.id`,
     )
     .all(target.workspaceId, target.epicId);
   const evidence: Record<string, BlockerEvidence> = {};
