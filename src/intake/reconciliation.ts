@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { IssueBrief, WorkBrief } from "../core";
 import type { EpicSnapshot, LinearIssueLifecycle, LinearSubIssue, TrackerAdapter } from "../linear";
-import { readyItems, syncEpicDependencies } from "./dependencies";
+import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import type { InspectBlockerMerge } from "./blocker-policy";
 
@@ -237,7 +237,10 @@ export function createEpicReconciler(input: {
           change.removedItemIds.length ||
           change.specChangedItemIds.length
         )
-          db.run("UPDATE epic_dependency_snapshot SET scope='[]' WHERE epic_id=?", [target.epicId]);
+          db.run(
+            "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE epic_id=?)",
+            [target.epicId],
+          );
         for (const [kind, ids] of [
           ["spec", change.specChangedItemIds],
           ["removed", change.removedItemIds],
@@ -271,14 +274,26 @@ export function createEpicReconciler(input: {
     const changes = publication.change;
     await input.afterChanges?.(changes);
     target.signal?.throwIfAborted();
-    if (!changes.parentCanceled)
-      await syncEpicDependencies(db, {
-        ...target,
-        expectedGeneration: readyItems(db, target).generation,
-        tracker,
-        lifecycle,
-        inspectMerge: input.inspectMerge,
-      });
+    if (!changes.parentCanceled) {
+      const itemIds = db
+        .query<{ id: string }, [string]>(
+          `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
+           WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+        )
+        .all(target.epicId)
+        .map((item) => item.id);
+      for (const itemId of itemIds)
+        await syncItemDependencies(db, {
+          itemId,
+          workspaceId: target.workspaceId,
+          expectedGeneration: readyItems(db, { itemId, workspaceId: target.workspaceId })
+            .generation,
+          tracker,
+          lifecycle,
+          inspectMerge: input.inspectMerge,
+          signal: target.signal,
+        });
+    }
     db.transaction(() => {
       db.run(
         "DELETE FROM epic_reconciliation_request WHERE epic_id=? AND workspace_id=? AND token=?",
