@@ -31,6 +31,8 @@ export {
 
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
 
+export { RUNNER_VERSION_PATTERN, RunnerHostStatusSchema, type RunnerHostStatus } from "./host";
+
 export {
   RunnerArtifactSchema,
   RunnerArtifactChunkSchema,

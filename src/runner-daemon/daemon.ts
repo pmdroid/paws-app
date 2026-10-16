@@ -46,6 +46,7 @@ import {
 } from "./state";
 import { downloadRunnerInputs } from "./inputs";
 import { httpsOrigin, requestJson, RunnerRequestError } from "./transport";
+import type { RunnerHostSampler } from "./host";
 import {
   RunnerAnswersRequestSchema,
   RunnerAnswersSchema,
@@ -70,6 +71,7 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
   concurrency?: number;
+  hostStatus?: RunnerHostSampler;
   now?: () => number;
 };
 
@@ -363,12 +365,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return status();
     },
     async heartbeat() {
+      const host = options.hostStatus ? await options.hostStatus().catch(() => ({})) : {};
       return RunnerHeartbeatSchema.parse(
-        await authenticated(
-          "/v1/heartbeat",
-          "POST",
-          options.concurrency === undefined ? {} : { capacity: concurrency },
-        ),
+        await authenticated("/v1/heartbeat", "POST", {
+          ...host,
+          ...(options.concurrency === undefined ? {} : { capacity: concurrency }),
+        }),
       );
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {

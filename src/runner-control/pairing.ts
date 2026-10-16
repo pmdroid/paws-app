@@ -7,7 +7,7 @@ import {
   findRunnerPairing,
   getRunnerCertificate,
   immediate,
-  listRunners,
+  listRunnerOverview,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
@@ -167,7 +167,7 @@ export function createRunnerControl(options: {
     list(principal: WorkspacePrincipal) {
       if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
         throw new Error("Workspace membership is required.");
-      return listRunners(db, principal.workspaceId);
+      return listRunnerOverview(db, principal.workspaceId, now());
     },
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {

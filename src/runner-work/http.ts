@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { RunnerHostStatusSchema } from "../runner-protocol";
 import { RunnerEventSchema, RunnerWorkFencedError, type RunnerWork } from "./control";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const empty = z.strictObject({});
-const heartbeat = z.strictObject({ capacity: z.number().int().min(1).max(16).optional() });
+const heartbeat = z.strictObject({
+  capacity: z.number().int().min(1).max(16).optional(),
+  ...RunnerHostStatusSchema.shape,
+});
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
   runId: id,
@@ -20,8 +24,8 @@ export function createRunnerWorkHttp(work: RunnerWork) {
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const input = heartbeat.parse(await body(request));
-        return json(work.heartbeat(runnerId, input.capacity ?? 1));
+        const { capacity, ...host } = heartbeat.parse(await body(request));
+        return json(work.heartbeat(runnerId, capacity ?? 1, host));
       }
       const acknowledgment = /^\/v1\/commands\/([^/]+)\/ack$/.exec(path);
       if (acknowledgment && request.method === "POST") {

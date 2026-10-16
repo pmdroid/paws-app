@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerControl } from "./pairing";
+import { serverVersion } from "./version";
 
 const code = z.object({ code: z.string().regex(/^[A-F0-9]{16}$/) }).strict();
 const enrollment = z.union([
@@ -13,7 +14,11 @@ const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
   .strict();
 
-export function createRunnerHttp(control: RunnerControl) {
+export function createRunnerHttp(
+  control: RunnerControl,
+  options: { serverVersion?: string | null } = {},
+) {
+  const version = options.serverVersion === undefined ? serverVersion() : options.serverVersion;
   let enrolling = 0;
   return {
     async enrollment(request: Request): Promise<Response> {
@@ -39,7 +44,7 @@ export function createRunnerHttp(control: RunnerControl) {
       const path = new URL(request.url).pathname;
       try {
         if (path === "/api/runners" && request.method === "GET")
-          return json({ runners: control.list(principal) });
+          return json({ runners: control.list(principal), serverVersion: version });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
         if (path === "/api/runners/pairings/approve" && request.method === "POST")
