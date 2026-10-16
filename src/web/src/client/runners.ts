@@ -2,6 +2,24 @@ import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
+export function runnerActionsMarkup(
+  runner: { id: string; status: "active" | "paused" | "draining" | "revoked" },
+  state: { manages: boolean; busy: boolean; recent: boolean },
+): string {
+  const disabled = state.busy || !state.recent ? " disabled" : "";
+  const health = `<button class="btn" data-runner-health="${esc(runner.id)}"${state.busy ? " disabled" : ""}>View health</button>`;
+  if (!state.manages || runner.status === "revoked") return `<div class="row">${health}</div>`;
+  const pause =
+    runner.status === "active"
+      ? `<button class="btn" data-runner-status="paused" data-runner="${esc(runner.id)}"${disabled}>Pause</button>`
+      : `<button class="btn" data-runner-status="active" data-runner="${esc(runner.id)}"${disabled}>Resume</button>`;
+  const drain =
+    runner.status !== "draining"
+      ? `<button class="btn" data-runner-status="draining" data-runner="${esc(runner.id)}"${disabled}>Drain</button>`
+      : "";
+  return `<div class="row">${health}${pause}${drain}<details><summary>Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${esc(runner.id)}"${disabled}>Revoke runner</button></details></div>`;
+}
+
 type Runner = {
   id: string;
   name: string;
@@ -250,9 +268,7 @@ export function createRunners() {
     }
   }
   function controls(runner: Runner) {
-    if (!manages() || runner.status === "revoked") return "";
-    const disabled = busy || !recent() ? " disabled" : "";
-    return `<div class="row">${runner.status === "active" ? `<button class="btn" data-runner-status="paused" data-runner="${esc(runner.id)}"${disabled}>Pause</button>` : `<button class="btn" data-runner-status="active" data-runner="${esc(runner.id)}"${disabled}>Resume</button>`}${runner.status !== "draining" ? `<button class="btn" data-runner-status="draining" data-runner="${esc(runner.id)}"${disabled}>Drain</button>` : ""}<details><summary>Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${esc(runner.id)}"${disabled}>Revoke runner</button></details></div>`;
+    return runnerActionsMarkup(runner, { manages: manages(), busy, recent: recent() });
   }
   function healthView() {
     const runner = runners.find((entry) => entry.id === selected);
@@ -372,7 +388,7 @@ export function createRunners() {
     const disabled = busy || !recent() ? " disabled" : "";
     renderMarkup(
       root,
-      `<div class="between"><h1 class="sr-only">Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p><button class="btn" data-runner-health="${esc(runner.id)}"${busy ? " disabled" : ""}>View health</button>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code> and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`,
+      `<div class="between"><h1 class="sr-only">Runners</h1><button class="btn" data-runners-refresh${busy ? " disabled" : ""}>Refresh runners</button></div><p class="sub">Manage the Linux hosts that execute work delegated in Linear.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve${busy || !recent() ? " disabled" : ""}>Approve runner</button></div>` : ""}</section>` : ""}<ul class="runner-list">${runners.map((runner) => `<li><div class="between"><h2>${esc(runner.name)}</h2><span class="tag">${esc(runner.status)}</span></div><p class="muted"><code>${esc(runner.id)}</code></p>${controls(runner)}</li>`).join("")}</ul>${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo | sudo sh</code> and enter its pairing code.</p>" : ""}${healthView()}${policyView()}${workspacePolicyView()}${usageView()}`,
     );
     bind();
   }

@@ -87,13 +87,13 @@ export function renderConversations(
   const plan = selected.plan
     .map(
       (step) =>
-        `<li class="conversation-row"><span class="conversation-step ${step.status}" aria-label="${esc(planState(step.status))}"></span><span>${esc(step.content)}</span><small>${esc(planState(step.status))}</small></li>`,
+        `<li class="conversation-row"><span>${esc(step.content)}</span><small class="muted">${esc(planState(step.status))}</small></li>`,
     )
     .join("");
   const files = selected.artifacts
     .map(
       (file) =>
-        `<li><a href="${esc(file.href)}" target="_blank" rel="noopener noreferrer">${esc(file.displayName)}</a>${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mimeType) ? `<a href="${esc(file.href)}" target="_blank" rel="noopener noreferrer"><img src="${esc(file.href)}" alt="${esc(file.displayName)}" loading="lazy" /></a>` : ""}<span>${esc(file.mimeType)} · ${Math.ceil(file.sizeBytes / 1024)} KB</span><small>${file.state === "uploaded" ? "Published in Linear" : file.state === "failed" ? "Publication retry needed" : "Publishing to Linear"}</small><a href="${esc(file.href)}?download=1" download>Download</a></li>`,
+        `<li class="conversation-row"><a href="${esc(file.href)}" target="_blank" rel="noopener noreferrer">${esc(file.displayName)}</a>${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mimeType) ? `<a href="${esc(file.href)}" target="_blank" rel="noopener noreferrer"><img src="${esc(file.href)}" alt="${esc(file.displayName)}" loading="lazy" /></a>` : ""}<span class="muted">${esc(file.mimeType)} · ${Math.ceil(file.sizeBytes / 1024)} KB</span><div class="row"><small>${file.state === "uploaded" ? "Published in Linear" : file.state === "failed" ? "Publication retry needed" : "Publishing to Linear"}</small><a href="${esc(file.href)}?download=1" download>Download</a></div></li>`,
     )
     .join("");
   const waiting = questions
@@ -105,14 +105,14 @@ export function renderConversations(
   const history = selected.items
     .map(
       (item) =>
-        `<li class="conversation-row"><div><b>${esc(item.identifier)}</b><span>${esc(item.title)}</span></div><small>${esc(taskState(item.state))}</small>${item.response ? `<p>${esc(item.response)}</p>` : ""}</li>`,
+        `<li class="conversation-row"><div><span class="lin-id">${esc(item.identifier)}</span> <span>${esc(item.title)}</span></div><small class="muted">${esc(taskState(item.state))}</small>${item.response ? `<p>${esc(item.response)}</p>` : ""}</li>`,
     )
     .join("");
   const pending = selected.delivery.filter(
     (entry) => entry.state === "pending" || entry.state === "dead",
   );
   return `${heading}${picker}
-    <header class="conversation-heading"><div><h2>${esc(selected.title)}</h2><p class="muted">${esc(selected.summary || status)}</p></div><span class="tag">${esc(status)}</span></header>
+    <header class="conversation-heading"><div class="title-row"><h2>${esc(selected.title)}</h2><span class="tag">${esc(status)}</span></div><p class="muted">${esc(selected.summary || status)}</p></header>
     <div class="conversation-links">${links}</div>${waiting}
     <div class="conversation-layout"><section aria-label="Conversation"><h2>Conversation</h2><ol class="conversation-timeline">${timeline || '<li class="empty">The session is starting. Messages will appear here.</li>'}</ol></section>
     <aside class="conversation-details">${plan ? `<section><h2>Plan ${selected.planState && selected.planState !== "sent" ? deliveryBadge(selected.planState) : ""}</h2><ol class="conversation-plan">${plan}</ol></section>` : ""}

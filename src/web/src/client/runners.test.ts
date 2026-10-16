@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { agentConnectionReady } from "./runners";
+import { agentConnectionReady, runnerActionsMarkup } from "./runners";
 
 const seen = {
   lastSeenAt: 1,
@@ -8,6 +8,20 @@ const seen = {
   accounts: [],
   checks: [],
 };
+
+test("runner actions share one row", () => {
+  const html = runnerActionsMarkup(
+    { id: "runner-1", status: "active" },
+    { manages: true, busy: false, recent: true },
+  );
+  expect(html.startsWith('<div class="row">')).toBe(true);
+  expect(html).toContain("View health");
+  expect(html).toContain("Pause");
+  expect(html).toContain("Drain");
+  expect(html).toContain("Revoke access");
+  expect(html.indexOf("View health")).toBeLessThan(html.indexOf("Pause"));
+  expect(html.indexOf("Pause")).toBeLessThan(html.indexOf("Revoke access"));
+});
 
 describe("runner agent connection checks", () => {
   test("a connection check waits until the runner has checked in and the agent is signed in", () => {

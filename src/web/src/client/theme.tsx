@@ -157,7 +157,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "button") {
     if (has("chk"))
       return styled(
-        "flex w-full flex-wrap items-center gap-3 rounded-base border-2 border-border bg-secondary-background p-4 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
+        "grid w-full grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 rounded-base border-2 border-border bg-secondary-background p-4 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:grid-cols-[3rem_12rem_minmax(0,1fr)_auto] [&>:nth-child(2)]:min-w-0 [&>:nth-child(2)]:break-words [&>:nth-child(3)]:col-span-full [&>:nth-child(3)]:row-start-2 [&>:nth-child(3)]:min-w-0 sm:[&>:nth-child(3)]:col-span-1 sm:[&>:nth-child(3)]:col-start-3 sm:[&>:nth-child(3)]:row-start-1 [&>:nth-child(4)]:col-start-3 [&>:nth-child(4)]:row-start-1 sm:[&>:nth-child(4)]:col-start-4",
       );
     return createElement(
       "button",
@@ -209,8 +209,13 @@ function replace(node: DOMNode): ReactElement | undefined {
           ? "text-xl font-heading"
           : "text-base font-heading",
     );
-  if (name === "summary" && has("btn"))
-    return styled(buttonVariants({ variant: "neutral", size: "sm" }));
+  if (name === "summary" && (has("btn") || inRow(node)))
+    return styled(
+      cn(
+        buttonVariants({ variant: "neutral", size: "default" }),
+        "list-none [&::-webkit-details-marker]:hidden [&::marker]:content-none",
+      ),
+    );
   if (has("attempts")) return styled("flex items-center gap-2");
   if (
     name === "i" &&
@@ -224,7 +229,11 @@ function replace(node: DOMNode): ReactElement | undefined {
           ? "inline-block h-3 w-6 rounded-base border-2 border-border bg-green-200"
           : "inline-block h-3 w-6 rounded-base border-2 border-border bg-main",
     );
-  if (has("conversation-message", "conversation-question", "conversation-row"))
+  if (has("conversation-row"))
+    return styled(
+      "flex min-w-0 flex-col items-start gap-2 rounded-base border-2 border-border bg-secondary-background px-4 py-3",
+    );
+  if (has("conversation-message", "conversation-question"))
     return styled(
       "space-y-3 rounded-base border-2 border-border bg-secondary-background px-4 py-4",
     );
@@ -241,15 +250,18 @@ function replace(node: DOMNode): ReactElement | undefined {
   )
     return styled(
       has("conversation-plan", "conversation-tasks", "conversation-files")
-        ? "m-0 flex list-none flex-col gap-3 p-0 [&>li]:px-4 [&>li]:py-3"
+        ? "m-0 flex list-none flex-col gap-3 p-0"
         : "flex min-w-0 flex-col gap-4",
     );
-  if (has("conversation-message-meta", "conversation-heading", "crumbs"))
+  if (has("conversation-heading")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("title-row"))
+    return styled("grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3");
+  if (has("conversation-message-meta", "crumbs"))
     return styled("flex flex-wrap items-center gap-2");
   if (has("sr-only")) return styled("sr-only");
   if (has("logo", "av"))
     return styled(
-      "inline-flex size-9 shrink-0 items-center justify-center rounded-base border-2 border-border bg-main text-sm font-bold text-main-foreground",
+      "inline-block size-9 shrink-0 rounded-base border-2 border-border bg-main text-center text-sm font-bold leading-8 text-main-foreground",
     );
   if (
     has(
@@ -357,7 +369,12 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-1 items-end gap-4 sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0 [&>button]:justify-self-start",
     );
   if (has("settings-field")) return styled("flex min-w-0 flex-col gap-2");
-  if (name === "details") return styled("my-2 space-y-4");
+  if (name === "details")
+    return styled(
+      inRow(node)
+        ? "flex flex-col items-start gap-3 self-start [&:not([open])]:gap-0"
+        : "my-2 space-y-4",
+    );
   if (has("card", "q", "runner-section", "login-panel"))
     return (
       <Card {...props} className={cn(attribs.class, "min-w-0 bg-secondary-background p-4 sm:p-6")}>
@@ -374,6 +391,27 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (has("primary-navigation", "work-navigation"))
     return styled("flex flex-wrap items-start gap-3 py-2 md:flex-col");
   if (has("sp")) return styled("grow");
+  if (has("it") && has("row"))
+    return styled(
+      "grid grid-cols-[6rem_minmax(0,1fr)] items-baseline gap-x-3 py-1 [&>:nth-child(2)]:min-w-0",
+    );
+  if (has("ln"))
+    return styled(
+      "grid grid-cols-[auto_auto_minmax(0,1fr)] items-baseline gap-x-3 [&>:nth-child(3)]:min-w-0",
+    );
+  if (has("qh"))
+    return styled(
+      "grid grid-cols-1 items-center gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_auto] [&>.title]:col-span-full [&>.claim]:min-w-0 [&_a]:whitespace-nowrap",
+    );
+  if (has("claim")) return styled("flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1");
+  if (has("opts")) return styled("flex min-w-0 flex-col gap-1");
+  if (has("opt"))
+    return styled("grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-1");
+  if (has("identity-link"))
+    return styled(
+      "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_9.5rem_auto] [&_label]:col-span-full [&_input]:col-span-full sm:[&_input]:col-span-1",
+    );
+  if (has("settings-roles")) return styled("flex min-w-0 flex-col gap-6");
   if (
     has(
       "row",
@@ -381,8 +419,6 @@ function replace(node: DOMNode): ReactElement | undefined {
       "tabs",
       "brand",
       "meta",
-      "qh",
-      "ln",
       "dialog-actions",
       "settings-actions",
       "agent",
@@ -395,9 +431,9 @@ function replace(node: DOMNode): ReactElement | undefined {
     )
   )
     return styled(
-      has("between", "qh")
-        ? "flex flex-wrap items-center justify-between gap-3"
-        : "flex flex-wrap items-center gap-3",
+      has("between")
+        ? "flex min-w-0 flex-wrap items-center justify-between gap-3"
+        : "flex min-w-0 flex-wrap items-center gap-3",
     );
   if (
     name === "form" ||
@@ -418,7 +454,7 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex min-w-0 flex-col gap-4");
   if (name === "ul" && has("overview-work"))
     return styled("m-0 list-none divide-y-2 divide-border p-0");
-  if (name === "li" || has("it", "act", "qe", "opt")) return styled("py-3");
+  if (name === "li" || has("it", "act", "qe")) return styled("py-3");
   if (has("demo-bar", "live-bar", "err-bar"))
     return styled(
       "flex flex-wrap items-center gap-2 rounded-base border-2 border-border bg-secondary-background p-3 text-sm leading-relaxed",
@@ -429,10 +465,15 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   if (name === "p" || name === "small" || has("dim", "muted", "sub", "k", "clock", "foot", "mono"))
     return styled(has("mono") ? "font-mono text-xs" : "text-sm leading-relaxed");
-  if (name === "details") return styled("my-2 space-y-4");
   if (name === "summary")
     return styled("cursor-pointer text-sm font-bold underline-offset-4 hover:underline");
   return createElement(name, props, children());
+}
+
+function inRow(node: Element): boolean {
+  const parent = node.parent instanceof Element ? node.parent : null;
+  const host = node.name === "summary" && parent?.name === "details" ? parent.parent : parent;
+  return host instanceof Element && (host.attribs.class ?? "").split(/\s+/).includes("row");
 }
 
 const options: HTMLReactParserOptions = { replace };
