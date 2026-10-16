@@ -41,53 +41,63 @@ export function createRemoteSessionAgentRunner(options: {
             "Remote session helper requires a read-only prompt without tools or files",
           );
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const runners = options.placement
-          ? await options.placement.candidates({
-              sessionId,
-              profile,
-              role: input.role,
-              purpose: "helper",
-              excludeRunnerIds: excluded,
-              signal: input.signal,
-            })
-          : options.db
-              .query<{ id: string; memberId?: string }, [number, number]>(
-                "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
-              )
-              .all(now() - 60_000, now())
-              .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
+        const waitUntil = now() + (input.timeoutMs ?? 60_000);
         let command: HelperCommand | undefined;
-        for (const runner of runners) {
-          if (excluded.includes(runner.id)) continue;
-          try {
-            command = immediate(options.db, () => {
-              const dispatched = options.helpers.dispatch({
-                runnerId: runner.id,
-                ...(runner.memberId ? { memberId: runner.memberId } : {}),
-                sessionId,
-                purpose,
-                profile,
-                prompt: input.prompt,
-              }).command;
-              options.placement?.started({
-                commandId: dispatched.id,
-                runnerId: runner.id,
-                ...(runner.memberId ? { memberId: runner.memberId } : {}),
+        while (!command) {
+          const runners = options.placement
+            ? await options.placement.candidates({
                 sessionId,
                 profile,
                 role: input.role,
                 purpose: "helper",
-                startedAt: now(),
+                excludeRunnerIds: excluded,
+                signal: input.signal,
+              })
+            : options.db
+                .query<{ id: string; memberId?: string }, [number, number]>(
+                  "SELECT r.id FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>? AND NOT EXISTS(SELECT 1 FROM runner_helper h WHERE h.runner_id=r.id AND h.ended_at IS NULL AND h.expires_at>?) ORDER BY r.last_seen_at DESC,r.id",
+                )
+                .all(now() - 60_000, now())
+                .filter((runner) => runnerHasCapacity(options.db, runner.id, now()));
+          for (const runner of runners) {
+            if (excluded.includes(runner.id)) continue;
+            try {
+              command = immediate(options.db, () => {
+                const dispatched = options.helpers.dispatch({
+                  runnerId: runner.id,
+                  ...(runner.memberId ? { memberId: runner.memberId } : {}),
+                  sessionId,
+                  purpose,
+                  profile,
+                  prompt: input.prompt,
+                }).command;
+                options.placement?.started({
+                  commandId: dispatched.id,
+                  runnerId: runner.id,
+                  ...(runner.memberId ? { memberId: runner.memberId } : {}),
+                  sessionId,
+                  profile,
+                  role: input.role,
+                  purpose: "helper",
+                  startedAt: now(),
+                });
+                return dispatched;
               });
-              return dispatched;
-            });
-            break;
-          } catch {}
+              break;
+            } catch {}
+          }
+          if (command) break;
+          const slotBusy = options.db
+            .query(
+              "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
+            )
+            .get(now());
+          if (!slotBusy || now() >= waitUntil)
+            throw new UserFacingError(
+              `No paired runner can run ${profile.agent} for this issue. Check the ${profile.agent} sign-in on your runners.`,
+            );
+          await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
-        if (!command)
-          throw new UserFacingError(
-            `No paired runner can run ${profile.agent} for this issue. Check the ${profile.agent} sign-in on your runners.`,
-          );
         try {
           const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
           while (now() < deadline) {
