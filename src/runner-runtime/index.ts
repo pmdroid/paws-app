@@ -8,7 +8,7 @@ import { RUNNER_ARTIFACT_CHUNK_BYTES } from "../runner-artifacts";
 import { RUNNER_TRANSCRIPT_CHUNK_BYTES } from "../runner-transcripts";
 import { RunnerRequestError, type RunnerDaemon, type RunnerGrant } from "../runner-daemon";
 import {
-  createRunnerBrokerClient,
+  createDirectWorkerSupervisor,
   publishRunnerJob,
   readRunnerResultFile,
   type RunnerBrokerClient,
@@ -95,7 +95,13 @@ export async function openRunnerRuntime(options: {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
   const journal = openExecutionJournal(options.root);
-  const broker = options.broker ?? createRunnerBrokerClient();
+  const broker =
+    options.broker ??
+    createDirectWorkerSupervisor({
+      stateRoot: join(options.root, "workers"),
+      spool: options.spool,
+      results: options.results,
+    });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
   const report = () => options.onError?.(new Error("Runner runtime operation failed"));

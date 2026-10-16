@@ -145,12 +145,13 @@ export function managedBlockerSatisfied(
      JOIN workspace w ON w.linear_organization_id=s.organization_id
      LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
      WHERE w.id=? AND i.linear_issue_id=? AND i.epic_id<>(SELECT epic_id FROM work_item WHERE id=?)
-     AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)`,
+     AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
+     ORDER BY i.created_at, i.id`,
     )
     .all(target.workspaceId, issue, target.itemId);
   if (!items.length) return null;
-  if (items.length !== 1) return false;
-  const item = items[0]!;
+  const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
+  const item = (active.length > 0 ? active : items).at(-1)!;
   return (
     !item.cancelRequested &&
     ((item.state === "merged" && !!item.mergeSha) ||

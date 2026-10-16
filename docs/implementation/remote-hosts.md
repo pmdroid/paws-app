@@ -39,23 +39,23 @@ See the [signed Linux release](https://github.com/pmdroid/paws-app/pull/237), [v
 
 ## Keep process identities separate
 
-The host installation contract uses distinct non-root `paws-runner`, `paws-agent`, and `paws-check` accounts. The daemon owns the runner transport and protected state. The agent uses its own home directory and provider login state. The execution broker and spool define the controlled exchange of jobs, events, and results between those roles.
+The host installation contract uses distinct non-root `paws-runner`, `paws-agent`, and `paws-check` accounts. The daemon runs agent work as `paws-runner`. Provider login state stays in `/var/lib/paws-agent`.
 
 - `/opt/paws-runner/releases/{version}` contains versioned application and runtime assets. Owner `root`, mode `0755`.
 - `/var/lib/paws-runner-install` holds the installation lock and release state. Owner `root`, mode `0700`.
 - `/var/lib/paws-runner` is the runner home and private state directory. Owner `paws-runner:paws-runner`, mode `0700`.
-- `/var/lib/paws-agent` is the agent home and provider login directory. Owner `paws-agent:paws-agent`, mode `0700`.
+- `/var/lib/paws-agent` is the agent home and provider login directory. Owner `paws-runner:paws-runner`, mode `0700`.
 - `/var/lib/paws-check` is the check account home. Owner `paws-check:paws-check`, mode `0700`.
 - `/var/lib/paws-runner-spool` delivers jobs. Owner `paws-runner:paws-agent`, mode `2750`.
-- `/var/lib/paws-agent-results` is the agent result root. Owner `root:paws-results`, mode `0750`.
+- `/var/lib/paws-agent-results` is the agent result root. Owner `paws-runner:paws-results`, mode `0750`.
 
-The operator performs provider login in the agent's identity and home. A health or login check reports whether that local agent can authenticate. Provider credentials stay with the agent account on the host.
+The operator performs provider login as `paws-runner`, with home `/var/lib/paws-agent`. A health or login check reports whether that local agent can authenticate. Provider credentials stay in `/var/lib/paws-agent`.
 
 After installation, the installer returns these operator login commands. Run them with root privileges on the host:
 
 ```sh
-/usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
-/usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
+/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
+/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
 ```
 
 The provider bootstrap verifies the bundled launchers against real provider CLI help, version, and login-status commands. See [PR 245](https://github.com/pmdroid/paws-app/pull/245), the [execution broker](https://github.com/pmdroid/paws-app/blob/cd6753d9e7aecbd702aa75fd1b82bbd7dae57b6a/src/runner-execution/broker.ts), and the [work/spool integration](https://github.com/pmdroid/paws-app/pull/248).
