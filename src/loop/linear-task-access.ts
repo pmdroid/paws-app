@@ -8,9 +8,9 @@ import {
   getLinearSessionInstallation,
   getLinearTaskDelegation,
   getLinearTeamAccess,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItem,
-  linearSessionForEpic,
+  workItemForSession,
   listWorkItems,
   recordLinearInstallation,
   requireLinearTaskDelegation,
@@ -93,7 +93,7 @@ export class LinearTaskAccess {
           (item) =>
             !["cancelled", "completed", "merged", "failed", "exhausted"].includes(item.state),
         )
-        .map((item) => item.sessionKey ?? linearSessionForEpic(this.db, item.epicId)),
+        .flatMap((item) => (item.sessionKey === null ? [] : [item.sessionKey])),
     );
     await this.reconcileItems((_item, sessionId) => affected.has(sessionId));
     for (const sessionId of affected) {
@@ -138,7 +138,7 @@ export class LinearTaskAccess {
     for (const item of listWorkItems(this.db)) {
       if (["cancelled", "completed", "merged", "failed", "exhausted"].includes(item.state))
         continue;
-      const sessionId = item.sessionKey ?? linearSessionForEpic(this.db, item.epicId);
+      const sessionId = item.sessionKey;
       if (sessionId === null || !accept(item, sessionId)) continue;
       try {
         await this.assert(item, AbortSignal.timeout(10_000));
@@ -188,9 +188,9 @@ export class LinearTaskAccess {
     current();
     this.record(access);
     current();
-    const itemId = options.itemId ?? getLinearSession(this.db, sessionId)?.activeItemId;
+    const itemId = options.itemId ?? workItemForSession(this.db, sessionId)?.id;
     const item = itemId ? getWorkItem(this.db, itemId) : null;
-    if (item && (item.sessionKey ?? linearSessionForEpic(this.db, item.epicId)) !== sessionId)
+    if (item && item.sessionKey !== sessionId)
       throw new Error("Linear delivery belongs to another session.");
     const issueIds = [access.issueId];
     if (options.issueId) issueIds.push(options.issueId);
@@ -223,7 +223,7 @@ export class LinearTaskAccess {
   ): Promise<readonly string[]> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
-    const sessionId = item.sessionKey ?? linearSessionForEpic(this.db, item.epicId);
+    const sessionId = item.sessionKey;
     if (sessionId === null) throw new Error("Linear task has no verified session.");
     const generation = getLinearSessionGeneration(this.db, sessionId);
     const current = (allowUnknown = false) => {
@@ -264,7 +264,7 @@ export class LinearTaskAccess {
     if (!prepare) return eligible;
     for (const issue of issues.reverse()) {
       current();
-      const actorId = getTaskLinearActor(this.db, item.id);
+      const actorId = delegatedLinearUserId(this.db, item.id);
       const result = await this.options.lifecycle.startCodeIssue(
         { issueId: issue.id, appUserId: access.appUserId, actorId },
         {

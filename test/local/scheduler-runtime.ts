@@ -48,11 +48,13 @@ export async function probeSchedulerRuntime(
     bindWorkItemRepository(db, id, repository);
     saveSchedulingContext(db, { itemId: id, projectId: "project", paths: ["src/shared"] });
   }
-  db.run("INSERT INTO work_item_block VALUES('epic','blocker','original')");
+  db.run(
+    "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','original')",
+  );
   ensureLinearSession(db, { sessionId: "session", issueId: "parent", now: clock.now() });
   bindLinearSessionTask(db, "session", "epic");
   activateLinearItem(db, "session", "original");
-  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"], concurrency: 1 });
+  const options = () => ({ now: clock.now(), legacyReadyItemIds: ["blocker"] });
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
   registerScheduler(heldLoop, options, () => {

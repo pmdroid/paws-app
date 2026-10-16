@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, delegationHasOpenWork } from "../core";
 import { canAdvanceItem, hasPendingEpicChanges } from "./dependencies";
-import type { createEpicReconciler } from "./reconciliation";
+import type { createItemReconciler } from "./reconciliation";
 
 export type PublicationPhase = "publish" | "merge";
 export type PublicationCandidate = { sha: string; baseSha: string };
@@ -28,7 +28,7 @@ type Identity = {
 
 export function createPublicationReadiness(input: {
   db: Database;
-  reconciler: Pick<ReturnType<typeof createEpicReconciler>, "reconcile">;
+  reconciler: Pick<ReturnType<typeof createItemReconciler>, "reconcile">;
   canAdvance?: (itemId: string) => boolean;
   now?: () => number;
 }) {
@@ -46,14 +46,14 @@ export function createPublicationReadiness(input: {
          p.hash AS specificationHash,p.revision AS specificationRevision,
          s.session_id AS sessionId,s.generation AS sessionGeneration,
          s.organization_id AS organizationId,s.team_id AS teamId,s.oauth_client_id AS clientId,
-         s.app_user_id AS appUserId,s.creator_id AS creatorId,t.owner_actor_id AS actorId
+         s.app_user_id AS appUserId,s.creator_id AS creatorId,
+         COALESCE((SELECT u.linear_user_id FROM workspace_user u WHERE u.id=i.owner_user_id), i.delegated_by, s.creator_id) AS actorId
          FROM work_item i JOIN work_item_specification p ON p.item_id=i.id AND p.present=1
          JOIN run r ON r.id=i.current_run_id AND r.item_id=i.id
-         JOIN epic e ON e.id=i.epic_id AND e.state IN ('running','stalled')
-         JOIN linear_session_task t ON t.epic_id=e.id
-         JOIN linear_session s ON s.session_id=t.session_id AND s.current_epic_id=e.id
+         JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          WHERE i.id=? AND i.state IN ('verifying','merge_queue') AND i.cancel_requested=0
+         AND ${delegationHasOpenWork("i.epic_id")}
          AND s.stopped_at IS NULL AND s.team_id IS NOT NULL
          AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
           )
@@ -78,9 +78,9 @@ export function createPublicationReadiness(input: {
         const generation =
           db
             .query<{ generation: number }, [string]>(
-              "SELECT generation FROM epic_dependency_snapshot WHERE epic_id=?",
+              "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
             )
-            .get(identity.epicId)?.generation ?? 0;
+            .get(itemId)?.generation ?? 0;
         return {
           identity,
           binding: JSON.stringify([itemId, identity, jobs[0], actual]),
@@ -109,7 +109,6 @@ export function createPublicationReadiness(input: {
       (saved.phase === phase || saved.phase === "merge") &&
       !hasPendingEpicChanges(db, before.identity.epicId) &&
       canAdvanceItem(db, {
-        epicId: before.identity.epicId,
         workspaceId: before.identity.workspaceId,
         itemId,
       }) &&
@@ -119,7 +118,7 @@ export function createPublicationReadiness(input: {
     ready.delete(itemId);
     try {
       await reconciler.reconcile({
-        epicId: before.identity.epicId,
+        itemId,
         workspaceId: before.identity.workspaceId,
         signal,
       });
@@ -134,7 +133,6 @@ export function createPublicationReadiness(input: {
       after.binding !== before.binding ||
       hasPendingEpicChanges(db, after.identity.epicId) ||
       !canAdvanceItem(db, {
-        epicId: after.identity.epicId,
         workspaceId: after.identity.workspaceId,
         itemId,
       }) ||

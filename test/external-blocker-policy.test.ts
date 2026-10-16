@@ -3,9 +3,10 @@ import { Database } from "bun:sqlite";
 import { bindLinearSessionTask, migrate, recordLinearInstallation, saveTaskMode } from "../src/db";
 import {
   intakeDelegatedIssue,
+  readExternalBlockerPolicies,
   readyItems,
   saveExternalBlockerPolicies,
-  syncEpicDependencies,
+  syncItemDependencies,
   type ExternalBlockerPolicy,
   type MergeEvidence,
 } from "../src/intake";
@@ -55,7 +56,9 @@ async function fixture() {
     observedAtMs: 1000,
   });
   bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "linear-person" });
-  const target = { workspaceId: "workspace", epicId: intake.epic.id };
+  const itemId = intake.items[0]!.id;
+  const target = { workspaceId: "workspace", itemId };
+  const policyTarget = { workspaceId: "workspace", itemId };
   const policy: ExternalBlockerPolicy = {
     blockerLinearIssueId: "a",
     outcome: "merge",
@@ -75,7 +78,7 @@ async function fixture() {
   let outage = false;
   let duringRead: (() => void) | undefined;
   const refresh = () =>
-    syncEpicDependencies(db, {
+    syncItemDependencies(db, {
       ...target,
       expectedGeneration: readyItems(db, target).generation,
       tracker,
@@ -87,7 +90,7 @@ async function fixture() {
       },
     });
   const save = (policies: ExternalBlockerPolicy[]) =>
-    saveExternalBlockerPolicies(db, { ...target, userId: "person", policies });
+    saveExternalBlockerPolicies(db, { ...policyTarget, userId: "person", policies });
   return {
     db,
     target,
@@ -96,7 +99,7 @@ async function fixture() {
     policy,
     refresh,
     save,
-    ready: () => readyItems(db, target).readyItemIds.includes(intake.items[0]!.id),
+    ready: () => readyItems(db, target).readyItemIds.includes(itemId),
     setEvidence: (value: Partial<MergeEvidence>) => {
       evidence = { ...evidence, ...value };
     },
@@ -108,6 +111,36 @@ async function fixture() {
     },
   };
 }
+
+test("a policy saved for an item is read back for that item only", async () => {
+  const f = await fixture();
+  try {
+    f.save([f.policy]);
+    expect(readExternalBlockerPolicies(f.db, f.target)).toEqual([f.policy]);
+    f.db.run(
+      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
+      [
+        f.db
+          .query<{ epicId: string }, [string]>("SELECT epic_id AS epicId FROM work_item WHERE id=?")
+          .get(f.target.itemId)!.epicId,
+      ],
+    );
+    expect(
+      readExternalBlockerPolicies(f.db, {
+        workspaceId: f.target.workspaceId,
+        itemId: "other-item",
+      }),
+    ).toEqual([]);
+    expect(
+      f.db.query<{ itemId: string }, []>("SELECT item_id AS itemId FROM item_blocker_policy").all(),
+    ).toEqual([{ itemId: f.target.itemId }]);
+    expect(
+      f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM external_blocker_policy").get()!.n,
+    ).toBe(0);
+  } finally {
+    f.db.close();
+  }
+});
 
 test("External code blockers require the approved merged PR and retain evidence", async () => {
   const f = await fixture();
@@ -131,7 +164,7 @@ test("External code blockers require the approved merged PR and retain evidence"
     expect(f.ready()).toBe(true);
     const proof = f.db
       .query<{ external_evidence: string }, []>(
-        "SELECT external_evidence FROM epic_dependency_snapshot",
+        "SELECT external_evidence FROM item_dependency_snapshot",
       )
       .get()!;
     expect(JSON.parse(proof.external_evidence).a.merge.mergeSha).toBe("b".repeat(40));
@@ -216,6 +249,10 @@ test("Managed blockers in another epic require canonical delivery", async () => 
     bindLinearSessionTask(f.db, "other-session", intake.epic.id, { actorId: "linear-person" });
     const item = intake.items[0]!;
     saveTaskMode(f.db, item.id, "code");
+    f.db.run(
+      "INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at) VALUES('approval','workspace','parent','person','person','1','{}',1000,9000,1000)",
+    );
+    f.db.run("UPDATE work_item SET project_approval_id='approval'");
     await f.refresh();
     expect(f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);
@@ -262,8 +299,8 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       "b".repeat(40),
     ]);
     f.db.run(
-      `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,task_key)
-       VALUES(?,?,?,?,?,'cancelled',?,?,?,?)`,
+      `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,task_key,session_key)
+       VALUES(?,?,?,?,?,'cancelled',?,?,?,?,?)`,
       [
         "older-blocker",
         intake.epic.id,
@@ -274,6 +311,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
         0,
         1000,
         "initial:a:item:a:reappearance:1",
+        "other-session",
       ],
     );
     await f.refresh();
@@ -338,7 +376,7 @@ test("A fresh process retains exact merge evidence and refuses expired snapshots
         process.execPath,
         "--no-env-file",
         "-e",
-        `import {Database} from 'bun:sqlite';import {readyItems} from ${JSON.stringify(join(import.meta.dir, "../src/intake/index.ts"))};const db=new Database(process.argv[1]);const target=JSON.parse(process.argv[2]);const before=readyItems(db,target).readyItemIds.length;db.run("UPDATE epic_dependency_snapshot SET external_evidence=json_set(external_evidence,'$.a.checkedAt',0)");const after=readyItems(db,target).readyItemIds.length;console.log(JSON.stringify({before,after}));db.close();`,
+        `import {Database} from 'bun:sqlite';import {readyItems} from ${JSON.stringify(join(import.meta.dir, "../src/intake/index.ts"))};const db=new Database(process.argv[1]);const target=JSON.parse(process.argv[2]);const before=readyItems(db,target).readyItemIds.length;db.run("UPDATE item_dependency_snapshot SET external_evidence=json_set(external_evidence,'$.a.checkedAt',0)");const after=readyItems(db,target).readyItemIds.length;console.log(JSON.stringify({before,after}));db.close();`,
         database,
         JSON.stringify(f.target),
       ],

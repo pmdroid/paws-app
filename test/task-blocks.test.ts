@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { listTaskBlockers, saveTaskBlocks, type TaskBlock } from "../src/db";
+import {
+  enqueueJob,
+  getWorkItem,
+  insertQueuedItem,
+  listTaskBlockers,
+  migrate,
+  migrations,
+  openDatabase,
+  saveTaskBlocks,
+  type TaskBlock,
+} from "../src/db";
 import { tempDb } from "./helpers";
 
 function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskBlock {
@@ -88,6 +98,86 @@ describe("task blocks", () => {
         .get("parent")?.source,
     ).toBe("parent");
     expect(() => insertApproval(db, "other", "3", "epic")).toThrow(/CHECK/);
+    db.close();
+  });
+
+  test("migration 058 keeps the newer active item and rejects a second", () => {
+    const db = openDatabase(":memory:");
+    db.run(
+      "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
+    );
+    for (const migration of migrations) {
+      if (
+        migration.id === "058_one_active_item" ||
+        migration.id === "059_drop_old_blocks" ||
+        migration.id === "064_work_item_without_epic_fk"
+      )
+        continue;
+      if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
+      db.transaction(() => {
+        db.run(migration.sql);
+        db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [migration.id, 0]);
+      }).immediate();
+      if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = ON");
+    }
+    insertQueuedItem(db, { id: "m-older", now: 1 });
+    insertQueuedItem(db, { id: "a-newer", now: 2 });
+    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", "m-older"]);
+    db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = ?", [
+      "shared-issue",
+      "a-newer",
+    ]);
+    const retiredEpic = getWorkItem(db, "m-older")!.epicId;
+    const survivingEpic = getWorkItem(db, "a-newer")!.epicId;
+    db.run(
+      "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
+      [survivingEpic, "inside-blocker", "shared-issue"],
+    );
+    db.run(
+      "INSERT INTO external_dep(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
+      [survivingEpic, "outside-blocker", "shared-issue"],
+    );
+    db.run(
+      "INSERT INTO external_dep(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?,?)",
+      [retiredEpic, "stale-blocker", "shared-issue"],
+    );
+    db.run(
+      "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('older-run','m-older','work','claude','active',1,1)",
+    );
+    const job = enqueueJob(db, { queue: "item.start", payload: { itemId: "m-older" }, now: 1 });
+    migrate(db);
+    expect(listTaskBlockers(db, "shared-issue")).toEqual(["inside-blocker", "outside-blocker"]);
+    expect(
+      db.query<{ status: string }, []>("SELECT status FROM run WHERE id='older-run'").get()?.status,
+    ).toBe("ended");
+    expect(
+      db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(job)?.status,
+    ).toBe("cancelled");
+    expect(getWorkItem(db, "m-older")?.cancelRequested).toBe(true);
+    expect(getWorkItem(db, "m-older")?.state).toBe("cancelled");
+    expect(getWorkItem(db, "a-newer")?.state).toBe("running");
+    expect(
+      db.query("SELECT 1 FROM schema_migration WHERE id = '058_one_active_item'").get(),
+    ).toBeTruthy();
+    expect(
+      db
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE name = 'work_item_active_issue'",
+        )
+        .get()?.name,
+    ).toBe("work_item_active_issue");
+    const extra = insertQueuedItem(db, { id: "extra", now: 3 });
+    expect(() =>
+      db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", extra.id]),
+    ).toThrow(/UNIQUE/);
+    const done = insertQueuedItem(db, { id: "done", now: 4 });
+    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [done.id]);
+    db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", ["shared-issue", done.id]);
+    expect(getWorkItem(db, "done")).toMatchObject({
+      state: "merged",
+      linearIssueId: "shared-issue",
+    });
+    expect(getWorkItem(db, "a-newer")?.state).toBe("running");
     db.close();
   });
 

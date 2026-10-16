@@ -484,17 +484,13 @@ try {
       ),
     { publications, pulls: happy.pulls },
   );
-  const completed = happy.comments.filter((comment) =>
-    comment.body.startsWith("Paws: Epic complete."),
-  );
   observe(
-    "one final completion preserves complete results from both ACP turns",
-    completed.length === 1 &&
-      completed[0]!.body.includes("LOCAL-2: Verified locally.") &&
-      completed[0]!.body.includes("LOCAL-3: Verified locally.") &&
+    "completion does not post an epic summary or a raw turn",
+    !happy.comments.some((comment) => comment.body.includes("Epic complete.")) &&
+      !happy.comments.some((comment) => comment.body.includes("Epic abandoned.")) &&
       !happy.comments.some((comment) => /^Paws: (I|Verified)\n/.test(comment.body)),
     happy.comments
-      .filter((comment) => comment.body.includes("Verified"))
+      .filter((comment) => comment.body.includes("Verified") || comment.body.includes("Epic"))
       .map((comment) => comment.body),
   );
   observe(

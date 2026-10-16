@@ -8,17 +8,21 @@ import {
   getWorkItem,
   submitCommand,
   syncWorkspaceMember,
+  workspaceForOrganization,
+  workspaceLinearMember,
   workspaceMember,
   type JobLoop,
 } from "../db";
 import type {
   AcceptedLinearEvent,
+  DependencyEdge,
   EpicSnapshot,
   LinearMembershipReads,
   TrackerAdapter,
   createSessionStarter,
 } from "../linear";
-import { readExternalBlockerEvidence, type IntakeResult } from "../intake";
+import { orderByBlocks, readExternalBlockerEvidence, type IntakeResult } from "../intake";
+import { workspaceId } from "../workspace";
 import {
   assertProjectAuthority,
   assertProjectTeamAccess,
@@ -27,7 +31,7 @@ import {
   readProjectApproval,
   type ProjectApproval,
 } from "./approval";
-import type { ProjectBlockerPolicy } from "./preview";
+import type { ProjectBlockerPolicy, ProjectPreview } from "./preview";
 
 type Claim = {
   approvalId: string;
@@ -54,7 +58,7 @@ export function createApprovedProjects(input: {
   repository: (name: string) => RepositoryBinding | null;
   saveBlockerPolicies: (input: {
     workspaceId: string;
-    epicId: string;
+    itemId: string;
     userId: string;
     policies: readonly ProjectBlockerPolicy[];
   }) => void;
@@ -80,6 +84,7 @@ export function createApprovedProjects(input: {
       db,
       { workspaceId: approval.workspaceId, userId: approval.actorId },
       approval.preview,
+      approval.source,
     );
     if (
       [result.member, result.lead].some(
@@ -107,6 +112,13 @@ export function createApprovedProjects(input: {
     }
     const approval = readProjectApproval(db, claim.approvalId)!;
     authority(approval);
+    if (approval.source === "parent") {
+      if (snapshot.linearIssueId !== claim.issueId)
+        throw new Error(
+          "Approved requirements changed. Stop this scope and approve its current requirements.",
+        );
+      return { ...snapshot, subIssues: [] };
+    }
     const issue = approval.preview.project.issues.find(
       (candidate) => candidate.linearIssueId === claim.issueId,
     )!;
@@ -129,6 +141,7 @@ export function createApprovedProjects(input: {
       db,
       { workspaceId: approval.workspaceId, userId: approval.actorId },
       approval.preview,
+      approval.source,
     ).workspace;
     for (const userId of new Set([approval.actorId, approval.leadUserId])) {
       const member = workspaceMember(db, approval.workspaceId, userId)!;
@@ -186,9 +199,128 @@ export function createApprovedProjects(input: {
       return false;
     }
   }
+  function adoptParent(
+    sessionId: string,
+    snapshot: EpicSnapshot,
+    edges: readonly DependencyEdge[],
+  ): boolean {
+    const session = getLinearSession(db, sessionId);
+    if (!session?.organizationId || !session.creatorId) return false;
+    const workspace = workspaceForOrganization(db, session.organizationId);
+    if (!workspace) return false;
+    if (
+      db
+        .query(
+          "SELECT 1 FROM project_approval WHERE workspace_id=? AND source='parent' AND project_id=? AND stopped_at IS NULL",
+        )
+        .get(workspace.id, snapshot.linearIssueId) !== null
+    )
+      return true;
+    const owner = workspaceLinearMember(db, workspace.id, session.creatorId);
+    if (!owner?.active || owner.role === "observer") return false;
+    const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
+    if (
+      issueIds.some(
+        (issueId) =>
+          db
+            .query(
+              "SELECT 1 FROM project_approval_issue WHERE workspace_id=? AND issue_id=? AND released_at IS NULL",
+            )
+            .get(workspace.id, issueId) !== null ||
+          db
+            .query(`SELECT 1 FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
+              JOIN workspace w ON w.linear_organization_id=s.organization_id
+              WHERE w.id=? AND i.linear_issue_id=? AND i.state NOT IN ('completed','merged','cancelled') LIMIT 1`)
+            .get(workspace.id, issueId) !== null,
+      )
+    )
+      return false;
+    const subIds = new Set(issueIds);
+    const internal = edges.filter(
+      (edge) => subIds.has(edge.blockerLinearIssueId) && subIds.has(edge.blockedLinearIssueId),
+    );
+    const ordered = orderByBlocks(
+      snapshot.subIssues.map((issue) => ({
+        linearIssueId: issue.linearIssueId,
+        identifier: issue.identifier,
+        title: issue.title,
+      })),
+      internal,
+    );
+    if (!ordered.ok) return false;
+    const createdAt = now();
+    const id = workspaceId(createdAt);
+    const generation = `parent:${sessionId}`;
+    const updatedAt = new Date(createdAt).toISOString();
+    const preview: ProjectPreview = {
+      selection: {
+        projectId: snapshot.linearIssueId,
+        issueIds,
+        repository: "",
+        targetBranch: "main",
+        leadUserId: owner.userId,
+        steeringRoles: ["admin", "member", "owner"],
+        blockers: [],
+      },
+      project: {
+        id: snapshot.linearIssueId,
+        name: snapshot.title,
+        organizationId: workspace.organizationId,
+        updatedAt,
+        leadId: null,
+        issues: snapshot.subIssues.map((issue) => ({
+          ...issue,
+          description: issue.description ?? null,
+          acceptanceCriteria: issue.acceptanceCriteria ?? null,
+          teamId: issue.teamId ?? snapshot.teamId ?? "",
+          projectId: issue.projectId || "",
+          parentId: snapshot.linearIssueId,
+          stateType: "unstarted",
+          updatedAt,
+        })),
+      },
+      generation,
+      includedIssueIds: issueIds,
+      excludedIssueIds: [],
+      order: ordered.ordered.map((issue) => issue.linearIssueId),
+      edges: internal,
+      externalBlockerIds: [],
+      problems: [],
+    };
+    db.run(
+      `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at,source)
+       VALUES(?,?,?,?,?,?,?,?,?,?,'parent')`,
+      [
+        id,
+        workspace.id,
+        snapshot.linearIssueId,
+        owner.userId,
+        owner.userId,
+        generation,
+        JSON.stringify(preview),
+        createdAt,
+        createdAt,
+        createdAt,
+      ],
+    );
+    for (const issueId of issueIds)
+      db.run(
+        "INSERT INTO project_approval_issue(workspace_id,issue_id,approval_id) VALUES(?,?,?)",
+        [workspace.id, issueId, id],
+      );
+    auditWorkspaceAccess(db, {
+      workspaceId: workspace.id,
+      userId: owner.userId,
+      action: "project.approved",
+      subject: `${id}:${generation}`,
+      now: createdAt,
+    });
+    return true;
+  }
   return {
     ...approvals,
-    list: (workspaceId: string) => listProjectApprovals(db, workspaceId),
+    adoptParent,
+    list: (id: string) => listProjectApprovals(db, id),
     progress(id: string) {
       const approval = readProjectApproval(db, id);
       return claims(id).map((claim) => ({
@@ -244,17 +376,26 @@ export function createApprovedProjects(input: {
         result.items[0]?.linearIssueId !== claim.issueId
       )
         throw new Error("Canonical intake did not preserve the approved issue scope.");
-      const repository = input.repository(approval.preview.selection.repository);
-      if (!repository || approval.preview.selection.targetBranch !== "main")
-        throw new Error("The approved repository and main branch must be configured.");
-      bindWorkItemRepository(db, result.items[0].id, repository);
+      const item = result.items[0];
+      if (approval.source !== "parent") {
+        const repository = input.repository(approval.preview.selection.repository);
+        if (!repository || approval.preview.selection.targetBranch !== "main")
+          throw new Error("The approved repository and main branch must be configured.");
+        bindWorkItemRepository(db, item.id, repository);
+      }
+      db.run("UPDATE work_item SET project_approval_id=?, owner_user_id=? WHERE id=?", [
+        approval.id,
+        approval.actorId,
+        item.id,
+      ]);
       db.run("UPDATE project_approval_issue SET epic_id=? WHERE session_id=?", [
         result.epic.id,
         sessionId,
       ]);
+      if (approval.source === "parent") return;
       input.saveBlockerPolicies({
         workspaceId: approval.workspaceId,
-        epicId: result.epic.id,
+        itemId: item.id,
         userId: approval.actorId,
         policies: (approval.preview.selection.blockers ?? []).filter((policy) =>
           approval.preview.edges.some(
@@ -294,13 +435,7 @@ export function createApprovedProjects(input: {
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
             .get(event.actorId ?? "");
           const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
-          if (
-            !member?.active ||
-            member.role === "observer" ||
-            (member.userId !== approval.leadUserId &&
-              !approval.preview.selection.steeringRoles.includes(member.role))
-          )
-            return deny();
+          if (!member?.active || member.role === "observer") return deny();
         }
         if (event.signal === "stop") return true;
         await refreshAuthority(approval, AbortSignal.timeout(30_000));
@@ -314,6 +449,7 @@ export function createApprovedProjects(input: {
       if (!claim) return snapshot;
       const approval = readProjectApproval(db, claim.approvalId)!;
       await refreshAuthority(approval, signal ?? AbortSignal.timeout(30_000));
+      if (approval.source === "parent") return scope(sessionId, snapshot);
       const expected = approval.preview.edges.filter(
         (edge) => edge.blockedLinearIssueId === claim.issueId,
       );
@@ -342,9 +478,7 @@ export function createApprovedProjects(input: {
         !saved ||
         saved.workspaceId !== actor.workspaceId ||
         !member?.active ||
-        member.role === "observer" ||
-        (actor.userId !== saved.leadUserId &&
-          !saved.preview.selection.steeringRoles.includes(member.role))
+        member.role === "observer"
       ) {
         auditWorkspaceAccess(db, {
           ...actor,
@@ -357,7 +491,7 @@ export function createApprovedProjects(input: {
       const authorize = (approval: ProjectApproval) => {
         try {
           return action === "resume"
-            ? assertProjectAuthority(db, actor, approval.preview).member
+            ? assertProjectAuthority(db, actor, approval.preview, approval.source).member
             : assertProjectTeamAccess(db, actor, approval.preview).member;
         } catch (error) {
           auditWorkspaceAccess(db, {
@@ -379,8 +513,6 @@ export function createApprovedProjects(input: {
           return (
             current.stoppedAt === null &&
             currentMember.role !== "observer" &&
-            (actor.userId === current.leadUserId ||
-              current.preview.selection.steeringRoles.includes(currentMember.role)) &&
             (action === "pause" ? current.pausedAt !== null : current.pausedAt === null)
           );
         } catch {

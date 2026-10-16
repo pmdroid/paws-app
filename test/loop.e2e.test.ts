@@ -293,7 +293,11 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
       JSON.stringify({
         ...(() => {
           const script = scriptFor(input);
-          if (input.purpose === "implement" && sourceIdentifier(input.itemId) === "ENG-2")
+          if (
+            input.purpose === "implement" &&
+            sourceIdentifier(input.itemId) === "ENG-2" &&
+            input.prompt.includes("Handoff from the previous session.")
+          )
             script.steps.splice(script.steps.length - 1, 0, {
               type: "publish_artifact",
               path: "ok.txt",
@@ -404,7 +408,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -418,13 +422,8 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
-    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
-      expect.objectContaining({
-        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
-      }),
-    ]);
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
     expect(
       tracker.sessionUpdates.some((update) =>
         update.addedExternalUrls?.some((link) => link.label === "Pull request"),
@@ -449,14 +448,14 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     expect(question?.body).toContain("Include archived rows?");
     expect(question?.body).toContain("answer in your own words");
     const asked = JSON.parse(await readFile(results.get("implement:ENG-2") ?? "", "utf8")) as {
-      askTeam?: { text?: string };
+      prompts?: unknown[];
     };
-    expect(asked.askTeam?.text).toBe("yes");
+    expect(JSON.stringify(asked.prompts)).toContain("Answer: yes");
     const kinds = new Set(tracker.progress.map((update) => update.kind));
     expect(kinds.has("thought")).toBe(true);
     expect(kinds.has("action")).toBe(true);
-    expect(kinds.has("response")).toBe(true);
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(kinds.has("response")).toBe(false);
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
     expect(github.opened.map((pull) => pull.head)).toEqual([
@@ -470,7 +469,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     expect(github.opened[0]?.body).toContain("Closeout:");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
     expect(github.merged).toHaveLength(2);
-    expect(implementationLaunches).toEqual(["ENG-2", "ENG-3"]);
+    expect(implementationLaunches).toEqual(["ENG-2", "ENG-2", "ENG-3"]);
     expect(uploadedDuringCode).toBe(true);
     expect(inputDownloads).toBe(1);
     const inputTrace = JSON.parse(await readFile(results.get("implement:ENG-2")!, "utf8")) as {
@@ -488,9 +487,6 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(artifactIndex).toBeLessThan(
-      tracker.progress.findIndex((update) => update.kind === "response"),
-    );
     expect(selectedRepositories).toHaveLength(2);
     for (const item of listWorkItems(db)) {
       expect(getWorkItemRepository(db, item.id)).toEqual(repository);
@@ -499,7 +495,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     for (const tick of keepAliveTicks) tick();
     await outbox.idle();
     expect(tracker.progress).toHaveLength(completedUpdates);
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     intervalSpy.mockRestore();
     stop = true;
@@ -662,7 +658,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
     await orchestrator.onLinearEvent(created);
     const deadline = Date.now() + 90_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -689,7 +685,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
           comment.parentId === question?.id && comment.userId === "human" && comment.body === "yes",
       ),
     ).toBe(true);
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(
       children.map((child) => stateOf(db, child.identifier)),
       debug(layout, db),
@@ -708,7 +704,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
     expect(github.merged).toHaveLength(3);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
     await answerer;
@@ -1303,7 +1299,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
     const deadline = Date.now() + 80_000;
     let idle = 0;
-    while (Date.now() < deadline && epicState(db) !== "done") {
+    while (Date.now() < deadline && !delegationMerged(db)) {
       const job = await jobs.tick();
       if (job === null) {
         idle += 1;
@@ -1317,13 +1313,8 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
-    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
-      expect.objectContaining({
-        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
-      }),
-    ]);
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
     expect(
       tracker.progress.some((update) => update.body.includes("Need a product decision.")),
     ).toBe(false);
@@ -1334,7 +1325,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     const asked = JSON.parse(
       await readFile(results.get("implement:ENG-2") ?? "", "utf8"),
     ) as FakeResult;
-    expect(asked.askTeam?.text).toBe("yes");
+    expect(JSON.stringify(asked.prompts)).toContain("Answer: yes");
     expect(asked.authenticate).toEqual({ methodId: "cached_token" });
     expect(asked.cwd).toBe(worktreePath(layout.pawsRoot, taskPath(db, "ENG-2")));
     expect(asked.env).toMatchObject({
@@ -1357,11 +1348,11 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
       expect(line).not.toContain("always-approve");
       expect(line).not.toContain("yolo");
     }
-    expect(epicState(db), debug(layout, db)).toBe("done");
+    expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
     await answerer;
@@ -1830,6 +1821,226 @@ for (const movedHead of [false, true]) {
   }, 30_000);
 }
 
+const REBASE_INSTRUCTION =
+  "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+const REBASE_THOUGHT = "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
+
+test("a conflicting rebase sends the item back to the agent and then merges", async () => {
+  const result = await runRebaseConflict("resolve");
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.merged, result.detail).toBe(1);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toEqual([REBASE_THOUGHT]);
+  expect(
+    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toHaveLength(1);
+  expect(result.handoffs, result.detail).toEqual([REBASE_INSTRUCTION]);
+  expect(result.returnPhases, result.detail).toEqual(["running"]);
+}, 90_000);
+
+test("after 3 rebase conflict returns the item fails", async () => {
+  const result = await runRebaseConflict("repeat");
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.merged, result.detail).toBe(0);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toHaveLength(3);
+  expect(result.handoffs, result.detail).toEqual([
+    REBASE_INSTRUCTION,
+    REBASE_INSTRUCTION,
+    REBASE_INSTRUCTION,
+  ]);
+  expect(
+    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toHaveLength(3);
+  expect(result.thoughts, result.detail).toContain("rebase conflict");
+}, 120_000);
+
+test("a rebase_failed merge fails the item", async () => {
+  const result = await runRebaseConflict("rebase-failed");
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.merged, result.detail).toBe(0);
+  expect(
+    result.thoughts.filter((body) => body === REBASE_THOUGHT),
+    result.detail,
+  ).toEqual([]);
+  expect(result.handoffs, result.detail).toEqual([]);
+  expect(
+    result.prompts.some((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toBe(false);
+  expect(result.thoughts, result.detail).toContain("rebase failed");
+}, 60_000);
+
+async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): Promise<{
+  state: string | null;
+  thoughts: string[];
+  prompts: string[];
+  handoffs: string[];
+  returnPhases: (string | null)[];
+  merged: number;
+  detail: string;
+}> {
+  const layout = await repoLayout();
+  const identifier = mode === "resolve" ? "ENG-70" : mode === "repeat" ? "ENG-71" : "ENG-72";
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: `rebase-${mode}`,
+      identifier,
+      title: "Rebase onto main",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const implementResults: string[] = [];
+  let sequence = 0;
+  let implementTurns = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `rebase-${mode}-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement"
+          ? path.join(layout.root, `rebase-${mode}-result-${sequence}.json`)
+          : "";
+      if (resultPath) implementResults.push(resultPath);
+      let steps: FakeScript["steps"];
+      if (input.purpose === "review" || input.purpose === "prepare") steps = emptyReview().steps;
+      else if (mode === "resolve" && implementTurns > 0) steps = rebaseOntoMainSteps();
+      else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
+      if (input.purpose === "implement") implementTurns += 1;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, `rebase-${mode}`));
+    await jobs.tick();
+    expect(stateOf(db, identifier), debug(layout, db)).toBe("merge_queue");
+    if (mode === "rebase-failed") {
+      await commitOnMain(layout.bare, "side\n", "side.txt");
+      await installRebaseHook(layout.pawsRoot);
+    } else await commitOnMain(layout.bare, "from-main\n");
+    const returnPhases: (string | null)[] = [];
+    for (let turn = 0; turn < 40; turn += 1) {
+      const state = stateOf(db, identifier);
+      if (state === "merged" || state === "failed") break;
+      const job = await jobs.tick();
+      const next = stateOf(db, identifier);
+      if (state === "merge_queue" && next === "running")
+        returnPhases.push(checkpointPhaseOf(db, identifier));
+      if (job === null && (next === "merged" || next === "failed" || next === state)) break;
+    }
+    while (outbox.tick().length > 0) await outbox.idle();
+    const prompts: string[] = [];
+    for (const file of implementResults) {
+      if (!existsSync(file)) continue;
+      prompts.push(
+        JSON.stringify((JSON.parse(await readFile(file, "utf8")) as FakeResult).prompts ?? []),
+      );
+    }
+    return {
+      state: stateOf(db, identifier),
+      thoughts: tracker.progress.map((update) => update.body),
+      prompts,
+      handoffs: listJobs(db)
+        .filter((job) => job.queue === JOB_KIND.resume)
+        .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
+      returnPhases,
+      merged: github.merged.length,
+      detail: debug(layout, db),
+    };
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}
+
+function rebaseOntoMainSteps(): FakeScript["steps"] {
+  return [
+    {
+      type: "terminal",
+      command: "sh",
+      args: [
+        "-c",
+        [
+          "export GIT_EDITOR=true",
+          "export GIT_SEQUENCE_EDITOR=true",
+          "onto=origin/main",
+          "if git rev-parse --verify --quiet refs/paws/upstream-main >/dev/null 2>&1; then",
+          "onto=refs/paws/upstream-main",
+          "fi",
+          'git_c() { git -c user.email=paws-test@example.com -c user.name=Paws -c commit.gpgsign=false -c core.editor=true "$@"; }',
+          'if ! git_c rebase "$onto"; then',
+          "printf 'ok\\n' > ok.txt",
+          "git add ok.txt",
+          "git_c rebase --continue",
+          "fi",
+        ].join("\n"),
+      ],
+    },
+    { type: "end", stopReason: "end_turn" },
+  ];
+}
+
+async function commitOnMain(bare: string, content: string, file = "ok.txt"): Promise<void> {
+  const dir = await mkdtemp(path.join(tmpdir(), "paws-main-"));
+  try {
+    await exec("git", ["clone", bare, dir]);
+    await gitIdentity(dir);
+    await writeFile(path.join(dir, file), content);
+    await exec("git", ["-C", dir, "add", file]);
+    await exec("git", ["-C", dir, "commit", "-m", "main moves"]);
+    await exec("git", ["-C", dir, "push", "origin", "HEAD:main"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function installRebaseHook(pawsRoot: string): Promise<void> {
+  const mirror = path.join(pawsRoot, "repos", "pmdroid", "paws-demo.git");
+  const hooks = path.join(mirror, "hooks");
+  await mkdir(hooks, { recursive: true });
+  const hook = path.join(hooks, "pre-rebase");
+  await writeFile(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  await exec("chmod", ["755", hook]);
+  await exec("git", ["--git-dir", mirror, "config", "core.hooksPath", hooks]);
+}
+
 function emptyReview(): FakeScript {
   return {
     steps: [
@@ -1849,23 +2060,35 @@ function writeOk(worktree: string, content = "ok\n"): FakeScript["steps"][number
   return { type: "fs_write", path: path.join(worktree, "ok.txt"), content };
 }
 
-function demoScript(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+function demoScript(input: {
+  purpose: string;
+  itemId: string;
+  worktree: string;
+  prompt: string;
+}): FakeScript {
   if (input.purpose === "review") return emptyReview();
   if (input.purpose === "fix") {
     return { steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }] };
   }
   if (input.itemId === "ENG-4") {
+    if (input.prompt.includes("Handoff from the previous session.")) {
+      return {
+        steps: [
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "archived.txt"),
+            content: "yes\n",
+          },
+          { type: "end", stopReason: "end_turn" },
+        ],
+      };
+    }
     return {
       steps: [
         {
           type: "ask_team",
           question: "Include archived rows?",
           options: ["yes", "no"],
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "archived.txt"),
-          content: "yes\n",
         },
         { type: "end", stopReason: "end_turn" },
       ],
@@ -1883,7 +2106,12 @@ function demoScript(input: { purpose: string; itemId: string; worktree: string }
   };
 }
 
-function scriptFor(input: { purpose: string; itemId: string; worktree: string }): FakeScript {
+function scriptFor(input: {
+  purpose: string;
+  itemId: string;
+  worktree: string;
+  prompt: string;
+}): FakeScript {
   if (input.purpose === "classify")
     return {
       steps: [
@@ -1904,6 +2132,34 @@ function scriptFor(input: { purpose: string; itemId: string; worktree: string })
     };
   }
   if (sourceIdentifier(input.itemId) === "ENG-2") {
+    if (input.prompt.includes("Handoff from the previous session.")) {
+      return {
+        steps: [
+          {
+            type: "update",
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "write-export",
+              title: "Write export",
+            },
+          },
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, "export.txt"),
+            content: "archived=yes\n",
+          },
+          writeOk(input.worktree),
+          {
+            type: "update",
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Wrote the export." },
+            },
+          },
+          { type: "end", stopReason: "end_turn" },
+        ],
+      };
+    }
     return {
       steps: [
         {
@@ -1914,26 +2170,9 @@ function scriptFor(input: { purpose: string; itemId: string; worktree: string })
           },
         },
         {
-          type: "update",
-          update: { sessionUpdate: "tool_call", toolCallId: "write-export", title: "Write export" },
-        },
-        {
           type: "ask_team",
           question: "Include archived rows?",
           options: ["yes", "no"],
-        },
-        {
-          type: "fs_write",
-          path: path.join(input.worktree, "export.txt"),
-          content: "archived=yes\n",
-        },
-        writeOk(input.worktree),
-        {
-          type: "update",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "Wrote the export." },
-          },
         },
         { type: "end", stopReason: "end_turn" },
       ],
@@ -2173,6 +2412,13 @@ async function seedCloseoutPolicy(seed: string): Promise<void> {
   await writeFile(path.join(seed, "README.md"), "paws demo\n");
 }
 
+function checkpointPhaseOf(db: Database, identifier: string): string | null {
+  const row = db
+    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .get(identifier);
+  return row ? (getWorkItem(db, row.id)?.checkpoint?.phase ?? null) : null;
+}
+
 function stateOf(db: Database, identifier: string): string | null {
   const row = db
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
@@ -2183,6 +2429,11 @@ function stateOf(db: Database, identifier: string): string | null {
 
 function epicState(db: Database): string | null {
   return db.query<{ state: string }, []>("SELECT state FROM epic LIMIT 1").get()?.state ?? null;
+}
+
+function delegationMerged(db: Database): boolean {
+  const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+  return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
 function debug(layout: { pawsRoot: string }, db: Database): string {
@@ -2416,35 +2667,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
           : [];
     if (input.purpose === "implement") {
       implementations++;
-      if (implementations === 1)
-        steps.push(
-          {
-            type: "ask_team",
-            question: "Which color should the chart use?",
-            options: [
-              { label: "Ocean blue", value: "blue" },
-              { label: "Leaf green", value: "green" },
-            ],
-          },
-          { type: "fs_write", path: "before-restart.txt", content: "retained across restart" },
-          {
-            type: "ask_team",
-            question: "How should the chart labels look?",
-            options: [
-              { label: "Original labels", value: "original" },
-              { label: "Compact labels", value: "compact" },
-            ],
-            context: "Freeform label guidance is also welcome.",
-          },
-          { type: "hang" },
-        );
-      else if (implementations === 2)
-        steps.push(
-          message("The chart color was chosen."),
-          { type: "fs_write", path: "before-correction.txt", content: "retained" },
-          { type: "hang" },
-        );
-      else
+      if (input.prompt.includes("corrected chart layout"))
         steps.push(
           { type: "fs_write", path: "ok.txt", content: "corrected chart" },
           {
@@ -2461,6 +2684,38 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
             attachToIssue: true,
           },
           message("Created the corrected chart and screenshot."),
+          { type: "end" },
+        );
+      else if (input.prompt.includes("Use larger labels"))
+        steps.push(
+          message("The chart color was chosen."),
+          { type: "fs_write", path: "before-correction.txt", content: "retained" },
+          { type: "hang" },
+        );
+      else if (input.prompt.includes("Handoff from the previous session."))
+        steps.push(
+          {
+            type: "ask_team",
+            question: "How should the chart labels look?",
+            options: [
+              { label: "Original labels", value: "original" },
+              { label: "Compact labels", value: "compact" },
+            ],
+            context: "Freeform label guidance is also welcome.",
+          },
+          { type: "end" },
+        );
+      else
+        steps.push(
+          { type: "fs_write", path: "before-restart.txt", content: "retained across restart" },
+          {
+            type: "ask_team",
+            question: "Which color should the chart use?",
+            options: [
+              { label: "Ocean blue", value: "blue" },
+              { label: "Leaf green", value: "green" },
+            ],
+          },
           { type: "end" },
         );
     }
@@ -2577,6 +2832,9 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
   try {
     await sendEvent("created", null);
     initial = jobs.tick();
+    await waitFor(() => tracker.questions.length === 1);
+    await initial;
+    await jobs.tick();
     await waitFor(() => tracker.questions.length === 2);
     await earlyAnswer;
     expect(earlyAnswerState).toBe("answered");
@@ -2636,7 +2894,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await sendEvent("correction", "Use the corrected chart layout and include a screenshot.");
     await initial;
     for (let tick = 0; tick < 10 && stateOf(db, "ENG-1") !== "merged"; tick++) await jobs.tick();
-    expect(implementations).toBe(3);
+    expect(implementations).toBe(4);
     expect(revoked).toEqual([]);
     expect(lifecycle.started.length).toBeGreaterThan(0);
     expect(
@@ -2664,9 +2922,8 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     expect(github.opened).toHaveLength(1);
     expect(github.merged).toHaveLength(1);
     expect(stateOf(db, "ENG-1"), debug(layout, db)).toBe("merged");
-    const responses = tracker.progress.filter((update) => update.kind === "response");
-    expect(responses).toHaveLength(1);
-    expect(responses[0]?.body).toContain("Created the corrected chart and screenshot.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
     const dashboard = await handleStatusRequest(
       new Request("http://127.0.0.1/api/linear/conversations"),
       { db, staticDir: null },
@@ -2684,7 +2941,6 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
               kind: "prompt",
               text: "Use the corrected chart layout and include a screenshot.",
             }),
-            expect.objectContaining({ kind: "response", text: responses[0]!.body, state: "sent" }),
           ]),
           artifacts: [
             expect.objectContaining({
@@ -2707,9 +2963,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       update.body.includes("https://uploads.linear.app/chart.png"),
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
-    expect(artifactIndex).toBeLessThan(
-      tracker.progress.findIndex((update) => update.kind === "response"),
-    );
+    expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
     expect(listArtifacts(db, task.id)).toHaveLength(1);
     expect(listArtifacts(db, task.id)[0]).toMatchObject({
       state: "uploaded",
@@ -2723,14 +2977,14 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       answer: "blue",
     });
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    const recovered = JSON.parse(await readFile(implementationTraces[1]!, "utf8"));
+    const recovered = JSON.parse(await readFile(implementationTraces[2]!, "utf8"));
     expect(JSON.stringify(recovered.prompts)).toContain(
       "Use larger labels and keep the blue color.",
     );
     for (const choice of ["Original labels", "original", "Compact labels", "compact"])
       expect(JSON.stringify(recovered.prompts)).toContain(choice);
     expect(JSON.stringify(recovered.prompts)).toContain("Freeform label guidance is also welcome.");
-    const resumed = JSON.parse(await readFile(implementationTraces[2]!, "utf8"));
+    const resumed = JSON.parse(await readFile(implementationTraces[3]!, "utf8"));
     expect(JSON.stringify(resumed.prompts)).toContain("blue");
     expect(JSON.stringify(resumed.prompts)).toContain("The chart color was chosen.");
     expect(JSON.stringify(resumed.prompts)).toContain("corrected chart layout");
