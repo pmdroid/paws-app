@@ -7,7 +7,7 @@ import {
   insertQueuedItem,
   recordLinearInstallation,
 } from "../src/db";
-import { intakeDelegatedIssue, syncEpicDependencies } from "../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { dispatchReadyItems, saveSchedulingContext } from "../src/scheduler";
 import { tempDb } from "./helpers";
@@ -143,13 +143,15 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       observedAtMs: 1000,
     });
     bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
-    const target = { epicId: intake.epic.id, workspaceId: "workspace" };
-    await syncEpicDependencies(db, {
-      ...target,
-      expectedGeneration: 0,
-      tracker,
-      lifecycle,
-    });
+    for (const item of intake.items)
+      await syncItemDependencies(db, {
+        itemId: item.id,
+        workspaceId: "workspace",
+        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+          .generation,
+        tracker,
+        lifecycle,
+      });
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('a', 'b')",
     );

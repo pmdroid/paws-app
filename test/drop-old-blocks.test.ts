@@ -179,7 +179,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       { epicId: intake.epic.id, workspaceId: "workspace" },
     ]);
     expect(
-      readyItems(db, { epicId: intake.epic.id, workspaceId: "workspace" }).readyItemIds,
+      readyItems(db, { itemId: blocked!.id, workspaceId: "workspace" }).readyItemIds,
     ).not.toContain(blocked!.id);
   } finally {
     await closeReconciler?.();
@@ -196,13 +196,16 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("061_drop_old_session_link");
+    expect(ids.at(-1)).toBe("062_item_dependency_snapshot");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
     );
     expect(ids.indexOf("060_session_link_on_item")).toBeLessThan(
       ids.indexOf("061_drop_old_session_link"),
+    );
+    expect(ids.indexOf("061_drop_old_session_link")).toBeLessThan(
+      ids.indexOf("062_item_dependency_snapshot"),
     );
   } finally {
     db.close();
