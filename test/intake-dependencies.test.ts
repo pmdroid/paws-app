@@ -206,3 +206,61 @@ test("a stale dependency sync is rejected", async () => {
     db.close();
   }
 });
+
+test("a held item tells Linear which blockers it waits for, once", async () => {
+  const db = tempDb();
+  const tracker = createFakeTracker([
+    { linearIssueId: "item", identifier: "DEP-1", title: "Item", description: null, subIssues: [] },
+  ]);
+  const lifecycle = createFakeLinearIssueLifecycle({
+    id: "done",
+    identifier: "DEP-2",
+    teamId: "team",
+    stateType: "completed",
+    assigneeId: null,
+    delegateId: null,
+  });
+  lifecycle.issues.set("open", {
+    ...lifecycle.issue,
+    id: "open",
+    identifier: "DEP-3",
+    stateType: "started",
+  });
+  try {
+    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "item", now: 1000 });
+    if (!intake.ok) throw new Error("Intake failed");
+    const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
+    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+    recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "session",
+      teamId: "team",
+      observedAtMs: 1000,
+    });
+    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    tracker.deps.set("item", [
+      { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
+      { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
+    ]);
+    const refresh = () =>
+      syncItemDependencies(db, {
+        ...target,
+        expectedGeneration: readyItems(db, target).generation,
+        tracker,
+        lifecycle,
+      });
+    await refresh();
+    await refresh();
+    const waiting = db
+      .query<{ payload: string }, []>("SELECT payload FROM outbox WHERE op='activity'")
+      .all()
+      .map((row) => JSON.parse(row.payload) as { sessionId: string; kind: string; body: string });
+    expect(waiting).toEqual([
+      { sessionId: "session", kind: "thought", body: "Waiting for DEP-3 before starting." },
+    ]);
+  } finally {
+    db.close();
+  }
+});
