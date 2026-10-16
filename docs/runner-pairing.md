@@ -1,6 +1,6 @@
 # Pair a remote Linux runner
 
-Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-agent` user with that user’s access to the host. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
+Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
 
 ## Prepare Paws and the host
 
@@ -65,14 +65,14 @@ For a private CA, also pass `--cacert /path/to/server-ca.pem` to curl. The respo
 
 ## Sign in to the agents
 
-Run the login command for each provider you intend to use on this host. The account and home directory must match the agent service:
+Run the login command for each provider you intend to use on this host. The daemon runs the agent as this same account, with provider state under `/var/lib/paws-agent`:
 
 ```sh
-sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
-sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
+sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
+sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
 ```
 
-Follow the provider's browser instructions. Provider credentials stay in the agent account's home on the VM.
+Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM.
 
 ## Request and approve pairing
 

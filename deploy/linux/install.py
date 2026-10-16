@@ -26,6 +26,15 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def adopt_tree(path, uid, gid, mode):
+    info = path.lstat()
+    os.lchown(path, uid, gid)
+    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+        os.chmod(path, mode)
+        for child in path.iterdir():
+            adopt_tree(child, uid, gid, stat.S_IMODE(child.lstat().st_mode))
+
+
 def root_directory(path, mode=0o755):
     if not path.is_absolute():
         raise ValueError("Installation path must be absolute")
@@ -282,6 +291,12 @@ def install(manifest, artifact, fingerprint, reinstall=False):
                     write_atomic(target, (assets / name).read_bytes(), 0o644)
             release.command(["/usr/bin/systemd-sysusers", "/etc/sysusers.d/paws-runner.conf"])
             release.command(["/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/paws-runner.conf"])
+            runner = pwd.getpwnam("paws-runner")
+            results_group = grp.getgrnam("paws-results")
+            adopt_tree(pathlib.Path("/var/lib/paws-agent"), runner.pw_uid, runner.pw_gid, 0o700)
+            adopt_tree(pathlib.Path("/var/lib/paws-agent-tasks"), runner.pw_uid, runner.pw_gid, 0o711)
+            adopt_tree(pathlib.Path("/var/lib/paws-agent-results"), runner.pw_uid, results_group.gr_gid, 0o750)
+            adopt_tree(pathlib.Path("/var/lib/paws-runner-members"), runner.pw_uid, runner.pw_gid, 0o711)
             validate_identity_separation()
             runner = pwd.getpwnam("paws-runner")
             agent = pwd.getpwnam("paws-agent")
@@ -300,7 +315,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
                 info = pathlib.Path(path).lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
                     raise ValueError(f"Unsafe verification installation state directory: {path}")
-            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", agent.pw_uid, agent_group.gr_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-results", 0, results_group.gr_gid, 0o750), ("/var/lib/paws-runner-broker", 0, 0, 0o700)):
+            for path, uid, gid, mode in (("/var/lib/paws-runner", runner.pw_uid, runner_group.gr_gid, 0o700), ("/var/lib/paws-agent", runner.pw_uid, runner.pw_gid, 0o700), ("/var/lib/paws-runner-spool", runner.pw_uid, agent_group.gr_gid, 0o2750), ("/var/lib/paws-agent-tasks", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-agent-results", runner.pw_uid, results_group.gr_gid, 0o750), ("/var/lib/paws-runner-members", runner.pw_uid, runner.pw_gid, 0o711), ("/var/lib/paws-runner-broker", 0, 0, 0o700)):
                 info = pathlib.Path(path).lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o7777 != mode:
                     raise ValueError(f"Unsafe runner installation state directory: {path}")
@@ -319,7 +334,7 @@ def install(manifest, artifact, fingerprint, reinstall=False):
             release.command(["/usr/bin/systemctl", "daemon-reload"])
             release.command(["/usr/bin/systemctl", "enable", "paws-runner-broker.socket"])
             write_atomic(STATE / "release.json", json.dumps({**accepted, "status": "installed"}).encode(), 0o600)
-        login_prefix = "/usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
+        login_prefix = "/usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C "
         login_commands = {"claude": login_prefix + "/opt/paws-runner/bin/claude auth login", "codex": login_prefix + "/opt/paws-runner/bin/codex login --device-auth"}
         return {"installed": True, "version": manifest["version"], "releaseKeyFingerprint": fingerprint, "verifierIdentity": verifier_identity, "providerLoginCommands": login_commands}
     finally:
