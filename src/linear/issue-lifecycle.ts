@@ -5,6 +5,7 @@ import { schedulingMetadata } from "./scheduling";
 
 export type LinearIssueOwnership = {
   id: string;
+  identifier?: string;
   teamId: string;
   assigneeId: string | null;
   delegateId: string | null;
@@ -31,7 +32,7 @@ export interface LinearIssueLifecycle {
 }
 
 const ISSUE = `query IssueOwnership($id: String!) {
-  issue(id: $id) { id team { id } state { type } assignee { id } delegate { id } project { id } }
+  issue(id: $id) { id identifier team { id } state { type } assignee { id } delegate { id } project { id } }
 }`;
 
 const ACTOR = `query CodeTaskActor($id: String!) {
@@ -65,6 +66,7 @@ export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLif
     return {
       ...schedulingMetadata(issue),
       id,
+      ...(readString(issue, "identifier") ? { identifier: readString(issue, "identifier")! } : {}),
       teamId,
       stateType,
       assigneeId: nullableOwner(issue, "assignee"),
