@@ -142,7 +142,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
     for (const item of intake.items)
       await syncItemDependencies(db, {
         itemId: item.id,

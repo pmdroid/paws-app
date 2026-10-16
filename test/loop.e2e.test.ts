@@ -255,7 +255,7 @@ test.each([false, true, "cap"] as const)(
   20000,
 );
 
-test("a bound two-item epic asks, verifies and merges in its repository after the default changes", async () => {
+test("a bound two-item delegation asks, verifies and merges in its repository after the default changes", async () => {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -505,7 +505,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
   }
 }, 90_000);
 
-test("the demo epic merges three pull requests in comment mode with gh auth", async () => {
+test("the demo delegation merges three pull requests in comment mode with gh auth", async () => {
   const seed = JSON.parse(
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;
@@ -1197,7 +1197,7 @@ for (const recovery of [
   }, 60_000);
 }
 
-test("grok implementer runs the demo epic with ask_team and one Closeout fix", async () => {
+test("grok implementer runs the demo delegation with ask_team and one Closeout fix", async () => {
   const layout = await repoLayout();
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");

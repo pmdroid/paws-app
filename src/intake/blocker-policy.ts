@@ -168,7 +168,7 @@ export type BlockerEvidence = {
 
 export function readExternalBlockerEvidence(
   db: Database,
-  target: { workspaceId: string; epicId: string },
+  target: { workspaceId: string; delegationId: string },
 ): Record<string, BlockerEvidence> {
   const rows = db
     .query<{ evidence: string }, [string, string]>(
@@ -176,7 +176,7 @@ export function readExternalBlockerEvidence(
        JOIN work_item i ON i.id=s.item_id
        WHERE s.workspace_id=? AND i.delegation_id=? ORDER BY s.generation,i.position,i.id`,
     )
-    .all(target.workspaceId, target.epicId);
+    .all(target.workspaceId, target.delegationId);
   const evidence: Record<string, BlockerEvidence> = {};
   for (const row of rows)
     for (const [id, entry] of Object.entries(

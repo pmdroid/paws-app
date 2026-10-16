@@ -97,7 +97,7 @@ export async function probeRunnerWork(
     teamId: "fixture-team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "fixture-session", item.epicId, { actorId: "owner" });
+  bindLinearSessionTask(db, "fixture-session", item.delegationId, { actorId: "owner" });
   const repository = {
     owner: "fixture",
     repo: "repository",

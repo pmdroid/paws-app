@@ -357,7 +357,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
   }
 });
 
-test("a merged item settles its epic without an epic summary", async () => {
+test("a merged item settles its delegation without a delegation summary", async () => {
   const db = openDatabase(join(tempHome(), "completion.db"));
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });

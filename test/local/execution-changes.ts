@@ -78,9 +78,12 @@ export async function probeExecutionChanges(
       throw new Error("Local agent launch is forbidden");
     },
   });
-  const changes = (epicId: string, patch: Partial<ExecutionChanges> = {}): ExecutionChanges => ({
-    epicId,
-    sessionId: `${epicId}-session`,
+  const changes = (
+    delegationId: string,
+    patch: Partial<ExecutionChanges> = {},
+  ): ExecutionChanges => ({
+    delegationId,
+    sessionId: `${delegationId}-session`,
     addedItemIds: [],
     removedItemIds: [],
     specChangedItemIds: [],
@@ -149,7 +152,7 @@ export async function probeExecutionChanges(
     });
     assert.throws(() =>
       immediate(db, () => {
-        orchestrator.applyEpicChanges(changed);
+        orchestrator.applyDelegationChanges(changed);
         throw new Error("Force atomic publication rollback");
       }),
     );
@@ -160,7 +163,7 @@ export async function probeExecutionChanges(
           ?.status === "pending",
       getWorkItem(db, "criteria-0"),
     );
-    orchestrator.applyEpicChanges(changed);
+    orchestrator.applyDelegationChanges(changed);
     observe(
       "criteria edits atomically retire old approval and candidate identity",
       getWorkItem(db, "criteria-0")?.state === "queued" &&
@@ -192,7 +195,7 @@ export async function probeExecutionChanges(
         getWorkItem(db, "criteria-2")?.checkpoint?.wipCommit === "paused-existing-work",
       { queued: getWorkItem(db, "criteria-4"), paused: getWorkItem(db, "criteria-2") },
     );
-    await orchestrator.finishEpicChanges(changed);
+    await orchestrator.finishDelegationChanges(changed);
     observe(
       "postcommit joining does not prematurely enqueue revised work",
       db
@@ -203,7 +206,7 @@ export async function probeExecutionChanges(
       cancelReceipts,
     );
     seed("added", ["queued"]);
-    orchestrator.applyEpicChanges(changes("added", { addedItemIds: ["added-0"] }));
+    orchestrator.applyDelegationChanges(changes("added", { addedItemIds: ["added-0"] }));
     observe(
       "new subissues enter canonical repository-backed code mode",
       db
@@ -217,7 +220,7 @@ export async function probeExecutionChanges(
       (state) => !["merged", "completed", "cancelled"].includes(state),
     );
     seed("cancel", activeStates);
-    orchestrator.applyEpicChanges(changes("cancel", { parentCanceled: true }));
+    orchestrator.applyDelegationChanges(changes("cancel", { parentCanceled: true }));
     observe(
       "epic cancellation cascades through every nonterminal state",
       activeStates.every((_, index) => getWorkItem(db, `cancel-${index}`)?.state === "cancelled"),
@@ -227,7 +230,7 @@ export async function probeExecutionChanges(
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker-0','blocker-1')",
     );
-    orchestrator.applyEpicChanges(changes("blocker", { canceledItemIds: ["blocker-0"] }));
+    orchestrator.applyDelegationChanges(changes("blocker", { canceledItemIds: ["blocker-0"] }));
     observe(
       "cancelled blockers leave dependents held with a Linear explanation",
       getWorkItem(db, "blocker-1")?.state === "queued" &&
@@ -239,7 +242,8 @@ export async function probeExecutionChanges(
       getWorkItem(db, "blocker-1"),
     );
     assert.throws(
-      () => orchestrator.applyEpicChanges(changes("cancel", { specChangedItemIds: ["added-0"] })),
+      () =>
+        orchestrator.applyDelegationChanges(changes("cancel", { specChangedItemIds: ["added-0"] })),
       /ownership/,
     );
     observe(

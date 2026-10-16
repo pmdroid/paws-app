@@ -256,7 +256,7 @@ export async function probeRunnerTaskAuthority(
           teamId: "team",
           observedAtMs: now,
         });
-        bindLinearSessionTask(db, sessionId, item.epicId, { actorId: "task-owner" });
+        bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "task-owner" });
         saveTaskMode(db, item.id, purpose, 0, withRepository);
         if (withRepository) bindWorkItemRepository(db, item.id, repository);
         const scope = coordinator.work.scopeTask(run.id, workspace.id);

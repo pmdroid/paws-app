@@ -48,13 +48,13 @@ for (const target of ["child", "child-before-progress"] as const) {
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [childIssue, item.id]);
     const sibling = insertQueuedItem(db, { id: "durable-sibling", sessionKey: epicIssue });
     db.run("UPDATE work_item SET delegation_id = ?, linear_issue_id = ? WHERE id = ?", [
-      item.epicId,
+      item.delegationId,
       "child-3",
       sibling.id,
     ]);
     const merged = insertQueuedItem(db, { id: "durable-merged", sessionKey: epicIssue });
     db.run("UPDATE work_item SET delegation_id = ?, state = 'merged' WHERE id = ?", [
-      item.epicId,
+      item.delegationId,
       merged.id,
     ]);
     const unrelated = insertQueuedItem(db, { id: "unrelated" });

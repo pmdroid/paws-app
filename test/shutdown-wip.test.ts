@@ -170,7 +170,7 @@ describe("shutdown WIP", () => {
         issueId: answer.linearIssueId,
         creatorId: "human",
       });
-      bindLinearSessionTask(paws.db, "session", answer.epicId);
+      bindLinearSessionTask(paws.db, "session", answer.delegationId);
       saveTaskMode(paws.db, answer.id, "answer");
       enqueueJob(paws.db, { queue: JOB_KIND.start, payload: { itemId: answer.id } });
       for (let i = 0; i < 5_000 && getWorkItem(paws.db, answer.id)?.state !== "failed"; i++)

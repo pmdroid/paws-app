@@ -69,9 +69,9 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     if (!admitted.ok) return;
     expect(admitted.alreadyExisted).toBe(false);
     expect(admitted.items).toEqual([]);
-    expect(admitted.epic.state).toBe("done");
+    expect(admitted.delegation.state).toBe("done");
     expect(
-      db.query("SELECT id FROM work_item WHERE delegation_id=?").all(admitted.epic.id),
+      db.query("SELECT id FROM work_item WHERE delegation_id=?").all(admitted.delegation.id),
     ).toHaveLength(0);
     const approval = db
       .query<
@@ -196,7 +196,7 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     expect(replay.ok && replay.alreadyExisted).toBe(true);
     if (!replay.ok) return;
     expect(replay.items).toEqual([]);
-    expect(replay.epic.id).toBe(admitted.epic.id);
+    expect(replay.delegation.id).toBe(admitted.delegation.id);
     expect(
       tracker.progress.filter((update) => update.body.startsWith("Picked up 2 sub-issues")),
     ).toHaveLength(1);
@@ -222,7 +222,7 @@ test("a delegated parent becomes an approved project and each sub-issue runs alo
     for (const item of items) {
       expect(item.project_approval_id).toBe(approval.id);
       expect(item.owner_user_id).toBe("lead");
-      expect(item.delegation_id).not.toBe(admitted.epic.id);
+      expect(item.delegation_id).not.toBe(admitted.delegation.id);
       expect(
         db.query("SELECT id FROM work_item WHERE delegation_id=?").all(item.delegation_id),
       ).toHaveLength(1);
@@ -291,7 +291,7 @@ test("a cycle between sub-issues reports the cycle and creates no project", asyn
     if (result.ok) return;
     expect(result.reason).toBe("cycle");
     expect(result.identifiers).toEqual(["CYC-2", "CYC-3"]);
-    expect(result.epic.state).toBe("stalled");
+    expect(result.delegation.state).toBe("stalled");
     expect(fixture.db.query("SELECT id FROM work_item").all()).toHaveLength(0);
     expect(fixture.db.query("SELECT id FROM project_approval").all()).toHaveLength(0);
     expect(fixture.tracker.progress[0]).toMatchObject({
@@ -304,7 +304,7 @@ test("a cycle between sub-issues reports the cycle and creates no project", asyn
   }
 });
 
-test("a reserved sub-issue keeps the multi-item epic", async () => {
+test("a reserved sub-issue keeps the multi-item delegation", async () => {
   const fixture = createProjectFixture();
   try {
     publish(fixture.tracker, parent);
@@ -329,7 +329,7 @@ test("a reserved sub-issue keeps the multi-item epic", async () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.epic.state).toBe("running");
+    expect(result.delegation.state).toBe("running");
     expect(result.items.map((item) => item.linearIdentifier)).toEqual(["PAR-2", "PAR-3"]);
     expect(fixture.db.query("SELECT id,source FROM project_approval").all()).toEqual([
       { id: "existing", source: "project" },

@@ -331,7 +331,7 @@ export function createApprovedProjects(input: {
                 ...Object.entries(
                   readExternalBlockerEvidence(db, {
                     workspaceId: approval.workspaceId,
-                    epicId: claim.epicId,
+                    delegationId: claim.epicId,
                   }),
                 ).flatMap(([issueId, evidence]) =>
                   evidence.satisfied ? [] : [`${issueId}: ${evidence.reason}`],
@@ -389,7 +389,7 @@ export function createApprovedProjects(input: {
         item.id,
       ]);
       db.run("UPDATE project_approval_issue SET delegation_id=? WHERE session_id=?", [
-        result.epic.id,
+        result.delegation.id,
         sessionId,
       ]);
       if (approval.source === "parent") return;

@@ -112,7 +112,7 @@ export async function probeRunnerInputs(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "transcript-session", item.epicId, { actorId: "owner" });
+  bindLinearSessionTask(db, "transcript-session", item.delegationId, { actorId: "owner" });
   const repository = {
     owner: "fixture",
     repo: "repository",

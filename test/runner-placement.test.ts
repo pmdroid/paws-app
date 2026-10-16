@@ -67,7 +67,7 @@ async function placeItem(project: boolean, bindTask = true) {
     teamId: "team",
     observedAtMs: now,
   });
-  if (bindTask) bindLinearSessionTask(db, "session", item.epicId, { actorId: "owner" });
+  if (bindTask) bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
   db.run(
     `INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at)
      VALUES('approval',?,'project',?,?,'placement','{}',?,?,?)`,

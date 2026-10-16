@@ -3,13 +3,13 @@ export type { IntakeResult } from "./intake";
 export { orderByBlocks } from "./order";
 export type { OrderNode, OrderResult } from "./order";
 export { listWorkItems } from "./store";
-export type { StoredEpic, StoredWorkItem } from "./store";
+export type { StoredDelegation, StoredWorkItem } from "./store";
 export {
   canAdvanceItem,
-  hasPendingEpicChanges,
+  hasPendingDelegationChanges,
   readyItems,
   syncItemDependencies,
-  epicSnapshotsComplete,
+  delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness } from "./dependencies";
 export { createItemReconciler } from "./reconciliation";

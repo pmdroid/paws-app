@@ -13,7 +13,7 @@ import { ulid } from "./ulid";
 import type { InspectBlockerMerge } from "./blocker-policy";
 
 export type ItemChanges = {
-  epicId: string;
+  delegationId: string;
   workspaceId: string;
   sessionId: string;
   addedItemIds: string[];
@@ -48,19 +48,19 @@ type Item = {
 };
 type RequestRow = { itemId: string; token: string };
 
-function requestsFor(db: Database, epicId: string): RequestRow[] {
+function requestsFor(db: Database, delegationId: string): RequestRow[] {
   return db
     .query<RequestRow, [string]>(
       `SELECT r.item_id AS itemId, r.token FROM item_reconciliation_request r
        JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=? ORDER BY r.item_id`,
     )
-    .all(epicId);
+    .all(delegationId);
 }
 
 function authority(db: Database, target: Target) {
   const row = db
-    .query<Identity & { epicId: string }, [string, string]>(
-      `SELECT i.delegation_id AS epicId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
+    .query<Identity & { delegationId: string }, [string, string]>(
+      `SELECT i.delegation_id AS delegationId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
        s.session_id AS sessionId, s.organization_id AS organizationId, s.team_id AS teamId,
        s.app_user_id AS appUserId, s.oauth_client_id AS clientId, s.creator_id AS creatorId,
        COALESCE(u.linear_user_id, i.delegated_by, s.creator_id) AS actorId, s.generation
@@ -74,18 +74,18 @@ function authority(db: Database, target: Target) {
     )
     .get(target.itemId, target.workspaceId);
   if (!row) throw new Error("Item reconciliation authority changed");
-  const { epicId, ...identity } = row;
+  const { delegationId, ...identity } = row;
   const items = db
     .query<Item, [string]>(
       `SELECT i.id,i.linear_issue_id AS issueId,i.brief,p.hash,p.revision,p.present
        FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
        WHERE i.delegation_id=? ORDER BY i.id`,
     )
-    .all(epicId);
+    .all(delegationId);
   const active = items.filter((item) => item.present !== 0);
   if (new Set(active.map((item) => item.issueId)).size !== active.length)
     throw new Error("Item reconciliation item identities are ambiguous");
-  return { identity, items, epicId, token: JSON.stringify([identity, items]) };
+  return { identity, items, delegationId, token: JSON.stringify([identity, items]) };
 }
 
 function brief(issue: LinearSubIssue | EpicSnapshot): IssueBrief {
@@ -128,14 +128,14 @@ export function createItemReconciler(input: {
   async function refresh(target: Target, requestToken: string) {
     target.signal?.throwIfAborted();
     const initial = authority(db, target);
-    const captured = requestsFor(db, initial.epicId);
+    const captured = requestsFor(db, initial.delegationId);
     const loaded = await tracker.loadEpic(initial.identity.issueId);
     const snapshot = input.scopeSnapshot
       ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
       : loaded;
     target.signal?.throwIfAborted();
     if (snapshot.linearIssueId !== initial.identity.issueId)
-      throw new Error("Linear returned another epic");
+      throw new Error("Linear returned another issue");
     const single = initial.items.every((item) => item.issueId === initial.identity.issueId);
     const issues = snapshot.subIssues.length ? snapshot.subIssues : single ? [snapshot] : [];
     if (new Set(issues.map((issue) => issue.linearIssueId)).size !== issues.length)
@@ -147,7 +147,7 @@ export function createItemReconciler(input: {
     ])) {
       const owned = await lifecycle.inspect(id, { signal: target.signal });
       if (owned.id !== id || owned.teamId !== initial.identity.teamId)
-        throw new Error("Linear epic or child team changed");
+        throw new Error("Linear issue or child team changed");
       statuses.set(id, owned.stateType);
     }
     target.signal?.throwIfAborted();
@@ -155,14 +155,14 @@ export function createItemReconciler(input: {
       .transaction(() => {
         if (authority(db, target).token !== initial.token)
           throw new Error("Item reconciliation authority changed");
-        const currentRequests = requestsFor(db, initial.epicId);
+        const currentRequests = requestsFor(db, initial.delegationId);
         if (
           JSON.stringify(currentRequests) !== JSON.stringify(captured) ||
           !currentRequests.some((row) => row.itemId === target.itemId && row.token === requestToken)
         )
           return null;
         const change: ItemChanges = {
-          epicId: initial.epicId,
+          delegationId: initial.delegationId,
           workspaceId: target.workspaceId,
           sessionId: initial.identity.sessionId,
           addedItemIds: [],
@@ -204,7 +204,7 @@ export function createItemReconciler(input: {
                VALUES(?,?,?,?,?,'queued',?,?,0,?,?,?,?)`,
               [
                 id,
-                initial.epicId,
+                initial.delegationId,
                 issue.linearIssueId,
                 issue.identifier,
                 issue.title,
@@ -242,7 +242,7 @@ export function createItemReconciler(input: {
         )
           db.run(
             "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE delegation_id=?)",
-            [initial.epicId],
+            [initial.delegationId],
           );
         for (const [kind, ids] of [
           ["spec", change.specChangedItemIds],
@@ -261,7 +261,7 @@ export function createItemReconciler(input: {
             `SELECT e.item_id AS itemId,e.kind,e.token FROM item_reconciliation_effect e
              JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=?`,
           )
-          .all(initial.epicId);
+          .all(initial.delegationId);
         change.specChangedItemIds = effects
           .filter((effect) => effect.kind === "spec")
           .map((effect) => effect.itemId);
@@ -282,14 +282,14 @@ export function createItemReconciler(input: {
       .query(
         `SELECT 1 FROM work_item WHERE delegation_id=? AND state NOT IN ('completed','merged','cancelled')`,
       )
-      .get(initial.epicId);
+      .get(initial.delegationId);
     if (!changes.parentCanceled && delegationOpen) {
       const itemIds = db
         .query<{ id: string }, [string]>(
           `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
            WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
         )
-        .all(initial.epicId)
+        .all(initial.delegationId)
         .map((item) => item.id);
       for (const itemId of itemIds)
         await syncItemDependencies(db, {
@@ -340,9 +340,9 @@ export function createItemReconciler(input: {
   function reconcile(target: Target): Promise<void> {
     if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
     if (target.signal?.aborted) return Promise.reject(target.signal.reason);
-    let epicId: string;
+    let delegationId: string;
     try {
-      epicId = db
+      delegationId = db
         .transaction(() => {
           const current = authority(db, target);
           const accepted = db.run(
@@ -352,13 +352,13 @@ export function createItemReconciler(input: {
             [target.itemId, target.workspaceId, crypto.randomUUID()],
           );
           if (!accepted.changes) throw new Error("Item reconciliation workspace changed");
-          return current.epicId;
+          return current.delegationId;
         })
         .immediate();
     } catch (error) {
       return Promise.reject(error);
     }
-    const key = JSON.stringify([target.workspaceId, epicId]);
+    const key = JSON.stringify([target.workspaceId, delegationId]);
     const existing = flights.get(key);
     if (existing) {
       existing.dirty = true;
@@ -369,7 +369,7 @@ export function createItemReconciler(input: {
       try {
         do {
           flight.dirty = false;
-          const pending = requestsFor(db, epicId);
+          const pending = requestsFor(db, delegationId);
           const request = pending.find((row) => row.itemId === target.itemId) ?? pending[0];
           if (!request) throw new Error("Item reconciliation request changed");
           await refresh(

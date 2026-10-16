@@ -52,13 +52,13 @@ try {
   await paws.ready;
   const item=insertQueuedItem(paws.db,{id:'ordinary',now:Date.now(),sessionKey:'ordinary'});
   ensureLinearSession(paws.db,{sessionId:'ordinary',issueId:item.linearIssueId,organizationId:'org'});
-  bindLinearSessionTask(paws.db,'ordinary',item.epicId,{actorId:'lead'});
+  bindLinearSessionTask(paws.db,'ordinary',item.delegationId,{actorId:'lead'});
   paws.db.run("UPDATE work_item SET state='merge_queue' WHERE id=?",[item.id]);
   runtime.repositoryForItem=()=>({owner:'owner',repo:'repo',remoteUrl:'https://example.test/repo'});
   runtime.githubForRepository=()=>({});
   let mergeFailure='';
   try {await runtime.merge({itemId:item.id},'proof')}catch(error){mergeFailure=error.message}
-  console.log(JSON.stringify({...observed,mergeFailure,composedHold:runtime.options.canDispatchEpic(claim.epicId)}));
+  console.log(JSON.stringify({...observed,mergeFailure,composedHold:runtime.options.canDispatchDelegation(claim.epicId)}));
 }finally{
   Orchestrator.prototype.register=register;
   await paws.stop();

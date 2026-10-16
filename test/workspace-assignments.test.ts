@@ -164,12 +164,12 @@ function fixture() {
           throw new Error("Interrupted before canonical intake");
         }
         await orchestrator.onLinearEvent(value);
-        const epicId = getLinearSession(db, "session")!.epicId!;
+        const delegationId = getLinearSession(db, "session")!.delegationId!;
         const itemIds = db
           .query<{ id: string }, [string]>(
             "SELECT id FROM work_item WHERE delegation_id=? ORDER BY position,id",
           )
-          .all(epicId);
+          .all(delegationId);
         for (const item of itemIds)
           await syncItemDependencies(db, {
             itemId: item.id,

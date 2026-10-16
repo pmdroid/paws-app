@@ -18,7 +18,7 @@ import { immediate } from "./tx";
 export type WorkItemRecord = {
   id: string;
   taskKey?: string | null;
-  epicId: string;
+  delegationId: string;
   linearIssueId: string;
   linearIdentifier: string;
   title: string;
@@ -321,7 +321,7 @@ function mapItem(row: ItemSql): WorkItemRecord {
   return {
     id: row.id,
     taskKey: row.task_key,
-    epicId: row.delegation_id,
+    delegationId: row.delegation_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,
     title: row.title,

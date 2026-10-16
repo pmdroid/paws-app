@@ -55,7 +55,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "linear-person" });
+  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const policyTarget = { workspaceId: "workspace", itemId };
@@ -121,10 +121,10 @@ test("a policy saved for an item is read back for that item only", async () => {
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
       [
         f.db
-          .query<{ epicId: string }, [string]>(
-            "SELECT delegation_id AS epicId FROM work_item WHERE id=?",
+          .query<{ delegationId: string }, [string]>(
+            "SELECT delegation_id AS delegationId FROM work_item WHERE id=?",
           )
-          .get(f.target.itemId)!.epicId,
+          .get(f.target.itemId)!.delegationId,
       ],
     );
     expect(
@@ -232,7 +232,7 @@ test("Explicit completion remains human-approved and cancellation always holds",
   }
 });
 
-test("Managed blockers in another epic require canonical delivery", async () => {
+test("Managed blockers in another delegation require canonical delivery", async () => {
   const f = await fixture();
   try {
     f.tracker.epics.set("a", {
@@ -252,7 +252,9 @@ test("Managed blockers in another epic require canonical delivery", async () => 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.epic.id, { actorId: "linear-person" });
+    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+      actorId: "linear-person",
+    });
     const item = intake.items[0]!;
     saveTaskMode(f.db, item.id, "code");
     f.db.run(
@@ -297,7 +299,9 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.epic.id, { actorId: "linear-person" });
+    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+      actorId: "linear-person",
+    });
     const newer = intake.items[0]!;
     f.db.run("UPDATE work_item SET state='merged', created_at=3000 WHERE id=?", [newer.id]);
     f.db.run("INSERT INTO remote_merge_fact VALUES(?,'owner','repo',12,NULL,?,3000)", [
@@ -309,7 +313,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
        VALUES(?,?,?,?,?,'cancelled',?,?,?,?,?)`,
       [
         "older-blocker",
-        intake.epic.id,
+        intake.delegation.id,
         "a",
         "DEP-3",
         "Code blocker",

@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   delegationIssueIdSql,
   parentTaskKeySql,
-  type EpicState,
+  type DelegationState,
   type WorkBrief,
   type WorkItemState,
 } from "../core";
@@ -11,18 +11,18 @@ import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
 import { ulid } from "./ulid";
 
-export type StoredEpic = {
+export type StoredDelegation = {
   id: string;
   linearIssueId: string;
   linearIdentifier: string;
   title: string;
-  state: EpicState;
+  state: DelegationState;
   version: number;
 };
 
 export type StoredWorkItem = {
   id: string;
-  epicId: string;
+  delegationId: string;
   linearIssueId: string;
   linearIdentifier: string;
   title: string;
@@ -60,7 +60,7 @@ export function findAcceptedIntake(
   db: Database,
   linearIssueId: string,
   taskKey: string,
-): { epic: StoredEpic; items: StoredWorkItem[] } | null {
+): { delegation: StoredDelegation; items: StoredWorkItem[] } | null {
   const delegated = db
     .query<DelegationRow, [string, string]>(
       `SELECT delegation_id,
@@ -76,7 +76,7 @@ export function findAcceptedIntake(
   if (delegated) {
     const items = listWorkItems(db, delegated.delegation_id);
     return {
-      epic: {
+      delegation: {
         id: delegated.delegation_id,
         linearIssueId,
         linearIdentifier: delegated.linear_identifier,
@@ -88,10 +88,10 @@ export function findAcceptedIntake(
     };
   }
   const adopted = readAdoptedParent(db, linearIssueId);
-  return adopted === null ? null : { epic: adopted, items: [] };
+  return adopted === null ? null : { delegation: adopted, items: [] };
 }
 
-export function readAdoptedParent(db: Database, linearIssueId: string): StoredEpic | null {
+export function readAdoptedParent(db: Database, linearIssueId: string): StoredDelegation | null {
   const row = db
     .query<ApprovalRow, [string]>(
       `SELECT id, project_id, preview
@@ -101,16 +101,16 @@ export function readAdoptedParent(db: Database, linearIssueId: string): StoredEp
        LIMIT 1`,
     )
     .get(linearIssueId);
-  return row === null ? null : epicFromApproval(row);
+  return row === null ? null : delegationFromApproval(row);
 }
 
-export function listWorkItems(db: Database, epicId: string): StoredWorkItem[] {
+export function listWorkItems(db: Database, delegationId: string): StoredWorkItem[] {
   return db
     .query<ItemRow, [string]>(
       `SELECT id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version
        FROM work_item WHERE delegation_id = ? ORDER BY position, linear_identifier`,
     )
-    .all(epicId)
+    .all(delegationId)
     .map(mapItem);
 }
 
@@ -127,11 +127,11 @@ export function insertRunningQueue(
     now: number;
     sessionKey?: string | null;
   },
-): { epic: StoredEpic; items: StoredWorkItem[] } {
-  const epicId = ulid(input.now);
+): { delegation: StoredDelegation; items: StoredWorkItem[] } {
+  const delegationId = ulid(input.now);
   const items = input.ordered.map((node, position) => ({
     id: ulid(input.now + position + 1),
-    epicId,
+    delegationId,
     linearIssueId: node.linearIssueId,
     linearIdentifier: node.identifier,
     title: node.title,
@@ -149,7 +149,7 @@ export function insertRunningQueue(
          ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?, ?)`,
         [
           item.id,
-          item.epicId,
+          item.delegationId,
           item.linearIssueId,
           item.linearIdentifier,
           item.title,
@@ -170,8 +170,8 @@ export function insertRunningQueue(
   });
   write.immediate();
   return {
-    epic: {
-      id: epicId,
+    delegation: {
+      id: delegationId,
       linearIssueId: input.linearIssueId,
       linearIdentifier: input.identifier,
       title: input.title,
@@ -185,7 +185,7 @@ export function insertRunningQueue(
 function mapItem(row: ItemRow): StoredWorkItem {
   return {
     id: row.id,
-    epicId: row.delegation_id,
+    delegationId: row.delegation_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,
     title: row.title,
@@ -200,7 +200,7 @@ function branchName(identifier: string): string {
   return `paws/${identifier.toLowerCase()}`;
 }
 
-function delegationState(items: readonly StoredWorkItem[]): EpicState {
+function delegationState(items: readonly StoredWorkItem[]): DelegationState {
   if (
     items.some(
       (item) => item.state !== "completed" && item.state !== "merged" && item.state !== "cancelled",
@@ -211,7 +211,7 @@ function delegationState(items: readonly StoredWorkItem[]): EpicState {
   return "done";
 }
 
-function epicFromApproval(row: ApprovalRow): StoredEpic {
+function delegationFromApproval(row: ApprovalRow): StoredDelegation {
   const preview = JSON.parse(row.preview) as {
     project?: { name?: unknown; identifier?: unknown };
   };
