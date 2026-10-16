@@ -73,11 +73,19 @@ export function enqueueVerifiedMerge(
   input: { itemId: string; head: string; summary: string; now: number; reverifyJobId?: number },
 ): number {
   const suffix = input.reverifyJobId === undefined ? "" : `:reverify:${input.reverifyJobId}`;
+  const jobKey = `merge:${input.itemId}:${input.head}${suffix}`;
+  const payload = { itemId: input.itemId, summary: input.summary, head: input.head };
+  db.run(
+    `UPDATE job SET status = 'pending', attempts = 0, last_error = NULL, finished_at = NULL,
+       locked_by = NULL, locked_until = NULL, run_at = ?, payload = ?
+     WHERE job_key = ? AND status IN ('cancelled', 'dead')`,
+    [input.now, JSON.stringify(payload), jobKey],
+  );
   return enqueueJobOnce(db, {
     queue: JOB_KIND.merge,
     lane: MERGE_LANE,
-    jobKey: `merge:${input.itemId}:${input.head}${suffix}`,
-    payload: { itemId: input.itemId, summary: input.summary, head: input.head },
+    jobKey,
+    payload,
     now: input.now,
   });
 }
