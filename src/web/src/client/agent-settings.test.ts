@@ -74,6 +74,7 @@ describe("agent settings", () => {
     expect(html).toContain('name="0-reviewer-agent" disabled');
     expect(html).toContain('<option value="" selected>Agent default</option>');
     expect(html).toContain('<select id="defaults-implementer-model"');
+    expect(html).toContain('class="settings-roles"');
     expect(html).toContain("Agents run on an installed runner");
     expect(html).toContain('href="#/runners"');
     expect(html).not.toContain("Test connection");

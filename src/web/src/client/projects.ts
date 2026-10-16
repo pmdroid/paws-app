@@ -215,7 +215,7 @@ export function createProjects() {
                     })
                     .join(
                       "",
-                    )}</ul>${entry.stoppedAt === null ? `<div class="flex flex-wrap gap-3"><button class="btn" data-project-control="${esc(entry.id)}" data-control="${entry.pausedAt === null ? "pause" : "resume"}"${disabled}>${entry.pausedAt === null ? "Pause" : "Resume"}</button><details><summary>Stop project</summary><p>Stop unfinished work in this approved scope.</p><button class="btn" data-project-control="${esc(entry.id)}" data-control="stop"${disabled}>Confirm stop</button></details></div>` : ""}</article>`,
+                    )}</ul>${entry.stoppedAt === null ? `<div class="row"><button class="btn" data-project-control="${esc(entry.id)}" data-control="${entry.pausedAt === null ? "pause" : "resume"}"${disabled}>${entry.pausedAt === null ? "Pause" : "Resume"}</button><details><summary>Stop project</summary><p>Stop unfinished work in this approved scope.</p><button class="btn" data-project-control="${esc(entry.id)}" data-control="stop"${disabled}>Confirm stop</button></details></div>` : ""}</article>`,
               )
               .join("")
           : "<p>No project scope has been approved yet.</p>"

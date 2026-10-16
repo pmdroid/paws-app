@@ -1,5 +1,17 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
+
+export function identityLinkMarkup(input: {
+  id: string;
+  label: string;
+  value: string;
+  maxLength: number;
+  status: string;
+  disabled: boolean;
+}): string {
+  const disabled = input.disabled ? " disabled" : "";
+  return `<div class="identity-link"><label class="field" for="${esc(input.id)}">${esc(input.label)}</label><input id="${esc(input.id)}" value="${esc(input.value)}" autocomplete="off" maxlength="${input.maxLength}"${disabled}><span class="muted" data-identity-status>${esc(input.status)}</span><button type="submit"${disabled}>Save account</button></div>`;
+}
 type IdentityLink = {
   userId: string;
   provider: string;
@@ -36,11 +48,21 @@ export async function initializeWorkspaceIdentities(root: HTMLElement, csrfToken
           (entry) => entry.userId === member.id && entry.provider === provider,
         );
         const form = document.createElement("form");
-        form.className = "row workspace-member";
         const unavailable = provider === "slack" && data.slackTeamId === null;
         renderMarkup(
           form,
-          `<label class="field"><span>${provider === "slack" ? "Slack user ID" : "GitHub username"}</span><input value="${esc(link?.externalId ?? "")}" autocomplete="off" maxlength="${provider === "slack" ? 100 : 39}"${unavailable ? " disabled" : ""}></label><span class="muted" data-identity-status>${esc(unavailable ? "Connect Slack to match accounts." : link ? `${link.status} · ${link.method}` : "Unlinked")}</span><button type="submit"${unavailable ? " disabled" : ""}>Save account</button>`,
+          identityLinkMarkup({
+            id: `identity-${member.id}-${provider}`,
+            label: provider === "slack" ? "Slack user ID" : "GitHub username",
+            value: link?.externalId ?? "",
+            maxLength: provider === "slack" ? 100 : 39,
+            status: unavailable
+              ? "Connect Slack to match accounts."
+              : link
+                ? `${link.status} · ${link.method}`
+                : "Unlinked",
+            disabled: unavailable,
+          }),
         );
         const input = form.querySelector<HTMLInputElement>("input")!;
         const status = form.querySelector<HTMLElement>("[data-identity-status]")!;
