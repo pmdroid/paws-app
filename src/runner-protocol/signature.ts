@@ -21,7 +21,7 @@ export type RunnerCommandRejection =
 
 export type RunnerCommandVerification =
   | { ok: true; command: RunnerCommand }
-  | { ok: false; reason: RunnerCommandRejection };
+  | { ok: false; reason: RunnerCommandRejection; repository?: string };
 
 export type RunnerCommandVerifier = {
   trustedKeys: ReadonlyMap<string, KeyObject>;
@@ -88,14 +88,15 @@ export function verifyRunnerCommand(
     return { ok: false, reason: "not_yet_valid" };
   }
   if (command.expiresAt <= context.now) return { ok: false, reason: "expired" };
-  const repository = "repository" in command ? command.repository : undefined;
+  const target = "repository" in command ? command.repository : undefined;
+  const repository = target ? `${target.owner}/${target.repo}` : undefined;
   if (
     repository &&
     !context.allowedRepositories.some(
-      (allowed) => allowed.toLowerCase() === `${repository.owner}/${repository.repo}`.toLowerCase(),
+      (allowed) => allowed.toLowerCase() === repository.toLowerCase(),
     )
   )
-    return { ok: false, reason: "repository_denied" };
+    return { ok: false, reason: "repository_denied", repository };
   try {
     if (!context.claimCommand(command.id, command.expiresAt)) {
       return { ok: false, reason: "replayed" };

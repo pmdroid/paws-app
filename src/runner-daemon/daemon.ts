@@ -232,6 +232,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     unchangedIdentity(identity);
     const trustedKeys = trustedSigningKeys(paired(), pins);
     const rejected: RunnerCommandRejection[] = [];
+    const deniedRepositories = new Set<string>();
     for (const envelope of response.commands) {
       const result = immediate(db, () => {
         const verified = verifyRunnerCommand(envelope, {
@@ -259,8 +260,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         return verified;
       });
       if (!result.ok) rejected.push(result.reason);
+      if (!result.ok && result.repository) deniedRepositories.add(result.repository);
     }
-    return { commands: pendingCommands(), rejected };
+    return { commands: pendingCommands(), rejected, deniedRepositories: [...deniedRepositories] };
   }
   return {
     status,
