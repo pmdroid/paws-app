@@ -1606,4 +1606,87 @@ JOIN work_item i ON i.epic_id=p.epic_id
 WHERE i.state NOT IN ('completed','merged','cancelled');
 `,
   },
+  {
+    id: "064_work_item_without_epic_fk",
+    foreignKeys: false,
+    sql: `
+CREATE TABLE work_item_delegation (
+  id TEXT PRIMARY KEY,
+  epic_id TEXT NOT NULL,
+  linear_issue_id TEXT NOT NULL,
+  linear_identifier TEXT NOT NULL,
+  title TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN (
+    'planning',
+    'queued',
+    'running',
+    'paused',
+    'awaiting_input',
+    'recovering',
+    'verifying',
+    'exhausted',
+    'failed',
+    'awaiting_signoff',
+    'merge_queue',
+    'manual',
+    'completed',
+    'merged',
+    'cancelled'
+  )),
+  branch_name TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  version INTEGER NOT NULL DEFAULT 0,
+  task_key TEXT UNIQUE,
+  created_at INTEGER NOT NULL,
+  checkpoint TEXT CHECK (checkpoint IS NULL OR json_valid(checkpoint)),
+  recovery_attempts INTEGER NOT NULL DEFAULT 0,
+  awake_ms INTEGER NOT NULL DEFAULT 0,
+  last_mono_ms INTEGER,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  max_turns INTEGER NOT NULL DEFAULT 80,
+  max_awake_ms INTEGER NOT NULL DEFAULT 2700000,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_key TEXT,
+  current_run_id TEXT,
+  brief TEXT CHECK (brief IS NULL OR json_valid(brief)),
+  owner_user_id TEXT REFERENCES workspace_user(id),
+  project_approval_id TEXT REFERENCES project_approval(id),
+  delegated_by TEXT
+) STRICT;
+INSERT INTO work_item_delegation (
+  id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  project_approval_id, delegated_by
+)
+SELECT
+  id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version,
+  task_key, created_at, checkpoint, recovery_attempts, awake_ms, last_mono_ms, turn_count,
+  max_turns, max_awake_ms, cancel_requested, session_key, current_run_id, brief, owner_user_id,
+  project_approval_id, delegated_by
+FROM work_item;
+DROP TABLE work_item;
+ALTER TABLE work_item_delegation RENAME TO work_item;
+CREATE INDEX work_item_epic_position ON work_item (epic_id, position);
+CREATE INDEX work_item_project_approval ON work_item(project_approval_id) WHERE project_approval_id IS NOT NULL;
+CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
+CREATE TABLE project_approval_issue_delegation (
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  issue_id TEXT NOT NULL,
+  approval_id TEXT NOT NULL REFERENCES project_approval(id),
+  session_id TEXT UNIQUE,
+  epic_id TEXT,
+  released_at INTEGER,
+  PRIMARY KEY(approval_id, issue_id)
+) STRICT;
+INSERT INTO project_approval_issue_delegation (
+  workspace_id, issue_id, approval_id, session_id, epic_id, released_at
+)
+SELECT workspace_id, issue_id, approval_id, session_id, epic_id, released_at
+FROM project_approval_issue;
+DROP TABLE project_approval_issue;
+ALTER TABLE project_approval_issue_delegation RENAME TO project_approval_issue;
+CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(workspace_id, issue_id) WHERE released_at IS NULL;
+`,
+  },
 ];
