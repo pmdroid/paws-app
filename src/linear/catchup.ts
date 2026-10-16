@@ -45,7 +45,7 @@ const INTAKE_QUERY = `query IntakePoll($team: TeamFilter!, $since: DateTimeOrDur
     first: 50
     after: $activityAfter
     orderBy: updatedAt
-    filter: { updatedAt: { gt: $since } }
+    filter: { updatedAt: { gt: $since }, type: { eq: "prompt" } }
   ) @include(if: $includeActivities) {
     nodes {
       id
@@ -354,6 +354,7 @@ function dedupeActivities(nodes: readonly Record<string, unknown>[]): PolledActi
     if (id === null || updatedAtMs === null || seen.has(id)) continue;
     seen.add(id);
     const content = isRecord(node["content"]) ? node["content"] : null;
+    if (content === null || readString(content, "type") !== "prompt") continue;
     const session = isRecord(node["agentSession"]) ? node["agentSession"] : null;
     const issue = session !== null && isRecord(session["issue"]) ? session["issue"] : null;
     const user = isRecord(node["user"]) ? node["user"] : null;
