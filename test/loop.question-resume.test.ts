@@ -189,7 +189,33 @@ test("startup resumes an answered question and leaves an open one parked", async
   }
 }, 90_000);
 
-async function askOnce(): Promise<{
+test("an answer that arrives before the asking turn ends resumes once after the run ends", async () => {
+  const fixture = await askOnce("parquet");
+  try {
+    const item = listWorkItems(fixture.db)[0]!;
+    expect(fixture.resumeJobsDuringTurn).toEqual([0]);
+    expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
+    const resumes = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]?.payload).toMatchObject({
+      itemId: item.id,
+      reason: "answer",
+      handoff: handoffNote({
+        question: "Include archived rows?",
+        options: ["yes", "no"],
+        answer: "parquet",
+      }),
+    });
+    await drive(fixture, ["verifying", "merge_queue", "merged"]);
+    expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
+  } finally {
+    await fixture.orchestrator.shutdown();
+    fixture.db.close();
+    await fixture.layout.cleanup();
+  }
+}, 90_000);
+
+async function askOnce(answerDuringTurn?: string): Promise<{
   layout: { pawsRoot: string; cleanup: () => Promise<void> };
   db: Database;
   jobs: JobLoop;
@@ -199,6 +225,7 @@ async function askOnce(): Promise<{
   results: string[];
   resumeHeads: string[];
   runnerId: string;
+  resumeJobsDuringTurn: number[];
 }> {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
@@ -302,6 +329,28 @@ async function askOnce(): Promise<{
       env: process.env,
     };
   };
+  const resumeJobsDuringTurn: number[] = [];
+  let answered: Promise<void> = Promise.resolve();
+  if (answerDuringTurn) {
+    const ask = tracker.askQuestion.bind(tracker);
+    tracker.askQuestion = async (question, options) => {
+      await ask(question, options);
+      setImmediate(() => {
+        answered = orchestrator.onLinearEvent(prompted(answerDuringTurn)).then(() => {
+          const run = db
+            .query<{ status: string }, []>(
+              "SELECT status FROM run ORDER BY created_at DESC, id DESC LIMIT 1",
+            )
+            .get();
+          resumeJobsDuringTurn.push(
+            run?.status === "ended"
+              ? -1
+              : listJobs(db).filter((job) => job.queue === JOB_KIND.resume).length,
+          );
+        });
+      });
+    };
+  }
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -326,6 +375,7 @@ async function askOnce(): Promise<{
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
   await running;
+  await answered;
   return {
     layout,
     db,
@@ -336,6 +386,7 @@ async function askOnce(): Promise<{
     results,
     resumeHeads,
     runnerId: await runnerId,
+    resumeJobsDuringTurn,
   };
 }
 

@@ -10,6 +10,7 @@ import {
   claimNextJob,
   completeJob,
   enqueueJob,
+  enqueueJobOnce,
   enterMergeQueue,
   getJob,
   getRun,
@@ -17,6 +18,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  markRun,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -202,6 +204,24 @@ describe("restart recovery", () => {
         },
       }),
     ]);
+  });
+
+  test("a restart leaves an answered item to its pending answer resume", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    markRun(db, run.id, "ended", clock.now());
+    applyWorkItemEvent(db, item.id, "answer_received");
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "resume:answer:q-1",
+      payload: { itemId: item.id, freshSession: true, reason: "answer", handoff: "Q and A" },
+      now: clock.now(),
+    });
+    expect(recoverOnStartup(db, clock.now() + 1)).toEqual([]);
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(listJobs(db).map((job) => job.jobKey)).toEqual(["resume:answer:q-1"]);
   });
 
   test("illegal transitions do not change the row", () => {
