@@ -60,7 +60,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     expect(readyItems(db, target).heldItemIds).toEqual([itemId]);
     await reconciler.reconcile(target);
     db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [itemId]);
-    expect(db.query<{ state: string }, []>("SELECT state FROM epic").get()?.state).toBe("running");
+    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
     expect(() => readyItems(db, target)).toThrow(/Dependency workspace or task ownership changed/);
     await expect(reconciler.reconcile(target)).rejects.toThrow(
       /Item reconciliation authority changed/,

@@ -2,7 +2,7 @@ export { intakeDelegatedIssue, cycleMessage, queueMessage } from "./intake";
 export type { IntakeResult } from "./intake";
 export { orderByBlocks } from "./order";
 export type { OrderNode, OrderResult } from "./order";
-export { listWorkItems, readEpicByLinearId } from "./store";
+export { listWorkItems } from "./store";
 export type { StoredEpic, StoredWorkItem } from "./store";
 export {
   canAdvanceItem,
