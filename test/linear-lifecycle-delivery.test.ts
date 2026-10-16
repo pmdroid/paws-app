@@ -382,9 +382,9 @@ test("a merged item settles its epic without an epic summary", async () => {
   try {
     await orchestrator.onLinearEvent({ ...created(), issueId: "lin-ENG-1" });
     expect(
-      db.query<{ state: string }, [string]>("SELECT state FROM epic WHERE id = ?").get(item.epicId)
+      db.query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?").get(item.id)
         ?.state,
-    ).toBe("done");
+    ).toBe("merged");
     expect(listOutbox(db).some((row) => row.idempotencyKey.startsWith("epic-done:"))).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
     expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);

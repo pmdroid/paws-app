@@ -42,8 +42,22 @@ export async function probeExecutionLifecycle(
       tracker: createFakeTracker(),
     });
   let orchestrator = create();
-  const state = (id: string) =>
-    db.query<{ state: string }, [string]>("SELECT state FROM epic WHERE id=?").get(id)?.state;
+  const state = (id: string) => {
+    const items = db
+      .query<{ state: string }, [string]>(
+        "SELECT state FROM work_item WHERE epic_id=? ORDER BY position, id",
+      )
+      .all(id);
+    if (
+      items.length > 0 &&
+      items.every(
+        (item) =>
+          item.state === "merged" || item.state === "completed" || item.state === "cancelled",
+      )
+    )
+      return items.every((item) => item.state === "cancelled") ? "cancelled" : "done";
+    return "running";
+  };
   const seed = (id: string, states: string[], epicState = "running") => {
     db.run(
       "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,?,?)",

@@ -265,7 +265,8 @@ test("a parent discussion classifies before fanout and completes without Git, is
     expect(getWorkItem(f.db, item.id)?.checkpoint?.wipCommit).toBeUndefined();
     await f.orchestrator.onLinearEvent(event());
     expect(f.launches).toEqual(["classify", "answer"]);
-    expect(f.db.query<{ state: string }, []>("SELECT state FROM epic").get()?.state).toBe("done");
+    expect(getWorkItem(f.db, item.id)?.state).toBe("completed");
+    expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
   } finally {
     f.db.close();
   }
