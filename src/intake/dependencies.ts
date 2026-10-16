@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type WorkItemState, type TaskMode } from "../core";
+import { saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 import {
@@ -139,12 +140,20 @@ function readReadyItems(db: Database, target: Target, includeItemId?: string): D
       heldItemIds: candidates.map((item) => item.id),
       cycleHeldItemIds: [],
     };
-  const edges = db
-    .query<DependencyEdge, [string]>(
-      `SELECT blocker_linear_issue_id AS blockerLinearIssueId,
-       blocked_linear_issue_id AS blockedLinearIssueId FROM work_item_block WHERE epic_id=?`,
-    )
-    .all(target.epicId);
+  const issueIds = current.items.map((item) => item.linearIssueId);
+  const blocks =
+    issueIds.length === 0
+      ? []
+      : db
+          .query<DependencyEdge, string[]>(
+            `SELECT blocker_linear_issue_id AS blockerLinearIssueId,
+             blocked_linear_issue_id AS blockedLinearIssueId FROM task_block
+             WHERE blocked_linear_issue_id IN (${issueIds.map(() => "?").join(",")})`,
+          )
+          .all(...issueIds);
+  const owned = new Set(issueIds);
+  const edges = blocks.filter((edge) => owned.has(edge.blockerLinearIssueId));
+  const external = blocks.filter((edge) => !owned.has(edge.blockerLinearIssueId));
   const ordered = orderByBlocks(current.items, edges);
   const cycleHeld = new Set(ordered.ok ? [] : ordered.remaining.map((item) => item.linearIssueId));
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
@@ -153,12 +162,6 @@ function readReadyItems(db: Database, target: Target, includeItemId?: string): D
     readExternalBlockerPolicies(db, target).map((policy) => [policy.blockerLinearIssueId, policy]),
   );
   const byId = new Map(current.items.map((item) => [item.linearIssueId, item]));
-  const external = db
-    .query<DependencyEdge, [string]>(
-      `SELECT blocker_linear_issue_id AS blockerLinearIssueId,
-       blocked_linear_issue_id AS blockedLinearIssueId FROM external_dep WHERE epic_id=?`,
-    )
-    .all(target.epicId);
   const satisfied = (id: string): boolean => {
     if (states.get(id) === "canceled") return false;
     const item = byId.get(id);
@@ -275,6 +278,7 @@ export async function syncEpicDependencies(
           [epicId, edge.blockerLinearIssueId, edge.blockedLinearIssueId],
         );
       }
+      saveTaskBlocks(db, [...ids], [...edges.values()]);
       db.run(
         `INSERT INTO epic_dependency_snapshot(epic_id,workspace_id,generation,scope,linear_states,external_evidence)
        VALUES(?,?,?,?,?,?) ON CONFLICT(epic_id) DO UPDATE SET

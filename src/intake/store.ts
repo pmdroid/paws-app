@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { EpicState, WorkBrief, WorkItemState } from "../core";
+import { saveTaskBlocks } from "../db";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
 import { ulid } from "./ulid";
@@ -137,6 +138,11 @@ export function insertRunningQueue(
         [epicId, edge.blockerLinearIssueId, edge.blockedLinearIssueId],
       );
     }
+    saveTaskBlocks(
+      db,
+      items.map((item) => item.linearIssueId),
+      input.edges.filter((edge) => inQueue.has(edge.blockedLinearIssueId)),
+    );
   });
   write.immediate();
   return {

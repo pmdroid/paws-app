@@ -11,6 +11,7 @@ import {
   getLinearSessionGeneration,
   getTaskLinearActor,
   getWorkItem,
+  saveTaskClassification,
   listPendingLinearTurns,
   migrate,
   migrations,
@@ -115,6 +116,7 @@ test("new tasks keep source IDs and get separate worktree identities while intak
   const db = tempDb();
   try {
     const initial = await task(db);
+    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [initial.items[0]!.id]);
     const later = await task(db, "turn:followup");
     const replay = await task(db, "turn:followup");
     expect(replay.epic.id).toBe(later.epic.id);
@@ -134,6 +136,7 @@ test("session ownership and active child routing remain separate from shared iss
   const db = tempDb();
   try {
     const first = await task(db);
+    db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [first.items[0]!.id]);
     const second = await task(db, "session:second");
     ensureLinearSession(db, {
       sessionId: "first",
@@ -199,17 +202,16 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
   }
 });
 
-test("created sessions sharing an issue keep separate tasks and preserve earlier routing", async () => {
+test("a second session for an active issue is rejected and a prompt still hydrates after that item is cancelled", async () => {
   const db = tempDb();
+  const orchestrator = attachOrchestrator({
+    db,
+    tracker: createFakeTracker([snapshot]),
+    jobs: new JobLoop(db, systemClock),
+    outbox: new OutboxDispatcher(db, systemClock),
+    pawsRoot: "/tmp/unused-identity-fixture",
+  });
   try {
-    const tracker = createFakeTracker([snapshot]);
-    const orchestrator = attachOrchestrator({
-      db,
-      tracker,
-      jobs: new JobLoop(db, systemClock),
-      outbox: new OutboxDispatcher(db, systemClock),
-      pawsRoot: "/tmp/unused-identity-fixture",
-    });
     const created = (sessionId: string) => ({
       dedupeKey: `session:${sessionId}:created`,
       deliveryId: null,
@@ -227,23 +229,16 @@ test("created sessions sharing an issue keep separate tasks and preserve earlier
         agentSession: { creatorId: "human" },
       }),
     });
-    await task(db);
-    await Promise.all([
-      orchestrator.onLinearEvent(created("first")),
-      orchestrator.onLinearEvent(created("concurrent")),
-    ]);
-    const concurrent = getLinearSession(db, "concurrent")!;
+    await orchestrator.onLinearEvent(created("first"));
     const first = getLinearSession(db, "first")!;
-    await orchestrator.onLinearEvent(created("second"));
-    await orchestrator.onLinearEvent(created("second"));
-    const second = getLinearSession(db, "second")!;
-    expect(first.epicId).not.toBe(second.epicId);
-    expect(first.epicId).not.toBe(concurrent.epicId);
-    expect(concurrent.epicId).not.toBe(second.epicId);
-    expect(getWorkItem(db, first.activeItemId!)?.sessionKey).toBe("first");
-    expect(getWorkItem(db, second.activeItemId!)?.sessionKey).toBe("second");
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic").get()?.n).toBe(4);
-    expect(getTaskLinearActor(db, second.activeItemId!)).toBe("human");
+    expect(first.activeItemId).not.toBeNull();
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic").get()?.n).toBe(1);
+    await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
+      "ENG-1 is already being worked on in another session.",
+    );
+    expect(getLinearSession(db, "second")?.epicId ?? null).toBeNull();
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
+    db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.activeItemId]);
     await orchestrator.onLinearEvent({
       ...created("before-created"),
       dedupeKey: "activity:early",
@@ -255,7 +250,54 @@ test("created sessions sharing an issue keep separate tasks and preserve earlier
     await orchestrator.onLinearEvent(created("before-created"));
     expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
     expect(listPendingLinearTurns(db, "before-created")).toHaveLength(1);
+    expect(getTaskLinearActor(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
+      "human",
+    );
   } finally {
+    await orchestrator.shutdown();
+    db.close();
+  }
+});
+
+test("a redirect cancels the previous item before the replacement is inserted", async () => {
+  const db = tempDb();
+  const orchestrator = attachOrchestrator({
+    db,
+    tracker: createFakeTracker([snapshot]),
+    jobs: new JobLoop(db, systemClock),
+    outbox: new OutboxDispatcher(db, systemClock),
+    pawsRoot: "/tmp/unused-redirect-fixture",
+  });
+  try {
+    ensureLinearSession(db, {
+      sessionId: "session",
+      issueId: "issue",
+      organizationId: "org",
+      creatorId: "human",
+    });
+    const initial = await task(db, "original");
+    const previousId = initial.items[0]!.id;
+    saveTaskClassification(db, "original", {
+      mode: "code",
+      redirect: { taskKey: "resolved:original", itemId: previousId },
+    });
+    const replaced = await orchestrator.intakeLinearTask("issue", "session", "original");
+    expect(replaced.ok).toBe(true);
+    if (!replaced.ok) return;
+    expect(getWorkItem(db, previousId)?.state).toBe("cancelled");
+    expect(replaced.items).toHaveLength(1);
+    expect(replaced.items[0]?.id).not.toBe(previousId);
+    expect(replaced.items[0]?.state).toBe("queued");
+    expect(replaced.items[0]?.linearIssueId).toBe("issue");
+    expect(
+      db
+        .query<{ n: number }, []>(
+          "SELECT COUNT(*) AS n FROM work_item WHERE linear_issue_id = 'issue' AND state NOT IN ('completed', 'merged', 'cancelled')",
+        )
+        .get()?.n,
+    ).toBe(1);
+  } finally {
+    await orchestrator.shutdown();
     db.close();
   }
 });

@@ -688,6 +688,26 @@ export class Orchestrator {
           })
         : null;
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    const retireRedirectedItem = () => {
+      if (!redirect) return;
+      const previous = getWorkItem(this.db, redirect.itemId);
+      if (!previous || previous.state === "cancelled") return;
+      applyWorkItemEvent(this.db, previous.id, "cancel");
+      if (previous.currentRunId) markRun(this.db, previous.currentRunId, "ended", this.now());
+      const epic = this.epicRow(previous.epicId);
+      if (epic) {
+        const retired = transitionEpic(epic.state, "cancel");
+        if (retired.ok)
+          this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ?", [
+            retired.to,
+            previous.epicId,
+          ]);
+      }
+      this.db.run(
+        "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
+        [this.now(), previous.id],
+      );
+    };
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
@@ -696,29 +716,10 @@ export class Orchestrator {
         (!sessionId ||
           authorizedSnapshot === null ||
           this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false),
+      beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
-          if (redirect) {
-            const previous = getWorkItem(this.db, redirect.itemId);
-            if (previous && previous.state !== "cancelled") {
-              applyWorkItemEvent(this.db, previous.id, "cancel");
-              if (previous.currentRunId)
-                markRun(this.db, previous.currentRunId, "ended", this.now());
-              const epic = this.epicRow(previous.epicId);
-              if (epic) {
-                const retired = transitionEpic(epic.state, "cancel");
-                if (retired.ok)
-                  this.db.run("UPDATE epic SET state = ?, version = version + 1 WHERE id = ?", [
-                    retired.to,
-                    previous.epicId,
-                  ]);
-              }
-              this.db.run(
-                "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
-                [this.now(), previous.id],
-              );
-            }
-          }
+          retireRedirectedItem();
           if (accepted.ok && options.conversation)
             for (const child of accepted.items) {
               const stored = getConversation(this.db, child.id);
