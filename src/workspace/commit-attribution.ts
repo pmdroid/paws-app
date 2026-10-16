@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   attributionItemScope,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItem,
   githubAttribution,
   syncWorkspaceMember,
@@ -64,7 +64,7 @@ export function createCommitPolicyForItem<Bot>(options: {
     const leadId = context.projectId === null ? null : context.leadId;
     if (context.projectId !== null && leadId === null)
       throw new MissingCommitAttributionError("projectLead");
-    const actorId = getTaskLinearActor(options.db, item.id);
+    const actorId = delegatedLinearUserId(options.db, item.id);
     if (!actorId) throw new MissingCommitAttributionError("taskSteerer");
     const members = new Map<string, string>();
     for (const linearId of new Set(leadId === null ? [actorId] : [leadId, actorId])) {
@@ -99,7 +99,7 @@ export function createCommitPolicyForItem<Bot>(options: {
       JSON.stringify(attributionItemScope(options.db, item.id)) !== JSON.stringify(scope) ||
       latest.sessionKey !== canonical.sessionKey ||
       latest.cancelRequested ||
-      getTaskLinearActor(options.db, item.id) !== actorId
+      delegatedLinearUserId(options.db, item.id) !== actorId
     )
       throw new Error("Task attribution changed during verification.");
     const identities = new Map<string, VerifiedGitHubAttribution>();

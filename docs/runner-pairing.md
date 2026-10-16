@@ -1,6 +1,6 @@
 # Pair a remote Linux runner
 
-Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-agent` user with that user’s access to the host. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
+Pairing connects a Linux host to your Paws workspace. Claude and Codex run as the non-root `paws-runner` user. Install the languages, browsers and other tools your repositories need on the VM. Each task receives its own workspace. Run the host commands over SSH on the VM. Use your browser to approve the host in Paws.
 
 ## Prepare Paws and the host
 
@@ -65,14 +65,14 @@ For a private CA, also pass `--cacert /path/to/server-ca.pem` to curl. The respo
 
 ## Sign in to the agents
 
-Run the login command for each provider you intend to use on this host. The account and home directory must match the agent service:
+Run the login command for each provider you intend to use on this host. The daemon runs the agent as this same account, with provider state under `/var/lib/paws-agent`:
 
 ```sh
-sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
-sudo /usr/sbin/runuser --user paws-agent -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
+sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/claude auth login
+sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-agent HOME=/var/lib/paws-agent PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C /opt/paws-runner/bin/codex login --device-auth
 ```
 
-Follow the provider's browser instructions. Provider credentials stay in the agent account's home on the VM.
+Follow the provider's browser instructions. Provider credentials stay in `/var/lib/paws-agent` on the VM.
 
 ## Request and approve pairing
 
@@ -86,13 +86,13 @@ sudo /usr/sbin/runuser --user paws-runner -- \
   --config /etc/paws-runner/config.json --name my-runner
 ```
 
-Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, `verifierFingerprint` and `expiresAt`. The request expires after ten minutes.
+Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, and `expiresAt`. The request expires after ten minutes.
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/status/#/runners`.
 2. Sign in as an owner or administrator. Approval requires a sign-in within the last fifteen minutes.
 3. Under **Pair a host**, enter the VM's `code` and select **Inspect host**.
-4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal, and the verification key fingerprint with `verifierFingerprint`.
-5. When both match, select **Approve runner**.
+4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal.
+5. When they match, select **Approve runner**.
 
 The VM command prints `"paired":true` with its runner and workspace identifiers, then exits successfully. If the request expires, run the same pairing command again and use its new code. Restarting an unexpired pending request retains its existing identity and code.
 
@@ -101,7 +101,7 @@ The VM command prints `"paired":true` with its runner and workspace identifiers,
 On the VM:
 
 ```sh
-sudo systemctl enable --now paws-runner-broker.socket paws-runner.service
+sudo systemctl enable --now paws-runner.service
 sudo systemctl status paws-runner.service --no-pager
 ```
 

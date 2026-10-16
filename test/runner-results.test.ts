@@ -51,4 +51,7 @@ test("runner result bounds preserve health schema derivation and escaped metadat
   delete metadata.reviewText;
   assert(health.safeParse({ ...metadata, models: [{ id: "codex", name: "Codex" }] }).success);
   assert(RunnerResultSchema.shape.reviewText.safeParse(result.reviewText).success);
+  const report = JSON.stringify({ pending: [], blocked: null });
+  assert(RunnerResultSchema.safeParse({ ...result, closeoutReport: report }).success);
+  assert(!RunnerResultSchema.safeParse({ ...result, closeoutReport: "x".repeat(65_537) }).success);
 });

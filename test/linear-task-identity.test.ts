@@ -9,8 +9,9 @@ import {
   ensureLinearSession,
   getLinearSession,
   getLinearSessionGeneration,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItem,
+  putWorkspaceUser,
   saveTaskClassification,
   listPendingLinearTurns,
   migrate,
@@ -150,8 +151,8 @@ test("session ownership and active child routing remain separate from shared iss
     ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
     bindLinearSessionTask(db, "second", second.epic.id);
     activateLinearItem(db, "second", second.items[0]!.id);
-    expect(getTaskLinearActor(db, first.items[0]!.id)).toBe("human");
-    expect(getTaskLinearActor(db, second.items[0]!.id)).toBeNull();
+    expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("human");
+    expect(delegatedLinearUserId(db, second.items[0]!.id)).toBeNull();
     expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
       "ownership changed",
     );
@@ -232,7 +233,9 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await orchestrator.onLinearEvent(created("first"));
     const first = getLinearSession(db, "first")!;
     expect(first.activeItemId).not.toBeNull();
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic").get()?.n).toBe(1);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
       "ENG-1 is already being worked on in another session.",
     );
@@ -250,7 +253,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await orchestrator.onLinearEvent(created("before-created"));
     expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
     expect(listPendingLinearTurns(db, "before-created")).toHaveLength(1);
-    expect(getTaskLinearActor(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
+    expect(delegatedLinearUserId(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
       "human",
     );
   } finally {
@@ -296,6 +299,116 @@ test("a redirect cancels the previous item before the replacement is inserted", 
         )
         .get()?.n,
     ).toBe(1);
+  } finally {
+    await orchestrator.shutdown();
+    db.close();
+  }
+});
+
+test("intake sets the session owner's workspace user on each new solo item and leaves an unknown actor unset", async () => {
+  const db = tempDb();
+  putWorkspaceUser(db, {
+    id: "delegate-user",
+    linearUserId: "delegate",
+    name: "Delegate",
+    email: "delegate@example.test",
+  });
+  putWorkspaceUser(db, {
+    id: "human-user",
+    linearUserId: "human",
+    name: "Human",
+    email: "human@example.test",
+  });
+  const parent = {
+    linearIssueId: "parent",
+    identifier: "P",
+    title: "Parent",
+    description: null,
+    subIssues: [
+      { linearIssueId: "child-a", identifier: "A", title: "A" },
+      { linearIssueId: "child-b", identifier: "B", title: "B" },
+    ],
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    tracker: createFakeTracker([
+      parent,
+      {
+        linearIssueId: "ghost-issue",
+        identifier: "G",
+        title: "Ghost",
+        description: null,
+        subIssues: [],
+      },
+      {
+        linearIssueId: "human-issue",
+        identifier: "H",
+        title: "Human",
+        description: null,
+        subIssues: [],
+      },
+    ]),
+    jobs: new JobLoop(db, systemClock),
+    outbox: new OutboxDispatcher(db, systemClock),
+    pawsRoot: "/tmp/unused-owner-fixture",
+    linearIntakeActor: (sessionId) => (sessionId === "delegated" ? "delegate" : undefined),
+  });
+  try {
+    ensureLinearSession(db, {
+      sessionId: "delegated",
+      issueId: "parent",
+      organizationId: "org",
+      creatorId: "human",
+    });
+    ensureLinearSession(db, {
+      sessionId: "ghost-session",
+      issueId: "ghost-issue",
+      organizationId: "org",
+      creatorId: "ghost",
+    });
+    ensureLinearSession(db, {
+      sessionId: "human-session",
+      issueId: "human-issue",
+      organizationId: "org",
+      creatorId: "human",
+    });
+    const delegated = await orchestrator.intakeLinearTask("parent", "delegated", "delegated-task");
+    expect(delegated.ok).toBe(true);
+    if (!delegated.ok) return;
+    expect(delegated.items.map((item) => item.linearIssueId).sort()).toEqual([
+      "child-a",
+      "child-b",
+    ]);
+    expect(
+      db
+        .query<{ linear_issue_id: string; owner_user_id: string | null }, []>(
+          "SELECT linear_issue_id, owner_user_id FROM work_item ORDER BY linear_issue_id",
+        )
+        .all(),
+    ).toEqual([
+      { linear_issue_id: "child-a", owner_user_id: "delegate-user" },
+      { linear_issue_id: "child-b", owner_user_id: "delegate-user" },
+    ]);
+    const ghost = await orchestrator.intakeLinearTask("ghost-issue", "ghost-session", "ghost-task");
+    expect(ghost.ok).toBe(true);
+    if (!ghost.ok) return;
+    expect(
+      db
+        .query<{ owner_user_id: string | null }, [string]>(
+          "SELECT owner_user_id FROM work_item WHERE id=?",
+        )
+        .get(ghost.items[0]!.id)?.owner_user_id,
+    ).toBeNull();
+    const human = await orchestrator.intakeLinearTask("human-issue", "human-session", "human-task");
+    expect(human.ok).toBe(true);
+    if (!human.ok) return;
+    expect(
+      db
+        .query<{ owner_user_id: string | null }, [string]>(
+          "SELECT owner_user_id FROM work_item WHERE id=?",
+        )
+        .get(human.items[0]!.id)?.owner_user_id,
+    ).toBe("human-user");
   } finally {
     await orchestrator.shutdown();
     db.close();

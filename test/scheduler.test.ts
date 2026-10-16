@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeScheduler } from "./local/scheduler";
 
-test("Scheduler dispatch is durable, capacity bound and conflict safe across processes", async () => {
+test("Scheduler dispatch is durable and admits each ready item once across processes", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-scheduler-"));
   const observations: string[] = [];
   try {

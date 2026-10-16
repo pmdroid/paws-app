@@ -18,7 +18,7 @@ export const ExternalBlockerPolicySchema = z.discriminatedUnion("outcome", [
   }),
 ]);
 export type ExternalBlockerPolicy = z.infer<typeof ExternalBlockerPolicySchema>;
-type Target = { workspaceId: string; epicId: string };
+type Target = { workspaceId: string; itemId: string };
 type SavedPolicy = { policy: string; userId: string; revision: number };
 export type MergeEvidence = {
   merged: boolean;
@@ -35,10 +35,10 @@ export type InspectBlockerMerge = (
 function savedPolicies(db: Database, target: Target): SavedPolicy[] {
   return db
     .query<SavedPolicy, [string, string]>(
-      `SELECT policy,user_id AS userId,revision FROM external_blocker_policy
-     WHERE workspace_id=? AND epic_id=? ORDER BY blocker_issue_id`,
+      `SELECT policy,user_id AS userId,revision FROM item_blocker_policy
+     WHERE workspace_id=? AND item_id=? ORDER BY blocker_issue_id`,
     )
-    .all(target.workspaceId, target.epicId);
+    .all(target.workspaceId, target.itemId);
 }
 
 export function readExternalBlockerPolicies(db: Database, target: Target): ExternalBlockerPolicy[] {
@@ -59,14 +59,14 @@ function permitted(
     JOIN workspace w ON w.linear_organization_id=s.organization_id
     JOIN workspace_member m ON m.workspace_id=w.id AND m.user_id=?
     JOIN workspace_user_team t ON t.workspace_id=w.id AND t.user_id=m.user_id AND t.team_id=s.team_id
-    WHERE w.id=? AND s.current_epic_id=? AND s.stopped_at IS NULL
+    WHERE w.id=? AND EXISTS(SELECT 1 FROM work_item i WHERE i.id=? AND i.session_key=s.session_id) AND s.stopped_at IS NULL
     AND m.active=1 AND m.role IN ('owner','admin','member')
     AND (? IS NULL OR EXISTS(SELECT 1 FROM workspace_repository r
       WHERE r.workspace_id=w.id AND r.team_id=s.team_id AND lower(r.repository)=lower(?)))`)
       .get(
         userId,
         target.workspaceId,
-        target.epicId,
+        target.itemId,
         policy.outcome === "merge" ? policy.repository : null,
         policy.outcome === "merge" ? policy.repository : null,
       ) !== null
@@ -98,13 +98,13 @@ export function saveExternalBlockerPolicies(
       if (!permitted(db, input, input.userId, policy))
         throw new Error("The blocker repository is not authorized for this project.");
       db.run(
-        `INSERT INTO external_blocker_policy(workspace_id,epic_id,blocker_issue_id,policy,user_id,revision)
-        VALUES(?,?,?,?,?,1) ON CONFLICT(epic_id,blocker_issue_id) DO UPDATE SET
-        policy=excluded.policy,user_id=excluded.user_id,revision=external_blocker_policy.revision+1
-        WHERE external_blocker_policy.workspace_id=excluded.workspace_id`,
+        `INSERT INTO item_blocker_policy(workspace_id,item_id,blocker_issue_id,policy,user_id,revision)
+        VALUES(?,?,?,?,?,1) ON CONFLICT(item_id,blocker_issue_id) DO UPDATE SET
+        policy=excluded.policy,user_id=excluded.user_id,revision=item_blocker_policy.revision+1
+        WHERE item_blocker_policy.workspace_id=excluded.workspace_id`,
         [
           input.workspaceId,
-          input.epicId,
+          input.itemId,
           policy.blockerLinearIssueId,
           JSON.stringify(policy),
           input.userId,
@@ -115,14 +115,14 @@ export function saveExternalBlockerPolicies(
       if (!policies.some((policy) => policy.blockerLinearIssueId === row.blockerLinearIssueId))
         throw new Error("An approved blocker policy must be replaced explicitly.");
     }
-    db.run("DELETE FROM epic_dependency_snapshot WHERE epic_id=?", [input.epicId]);
+    db.run("DELETE FROM item_dependency_snapshot WHERE item_id=?", [input.itemId]);
     db.run(
       `INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at)
       VALUES(?,?,'dependency.policy.approved',?,?)`,
       [
         input.workspaceId,
         input.userId,
-        JSON.stringify({ epicId: input.epicId, policies }),
+        JSON.stringify({ itemId: input.itemId, policies }),
         input.now ?? Date.now(),
       ],
     );
@@ -140,17 +140,18 @@ export function managedBlockerSatisfied(
       [string, string, string]
     >(
       `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha
-     FROM work_item i JOIN epic e ON e.id=i.epic_id
-     JOIN linear_session_task st ON st.epic_id=e.id JOIN linear_session s ON s.session_id=st.session_id
+     FROM work_item i
+     JOIN linear_session s ON s.session_id=i.session_key
      JOIN workspace w ON w.linear_organization_id=s.organization_id
      LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
-     WHERE w.id=? AND i.linear_issue_id=? AND i.epic_id<>?
-     AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)`,
+     WHERE w.id=? AND i.linear_issue_id=? AND i.delegation_id<>(SELECT delegation_id FROM work_item WHERE id=?)
+     AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
+     ORDER BY i.created_at, i.id`,
     )
-    .all(target.workspaceId, issue, target.epicId);
+    .all(target.workspaceId, issue, target.itemId);
   if (!items.length) return null;
-  if (items.length !== 1) return false;
-  const item = items[0]!;
+  const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
+  const item = (active.length > 0 ? active : items).at(-1)!;
   return (
     !item.cancelRequested &&
     ((item.state === "merged" && !!item.mergeSha) ||
@@ -167,14 +168,22 @@ export type BlockerEvidence = {
 
 export function readExternalBlockerEvidence(
   db: Database,
-  target: Target,
+  target: { workspaceId: string; epicId: string },
 ): Record<string, BlockerEvidence> {
-  const row = db
+  const rows = db
     .query<{ evidence: string }, [string, string]>(
-      "SELECT external_evidence AS evidence FROM epic_dependency_snapshot WHERE workspace_id=? AND epic_id=?",
+      `SELECT s.external_evidence AS evidence FROM item_dependency_snapshot s
+       JOIN work_item i ON i.id=s.item_id
+       WHERE s.workspace_id=? AND i.delegation_id=? ORDER BY s.generation,i.position,i.id`,
     )
-    .get(target.workspaceId, target.epicId);
-  return row ? JSON.parse(row.evidence) : {};
+    .all(target.workspaceId, target.epicId);
+  const evidence: Record<string, BlockerEvidence> = {};
+  for (const row of rows)
+    for (const [id, entry] of Object.entries(
+      JSON.parse(row.evidence) as Record<string, BlockerEvidence>,
+    ))
+      if (!evidence[id] || entry.checkedAt >= evidence[id].checkedAt) evidence[id] = entry;
+  return evidence;
 }
 
 export async function inspectExternalBlockers(

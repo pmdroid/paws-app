@@ -9,14 +9,7 @@ const base = process.env.PAWS_BROKER_VM_BASE;
 const expectedDigest = process.env.PAWS_BROKER_VM_SHA512;
 if (!base || !expectedDigest || !/^[a-f0-9]{128}$/.test(expectedDigest))
   throw new Error("Set PAWS_BROKER_VM_BASE and its trusted PAWS_BROKER_VM_SHA512");
-const files = [
-  "runner-broker.py",
-  "paws-agent@.service",
-  "paws-runner-broker.service",
-  "paws-runner-broker.socket",
-  "paws-runner.sysusers",
-  "paws-runner.tmpfiles",
-];
+const files = ["paws-runner.sysusers", "paws-runner.tmpfiles"];
 const digest = (path: string, algorithm = "sha256") =>
   createHash(algorithm).update(readFileSync(path)).digest("hex");
 if (digest(base, "sha512") !== expectedDigest) throw new Error("VM base digest mismatch");

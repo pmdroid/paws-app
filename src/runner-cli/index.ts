@@ -6,7 +6,6 @@ import { z } from "zod";
 import { openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
-import { installedVerifierPublicKey } from "./verifier";
 import { runPairedDaemon } from "./daemon";
 
 const configuration = z.strictObject({
@@ -39,10 +38,10 @@ function accounts() {
   if (process.platform !== "linux") throw new Error("Runner commands require Linux");
   const runnerUid = account("user", "paws-runner");
   const agentUid = account("user", "paws-agent");
-  if (runnerUid === agentUid) throw new Error("Runner identities must differ");
+  if (runnerUid === 0 || agentUid === 0) throw new Error("Runner identities must be non-root");
   return {
     runnerUid,
-    agentUid,
+    agentUid: runnerUid,
     agentGid: account("group", "paws-agent"),
     resultsGid: account("group", "paws-results"),
   };
@@ -132,30 +131,13 @@ export async function runRunnerCli(
     )
       throw new Error("Invalid pairing command");
     if (process.getuid?.() !== ids.runnerUid) throw new Error("Pairing identity is invalid");
-    const verifierPublicKeyPem = installedVerifierPublicKey();
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
-      verifierPublicKeyPem,
     });
     try {
       if (daemonCommand) {
-        const checkUid = account("user", "paws-check");
-        if ([ids.runnerUid, ids.agentUid].includes(checkUid))
-          throw new Error("Runner check identity must differ");
-        await runPairedDaemon(
-          daemon,
-          {
-            ...ids,
-            runnerGid: account("group", "paws-runner"),
-            inputGid: account("group", "paws-check-input"),
-            checkUid,
-            checkGid: account("group", "paws-check"),
-          },
-          verifierPublicKeyPem,
-          abort.signal,
-          () => error("Runner operation failed."),
-        );
+        await runPairedDaemon(daemon, ids, abort.signal, () => error("Runner operation failed."));
         abort.signal.throwIfAborted();
         return 0;
       }
@@ -172,7 +154,6 @@ export async function runRunnerCli(
               paired: true,
               runnerId: status.runnerId,
               workspaceId: status.workspaceId,
-              verifierFingerprint: status.verifierFingerprint,
             }),
           );
           return 0;

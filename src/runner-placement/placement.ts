@@ -6,7 +6,7 @@ import {
   getWorkItemRepository,
   immediate,
   runnerHasCapacity,
-  linearSessionForEpic,
+  delegatedLinearUserId,
   workspaceMember,
 } from "../db";
 import type { LinearIssueLifecycle, TrackerAdapter } from "../linear";
@@ -97,8 +97,7 @@ export function createRunnerPlacement(options: {
     const item = input.itemId ? getWorkItem(db, input.itemId) : null;
     if (input.itemId && (!item || item.cancelRequested))
       throw new Error("Runner task is unavailable");
-    const sessionId =
-      input.sessionId ?? item?.sessionKey ?? (item ? linearSessionForEpic(db, item.epicId) : null);
+    const sessionId = input.sessionId ?? item?.sessionKey ?? null;
     const session = sessionId ? getLinearSession(db, sessionId) : null;
     if (
       !session ||
@@ -120,14 +119,17 @@ export function createRunnerPlacement(options: {
     const repository = item ? getWorkItemRepository(db, item.id) : null;
     const issueId = item?.linearIssueId ?? session.issueId;
     if (!issueId) throw new Error("Runner issue authority is unavailable");
-    const ownership = item
-      ? db
-          .query<{ actorId: string | null }, [string, string]>(
-            "SELECT owner_actor_id AS actorId FROM linear_session_task WHERE session_id=? AND epic_id=?",
+    const placement = item
+      ? (db
+          .query<{ ownerUserId: string | null; projectApprovalId: string | null }, [string]>(
+            "SELECT owner_user_id AS ownerUserId,project_approval_id AS projectApprovalId FROM work_item WHERE id=?",
           )
-          .get(session.sessionId, item.epicId)?.actorId
+          .get(item.id) ?? { ownerUserId: null, projectApprovalId: null })
+      : null;
+    const ownership = item
+      ? delegatedLinearUserId(db, item.id)
       : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
-    return { item, session, workspace, repository, issueId, ownership };
+    return { item, session, workspace, repository, issueId, ownership, placement };
   }
   function authority(current: ReturnType<typeof scope>) {
     const item = current.item;
@@ -141,6 +143,8 @@ export function createRunnerPlacement(options: {
             currentRunId: item.currentRunId,
             version: item.version,
             cancelRequested: item.cancelRequested,
+            ownerUserId: current.placement?.ownerUserId ?? null,
+            projectApprovalId: current.placement?.projectApprovalId ?? null,
           }
         : null,
       session: current.session,
@@ -156,10 +160,7 @@ export function createRunnerPlacement(options: {
   return {
     async candidates(input) {
       input.signal?.throwIfAborted();
-      if (input.purpose !== "check" && !input.profile)
-        throw new Error("Runner agent profile is required");
-      if (input.purpose === "check" && input.profile)
-        throw new Error("Trusted checks do not use an agent profile");
+      if (!input.profile) throw new Error("Runner agent profile is required");
       const before = scope(input);
       const binding = authority(before);
       const issue = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
@@ -238,13 +239,27 @@ export function createRunnerPlacement(options: {
             )
             .get(input.itemId)
         : null;
-      const accountActor = input.purpose === "helper" ? current.ownership : issue.assigneeId;
+      const itemOwnerLinear = current.placement?.ownerUserId
+        ? db
+            .query<{ linearUserId: string }, [string]>(
+              "SELECT linear_user_id AS linearUserId FROM workspace_user WHERE id=?",
+            )
+            .get(current.placement.ownerUserId)?.linearUserId
+        : undefined;
+      const accountActor =
+        input.purpose === "helper"
+          ? current.ownership
+          : current.placement?.ownerUserId
+            ? itemOwnerLinear
+            : issue.assigneeId;
       const accountUser = accountActor
         ? db
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
             .get(accountActor)?.id
         : undefined;
-      const ranked = rows.flatMap((runner) => {
+      const ranked = rows.flatMap((candidate) => {
+        let runner = candidate;
+        const hostOwnerId = runner.ownerId;
         if (!runnerHasCapacity(db, runner.id, at)) return [];
         if (
           input.purpose === "helper" &&
@@ -294,14 +309,20 @@ export function createRunnerPlacement(options: {
           (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(issue.teamId))
         )
           return [];
-        const own =
+        const legacyOwn =
           issue.assigneeId === runner.linearUserId ||
           (input.purpose === "helper" && runner.ownerId === requester);
-        const shared =
+        const legacyShared =
           runner.sharing === 1 &&
           runner.hostOwner !== "unknown" &&
           ["organization", "api"].includes(runner.seat) &&
           projectMembers.includes(runner.linearUserId);
+        const projectItem = current.placement?.projectApprovalId != null;
+        const own =
+          current.placement && (projectItem || current.placement.ownerUserId)
+            ? hostOwnerId === current.placement.ownerUserId
+            : legacyOwn;
+        const shared = current.placement?.ownerUserId && !projectItem ? false : legacyShared;
         const fallback =
           current.workspace.fallbackAllowed === 1 &&
           runner.fallback === 1 &&
@@ -425,10 +446,7 @@ export function createRunnerPlacement(options: {
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
         if (usage.endedAt !== null) return { retryable: false };
         const result = input.result;
-        if (
-          (!result && !input.failure && usage.purpose !== "check") ||
-          (result && result.commandId !== input.commandId)
-        )
+        if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
           throw new Error("Runner result is not bound to its command");
         const quota = result?.errorMessage
           ? quotaSignal(result.errorMessage, input.finishedAt)

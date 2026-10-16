@@ -171,6 +171,7 @@ export async function probeExecutionRuntime(input: {
   assert(accepted.ok);
   const itemId = accepted.items[0]!.id;
   const target = { epicId: accepted.epic.id, workspaceId: input.workspaceId };
+  const itemTarget = { itemId, workspaceId: input.workspaceId };
   const sessionId = "runtime-execution-session";
   recordLinearInstallation(db, {
     sessionId,
@@ -205,9 +206,9 @@ export async function probeExecutionRuntime(input: {
   const generation = () =>
     db
       .query<{ generation: number }, [string]>(
-        "SELECT generation FROM epic_dependency_snapshot WHERE epic_id=?",
+        "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
       )
-      .get(target.epicId)?.generation ?? 0;
+      .get(itemId)?.generation ?? 0;
   const issueEvent = () => ({
     type: "Issue",
     action: "update",
@@ -249,7 +250,7 @@ export async function probeExecutionRuntime(input: {
       Date.now(),
     ]);
     await until(() => timers().find((row) => row.queue === "scheduler.tick")!.fires > before);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
     assert.equal(
       db
         .query<{ n: number }, [string]>(
@@ -276,7 +277,7 @@ export async function probeExecutionRuntime(input: {
       .status,
     "lost",
   );
-  assert.deepEqual(readyItems(db, target).readyItemIds, []);
+  assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
   observe(
     "Signed live criteria changes hold the actual scheduler during reads then fence old candidate, run and merge before blocked redispatch",
     {
@@ -297,7 +298,7 @@ export async function probeExecutionRuntime(input: {
       !hasPendingEpicChanges(db, target.epicId),
   );
   assert.equal(spec()!.revision, 2);
-  assert.deepEqual(readyItems(db, target).readyItemIds, []);
+  assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
   observe(
     "The actual five-minute durable runtime sweep refreshes active epics without changing unchanged criteria or bypassing blockers",
     {
@@ -309,7 +310,6 @@ export async function probeExecutionRuntime(input: {
   );
   acceptLinearStop(db, sessionId, JSON.stringify(["activity", "runtime-session-late"]), Date.now());
   applyWorkItemEvent(db, itemId, "cancel");
-  db.run("UPDATE epic SET state='done' WHERE id=?", [target.epicId]);
   const late = {
     type: "AgentSessionEvent",
     action: "prompted",
@@ -355,7 +355,6 @@ export async function probeExecutionRuntime(input: {
     });
   bindLinearSessionTask(db, "runtime-terminal-session", terminal.epicId, { actorId: "owner" });
   applyWorkItemEvent(db, terminal.id, "cancel");
-  db.run("UPDATE epic SET state='done' WHERE id=?", [terminal.epicId]);
   const store = createInboxStore(db);
   const replayKeys = [];
   for (const [nextSession, body] of [

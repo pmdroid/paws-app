@@ -93,6 +93,35 @@ const ARTIFACT_TOOL = {
   },
 };
 
+const GET_CLOSEOUT_TOOL = {
+  name: "get_closeout",
+  description:
+    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. This tool does not run checks. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
+};
+
+const RUN_CLOSEOUT_TOOL = {
+  name: "run_closeout",
+  description:
+    "Run a pending closeout check by id, including matching setup steps, and return its result. Review checks are not run by this tool. Call get_closeout again after edits because passed checks can go stale.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "Closeout check id from get_closeout." },
+      model: {
+        type: "string",
+        description: "Unused for command checks. Reviews run in an independent session.",
+      },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
@@ -170,7 +199,9 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
       return;
     case "tools/list":
       respond(message.id, {
-        tools: [TOOL, PLAN_TOOL, ARTIFACT_TOOL].filter((tool) => enabledTools.has(tool.name)),
+        tools: [TOOL, PLAN_TOOL, ARTIFACT_TOOL, GET_CLOSEOUT_TOOL, RUN_CLOSEOUT_TOOL].filter(
+          (tool) => enabledTools.has(tool.name),
+        ),
       });
       return;
     case "prompts/list":

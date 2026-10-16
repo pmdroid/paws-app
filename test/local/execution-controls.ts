@@ -91,7 +91,7 @@ export function createExecutionControlsFixture(root: string) {
   }
   const item = getWorkItem(db, "controlled")!;
   db.run(
-    `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+    `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
     [item.epicId, now, item.sessionKey],
   );

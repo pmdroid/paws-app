@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,12 +12,33 @@ import {
   saveTaskMode,
 } from "../../src/db";
 import {
-  createEpicReconciler,
+  createItemReconciler,
   intakeDelegatedIssue,
   readyItems,
-  type EpicChanges,
+  type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
+
+function epicReadyItemIds(db: Database, epicId: string, workspaceId: string): string[] {
+  return db
+    .query<{ id: string }, [string]>(
+      `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
+       WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+    )
+    .all(epicId)
+    .flatMap((item) => {
+      try {
+        return readyItems(db, { itemId: item.id, workspaceId }).readyItemIds;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "Dependency workspace or task ownership changed"
+        )
+          return [];
+        throw error;
+      }
+    });
+}
 
 export async function probeEpicReconciliation(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -59,11 +81,12 @@ export async function probeEpicReconciliation(root: string) {
       observedAtMs: 1000,
     });
     bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "human" });
-    const target = { epicId: intake.epic.id, workspaceId: "workspace" };
-    const recorded: EpicChanges[] = [];
-    const joinedChanges: EpicChanges[] = [];
+    const epicId = intake.epic.id;
+    const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
+    const recorded: ItemChanges[] = [];
+    const joinedChanges: ItemChanges[] = [];
     let fail = false;
-    const reconciler = createEpicReconciler({
+    const reconciler = createItemReconciler({
       db,
       tracker,
       lifecycle,
@@ -129,8 +152,8 @@ export async function probeEpicReconciliation(root: string) {
       "A failed canonical invalidation rolls back brief and specification publication",
       specification(),
     );
-    let interruptedEffects: EpicChanges | null = null;
-    const interrupted = createEpicReconciler({
+    let interruptedEffects: ItemChanges | null = null;
+    const interrupted = createItemReconciler({
       db,
       tracker,
       lifecycle,
@@ -143,14 +166,14 @@ export async function probeEpicReconciliation(root: string) {
     });
     await assert.rejects(interrupted.reconcile(target), /coordinator interruption/);
     assert.equal(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_effect").get()!.n,
+      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_effect").get()!.n,
       1,
     );
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
     const recoveredDb = openDatabase(join(root, "paws.sqlite"));
     try {
-      let recoveredEffects: EpicChanges | null = null;
-      const recovered = createEpicReconciler({
+      let recoveredEffects: ItemChanges | null = null;
+      const recovered = createItemReconciler({
         db: recoveredDb,
         tracker,
         lifecycle,
@@ -165,7 +188,7 @@ export async function probeEpicReconciliation(root: string) {
       assert.deepEqual(recoveredEffects!.specChangedItemIds, []);
       assert.equal(
         recoveredDb
-          .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_effect")
+          .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_effect")
           .get()!.n,
         0,
       );
@@ -211,16 +234,16 @@ export async function probeEpicReconciliation(root: string) {
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     await reconciler.reconcile(target);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
     lifecycle.issues.get("outside")!.stateType = "completed";
     const beforeWrong = recorded.length;
     await reconciler.issueChanged({ issueId: "outside", organizationId: "other" });
     assert.equal(recorded.length, beforeWrong);
     await reconciler.issueChanged({ issueId: "outside", organizationId: "org" });
-    assert.deepEqual(readyItems(db, target).readyItemIds, [b]);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), [b]);
     observe(
       "External blocker events resync only matching organization epics",
-      readyItems(db, target),
+      readyItems(db, { itemId: b, workspaceId: target.workspaceId }),
     );
     const beforeSweep = recorded.length;
     await reconciler.sweep({ now: 1000 });
@@ -238,7 +261,7 @@ export async function probeEpicReconciliation(root: string) {
     const entered = new Promise<void>((resolve) => (enter = resolve));
     let loads = 0;
     let publications = 0;
-    const coalesced = createEpicReconciler({
+    const coalesced = createItemReconciler({
       db,
       lifecycle,
       tracker: {
@@ -260,7 +283,7 @@ export async function probeEpicReconciliation(root: string) {
     });
     const flight = coalesced.reconcile(target);
     await entered;
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
     const same = coalesced.reconcile(target);
     assert.equal(flight, same);
     const waiter = new AbortController();
@@ -270,7 +293,7 @@ export async function probeEpicReconciliation(root: string) {
     );
     waiter.abort(new Error("Waiter canceled"));
     await canceledWaiter;
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
     release();
     await flight;
     assert.equal(loads, 2);
@@ -287,7 +310,7 @@ export async function probeEpicReconciliation(root: string) {
     let staleEnter!: () => void;
     const staleGate = new Promise<void>((resolve) => (staleRelease = resolve));
     const staleEntered = new Promise<void>((resolve) => (staleEnter = resolve));
-    const stale = createEpicReconciler({
+    const stale = createItemReconciler({
       db,
       lifecycle,
       tracker: {
@@ -305,26 +328,29 @@ export async function probeEpicReconciliation(root: string) {
     });
     const old = stale.reconcile(target);
     await staleEntered;
-    db.run("UPDATE linear_session_task SET owner_actor_id='new-owner' WHERE epic_id=?", [
-      target.epicId,
-    ]);
+    db.run(
+      "UPDATE linear_session SET creator_id='new-owner' WHERE session_id IN (SELECT session_key FROM work_item WHERE delegation_id=?)",
+      [epicId],
+    );
     staleRelease();
     await assert.rejects(old, /authority changed/);
     observe("Ownership changes fence delayed publications before canonical effects", {
       owner: "new-owner",
     });
+    const keepIssue = { linearIssueId: "keep", identifier: "SYNC-4", title: "Keep" };
+    tracker.epics.get("parent")!.subIssues = [
+      { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
+      keepIssue,
+    ];
+    lifecycle.issues.set("keep", { ...lifecycle.issue, id: "keep", stateType: "started" });
+    await reconciler.reconcile(target);
+    const keep = recorded.at(-1)!.addedItemIds[0]!;
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [keep]);
     lifecycle.issues.get("b")!.stateType = "canceled";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.canceledItemIds, [b]);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
-    lifecycle.issue.stateType = "canceled";
-    await reconciler.reconcile(target);
-    assert(recorded.at(-1)!.parentCanceled);
-    observe(
-      "Linear child and parent cancellation reach canonical cancellation effects",
-      recorded.at(-1),
-    );
-    tracker.epics.get("parent")!.subIssues = [];
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), []);
+    tracker.epics.get("parent")!.subIssues = [keepIssue];
     lifecycle.issue.stateType = "started";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.addedItemIds, []);
@@ -335,14 +361,15 @@ export async function probeEpicReconciliation(root: string) {
     );
     lifecycle.issues.get("b")!.stateType = "started";
     tracker.epics.get("parent")!.subIssues = [
+      keepIssue,
       { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
     ];
     await reconciler.reconcile(target);
     assert.equal(recorded.at(-1)!.addedItemIds.length, 1);
     const firstRestoration = recorded.at(-1)!.addedItemIds[0]!;
     assert.notEqual(firstRestoration, b);
-    tracker.epics.get("parent")!.subIssues = [];
-    const pendingRemoval = createEpicReconciler({
+    tracker.epics.get("parent")!.subIssues = [keepIssue];
+    const pendingRemoval = createItemReconciler({
       db,
       tracker,
       lifecycle,
@@ -355,6 +382,7 @@ export async function probeEpicReconciliation(root: string) {
     });
     await assert.rejects(pendingRemoval.reconcile(target), /removed child join/);
     tracker.epics.get("parent")!.subIssues = [
+      keepIssue,
       { linearIssueId: "b", identifier: "SYNC-3", title: "B" },
     ];
     await reconciler.reconcile(target);
@@ -365,7 +393,7 @@ export async function probeEpicReconciliation(root: string) {
     assert(!restored.removedItemIds.includes(secondRestoration));
     assert.deepEqual(restored.removedItemIds, []);
     assert.deepEqual(joinedChanges.at(-1)!.removedItemIds, [firstRestoration]);
-    assert.deepEqual(readyItems(db, target).readyItemIds, [secondRestoration]);
+    assert.deepEqual(epicReadyItemIds(db, epicId, target.workspaceId), [secondRestoration]);
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.addedItemIds, []);
     const childHistory = db
@@ -400,7 +428,7 @@ export async function probeEpicReconciliation(root: string) {
     let stopEnter!: () => void;
     const stopGate = new Promise<void>((resolve) => (stopRelease = resolve));
     const stopEntered = new Promise<void>((resolve) => (stopEnter = resolve));
-    const stopping = createEpicReconciler({
+    const stopping = createItemReconciler({
       db,
       lifecycle,
       tracker: {
@@ -429,12 +457,19 @@ export async function probeEpicReconciliation(root: string) {
     await Promise.all([stoppedRequest, shutdown]);
     assert(joined);
     assert.equal(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_request").get()!.n,
+      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_request").get()!.n,
       1,
     );
     observe("Shutdown rejects new work and joins held tracker reads before database closure", {
       joined,
     });
+    lifecycle.issue.stateType = "canceled";
+    await reconciler.reconcile(target);
+    assert(recorded.at(-1)!.parentCanceled);
+    observe(
+      "Linear child and parent cancellation reach canonical cancellation effects",
+      recorded.at(-1),
+    );
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
     return observations;
   } finally {

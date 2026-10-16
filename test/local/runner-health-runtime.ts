@@ -108,8 +108,6 @@ const output = await run(
       [join(root, "fake-agent.js"), "/proof/fake-agent.js"],
       [join(repository, "src/process/process-anchor.ts"), "/proof/process-anchor.ts"],
       [join(repository, "test/local/runner-health-runtime-proof.py"), "/proof/proof.py"],
-      [join(repository, "deploy/linux/runner-broker.py"), "/proof/runner-broker.py"],
-      [join(repository, "deploy/linux/paws-agent@.service"), "/proof/paws-agent@.service"],
     ].flatMap(([sourcePath, target]) => [
       "--mount",
       `type=bind,src=${sourcePath},dst=${target},readonly`,

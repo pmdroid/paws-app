@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent, type RunAgentOptions } from "../../src/acp";
@@ -138,9 +137,8 @@ export async function probeRunnerOrchestration(
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
     const calls: { role: string; prepare: boolean; prompt: string }[] = [];
-    const checks: { argv: string[]; active: boolean }[] = [];
+    const witnessCalls = 0;
     const appChecks: { currentRunId: string | null; checkpoint: unknown }[] = [];
-    let commandCount = 0;
     let implementationCount = 0;
     let reverifying = false;
     let originalRunId = "";
@@ -207,6 +205,7 @@ export async function probeRunnerOrchestration(
     let laterDispatches = 0;
     const crashed = scenario.startsWith("crashed-");
     let verificationExclusions: readonly string[] = [];
+    let exclusionsForReverify = false;
     writeFileSync(
       join(home, "config.toml"),
       '[checkout.projects."acme/fixture"]\nexclude = ["large"]\n',
@@ -244,7 +243,7 @@ export async function probeRunnerOrchestration(
       ...(mergeDependencyYield
         ? {
             dispatchReady({ legacyReadyItemIds }: { legacyReadyItemIds: readonly string[] }) {
-              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds, concurrency: 1 });
+              dispatchReadyItems(db, { now: clock.now(), legacyReadyItemIds });
             },
             publicationReady(itemId: string) {
               assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
@@ -308,8 +307,25 @@ export async function probeRunnerOrchestration(
         },
         agentForItem(itemId) {
           return async (options: RunAgentOptions) => {
-            if (options.role === "reviewer" && !options.prepareOnly)
-              assert.deepEqual(options.checkoutExclusions, verificationExclusions);
+            const reviewing = options.role === "reviewer" && !options.prepareOnly;
+            if (reviewing) {
+              if (reverifying !== exclusionsForReverify) {
+                verificationExclusions = [];
+                exclusionsForReverify = reverifying;
+              }
+              if (verificationExclusions.length === 0) {
+                verificationExclusions = [...(options.checkoutExclusions ?? [])];
+                assert(verificationExclusions.length > 0);
+                writeFileSync(
+                  join(home, "config.toml"),
+                  '[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n',
+                );
+              }
+              assert.deepEqual(
+                [...(options.checkoutExclusions ?? [])],
+                [...verificationExclusions],
+              );
+            }
             if (reverifying) laterDispatches++;
             const item = getWorkItem(db, itemId)!;
             assert.equal(getRun(db, item.currentRunId!)?.status, "active");
@@ -361,6 +377,40 @@ export async function probeRunnerOrchestration(
             const reviewer = options.role === "reviewer";
             const answer = mergeDependencyYield && itemId === "new-blocker";
             if (!reviewer && !options.prepareOnly) implementationCount++;
+            if (reverifying && reviewing) {
+              assert.equal(item.state, "verifying");
+              assert.notEqual(item.currentRunId, originalRunId);
+              assert.equal(getRun(db, item.currentRunId!)?.kind, "review");
+              reviewRunId = item.currentRunId!;
+              assert.deepEqual(
+                readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
+                originalProfile,
+              );
+              if (scenario === "reverify-lease" || scenario === "merge-lease")
+                await reclaim(options.signal);
+              if (scenario === "error") throw new Error("fixture remote verification unavailable");
+              if (!changed) {
+                changed = true;
+                if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
+                if (scenario === "reassigned") {
+                  const replacement = insertRun(db, {
+                    itemId: item.id,
+                    kind: "review",
+                    status: "active",
+                    now: clock.now(),
+                  });
+                  setCurrentRun(db, item.id, replacement.id);
+                }
+                if (scenario === "stale") {
+                  const path = join(home, "runs", reviewRunId, "agent-profile.json");
+                  const snapshot = JSON.parse(readFileSync(path, "utf8")) as {
+                    candidate: { model: string };
+                  };
+                  snapshot.candidate.model = "unexpected-candidate";
+                  writeFileSync(path, JSON.stringify(snapshot));
+                }
+              }
+            }
             writeFileSync(
               script,
               JSON.stringify({
@@ -405,85 +455,21 @@ export async function probeRunnerOrchestration(
                       ],
               }),
             );
-            return runAgent({
+            const result = await runAgent({
               ...options,
               command: process.execPath,
               args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
               env: { PATH: process.env.PATH!, HOME: home },
             });
-          };
-        },
-        closeoutForItem(itemId, signal, checkoutExclusions) {
-          verificationExclusions = checkoutExclusions ?? [];
-          assert(verificationExclusions.length > 0);
-          writeFileSync(
-            join(home, "config.toml"),
-            '[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n',
-          );
-          return {
-            async runLogged(request) {
-              if (reverifying) laterDispatches++;
-              const item = getWorkItem(db, itemId)!;
-              const active = getRun(db, item.currentRunId!)?.status === "active";
-              assert.equal(active, true);
-              assert.equal(
-                await git(["-C", request.cwd, "rev-parse", "HEAD"]),
-                request.expectedHead,
-              );
-              if (reverifying) {
-                assert.equal(item.state, "verifying");
-                assert.notEqual(item.currentRunId, originalRunId);
-                assert.equal(getRun(db, item.currentRunId!)?.kind, "review");
-                reviewRunId = item.currentRunId!;
-                assert.deepEqual(
-                  readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-                  originalProfile,
-                );
-                if (scenario === "reverify-lease" || scenario === "merge-lease")
-                  await reclaim(signal);
-                if (scenario === "error")
-                  throw new Error("fixture remote verification unavailable");
-                if (!changed) {
-                  changed = true;
-                  if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
-                  if (scenario === "reassigned") {
-                    const replacement = insertRun(db, {
-                      itemId: item.id,
-                      kind: "review",
-                      status: "active",
-                      now: clock.now(),
-                    });
-                    setCurrentRun(db, item.id, replacement.id);
-                  }
-                  if (scenario === "stale") {
-                    const path = join(home, "runs", reviewRunId, "agent-profile.json");
-                    const snapshot = JSON.parse(readFileSync(path, "utf8"));
-                    snapshot.candidate.model = "unexpected-candidate";
-                    writeFileSync(path, JSON.stringify(snapshot));
-                  }
-                }
-              }
-              checks.push({ argv: request.argv, active });
-              if (request.argv[1] === "check") commandCount++;
-              const bytes = Buffer.from("Recorded remote execution\n");
-              mkdirSync(join(request.logFile, ".."), { recursive: true });
-              writeFileSync(request.logFile, bytes, { mode: 0o600, flag: "wx" });
-              return {
-                argv: request.argv,
-                exitCode: request.argv[1] === "check" && commandCount === 1 ? 1 : 0,
-                timedOut: false,
-                dirty: false,
-                headMoved: false,
-                durationMs: 1,
-                truncated: false,
-                artifacts: [
-                  {
-                    path: request.artifactPath,
-                    sha256: createHash("sha256").update(bytes).digest("hex"),
-                  },
-                ],
-              };
-            },
+            if (reviewer || options.prepareOnly) return result;
+            return {
+              ...result,
+              closeoutReport: JSON.stringify(
+                implementationCount > 1
+                  ? { required: [], pending: [], blocked: null, bypassed: false }
+                  : { required: ["check"], pending: ["check"], blocked: null, bypassed: false },
+              ),
+            };
           };
         },
       },
@@ -549,7 +535,7 @@ export async function probeRunnerOrchestration(
         assert.equal(getRun(db, replacementRunId)?.status, "active");
         assert.equal(getJob(db, reclaimedJobId)?.status, "running");
         assert(leaseAborted);
-        assert.equal(checks.length, 0);
+        assert.equal(witnessCalls, 0);
         observe(
           "selected initial transport aborts on lease loss without ending current run: " + scenario,
           true,
@@ -560,7 +546,7 @@ export async function probeRunnerOrchestration(
       if (unavailable) {
         assert.equal(item.state, "awaiting_input", JSON.stringify(item));
         assert.equal(calls.length, 1);
-        assert.equal(checks.length, 0);
+        assert.equal(witnessCalls, 0);
       } else {
         assert.equal(item.state, "merge_queue", JSON.stringify(item));
         assert.equal(implementationCount, 2);
@@ -569,7 +555,7 @@ export async function probeRunnerOrchestration(
         const fix = calls.filter((call) => call.role === "implementer" && !call.prepare)[1]!;
         assert(fix.prompt.includes("PUBLIC_REMOTE_RESPONSE"));
         assert(fix.prompt.includes("Write output"));
-        assert(checks.length >= 3);
+        assert.equal(witnessCalls, 0);
       }
       assert.equal(getRun(db, item.currentRunId!)?.status, "ended");
       assert.equal(existsSync(join(home, "local-agent")), false);
@@ -597,7 +583,7 @@ export async function probeRunnerOrchestration(
         }
         if (mergeDependencyYield) {
           db.run(
-            `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+            `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
             [item.epicId, clock.now()],
           );
@@ -612,11 +598,10 @@ export async function probeRunnerOrchestration(
             projectId: "project",
             paths: ["src/shared"],
           });
-          db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
-            item.epicId,
-            "new-blocker",
-            item.linearIssueId,
-          ]);
+          db.run(
+            "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
+            ["new-blocker", item.linearIssueId],
+          );
           const before = getLinearSession(db, "session")?.activeItemId;
           assert.equal(before, item.id);
           const deferred = await jobs.tick();
@@ -643,7 +628,6 @@ export async function probeRunnerOrchestration(
           clock.advance(30001);
         }
         reverifying = true;
-        const priorChecks = checks.length;
         const reverifyId =
           scenario === "merge" || scenario === "merge-lease"
             ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!
@@ -681,7 +665,7 @@ export async function probeRunnerOrchestration(
           assert.equal(verified.currentRunId, foreignRunId);
           assert.equal(verified.state, "verifying");
           assert.equal(getRun(db, foreignRunId)?.status, "active");
-          assert.equal(checks.length, priorChecks);
+          assert.equal(witnessCalls, 0);
           assert.equal(listRuns(db, item.id).length, scenario === "crashed-review" ? 2 : 1);
           assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "pending");
           observe(
@@ -708,7 +692,8 @@ export async function probeRunnerOrchestration(
               verified.state,
               scenario === "merge" || scenario === "merge-lease" ? "merged" : "merge_queue",
             );
-            assert(checks.length > priorChecks);
+            assert(laterDispatches > 0);
+            assert.equal(witnessCalls, 0);
             assert.deepEqual(
               readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
               originalProfile,
@@ -743,8 +728,8 @@ export async function probeRunnerOrchestration(
               currentRunId: verified.currentRunId,
               state: verified.state,
               jobStatus: listJobs(db).find((job) => job.id === reverifyId)?.status,
-              priorChecks,
-              checks: checks.length,
+              laterDispatches,
+              witnessCalls,
             },
           );
         }
@@ -752,12 +737,12 @@ export async function probeRunnerOrchestration(
       observe(
         unavailable
           ? "unavailable remote preparation blocks without local fallback"
-          : "Linear orchestration routes preparation, implementation, fixes, reviews and commands through selected execution ports",
+          : "Linear orchestration routes preparation, implementation, fixes and reviews through the selected port and accepts command checks from the session report",
         true,
         {
           state: item.state,
           agentCalls: calls.map(({ role, prepare }) => ({ role, prepare })),
-          commandCalls: checks,
+          witnessCalls,
           transport: "recording port with real scripted ACP, Git and SQLite",
         },
       );

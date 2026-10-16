@@ -74,24 +74,19 @@ export type ClaimOptions = {
   queues?: readonly string[];
 };
 
-const EXCLUSIVE_QUEUES = [
-  JOB_KIND.start,
-  JOB_KIND.resume,
-  JOB_KIND.reverify,
-  JOB_KIND.merge,
-] as const;
+const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
 
 function sqlLiteral(value: string): string {
-  if (!/^[A-Za-z0-9._%-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
+  if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
 }
 
+function mergeLaneSql(alias: string): string {
+  return `(${alias}.queue = ${sqlLiteral(JOB_KIND.merge)} OR ${alias}.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)} OR ${alias}.lane = ${sqlLiteral(MERGE_LANE)} OR ${alias}.lane LIKE ${sqlLiteral(`${MERGE_LANE}:%`)})`;
+}
+
 /** Item execution. A second one stays pending until the first item is finished. */
-const EXCLUSIVE_SQL = `(
-  candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")})
-  OR candidate.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)}
-  OR candidate.lane = ${sqlLiteral(MERGE_LANE)}
-)`;
+const EXCLUSIVE_SQL = `(candidate.queue IN (${EXCLUSIVE_QUEUES.map(sqlLiteral).join(", ")}))`;
 
 const IN_FLIGHT_SQL = IN_FLIGHT_ITEM_STATES.map(sqlLiteral).join(", ");
 
@@ -119,7 +114,7 @@ export function claimJobSql(queueCount: number): string {
     AND candidate.queue IN (${[JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify].map(sqlLiteral).join(",")})
     AND ${reservation}`;
   const sameItem = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${heldExclusive} OR ${mergeLaneSql("held")})
     AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId})`;
   const holdsExecution = `(other.state != 'merge_queue'
     OR EXISTS (SELECT 1 FROM run live WHERE live.item_id=other.id AND live.status IN ('active','provisioning'))
@@ -131,10 +126,12 @@ export function claimJobSql(queueCount: number): string {
     OR EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
       AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}
       AND NOT EXISTS (SELECT 1 FROM scheduler_admission a WHERE a.item_id = json_extract(held.payload,'$.itemId')))`;
-  const heldMerge = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
-    AND (held.locked_until IS NULL OR held.locked_until > ?) AND
-    (held.queue = ${sqlLiteral(JOB_KIND.merge)} OR held.queue LIKE ${sqlLiteral(`${JOB_KIND.merge}.%`)}
-      OR held.lane = ${sqlLiteral(MERGE_LANE)}))`;
+  const reposDiffer = `EXISTS (SELECT 1 FROM work_item_repository mine
+    JOIN work_item_repository other ON other.item_id = COALESCE(json_extract(held.payload,'$.itemId'),'')
+    WHERE mine.item_id = ${itemId}
+      AND (lower(mine.owner) != lower(other.owner) OR lower(mine.repo) != lower(other.repo)))`;
+  const heldSameMergeLane = `EXISTS (SELECT 1 FROM job held WHERE held.id != candidate.id AND held.status = 'running'
+    AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${mergeLaneSql("held")} AND NOT (${reposDiffer}))`;
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
     "WHERE id = (" +
@@ -146,11 +143,12 @@ export function claimJobSql(queueCount: number): string {
     " AND (candidate.status = 'pending' OR (candidate.status = 'running' AND (candidate.locked_until IS NULL OR candidate.locked_until <= ?))) " +
     `AND NOT (${EXCLUSIVE_SQL} AND NOT (${parallel}) AND (` +
     "EXISTS (SELECT 1 FROM job AS held WHERE held.id != candidate.id AND held.status = 'running' " +
-    `AND (held.locked_until IS NULL OR held.locked_until > ?) AND ${heldExclusive}) ` +
+    `AND (held.locked_until IS NULL OR held.locked_until > ?) AND (${heldExclusive} OR (${mergeLaneSql("held")} AND COALESCE(json_extract(held.payload,'$.itemId'),'') = ${itemId}))) ` +
     `OR (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND EXISTS (SELECT 1 FROM work_item AS active WHERE active.state IN (${IN_FLIGHT_SQL}))) ` +
     `OR (EXISTS (SELECT 1 FROM work_item AS other WHERE other.state IN (${IN_FLIGHT_SQL}) AND other.id != ${itemId}) ` +
     `AND NOT EXISTS (SELECT 1 FROM work_item AS mine WHERE mine.state IN (${IN_FLIGHT_SQL}) AND mine.id = ${itemId}))` +
-    `)) AND NOT ((${parallel}) AND (${sameItem} OR ${heldMerge} OR ${unreserved})) ` +
+    `)) AND NOT (${mergeLaneSql("candidate")} AND ${heldSameMergeLane}) ` +
+    `AND NOT ((${parallel}) AND (${sameItem} OR ${unreserved})) ` +
     "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
   );
 }

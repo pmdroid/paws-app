@@ -25,9 +25,7 @@ def main():
     runner = pwd.getpwnam('paws-runner')
     agent = pwd.getpwnam('paws-agent')
     results_gid = grp.getgrnam('paws-results').gr_gid
-    assert runner.pw_uid != agent.pw_uid and WORK.stat().st_uid == 0 and WORK.stat().st_mode & 0o777 == 0o755
-    for name in ('paws-agent@.service', 'paws-runner-broker.service', 'paws-runner-broker.socket'):
-        (pathlib.Path('/etc/systemd/system')/name).write_bytes((ASSETS/name).read_bytes())
+    assert runner.pw_uid != agent.pw_uid and WORK.stat().st_uid == runner.pw_uid and WORK.stat().st_mode & 0o777 == 0o711
     (APP/'node_modules/.bin').mkdir(parents=True)
     launcher = APP/'node_modules/.bin/claude-agent-acp'
     launcher.write_text('#!/opt/paws-runner/bin/bun\nprocess.argv.splice(2,0,"agent");await import("../../src/index.ts");\n')
@@ -38,9 +36,8 @@ def main():
         os.setgroups([agent.pw_gid, results_gid])
         os.setgid(runner.pw_gid)
         os.setuid(runner.pw_uid)
-    client = "import json,socket,sys;s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.settimeout(50);s.connect('/run/paws-runner-broker.sock');s.sendall((json.dumps({'operation':sys.argv[1],'executionId':sys.argv[2]})+'\\n').encode());b=b''\nwhile not b.endswith(b'\\n'):b+=s.recv(1024)\nprint(b.decode(),end='')"
     def broker(operation, execution_id):
-        return json.loads(run('/usr/bin/python3', '-c', client, operation, execution_id, preexec_fn=daemon).stdout)
+        return json.loads(run(BUN,'--no-env-file',str(APP/'src/index.ts'),'supervise',str(agent.pw_gid),execution_id,str(results_gid),operation,preexec_fn=daemon,env={'PATH':'/usr/bin:/bin','HOME':'/var/lib/paws-runner'}).stdout)
     def command(execution_id, purpose, repository):
         now = int(time.time()*1000)
         value = {'id':'task-'+execution_id,'type':'task','runnerId':'runner','workspaceId':'workspace','runId':'run-'+execution_id,'itemId':'item','generation':1,'sessionId':'session','sessionGeneration':1,'taskModeGeneration':1,'purpose':purpose,'issuedAt':now,'expiresAt':now+120000,'profile':{'agent':'claude','model':'fixture-model'},'prompt':'Create a private report and return the requested '+purpose}
@@ -54,8 +51,6 @@ def main():
             (source/'tracked').write_text('source-original');os.chown(source/'tracked',runner.pw_uid,runner.pw_gid);(source/'tracked').chmod(0o600)
             args=[str(source)]
         run(BUN,'--no-env-file',str(APP/'src/index.ts'),'stage',str(agent.pw_gid),str(job),*args,preexec_fn=daemon,env={'PATH':'/usr/bin:/bin','HOME':'/var/lib/paws-runner'})
-    run('/usr/bin/systemctl','daemon-reload')
-    run('/usr/bin/systemctl','start','paws-runner-broker.socket')
     observed=[]
     for index,(purpose,repository) in enumerate((('answer',False),('artifact',False),('answer',True),('artifact',True)),1):
         execution_id='0'*25+str(index);value=command(execution_id,purpose,repository)
@@ -69,7 +64,7 @@ def main():
         output=pathlib.Path('/var/lib/paws-agent-results')/execution_id
         deadline=time.monotonic()+45;answered=set()
         while not (output/'result.json').exists():
-            assert time.monotonic()<deadline,run('/usr/bin/journalctl','-u','paws-agent@'+execution_id+'.service','--no-pager').stdout
+            assert time.monotonic()<deadline,'worker did not finish'
             if (output/'events.jsonl').exists():
                 for line in (output/'events.jsonl').read_text().splitlines():
                     event=json.loads(line)
@@ -102,7 +97,7 @@ def main():
     execution_id='0'*25+'5';value=command(execution_id,'answer',False);stage(execution_id,value,False)
     (WORK/execution_id).symlink_to('/var/lib/paws-agent')
     assert broker('start',execution_id)=={'ok':False}
-    assert not pathlib.Path('/var/lib/paws-runner-broker',execution_id+'.launched').exists()
+    assert not pathlib.Path('/var/lib/paws-runner/workers',execution_id+'.pid').exists()
     print('PAWS_TASK_WORKER_VM_PROOF '+json.dumps({'passed':True,'pid1':True,'systemd':run('/usr/bin/systemctl','--version').stdout.splitlines()[0],'runnerUid':runner.pw_uid,'agentUid':agent.pw_uid,'cases':observed,'poisonedTaskWorkspaceRefusedBeforeLaunch':True}),flush=True)
 
 

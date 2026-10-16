@@ -6,7 +6,7 @@ import { publishRunnerAnswer, removeRunnerAnswers } from "../runner-answers";
 import { openDatabase } from "../db";
 import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
-  createRunnerBrokerClient,
+  createDirectWorkerSupervisor,
   publishRunnerJob,
   readRunnerResultFile,
   type RunnerBrokerClient,
@@ -101,7 +101,13 @@ export async function openRunnerHealthRuntime(options: {
       .some((row) => row.name === "result")
   )
     db.run("ALTER TABLE health_execution ADD COLUMN result TEXT");
-  const broker = options.broker ?? createRunnerBrokerClient();
+  const broker =
+    options.broker ??
+    createDirectWorkerSupervisor({
+      stateRoot: join(options.root, "workers"),
+      spool: options.spool,
+      results: options.results,
+    });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
   let active: Entry | undefined;

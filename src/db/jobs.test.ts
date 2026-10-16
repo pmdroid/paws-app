@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FakeClock, JOB_KIND } from "../core";
+import { FakeClock, JOB_KIND, MERGE_LANE } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  bindWorkItemRepository,
   claimJobSql,
   claimNextJob,
   completeJob,
@@ -24,6 +25,23 @@ function queue(clock = new FakeClock(1_000), leaseMs = 5_000) {
   const db = openDatabase(":memory:");
   migrate(db);
   return { db, clock, leaseMs };
+}
+
+function bindRepo(db: ReturnType<typeof queue>["db"], itemId: string, owner: string, repo: string) {
+  bindWorkItemRepository(db, itemId, {
+    owner,
+    repo,
+    remoteUrl: `https://github.com/${owner}/${repo}.git`,
+  });
+}
+
+function enqueueMerge(db: ReturnType<typeof queue>["db"], clock: FakeClock, itemId: string) {
+  return enqueueJob(db, {
+    queue: JOB_KIND.merge,
+    lane: MERGE_LANE,
+    payload: { itemId },
+    now: clock.now(),
+  });
 }
 
 function claim(
@@ -226,6 +244,46 @@ describe("job queue", () => {
     expect(claimed?.queue).toBe(JOB_KIND.resume);
     expect(claimed?.payload).toEqual({ itemId: "eng-1" });
     expect(claim(db, clock, [JOB_KIND.start])).toBeNull();
+  });
+
+  test("two merge jobs for different repositories are both claimed", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    bindRepo(db, "eng-1", "acme", "one");
+    bindRepo(db, "eng-2", "acme", "two");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    const first = claim(db, clock, [JOB_KIND.merge]);
+    const second = claim(db, clock, [JOB_KIND.merge]);
+    expect(first?.payload).toEqual({ itemId: "eng-1" });
+    expect(second?.payload).toEqual({ itemId: "eng-2" });
+    expect(first?.status).toBe("running");
+    expect(second?.status).toBe("running");
+  });
+
+  test("a second merge job for the same repository is not claimed", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    bindRepo(db, "eng-1", "acme", "one");
+    bindRepo(db, "eng-2", "Acme", "ONE");
+    enqueueMerge(db, clock, "eng-1");
+    enqueueMerge(db, clock, "eng-2");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    expect(claim(db, clock, [JOB_KIND.merge])).toBeNull();
+  });
+
+  test("a start job is claimed while a merge job is running", () => {
+    const { db, clock } = queue();
+    insertQueuedItem(db, { id: "eng-1", now: clock.now() });
+    insertQueuedItem(db, { id: "eng-2", now: clock.now() });
+    bindRepo(db, "eng-1", "acme", "one");
+    enqueueMerge(db, clock, "eng-1");
+    expect(claim(db, clock, [JOB_KIND.merge])?.payload).toEqual({ itemId: "eng-1" });
+    enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "eng-1" }, now: clock.now() });
+    enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "eng-2" }, now: clock.now() });
+    expect(claim(db, clock, [JOB_KIND.start])?.payload).toEqual({ itemId: "eng-2" });
   });
 
   test("an open dedupe key collapses to one pending row", () => {

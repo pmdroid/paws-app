@@ -13,13 +13,10 @@ import { probeExecutionControls } from "./execution-controls";
 import { probeExecutionStopStates } from "./execution-stop-states";
 import { probeLinearActivityBudget } from "./linear-activity-budget";
 import { probeLinearProjectMembers } from "./linear-project-members";
-import { probeRunnerVerifierPairing } from "./runner-verifier-pairing";
-import { probeRunnerCloseout } from "./runner-closeout";
 import { probeRunnerJournal } from "./runner-journal";
 import { probeRunnerDaemonHealth } from "./runner-daemon-health";
 import { probeRunnerControlStartup } from "./runner-control-startup";
 import { probeRunnerBackend } from "./runner-backend";
-import { probeRunnerTrustedCloseout } from "./runner-trusted-closeout";
 import { probeCloseoutCommandRunner } from "./closeout-command-runner";
 import { probeRunnerCoordinator } from "./runner-coordinator";
 import { probeRunnerHealth } from "./runner-health";
@@ -64,10 +61,8 @@ import { probeHostAcp } from "./host-acp";
 import { probePublicTls } from "./public-tls";
 import { probeRunnerPairing } from "./runner-pairing";
 import { probeRunnerTls } from "./runner-tls";
-import { probeRunnerVerifier } from "./runner-verifier";
 import { probeRunnerCoordinatorData } from "./runner-coordinator-data";
 import { probeRunnerEvidenceRelays } from "./runner-evidence-relays";
-import { probeRunnerChecks } from "./runner-checks";
 import { probePublicTlsRenewal } from "./public-tls-renewal";
 
 export async function probeBoundaries(
@@ -100,13 +95,10 @@ export async function probeBoundaries(
   await probeCloseoutCommandRunner(join(root, "closeout-command-runner"), observe);
   await probePublicTls(root, observe);
   await probePublicTlsRenewal(join(root, "public-tls-renewal"), observe);
-  await probeRunnerCloseout(join(root, "runner-closeout"), observe);
   await probeRunnerResults(join(root, "runner-results"), observe);
   await probeRunnerBackend(join(root, "runner-backend"), observe);
   await probeRunnerHealth(join(root, "runner-health"), observe);
-  await probeRunnerTrustedCloseout(join(root, "runner-trusted-closeout"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
-  await probeRunnerVerifierPairing(join(root, "runner-verifier-pairing"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
   probeRunnerJournal(join(root, "runner-journal"), observe);
   await probeRunnerDaemonHealth(join(root, "runner-daemon-health"), observe);
@@ -114,10 +106,8 @@ export async function probeBoundaries(
   await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);
   await probeRunnerWork(join(root, "runner-work"), observe);
   await probeRunnerTls(join(root, "runner-tls"), observe);
-  probeRunnerVerifier(observe);
   await probeRunnerCoordinatorData(join(root, "runner-coordinator-data"), observe);
   await probeRunnerEvidenceRelays(join(root, "runner-evidence-relays"), observe);
-  await probeRunnerChecks(join(root, "runner-checks"), observe);
   const release = Bun.spawn(
     [
       "/usr/bin/python3",
@@ -297,11 +287,6 @@ export async function probeBoundaries(
       now: clock.now(),
       sessionKey: issue,
     });
-    db.run("UPDATE epic SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
-      issue,
-      "LOCAL-1",
-      item.epicId,
-    ]);
     beginImplementRun(db, item.id, clock.now());
     const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
     const stopMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });
