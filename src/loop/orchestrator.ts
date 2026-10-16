@@ -3,6 +3,7 @@ import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { AskTeamHook, AgentIdentity, UpdatePlanHook } from "../acp";
@@ -3906,7 +3907,7 @@ export class Orchestrator {
       };
       candidates.sort((left, right) => recency(left) - recency(right));
       let suggestions: readonly RepositorySuggestion[] = [];
-      if (this.tracker?.issueRepositorySuggestions) {
+      for (let attempt = 1; this.tracker?.issueRepositorySuggestions && attempt <= 3; attempt++) {
         try {
           suggestions = await this.tracker.issueRepositorySuggestions(
             {
@@ -3921,8 +3922,15 @@ export class Orchestrator {
             },
             { signal: controller.signal },
           );
-        } catch {
+          break;
+        } catch (error) {
           controller.signal.throwIfAborted();
+          console.error(
+            `repository suggestions for ${item.linearIdentifier} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
         }
       }
       if (this.stopped(item.id)) return false;
