@@ -96,7 +96,7 @@ export function insertRunningQueue(
     position,
     version: 0,
   }));
-  const inQueue = new Set(items.map((item) => item.linearIssueId));
+  const blockedIssues = new Set(items.map((item) => item.linearIssueId));
   const write = db.transaction(() => {
     db.run(
       `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
@@ -129,19 +129,10 @@ export function insertRunningQueue(
         ],
       );
     }
-    for (const edge of input.edges) {
-      if (!inQueue.has(edge.blockerLinearIssueId) || !inQueue.has(edge.blockedLinearIssueId))
-        continue;
-      db.run(
-        `INSERT OR IGNORE INTO work_item_block (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
-         VALUES (?, ?, ?)`,
-        [epicId, edge.blockerLinearIssueId, edge.blockedLinearIssueId],
-      );
-    }
     saveTaskBlocks(
       db,
       items.map((item) => item.linearIssueId),
-      input.edges.filter((edge) => inQueue.has(edge.blockedLinearIssueId)),
+      input.edges.filter((edge) => blockedIssues.has(edge.blockedLinearIssueId)),
     );
   });
   write.immediate();

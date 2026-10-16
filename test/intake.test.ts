@@ -48,7 +48,7 @@ describe("intake", () => {
     ]);
     const blocks = db
       .query<{ blocker: string; blocked: string }, []>(
-        "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM work_item_block",
+        "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM task_block",
       )
       .all();
     expect(blocks).toEqual([{ blocker: "a", blocked: "b" }]);
@@ -227,13 +227,6 @@ describe("intake", () => {
     expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
     expect(listTaskBlockers(db, "a")).toEqual([]);
     expect(listTaskBlockers(db, "outside")).toEqual([]);
-    expect(
-      db
-        .query<{ blocker: string; blocked: string }, []>(
-          "SELECT blocker_linear_issue_id AS blocker, blocked_linear_issue_id AS blocked FROM work_item_block",
-        )
-        .all(),
-    ).toEqual([{ blocker: "a", blocked: "b" }]);
     db.close();
   });
 

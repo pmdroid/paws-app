@@ -73,12 +73,12 @@ export async function probeDependencySnapshots(
     const observed = (name: string, value: unknown) => observe(name, true, value);
     const addedSchema = db
       .query<{ name: string }, []>(
-        "SELECT name FROM sqlite_master WHERE name IN ('epic_dependency_snapshot','external_dep','external_dep_blocker') ORDER BY name",
+        "SELECT name FROM sqlite_master WHERE name IN ('epic_dependency_snapshot','external_dep','external_dep_blocker','work_item_block','epic_execution_control') ORDER BY name",
       )
       .all();
     assert.deepEqual(
       addedSchema.map((row) => row.name),
-      ["epic_dependency_snapshot", "external_dep", "external_dep_blocker"],
+      ["epic_dependency_snapshot"],
     );
     assert(db.query("SELECT 1 FROM schema_migration WHERE id='039_epic_dependencies'").get());
     assert.deepEqual(readyItems(db, target).readyItemIds, []);
@@ -89,8 +89,7 @@ export async function probeDependencySnapshots(
     tracker.deps.set("parent", [edge("a", "b"), edge("outside", "b")]);
     tracker.deps.set("a", [edge("a", "b")]);
     await refresh();
-    assert.equal(rowCount("work_item_block"), 1);
-    assert.equal(rowCount("external_dep"), 1);
+    assert.equal(rowCount("task_block"), 2);
     assert(!readyItems(db, target).readyItemIds.includes(ids.get("b")!));
     observed(
       "Complete snapshots persist deduplicated internal and external edges",
@@ -183,8 +182,7 @@ export async function probeDependencySnapshots(
     await refresh();
     release();
     await assert.rejects(late, /snapshot changed/);
-    assert.equal(rowCount("work_item_block"), 0);
-    assert.equal(rowCount("external_dep"), 0);
+    assert.equal(rowCount("task_block"), 0);
     assert.equal(readyItems(db, target).readyItemIds.length, 4);
     await assert.rejects(
       syncEpicDependencies(db, { ...target, expectedGeneration: generation, tracker, lifecycle }),
@@ -198,10 +196,10 @@ export async function probeDependencySnapshots(
     const before = readyItems(db, target).generation;
     tracker.deps.set("parent", [edge("outside", "b")]);
     db.run(
-      "CREATE TRIGGER dependency_write_failure BEFORE INSERT ON external_dep BEGIN SELECT RAISE(ABORT,'injected storage failure'); END",
+      "CREATE TRIGGER dependency_write_failure BEFORE INSERT ON task_block BEGIN SELECT RAISE(ABORT,'injected storage failure'); END",
     );
     await assert.rejects(refresh, /injected storage failure/);
-    assert.equal(rowCount("external_dep"), 0);
+    assert.equal(rowCount("task_block"), 0);
     assert.equal(readyItems(db, target).generation, before);
     db.run("DROP TRIGGER dependency_write_failure");
     await refresh();

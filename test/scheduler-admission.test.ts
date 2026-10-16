@@ -155,10 +155,6 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('a', 'b')",
     );
-    assert.equal(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item_block").get()!.n,
-      0,
-    );
     const blocker = ids.get("a");
     const blocked = ids.get("b");
     assert(blocker);

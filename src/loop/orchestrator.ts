@@ -2433,7 +2433,7 @@ export class Orchestrator {
           });
           const dependents = this.db
             .query<{ id: string; identifier: string }, [string, string]>(
-              `SELECT i.id,i.linear_identifier AS identifier FROM work_item_block b JOIN work_item i ON i.epic_id=b.epic_id AND i.linear_issue_id=b.blocked_linear_issue_id WHERE b.epic_id=? AND b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
+              `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.epic_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
             )
             .all(changes.epicId, item.linearIssueId);
           if (dependents.length)
@@ -2588,10 +2588,15 @@ export class Orchestrator {
     if (!item) return undefined;
     const blockers = this.db
       .query<{ id: string; identifier: string; checkpoint: string | null }, [string, string]>(
-        `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM work_item_block b
-         JOIN work_item i ON i.epic_id=b.epic_id AND i.linear_issue_id=b.blocker_linear_issue_id
+        `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM task_block b
+         JOIN work_item i ON i.id=(
+           SELECT candidate.id FROM work_item candidate
+           WHERE candidate.linear_issue_id=b.blocker_linear_issue_id AND candidate.epic_id=?
+           AND candidate.state<>'cancelled'
+           AND NOT EXISTS(SELECT 1 FROM work_item_specification spec WHERE spec.item_id=candidate.id AND spec.present=0)
+           ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1)
          LEFT JOIN run r ON r.id=i.current_run_id
-         WHERE b.epic_id=? AND b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
+         WHERE b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
          ORDER BY i.position,i.id`,
       )
       .all(item.epicId, item.linearIssueId);
@@ -2770,10 +2775,14 @@ export class Orchestrator {
     }
     const rows = this.db
       .query<{ blocker_linear_issue_id: string }, [string, string]>(
-        `SELECT blocker_linear_issue_id FROM work_item_block
-         WHERE epic_id = ? AND blocked_linear_issue_id = ?`,
+        `SELECT blocker_linear_issue_id FROM task_block
+         WHERE blocked_linear_issue_id = ?
+         AND EXISTS (
+           SELECT 1 FROM work_item
+           WHERE epic_id = ? AND linear_issue_id = task_block.blocker_linear_issue_id
+         )`,
       )
-      .all(item.epicId, item.linearIssueId);
+      .all(item.linearIssueId, item.epicId);
     const active = new Map(
       this.epicItems(item.epicId).map((entry) => [entry.linearIssueId, entry]),
     );

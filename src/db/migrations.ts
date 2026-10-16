@@ -1511,4 +1511,12 @@ INSERT OR IGNORE INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id
 CREATE UNIQUE INDEX work_item_active_issue ON work_item(linear_issue_id) WHERE state NOT IN ('completed','merged','cancelled');
 `,
   },
+  {
+    id: "059_drop_old_blocks",
+    sql: `
+DROP TABLE work_item_block;
+DROP TABLE external_dep;
+DROP TABLE epic_execution_control;
+`,
+  },
 ];
