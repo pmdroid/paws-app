@@ -64,7 +64,7 @@ async function fixture(purpose: "answer" | "artifact", context: boolean) {
       return { leases: [{ runId: "run", generation: 1, expiresAt: now + 60_000 }], fenced: [] };
     },
     async pollCommands() {
-      return { commands, rejected: [] };
+      return { commands, rejected: [], deniedRepositories: [] };
     },
     pendingCommands: () => commands,
     async acknowledgeCommand() {},

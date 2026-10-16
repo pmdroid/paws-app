@@ -85,7 +85,7 @@ test("shutdown during a cancellation acknowledgment cannot admit another pending
         };
       },
       async pollCommands() {
-        return { commands, rejected: [] };
+        return { commands, rejected: [], deniedRepositories: [] };
       },
       pendingCommands: () => commands,
       async acknowledgeCommand(id) {
@@ -204,7 +204,7 @@ test("an interrupted run whose broker never stops does not block the next run", 
         };
       },
       async pollCommands() {
-        return { commands, rejected: [] };
+        return { commands, rejected: [], deniedRepositories: [] };
       },
       pendingCommands: () => commands,
       async acknowledgeCommand(id) {

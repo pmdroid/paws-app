@@ -50,7 +50,7 @@ test.skipIf(process.getuid!() === 0)(
         }),
         pendingCommands: () => [command],
         async pollCommands() {
-          return { commands: [], rejected: [] };
+          return { commands: [], rejected: [], deniedRepositories: [] };
         },
         async acknowledgeCommand() {
           calls.push("ack");
@@ -147,7 +147,7 @@ test.skipIf(process.getuid!() === 0).each(["connected", "running"] as const)(
         }),
         pendingCommands: () => [command],
         async pollCommands() {
-          return { commands: [], rejected: [] };
+          return { commands: [], rejected: [], deniedRepositories: [] };
         },
         async acknowledgeCommand() {
           calls.push("ack");
