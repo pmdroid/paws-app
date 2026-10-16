@@ -287,11 +287,6 @@ export async function probeBoundaries(
       now: clock.now(),
       sessionKey: issue,
     });
-    db.run("UPDATE epic SET linear_issue_id = ?, linear_identifier = ? WHERE id = ?", [
-      issue,
-      "LOCAL-1",
-      item.epicId,
-    ]);
     beginImplementRun(db, item.id, clock.now());
     const comments = createFakeCommentBoard({ clock, selfUserId: "local-user" });
     const stopMode = createCommentMode({ board: comments, clock, selfUserId: "local-user" });

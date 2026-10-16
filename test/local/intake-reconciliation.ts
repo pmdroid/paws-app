@@ -23,7 +23,7 @@ function epicReadyItemIds(db: Database, epicId: string, workspaceId: string): st
   return db
     .query<{ id: string }, [string]>(
       `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+       WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
     .all(epicId)
     .flatMap((item) => {
@@ -329,7 +329,7 @@ export async function probeEpicReconciliation(root: string) {
     const old = stale.reconcile(target);
     await staleEntered;
     db.run(
-      "UPDATE linear_session SET creator_id='new-owner' WHERE session_id IN (SELECT session_key FROM work_item WHERE epic_id=?)",
+      "UPDATE linear_session SET creator_id='new-owner' WHERE session_id IN (SELECT session_key FROM work_item WHERE delegation_id=?)",
       [epicId],
     );
     staleRelease();

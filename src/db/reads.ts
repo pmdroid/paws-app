@@ -17,7 +17,7 @@ export type OpenQuestionRecord = {
 };
 
 type BlockSql = {
-  epic_id: string;
+  delegation_id: string;
   blocker_linear_issue_id: string;
   blocked_linear_issue_id: string;
 };
@@ -36,7 +36,7 @@ type QuestionSql = {
 export function listWorkItemBlocks(db: Database, epicId?: string): WorkItemBlockRecord[] {
   return db
     .query<BlockSql, [string | null, string | null]>(
-      `SELECT i.epic_id, b.blocker_linear_issue_id, b.blocked_linear_issue_id
+      `SELECT i.delegation_id, b.blocker_linear_issue_id, b.blocked_linear_issue_id
        FROM task_block b
        JOIN work_item i ON i.id = (
          SELECT candidate.id FROM work_item candidate
@@ -49,12 +49,12 @@ export function listWorkItemBlocks(db: Database, epicId?: string): WorkItemBlock
          ORDER BY candidate.created_at DESC, candidate.id DESC
          LIMIT 1
        )
-       WHERE (? IS NULL OR i.epic_id = ?)
-       ORDER BY i.epic_id, b.blocked_linear_issue_id, b.blocker_linear_issue_id`,
+       WHERE (? IS NULL OR i.delegation_id = ?)
+       ORDER BY i.delegation_id, b.blocked_linear_issue_id, b.blocker_linear_issue_id`,
     )
     .all(epicId ?? null, epicId ?? null)
     .map((row) => ({
-      epicId: row.epic_id,
+      epicId: row.delegation_id,
       blockerLinearIssueId: row.blocker_linear_issue_id,
       blockedLinearIssueId: row.blocked_linear_issue_id,
     }));

@@ -29,13 +29,9 @@ function harness() {
 }
 
 function seed(db: Database, now: number, id: string, states: readonly string[]): void {
-  db.run(
-    "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,?,?)",
-    [id, `${id}-parent`, id, id, "running", now],
-  );
   states.forEach((itemState, index) =>
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
       [
         `${id}-${index}`,
         id,
@@ -55,7 +51,7 @@ function seed(db: Database, now: number, id: string, states: readonly string[]):
 function itemStates(db: Database, id: string): string[] {
   return db
     .query<{ state: string }, [string]>(
-      "SELECT state FROM work_item WHERE epic_id=? ORDER BY position, id",
+      "SELECT state FROM work_item WHERE delegation_id=? ORDER BY position, id",
     )
     .all(id)
     .map((row) => row.state);
@@ -159,11 +155,10 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
     expect(finished.ok).toBe(true);
     expect(open.ok).toBe(true);
     if (!finished.ok || !open.ok) return;
-    db.run("UPDATE work_item SET state = 'merged' WHERE epic_id = ?", [finished.epic.id]);
-    db.run("PRAGMA foreign_keys = OFF");
-    db.run("DELETE FROM epic WHERE id IN (?, ?)", [finished.epic.id, open.epic.id]);
-    db.run("PRAGMA foreign_keys = ON");
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    db.run("UPDATE work_item SET state = 'merged' WHERE delegation_id = ?", [finished.epic.id]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     orchestrator.reconcileExecution();
     expect(getWorkItem(db, finished.items[0]!.id)?.state).toBe("merged");
     expect(
@@ -234,10 +229,9 @@ test("a follow-up session turn routes by the item's task key without the epic ro
       ...tracker.epics.get("parent")!,
       subIssues: [{ linearIssueId: "child", identifier: "ENG-2", title: "Child" }],
     });
-    db.run("PRAGMA foreign_keys = OFF");
-    db.run("DELETE FROM epic WHERE id = ?", [intake.epic.id]);
-    db.run("PRAGMA foreign_keys = ON");
-    expect(db.query("SELECT id FROM epic").get()).toBeNull();
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     const followup: AcceptedLinearEvent = {
       dedupeKey: "follow-up",
       deliveryId: null,

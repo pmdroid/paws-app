@@ -114,10 +114,7 @@ test("approval binds exact project scope, rejects authorization races and persis
       "INSERT INTO linear_session(session_id,issue_id,organization_id,created_at) VALUES('existing','two','organization',0)",
     );
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('existing','two','two','Existing','running',0)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('existing','existing','two','two','Existing','failed','existing',0,0,'existing')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('existing','existing','two','two','Existing','failed','existing',0,0,'existing')",
     );
     for (const state of ["failed", "exhausted"]) {
       db.run("UPDATE work_item SET state=? WHERE id='existing'", [state]);

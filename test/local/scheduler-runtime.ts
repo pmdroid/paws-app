@@ -34,15 +34,12 @@ export async function probeSchedulerRuntime(
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   };
-  db.run(
-    "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','parent','TICK-1','Tick','running',1000)",
-  );
   for (const [id, state, position] of [
     ["original", "merge_queue", 0],
     ["blocker", "queued", 1],
   ] as const) {
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'epic',?,?,?, ?,?,?,1000,'session')",
       [id, id, id, id, state, `paws/${id}`, position],
     );
     bindWorkItemRepository(db, id, repository);
