@@ -138,7 +138,7 @@ import {
   type GitHubClient,
   type GitHubTokenProvider,
 } from "../github";
-import { intakeDelegatedIssue, readyItems, type IntakeResult } from "../intake";
+import { intakeDelegatedIssue, readyItems, stopAdoptedParent, type IntakeResult } from "../intake";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -2487,6 +2487,7 @@ export class Orchestrator {
       if (agentSession && acceptLinearStop(this.db, sessionId, eventKey, requestedAt) === null)
         return false;
       const items = this.itemsForSession(sessionId);
+      if (items.length === 0 && agentSession) stopAdoptedParent(this.db, sessionId, requestedAt);
       if (items.length === 0 && agentSession)
         enqueueOutboxOnce(this.db, {
           target: "linear",
