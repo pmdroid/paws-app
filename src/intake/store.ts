@@ -91,6 +91,13 @@ export function findAcceptedIntake(
   return adopted === null ? null : { delegation: adopted, items: [] };
 }
 
+export function stopAdoptedParent(db: Database, sessionId: string, now: number): void {
+  db.run(
+    "UPDATE project_approval SET stopped_at = ? WHERE source = 'parent' AND generation = ? AND stopped_at IS NULL",
+    [now, `parent:${sessionId}`],
+  );
+}
+
 export function readAdoptedParent(db: Database, linearIssueId: string): StoredDelegation | null {
   const row = db
     .query<ApprovalRow, [string]>(
