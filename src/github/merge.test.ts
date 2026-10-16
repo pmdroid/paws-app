@@ -55,6 +55,7 @@ describe("pull requests and serial merge", () => {
           issue: "ENG-8",
           prNumber: 8,
           remoteUrl: repo.bare,
+          sleep: async () => {},
           reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
         });
         expect(result.merged).toBe(false);

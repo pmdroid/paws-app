@@ -73,9 +73,18 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
   const sleep =
     input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let previous = "";
+  let failedReads = 0;
   for (let attempt = 0; attempt < 270; attempt++) {
     if (input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
     const result = await readReadiness(input);
+    if (
+      result.outcome === "blocked" &&
+      result.message.startsWith("could not read") &&
+      ++failedReads < 3
+    ) {
+      await sleep(10_000);
+      continue;
+    }
     if (result.outcome !== "pending") return result;
     if (result.message !== previous) {
       await input.onWait?.(result.message);
@@ -111,6 +120,15 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
       });
       const parsed = responseSchema.safeParse(response.body);
       if (response.status !== 200 || !parsed.success || parsed.data.errors?.length) {
+        console.error(
+          `GitHub readiness read failed: status ${response.status}${
+            parsed.success && parsed.data.errors?.length
+              ? `, ${JSON.stringify(parsed.data.errors).slice(0, 500)}`
+              : parsed.success
+                ? ""
+                : ", unexpected response shape"
+          }`,
+        );
         return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
       }
       const { object: commit, pullRequest: pull } = parsed.data.data.repository;
@@ -143,7 +161,10 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
     return unresolved > 0
       ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
-  } catch {
+  } catch (error) {
+    console.error(
+      `GitHub readiness read failed: ${error instanceof Error ? error.name : "unknown error"}`,
+    );
     return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
   }
 }
