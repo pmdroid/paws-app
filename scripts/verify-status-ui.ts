@@ -229,9 +229,11 @@ try {
     await inherit.click();
     await expect(page.getByRole("button", { name: "Test connection" })).toHaveCount(0);
     await expect(page.locator('#agent-settings a[href="#/runners"]')).toBeVisible();
-    await page.locator("#defaults-implementer-effort").fill("high");
-    await page.locator("#defaults-implementer-model").fill("ui-test-model");
-    await expect(page.locator("#defaults-implementer-effort")).toHaveValue("");
+    await expect(page.locator("#defaults-implementer-model")).toBeDisabled();
+    await expect(page.locator("#defaults-implementer-effort")).toBeDisabled();
+    await expect(
+      page.getByText("Sign in on a runner to load model choices.").first(),
+    ).toBeVisible();
     await page.reload();
     await expect(page.locator("#defaults-implementer-model")).toHaveValue("");
     await page.getByRole("button", { name: "Save settings", exact: true }).click();
