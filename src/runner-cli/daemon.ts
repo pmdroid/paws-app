@@ -14,7 +14,7 @@ export async function runPairedDaemon(
     resultsGid: number;
   },
   signal: AbortSignal,
-  report: () => void,
+  report: (error: Error) => void,
 ): Promise<void> {
   signal.throwIfAborted();
   if (daemon.status().phase !== "paired") throw new Error("Runner must be paired");
@@ -63,8 +63,9 @@ export async function runPairedDaemon(
       try {
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
-      } catch {
-        if (!signal.aborted) report();
+      } catch (error) {
+        if (!signal.aborted)
+          report(error instanceof Error ? error : new Error("Runner operation failed"));
       }
       await delay(1000, undefined, { signal });
     }

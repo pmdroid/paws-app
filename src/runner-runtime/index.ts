@@ -91,6 +91,7 @@ export async function openRunnerRuntime(options: {
   monotonic?: () => number;
   onError?: (error: Error) => void;
   concurrency?: number;
+  stopWaitMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
     throw new Error("Runner must be paired before execution");
@@ -104,7 +105,15 @@ export async function openRunnerRuntime(options: {
     });
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
-  const report = () => options.onError?.(new Error("Runner runtime operation failed"));
+  const report = (error?: unknown) =>
+    options.onError?.(
+      error instanceof Error ? error : new Error("Runner runtime operation failed"),
+    );
+  const settle = (work: readonly (Promise<unknown> | undefined)[]) =>
+    Promise.race([
+      Promise.allSettled(work),
+      new Promise<void>((resolve) => setTimeout(resolve, options.stopWaitMs ?? 5_000).unref?.()),
+    ]);
   try {
     for (const previous of journal.executions(true)) {
       await broker.stop(previous.id);
@@ -306,7 +315,7 @@ export async function openRunnerRuntime(options: {
       entry.execution.phase = "running";
     } catch (error) {
       if (!(error instanceof RemoteFailure)) await interrupt(entry);
-      report();
+      report(error);
     } finally {
       if (bundle) rmSync(bundle, { force: true });
       if (snapshotWorkspace) {
@@ -548,8 +557,7 @@ export async function openRunnerRuntime(options: {
     }
     for (const entry of active.values()) {
       if (entry.abort.signal.aborted) {
-        await entry.stopped;
-        await entry.task;
+        await settle([entry.stopped, entry.task]);
         active.delete(key(entry.execution.command));
       } else if (entry.execution.phase === "preparing") {
         if (!entry.task) prepare(entry);
@@ -586,11 +594,11 @@ export async function openRunnerRuntime(options: {
         await complete(entry);
       } catch (error) {
         if (error instanceof RemoteFailure) {
-          report();
+          report(error);
           continue;
         }
         await interrupt(entry);
-        report();
+        report(error);
       }
     }
   }
