@@ -14,7 +14,7 @@ import {
   saveRunResult,
   setCurrentRun,
 } from "../src/db";
-import { createEpicReconciler, intakeDelegatedIssue, readyItems } from "../src/intake";
+import { createItemReconciler, intakeDelegatedIssue, readyItems } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
@@ -165,7 +165,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('outside','b')",
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
-    const reconciler = createEpicReconciler({
+    const reconciler = createItemReconciler({
       db,
       tracker,
       lifecycle,
@@ -176,7 +176,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       [],
     );
     expect(await reconciler.issueChanged({ issueId: "outside", organizationId: "org" })).toEqual([
-      { epicId: intake.epic.id, workspaceId: "workspace" },
+      { itemId: blocked!.id, workspaceId: "workspace" },
     ]);
     expect(
       readyItems(db, { itemId: blocked!.id, workspaceId: "workspace" }).readyItemIds,
@@ -196,7 +196,7 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("062_item_dependency_snapshot");
+    expect(ids.at(-1)).toBe("063_item_reconciliation");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
@@ -206,6 +206,9 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
     );
     expect(ids.indexOf("061_drop_old_session_link")).toBeLessThan(
       ids.indexOf("062_item_dependency_snapshot"),
+    );
+    expect(ids.indexOf("062_item_dependency_snapshot")).toBeLessThan(
+      ids.indexOf("063_item_reconciliation"),
     );
   } finally {
     db.close();
