@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import { canAdvanceItem, hasPendingEpicChanges } from "./dependencies";
-import type { createEpicReconciler } from "./reconciliation";
+import type { createItemReconciler } from "./reconciliation";
 
 export type PublicationPhase = "publish" | "merge";
 export type PublicationCandidate = { sha: string; baseSha: string };
@@ -28,7 +28,7 @@ type Identity = {
 
 export function createPublicationReadiness(input: {
   db: Database;
-  reconciler: Pick<ReturnType<typeof createEpicReconciler>, "reconcile">;
+  reconciler: Pick<ReturnType<typeof createItemReconciler>, "reconcile">;
   canAdvance?: (itemId: string) => boolean;
   now?: () => number;
 }) {
@@ -118,7 +118,7 @@ export function createPublicationReadiness(input: {
     ready.delete(itemId);
     try {
       await reconciler.reconcile({
-        epicId: before.identity.epicId,
+        itemId,
         workspaceId: before.identity.workspaceId,
         signal,
       });

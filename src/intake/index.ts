@@ -12,8 +12,8 @@ export {
   epicSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness } from "./dependencies";
-export { createEpicReconciler } from "./reconciliation";
-export type { EpicChanges } from "./reconciliation";
+export { createItemReconciler } from "./reconciliation";
+export type { ItemChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";
 export {
