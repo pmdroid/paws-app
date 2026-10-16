@@ -174,6 +174,7 @@ export {
   resolveTaskClassification,
   type StoredTaskClassification,
 } from "./task-requests";
+export { listTaskBlockers, saveTaskBlocks, type TaskBlock } from "./task-blocks";
 
 export {
   saveArtifact,
