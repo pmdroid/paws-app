@@ -1545,4 +1545,16 @@ WHERE id IN (SELECT item_id FROM session_link_backfill WHERE session_id IS NOT N
 DROP TABLE session_link_backfill;
 `,
   },
+  {
+    id: "061_drop_old_session_link",
+    foreignKeys: false,
+    sql: `
+ALTER TABLE work_item ADD COLUMN delegated_by TEXT;
+UPDATE work_item SET delegated_by=(
+  SELECT t.owner_actor_id FROM linear_session_task t
+  WHERE t.epic_id=work_item.epic_id);
+DROP TABLE linear_session_task;
+ALTER TABLE linear_session DROP COLUMN current_epic_id;
+`,
+  },
 ];
