@@ -122,6 +122,7 @@ import {
   listLinearActivitySnapshots,
   setCurrentRun,
   applyLinearCommand,
+  listRepositoryCatalog,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
@@ -146,6 +147,7 @@ import type {
   TrackerRequestOptions,
   LinearActivitySnapshot,
   LinearFileTransfer,
+  RepositorySuggestion,
 } from "../linear";
 import { parseLinearSessionContext, renderLinearSessionContext } from "../linear";
 import {
@@ -183,7 +185,7 @@ import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
-  rankRepositories,
+  chooseRepository,
   repositoryAnswer,
 } from "./repository-selection";
 
@@ -3745,8 +3747,16 @@ export class Orchestrator {
         if (!allowed) throw new Error("The selected repository is no longer accessible");
         return true;
       }
-      const available =
-        this.options.repositories ?? (this.options.repository ? [this.options.repository] : []);
+      const catalog = listRepositoryCatalog(this.db).map(({ owner, repo, remoteUrl }) => ({
+        owner,
+        repo,
+        remoteUrl,
+      }));
+      const available = [
+        ...(this.options.repositories ??
+          (this.options.repository ? [this.options.repository] : [])),
+        ...catalog,
+      ];
       const configured = available.filter(
         (candidate, index) =>
           available.findIndex(
@@ -3755,10 +3765,13 @@ export class Orchestrator {
               `${candidate.owner}/${candidate.repo}`.toLowerCase(),
           ) === index,
       );
+      const listed = (candidate: RepositoryBinding) =>
+        catalog.some((entry) => sameRepository(entry, candidate));
       const candidates: RepositoryBinding[] = auth ? [...configured] : [];
       for (const candidate of auth ? [] : configured) {
         controller.signal.throwIfAborted();
         if (
+          listed(candidate) ||
           !this.options.repositoryAccess ||
           (await this.options.repositoryAccess(candidate, controller.signal, access))
         )
@@ -3852,10 +3865,22 @@ export class Orchestrator {
         bindWorkItemRepository(this.db, item.id, candidates[0]!);
         return true;
       }
-      let ranked = candidates;
+      const recent = this.db
+        .query<{ name: string }, []>(
+          `SELECT lower(r.owner||'/'||r.repo) AS name FROM work_item_repository r
+           JOIN work_item i ON i.id=r.item_id ORDER BY i.created_at DESC LIMIT 50`,
+        )
+        .all()
+        .map((row) => row.name);
+      const recency = (candidate: RepositoryBinding) => {
+        const index = recent.indexOf(`${candidate.owner}/${candidate.repo}`.toLowerCase());
+        return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+      };
+      candidates.sort((left, right) => recency(left) - recency(right));
+      let suggestions: readonly RepositorySuggestion[] = [];
       if (this.tracker?.issueRepositorySuggestions) {
         try {
-          const suggestions = await this.tracker.issueRepositorySuggestions(
+          suggestions = await this.tracker.issueRepositorySuggestions(
             {
               issueId: item.linearIssueId,
               ...(this.options.channel !== "comments" && item.sessionKey
@@ -3868,12 +3893,38 @@ export class Orchestrator {
             },
             { signal: controller.signal },
           );
-          ranked = rankRepositories(candidates, suggestions);
         } catch {
           controller.signal.throwIfAborted();
         }
       }
       if (this.stopped(item.id)) return false;
+      const choice = chooseRepository(candidates, suggestions);
+      let ranked = "ask" in choice ? choice.ask : [];
+      if ("bind" in choice) {
+        if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
+          await this.flush();
+          return false;
+        }
+        const accessible =
+          !this.options.repositoryAccess ||
+          (await this.options.repositoryAccess(choice.bind, controller.signal, access));
+        controller.signal.throwIfAborted();
+        if (!current()) return false;
+        if (accessible) {
+          bindWorkItemRepository(this.db, item.id, choice.bind);
+          this.post(
+            item,
+            "thought",
+            `Working in ${choice.bind.owner}/${choice.bind.repo}.`,
+            `${item.id}:repository`,
+          );
+          await this.flush();
+          return true;
+        }
+        ranked = candidates
+          .filter((candidate) => !sameRepository(candidate, choice.bind))
+          .slice(0, 3);
+      }
       const sessionId = this.activitySession(item);
       if (sessionId === null) throw new Error("Repository selection has no tracker session");
       immediate(this.db, () => {
