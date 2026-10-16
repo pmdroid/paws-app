@@ -15,4 +15,5 @@ export {
   type RunnerBrokerClient,
   type RunnerCheckBrokerClient,
 } from "./broker";
+export { createDirectWorkerSupervisor } from "./supervisor";
 export { runnerResultDirectory, readRunnerResultFile, type RunnerResults } from "./results";

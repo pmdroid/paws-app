@@ -32,7 +32,11 @@ function openResults(options: RunnerResults, executionId: string): number {
       fd = next;
     }
     const root = fstatSync(fd);
-    if (root.uid !== 0 || root.gid !== options.resultsGid || (root.mode & 0o7777) !== 0o750)
+    if (
+      (root.uid !== 0 && root.uid !== options.agentUid) ||
+      root.gid !== options.resultsGid ||
+      (root.mode & 0o7777) !== 0o750
+    )
       throw new Error("Unsafe runner results root");
     const directory = openSync(
       `/proc/self/fd/${fd}/${executionId}`,
