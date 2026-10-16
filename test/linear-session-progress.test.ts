@@ -171,7 +171,7 @@ test("PR links use incremental session updates through the GraphQL adapter", asy
   db.close();
 });
 
-test("a new epic child starts its own plan without requiring an ACP plan event", () => {
+test("a new delegation child starts its own plan without requiring an ACP plan event", () => {
   const db = tempDb();
   const first = createLinearSessionProgress(db, "session", "ENG-1");
   first.plan([{ content: "Build first child", status: "completed" }]);

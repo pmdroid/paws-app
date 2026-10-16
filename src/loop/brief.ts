@@ -4,9 +4,9 @@ export function renderWorkBrief(brief: WorkBrief | null): string {
   if (brief === null) return "";
   return [
     "Task brief",
-    "Use the issue description and acceptance criteria as the task requirements. The epic provides context for this child, not additional work items.",
+    "Use the issue description and acceptance criteria as the task requirements. The delegation provides context for this child, not additional work items.",
     renderIssue("Issue", brief.issue),
-    ...(brief.epic === null ? [] : [renderIssue("Epic context", brief.epic)]),
+    ...(brief.epic === null ? [] : [renderIssue("Delegation context", brief.epic)]),
   ].join("\n\n");
 }
 

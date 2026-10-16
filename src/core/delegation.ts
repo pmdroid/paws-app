@@ -1,5 +1,5 @@
-export function delegationHasOpenWork(epicIdSql: string): string {
-  return `EXISTS (SELECT 1 FROM work_item open_delegation WHERE open_delegation.delegation_id = ${epicIdSql} AND open_delegation.state NOT IN ('completed', 'merged', 'cancelled'))`;
+export function delegationHasOpenWork(delegationIdSql: string): string {
+  return `EXISTS (SELECT 1 FROM work_item open_delegation WHERE open_delegation.delegation_id = ${delegationIdSql} AND open_delegation.state NOT IN ('completed', 'merged', 'cancelled'))`;
 }
 
 export function delegationIssueIdSql(item: string): string {

@@ -86,7 +86,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(getWorkItem(db, "item")?.state).toBe("merged");
-    expect(getLinearSession(db, "session")?.epicId).toBe("epic");
+    expect(getLinearSession(db, "session")?.delegationId).toBe("epic");
     expect(getLinearSession(db, "session")?.activeItemId).toBe("running");
     activateLinearItem(db, "session", "running");
     expect(() => activateLinearItem(db, "session", "queued")).toThrow("still active");
@@ -120,8 +120,8 @@ test("new tasks keep source IDs and get separate worktree identities while intak
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [initial.items[0]!.id]);
     const later = await task(db, "turn:followup");
     const replay = await task(db, "turn:followup");
-    expect(replay.epic.id).toBe(later.epic.id);
-    expect(initial.epic.id).not.toBe(later.epic.id);
+    expect(replay.delegation.id).toBe(later.delegation.id);
+    expect(initial.delegation.id).not.toBe(later.delegation.id);
     const first = getWorkItem(db, initial.items[0]!.id)!;
     const next = getWorkItem(db, later.items[0]!.id)!;
     expect(first.linearIssueId).toBe(next.linearIssueId);
@@ -146,17 +146,17 @@ test("session ownership and active child routing remain separate from shared iss
       appUserId: "app",
       creatorId: "human",
     });
-    bindLinearSessionTask(db, "first", first.epic.id);
+    bindLinearSessionTask(db, "first", first.delegation.id);
     activateLinearItem(db, "first", first.items[0]!.id);
     ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
-    bindLinearSessionTask(db, "second", second.epic.id);
+    bindLinearSessionTask(db, "second", second.delegation.id);
     activateLinearItem(db, "second", second.items[0]!.id);
     expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("human");
     expect(delegatedLinearUserId(db, second.items[0]!.id)).toBeNull();
     expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
       "ownership changed",
     );
-    expect(() => bindLinearSessionTask(db, "second", first.epic.id)).toThrow();
+    expect(() => bindLinearSessionTask(db, "second", first.delegation.id)).toThrow();
     expect(() => activateLinearItem(db, "second", first.items[0]!.id)).toThrow("route changed");
     expect(getWorkItem(db, first.items[0]!.id)?.sessionKey).toBe("first");
   } finally {
@@ -179,13 +179,13 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
     recordLinearTurn(db, turn("later", 20));
     recordLinearTurn(db, turn("earlier", 10));
     recordLinearTurn(db, { ...turn("later", 20), body: "Edited comment" });
-    expect(getLinearSession(db, "session")?.epicId).toBeNull();
+    expect(getLinearSession(db, "session")?.delegationId).toBeNull();
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.body)).toEqual([
       "earlier",
       "later",
     ]);
     const result = await task(db);
-    bindLinearSessionTask(db, "session", result.epic.id, { actorId: "human" });
+    bindLinearSessionTask(db, "session", result.delegation.id, { actorId: "human" });
     const itemId = result.items[0]!.id;
     activateLinearItem(db, "session", itemId);
     applyLinearTurns(db, "session", ["earlier"], itemId);
@@ -239,7 +239,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
       "ENG-1 is already being worked on in another session.",
     );
-    expect(getLinearSession(db, "second")?.epicId ?? null).toBeNull();
+    expect(getLinearSession(db, "second")?.delegationId ?? null).toBeNull();
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.activeItemId]);
     await orchestrator.onLinearEvent({

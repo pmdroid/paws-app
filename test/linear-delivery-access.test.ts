@@ -31,7 +31,7 @@ function fixture() {
   const item = insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId });
-  bindLinearSessionTask(db, "session", item.epicId, { actorId: "human" });
+  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "human" });
   recordLinearInstallation(db, {
     ...scope,
     sessionId: "session",

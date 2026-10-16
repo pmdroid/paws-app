@@ -138,7 +138,7 @@ export function createRunnerPlacement(options: {
       item: item
         ? {
             id: item.id,
-            epicId: item.epicId,
+            delegationId: item.delegationId,
             issueId: item.linearIssueId,
             sessionId: item.sessionKey,
             currentRunId: item.currentRunId,

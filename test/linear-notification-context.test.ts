@@ -31,7 +31,7 @@ test("child notifications refresh only their installation sessions and retain co
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected intake cycle");
   recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-  bindLinearSessionTask(db, "session", task.epic.id);
+  bindLinearSessionTask(db, "session", task.delegation.id);
   tracker.issueContexts.set("child", {
     id: "child",
     teamId: "team",

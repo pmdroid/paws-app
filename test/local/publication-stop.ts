@@ -107,7 +107,7 @@ export async function probePublicationStop(
       tracker: createFakeTracker(),
       repository,
       github,
-      canDispatchEpic: (epicId) => !pendingEpics.has(epicId),
+      canDispatchDelegation: (delegationId) => !pendingEpics.has(delegationId),
       publicationReady: (...args) => freshness?.(...args) ?? true,
       dispatchReady,
       remoteExecution: {
@@ -323,8 +323,8 @@ export async function probePublicationStop(
         calls.length === beforePending,
       { successor, calls: calls.length },
     );
-    current.orchestrator.applyEpicChanges({
-      epicId: "pending",
+    current.orchestrator.applyDelegationChanges({
+      delegationId: "pending",
       sessionId: "pending-session",
       addedItemIds: [],
       removedItemIds: [],
@@ -448,7 +448,7 @@ export async function probePublicationStop(
     db.run(
       `CREATE TABLE IF NOT EXISTS work_item_specification(item_id TEXT PRIMARY KEY REFERENCES work_item(id),hash TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),present INTEGER NOT NULL CHECK(present IN(0,1))) STRICT`,
     );
-    for (const [epicId, oldState, newState] of [
+    for (const [delegationId, oldState, newState] of [
       ["restored", "cancelled", "queued"],
       ["all-removed", "cancelled", null],
       ["delivered-history", "merged", "cancelled"],
@@ -456,35 +456,35 @@ export async function probePublicationStop(
       db.run(
         "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
         [
-          `${epicId}-old`,
-          epicId,
-          `${epicId}-issue`,
-          epicId,
-          epicId,
+          `${delegationId}-old`,
+          delegationId,
+          `${delegationId}-issue`,
+          delegationId,
+          delegationId,
           oldState,
-          `paws/${epicId}-old`,
+          `paws/${delegationId}-old`,
         ],
       );
       db.run(
         "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'old',1,0)",
-        [`${epicId}-old`],
+        [`${delegationId}-old`],
       );
       if (newState) {
         db.run(
           "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
           [
-            `${epicId}-new`,
-            epicId,
-            `${epicId}-issue`,
-            epicId,
-            epicId,
+            `${delegationId}-new`,
+            delegationId,
+            `${delegationId}-issue`,
+            delegationId,
+            delegationId,
             newState,
-            `paws/${epicId}-new`,
+            `paws/${delegationId}-new`,
           ],
         );
         db.run(
           "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'new',1,1)",
-          [`${epicId}-new`],
+          [`${delegationId}-new`],
         );
       }
     }
@@ -542,7 +542,7 @@ export async function probePublicationStop(
         profiles: { implementer: { agent: "codex" }, reviewer: { agent: "codex" } },
       }),
     );
-    freshness = (itemId) => !pendingEpics.has(getWorkItem(db, itemId)!.epicId);
+    freshness = (itemId) => !pendingEpics.has(getWorkItem(db, itemId)!.delegationId);
     onToken = () => {
       onToken = undefined;
       pendingEpics.add("owned-refresh");
@@ -609,7 +609,7 @@ export async function probePublicationStop(
       );
       shared = Promise.resolve().then(async () => {
         const change = {
-          epicId: "owned-refresh",
+          delegationId: "owned-refresh",
           sessionId: "owned-refresh-session",
           addedItemIds: [],
           removedItemIds: [],
@@ -617,8 +617,8 @@ export async function probePublicationStop(
           specChangedItemIds: ["owned-refresh-item"],
           parentCanceled: false,
         };
-        current.orchestrator.applyEpicChanges(change);
-        await current.orchestrator.finishEpicChanges(change);
+        current.orchestrator.applyDelegationChanges(change);
+        await current.orchestrator.finishDelegationChanges(change);
         joinedRefresh = true;
       });
       return waiter;
@@ -659,7 +659,7 @@ export async function probePublicationStop(
     await current.orchestrator.shutdown();
     const readyIds: string[] = [];
     current = create(({ legacyReadyItemIds }) => readyIds.push(...legacyReadyItemIds));
-    for (const [epicId, retiredState] of [
+    for (const [delegationId, retiredState] of [
       ["handoff-history", "merged"],
       ["cancelled-history", "cancelled"],
     ] as const) {
@@ -668,11 +668,11 @@ export async function probePublicationStop(
         ["new", "merged", 1],
         ["consumer", "queued", 1],
       ] as const) {
-        const itemId = `${epicId}-${suffix}`;
-        const issueId = suffix === "consumer" ? itemId : `${epicId}-issue`;
+        const itemId = `${delegationId}-${suffix}`;
+        const issueId = suffix === "consumer" ? itemId : `${delegationId}-issue`;
         db.run(
           "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
-          [itemId, epicId, issueId, itemId, itemId, state, `paws/${itemId}`],
+          [itemId, delegationId, issueId, itemId, itemId, state, `paws/${itemId}`],
         );
         db.run(
           "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,'version',1,?)",
@@ -698,7 +698,7 @@ export async function probePublicationStop(
       }
       db.run(
         "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
-        [`${epicId}-issue`, `${epicId}-consumer`],
+        [`${delegationId}-issue`, `${delegationId}-consumer`],
       );
     }
     current.orchestrator.reconcileExecution();

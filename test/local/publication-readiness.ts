@@ -24,7 +24,7 @@ import {
 import {
   createItemReconciler,
   createPublicationReadiness,
-  hasPendingEpicChanges,
+  hasPendingDelegationChanges,
   intakeDelegatedIssue,
   readyItems,
   type ItemChanges,
@@ -85,9 +85,9 @@ export async function probePublicationReadiness(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "human" });
+    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
-    const target = { epicId: intake.epic.id, workspaceId: "workspace" };
+    const target = { delegationId: intake.delegation.id, workspaceId: "workspace" };
     let onChanges = (_changes: ItemChanges) => {};
     let afterChanges = async (_changes: ItemChanges) => {};
     const reconciler = createItemReconciler({
@@ -313,12 +313,16 @@ export async function probePublicationReadiness(root: string) {
       } finally {
         clearTimeout(watchdog);
       }
-      for (let tries = 0; tries < 100 && hasPendingEpicChanges(f.db, f.target.epicId); tries++)
+      for (
+        let tries = 0;
+        tries < 100 && hasPendingDelegationChanges(f.db, f.target.delegationId);
+        tries++
+      )
         await Bun.sleep(10);
       assert(joined);
       assert(exited);
       assert.equal(mergeCalls, 0);
-      assert(!hasPendingEpicChanges(f.db, f.target.epicId));
+      assert(!hasPendingDelegationChanges(f.db, f.target.delegationId));
       const job = f.db
         .query<{ status: string; worker: string | null }, []>(
           "SELECT status,locked_by AS worker FROM job WHERE queue='github.merge'",
@@ -347,13 +351,13 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(hasPendingEpicChanges(f.db, f.target.epicId));
+      assert(hasPendingDelegationChanges(f.db, f.target.delegationId));
       f.tracker.loadEpic = original;
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(!hasPendingEpicChanges(f.db, f.target.epicId));
+      assert(!hasPendingDelegationChanges(f.db, f.target.delegationId));
       observe(
         "Failed authoritative reads hold publication durably and repaired reads release the same candidate",
-        { loads: f.loads(), pending: hasPendingEpicChanges(f.db, f.target.epicId) },
+        { loads: f.loads(), pending: hasPendingDelegationChanges(f.db, f.target.delegationId) },
       );
     } finally {
       await f.close();
@@ -436,10 +440,10 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(hasPendingEpicChanges(f.db, f.target.epicId));
+      assert(hasPendingDelegationChanges(f.db, f.target.delegationId));
       observe(
         "A session generation change during the fresh read cannot approve the old publication context",
-        { pending: hasPendingEpicChanges(f.db, f.target.epicId) },
+        { pending: hasPendingDelegationChanges(f.db, f.target.delegationId) },
       );
     } finally {
       await f.close();

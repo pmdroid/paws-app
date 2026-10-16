@@ -41,7 +41,7 @@ describe("intake", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.epic.state).toBe("running");
+    expect(result.delegation.state).toBe("running");
     expect(result.items.map((item) => item.linearIdentifier)).toEqual(["ENG-2", "ENG-3", "ENG-4"]);
     expect(result.items.map((item) => item.state)).toEqual(["queued", "queued", "queued"]);
     expect(result.items[0]?.branchName).toBe("paws/eng-2");
@@ -90,7 +90,7 @@ describe("intake", () => {
     db.close();
   });
 
-  test("adopting a parent finishes the epic without items and announces separate sessions", async () => {
+  test("adopting a parent finishes the delegation without items and announces separate sessions", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([
       {
@@ -126,8 +126,8 @@ describe("intake", () => {
     if (!result.ok) return;
     expect(result.alreadyExisted).toBe(false);
     expect(result.items).toEqual([]);
-    expect(result.epic.state).toBe("done");
-    expect(result.epic.id).toBe("approval");
+    expect(result.delegation.state).toBe("done");
+    expect(result.delegation.id).toBe("approval");
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
@@ -144,12 +144,12 @@ describe("intake", () => {
     expect(again.ok && again.alreadyExisted).toBe(true);
     if (!again.ok) return;
     expect(again.items).toEqual([]);
-    expect(again.epic.id).toBe(result.epic.id);
+    expect(again.delegation.id).toBe(result.delegation.id);
     expect(tracker.progress).toHaveLength(1);
     db.close();
   });
 
-  test("adoptParent false keeps the ordered multi-item epic", async () => {
+  test("adoptParent false keeps the ordered multi-item delegation", async () => {
     const db = tempDb();
     const tracker = createFakeTracker([parent]);
     const result = await intakeDelegatedIssue(db, tracker, {
@@ -159,7 +159,7 @@ describe("intake", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.epic.state).toBe("running");
+    expect(result.delegation.state).toBe("running");
     expect(result.items.map((item) => item.linearIdentifier)).toEqual(["ENG-2", "ENG-3", "ENG-4"]);
     expect(tracker.progress.map((update) => update.body)).toEqual([
       queueMessage(["ENG-2", "ENG-3", "ENG-4"], false),
@@ -207,7 +207,7 @@ describe("intake", () => {
     if (result.ok) return;
     expect(result.reason).toBe("cycle");
     expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
-    expect(result.epic.state).toBe("stalled");
+    expect(result.delegation.state).toBe("stalled");
     const items = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get();
     expect(items?.n).toBe(0);
     expect(tracker.progress[0]).toMatchObject({
@@ -382,7 +382,7 @@ describe("intake", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.epic.state).toBe("running");
+    expect(result.delegation.state).toBe("running");
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
@@ -392,7 +392,7 @@ describe("intake", () => {
     });
     expect(again.ok && again.alreadyExisted).toBe(true);
     if (!again.ok) return;
-    expect(again.epic.id).toBe(result.epic.id);
+    expect(again.delegation.id).toBe(result.delegation.id);
     expect(again.items.map((item) => item.id)).toEqual(result.items.map((item) => item.id));
     expect(tracker.progress).toHaveLength(1);
     db.run("UPDATE work_item SET state = 'cancelled'");
@@ -400,13 +400,13 @@ describe("intake", () => {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
-    expect(cancelled.ok && cancelled.epic.state).toBe("cancelled");
+    expect(cancelled.ok && cancelled.delegation.state).toBe("cancelled");
     db.run("UPDATE work_item SET state = 'merged'");
     const done = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
     });
-    expect(done.ok && done.epic.state).toBe("done");
+    expect(done.ok && done.delegation.state).toBe("done");
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
     ).toEqual([]);
@@ -444,7 +444,7 @@ describe("intake", () => {
     if (!result.ok) return;
     expect(result.alreadyExisted).toBe(false);
     expect(result.items).toEqual([]);
-    expect(result.epic).toMatchObject({
+    expect(result.delegation).toMatchObject({
       id: "approval",
       linearIssueId: "parent",
       linearIdentifier: "ENG-1",
@@ -464,7 +464,7 @@ describe("intake", () => {
     });
     expect(again.ok && again.alreadyExisted).toBe(true);
     if (!again.ok) return;
-    expect(again.epic.id).toBe("approval");
+    expect(again.delegation.id).toBe("approval");
     expect(again.items).toEqual([]);
     expect(tracker.progress).toHaveLength(1);
     expect(
@@ -488,7 +488,7 @@ describe("intake", () => {
     if (result.ok) return;
     expect(result.reason).toBe("cycle");
     expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
-    expect(result.epic.state).toBe("stalled");
+    expect(result.delegation.state).toBe("stalled");
     expect(result.alreadyExisted).toBe(false);
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),

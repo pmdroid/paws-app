@@ -229,7 +229,7 @@ export async function probeExecutionLifecycle(
       outbox: new OutboxDispatcher(guardDb, clock),
       clock,
       pawsRoot: join(root, "admission"),
-      canDispatchEpic: () => allowed,
+      canDispatchDelegation: () => allowed,
     });
     try {
       guardDb.run(

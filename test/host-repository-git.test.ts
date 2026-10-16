@@ -238,7 +238,7 @@ test("verified saved credentials reach real host clone and fetch without reachin
       issueId: item.linearIssueId,
       now: Date.now(),
     });
-    bindLinearSessionTask(db, item.sessionKey!, item.epicId, { actorId: "human" });
+    bindLinearSessionTask(db, item.sessionKey!, item.delegationId, { actorId: "human" });
     saveTaskMode(db, item.id, "answer", 0, true);
     const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
     recordLinearInstallation(db, {

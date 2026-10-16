@@ -60,7 +60,7 @@ async function fixture(token = true, children = false) {
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
   recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-  bindLinearSessionTask(db, "session", task.epic.id, { actorId: "human" });
+  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
   const bus = new CommandBus();
   const owned = new AbortController();
   const notifications: string[] = [];
