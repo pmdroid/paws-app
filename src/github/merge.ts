@@ -42,6 +42,12 @@ export type SerialMergeInput = {
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
+  releaseWhilePending?: boolean;
+  priorVerification?: {
+    base: string;
+    head: string;
+    summary: string;
+  };
 };
 
 /**
@@ -74,12 +80,14 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     const pushed = await pushRebased(input, url, branch, gitExec);
     if (!pushed.ok) return { ...pushed.result, cycle };
 
-    const verified = await input.reverify({
-      worktree: input.worktree,
-      base: pushed.base,
-      head: pushed.head,
-      cycle,
-    });
+    const verified =
+      reuseVerification(input, pushed) ??
+      (await input.reverify({
+        worktree: input.worktree,
+        base: pushed.base,
+        head: pushed.head,
+        cycle,
+      }));
     if (!verified.accepted) {
       return {
         merged: false,
@@ -97,6 +105,18 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       head: pushed.head,
       token: () => operationToken(input, "merge"),
     });
+    if (readiness.outcome === "pending") {
+      return {
+        merged: false,
+        outcome: "waiting",
+        branch,
+        base: pushed.base,
+        head: pushed.head,
+        summary: verified.summary,
+        cycle,
+        message: readiness.message,
+      };
+    }
     if (readiness.outcome !== "ready") {
       return {
         merged: false,
@@ -306,6 +326,17 @@ function operationToken(input: SerialMergeInput, purpose: "push" | "merge"): Pro
     },
     purpose,
   );
+}
+
+function reuseVerification(
+  input: SerialMergeInput,
+  pushed: { base: string; head: string },
+): ReverifyResult | undefined {
+  const prior = input.priorVerification;
+  if (prior === undefined || prior.base !== pushed.base || prior.head !== pushed.head) {
+    return undefined;
+  }
+  return { accepted: true, outcome: "merged", summary: prior.summary };
 }
 
 function safeBranch(issue: string): string {
