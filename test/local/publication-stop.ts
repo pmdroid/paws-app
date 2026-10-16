@@ -346,8 +346,33 @@ export async function probePublicationStop(
     );
     for (const [position, id] of ["a", "b", "free"].entries()) {
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,'cycle',?,?,?,'queued',?, ?,1,'cycle-session')",
-        [`cycle-${id}`, id, id, id, `paws/${id}`, position],
+        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key,brief) VALUES(?,'cycle',?,?,?,'queued',?, ?,1,'cycle-session',?)",
+        [
+          `cycle-${id}`,
+          id,
+          id,
+          id,
+          `paws/${id}`,
+          position,
+          JSON.stringify({
+            issue: {
+              source: "linear",
+              issueId: id,
+              identifier: id,
+              title: id,
+              description: null,
+              acceptanceCriteria: null,
+            },
+            epic: {
+              source: "linear",
+              issueId: "cycle-parent",
+              identifier: "CYC-1",
+              title: "Cycle",
+              description: null,
+              acceptanceCriteria: null,
+            },
+          }),
+        ],
       );
       saveTaskMode(db, `cycle-${id}`, "code");
     }
