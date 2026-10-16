@@ -39,6 +39,21 @@ export function createWorkspaceGitHubActivation(
       if (!value) throw new Error("GitHub activation secret unavailable.");
       return JSON.parse(value) as T;
     },
+    installations(): ActiveGitHubApp[] {
+      const rows = db
+        .query<{ secret_id: string; generation: number }, []>(
+          "SELECT secret_id,generation FROM workspace_github_connection WHERE secret_id IS NOT NULL AND installation_id IS NOT NULL",
+        )
+        .all();
+      if (rows.length === 0 && !db.query("SELECT 1 FROM workspace LIMIT 1").get()) {
+        const app = loadGitHubAppCredentials(home, env);
+        return app?.installationId ? [template()] : [];
+      }
+      return rows.map((row) => ({
+        ...this.read<ActiveGitHubApp>(row.secret_id),
+        generation: row.generation,
+      }));
+    },
     resolve(repository: string): ActiveGitHubApp {
       const rows = db
         .query<{ secret_id: string | null; generation: number; repositories: string }, [string]>(

@@ -60,6 +60,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   recordGitHubDelivery,
+  refreshRepositoryCatalog,
   startLoops,
   submitCommand,
   type WorkItemRecord,
@@ -80,6 +81,9 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  listAppRepositories,
+  listUserRepositories,
+  readGhUserToken,
   createGitHubApp,
   inspectPullRequestMerge,
   githubHttpsUrl,
@@ -178,6 +182,7 @@ export type StartOptions = {
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
+  refreshRepositories?: boolean;
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -250,6 +255,32 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     .filter((value): value is RepositoryBinding => value !== null);
   const auth = repository === null ? null : authProvider(runtime, repository, "write", resolveApp);
   const github = githubBinding(auth);
+  const listCatalog = async () => {
+    const client = createFetchGitHubClient();
+    if (runtime.githubAuth === "gh") {
+      if (repository === null) return [];
+      const token = await readGhUserToken({ owner: repository.owner, repo: repository.repo });
+      return listUserRepositories({ client, token, signal: abort.signal });
+    }
+    const lists = await Promise.all(
+      appActivation.installations().map((app) =>
+        listAppRepositories({
+          client,
+          appId: app.appId,
+          installationId: app.installationId!,
+          privateKeyPem: app.privateKeyPem,
+          signal: abort.signal,
+        }),
+      ),
+    );
+    return lists.flat();
+  };
+  if (options?.refreshRepositories) {
+    void refreshRepositoryCatalog(db, listCatalog);
+    const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
+    catalogTimer.unref?.();
+    abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
+  }
   const webhooks = runtime.webhooks;
   const channel: "comments" | "agent-session" =
     runtime.linearMode === "agent-session" ? "agent-session" : "comments";
@@ -1608,6 +1639,7 @@ if (import.meta.main) {
     process.exit(1);
   }
   const paws = startPaws(process.env, {
+    refreshRepositories: true,
     noTunnel: argv.includes("--no-tunnel"),
   });
   let exiting = false;
