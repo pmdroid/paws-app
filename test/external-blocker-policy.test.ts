@@ -5,7 +5,7 @@ import {
   intakeDelegatedIssue,
   readyItems,
   saveExternalBlockerPolicies,
-  syncEpicDependencies,
+  syncItemDependencies,
   type ExternalBlockerPolicy,
   type MergeEvidence,
 } from "../src/intake";
@@ -55,7 +55,9 @@ async function fixture() {
     observedAtMs: 1000,
   });
   bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "linear-person" });
-  const target = { workspaceId: "workspace", epicId: intake.epic.id };
+  const itemId = intake.items[0]!.id;
+  const target = { workspaceId: "workspace", itemId };
+  const policyTarget = { workspaceId: "workspace", epicId: intake.epic.id };
   const policy: ExternalBlockerPolicy = {
     blockerLinearIssueId: "a",
     outcome: "merge",
@@ -75,7 +77,7 @@ async function fixture() {
   let outage = false;
   let duringRead: (() => void) | undefined;
   const refresh = () =>
-    syncEpicDependencies(db, {
+    syncItemDependencies(db, {
       ...target,
       expectedGeneration: readyItems(db, target).generation,
       tracker,
@@ -87,7 +89,7 @@ async function fixture() {
       },
     });
   const save = (policies: ExternalBlockerPolicy[]) =>
-    saveExternalBlockerPolicies(db, { ...target, userId: "person", policies });
+    saveExternalBlockerPolicies(db, { ...policyTarget, userId: "person", policies });
   return {
     db,
     target,
@@ -96,7 +98,7 @@ async function fixture() {
     policy,
     refresh,
     save,
-    ready: () => readyItems(db, target).readyItemIds.includes(intake.items[0]!.id),
+    ready: () => readyItems(db, target).readyItemIds.includes(itemId),
     setEvidence: (value: Partial<MergeEvidence>) => {
       evidence = { ...evidence, ...value };
     },
@@ -131,7 +133,7 @@ test("External code blockers require the approved merged PR and retain evidence"
     expect(f.ready()).toBe(true);
     const proof = f.db
       .query<{ external_evidence: string }, []>(
-        "SELECT external_evidence FROM epic_dependency_snapshot",
+        "SELECT external_evidence FROM item_dependency_snapshot",
       )
       .get()!;
     expect(JSON.parse(proof.external_evidence).a.merge.mergeSha).toBe("b".repeat(40));
@@ -216,6 +218,10 @@ test("Managed blockers in another epic require canonical delivery", async () => 
     bindLinearSessionTask(f.db, "other-session", intake.epic.id, { actorId: "linear-person" });
     const item = intake.items[0]!;
     saveTaskMode(f.db, item.id, "code");
+    f.db.run(
+      "INSERT INTO project_approval(id,workspace_id,project_id,actor_id,lead_user_id,generation,preview,created_at,expires_at,approved_at) VALUES('approval','workspace','parent','person','person','1','{}',1000,9000,1000)",
+    );
+    f.db.run("UPDATE work_item SET project_approval_id='approval'");
     await f.refresh();
     expect(f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);
@@ -338,7 +344,7 @@ test("A fresh process retains exact merge evidence and refuses expired snapshots
         process.execPath,
         "--no-env-file",
         "-e",
-        `import {Database} from 'bun:sqlite';import {readyItems} from ${JSON.stringify(join(import.meta.dir, "../src/intake/index.ts"))};const db=new Database(process.argv[1]);const target=JSON.parse(process.argv[2]);const before=readyItems(db,target).readyItemIds.length;db.run("UPDATE epic_dependency_snapshot SET external_evidence=json_set(external_evidence,'$.a.checkedAt',0)");const after=readyItems(db,target).readyItemIds.length;console.log(JSON.stringify({before,after}));db.close();`,
+        `import {Database} from 'bun:sqlite';import {readyItems} from ${JSON.stringify(join(import.meta.dir, "../src/intake/index.ts"))};const db=new Database(process.argv[1]);const target=JSON.parse(process.argv[2]);const before=readyItems(db,target).readyItemIds.length;db.run("UPDATE item_dependency_snapshot SET external_evidence=json_set(external_evidence,'$.a.checkedAt',0)");const after=readyItems(db,target).readyItemIds.length;console.log(JSON.stringify({before,after}));db.close();`,
         database,
         JSON.stringify(f.target),
       ],

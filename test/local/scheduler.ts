@@ -18,7 +18,7 @@ import {
   recordLinearInstallation,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
-import { intakeDelegatedIssue, syncEpicDependencies } from "../../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 import { dispatchReadyItems, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
 
@@ -364,17 +364,19 @@ export async function probeScheduler(
       assigneeId: null,
       delegateId: null,
     });
-    await syncEpicDependencies(db, {
-      epicId: intake.epic.id,
-      workspaceId: "workspace",
-      expectedGeneration: 0,
-      tracker,
-      lifecycle,
-    });
+    for (const item of intake.items)
+      await syncItemDependencies(db, {
+        itemId: item.id,
+        workspaceId: "workspace",
+        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+          .generation,
+        tracker,
+        lifecycle,
+      });
     assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids }), [
       intake.items[0]!.id,
     ]);
-    db.run("UPDATE epic_dependency_snapshot SET scope='[]'");
+    db.run("UPDATE item_dependency_snapshot SET scope='[]'");
     assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), []);
     assert.equal(count(db, "scheduler_admission"), 0);
     assert.equal(
@@ -434,13 +436,15 @@ export async function probeScheduler(
           projectId: "same-project",
           paths: [`src/${item.linearIssueId}`],
         });
-      await syncEpicDependencies(db, {
-        epicId: intake.epic.id,
-        workspaceId: "workspace",
-        expectedGeneration: 0,
-        tracker,
-        lifecycle,
-      });
+      for (const item of intake.items)
+        await syncItemDependencies(db, {
+          itemId: item.id,
+          workspaceId: "workspace",
+          expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+            .generation,
+          tracker,
+          lifecycle,
+        });
     }
     const admitted = dispatchReadyItems(db, { now: 1000, defaultRepository: repository });
     assert.equal(admitted.length, 4);

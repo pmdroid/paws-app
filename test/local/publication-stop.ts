@@ -23,7 +23,7 @@ import {
 } from "../../src/db";
 import { branchForIssue, closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
-import { syncEpicDependencies } from "../../src/intake";
+import { readyItems, syncItemDependencies } from "../../src/intake";
 import { itemPathId, Orchestrator, type OrchestratorOptions } from "../../src/loop";
 import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
@@ -383,13 +383,14 @@ export async function probePublicationStop(
     };
     const lifecycle = createFakeLinearIssueLifecycle({ id: "a", ...ownership });
     lifecycle.issues.set("b", { id: "b", ...ownership });
-    await syncEpicDependencies(db, {
-      epicId: "cycle",
-      workspaceId: "cycle-workspace",
-      expectedGeneration: 0,
-      tracker: cycleTracker,
-      lifecycle,
-    });
+    for (const itemId of ["cycle-a", "cycle-b", "cycle-free"])
+      await syncItemDependencies(db, {
+        itemId,
+        workspaceId: "cycle-workspace",
+        expectedGeneration: readyItems(db, { itemId, workspaceId: "cycle-workspace" }).generation,
+        tracker: cycleTracker,
+        lifecycle,
+      });
     current.orchestrator.reconcileExecution();
     current.orchestrator.reconcileExecution();
     const cycleQuestion = db

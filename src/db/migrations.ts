@@ -1557,4 +1557,17 @@ DROP TABLE linear_session_task;
 ALTER TABLE linear_session DROP COLUMN current_epic_id;
 `,
   },
+  {
+    id: "062_item_dependency_snapshot",
+    sql: `
+CREATE TABLE item_dependency_snapshot (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  workspace_id TEXT NOT NULL REFERENCES workspace(id),
+  generation INTEGER NOT NULL CHECK(generation>0),
+  scope TEXT NOT NULL CHECK(json_valid(scope)),
+  linear_states TEXT NOT NULL CHECK(json_valid(linear_states)),
+  external_evidence TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(external_evidence))
+) STRICT;
+`,
+  },
 ];
