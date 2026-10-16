@@ -1,3 +1,4 @@
+import { teamRepositoryAllowedSql } from "../db";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { hintedPaths } from "../scheduler";
@@ -52,9 +53,8 @@ function scope(db: Database, questionId: string): Scope | null {
     JOIN linear_session s ON s.session_id=q.session_id
     JOIN workspace w ON w.linear_organization_id=s.organization_id
     JOIN work_item_repository r ON r.item_id=i.id
-    JOIN workspace_repository p ON p.workspace_id=w.id AND p.team_id=s.team_id
-      AND p.repository=lower(r.owner || '/' || r.repo)
-    WHERE q.id=? AND s.installation_observed_at IS NOT NULL`)
+    WHERE q.id=? AND s.installation_observed_at IS NOT NULL
+    AND ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(r.owner || '/' || r.repo)")}`)
     .get(questionId);
 }
 function accessible(db: Database, actor: Actor, source: Scope | null): source is Scope {

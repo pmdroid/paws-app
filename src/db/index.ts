@@ -58,7 +58,12 @@ export {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
 } from "./repositories";
-export { listRepositoryCatalog, refreshRepositoryCatalog } from "./repository-catalog";
+export {
+  listRepositoryCatalog,
+  refreshRepositoryCatalog,
+  listTeamRepositories,
+  teamRepositoryAllowedSql,
+} from "./repository-catalog";
 export type { CatalogEntry } from "./repository-catalog";
 export { migrations } from "./migrations";
 export type { Migration } from "./migrations";
