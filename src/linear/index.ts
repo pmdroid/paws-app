@@ -24,7 +24,7 @@ export type {
   PreparedLinearUpload,
   UploadedLinearFile,
 } from "./files";
-export { createLinearClient } from "./graphql";
+export { createLinearClient, LinearEntityNotFoundError } from "./graphql";
 export type { LinearClient } from "./graphql";
 export { createLinearRepositoryMethods } from "./repositories";
 export type {
