@@ -3912,9 +3912,6 @@ export class Orchestrator {
           suggestions = await this.tracker.issueRepositorySuggestions(
             {
               issueId: item.linearIssueId,
-              ...(this.options.channel !== "comments" && item.sessionKey
-                ? { agentSessionId: item.sessionKey }
-                : {}),
               candidateRepositories: candidates.map((candidate) => ({
                 hostname: "github.com",
                 repositoryFullName: `${candidate.owner}/${candidate.repo}`,
