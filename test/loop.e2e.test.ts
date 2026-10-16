@@ -1965,7 +1965,7 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
         returnPhases.push(checkpointPhaseOf(db, identifier));
       if (job !== null) turn += 1;
       if (job !== null || next !== state) idle = 0;
-      else if (idle++ < 400) await Bun.sleep(25);
+      else if (idle++ < 2400) await Bun.sleep(25);
       else break;
     }
     while (outbox.tick().length > 0) await outbox.idle();
