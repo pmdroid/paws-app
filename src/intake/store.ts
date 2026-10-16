@@ -152,6 +152,39 @@ export function insertRunningQueue(
   };
 }
 
+export function insertDoneEpic(
+  db: Database,
+  input: {
+    linearIssueId: string;
+    identifier: string;
+    title: string;
+    now: number;
+    taskKey?: string;
+  },
+): StoredEpic {
+  const id = ulid(input.now);
+  db.run(
+    `INSERT INTO epic (id, linear_issue_id, linear_identifier, title, state, version, created_at, task_key)
+     VALUES (?, ?, ?, ?, 'done', 0, ?, ?)`,
+    [
+      id,
+      input.linearIssueId,
+      input.identifier,
+      input.title,
+      input.now,
+      input.taskKey ?? `initial:${input.linearIssueId}`,
+    ],
+  );
+  return {
+    id,
+    linearIssueId: input.linearIssueId,
+    linearIdentifier: input.identifier,
+    title: input.title,
+    state: "done",
+    version: 0,
+  };
+}
+
 export function insertStalledEpic(
   db: Database,
   input: {

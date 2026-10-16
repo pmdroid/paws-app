@@ -147,6 +147,7 @@ export function createProjectFixture(filename = ":memory:") {
     linearIntakeScope: projects.scope,
     linearIntakeActor: projects.actor,
     onLinearIntake: projects.accepted,
+    adoptLinearParent: projects.adoptParent,
   });
   const actor = { workspaceId: "workspace", userId: "actor" };
   const selection = {

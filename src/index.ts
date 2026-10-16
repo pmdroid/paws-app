@@ -663,6 +663,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearIntakeScope: projectExecution.scope,
         linearIntakeActor: projectExecution.actor,
         onLinearIntake: projectExecution.accepted,
+        adoptLinearParent: projectExecution.adoptParent,
         authorizeLinearEvent: async (event) =>
           (await projectExecution.authorizeEvent(event)) ?? true,
         ...(workspace && linear?.tracker && linear.issueLifecycle
