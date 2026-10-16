@@ -165,6 +165,16 @@ for (const scenario of [
     const result = await waitForMergeReadiness(f.input);
     expect(result.outcome).toBe("blocked");
     expect(result.message).not.toContain("synthetic-token");
-    expect(f.sleeps()).toBe(0);
+    expect(f.sleeps()).toBe(2);
   });
 }
+
+test("a failed read right after the pull request opens is retried", async () => {
+  const f = fixture((_, poll) => {
+    if (poll === 1) throw new Error("GitHub GraphQL unavailable");
+    return { status: 200, body: fakeMergeReadiness(head) };
+  });
+  const result = await waitForMergeReadiness(f.input);
+  expect(result.outcome).toBe("ready");
+  expect(f.sleeps()).toBe(1);
+});
