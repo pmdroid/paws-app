@@ -890,3 +890,30 @@ test("a synchronous Linear adapter Stop joins the poll before SQLite can close",
     db.close();
   }
 });
+
+test("the catch-up poll ignores activities Paws posted itself", async () => {
+  const { client } = scripted(() =>
+    page(
+      [],
+      [],
+      [
+        {
+          id: "act_thought",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          user: { id: "app_1" },
+          agentSession: { id: "ses_1", issue: { id: "iss_1" } },
+          content: { __typename: "AgentActivityThoughtContent" },
+        },
+        {
+          id: "act_prompt",
+          updatedAt: "2026-01-02T00:00:01.000Z",
+          user: { id: "user_1" },
+          agentSession: { id: "ses_1", issue: { id: "iss_1" } },
+          content: { __typename: "AgentActivityPromptContent", body: "go on", type: "prompt" },
+        },
+      ],
+    ),
+  );
+  const sighting = await createIntakePollSource(client, { teamId: TEAM }).poll(0);
+  expect(sighting.activities.map((activity) => activity.id)).toEqual(["act_prompt"]);
+});
