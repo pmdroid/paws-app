@@ -15,10 +15,7 @@ test("recovery consumes only new public transcript observations once after an in
   migrate(db);
   try {
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','issue','ENG-1','Task','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
     );
     const line = (update: unknown) =>
       JSON.stringify({ event: { type: "session_update", update } }) + "\n";
@@ -90,10 +87,7 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
       "Seed",
     );
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','issue','ENG-1','Task','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
     );
     const runner = await durableConversation(db, "item");
     const agent = new URL("../../test/fixtures/brief-agent.ts", import.meta.url).pathname;
@@ -186,10 +180,7 @@ test("a concurrent prompt rejects without replacing the active transcript snapsh
   let running: Promise<unknown> | undefined;
   try {
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','issue','ENG-1','Task','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
     );
     const script = join(root, "script.json");
     writeFileSync(

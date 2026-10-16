@@ -118,10 +118,12 @@ test("a policy saved for an item is read back for that item only", async () => {
     f.save([f.policy]);
     expect(readExternalBlockerPolicies(f.db, f.target)).toEqual([f.policy]);
     f.db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('other-item',?,'other','DEP-9','Other','queued','paws/other',2,1001,'session')",
       [
         f.db
-          .query<{ epicId: string }, [string]>("SELECT epic_id AS epicId FROM work_item WHERE id=?")
+          .query<{ epicId: string }, [string]>(
+            "SELECT delegation_id AS epicId FROM work_item WHERE id=?",
+          )
           .get(f.target.itemId)!.epicId,
       ],
     );
@@ -135,8 +137,12 @@ test("a policy saved for an item is read back for that item only", async () => {
       f.db.query<{ itemId: string }, []>("SELECT item_id AS itemId FROM item_blocker_policy").all(),
     ).toEqual([{ itemId: f.target.itemId }]);
     expect(
-      f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM external_blocker_policy").get()!.n,
-    ).toBe(0);
+      f.db
+        .query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'external_blocker_policy'",
+        )
+        .get(),
+    ).toBeNull();
   } finally {
     f.db.close();
   }

@@ -100,15 +100,15 @@ test("migration 063 copies a request, an effect and a policy onto the non-termin
       { itemId: "queued-item", blockerIssueId: "blocker", revision: 3 },
       { itemId: "running-item", blockerIssueId: "blocker", revision: 3 },
     ]);
-    expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_request").get()!.n,
-    ).toBe(1);
-    expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_effect").get()!.n,
-    ).toBe(1);
-    expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM external_blocker_policy").get()!.n,
-    ).toBe(1);
+    for (const name of [
+      "epic_reconciliation_request",
+      "epic_reconciliation_effect",
+      "external_blocker_policy",
+      "epic",
+    ])
+      expect(
+        db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name),
+      ).toBeNull();
   } finally {
     db.close();
   }
@@ -177,8 +177,12 @@ test("a spec change on the item's issue is reconciled through the item", async (
     expect(specification().revision).toBe(2);
     expect(changed.at(-1)).toEqual([itemId]);
     expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_request").get()!.n,
-    ).toBe(0);
+      db
+        .query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'epic_reconciliation_request'",
+        )
+        .get(),
+    ).toBeNull();
     expect(
       db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_request").get()!.n,
     ).toBe(0);

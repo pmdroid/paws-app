@@ -310,7 +310,6 @@ export async function probeExecutionRuntime(input: {
   );
   acceptLinearStop(db, sessionId, JSON.stringify(["activity", "runtime-session-late"]), Date.now());
   applyWorkItemEvent(db, itemId, "cancel");
-  db.run("UPDATE epic SET state='done' WHERE id=?", [target.epicId]);
   const late = {
     type: "AgentSessionEvent",
     action: "prompted",
@@ -356,7 +355,6 @@ export async function probeExecutionRuntime(input: {
     });
   bindLinearSessionTask(db, "runtime-terminal-session", terminal.epicId, { actorId: "owner" });
   applyWorkItemEvent(db, terminal.id, "cancel");
-  db.run("UPDATE epic SET state='done' WHERE id=?", [terminal.epicId]);
   const store = createInboxStore(db);
   const replayKeys = [];
   for (const [nextSession, body] of [
