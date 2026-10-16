@@ -456,7 +456,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     expect(f.launches).toEqual(["classify", "classify"]);
     const children = db
       .query<{ id: string; linear_issue_id: string; state: string }, [string]>(
-        "SELECT id,linear_issue_id,state FROM work_item WHERE epic_id = ? ORDER BY position",
+        "SELECT id,linear_issue_id,state FROM work_item WHERE delegation_id = ? ORDER BY position",
       )
       .all(session.epicId!);
     expect(children.map((child) => child.linear_issue_id)).toEqual(["child", "second-child"]);
@@ -466,7 +466,7 @@ test("clarified parent code requests recover the ordered child queue and every c
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toEqual([]);
     const originalKey = db
       .query<{ task_key: string }, [string]>(
-        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE epic_id = ? ORDER BY position, id LIMIT 1`,
+        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY position, id LIMIT 1`,
       )
       .get(previous.epicId)!.task_key;
     const resolved = getTaskClassification(db, originalKey)!;

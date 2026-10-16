@@ -61,7 +61,7 @@ async function fixture(child = false, actorId: string | null = "human") {
           name: actorId,
           email: `${actorId}@example.invalid`,
         });
-  db.run("UPDATE work_item SET session_key = ?, owner_user_id = ? WHERE epic_id = ?", [
+  db.run("UPDATE work_item SET session_key = ?, owner_user_id = ? WHERE delegation_id = ?", [
     "session",
     ownerId,
     task.epic.id,

@@ -60,8 +60,12 @@ test("migration 062 starts items without a snapshot so startup resyncs them", ()
     migrate(db);
     expect(db.query("SELECT item_id FROM item_dependency_snapshot").all()).toEqual([]);
     expect(
-      db.query("SELECT 1 FROM epic_dependency_snapshot WHERE epic_id='epic'").get(),
-    ).toBeTruthy();
+      db
+        .query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'epic_dependency_snapshot'",
+        )
+        .get(),
+    ).toBeNull();
   } finally {
     db.close();
   }
@@ -72,11 +76,11 @@ test("an epic is snapshot-ready only when every active item has a snapshot", () 
   try {
     const first = insertQueuedItem(db, { id: "first", now: 1 });
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
       [first.epicId],
     );
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('done',?,'done','DEP-4','Done','merged','paws/done',2,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('done',?,'done','DEP-4','Done','merged','paws/done',2,1)",
       [first.epicId],
     );
     db.run(
@@ -93,7 +97,7 @@ test("an epic is snapshot-ready only when every active item has a snapshot", () 
     snap("second");
     expect(epicSnapshotsComplete(db, first.epicId)).toBe(true);
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('removed',?,'removed','DEP-5','Removed','queued','paws/removed',3,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('removed',?,'removed','DEP-5','Removed','queued','paws/removed',3,1)",
       [first.epicId],
     );
     db.run(
@@ -110,7 +114,7 @@ test("merged blocker evidence keeps the newest check", () => {
   try {
     const first = insertQueuedItem(db, { id: "first", now: 1 });
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
       [first.epicId],
     );
     db.run(

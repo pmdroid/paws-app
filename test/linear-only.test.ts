@@ -174,10 +174,6 @@ test("historical GitHub work is preserved and never recovered into Linear", () =
   const db = openDatabase(paths.db);
   migrate(db);
   const item = insertQueuedItem(db, { id: "historical", now: 1 });
-  db.run("UPDATE epic SET linear_issue_id = ? WHERE id = ?", [
-    "github:local/fixture#1",
-    item.epicId,
-  ]);
   db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
     "github:local/fixture#1",
     item.id,

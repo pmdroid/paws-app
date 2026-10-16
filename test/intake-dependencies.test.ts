@@ -170,7 +170,13 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
       });
     await refresh();
     expect(readyItems(db, target).readyItemIds).toEqual([]);
-    expect(count(db, "epic_dependency_snapshot")).toBe(0);
+    expect(
+      db
+        .query(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'epic_dependency_snapshot'",
+        )
+        .get(),
+    ).toBeNull();
     expect(count(db, "item_dependency_snapshot")).toBe(1);
     lifecycle.issues.get("open")!.stateType = "completed";
     await refresh();

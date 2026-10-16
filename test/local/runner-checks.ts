@@ -177,24 +177,12 @@ export async function probeRunnerChecks(
     );
     now = Date.now();
     assert.equal((await daemon.pollPairing()).phase, "paired");
-    const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
-    const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
-      organizationId: "relay-org",
-      oauthClientId: "fixture",
-      appUserId: "app",
-      sessionId: "relay-session",
-      teamId: "team",
-      observedAtMs: now,
-    });
-    bindLinearSessionTask(db, "relay-session", item.epicId, { actorId: "relay-owner" });
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
       baseSha: "a".repeat(40),
     };
-    bindWorkItemRepository(db, item.id, repository);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
       workspace.id,
       "fixture/repository",
@@ -235,6 +223,18 @@ export async function probeRunnerChecks(
       1000,
     );
     assert.deepEqual(db.query("PRAGMA foreign_key_check").all(), []);
+    const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
+    const { run } = beginImplementRun(db, item.id, now);
+    recordLinearInstallation(db, {
+      organizationId: "relay-org",
+      oauthClientId: "fixture",
+      appUserId: "app",
+      sessionId: "relay-session",
+      teamId: "team",
+      observedAtMs: now,
+    });
+    bindLinearSessionTask(db, "relay-session", item.epicId, { actorId: "relay-owner" });
+    bindWorkItemRepository(db, item.id, repository);
     async function dispatch(attempt = workspaceId(now)) {
       const assigned = checks.dispatch({
         runnerId,

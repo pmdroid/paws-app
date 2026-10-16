@@ -32,11 +32,7 @@ test("orchestrator resumes the session item through session_key alone", async ()
       ["older-live", "queued", 2_000],
     ] as const) {
       db.run(
-        "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,?,?)",
-        [id, `${id}-issue`, id, id, "running", createdAt],
-      );
-      db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
         [id, id, `${id}-issue`, id, id, state, `paws/${id}`, 0, createdAt, "session"],
       );
     }
