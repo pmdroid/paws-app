@@ -1955,14 +1955,18 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
       await installRebaseHook(layout.pawsRoot);
     } else await commitOnMain(layout.bare, "from-main\n");
     const returnPhases: (string | null)[] = [];
-    for (let turn = 0; turn < 40; turn += 1) {
+    let idle = 0;
+    for (let turn = 0; turn < 40;) {
       const state = stateOf(db, identifier);
       if (state === "merged" || state === "failed") break;
       const job = await jobs.tick();
       const next = stateOf(db, identifier);
       if (state === "merge_queue" && next === "running")
         returnPhases.push(checkpointPhaseOf(db, identifier));
-      if (job === null && (next === "merged" || next === "failed" || next === state)) break;
+      if (job !== null) turn += 1;
+      if (job !== null || next !== state) idle = 0;
+      else if (idle++ < 80) await Bun.sleep(25);
+      else break;
     }
     while (outbox.tick().length > 0) await outbox.idle();
     const prompts: string[] = [];
