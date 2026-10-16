@@ -546,6 +546,29 @@ test("a confident Linear suggestion binds the repository without a question", as
   }
 });
 
+test("a failed Linear suggestion read is retried before asking", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    const read = f.tracker.issueRepositorySuggestions.bind(f.tracker);
+    let calls = 0;
+    f.tracker.issueRepositorySuggestions = async (input, options) => {
+      calls += 1;
+      if (calls === 1) throw new Error("Linear GraphQL: RATELIMITED");
+      return read(input, options);
+    };
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+  } finally {
+    f.db.close();
+  }
+});
+
 test("close Linear suggestions ask with the top three repositories", async () => {
   const f = fixture({ confidence: 0.95 });
   try {
