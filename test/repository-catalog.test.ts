@@ -67,7 +67,10 @@ test("an app installation lists every unarchived repository across pages", async
         status: 200,
         body: { repositories: [...first.slice(0, 99), repo("old", { archived: true })] },
       };
-    return { status: 200, body: { repositories: [repo("paws-app")] } };
+    return {
+      status: 200,
+      body: { repositories: [repo("paws-app", { permissions: { push: false, pull: false } })] },
+    };
   });
   const listed = await listAppRepositories({
     client,
