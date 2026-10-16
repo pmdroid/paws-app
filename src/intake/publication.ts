@@ -78,9 +78,9 @@ export function createPublicationReadiness(input: {
         const generation =
           db
             .query<{ generation: number }, [string]>(
-              "SELECT generation FROM epic_dependency_snapshot WHERE epic_id=?",
+              "SELECT generation FROM item_dependency_snapshot WHERE item_id=?",
             )
-            .get(identity.epicId)?.generation ?? 0;
+            .get(itemId)?.generation ?? 0;
         return {
           identity,
           binding: JSON.stringify([itemId, identity, jobs[0], actual]),
@@ -109,7 +109,6 @@ export function createPublicationReadiness(input: {
       (saved.phase === phase || saved.phase === "merge") &&
       !hasPendingEpicChanges(db, before.identity.epicId) &&
       canAdvanceItem(db, {
-        epicId: before.identity.epicId,
         workspaceId: before.identity.workspaceId,
         itemId,
       }) &&
@@ -134,7 +133,6 @@ export function createPublicationReadiness(input: {
       after.binding !== before.binding ||
       hasPendingEpicChanges(db, after.identity.epicId) ||
       !canAdvanceItem(db, {
-        epicId: after.identity.epicId,
         workspaceId: after.identity.workspaceId,
         itemId,
       }) ||

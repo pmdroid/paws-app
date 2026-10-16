@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindLinearSessionTask, listTaskBlockers, recordLinearInstallation } from "../src/db";
-import { intakeDelegatedIssue, readyItems, syncEpicDependencies } from "../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { tempDb } from "./helpers";
 import { probeDependencySnapshots } from "./local/intake-dependencies";
@@ -53,7 +53,7 @@ async function dependencyEpic() {
   lifecycle.issues.set("outside", { ...lifecycle.issue, id: "outside", stateType: "completed" });
   const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
   if (!intake.ok) throw new Error("Intake failed");
-  const target = { epicId: intake.epic.id, workspaceId: "workspace" };
+  const workspaceId = "workspace";
   const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
   recordLinearInstallation(db, {
@@ -65,18 +65,23 @@ async function dependencyEpic() {
     observedAtMs: 1000,
   });
   bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
-  const refresh = () =>
-    syncEpicDependencies(db, {
-      ...target,
-      expectedGeneration: readyItems(db, target).generation,
-      tracker,
-      lifecycle,
-    });
-  return { db, tracker, lifecycle, target, ids, refresh };
+  const readyIds = () =>
+    intake.items.flatMap((item) => readyItems(db, { itemId: item.id, workspaceId }).readyItemIds);
+  const refresh = async () => {
+    for (const item of intake.items)
+      await syncItemDependencies(db, {
+        itemId: item.id,
+        workspaceId,
+        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId }).generation,
+        tracker,
+        lifecycle,
+      });
+  };
+  return { db, tracker, lifecycle, ids, refresh, readyIds, workspaceId };
 }
 
 test("sync stores internal and external edges in task_block and readiness matches", async () => {
-  const { db, tracker, lifecycle, target, ids, refresh } = await dependencyEpic();
+  const { db, tracker, lifecycle, ids, refresh, readyIds } = await dependencyEpic();
   try {
     tracker.deps.set("parent", [
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
@@ -87,14 +92,13 @@ test("sync stores internal and external edges in task_block and readiness matche
     expect(count(db, "task_block")).toBe(2);
     expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
     expect(listTaskBlockers(db, "outside")).toEqual([]);
-    const ready = () => readyItems(db, target).readyItemIds;
-    expect(ready()).not.toContain(ids.get("b")!);
-    expect(ready()).toContain(ids.get("a")!);
+    expect(readyIds()).not.toContain(ids.get("b")!);
+    expect(readyIds()).toContain(ids.get("a")!);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [ids.get("a")!]);
-    expect(ready()).toContain(ids.get("b")!);
+    expect(readyIds()).toContain(ids.get("b")!);
     lifecycle.issues.get("outside")!.stateType = "started";
     await refresh();
-    expect(ready()).not.toContain(ids.get("b")!);
+    expect(readyIds()).not.toContain(ids.get("b")!);
     expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
   } finally {
     db.close();
@@ -102,20 +106,96 @@ test("sync stores internal and external edges in task_block and readiness matche
 });
 
 test("a blocker stored only in task_block holds the dependent", async () => {
-  const { db, target, ids, refresh } = await dependencyEpic();
+  const { db, ids, refresh, readyIds } = await dependencyEpic();
   try {
     await refresh();
-    expect(readyItems(db, target).readyItemIds.sort()).toEqual(
-      [ids.get("a")!, ids.get("b")!].sort(),
-    );
+    expect(readyIds().sort()).toEqual([ids.get("a")!, ids.get("b")!].sort());
     expect(count(db, "task_block")).toBe(0);
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id, blocked_linear_issue_id) VALUES('a', 'b')",
     );
-    const ready = readyItems(db, target).readyItemIds;
+    const ready = readyIds();
     expect(ready).toContain(ids.get("a")!);
     expect(ready).not.toContain(ids.get("b")!);
     expect(count(db, "task_block")).toBe(1);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item with a satisfied and an unsatisfied external blocker stays held", async () => {
+  const db = tempDb();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "item",
+      identifier: "DEP-1",
+      title: "Item",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const lifecycle = createFakeLinearIssueLifecycle({
+    id: "done",
+    teamId: "team",
+    stateType: "completed",
+    assigneeId: null,
+    delegateId: null,
+  });
+  lifecycle.issues.set("open", { ...lifecycle.issue, id: "open", stateType: "started" });
+  try {
+    const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "item", now: 1000 });
+    if (!intake.ok) throw new Error("Intake failed");
+    const itemId = intake.items[0]!.id;
+    const target = { itemId, workspaceId: "workspace" };
+    db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+    recordLinearInstallation(db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "session",
+      teamId: "team",
+      observedAtMs: 1000,
+    });
+    bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
+    tracker.deps.set("item", [
+      { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
+      { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
+    ]);
+    const refresh = () =>
+      syncItemDependencies(db, {
+        ...target,
+        expectedGeneration: readyItems(db, target).generation,
+        tracker,
+        lifecycle,
+      });
+    await refresh();
+    expect(readyItems(db, target).readyItemIds).toEqual([]);
+    expect(count(db, "epic_dependency_snapshot")).toBe(0);
+    expect(count(db, "item_dependency_snapshot")).toBe(1);
+    lifecycle.issues.get("open")!.stateType = "completed";
+    await refresh();
+    expect(readyItems(db, target).readyItemIds).toEqual([itemId]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a stale dependency sync is rejected", async () => {
+  const { db, tracker, lifecycle, ids, refresh, workspaceId } = await dependencyEpic();
+  try {
+    await refresh();
+    const itemId = ids.get("a")!;
+    const target = { itemId, workspaceId };
+    const generation = readyItems(db, target).generation;
+    await expect(
+      syncItemDependencies(db, {
+        ...target,
+        expectedGeneration: generation - 1,
+        tracker,
+        lifecycle,
+      }),
+    ).rejects.toThrow(/snapshot changed/);
+    expect(readyItems(db, target).generation).toBe(generation);
   } finally {
     db.close();
   }

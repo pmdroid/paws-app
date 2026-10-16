@@ -2679,9 +2679,12 @@ export class Orchestrator {
     if (!["running", "stalled"].includes(this.epicRow(epicId)?.state ?? "")) return;
     const workspace = this.workspaceForEpic(epicId);
     if (!workspace || this.options.canDispatchEpic?.(epicId) === false) return;
-    let ids: string[];
+    const ids: string[] = [];
     try {
-      ids = readyItems(this.db, { epicId, workspaceId: workspace }).cycleHeldItemIds;
+      for (const item of this.epicItems(epicId))
+        ids.push(
+          ...readyItems(this.db, { itemId: item.id, workspaceId: workspace }).cycleHeldItemIds,
+        );
     } catch {
       return;
     }
@@ -2756,7 +2759,7 @@ export class Orchestrator {
     if (workspace) {
       try {
         return readyItems(this.db, {
-          epicId: item.epicId,
+          itemId: item.id,
           workspaceId: workspace,
         }).readyItemIds.includes(item.id);
       } catch {

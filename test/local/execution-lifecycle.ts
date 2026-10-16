@@ -16,7 +16,7 @@ import {
   getWorkItem,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
-import { syncEpicDependencies } from "../../src/intake";
+import { readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 
 export async function probeExecutionLifecycle(
@@ -180,10 +180,13 @@ export async function probeExecutionLifecycle(
       assigneeId: "external-human",
       delegateId: "external-app",
     });
-    await syncEpicDependencies(db, {
-      epicId: "external",
+    await syncItemDependencies(db, {
+      itemId: "external-0",
       workspaceId: "external-workspace",
-      expectedGeneration: 0,
+      expectedGeneration: readyItems(db, {
+        itemId: "external-0",
+        workspaceId: "external-workspace",
+      }).generation,
       tracker,
       lifecycle,
     });

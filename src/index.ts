@@ -124,7 +124,7 @@ import {
   createProjectHttp,
   createProjectExecutionGuard,
 } from "./project-execution";
-import { saveExternalBlockerPolicies } from "./intake";
+import { epicSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
@@ -241,7 +241,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const managedEpicReady = (epicId: string): boolean =>
     projectExecution.canDispatch(epicId) &&
     !hasPendingEpicChanges(db, epicId) &&
-    db.query("SELECT 1 FROM epic_dependency_snapshot WHERE epic_id=?").get(epicId) !== null;
+    epicSnapshotsComplete(db, epicId);
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -674,7 +674,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   currentWorkspace !== null &&
                   canAdvanceItem(db, {
                     itemId,
-                    epicId: item.epicId,
                     workspaceId: currentWorkspace.id,
                   })
                 );
@@ -957,7 +956,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             JOIN work_item i ON i.epic_id=e.id AND i.session_key IS NOT NULL
             JOIN linear_session s ON s.session_id=i.session_key
             JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
-            AND NOT EXISTS(SELECT 1 FROM epic_dependency_snapshot p WHERE p.epic_id=e.id)`)
+            AND EXISTS(SELECT 1 FROM work_item i WHERE i.epic_id=e.id AND i.state NOT IN ('completed','merged','cancelled')
+              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
+              AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=i.id))`)
             .all();
           for (const target of targets)
             enqueueJobOnce(db, {

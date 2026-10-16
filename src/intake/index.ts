@@ -8,7 +8,8 @@ export {
   canAdvanceItem,
   hasPendingEpicChanges,
   readyItems,
-  syncEpicDependencies,
+  syncItemDependencies,
+  epicSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness } from "./dependencies";
 export { createEpicReconciler } from "./reconciliation";
