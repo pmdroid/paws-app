@@ -34,9 +34,12 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 ReadWritePaths=/var/lib/paws-runner-spool
 ReadWritePaths=/var/lib/paws-check-input
-ReadOnlyPaths=/var/lib/paws-agent-results
+ReadWritePaths=/var/lib/paws-agent
+ReadWritePaths=/var/lib/paws-agent-results
+ReadWritePaths=/var/lib/paws-agent-tasks
+ReadWritePaths=/var/lib/paws-runner-members
 ReadOnlyPaths=/var/lib/paws-check-results
-InaccessiblePaths=-/var/lib/paws-agent -/var/lib/paws-runner-broker
+InaccessiblePaths=-/var/lib/paws-runner-broker
 
 [Install]
 WantedBy=multi-user.target
