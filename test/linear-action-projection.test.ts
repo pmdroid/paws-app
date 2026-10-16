@@ -126,9 +126,10 @@ test("tool results retain the input from their start and terminal details are du
   });
   expect(posted[0]?.action?.parameter).toContain("bun test");
   expect(posted.every((activity) => !activity.ephemeral)).toBe(true);
-  expect(posted[1]?.action?.parameter).toBe(posted[0]?.action?.parameter);
-  expect(posted[1]?.action?.result).toContain("14 tests passed");
-  expect(posted[1]?.ephemeral).not.toBe(true);
+  expect(posted.at(-1)?.action?.parameter).toBe(posted[0]?.action?.parameter);
+  expect(posted.at(-1)?.action?.result).toContain("14 tests passed");
+  expect(posted.at(-1)?.ephemeral).not.toBe(true);
+  expect(posted.find((activity) => activity.kind === "thought")?.body).toContain("14 tests passed");
   expect(JSON.stringify(posted)).not.toContain("opaque-123");
 });
 
@@ -205,7 +206,7 @@ test("stringified arguments and quoted environment assignments cannot publish cr
     rawOutput: "GITHUB_TOKEN='private quoted token' bun test. API_KEY=private-key",
   });
   expect(posted[0]?.action?.parameter).toContain("output.json");
-  expect(posted[1]?.action?.result).toContain("bun test");
+  expect(posted.at(-1)?.action?.result).toContain("bun test");
   expect(JSON.stringify(posted)).not.toContain("private");
 });
 
@@ -222,7 +223,8 @@ test("host credential values are removed from otherwise unlabelled tool output",
       status: "completed",
       rawOutput: "Check succeeded with synthetic-host-credential",
     });
-    expect(posted[0]?.action?.result).toBe("Check succeeded with [redacted]");
+    expect(posted.at(-1)?.action?.result).toBe("Check succeeded with [redacted]");
+    expect(posted[0]?.body).toContain("Check succeeded with [redacted]");
   } finally {
     if (previous === undefined) delete process.env.PAWS_ACTIVITY_TEST_TOKEN;
     else process.env.PAWS_ACTIVITY_TEST_TOKEN = previous;

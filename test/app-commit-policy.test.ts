@@ -44,18 +44,31 @@ afterEach(() => {
 
 test("roles remain distinct and matching verified identities deduplicate; missing roles cannot invent credit", () => {
   expect(policyCoauthors(policy)).toHaveLength(2);
-  expect(policyCoauthors({ ...policy, taskSteerer: policy.projectLead })).toHaveLength(1);
+  expect(policyCoauthors({ ...policy, taskSteerer: policy.projectLead! })).toHaveLength(1);
   expect(() => policyCoauthors({ ...policy, taskSteerer: undefined! })).toThrow(
     "Link consenting verified",
   );
   expect(() =>
     policyCoauthors({
       ...policy,
-      taskSteerer: { ...policy.projectLead, email: "invented@example.invalid" },
+      taskSteerer: { ...policy.projectLead!, email: "invented@example.invalid" },
     }),
   ).toThrow("Conflicting");
   expect(policyPullRequestCredit(policy)).toContain("https://github.com/lead");
   expect(policyPullRequestCredit(policy)).toContain("https://github.com/steerer");
+});
+
+test("standalone attribution keeps exactly its verified task steerer and requires explicit absent lead", () => {
+  const standalone = { ...policy, projectLead: null };
+  expect(policyCoauthors(standalone)).toEqual([policy.taskSteerer]);
+  expect(commitPolicyMessage("change", standalone)).toBe(
+    "change\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
+  );
+  expect(policyPullRequestCredit(standalone)).toBe(
+    "Task steerer: [@steerer](https://github.com/steerer)",
+  );
+  expect(() => policyCoauthors({ ...standalone, taskSteerer: undefined! })).toThrow();
+  expect(() => policyCoauthors({ ...policy, projectLead: undefined! })).toThrow();
 });
 
 async function fixture() {
@@ -223,7 +236,7 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
     insertRun(db, { itemId: item.id, now: 2 });
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
     expect(() =>
-      saveRunCommitPolicy(db, run.id, { ...policy, taskSteerer: policy.projectLead }),
+      saveRunCommitPolicy(db, run.id, { ...policy, taskSteerer: policy.projectLead! }),
     ).toThrow("cannot change");
   } finally {
     db.close();

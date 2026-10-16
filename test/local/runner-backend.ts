@@ -1380,10 +1380,14 @@ export async function probeRunnerBackend(
         },
       },
     });
+    let selectionReads = 0;
     const placedBackend = createRemoteAgentRunner({
       ...backendOptions,
       placement: {
-        candidates: placement.candidates,
+        candidates(request) {
+          selectionReads++;
+          return placement.candidates(request);
+        },
         started(request) {
           assert(db.inTransaction);
           assert(
@@ -1412,13 +1416,40 @@ export async function probeRunnerBackend(
     });
     const beforeFailoverImports = fetched;
     await git(["-C", source, "reset", "--hard", base]);
+    const selectionsBeforeWork = selectionReads;
+    let delayedPreparation = false;
     const failover = placedBackend.forItem(failoverItem.id)(
-      input(failoverItem, { signal: failoverAbort.signal }),
+      input(failoverItem, {
+        signal: failoverAbort.signal,
+        prepareInputFiles: async ({ prompt }) => {
+          if (!delayedPreparation) {
+            delayedPreparation = true;
+            now += 16_000;
+            for (const hostId of hostIds) work.heartbeat(hostId);
+            db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [
+              now,
+              principal.userId,
+            ]);
+          }
+          return { prompt, inputFiles: [] };
+        },
+      }),
     );
     pendingFailover = failover;
     void failover.catch(() => undefined);
-    const firstAttempt = await next(hostIds[0]!);
+    const firstAttempt = await Promise.race([
+      next(hostIds[0]!),
+      failover.then(() => {
+        throw new Error("Work completed before its assignment");
+      }),
+    ]);
     if (firstAttempt.type !== "run") throw new Error("Expected first failover work");
+    assert.equal(selectionReads - selectionsBeforeWork, 2);
+    observe(
+      "slow preparation and a benign membership refresh receive fresh runner admission immediately before assignment",
+      true,
+      { preparationMs: 16000, selections: 2 },
+    );
     const firstToken = work.issueGrant({
       runnerId: hostIds[0]!,
       runId: firstAttempt.runId,

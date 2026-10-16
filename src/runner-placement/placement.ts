@@ -149,9 +149,7 @@ export function createRunnerPlacement(options: {
       issueId: current.issueId,
       ownership: current.ownership,
       installation: db
-        .query(
-          "SELECT oauth_client_id,team_id,installation_observed_at FROM linear_session WHERE session_id=?",
-        )
+        .query("SELECT oauth_client_id,team_id FROM linear_session WHERE session_id=?")
         .get(current.session.sessionId),
     });
   }

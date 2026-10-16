@@ -561,6 +561,7 @@ try {
           db: paws.db,
           workspaceId: workspace.id,
           secret: source.LINEAR_WEBHOOK_SECRET!,
+          catchUp: () => paws.catchUp(),
           post: (body, eventHeaders) => call(browserPort, "/webhooks/linear", body, eventHeaders),
           advance(ms) {
             executionClockOffset += ms;

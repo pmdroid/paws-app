@@ -178,14 +178,15 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Read-only remote work requires the reviewer role");
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
-        const selected = await select(itemId, {
+        const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
           signal: input.signal,
-        });
+        };
+        const selected = await select(itemId, placementRequest);
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -355,6 +356,18 @@ export function createRemoteAgentRunner(options: {
               input.commitPolicy.bot.login !== checkpointBot.login)
           )
             throw new Error("Run attribution App bot authority changed");
+          if (options.placement) {
+            const admitted = (await options.placement.candidates(placementRequest)).some(
+              (runner) =>
+                runner.id === selected.id &&
+                runner.workspaceId === selected.workspaceId &&
+                runner.memberId === selected.memberId,
+            );
+            if (!admitted)
+              throw new RunnerUnavailableError(
+                "Selected runner is no longer available after preparation",
+              );
+          }
           signal.throwIfAborted();
           const boundRepository = taskScope?.repository ?? scoped.repository;
           const checkoutExclusions = input.checkoutExclusions

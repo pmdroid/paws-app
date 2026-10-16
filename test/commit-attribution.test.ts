@@ -137,7 +137,7 @@ test("trusted policy provider resolves current Linear lead and actual task actor
     const policy = await f.policy(f.item);
     expect(policy.projectLead).toEqual(githubAttribution(f.db, "workspace", "lead")!);
     expect(policy.taskSteerer).toEqual(githubAttribution(f.db, "workspace", "steerer")!);
-    expect(policy.projectLead.id).not.toBe(policy.taskSteerer.id);
+    expect(policy.projectLead!.id).not.toBe(policy.taskSteerer.id);
     expect(f.memberReads).toBe(2);
     revokeGitHubAttribution(f.db, f.bindings.get("lead")!, f.now);
     f.db.run(
@@ -162,8 +162,52 @@ test("same lead and actual steerer returns one verified identity at the policy d
   }
 });
 
+test("standalone issues require only the verified consenting task steerer", async () => {
+  const f = fixture();
+  try {
+    f.context = { ...f.context, projectId: null, leadId: null };
+    revokeGitHubAttribution(f.db, f.bindings.get("lead")!, f.now);
+    const policy = await f.policy(f.item);
+    expect(policy.projectLead).toBeNull();
+    expect(policy.taskSteerer).toEqual(githubAttribution(f.db, "workspace", "steerer")!);
+    expect(f.memberReads).toBe(1);
+    revokeGitHubAttribution(f.db, f.bindings.get("steerer")!, f.now);
+    await expect(f.policy(f.item)).rejects.toThrow("verifiedConsent");
+  } finally {
+    f.db.close();
+  }
+});
+
 for (const failure of [
-  "project",
+  "actor",
+  "observer",
+  "inactive",
+  "guest",
+  "team",
+  "changed-actor",
+] as const) {
+  test(`standalone attribution refuses missing or unauthorized ${failure}`, async () => {
+    const f = fixture();
+    try {
+      f.context = { ...f.context, projectId: null, leadId: null };
+      if (failure === "actor") f.db.run("UPDATE linear_session_task SET owner_actor_id=NULL");
+      if (failure === "observer")
+        f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='steerer'");
+      if (failure === "inactive") f.active = false;
+      if (failure === "guest") f.guest = true;
+      if (failure === "team") f.db.run("UPDATE linear_session SET team_id='other'");
+      if (failure === "changed-actor")
+        f.onMember = () => {
+          f.db.run("UPDATE linear_session_task SET owner_actor_id='lead'");
+        };
+      await expect(f.policy(f.item)).rejects.toThrow();
+    } finally {
+      f.db.close();
+    }
+  });
+}
+
+for (const failure of [
   "projectLead",
   "taskSteerer",
   "outsider",
@@ -182,7 +226,6 @@ for (const failure of [
         if (failure === "stale-inactive") f.active = false;
         else f.guest = true;
       }
-      if (failure === "project") f.context = { ...f.context, projectId: null, leadId: null };
       if (failure === "projectLead") f.context = { ...f.context, leadId: null };
       if (failure === "taskSteerer") f.db.run("UPDATE linear_session_task SET owner_actor_id=NULL");
       if (failure === "outsider") f.context = { ...f.context, leadId: "unknown" };
