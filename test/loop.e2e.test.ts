@@ -418,13 +418,8 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
-    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
-      expect.objectContaining({
-        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
-      }),
-    ]);
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
     expect(
       tracker.sessionUpdates.some((update) =>
         update.addedExternalUrls?.some((link) => link.label === "Pull request"),
@@ -455,7 +450,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     const kinds = new Set(tracker.progress.map((update) => update.kind));
     expect(kinds.has("thought")).toBe(true);
     expect(kinds.has("action")).toBe(true);
-    expect(kinds.has("response")).toBe(true);
+    expect(kinds.has("response")).toBe(false);
     expect(epicState(db), debug(layout, db)).toBe("done");
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
@@ -488,9 +483,6 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(artifactIndex).toBeLessThan(
-      tracker.progress.findIndex((update) => update.kind === "response"),
-    );
     expect(selectedRepositories).toHaveLength(2);
     for (const item of listWorkItems(db)) {
       expect(getWorkItemRepository(db, item.id)).toEqual(repository);
@@ -499,7 +491,7 @@ test("a bound two-item epic asks, verifies and merges in its repository after th
     for (const tick of keepAliveTicks) tick();
     await outbox.idle();
     expect(tracker.progress).toHaveLength(completedUpdates);
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     intervalSpy.mockRestore();
     stop = true;
@@ -708,7 +700,7 @@ test("the demo epic merges three pull requests in comment mode with gh auth", as
     expect(github.merged).toHaveLength(3);
     expect(apiPaths.some((apiPath) => apiPath.endsWith("/access_tokens"))).toBe(false);
     expect(apiPaths.some((apiPath) => apiPath.includes("webhook"))).toBe(false);
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
     await answerer;
@@ -1317,13 +1309,8 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     await answerer;
 
     expect(whileAsking, debug(layout, db)).toBe("awaiting_input/queued");
-    expect(tracker.progress.filter((update) => update.kind === "response")).toEqual([
-      expect.objectContaining({
-        body: expect.stringContaining("Epic complete. Merged ENG-2, ENG-3."),
-      }),
-    ]);
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-2: Wrote the export.");
-    expect(tracker.progress.at(-1)?.body).toContain("ENG-3: Header is in.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.body.includes("Epic abandoned"))).toBe(false);
     expect(
       tracker.progress.some((update) => update.body.includes("Need a product decision.")),
     ).toBe(false);
@@ -1361,7 +1348,7 @@ test("grok implementer runs the demo epic with ask_team and one Closeout fix", a
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
     expect(github.opened[1]?.body).toContain("Fix attempts: 1");
-    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(true);
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
   } finally {
     stop = true;
     await answerer;
@@ -2664,9 +2651,8 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     expect(github.opened).toHaveLength(1);
     expect(github.merged).toHaveLength(1);
     expect(stateOf(db, "ENG-1"), debug(layout, db)).toBe("merged");
-    const responses = tracker.progress.filter((update) => update.kind === "response");
-    expect(responses).toHaveLength(1);
-    expect(responses[0]?.body).toContain("Created the corrected chart and screenshot.");
+    expect(tracker.progress.some((update) => update.body.includes("Epic complete"))).toBe(false);
+    expect(tracker.progress.some((update) => update.kind === "response")).toBe(false);
     const dashboard = await handleStatusRequest(
       new Request("http://127.0.0.1/api/linear/conversations"),
       { db, staticDir: null },
@@ -2684,7 +2670,6 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
               kind: "prompt",
               text: "Use the corrected chart layout and include a screenshot.",
             }),
-            expect.objectContaining({ kind: "response", text: responses[0]!.body, state: "sent" }),
           ]),
           artifacts: [
             expect.objectContaining({
@@ -2707,9 +2692,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       update.body.includes("https://uploads.linear.app/chart.png"),
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
-    expect(artifactIndex).toBeLessThan(
-      tracker.progress.findIndex((update) => update.kind === "response"),
-    );
+    expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
     expect(listArtifacts(db, task.id)).toHaveLength(1);
     expect(listArtifacts(db, task.id)[0]).toMatchObject({
       state: "uploaded",
