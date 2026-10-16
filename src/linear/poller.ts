@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, parentIssueIdSql, retryBackoffMs, type LinearCommand } from "../core";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
+import { LinearEntityNotFoundError } from "./graphql";
 import type {
   IntakePollSource,
   PolledActivity,
@@ -183,7 +184,16 @@ export function startCatchUpPoller(options: {
   }
 
   async function deliver(event: AcceptedLinearEvent): Promise<void> {
-    const accepted = await options.onEvent(event);
+    let accepted: boolean | void;
+    try {
+      accepted = await options.onEvent(event);
+    } catch (error) {
+      if (!(error instanceof LinearEntityNotFoundError) || error.entity !== "AgentSession")
+        throw error;
+      console.error(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
+      options.store.markHandled(event.dedupeKey);
+      return;
+    }
     if (accepted !== false && event.signal === "stop") submitStops(event);
     options.store.markHandled(event.dedupeKey);
   }
