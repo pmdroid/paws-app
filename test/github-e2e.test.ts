@@ -126,8 +126,8 @@ test("a Linear epic publishes and merges three GitHub pull requests with one pla
 
   try {
     const appeared = Date.now() + 10_000;
-    while (Date.now() < appeared && epicState(db) === null) await Bun.sleep(20);
-    expect(epicState(db), debug(layout, db)).not.toBeNull();
+    while (Date.now() < appeared && stateOf(db, "DEMO-2") === null) await Bun.sleep(20);
+    expect(stateOf(db, "DEMO-2"), debug(layout, db)).not.toBeNull();
     const deadline = Date.now() + 90_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {

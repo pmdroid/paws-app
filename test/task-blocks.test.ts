@@ -107,7 +107,11 @@ describe("task blocks", () => {
       "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
     );
     for (const migration of migrations) {
-      if (migration.id === "058_one_active_item" || migration.id === "059_drop_old_blocks")
+      if (
+        migration.id === "058_one_active_item" ||
+        migration.id === "059_drop_old_blocks" ||
+        migration.id === "064_work_item_without_epic_fk"
+      )
         continue;
       if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
       db.transaction(() => {
