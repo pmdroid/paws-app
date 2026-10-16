@@ -190,7 +190,8 @@ for (const failure of [
     const f = fixture();
     try {
       f.context = { ...f.context, projectId: null, leadId: null };
-      if (failure === "actor") f.db.run("UPDATE linear_session_task SET owner_actor_id=NULL");
+      if (failure === "actor")
+        f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by=NULL");
       if (failure === "observer")
         f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id='steerer'");
       if (failure === "inactive") f.active = false;
@@ -198,7 +199,7 @@ for (const failure of [
       if (failure === "team") f.db.run("UPDATE linear_session SET team_id='other'");
       if (failure === "changed-actor")
         f.onMember = () => {
-          f.db.run("UPDATE linear_session_task SET owner_actor_id='lead'");
+          f.db.run("UPDATE work_item SET owner_user_id='lead'");
         };
       await expect(f.policy(f.item)).rejects.toThrow();
     } finally {
@@ -227,7 +228,8 @@ for (const failure of [
         else f.guest = true;
       }
       if (failure === "projectLead") f.context = { ...f.context, leadId: null };
-      if (failure === "taskSteerer") f.db.run("UPDATE linear_session_task SET owner_actor_id=NULL");
+      if (failure === "taskSteerer")
+        f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by=NULL");
       if (failure === "outsider") f.context = { ...f.context, leadId: "unknown" };
       if (failure === "team") f.db.run("UPDATE linear_session SET team_id='other'");
       if (failure === "revoked")
@@ -238,7 +240,7 @@ for (const failure of [
         };
       if (failure === "changed-actor")
         f.onMember = () => {
-          f.db.run("UPDATE linear_session_task SET owner_actor_id='lead'");
+          f.db.run("UPDATE work_item SET owner_user_id='lead'");
         };
       if (failure === "changed-item")
         f.onMember = () => {

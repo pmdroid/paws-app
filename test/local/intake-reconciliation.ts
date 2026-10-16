@@ -305,9 +305,10 @@ export async function probeEpicReconciliation(root: string) {
     });
     const old = stale.reconcile(target);
     await staleEntered;
-    db.run("UPDATE linear_session_task SET owner_actor_id='new-owner' WHERE epic_id=?", [
-      target.epicId,
-    ]);
+    db.run(
+      "UPDATE linear_session SET creator_id='new-owner' WHERE session_id IN (SELECT session_key FROM work_item WHERE epic_id=?)",
+      [target.epicId],
+    );
     staleRelease();
     await assert.rejects(old, /authority changed/);
     observe("Ownership changes fence delayed publications before canonical effects", {

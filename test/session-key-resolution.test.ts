@@ -5,7 +5,7 @@ import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
-test("orchestrator resumes the session item through session_key when linear_session_task is empty", async () => {
+test("orchestrator resumes the session item through session_key alone", async () => {
   const db = tempDb();
   const clock = new FakeClock(5_000);
   const tracker = createFakeTracker([
@@ -40,9 +40,6 @@ test("orchestrator resumes the session item through session_key when linear_sess
         [id, id, `${id}-issue`, id, id, state, `paws/${id}`, 0, createdAt, "session"],
       );
     }
-    expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_session_task").get()?.n,
-    ).toBe(0);
     await orchestrator.onLinearEvent({
       dedupeKey: "turn-1",
       deliveryId: null,
@@ -58,9 +55,6 @@ test("orchestrator resumes the session item through session_key when linear_sess
       payload: "{}",
     });
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(2);
-    expect(
-      db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_session_task").get()?.n,
-    ).toBe(0);
     expect(
       listJobs(db)
         .filter((job) => job.queue === JOB_KIND.resume)

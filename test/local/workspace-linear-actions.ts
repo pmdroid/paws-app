@@ -648,6 +648,15 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
         "SELECT count(*) AS count FROM workspace_access_audit WHERE action='access.denied'",
       )
       .get()!.count;
+  const startup = Date.now() + 3000;
+  while (
+    ["scheduler.tick", "execution.reconcile", "linear.epics.reconcile"].some(
+      (queue) => !listJobs(db).some((job) => job.queue === queue && job.fireCount >= 1),
+    )
+  ) {
+    if (Date.now() > startup) throw new Error("Startup reconcile did not settle");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   try {
     const invalid = task("observer");
     const invalidStatus = await send(invalid.payload, false);

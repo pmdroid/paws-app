@@ -9,7 +9,7 @@ import {
   ensureLinearSession,
   getLinearSession,
   getLinearSessionGeneration,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItem,
   putWorkspaceUser,
   saveTaskClassification,
@@ -151,8 +151,8 @@ test("session ownership and active child routing remain separate from shared iss
     ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
     bindLinearSessionTask(db, "second", second.epic.id);
     activateLinearItem(db, "second", second.items[0]!.id);
-    expect(getTaskLinearActor(db, first.items[0]!.id)).toBe("human");
-    expect(getTaskLinearActor(db, second.items[0]!.id)).toBeNull();
+    expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("human");
+    expect(delegatedLinearUserId(db, second.items[0]!.id)).toBeNull();
     expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
       "ownership changed",
     );
@@ -251,7 +251,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await orchestrator.onLinearEvent(created("before-created"));
     expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
     expect(listPendingLinearTurns(db, "before-created")).toHaveLength(1);
-    expect(getTaskLinearActor(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
+    expect(delegatedLinearUserId(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
       "human",
     );
   } finally {

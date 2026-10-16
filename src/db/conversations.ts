@@ -67,15 +67,14 @@ export function listLinearSessionTurns(db: Database, sessionId: string): LinearC
 
 export function listLinearSessionTasks(db: Database, sessionId: string): LinearConversationTask[] {
   const modes = hasTable(db, "work_item_task");
-  const associations = hasTable(db, "linear_session_task");
   return db
-    .query<LinearConversationTask, string[]>(`SELECT w.id,
+    .query<LinearConversationTask, [string]>(`SELECT w.id,
     w.linear_identifier AS identifier, w.title, w.state,
     ${modes ? "t.mode, t.response" : "NULL AS mode, NULL AS response"}
     FROM work_item w ${modes ? "LEFT JOIN work_item_task t ON t.item_id = w.id" : ""}
-    WHERE w.session_key = ? ${associations ? "OR w.epic_id IN (SELECT epic_id FROM linear_session_task WHERE session_id = ?)" : ""}
+    WHERE w.session_key = ?
     ORDER BY w.created_at, w.position, w.id`)
-    .all(...(associations ? [sessionId, sessionId] : [sessionId]));
+    .all(sessionId);
 }
 
 export function listLinearSessionQuestions(
