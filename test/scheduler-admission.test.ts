@@ -57,7 +57,7 @@ test("two ready items that share a Linear session are both admitted", () => {
   try {
     insertQueuedItem(db, { id: "one", now: 1, sessionKey: "shared" });
     insertQueuedItem(db, { id: "two", now: 2, sessionKey: "shared" });
-    db.run("UPDATE work_item SET epic_id=? WHERE id=?", ["epic-one", "two"]);
+    db.run("UPDATE work_item SET delegation_id=? WHERE id=?", ["epic-one", "two"]);
     ensureLinearSession(db, { sessionId: "shared", issueId: "lin-one", now: 1000 });
     bindLinearSessionTask(db, "shared", "epic-one");
     const sessions = db

@@ -41,7 +41,7 @@ export function createPublicationReadiness(input: {
       .transaction(() => {
         const identity = db
           .query<Identity, [string]>(
-            `SELECT i.epic_id AS epicId,w.id AS workspaceId,i.checkpoint,
+            `SELECT i.delegation_id AS epicId,w.id AS workspaceId,i.checkpoint,
          r.id AS runId,r.agent,r.kind AS runKind,r.status AS runStatus,
          p.hash AS specificationHash,p.revision AS specificationRevision,
          s.session_id AS sessionId,s.generation AS sessionGeneration,
@@ -53,7 +53,7 @@ export function createPublicationReadiness(input: {
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          WHERE i.id=? AND i.state IN ('verifying','merge_queue') AND i.cancel_requested=0
-         AND ${delegationHasOpenWork("i.epic_id")}
+         AND ${delegationHasOpenWork("i.delegation_id")}
          AND s.stopped_at IS NULL AND s.team_id IS NOT NULL
          AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
           )

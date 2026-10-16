@@ -49,23 +49,17 @@ test("migration 059 drops the old block tables and task_block holds each depende
         .all(),
     ).toEqual([]);
 
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('hold','hold-parent','HOLD','Hold','running',1000)",
-    );
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('stale','stale-parent','STALE','Stale','running',1000)",
-    );
     for (const [id, position] of [
       ["hold-0", 0],
       ["hold-1", 1],
     ] as const) {
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'hold-session')",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'hold-session')",
         [id, "hold", id, id, id, `paws/${id}`, position],
       );
     }
     db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('stale-1','stale','hold-1','stale-1','stale','cancelled','paws/stale-1',0,5000)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('stale-1','stale','hold-1','stale-1','stale','cancelled','paws/stale-1',0,5000)",
     );
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('hold-0','hold-1')",
@@ -97,15 +91,12 @@ test("migration 059 drops the old block tables and task_block holds each depende
       "Completed dependencies:\nhold-0: Published the schema.",
     );
 
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('notice','notice-parent','NOTICE','Notice','running',1000)",
-    );
     for (const [id, position] of [
       ["notice-0", 0],
       ["notice-1", 1],
     ] as const) {
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'notice-session')",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,'queued',?,?,1000,'notice-session')",
         [id, "notice", id, id, id, `paws/${id}`, position],
       );
     }
@@ -196,7 +187,7 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("064_work_item_without_epic_fk");
+    expect(ids.at(-1)).toBe("065_drop_epic");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
@@ -213,6 +204,7 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
     expect(ids.indexOf("063_item_reconciliation")).toBeLessThan(
       ids.indexOf("064_work_item_without_epic_fk"),
     );
+    expect(ids.indexOf("064_work_item_without_epic_fk")).toBeLessThan(ids.indexOf("065_drop_epic"));
   } finally {
     db.close();
   }

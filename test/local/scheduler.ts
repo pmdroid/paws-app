@@ -222,7 +222,7 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("idle-merge", 2, () => ["src/shared"]);
-    db.run("UPDATE work_item SET epic_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
+    db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
     recordLinearInstallation(db, {
       organizationId: "merge-org",
       oauthClientId: "merge-client",
@@ -321,7 +321,7 @@ export async function probeScheduler(
     const { db, ids } = setup("priority", 4);
     const issue = (id: string) => `lin-item-${id}`;
     const epic = (id: string) => `epic-${id}`;
-    db.run("UPDATE work_item SET epic_id=? WHERE id LIKE 'priority-%'", [epic(ids[0]!)]);
+    db.run("UPDATE work_item SET delegation_id=? WHERE id LIKE 'priority-%'", [epic(ids[0]!)]);
     db.run("INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)", [
       issue(ids[2]!),
       issue(ids[3]!),

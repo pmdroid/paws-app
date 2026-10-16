@@ -233,7 +233,9 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await orchestrator.onLinearEvent(created("first"));
     const first = getLinearSession(db, "first")!;
     expect(first.activeItemId).not.toBeNull();
-    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic").get()?.n).toBe(0);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
       "ENG-1 is already being worked on in another session.",
     );

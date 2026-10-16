@@ -597,7 +597,7 @@ export async function probeRunnerOrchestration(
         }
         if (mergeDependencyYield) {
           db.run(
-            `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
+            `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
             [item.epicId, clock.now()],
           );

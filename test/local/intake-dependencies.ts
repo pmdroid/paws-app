@@ -89,7 +89,7 @@ export async function probeDependencySnapshots(
       .all();
     assert.deepEqual(
       addedSchema.map((row) => row.name),
-      ["epic_dependency_snapshot"],
+      [],
     );
     assert(db.query("SELECT 1 FROM schema_migration WHERE id='039_epic_dependencies'").get());
     assert.deepEqual(readyIds(), []);
@@ -151,7 +151,7 @@ export async function probeDependencySnapshots(
     );
     tracker.deps.clear();
     tracker.deps.set("parent", [edge("a", "b"), edge("b", "a"), edge("b", "c")]);
-    db.run("UPDATE work_item SET state='queued' WHERE epic_id=?", [intake.epic.id]);
+    db.run("UPDATE work_item SET state='queued' WHERE delegation_id=?", [intake.epic.id]);
     await refresh();
     assert.deepEqual(readyIds(), [ids.get("free")!]);
     assert.deepEqual(new Set(cycleIds()), new Set(["a", "b", "c"].map((id) => ids.get(id)!)));

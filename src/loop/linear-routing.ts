@@ -39,7 +39,7 @@ export function sessionTaskKey(db: Database, session: StoredLinearSession): stri
   if (epicId) {
     const row = db
       .query<{ task_key: string | null }, [string]>(
-        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE epic_id = ? ORDER BY created_at, position, id LIMIT 1`,
+        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY created_at, position, id LIMIT 1`,
       )
       .get(epicId);
     if (row?.task_key) return row.task_key;

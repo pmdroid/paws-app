@@ -108,7 +108,7 @@ export function hintedPaths(brief: string | null): string[] {
 
 function allItems(db: Database, now: number): Item[] {
   return db
-    .query<Item, [number]>(`SELECT i.id,i.epic_id AS epicId,i.linear_issue_id AS issueId,
+    .query<Item, [number]>(`SELECT i.id,i.delegation_id AS epicId,i.linear_issue_id AS issueId,
     i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
     EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
     EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
@@ -121,7 +121,7 @@ function allItems(db: Database, now: number): Item[] {
     LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
     LEFT JOIN work_item_scheduling c ON c.item_id=i.id
     LEFT JOIN work_item_repository r ON r.item_id=i.id
-    WHERE ${delegationHasOpenWork("i.epic_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
+    WHERE ${delegationHasOpenWork("i.delegation_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
     OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
     .all(now);
 }
