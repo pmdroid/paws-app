@@ -42,9 +42,11 @@ import {
   commitPolicyMessage,
   type GitCommitPolicy,
   JOB_KIND,
+  delegationHasOpenWork,
+  delegationIssueIdSql,
+  parentTaskKeySql,
   type Clock,
   type LinearCommand,
-  type EpicState,
   type RepositoryBinding,
   systemClock,
   parseLinearCommand,
@@ -688,10 +690,6 @@ export class Orchestrator {
       applyWorkItemEvent(this.db, previous.id, "cancel");
       if (previous.currentRunId) markRun(this.db, previous.currentRunId, "ended", this.now());
       this.db.run(
-        "UPDATE epic SET state = 'cancelled', version = version + 1 WHERE id = ? AND state NOT IN ('done', 'cancelled')",
-        [previous.epicId],
-      );
-      this.db.run(
         "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
         [this.now(), previous.id],
       );
@@ -940,12 +938,10 @@ export class Orchestrator {
       throw new Error("ACP process cleanup could not be verified");
     const saved = getTaskMode(this.db, item.id);
     const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
-    const taskKey = this.db
-      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
-      .get(item.epicId)?.task_key;
+    const taskKey = this.parentTaskKey(item);
     const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
-    if (classification?.mode === "code" && classification.redirect) {
-      await this.intakeLinearTask(this.epicIssueId(item.epicId)!, item.sessionKey, taskKey);
+    if (taskKey && classification?.mode === "code" && classification.redirect) {
+      await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
       this.pump();
       return false;
     }
@@ -1013,7 +1009,7 @@ export class Orchestrator {
         (classification?.mode === "clarify" || saved === "answer" || saved === "artifact") &&
         taskKey
       ) {
-        const issueId = this.epicIssueId(item.epicId)!;
+        const issueId = this.delegationIssueId(item)!;
         const snapshot = await this.tracker!.loadEpic(issueId);
         controller.signal.throwIfAborted();
         if (
@@ -2611,14 +2607,13 @@ export class Orchestrator {
     const items = this.allItems();
     const epicIds = new Set(
       this.db
-        .query<{ id: string }, []>("SELECT id FROM epic WHERE state IN ('running','stalled')")
+        .query<{ id: string }, []>(
+          `SELECT DISTINCT epic_id AS id FROM work_item WHERE ${delegationHasOpenWork("work_item.epic_id")}`,
+        )
         .all()
-        .map((epic) => epic.id),
+        .map((row) => row.id),
     );
-    for (const epicId of epicIds) {
-      this.questionDependencyCycle(epicId);
-      this.settleEpic(epicId);
-    }
+    for (const epicId of epicIds) this.questionDependencyCycle(epicId);
     const queued = items.filter((item) => item.state === "queued" && !item.cancelRequested);
     queued.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
     const ready = queued.filter(
@@ -2676,7 +2671,6 @@ export class Orchestrator {
   }
 
   private questionDependencyCycle(epicId: string): void {
-    if (!["running", "stalled"].includes(this.epicRow(epicId)?.state ?? "")) return;
     const workspace = this.workspaceForEpic(epicId);
     if (!workspace || this.options.canDispatchEpic?.(epicId) === false) return;
     const ids: string[] = [];
@@ -2720,37 +2714,6 @@ export class Orchestrator {
         )
         .get(epicId)?.id ?? null
     );
-  }
-
-  private settleEpic(epicId: string): void {
-    if (this.options.canDispatchEpic?.(epicId) === false) return;
-    const activeItems = this.epicItems(epicId);
-    const history = this.allItems(true).filter((item) => item.epicId === epicId);
-    const items = activeItems.length ? activeItems : history;
-    if (items.length === 0) return;
-    if (
-      items.some(
-        (item) =>
-          item.state !== "merged" && item.state !== "completed" && item.state !== "cancelled",
-      )
-    )
-      return;
-    immediate(this.db, () => {
-      const next = history.every((item) => item.state === "cancelled") ? "cancelled" : "done";
-      const updated = this.db.run(
-        "UPDATE epic SET state = ?, version = version + 1 WHERE id = ? AND state IN ('running', 'stalled')",
-        [next, epicId],
-      );
-      if (updated.changes !== 1) return;
-      if (!items.every((item) => item.state === "merged")) return;
-      const epicIssueId = this.epicIssueId(epicId);
-      if (
-        epicIssueId &&
-        this.taskAccess() &&
-        items.every((item) => getLinearTaskDelegation(this.db, item.id, epicIssueId)?.humanActorId)
-      )
-        this.postStatus(items.at(-1)!, "completed", epicIssueId);
-    });
   }
 
   private blockersClear(item: WorkItemRecord): boolean {
@@ -3172,10 +3135,24 @@ export class Orchestrator {
       .sort((left, right) => left.position - right.position);
   }
 
-  private epicRow(epicId: string): { id: string; state: EpicState } | null {
-    return this.db
-      .query<{ id: string; state: EpicState }, [string]>("SELECT id, state FROM epic WHERE id = ?")
-      .get(epicId);
+  private parentTaskKey(item: WorkItemRecord): string | null {
+    return (
+      this.db
+        .query<{ task_key: string | null }, [string]>(
+          `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE id = ?`,
+        )
+        .get(item.id)?.task_key ?? null
+    );
+  }
+
+  private delegationIssueId(item: WorkItemRecord): string | null {
+    return (
+      this.db
+        .query<{ issue_id: string | null }, [string]>(
+          `SELECT ${delegationIssueIdSql("work_item")} AS issue_id FROM work_item WHERE id = ?`,
+        )
+        .get(item.id)?.issue_id ?? null
+    );
   }
 
   private async flush(signal?: AbortSignal): Promise<void> {
@@ -3255,9 +3232,7 @@ export class Orchestrator {
   }
 
   private workContext(item: WorkItemRecord): string {
-    const taskKey = this.db
-      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
-      .get(item.epicId)?.task_key;
+    const taskKey = this.parentTaskKey(item);
     const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const activities = item.sessionKey
       ? listLinearActivitySnapshots(this.db, item.sessionKey)
@@ -3312,9 +3287,7 @@ export class Orchestrator {
   }
 
   private async prepareConversation(item: WorkItemRecord) {
-    const taskKey = this.db
-      .query<{ task_key: string }, [string]>("SELECT task_key FROM epic WHERE id = ?")
-      .get(item.epicId)?.task_key;
+    const taskKey = this.parentTaskKey(item);
     const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const sourceItemId = classification?.mode !== "clarify" ? classification?.sourceItemId : null;
     const stored = getConversation(this.db, item.id);
@@ -3413,13 +3386,6 @@ export class Orchestrator {
       installationId: github.installationId,
       privateKeyPem: github.privateKeyPem,
     };
-  }
-
-  private epicIssueId(epicId: string): string | null {
-    const row = this.db
-      .query<{ linear_issue_id: string }, [string]>("SELECT linear_issue_id FROM epic WHERE id = ?")
-      .get(epicId);
-    return row?.linear_issue_id ?? null;
   }
 
   private activitySession(item: WorkItemRecord): string | null {

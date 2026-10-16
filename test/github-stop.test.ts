@@ -129,11 +129,6 @@ for (const target of ["child", "child-before-progress"] as const) {
       expect(getWorkItem(db, sibling.id)?.state).toBe("queued");
       expect(getWorkItem(db, unrelated.id)?.state).toBe("queued");
       expect(getWorkItem(db, merged.id)?.state).toBe("merged");
-      expect(
-        db
-          .query<{ state: string }, [string]>("SELECT state FROM epic WHERE id = ?")
-          .get(item.epicId)?.state,
-      ).toBe("running");
       await waitFor(() => !alive(pid));
       await running;
       running = null;
