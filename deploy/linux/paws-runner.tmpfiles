@@ -1,8 +1,8 @@
 d /var/lib/paws-runner 0700 paws-runner paws-runner -
-d /var/lib/paws-agent 0700 paws-agent paws-agent -
-d /var/lib/paws-agent-tasks 0755 root root -
+d /var/lib/paws-agent 0700 paws-runner paws-runner -
+d /var/lib/paws-agent-tasks 0711 paws-runner paws-runner -
 d /var/lib/paws-runner-spool 2750 paws-runner paws-agent -
-d /var/lib/paws-agent-results 0750 root paws-results -
+d /var/lib/paws-agent-results 0750 paws-runner paws-results -
 d /var/lib/paws-runner-broker 0700 root root -
 d /var/lib/paws-check 0700 paws-check paws-check -
 d /var/lib/paws-check-input 2750 paws-runner paws-check-input -
@@ -14,4 +14,4 @@ d /var/lib/paws-check-control 0700 root root -
 d /var/lib/paws-check-metadata 0750 root paws-check-metadata -
 d /var/lib/paws-check-broker 0700 root root -
 d /run/systemd/system 0755 root root -
-d /var/lib/paws-runner-members 0711 root root -
+d /var/lib/paws-runner-members 0711 paws-runner paws-runner -
