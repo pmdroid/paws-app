@@ -37,6 +37,7 @@ import {
   enqueueJobOnce,
   getLinearSession,
   getWorkItem,
+  workItemForSession,
   getItemRunCommitPolicy,
   workspaceLinearMember,
   workspaceForOrganization,
@@ -113,7 +114,7 @@ import {
   type HostGitHubAuth,
 } from "./loop";
 import {
-  createEpicReconciler,
+  createItemReconciler,
   createPublicationReadiness,
   hasPendingEpicChanges,
   canAdvanceItem,
@@ -230,7 +231,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
-  let reconciler: ReturnType<typeof createEpicReconciler> | null = null;
+  let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let dispatch: (() => readonly string[]) | null = null;
   let legacyReadyItemIds: readonly string[] = [];
@@ -258,15 +259,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const accepted = await orchestrator.onLinearEvent(event);
     if (accepted !== false && reconciler && event.sessionId) {
       const session = getLinearSession(db, event.sessionId);
-      if (session?.epicId && session.organizationId && session.stoppedAt === null) {
+      const linked = workItemForSession(db, event.sessionId);
+      if (linked && session?.organizationId && session.stoppedAt === null) {
         const workspace = db
           .query<{ id: string }, [string, string]>(
             "SELECT w.id FROM workspace w JOIN epic e ON e.id=? AND e.state IN ('running','stalled') WHERE w.linear_organization_id=?",
           )
-          .get(session.epicId, session.organizationId);
+          .get(linked.epicId, session.organizationId);
         if (workspace)
           await reconciler.reconcile({
-            epicId: session.epicId,
+            itemId: linked.id,
             workspaceId: workspace.id,
             signal: abort.signal,
           });
@@ -918,7 +920,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           projectHttp = createProjectHttp({ db, tracker: linear.tracker, projects });
           projects.register(created.jobs);
         }
-        reconciler = createEpicReconciler({
+        reconciler = createItemReconciler({
           db,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
@@ -949,28 +951,50 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publication = createPublicationReadiness({ db, reconciler });
         const enqueueMissingSnapshots = () => {
           const targets = db
-            .query<
-              { epicId: string; workspaceId: string },
-              []
-            >(`SELECT DISTINCT e.id AS epicId,w.id AS workspaceId FROM epic e
-            JOIN work_item i ON i.epic_id=e.id AND i.session_key IS NOT NULL
-            JOIN linear_session s ON s.session_id=i.session_key
-            JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
-            AND EXISTS(SELECT 1 FROM work_item i WHERE i.epic_id=e.id AND i.state NOT IN ('completed','merged','cancelled')
+            .query<{ itemId: string; workspaceId: string }, []>(
+              `SELECT picked.id AS itemId,w.id AS workspaceId FROM epic e
+            JOIN work_item picked ON picked.id=(
+              SELECT i.id FROM work_item i
+              JOIN linear_session s ON s.session_id=i.session_key AND s.stopped_at IS NULL
+              WHERE i.epic_id=e.id AND i.state NOT IN ('completed','merged','cancelled')
               AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
-              AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=i.id))`)
+              ORDER BY i.position,i.id LIMIT 1)
+            JOIN linear_session s ON s.session_id=picked.session_key
+            JOIN workspace w ON w.linear_organization_id=s.organization_id
+            WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
+            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.epic_id=e.id AND gap.state NOT IN ('completed','merged','cancelled')
+              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
+              AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
+            )
             .all();
           for (const target of targets)
             enqueueJobOnce(db, {
-              queue: "linear.epic.reconcile",
-              jobKey: `linear.epic.reconcile:${target.epicId}`,
+              queue: "linear.item.reconcile",
+              jobKey: `linear.item.reconcile:${target.itemId}`,
               payload: target,
               now: Date.now(),
             });
         };
-        created.jobs.register("linear.epic.reconcile", async (job) => {
-          const target = job.payload as { epicId: string; workspaceId: string };
+        created.jobs.register("linear.item.reconcile", async (job) => {
+          const target = job.payload as { itemId: string; workspaceId: string };
           await reconciler?.reconcile({ ...target, signal: abort.signal });
+          attached.reconcileExecution();
+        });
+        created.jobs.register("linear.epic.reconcile", async (job) => {
+          const legacy = job.payload as { epicId: string; workspaceId: string };
+          const item = db
+            .query<{ id: string }, [string]>(
+              `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
+               WHERE i.epic_id=? AND s.stopped_at IS NULL
+               AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
+            )
+            .get(legacy.epicId);
+          if (item)
+            await reconciler?.reconcile({
+              itemId: item.id,
+              workspaceId: legacy.workspaceId,
+              signal: abort.signal,
+            });
           attached.reconcileExecution();
         });
         dispatch = registerScheduler(

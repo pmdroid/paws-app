@@ -58,7 +58,7 @@ export function createApprovedProjects(input: {
   repository: (name: string) => RepositoryBinding | null;
   saveBlockerPolicies: (input: {
     workspaceId: string;
-    epicId: string;
+    itemId: string;
     userId: string;
     policies: readonly ProjectBlockerPolicy[];
   }) => void;
@@ -395,7 +395,7 @@ export function createApprovedProjects(input: {
       if (approval.source === "parent") return;
       input.saveBlockerPolicies({
         workspaceId: approval.workspaceId,
-        epicId: result.epic.id,
+        itemId: item.id,
         userId: approval.actorId,
         policies: (approval.preview.selection.blockers ?? []).filter((policy) =>
           approval.preview.edges.some(

@@ -5,7 +5,7 @@ import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import type { InspectBlockerMerge } from "./blocker-policy";
 
-export type EpicChanges = {
+export type ItemChanges = {
   epicId: string;
   workspaceId: string;
   sessionId: string;
@@ -17,7 +17,7 @@ export type EpicChanges = {
   issues: { itemId: string; issue: LinearSubIssue }[];
 };
 
-type Target = { epicId: string; workspaceId: string; signal?: AbortSignal };
+type Target = { itemId: string; workspaceId: string; signal?: AbortSignal };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
 type Identity = {
   issueId: string;
@@ -39,44 +39,47 @@ type Item = {
   revision: number | null;
   present: number | null;
 };
+type RequestRow = { itemId: string; token: string };
+
+function requestsFor(db: Database, epicId: string): RequestRow[] {
+  return db
+    .query<RequestRow, [string]>(
+      `SELECT r.item_id AS itemId, r.token FROM item_reconciliation_request r
+       JOIN work_item i ON i.id=r.item_id WHERE i.epic_id=? ORDER BY r.item_id`,
+    )
+    .all(epicId);
+}
 
 function authority(db: Database, target: Target) {
-  const identity = db
-    .query<Identity, [string, string]>(
-      `SELECT e.linear_issue_id AS issueId,e.task_key AS taskKey,s.session_id AS sessionId,
-       s.organization_id AS organizationId,s.team_id AS teamId,s.app_user_id AS appUserId,
-       s.oauth_client_id AS clientId,s.creator_id AS creatorId,
-       COALESCE((SELECT u.linear_user_id FROM workspace_user u
-         JOIN work_item oi ON oi.owner_user_id=u.id
-         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id
-         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
-       (SELECT oi.delegated_by FROM work_item oi
-         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
-         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS actorId,
-       s.generation FROM epic e
-       JOIN linear_session s ON s.session_id=(
-         SELECT i.session_key FROM work_item i
-         JOIN linear_session ls ON ls.session_id=i.session_key AND ls.stopped_at IS NULL
-         WHERE i.epic_id=e.id
-         ORDER BY i.created_at, i.position, i.id LIMIT 1)
+  const row = db
+    .query<Identity & { epicId: string }, [string, string]>(
+      `SELECT e.id AS epicId, e.linear_issue_id AS issueId, e.task_key AS taskKey,
+       s.session_id AS sessionId, s.organization_id AS organizationId, s.team_id AS teamId,
+       s.app_user_id AS appUserId, s.oauth_client_id AS clientId, s.creator_id AS creatorId,
+       COALESCE(u.linear_user_id, i.delegated_by, s.creator_id) AS actorId, s.generation
+       FROM work_item i
+       JOIN epic e ON e.id=i.epic_id
+       JOIN linear_session s ON s.session_id=i.session_key
        JOIN workspace w ON w.linear_organization_id=s.organization_id
-       WHERE e.id=? AND w.id=? AND e.state IN ('running','stalled')
+       LEFT JOIN workspace_user u ON u.id=i.owner_user_id
+       WHERE i.id=? AND w.id=? AND e.state IN ('running','stalled')
        AND s.stopped_at IS NULL
        AND s.team_id IS NOT NULL AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
     )
-    .get(target.epicId, target.workspaceId);
-  if (!identity) throw new Error("Epic reconciliation authority changed");
+    .get(target.itemId, target.workspaceId);
+  if (!row) throw new Error("Item reconciliation authority changed");
+  const { epicId, ...identity } = row;
   const items = db
     .query<Item, [string]>(
       `SELECT i.id,i.linear_issue_id AS issueId,i.brief,p.hash,p.revision,p.present
        FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
        WHERE i.epic_id=? ORDER BY i.id`,
     )
-    .all(target.epicId);
+    .all(epicId);
   const active = items.filter((item) => item.present !== 0);
   if (new Set(active.map((item) => item.issueId)).size !== active.length)
-    throw new Error("Epic reconciliation item identities are ambiguous");
-  return { identity, items, token: JSON.stringify([identity, items]) };
+    throw new Error("Item reconciliation item identities are ambiguous");
+  return { identity, items, epicId, token: JSON.stringify([identity, items]) };
 }
 
 function brief(issue: LinearSubIssue | EpicSnapshot): IssueBrief {
@@ -94,13 +97,13 @@ function specHash(value: WorkBrief): string {
   return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function createEpicReconciler(input: {
+export function createItemReconciler(input: {
   db: Database;
   tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listIssuePullRequests">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
   inspectMerge?: InspectBlockerMerge;
-  onChanges: (changes: EpicChanges) => void;
-  afterChanges?: (changes: EpicChanges) => Promise<void>;
+  onChanges: (changes: ItemChanges) => void;
+  afterChanges?: (changes: ItemChanges) => Promise<void>;
   scopeSnapshot?: (
     sessionId: string,
     snapshot: EpicSnapshot,
@@ -119,6 +122,7 @@ export function createEpicReconciler(input: {
   async function refresh(target: Target, requestToken: string) {
     target.signal?.throwIfAborted();
     const initial = authority(db, target);
+    const captured = requestsFor(db, initial.epicId);
     const loaded = await tracker.loadEpic(initial.identity.issueId);
     const snapshot = input.scopeSnapshot
       ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
@@ -144,17 +148,15 @@ export function createEpicReconciler(input: {
     const publication = db
       .transaction(() => {
         if (authority(db, target).token !== initial.token)
-          throw new Error("Epic reconciliation authority changed");
+          throw new Error("Item reconciliation authority changed");
+        const currentRequests = requestsFor(db, initial.epicId);
         if (
-          db
-            .query<{ token: string }, [string]>(
-              "SELECT token FROM epic_reconciliation_request WHERE epic_id=?",
-            )
-            .get(target.epicId)?.token !== requestToken
+          JSON.stringify(currentRequests) !== JSON.stringify(captured) ||
+          !currentRequests.some((row) => row.itemId === target.itemId && row.token === requestToken)
         )
           return null;
-        const change: EpicChanges = {
-          epicId: target.epicId,
+        const change: ItemChanges = {
+          epicId: initial.epicId,
           workspaceId: target.workspaceId,
           sessionId: initial.identity.sessionId,
           addedItemIds: [],
@@ -196,7 +198,7 @@ export function createEpicReconciler(input: {
                VALUES(?,?,?,?,?,'queued',?,?,0,?,?,?,?)`,
               [
                 id,
-                target.epicId,
+                initial.epicId,
                 issue.linearIssueId,
                 issue.identifier,
                 issue.title,
@@ -230,7 +232,7 @@ export function createEpicReconciler(input: {
         db.run("UPDATE epic SET title=?,linear_identifier=? WHERE id=?", [
           snapshot.title,
           snapshot.identifier,
-          target.epicId,
+          initial.epicId,
         ]);
         if (
           change.addedItemIds.length ||
@@ -239,7 +241,7 @@ export function createEpicReconciler(input: {
         )
           db.run(
             "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE epic_id=?)",
-            [target.epicId],
+            [initial.epicId],
           );
         for (const [kind, ids] of [
           ["spec", change.specChangedItemIds],
@@ -248,16 +250,17 @@ export function createEpicReconciler(input: {
         ] as const)
           for (const id of ids)
             db.run(
-              `INSERT INTO epic_reconciliation_effect(epic_id,item_id,kind,token) VALUES(?,?,?,?)
-               ON CONFLICT(epic_id,item_id,kind) DO UPDATE SET token=excluded.token`,
-              [target.epicId, id, kind, crypto.randomUUID()],
+              `INSERT INTO item_reconciliation_effect(item_id,kind,token) VALUES(?,?,?)
+               ON CONFLICT(item_id,kind) DO UPDATE SET token=excluded.token`,
+              [id, kind, crypto.randomUUID()],
             );
         input.onChanges({ ...change });
         const effects = db
           .query<{ itemId: string; kind: string; token: string }, [string]>(
-            "SELECT item_id AS itemId,kind,token FROM epic_reconciliation_effect WHERE epic_id=?",
+            `SELECT e.item_id AS itemId,e.kind,e.token FROM item_reconciliation_effect e
+             JOIN work_item i ON i.id=e.item_id WHERE i.epic_id=?`,
           )
-          .all(target.epicId);
+          .all(initial.epicId);
         change.specChangedItemIds = effects
           .filter((effect) => effect.kind === "spec")
           .map((effect) => effect.itemId);
@@ -280,7 +283,7 @@ export function createEpicReconciler(input: {
           `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
            WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
         )
-        .all(target.epicId)
+        .all(initial.epicId)
         .map((item) => item.id);
       for (const itemId of itemIds)
         await syncItemDependencies(db, {
@@ -295,15 +298,17 @@ export function createEpicReconciler(input: {
         });
     }
     db.transaction(() => {
-      db.run(
-        "DELETE FROM epic_reconciliation_request WHERE epic_id=? AND workspace_id=? AND token=?",
-        [target.epicId, target.workspaceId, requestToken],
-      );
-      for (const effect of publication.effects)
+      for (const request of captured)
         db.run(
-          "DELETE FROM epic_reconciliation_effect WHERE epic_id=? AND item_id=? AND kind=? AND token=?",
-          [target.epicId, effect.itemId, effect.kind, effect.token],
+          "DELETE FROM item_reconciliation_request WHERE item_id=? AND workspace_id=? AND token=?",
+          [request.itemId, target.workspaceId, request.token],
         );
+      for (const effect of publication.effects)
+        db.run("DELETE FROM item_reconciliation_effect WHERE item_id=? AND kind=? AND token=?", [
+          effect.itemId,
+          effect.kind,
+          effect.token,
+        ]);
     }).immediate();
   }
 
@@ -329,21 +334,25 @@ export function createEpicReconciler(input: {
   function reconcile(target: Target): Promise<void> {
     if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
     if (target.signal?.aborted) return Promise.reject(target.signal.reason);
+    let epicId: string;
     try {
-      db.transaction(() => {
-        authority(db, target);
-        const accepted = db.run(
-          `INSERT INTO epic_reconciliation_request(epic_id,workspace_id,token) VALUES(?,?,?)
-           ON CONFLICT(epic_id) DO UPDATE SET token=excluded.token
-           WHERE epic_reconciliation_request.workspace_id=excluded.workspace_id`,
-          [target.epicId, target.workspaceId, crypto.randomUUID()],
-        );
-        if (!accepted.changes) throw new Error("Epic reconciliation workspace changed");
-      }).immediate();
+      epicId = db
+        .transaction(() => {
+          const current = authority(db, target);
+          const accepted = db.run(
+            `INSERT INTO item_reconciliation_request(item_id,workspace_id,token) VALUES(?,?,?)
+             ON CONFLICT(item_id) DO UPDATE SET token=excluded.token
+             WHERE item_reconciliation_request.workspace_id=excluded.workspace_id`,
+            [target.itemId, target.workspaceId, crypto.randomUUID()],
+          );
+          if (!accepted.changes) throw new Error("Item reconciliation workspace changed");
+          return current.epicId;
+        })
+        .immediate();
     } catch (error) {
       return Promise.reject(error);
     }
-    const key = JSON.stringify([target.workspaceId, target.epicId]);
+    const key = JSON.stringify([target.workspaceId, epicId]);
     const existing = flights.get(key);
     if (existing) {
       existing.dirty = true;
@@ -354,13 +363,13 @@ export function createEpicReconciler(input: {
       try {
         do {
           flight.dirty = false;
-          const request = db
-            .query<{ token: string }, [string]>(
-              "SELECT token FROM epic_reconciliation_request WHERE epic_id=?",
-            )
-            .get(target.epicId);
-          if (!request) throw new Error("Epic reconciliation request changed");
-          await refresh({ ...target, signal: shutdown.signal }, request.token);
+          const pending = requestsFor(db, epicId);
+          const request = pending.find((row) => row.itemId === target.itemId) ?? pending[0];
+          if (!request) throw new Error("Item reconciliation request changed");
+          await refresh(
+            { itemId: request.itemId, workspaceId: target.workspaceId, signal: shutdown.signal },
+            request.token,
+          );
         } while (flight.dirty);
       } finally {
         flights.delete(key);
@@ -376,19 +385,19 @@ export function createEpicReconciler(input: {
         Target,
         [string | null, string | null, string | null, string | null, string | null, string | null]
       >(
-        `SELECT DISTINCT e.id AS epicId,w.id AS workspaceId FROM epic e
-         JOIN work_item linked ON linked.epic_id=e.id AND linked.session_key IS NOT NULL
-         JOIN linear_session s ON s.session_id=linked.session_key
+        `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId FROM work_item i
+         JOIN epic e ON e.id=i.epic_id
+         JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
+         WHERE e.state IN ('running','stalled') AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
          AND (? IS NULL OR s.organization_id=?)
          AND (? IS NULL OR e.linear_issue_id=?
-          OR EXISTS(SELECT 1 FROM work_item i WHERE i.epic_id=e.id AND i.linear_issue_id=?5)
+          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.epic_id=e.id AND hit.linear_issue_id=?5)
           OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND e.id=(
-            SELECT i.epic_id FROM work_item i
-            WHERE i.linear_issue_id=b.blocked_linear_issue_id AND i.state<>'cancelled'
-            AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
-            ORDER BY i.created_at DESC, i.id DESC LIMIT 1))
+            SELECT bi.epic_id FROM work_item bi
+            WHERE bi.linear_issue_id=b.blocked_linear_issue_id AND bi.state<>'cancelled'
+            AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=bi.id AND p.present=0)
+            ORDER BY bi.created_at DESC, bi.id DESC LIMIT 1))
           OR e.linear_issue_id=?6)`,
       )
       .all(
@@ -431,7 +440,7 @@ export function createEpicReconciler(input: {
 
   function close(): Promise<void> {
     if (closing) return closing;
-    shutdown.abort(new DOMException("Epic reconciliation stopped", "AbortError"));
+    shutdown.abort(new DOMException("Item reconciliation stopped", "AbortError"));
     closing = Promise.allSettled([...flights.values()].map((flight) => flight.promise)).then(
       () => undefined,
     );
