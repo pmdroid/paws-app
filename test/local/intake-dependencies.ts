@@ -8,7 +8,7 @@ import {
   recordLinearInstallation,
   saveTaskMode,
 } from "../../src/db";
-import { intakeDelegatedIssue, readyItems, syncEpicDependencies } from "../../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 
 export async function probeDependencySnapshots(
@@ -43,8 +43,16 @@ export async function probeDependencySnapshots(
   try {
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
     assert(intake.ok);
-    const target = { epicId: intake.epic.id, workspaceId: "workspace" };
     const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
+    const workspaceId = "workspace";
+    const focus = ids.get("b")!;
+    const target = { itemId: focus, workspaceId };
+    const readyIds = () =>
+      [...ids.values()].flatMap((itemId) => readyItems(db, { itemId, workspaceId }).readyItemIds);
+    const cycleIds = () =>
+      [...ids.values()].flatMap(
+        (itemId) => readyItems(db, { itemId, workspaceId }).cycleHeldItemIds,
+      );
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     db.run("INSERT INTO workspace VALUES('other','outside-org','Other',1000)");
     recordLinearInstallation(db, {
@@ -57,13 +65,16 @@ export async function probeDependencySnapshots(
     });
     bindLinearSessionTask(db, "session", intake.epic.id, { actorId: "owner" });
     saveTaskMode(db, ids.get("a")!, "code");
-    const refresh = () =>
-      syncEpicDependencies(db, {
-        ...target,
-        expectedGeneration: readyItems(db, target).generation,
-        tracker,
-        lifecycle,
-      });
+    const refresh = async () => {
+      for (const itemId of ids.values())
+        await syncItemDependencies(db, {
+          itemId,
+          workspaceId,
+          expectedGeneration: readyItems(db, { itemId, workspaceId }).generation,
+          tracker,
+          lifecycle,
+        });
+    };
     const edge = (blockerLinearIssueId: string, blockedLinearIssueId: string) => ({
       blockerLinearIssueId,
       blockedLinearIssueId,
@@ -81,10 +92,10 @@ export async function probeDependencySnapshots(
       ["epic_dependency_snapshot"],
     );
     assert(db.query("SELECT 1 FROM schema_migration WHERE id='039_epic_dependencies'").get());
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(readyIds(), []);
     observed("Uninitialized snapshots hold every queued item", {
       addedSchema,
-      readiness: readyItems(db, target),
+      readiness: readyIds(),
     });
     tracker.deps.set("parent", [edge("a", "b"), edge("outside", "b")]);
     tracker.deps.set("a", [edge("a", "b")]);
@@ -140,13 +151,10 @@ export async function probeDependencySnapshots(
     );
     tracker.deps.clear();
     tracker.deps.set("parent", [edge("a", "b"), edge("b", "a"), edge("b", "c")]);
-    db.run("UPDATE work_item SET state='queued' WHERE epic_id=?", [target.epicId]);
+    db.run("UPDATE work_item SET state='queued' WHERE epic_id=?", [intake.epic.id]);
     await refresh();
-    assert.deepEqual(readyItems(db, target).readyItemIds, [ids.get("free")!]);
-    assert.deepEqual(
-      new Set(readyItems(db, target).cycleHeldItemIds),
-      new Set(["a", "b", "c"].map((id) => ids.get(id)!)),
-    );
+    assert.deepEqual(readyIds(), [ids.get("free")!]);
+    assert.deepEqual(new Set(cycleIds()), new Set(["a", "b", "c"].map((id) => ids.get(id)!)));
     observed(
       "Cycles and descendants hold while unrelated work remains ready",
       readyItems(db, target),
@@ -157,7 +165,7 @@ export async function probeDependencySnapshots(
     const entered = new Promise<void>((resolve) => (enter = resolve));
     const gate = new Promise<void>((resolve) => (release = resolve));
     let held = false;
-    const late = syncEpicDependencies(db, {
+    const late = syncItemDependencies(db, {
       ...target,
       expectedGeneration: generation,
       lifecycle,
@@ -183,9 +191,9 @@ export async function probeDependencySnapshots(
     release();
     await assert.rejects(late, /snapshot changed/);
     assert.equal(rowCount("task_block"), 0);
-    assert.equal(readyItems(db, target).readyItemIds.length, 4);
+    assert.equal(readyIds().length, 4);
     await assert.rejects(
-      syncEpicDependencies(db, { ...target, expectedGeneration: generation, tracker, lifecycle }),
+      syncItemDependencies(db, { ...target, expectedGeneration: generation, tracker, lifecycle }),
       /snapshot changed/,
     );
     observed(
@@ -226,7 +234,7 @@ export async function probeDependencySnapshots(
     const controller = new AbortController();
     const beforeAbort = readyItems(db, target).generation;
     await assert.rejects(
-      syncEpicDependencies(db, {
+      syncItemDependencies(db, {
         ...target,
         expectedGeneration: beforeAbort,
         tracker,
@@ -243,7 +251,7 @@ export async function probeDependencySnapshots(
     );
     assert.equal(readyItems(db, target).generation, beforeAbort);
     await assert.rejects(
-      syncEpicDependencies(db, {
+      syncItemDependencies(db, {
         ...target,
         expectedGeneration: beforeAbort,
         tracker,
@@ -281,7 +289,7 @@ export async function probeDependencySnapshots(
       let changed = false;
       try {
         await assert.rejects(
-          syncEpicDependencies(db, {
+          syncItemDependencies(db, {
             ...target,
             expectedGeneration: beforeAbort,
             lifecycle,
@@ -304,7 +312,7 @@ export async function probeDependencySnapshots(
       assert.equal(readyItems(db, target).generation, beforeAbort);
     }
     await assert.rejects(
-      syncEpicDependencies(db, {
+      syncItemDependencies(db, {
         ...target,
         expectedGeneration: beforeAbort,
         lifecycle,
@@ -319,7 +327,7 @@ export async function probeDependencySnapshots(
       /snapshot changed/,
     );
     assert.equal(readyItems(db, target).generation, beforeAbort);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(readyIds(), []);
     await refresh();
     observed(
       "Changed canonical session generations hold work until a fresh snapshot succeeds",

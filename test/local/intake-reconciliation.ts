@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,16 @@ import {
   type EpicChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
+
+function epicReadyItemIds(db: Database, epicId: string, workspaceId: string): string[] {
+  return db
+    .query<{ id: string }, [string]>(
+      `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
+       WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+    )
+    .all(epicId)
+    .flatMap((item) => readyItems(db, { itemId: item.id, workspaceId }).readyItemIds);
+}
 
 export async function probeEpicReconciliation(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -146,7 +157,7 @@ export async function probeEpicReconciliation(root: string) {
       db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM epic_reconciliation_effect").get()!.n,
       1,
     );
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), []);
     const recoveredDb = openDatabase(join(root, "paws.sqlite"));
     try {
       let recoveredEffects: EpicChanges | null = null;
@@ -211,16 +222,16 @@ export async function probeEpicReconciliation(root: string) {
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     await reconciler.reconcile(target);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), []);
     lifecycle.issues.get("outside")!.stateType = "completed";
     const beforeWrong = recorded.length;
     await reconciler.issueChanged({ issueId: "outside", organizationId: "other" });
     assert.equal(recorded.length, beforeWrong);
     await reconciler.issueChanged({ issueId: "outside", organizationId: "org" });
-    assert.deepEqual(readyItems(db, target).readyItemIds, [b]);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), [b]);
     observe(
       "External blocker events resync only matching organization epics",
-      readyItems(db, target),
+      readyItems(db, { itemId: b, workspaceId: target.workspaceId }),
     );
     const beforeSweep = recorded.length;
     await reconciler.sweep({ now: 1000 });
@@ -260,7 +271,7 @@ export async function probeEpicReconciliation(root: string) {
     });
     const flight = coalesced.reconcile(target);
     await entered;
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), []);
     const same = coalesced.reconcile(target);
     assert.equal(flight, same);
     const waiter = new AbortController();
@@ -270,7 +281,7 @@ export async function probeEpicReconciliation(root: string) {
     );
     waiter.abort(new Error("Waiter canceled"));
     await canceledWaiter;
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), []);
     release();
     await flight;
     assert.equal(loads, 2);
@@ -317,7 +328,7 @@ export async function probeEpicReconciliation(root: string) {
     lifecycle.issues.get("b")!.stateType = "canceled";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.canceledItemIds, [b]);
-    assert.deepEqual(readyItems(db, target).readyItemIds, []);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), []);
     lifecycle.issue.stateType = "canceled";
     await reconciler.reconcile(target);
     assert(recorded.at(-1)!.parentCanceled);
@@ -366,7 +377,7 @@ export async function probeEpicReconciliation(root: string) {
     assert(!restored.removedItemIds.includes(secondRestoration));
     assert.deepEqual(restored.removedItemIds, []);
     assert.deepEqual(joinedChanges.at(-1)!.removedItemIds, [firstRestoration]);
-    assert.deepEqual(readyItems(db, target).readyItemIds, [secondRestoration]);
+    assert.deepEqual(epicReadyItemIds(db, target.epicId, target.workspaceId), [secondRestoration]);
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.addedItemIds, []);
     const childHistory = db
