@@ -2952,6 +2952,8 @@ export class Orchestrator {
         )
         .get(epicId)!;
       if (this.now() - blocked.blocked_since < 10 * 60 * 1000) return;
+      const session = this.epicSession(items);
+      if (session !== null && findOpenQuestion(this.db, session)) return;
       const result = transitionEpic(row.state, "stalled");
       if (!result.ok) return;
       this.db.run("UPDATE epic SET state=?,version=version+1 WHERE id=? AND state=?", [
@@ -2963,7 +2965,6 @@ export class Orchestrator {
         "UPDATE epic_execution_control SET notice_generation=notice_generation+1 WHERE epic_id=?",
         [epicId],
       );
-      const session = this.epicSession(items);
       if (session === null) return;
       const held = items
         .filter(
@@ -2971,7 +2972,6 @@ export class Orchestrator {
             item.state !== "merged" && item.state !== "completed" && item.state !== "cancelled",
         )
         .map((item) => `${item.linearIdentifier} (${item.state})`);
-      if (findOpenQuestion(this.db, session)) return;
       const body = `The queue has made no progress for ten minutes. Check the dependencies or reply Retry to retry failed work. Held work: ${held.join(", ")}.`;
       const question = openQuestion(this.db, {
         itemId: items.find((item) => item.state !== "cancelled")!.id,
