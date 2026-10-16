@@ -139,6 +139,19 @@ export function createAcpActivityReporter(
           const activity = toolActivity(tool);
           if (activity) {
             flush();
+            if ((tool.status === "completed" || tool.status === "failed") && tool.result) {
+              for (let offset = 0; offset < tool.result.length; offset += 1_000) {
+                const output = tool.result.slice(offset, offset + 1_000);
+                const fence = "`".repeat(
+                  Math.max(3, ...[...output.matchAll(/`+/g)].map(([run]) => run.length + 1)),
+                );
+                const title = tool.title.slice(0, 200).replace(/[\\`*_[\]<>]/g, "\\$&");
+                post({
+                  kind: "thought",
+                  body: `Tool output: ${title}\n\n${fence}text\n${output}\n${fence}`,
+                });
+              }
+            }
             post(activity);
           }
           return;

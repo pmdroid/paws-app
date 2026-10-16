@@ -19,6 +19,7 @@ import {
 import { Orchestrator } from "../../src/loop";
 import { syncEpicDependencies } from "../../src/intake";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
+import { answerQuestion, openQuestion } from "../../src/questions";
 
 export async function probeExecutionLifecycle(
   root: string,
@@ -154,6 +155,37 @@ export async function probeExecutionLifecycle(
       { state: state("failed"), notices: notices("failed") },
     );
     db.run("UPDATE work_item SET state='failed' WHERE id='failed-0'");
+    seed("held-question", ["failed"]);
+    const pending = openQuestion(db, {
+      itemId: "held-question-0",
+      sessionId: "held-question-session",
+      body: "Which repository should this use?",
+      options: ["acme/widgets"],
+      now: clock.now(),
+    });
+    orchestrator.reconcileExecution();
+    clock.advance(600000);
+    orchestrator.reconcileExecution();
+    const heldRunning = state("held-question") === "running" && notices("held-question") === 0;
+    answerQuestion(db, pending.id, {
+      answer: "acme/widgets",
+      answeredBy: "person",
+      now: clock.now(),
+    });
+    orchestrator.reconcileExecution();
+    const stalledNotice = db
+      .query<{ payload: string }, [string]>(
+        "SELECT payload FROM outbox WHERE op='elicitation' AND idempotency_key LIKE ?",
+      )
+      .get("epic-stalled:held-question:%");
+    observe(
+      "an open session question waits to stall until that question is answered",
+      heldRunning &&
+        state("held-question") === "stalled" &&
+        stalledNotice !== null &&
+        JSON.parse(stalledNotice.payload).body.includes("made no progress for ten minutes"),
+      { heldRunning, state: state("held-question"), stalledNotice },
+    );
     seed("handoff", ["merged", "queued"]);
     db.run(
       "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff','handoff-0','handoff-1')",
