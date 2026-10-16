@@ -120,6 +120,13 @@ export function createRunnerPlacement(options: {
     const repository = item ? getWorkItemRepository(db, item.id) : null;
     const issueId = item?.linearIssueId ?? session.issueId;
     if (!issueId) throw new Error("Runner issue authority is unavailable");
+    const placement = item
+      ? (db
+          .query<{ ownerUserId: string | null; projectApprovalId: string | null }, [string]>(
+            "SELECT owner_user_id AS ownerUserId,project_approval_id AS projectApprovalId FROM work_item WHERE id=?",
+          )
+          .get(item.id) ?? { ownerUserId: null, projectApprovalId: null })
+      : null;
     const ownership = item
       ? db
           .query<{ actorId: string | null }, [string, string]>(
@@ -127,7 +134,7 @@ export function createRunnerPlacement(options: {
           )
           .get(session.sessionId, item.epicId)?.actorId
       : (options.sessionActor?.(session.sessionId) ?? session.creatorId);
-    return { item, session, workspace, repository, issueId, ownership };
+    return { item, session, workspace, repository, issueId, ownership, placement };
   }
   function authority(current: ReturnType<typeof scope>) {
     const item = current.item;
@@ -141,6 +148,8 @@ export function createRunnerPlacement(options: {
             currentRunId: item.currentRunId,
             version: item.version,
             cancelRequested: item.cancelRequested,
+            ownerUserId: current.placement?.ownerUserId ?? null,
+            projectApprovalId: current.placement?.projectApprovalId ?? null,
           }
         : null,
       session: current.session,
@@ -238,13 +247,27 @@ export function createRunnerPlacement(options: {
             )
             .get(input.itemId)
         : null;
-      const accountActor = input.purpose === "helper" ? current.ownership : issue.assigneeId;
+      const itemOwnerLinear = current.placement?.ownerUserId
+        ? db
+            .query<{ linearUserId: string }, [string]>(
+              "SELECT linear_user_id AS linearUserId FROM workspace_user WHERE id=?",
+            )
+            .get(current.placement.ownerUserId)?.linearUserId
+        : undefined;
+      const accountActor =
+        input.purpose === "helper"
+          ? current.ownership
+          : current.placement?.ownerUserId
+            ? itemOwnerLinear
+            : issue.assigneeId;
       const accountUser = accountActor
         ? db
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
             .get(accountActor)?.id
         : undefined;
-      const ranked = rows.flatMap((runner) => {
+      const ranked = rows.flatMap((candidate) => {
+        let runner = candidate;
+        const hostOwnerId = runner.ownerId;
         if (!runnerHasCapacity(db, runner.id, at)) return [];
         if (
           input.purpose === "helper" &&
@@ -294,14 +317,20 @@ export function createRunnerPlacement(options: {
           (!["owner", "admin"].includes(member.role) && !member.teamIds.includes(issue.teamId))
         )
           return [];
-        const own =
+        const legacyOwn =
           issue.assigneeId === runner.linearUserId ||
           (input.purpose === "helper" && runner.ownerId === requester);
-        const shared =
+        const legacyShared =
           runner.sharing === 1 &&
           runner.hostOwner !== "unknown" &&
           ["organization", "api"].includes(runner.seat) &&
           projectMembers.includes(runner.linearUserId);
+        const projectItem = current.placement?.projectApprovalId != null;
+        const own =
+          current.placement && (projectItem || current.placement.ownerUserId)
+            ? hostOwnerId === current.placement.ownerUserId
+            : legacyOwn;
+        const shared = current.placement?.ownerUserId && !projectItem ? false : legacyShared;
         const fallback =
           current.workspace.fallbackAllowed === 1 &&
           runner.fallback === 1 &&
