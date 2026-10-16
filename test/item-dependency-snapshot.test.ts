@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { insertQueuedItem, migrate, migrations, openDatabase } from "../src/db";
-import { epicSnapshotsComplete } from "../src/intake";
+import { epicSnapshotsComplete, readExternalBlockerEvidence } from "../src/intake";
 import { tempDb } from "./helpers";
 
 function applyMigrationsUntil(db: Database, lastId: string): void {
@@ -100,6 +100,33 @@ test("an epic is snapshot-ready only when every active item has a snapshot", () 
       "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES('removed','hash',1,0)",
     );
     expect(epicSnapshotsComplete(db, first.epicId)).toBe(true);
+  } finally {
+    db.close();
+  }
+});
+
+test("merged blocker evidence keeps the newest check", () => {
+  const db = tempDb();
+  try {
+    const first = insertQueuedItem(db, { id: "first", now: 1 });
+    db.run(
+      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('second',?,'second','DEP-3','Second','queued','paws/second',1,1)",
+      [first.epicId],
+    );
+    db.run(
+      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',1)",
+    );
+    const snap = (itemId: string, generation: number, evidence: object) =>
+      db.run(
+        "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,external_evidence) VALUES(?,'workspace',?,'[]','[]',?)",
+        [itemId, generation, JSON.stringify(evidence)],
+      );
+    snap("first", 5, { out: { satisfied: false, reason: "old", checkedAt: 1 } });
+    snap("second", 1, { out: { satisfied: true, reason: "new", checkedAt: 9 } });
+    expect(
+      readExternalBlockerEvidence(db, { workspaceId: "workspace", epicId: first.epicId }).out
+        ?.reason,
+    ).toBe("new");
   } finally {
     db.close();
   }
