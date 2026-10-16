@@ -116,3 +116,38 @@ test("inserting a work item needs no epic row", () => {
     db.close();
   }
 });
+
+test("migration 065 keeps the parent issue in a child brief that lacks it", () => {
+  const db = openDatabase(":memory:");
+  try {
+    applyMigrationsUntil(db, "064_work_item_without_epic_fk");
+    db.run(
+      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('parent-epic','parent','DEP-1','Parent','running',1)",
+    );
+    for (const [id, brief] of [
+      ["no-brief", null],
+      ["issue-only", JSON.stringify({ issue: { issueId: "issue-only" }, epic: null })],
+      ["solo", null],
+    ] as const)
+      db.run(
+        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,brief) VALUES(?,?,?,?,?,'queued',?,0,1,?)",
+        [id, id === "solo" ? "solo-epic" : "parent-epic", id, id, id, `paws/${id}`, brief],
+      );
+    db.run(
+      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('solo-epic','solo','DEP-9','Solo','running',1)",
+    );
+    migrate(db);
+    const parents = db
+      .query<{ id: string; parent: string | null; issue: string | null }, []>(
+        "SELECT id, json_extract(brief,'$.epic.issueId') AS parent, json_extract(brief,'$.issue.issueId') AS issue FROM work_item ORDER BY id",
+      )
+      .all();
+    expect(parents).toEqual([
+      { id: "issue-only", parent: "parent", issue: "issue-only" },
+      { id: "no-brief", parent: null, issue: null },
+      { id: "solo", parent: null, issue: null },
+    ]);
+  } finally {
+    db.close();
+  }
+});
