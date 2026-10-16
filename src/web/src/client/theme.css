@@ -74,7 +74,7 @@
   [hidden] {
     display: none !important;
   }
-  [data-epic-filter][aria-pressed="true"] {
+  [data-issue-filter][aria-pressed="true"] {
     background: var(--main);
     color: var(--main-foreground);
   }

@@ -4,10 +4,9 @@ import { flushSync } from "react-dom";
 import {
   LayoutDashboard,
   GitBranch,
+  ListTodo,
   Terminal,
   CircleHelp,
-  ShieldCheck,
-  GitMerge,
   MessagesSquare,
   Server,
   Bot,
@@ -36,12 +35,10 @@ import {
 
 const ICONS = {
   overview: LayoutDashboard,
-  epics: GitBranch,
+  issues: ListTodo,
   projects: GitBranch,
   runs: Terminal,
   questions: CircleHelp,
-  verdicts: ShieldCheck,
-  queue: GitMerge,
   sessions: MessagesSquare,
   runners: Server,
   agents: Bot,

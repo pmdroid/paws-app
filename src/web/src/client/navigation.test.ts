@@ -36,21 +36,12 @@ test("empty pages retain their own heading and empty state", () => {
   const snapshot = {
     ...demoStatus(),
     items: [],
-    epics: [],
     runs: [],
     questions: [],
     verdicts: [],
     mergeQueue: [],
   };
-  for (const view of [
-    "overview",
-    "epics",
-    "runs",
-    "questions",
-    "verdicts",
-    "queue",
-    "sessions",
-  ] as const) {
+  for (const view of ["overview", "issues", "runs", "questions", "sessions"] as const) {
     const html = render({
       ...model,
       snapshot,
@@ -64,19 +55,22 @@ test("empty pages retain their own heading and empty state", () => {
 });
 
 test("invalid detail routes do not silently show a different result", () => {
-  for (const view of ["epics", "runs", "verdicts"] as const) {
+  for (const view of ["issues", "runs"] as const) {
     const html = render({ ...model, route: { view, id: "missing" } }).content;
     expect(html).toContain("not found");
     expect(html).toContain("data-route-picker");
   }
 });
 
-test("epics list offers state filters and a simple item list", () => {
-  const list = render({ ...model, route: { view: "epics", id: null } }).content;
-  expect(list).toContain('data-epic-filter="needs"');
-  expect(list).toContain("data-epic-state=");
+test("issues list offers state filters and a simple item list", () => {
+  const list = render({ ...model, route: { view: "issues", id: null } }).content;
+  expect(list).toContain('data-issue-filter="all"');
+  expect(list).toContain('data-issue-filter="active"');
+  expect(list).toContain('data-issue-filter="needs"');
+  expect(list).toContain('data-issue-filter="done"');
+  expect(list).toContain("data-issue-state=");
   expect(list).not.toContain("data-view-tabs");
-  const detail = render({ ...model, route: { view: "epics", id: "ENG-98" } }).content;
-  expect(detail).toContain("All epics");
+  const detail = render({ ...model, route: { view: "issues", id: "ENG-104" } }).content;
+  expect(detail).toContain("All issues");
   expect(detail).not.toContain("Linear agent session");
 });

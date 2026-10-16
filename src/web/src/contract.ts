@@ -26,8 +26,6 @@ export const ITEM_STATES = [
   "needs_human",
 ] as const;
 
-export const EPIC_STATES = ["idle", "planning", "running", "awaiting_input", "done"] as const;
-
 export const RUN_STATES = [
   "running",
   "awaiting_input",
@@ -67,12 +65,10 @@ export const ACTIVITY_KINDS = [
   "err",
   "prompt",
 ] as const;
-export const NOTE_KINDS = ["thought", "action", "elicitation", "error", "response"] as const;
 export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
 export const SOURCES = ["demo", "live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
-export type EpicState = (typeof EPIC_STATES)[number];
 export type RunState = (typeof RUN_STATES)[number];
 export type QuestionKind = (typeof QUESTION_KINDS)[number];
 export type Urgency = (typeof URGENCIES)[number];
@@ -81,31 +77,12 @@ export type CheckState = (typeof CHECK_STATES)[number];
 export type CheckKind = (typeof CHECK_KINDS)[number];
 export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
-export type NoteKind = (typeof NOTE_KINDS)[number];
 export type EventLevel = (typeof EVENT_LEVELS)[number];
 export type StatusSource = (typeof SOURCES)[number];
 
 export interface StatusLink {
   label: string;
   href: string;
-}
-
-export interface StatusNote {
-  at: string;
-  kind: NoteKind;
-  actor: string;
-  text: string;
-}
-
-export interface StatusEpic {
-  id: string;
-  title: string;
-  description: string;
-  state: EpicState;
-  delegated: boolean;
-  dri: string;
-  session: StatusNote[];
-  links: StatusLink[];
 }
 
 export interface StatusPullRequest {
@@ -115,11 +92,12 @@ export interface StatusPullRequest {
 
 export interface StatusItem {
   id: string;
-  epicId: string;
   title: string;
   state: ItemState;
   agent: string;
   assignee: string;
+  owner: string | null;
+  project: { id: string; name: string } | null;
   blockers: string[];
   attempts: number;
   branch: string | null;
@@ -232,7 +210,6 @@ export interface StatusSnapshot {
   source: StatusSource;
   generatedAt: string;
   project: StatusProject;
-  epics: StatusEpic[];
   items: StatusItem[];
   runs: StatusRun[];
   questions: StatusQuestion[];
@@ -261,11 +238,6 @@ export function parseStatusSnapshot(input: unknown): ParseResult {
 
 export function statusIntegrity(snapshot: StatusSnapshot): string[] {
   const problems: string[] = [];
-  const epics = ids(
-    snapshot.epics.map((epic) => epic.id),
-    "epic",
-    problems,
-  );
   const items = ids(
     snapshot.items.map((item) => item.id),
     "item",
@@ -283,7 +255,6 @@ export function statusIntegrity(snapshot: StatusSnapshot): string[] {
   );
 
   for (const item of snapshot.items) {
-    if (!epics.has(item.epicId)) problems.push(`${item.id} epic ${item.epicId} is missing`);
     for (const blocker of item.blockers) {
       if (!items.has(blocker)) problems.push(`${item.id} blocker ${blocker} is missing`);
     }
@@ -337,7 +308,6 @@ function readSnapshot(input: unknown): StatusSnapshot {
     source: oneOf(string(body, "source", "status"), SOURCES, "status.source"),
     generatedAt: dateString(body, "generatedAt", "status"),
     project: readProject(body.project),
-    epics: array(body, "epics", "status").map((entry, index) => readEpic(entry, index)),
     items: array(body, "items", "status").map((entry, index) => readItem(entry, index)),
     runs: array(body, "runs", "status").map((entry, index) => readRun(entry, index)),
     questions: array(body, "questions", "status").map((entry, index) => readQuestion(entry, index)),
@@ -361,23 +331,6 @@ function readProject(input: unknown): StatusProject {
   };
 }
 
-function readEpic(input: unknown, index: number): StatusEpic {
-  const path = `epics[${index}]`;
-  const body = object(input, path);
-  return {
-    id: text(body, "id", path),
-    title: text(body, "title", path),
-    description: string(body, "description", path),
-    state: oneOf(string(body, "state", path), EPIC_STATES, `${path}.state`),
-    delegated: boolean(body, "delegated", path),
-    dri: text(body, "dri", path),
-    session: array(body, "session", path).map((entry, note) =>
-      readNote(entry, `${path}.session[${note}]`),
-    ),
-    links: readLinks(body.links, `${path}.links`),
-  };
-}
-
 function readItem(input: unknown, index: number): StatusItem {
   const path = `items[${index}]`;
   const body = object(input, path);
@@ -391,11 +344,12 @@ function readItem(input: unknown, index: number): StatusItem {
   }
   return {
     id: text(body, "id", path),
-    epicId: text(body, "epicId", path),
     title: text(body, "title", path),
     state: oneOf(string(body, "state", path), ITEM_STATES, `${path}.state`),
     agent: text(body, "agent", path),
     assignee: text(body, "assignee", path),
+    owner: nullableText(body, "owner", path),
+    project: readItemProject(body.project, `${path}.project`),
     blockers: stringArray(body, "blockers", path),
     attempts: count(body, "attempts", path),
     branch,
@@ -572,14 +526,10 @@ function readEvent(input: unknown, index: number): StatusEvent {
   };
 }
 
-function readNote(input: unknown, path: string): StatusNote {
+function readItemProject(input: unknown, path: string): { id: string; name: string } | null {
+  if (input === null) return null;
   const body = object(input, path);
-  return {
-    at: dateString(body, "at", path),
-    kind: oneOf(string(body, "kind", path), NOTE_KINDS, `${path}.kind`),
-    actor: text(body, "actor", path),
-    text: text(body, "text", path),
-  };
+  return { id: text(body, "id", path), name: text(body, "name", path) };
 }
 
 function readActivity(input: unknown, path: string): StatusActivity {
@@ -635,6 +585,15 @@ function text(body: Record<string, unknown>, key: string, path: string): string 
   const value = string(body, key, path).trim();
   if (!value) throw new StatusContractError(`${path}.${key} must not be empty`);
   return value;
+}
+
+function nullableText(body: Record<string, unknown>, key: string, path: string): string | null {
+  const value = body[key];
+  if (value === null) return null;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new StatusContractError(`${path}.${key} must be a string or null`);
+  }
+  return value.trim();
 }
 
 function stringArray(body: Record<string, unknown>, key: string, path: string): string[] {

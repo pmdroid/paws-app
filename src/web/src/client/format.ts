@@ -1,4 +1,4 @@
-import type { EpicState, ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
+import type { ItemState, RunState, StatusLink, VerdictDecision } from "../contract";
 
 const ITEM_LABEL: Record<ItemState, string> = {
   queued: "Queued",
@@ -13,14 +13,6 @@ const ITEM_LABEL: Record<ItemState, string> = {
   exhausted: "Exhausted",
   stopped: "Stopped",
   needs_human: "Needs a person",
-};
-
-const EPIC_LABEL: Record<EpicState, string> = {
-  idle: "Idle",
-  planning: "Planning",
-  running: "Running",
-  awaiting_input: "Awaiting input",
-  done: "Done",
 };
 
 const RUN_LABEL: Record<RunState, string> = {
@@ -67,10 +59,6 @@ export function esc(value: string): string {
 
 export function itemLabel(state: ItemState): string {
   return ITEM_LABEL[state];
-}
-
-export function epicLabel(state: EpicState): string {
-  return EPIC_LABEL[state];
 }
 
 export function runLabel(state: RunState): string {
