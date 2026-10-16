@@ -309,7 +309,6 @@ test("ambiguous configured repositories ask before any worktree or issue-state m
     expect(f.tracker.repositorySuggestionRequests).toEqual([
       {
         issueId: "issue",
-        agentSessionId: "session",
         candidateRepositories: [
           { hostname: "github.com", repositoryFullName: "acme/one" },
           { hostname: "github.com", repositoryFullName: "acme/two" },
