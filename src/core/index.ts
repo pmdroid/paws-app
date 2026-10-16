@@ -62,6 +62,7 @@ export {
   type StartupDecision,
   type WakeDecision,
 } from "./recovery";
+export { handoffNote } from "./handoff";
 
 export {
   appBotCommitIdentity,

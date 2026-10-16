@@ -88,6 +88,7 @@ export {
   insertRun,
   listRuns,
   markRun,
+  releaseRunCapacity,
   saveRunResult,
   saveRunCommitPolicy,
   getItemRunCommitPolicy,
