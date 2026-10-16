@@ -78,10 +78,8 @@ export async function probeRunnerPolicyBrowser(
     );
   const policy = {
     agent: "codex",
-    hostOwner: "member",
     seat: "organization",
     sharing: true,
-    fallback: false,
   };
   try {
     const memberPrincipal = principal(member, "member");
@@ -116,13 +114,18 @@ export async function probeRunnerPolicyBrowser(
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       403,
     );
     assert.equal(
+      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
+        ...policy,
+        hostOwner: "workspace",
+      }))!.status,
+      400,
+    );
+    assert.equal(
       (await request("/api/runners/policy", principal(owner, "owner"), {
-        fallbackAllowed: true,
         personalOrganizationHost: true,
       }))!.status,
       200,
@@ -132,19 +135,17 @@ export async function probeRunnerPolicyBrowser(
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       200,
     );
     assert.equal(
       (await request("/api/runners/policy", memberPrincipal, {
-        fallbackAllowed: false,
         personalOrganizationHost: false,
       }))!.status,
       403,
     );
     observe(
-      "Personal accounts and workspace fallback require explicit account and owner permission",
+      "Personal accounts require explicit account type and workspace owner permission",
       true,
       { personalSharingDenied: true, workspacePermissionRequired: true },
     );
