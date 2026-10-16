@@ -3,8 +3,9 @@ import type { IssueBrief } from "../core";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
-import { insertRunningQueue, insertStalledEpic, listWorkItems, readEpicByLinearId } from "./store";
+import { findAcceptedIntake, insertRunningQueue, readAdoptedParent } from "./store";
 import type { StoredEpic, StoredWorkItem } from "./store";
+import { ulid } from "./ulid";
 
 export type IntakeResult =
   | {
@@ -34,6 +35,11 @@ export function cycleMessage(identifiers: readonly string[]): string {
   return `Cycle in blocks relations (${identifiers.join(" → ")}). Nothing will run.`;
 }
 
+function parentAdoptionMessage(count: number): string {
+  const noun = count === 1 ? "sub-issue" : "sub-issues";
+  return `Picked up ${count} ${noun}. Each one runs in its own session.`;
+}
+
 /**
  * Load a delegated issue. A parent with sub-issues becomes an ordered queue;
  * a lone issue is a queue of one. A blocks cycle is reported and nothing is queued.
@@ -49,13 +55,19 @@ export async function intakeDelegatedIssue(
     singleIssue?: boolean;
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
+    beforeAdmit?: () => void;
+    adoptParent?: (
+      sessionId: string,
+      snapshot: EpicSnapshot,
+      edges: readonly DependencyEdge[],
+    ) => boolean;
   },
 ): Promise<IntakeResult> {
   const now = input.now ?? Date.now();
   const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
-  const existing = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  const existing = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (existing !== null) {
-    const result = replay(db, existing);
+    const result = { ok: true as const, ...existing, alreadyExisted: true as const };
     input.onAccepted?.(result);
     return result;
   }
@@ -66,25 +78,25 @@ export async function intakeDelegatedIssue(
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
   if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
-  const accepted = readEpicByLinearId(db, input.linearIssueId, taskKey);
+  const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
-    const result = replay(db, accepted);
+    const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
     input.onAccepted?.(result);
     return result;
   }
   if (!ordered.ok) {
-    const epic = insertStalledEpic(db, {
-      taskKey,
-      linearIssueId: snapshot.linearIssueId,
-      identifier: snapshot.identifier,
-      title: snapshot.title,
-      now,
-    });
     const identifiers = ordered.remaining.map((node) => node.identifier);
     const result = {
       ok: false,
       reason: "cycle",
-      epic,
+      epic: {
+        id: ulid(now),
+        linearIssueId: snapshot.linearIssueId,
+        linearIdentifier: snapshot.identifier,
+        title: snapshot.title,
+        state: "stalled",
+        version: 0,
+      },
       identifiers,
       alreadyExisted: false,
     } as const;
@@ -92,43 +104,96 @@ export async function intakeDelegatedIssue(
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
-  const result = db
-    .transaction(() => {
-      const saved = insertRunningQueue(db, {
-        taskKey,
-        linearIssueId: snapshot.linearIssueId,
-        identifier: snapshot.identifier,
-        title: snapshot.title,
-        ordered: ordered.ordered,
-        briefs: new Map(
-          (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
-            issue.linearIssueId,
-            { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
-          ]),
-        ),
-        edges,
-        now,
-      });
-      const admitted = {
-        ok: true,
-        epic: saved.epic,
-        items: saved.items,
-        alreadyExisted: false,
-      } as const;
-      input.onAccepted?.(admitted);
-      return admitted;
-    })
-    .immediate();
+  const sessionId = input.sessionId ?? "";
+  let adopted = false;
+  let result: IntakeResult;
+  try {
+    result = db
+      .transaction(() => {
+        input.beforeAdmit?.();
+        if (
+          snapshot.subIssues.length > 0 &&
+          sessionId.length > 0 &&
+          input.adoptParent?.(sessionId, snapshot, edges)
+        ) {
+          adopted = true;
+          const epic = readAdoptedParent(db, snapshot.linearIssueId);
+          if (epic === null) throw new Error("Adopted parent was not recorded");
+          const admitted = {
+            ok: true,
+            epic,
+            items: [],
+            alreadyExisted: false,
+          } as const;
+          input.onAccepted?.(admitted);
+          return admitted;
+        }
+        const conflict = activeElsewhere(db, ordered.ordered);
+        if (conflict) throw new ActiveIssueError(conflict.identifier);
+        const saved = insertRunningQueue(db, {
+          taskKey,
+          linearIssueId: snapshot.linearIssueId,
+          identifier: snapshot.identifier,
+          title: snapshot.title,
+          ordered: ordered.ordered,
+          briefs: new Map(
+            (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+              issue.linearIssueId,
+              { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+            ]),
+          ),
+          edges,
+          now,
+          sessionKey: sessionId.length > 0 ? sessionId : null,
+        });
+        const admitted = {
+          ok: true,
+          epic: saved.epic,
+          items: saved.items,
+          alreadyExisted: false,
+        } as const;
+        input.onAccepted?.(admitted);
+        return admitted;
+      })
+      .immediate();
+  } catch (error) {
+    if (error instanceof ActiveIssueError)
+      await announce(tracker, input.sessionId, "error", error.message);
+    throw error;
+  }
   await announce(
     tracker,
     input.sessionId,
     "thought",
-    queueMessage(
-      result.items.map((item) => item.linearIdentifier),
-      delegatedAlone,
-    ),
+    adopted
+      ? parentAdoptionMessage(snapshot.subIssues.length)
+      : queueMessage(
+          result.items.map((item) => item.linearIdentifier),
+          delegatedAlone,
+        ),
   );
   return result;
+}
+
+export class ActiveIssueError extends Error {
+  constructor(identifier: string) {
+    super(`${identifier} is already being worked on in another session.`);
+    this.name = "ActiveIssueError";
+  }
+}
+
+function activeElsewhere(db: Database, nodes: readonly OrderNode[]): OrderNode | undefined {
+  for (const node of nodes) {
+    const active = db
+      .query<{ id: string }, [string]>(
+        `SELECT id FROM work_item
+         WHERE linear_issue_id = ? AND state NOT IN ('completed', 'merged', 'cancelled')
+         LIMIT 1`,
+      )
+      .get(node.linearIssueId);
+    if (active) return node;
+  }
+  return undefined;
 }
 
 function issueBrief(issue: {
@@ -146,14 +211,6 @@ function issueBrief(issue: {
     description: issue.description ?? null,
     acceptanceCriteria: issue.acceptanceCriteria ?? null,
   };
-}
-
-function replay(db: Database, epic: StoredEpic): IntakeResult {
-  const items = listWorkItems(db, epic.id);
-  if (epic.state === "stalled" && items.length === 0) {
-    return { ok: false, reason: "cycle", epic, identifiers: [], alreadyExisted: true };
-  }
-  return { ok: true, epic, items, alreadyExisted: true };
 }
 
 function workNodes(snapshot: EpicSnapshot): OrderNode[] {

@@ -40,23 +40,23 @@ For branch or PR work, set `BASE_REF` to the successfully fetched target ref, th
 
 ## Layout
 
-| Path            | Owns                                                      | Depends on                          |
-| --------------- | --------------------------------------------------------- | ----------------------------------- |
-| `src/index.ts`  | Composition root. Opens the database, migrates, listens.  | public indexes only                 |
-| `src/config`    | `~/.paws` paths, env schema, `config.toml` seam           | `core` (for `NotImplementedError`)  |
-| `src/core`      | Domain types, states, `transition()` / `transitionEpic()` | nothing in `src`                    |
-| `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`   | `core`                              |
-| `src/linear`    | `TrackerAdapter`, webhook route, fake                     | `core`                              |
-| `src/intake`    | Delegated issues and `blocks` order                       | `core`, `linear`                    |
-| `src/acp`       | ACP executor, worktrees, fake agent                       | `core`                              |
-| `src/closeout`  | `CloseoutGate`, fake                                      | nothing in `src`                    |
-| `src/github`    | GitHub App token, pull requests, serial merge, fake       | nothing in `src`                    |
-| `src/questions` | Elicitation text, question rows, `QuestionChannel`        | `core`                              |
-| `src/loop`      | Orchestrator: intake, ACP, Closeout, PR, merge            | the modules it composes             |
-| `src/doctor`    | `bun run paws doctor` prerequisite checks                 | `config`                            |
-| `src/host`      | Sleep, wake, and `agentAlive`                             | `core`, `db`                        |
-| `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table   | `config`, `linear`, `github`, `web` |
-| `src/web`       | Static status dashboard (`/status`, `GET /api/status`)    | nothing in `src`                    |
+| Path            | Owns                                                     | Depends on                          |
+| --------------- | -------------------------------------------------------- | ----------------------------------- |
+| `src/index.ts`  | Composition root. Opens the database, migrates, listens. | public indexes only                 |
+| `src/config`    | `~/.paws` paths, env schema, `config.toml` seam          | `core` (for `NotImplementedError`)  |
+| `src/core`      | Domain types, states, `transition()`                     | nothing in `src`                    |
+| `src/db`        | `bun:sqlite` connection, migrations, `job` and `outbox`  | `core`                              |
+| `src/linear`    | `TrackerAdapter`, webhook route, fake                    | `core`                              |
+| `src/intake`    | Delegated issues and `blocks` order                      | `core`, `db`, `linear`              |
+| `src/acp`       | ACP executor, worktrees, fake agent                      | `core`                              |
+| `src/closeout`  | `CloseoutGate`, fake                                     | nothing in `src`                    |
+| `src/github`    | GitHub App token, pull requests, serial merge, fake      | nothing in `src`                    |
+| `src/questions` | Elicitation text, question rows, `QuestionChannel`       | `core`                              |
+| `src/loop`      | Orchestrator: intake, ACP, Closeout, PR, merge           | the modules it composes             |
+| `src/doctor`    | `bun run paws doctor` prerequisite checks                | `config`                            |
+| `src/host`      | Sleep, wake, and `agentAlive`                            | `core`, `db`                        |
+| `src/server`    | `Bun.serve` on `127.0.0.1:8787`, `/health`, route table  | `config`, `linear`, `github`, `web` |
+| `src/web`       | Static status dashboard (`/status`, `GET /api/status`)   | nothing in `src`                    |
 
 Import another module only through its `index.ts`. `test/boundaries.test.ts` fails the build otherwise. A new npm dependency is fine; a deep import is not.
 

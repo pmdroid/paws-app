@@ -229,7 +229,7 @@ export async function probeExecutionChanges(
     );
     seed("blocker", ["queued", "queued"]);
     db.run(
-      "INSERT INTO work_item_block(epic_id,blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','blocker-0','blocker-1')",
+      "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker-0','blocker-1')",
     );
     orchestrator.applyEpicChanges(changes("blocker", { canceledItemIds: ["blocker-0"] }));
     observe(

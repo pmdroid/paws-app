@@ -65,7 +65,7 @@ export function createProjectHttp(input: {
       let lastError = approval.lastError;
       if (approval.stoppedAt === null) {
         try {
-          assertProjectAuthority(input.db, actor, approval.preview);
+          assertProjectAuthority(input.db, actor, approval.preview, approval.source);
         } catch {
           lastError =
             "Execution access changed. Restore lead and repository access before resuming.";

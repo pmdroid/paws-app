@@ -18,7 +18,7 @@ import {
   recordLinearInstallation,
 } from "../../src/db";
 import { JOB_KIND } from "../../src/core";
-import { intakeDelegatedIssue, syncEpicDependencies } from "../../src/intake";
+import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 import { dispatchReadyItems, registerScheduler, saveSchedulingContext } from "../../src/scheduler";
 
@@ -99,9 +99,9 @@ export async function probeScheduler(
         const [exit, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
         assert.equal(exit, 0, error);
       }
-      assert.equal(count(db, "scheduler_admission"), 2);
-      assert.equal(count(db, "job"), 2);
-      observed("Twenty processes atomically admit only two project jobs", {
+      assert.equal(count(db, "scheduler_admission"), 20);
+      assert.equal(count(db, "job"), 20);
+      observed("Twenty processes atomically admit every ready item once", {
         admissions: count(db, "scheduler_admission"),
         jobs: count(db, "job"),
       });
@@ -128,8 +128,8 @@ export async function probeScheduler(
       db.close();
       const reopened = openDatabase(join(directory, "paws.sqlite"));
       assert.deepEqual(dispatchReadyItems(reopened, { now: 1001, legacyReadyItemIds: ids }), []);
-      assert.equal(count(reopened, "scheduler_admission"), 2);
-      observed("Restart retains capacity and queued or active reservations", {
+      assert.equal(count(reopened, "scheduler_admission"), 20);
+      observed("Restart retains queued or active reservations", {
         admissions: count(reopened, "scheduler_admission"),
       });
       reopened.close();
@@ -169,10 +169,7 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("claimed-retraction", 2, () => ["src/shared"]);
-    assert.equal(
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 }).length,
-      1,
-    );
+    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), ids);
     const claimed = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     const first = (claimed.payload as { itemId: string }).itemId;
     const canDispatchEpic = (epicId: string) => epicId !== `epic-${first}`;
@@ -181,23 +178,22 @@ export async function probeScheduler(
         now: 1001,
         legacyReadyItemIds: ids,
         canDispatchEpic,
-        concurrency: 1,
       }),
       [],
     );
     assert.equal(getJob(db, claimed.id)!.status, "running");
     assert.equal(getJob(db, claimed.id)!.lockedBy, claimed.lockedBy);
-    assert.equal(count(db, "scheduler_admission"), 1);
+    assert.equal(count(db, "scheduler_admission"), 2);
     assert(completeJob(db, claimed, 1002));
-    assert.equal(
+    assert.deepEqual(
       dispatchReadyItems(db, {
         now: 1002,
         legacyReadyItemIds: ids,
         canDispatchEpic,
-        concurrency: 1,
-      }).length,
-      1,
+      }),
+      [],
     );
+    assert.equal(count(db, "scheduler_admission"), 1);
     observed("A claimed start retains its locks until the actual job holder releases", {
       claimed: claimed.id,
     });
@@ -206,7 +202,7 @@ export async function probeScheduler(
   {
     for (const running of [false, true]) {
       const { db, ids } = setup(`stale-start-${running}`, 1);
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 });
+      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids });
       if (running) assert(claimNextJob(db, { now: 1000, leaseMs: 10, queues: [JOB_KIND.start] }));
       db.run("UPDATE work_item SET state='failed' WHERE id=?", [ids[0]!]);
       dispatchReadyItems(db, { now: 1011 });
@@ -236,11 +232,11 @@ export async function probeScheduler(
       observedAtMs: 1000,
     });
     bindLinearSessionTask(db, "merge-session", `epic-${ids[0]!}`, { actorId: "owner" });
-    const options = { now: 1000, legacyReadyItemIds: ids, concurrency: 1 };
-    assert.deepEqual(dispatchReadyItems(db, options), [ids[0]!]);
+    const firstOnly = { now: 1000, legacyReadyItemIds: [ids[0]!] };
+    assert.deepEqual(dispatchReadyItems(db, firstOnly), [ids[0]!]);
     const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
     db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
-    assert.deepEqual(dispatchReadyItems(db, options), []);
+    assert.deepEqual(dispatchReadyItems(db, firstOnly), []);
     assert(completeJob(db, start, 1001));
     const mergeId = enqueueJob(db, {
       queue: `${JOB_KIND.merge}.deferred`,
@@ -250,48 +246,35 @@ export async function probeScheduler(
     });
     const merge = claimNextJob(db, { now: 1001, queues: [`${JOB_KIND.merge}.deferred`] })!;
     assert.equal(merge.id, mergeId);
-    assert.deepEqual(dispatchReadyItems(db, { ...options, now: 1002 }), []);
-    assert.equal(count(db, "scheduler_admission"), 1);
+    assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), [ids[1]!]);
+    assert.equal(count(db, "scheduler_admission"), 2);
     assert(completeJob(db, merge, 1003));
-    db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
-      `epic-${ids[0]!}`,
-      `lin-item-${ids[1]!}`,
-      `lin-item-${ids[0]!}`,
-    ]);
-    assert.deepEqual(dispatchReadyItems(db, { ...options, now: 1003 }), [ids[1]!]);
+    assert.deepEqual(dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids }), []);
     const blocker = claimNextJob(db, { now: 1003, queues: [JOB_KIND.start] })!;
     assert.equal((blocker.payload as { itemId: string }).itemId, ids[1]!);
-    assert.equal(count(db, "scheduler_admission"), 1);
-    observed(
-      "Joined idle merges yield the same session, project cap and overlapping footprint to a new blocker",
-      {
-        originalStart: start.id,
-        joinedMerge: merge.id,
-        blockerStart: blocker.id,
-      },
-    );
+    observed("A live merge admits a same-session sibling with an overlapping footprint", {
+      originalStart: start.id,
+      joinedMerge: merge.id,
+      blockerStart: blocker.id,
+    });
     db.close();
   }
   {
     for (const status of ["active", "provisioning"] as const) {
       const { db, ids } = setup(`merge-run-${status}`, 2, () => ["src/shared"]);
-      dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids, concurrency: 1 });
+      assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: [ids[0]!] }), [
+        ids[0]!,
+      ]);
       const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
       assert(completeJob(db, start, 1001));
       db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [ids[0]!]);
       const run = insertRun(db, { itemId: ids[0]!, now: 1001, status });
-      assert.deepEqual(
-        dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids, concurrency: 1 }),
-        [],
-      );
+      assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), [ids[1]!]);
       db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
-      assert.deepEqual(
-        dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids, concurrency: 1 }),
-        [ids[1]!],
-      );
+      assert.deepEqual(dispatchReadyItems(db, { now: 1003, legacyReadyItemIds: ids }), []);
       db.close();
     }
-    observed("Merge queues retain project capacity while active or provisioning runs remain", {
+    observed("Active or provisioning runs do not block another ready item", {
       statuses: ["active", "provisioning"],
     });
   }
@@ -306,8 +289,14 @@ export async function probeScheduler(
   }
   {
     const { db, ids } = setup("duplicate-issue", 2, () => []);
-    db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [`lin-item-${ids[0]!}`, ids[1]!]);
-    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }), [ids[0]!]);
+    assert.throws(
+      () =>
+        db.run("UPDATE work_item SET linear_issue_id=? WHERE id=?", [
+          `lin-item-${ids[0]!}`,
+          ids[1]!,
+        ]),
+      /UNIQUE/,
+    );
     observed("Separate sessions cannot execute the same Linear issue concurrently", { ids });
     db.close();
   }
@@ -333,13 +322,12 @@ export async function probeScheduler(
     const issue = (id: string) => `lin-item-${id}`;
     const epic = (id: string) => `epic-${id}`;
     db.run("UPDATE work_item SET epic_id=? WHERE id LIKE 'priority-%'", [epic(ids[0]!)]);
-    db.run("INSERT INTO work_item_block VALUES(?,?,?)", [
-      epic(ids[0]!),
+    db.run("INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)", [
       issue(ids[2]!),
       issue(ids[3]!),
     ]);
     const admitted = dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids.slice(0, 3) });
-    assert.deepEqual(admitted, [ids[2], ids[0]]);
+    assert.deepEqual(admitted, [ids[2], ids[0], ids[1]]);
     observed("Critical path wins before age with deterministic ties", { admitted });
     db.close();
   }
@@ -376,17 +364,19 @@ export async function probeScheduler(
       assigneeId: null,
       delegateId: null,
     });
-    await syncEpicDependencies(db, {
-      epicId: intake.epic.id,
-      workspaceId: "workspace",
-      expectedGeneration: 0,
-      tracker,
-      lifecycle,
-    });
+    for (const item of intake.items)
+      await syncItemDependencies(db, {
+        itemId: item.id,
+        workspaceId: "workspace",
+        expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+          .generation,
+        tracker,
+        lifecycle,
+      });
     assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ids }), [
       intake.items[0]!.id,
     ]);
-    db.run("UPDATE epic_dependency_snapshot SET scope='[]'");
+    db.run("UPDATE item_dependency_snapshot SET scope='[]'");
     assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ids }), []);
     assert.equal(count(db, "scheduler_admission"), 0);
     assert.equal(
@@ -446,32 +436,29 @@ export async function probeScheduler(
           projectId: "same-project",
           paths: [`src/${item.linearIssueId}`],
         });
-      await syncEpicDependencies(db, {
-        epicId: intake.epic.id,
-        workspaceId: "workspace",
-        expectedGeneration: 0,
-        tracker,
-        lifecycle,
-      });
+      for (const item of intake.items)
+        await syncItemDependencies(db, {
+          itemId: item.id,
+          workspaceId: "workspace",
+          expectedGeneration: readyItems(db, { itemId: item.id, workspaceId: "workspace" })
+            .generation,
+          tracker,
+          lifecycle,
+        });
     }
     const admitted = dispatchReadyItems(db, { now: 1000, defaultRepository: repository });
-    assert.equal(admitted.length, 2);
+    assert.equal(admitted.length, 4);
     for (const [sessionId, ids] of sessions) {
       const selected = ids.filter((id) => admitted.includes(id));
-      assert.equal(selected.length, 1);
+      assert.equal(selected.length, ids.length);
       activateLinearItem(db, sessionId, selected[0]!);
       applyWorkItemEvent(db, selected[0]!, "dispatched");
       assert.throws(
-        () =>
-          activateLinearItem(
-            db,
-            sessionId,
-            ids.find((id) => !admitted.includes(id))!,
-          ),
+        () => activateLinearItem(db, sessionId, selected[1]!),
         /Previous Linear task is still active/,
       );
     }
-    observed("Two canonical sessions activate concurrently while each session admits one item", {
+    observed("Two canonical sessions admit every ready item and each activates one", {
       admitted,
       sessions: [...sessions],
     });
@@ -499,8 +486,8 @@ export async function probeScheduler(
     const { db, ids } = setup("unknown-project", 3);
     for (const id of ids) saveSchedulingContext(db, { itemId: id, paths: ["src/a"] });
     db.run("UPDATE work_item_repository SET repo=item_id");
-    assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 2);
-    observed("Unknown project identity shares one conservative cap across repositories", {
+    assert.equal(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ids }).length, 3);
+    observed("Unknown project identity does not cap ready items across repositories", {
       admissions: count(db, "scheduler_admission"),
     });
     db.close();

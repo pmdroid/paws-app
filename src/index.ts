@@ -25,6 +25,7 @@ import {
 } from "./config";
 import {
   WORK_ITEM_STATES,
+  delegationHasOpenWork,
   type LinearCommand,
   type GitCommitPolicy,
   type AppBotIdentity,
@@ -37,6 +38,7 @@ import {
   enqueueJobOnce,
   getLinearSession,
   getWorkItem,
+  workItemForSession,
   getItemRunCommitPolicy,
   workspaceLinearMember,
   workspaceForOrganization,
@@ -45,7 +47,7 @@ import {
   getLinearSessionInstallation,
   isLinearAppRevoked,
   getLinearSessionAccess,
-  getTaskLinearActor,
+  delegatedLinearUserId,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   getWorkItemRepositoryAnswer,
@@ -53,7 +55,6 @@ import {
   taskRequiresRepository,
   listWorkItemsByStates,
   listWorkItems,
-  linearSessionForEpic,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -114,7 +115,7 @@ import {
   type HostGitHubAuth,
 } from "./loop";
 import {
-  createEpicReconciler,
+  createItemReconciler,
   createPublicationReadiness,
   hasPendingEpicChanges,
   canAdvanceItem,
@@ -125,7 +126,7 @@ import {
   createProjectHttp,
   createProjectExecutionGuard,
 } from "./project-execution";
-import { saveExternalBlockerPolicies } from "./intake";
+import { epicSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
@@ -231,7 +232,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   recoverOnStartup(db);
   const abort = new AbortController();
   let orchestrator: Orchestrator | null = null;
-  let reconciler: ReturnType<typeof createEpicReconciler> | null = null;
+  let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
   let dispatch: (() => readonly string[]) | null = null;
   let legacyReadyItemIds: readonly string[] = [];
@@ -242,7 +243,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const managedEpicReady = (epicId: string): boolean =>
     projectExecution.canDispatch(epicId) &&
     !hasPendingEpicChanges(db, epicId) &&
-    db.query("SELECT 1 FROM epic_dependency_snapshot WHERE epic_id=?").get(epicId) !== null;
+    epicSnapshotsComplete(db, epicId);
   const repository = repositoryBinding(runtime.repo);
   const repositories = [runtime.repo, ...runtime.file.githubRepos]
     .map(repositoryBinding)
@@ -259,15 +260,16 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const accepted = await orchestrator.onLinearEvent(event);
     if (accepted !== false && reconciler && event.sessionId) {
       const session = getLinearSession(db, event.sessionId);
-      if (session?.epicId && session.organizationId && session.stoppedAt === null) {
+      const linked = workItemForSession(db, event.sessionId);
+      if (linked && session?.organizationId && session.stoppedAt === null) {
         const workspace = db
           .query<{ id: string }, [string, string]>(
-            "SELECT w.id FROM workspace w JOIN epic e ON e.id=? AND e.state IN ('running','stalled') WHERE w.linear_organization_id=?",
+            `SELECT w.id FROM workspace w WHERE w.linear_organization_id=? AND ${delegationHasOpenWork("?")}`,
           )
-          .get(session.epicId, session.organizationId);
+          .get(session.organizationId, linked.epicId);
         if (workspace)
           await reconciler.reconcile({
-            epicId: session.epicId,
+            itemId: linked.id,
             workspaceId: workspace.id,
             signal: abort.signal,
           });
@@ -289,7 +291,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
-      if ((item.sessionKey ?? linearSessionForEpic(db, item.epicId)) !== sessionId) continue;
+      if (item.sessionKey !== sessionId) continue;
       if (["cancelled", "completed", "merged"].includes(item.state)) continue;
       submit({ type: "cancel", source: "linear", itemId: item.id, requestedAt: Date.now() });
     }
@@ -308,18 +310,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             const issueEvent = acceptedIssueChange(event);
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
-              for (const target of targets) {
-                const actor = issueEvent.actorId
-                  ? workspaceLinearMember(db, target.workspaceId, issueEvent.actorId)
-                  : null;
-                orchestrator?.reconcileExecution(
-                  actor?.active &&
-                    actor.role !== "observer" &&
-                    issueEvent.actorId !== runtime.linearViewerId
-                    ? { humanEpicId: target.epicId }
-                    : {},
-                );
-              }
+              if (targets.length > 0) orchestrator?.reconcileExecution();
               return false;
             }
             if (
@@ -650,6 +641,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         linearIntakeScope: projectExecution.scope,
         linearIntakeActor: projectExecution.actor,
         onLinearIntake: projectExecution.accepted,
+        adoptLinearParent: projectExecution.adoptParent,
         authorizeLinearEvent: async (event) =>
           (await projectExecution.authorizeEvent(event)) ?? true,
         ...(workspace && linear?.tracker && linear.issueLifecycle
@@ -657,8 +649,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               canDispatchEpic: managedEpicReady,
               canAdvanceItem: (itemId: string) => {
                 const item = getWorkItem(db, itemId);
-                const sessionId =
-                  item?.sessionKey ?? (item ? linearSessionForEpic(db, item.epicId) : null);
+                const sessionId = item?.sessionKey ?? null;
                 const session = sessionId ? getLinearSession(db, sessionId) : null;
                 const currentWorkspace = session?.organizationId
                   ? db
@@ -673,7 +664,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   currentWorkspace !== null &&
                   canAdvanceItem(db, {
                     itemId,
-                    epicId: item.epicId,
                     workspaceId: currentWorkspace.id,
                   })
                 );
@@ -740,7 +730,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   getTaskMode(db, item.id) !== "code" && taskRequiresRepository(db, item.id)
                     ? "read"
                     : "write",
-                actorForItem: (item) => getTaskLinearActor(db, item.id),
+                actorForItem: (item) => delegatedLinearUserId(db, item.id),
                 attributionReady: async (item) => {
                   try {
                     if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item);
@@ -763,7 +753,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const currentWorkspace = session?.organizationId
                     ? workspaceForOrganization(db, session.organizationId)
                     : null;
-                  const actorId = getTaskLinearActor(db, item.id);
+                  const actorId = delegatedLinearUserId(db, item.id);
                   if (!currentWorkspace || !actorId || !session?.teamId || !linear?.memberships)
                     return false;
                   const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
@@ -811,7 +801,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const currentWorkspace = session?.organizationId
                     ? workspaceForOrganization(db, session.organizationId)
                     : null;
-                  const actorId = getTaskLinearActor(db, item.id);
+                  const actorId = delegatedLinearUserId(db, item.id);
                   if (!currentWorkspace || !actorId || !session?.teamId) return false;
                   const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
                   return (
@@ -823,7 +813,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 },
                 integrationIdentity: (item) =>
                   JSON.stringify([
-                    getTaskLinearActor(db, item.id),
+                    delegatedLinearUserId(db, item.id),
                     getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
                     db
                       .query(
@@ -918,7 +908,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           projectHttp = createProjectHttp({ db, tracker: linear.tracker, projects });
           projects.register(created.jobs);
         }
-        reconciler = createEpicReconciler({
+        reconciler = createItemReconciler({
           db,
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
@@ -949,25 +939,50 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publication = createPublicationReadiness({ db, reconciler });
         const enqueueMissingSnapshots = () => {
           const targets = db
-            .query<
-              { epicId: string; workspaceId: string },
-              []
-            >(`SELECT e.id AS epicId,w.id AS workspaceId FROM epic e
-            JOIN linear_session_task t ON t.epic_id=e.id JOIN linear_session s ON s.session_id=t.session_id AND s.current_epic_id=e.id
-            JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
-            AND NOT EXISTS(SELECT 1 FROM epic_dependency_snapshot p WHERE p.epic_id=e.id)`)
+            .query<{ itemId: string; workspaceId: string }, []>(
+              `SELECT picked.id AS itemId,w.id AS workspaceId FROM work_item picked
+            JOIN linear_session s ON s.session_id=picked.session_key
+            JOIN workspace w ON w.linear_organization_id=s.organization_id
+            WHERE picked.id=(
+              SELECT i.id FROM work_item i
+              JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
+              WHERE i.epic_id=picked.epic_id AND i.state NOT IN ('completed','merged','cancelled')
+              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
+              ORDER BY i.position,i.id LIMIT 1)
+            AND ${delegationHasOpenWork("picked.epic_id")} AND s.stopped_at IS NULL
+            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.epic_id=picked.epic_id AND gap.state NOT IN ('completed','merged','cancelled')
+              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
+              AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
+            )
             .all();
           for (const target of targets)
             enqueueJobOnce(db, {
-              queue: "linear.epic.reconcile",
-              jobKey: `linear.epic.reconcile:${target.epicId}`,
+              queue: "linear.item.reconcile",
+              jobKey: `linear.item.reconcile:${target.itemId}`,
               payload: target,
               now: Date.now(),
             });
         };
-        created.jobs.register("linear.epic.reconcile", async (job) => {
-          const target = job.payload as { epicId: string; workspaceId: string };
+        created.jobs.register("linear.item.reconcile", async (job) => {
+          const target = job.payload as { itemId: string; workspaceId: string };
           await reconciler?.reconcile({ ...target, signal: abort.signal });
+          attached.reconcileExecution();
+        });
+        created.jobs.register("linear.epic.reconcile", async (job) => {
+          const legacy = job.payload as { epicId: string; workspaceId: string };
+          const item = db
+            .query<{ id: string }, [string]>(
+              `SELECT i.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
+               WHERE i.epic_id=? AND s.stopped_at IS NULL
+               AND i.state NOT IN ('completed','merged','cancelled') ORDER BY i.position,i.id LIMIT 1`,
+            )
+            .get(legacy.epicId);
+          if (item)
+            await reconciler?.reconcile({
+              itemId: item.id,
+              workspaceId: legacy.workspaceId,
+              signal: abort.signal,
+            });
           attached.reconcileExecution();
         });
         dispatch = registerScheduler(
@@ -976,7 +991,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             enqueueMissingSnapshots();
             return {
               now: Date.now(),
-              concurrency: 2,
               defaultRepository: repository,
               legacyReadyItemIds,
               canDispatchEpic: managedEpicReady,

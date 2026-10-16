@@ -31,7 +31,10 @@ export async function probeCurrentRunStartup(root: string) {
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
     if (mode === "clarified-artifact") {
       const taskKey = "clarification-task";
-      db.run("UPDATE epic SET task_key=? WHERE id=?", [taskKey, item.epicId]);
+      db.run("UPDATE work_item SET task_key=? WHERE id=?", [
+        `${taskKey}:item:${item.linearIssueId}`,
+        item.id,
+      ]);
       saveTaskClassification(db, taskKey, { mode: "clarify", question: "Which page?" });
       const previous = beginImplementRun(db, item.id, clock.now());
       markRun(db, previous.run.id, "ended", clock.now());

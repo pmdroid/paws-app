@@ -77,7 +77,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   core: [],
   db: ["core"],
   linear: ["core", "credentials"],
-  intake: ["core", "linear"],
+  intake: ["core", "db", "linear"],
   "execution-controls": ["core", "db", "workspace"],
   "project-execution": ["core", "db", "workspace", "linear", "intake"],
   scheduler: ["core", "db", "intake"],

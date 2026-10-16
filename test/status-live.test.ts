@@ -46,9 +46,9 @@ test("fake e2e rows show up on /api/status as live work", async () => {
     ]);
     db.run("DELETE FROM epic WHERE id = ?", [merging.epicId]);
     db.run(
-      `INSERT INTO work_item_block (epic_id, blocker_linear_issue_id, blocked_linear_issue_id)
-       VALUES (?, ?, ?)`,
-      [waiting.epicId, waiting.linearIssueId, merging.linearIssueId],
+      `INSERT INTO task_block (blocker_linear_issue_id, blocked_linear_issue_id)
+       VALUES (?, ?)`,
+      [waiting.linearIssueId, merging.linearIssueId],
     );
 
     const parked = beginImplementRun(db, waiting.id, NOW);

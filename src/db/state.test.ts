@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CommandBus, FakeClock, JOB_KIND, type Checkpoint } from "../core";
+import { CommandBus, FakeClock, handoffNote, JOB_KIND, type Checkpoint } from "../core";
 import {
   accrueAwake,
   applyWorkItemEvent,
@@ -10,6 +10,7 @@ import {
   claimNextJob,
   completeJob,
   enqueueJob,
+  enqueueJobOnce,
   enterMergeQueue,
   getJob,
   getRun,
@@ -17,6 +18,7 @@ import {
   insertQueuedItem,
   listJobs,
   listOutbox,
+  markRun,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -126,12 +128,100 @@ describe("restart recovery", () => {
   test("a question that is waiting for Linear survives a restart", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
-    beginImplementRun(db, item.id, clock.now());
+    const { run } = beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "blocking_question");
     saveCheckpoint(db, item.id, { ...checkpoint, phase: "awaiting_input" });
     expect(recoverOnStartup(db, clock.now())).toEqual([]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
+    expect(getRun(db, run.id)?.status).toBe("ended");
     expect(listJobs(db)).toHaveLength(0);
+  });
+
+  test("an answered question at startup resumes once and an open question stays parked", () => {
+    const { db, clock } = harness();
+    const waiting = insertQueuedItem(db, {
+      id: "waiting",
+      sessionKey: "ses-wait",
+      now: clock.now(),
+    });
+    const answered = insertQueuedItem(db, {
+      id: "answered",
+      sessionKey: "ses-ans",
+      now: clock.now(),
+    });
+    const waitingRun = beginImplementRun(db, waiting.id, clock.now()).run;
+    const answeredRun = beginImplementRun(db, answered.id, clock.now()).run;
+    applyWorkItemEvent(db, waiting.id, "blocking_question");
+    applyWorkItemEvent(db, answered.id, "blocking_question");
+    db.run(
+      `INSERT INTO question (
+         id, item_id, run_id, session_id, body, options, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+      ["q-wait", waiting.id, waitingRun.id, "ses-wait", "Still waiting?", null, clock.now()],
+    );
+    db.run(
+      `INSERT INTO question (
+         id, item_id, run_id, session_id, body, options, status, answer, answered_by,
+         created_at, answered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'answered', ?, ?, ?, ?)`,
+      [
+        "q-ans",
+        answered.id,
+        answeredRun.id,
+        "ses-ans",
+        "Which format?",
+        JSON.stringify(["yes", "no"]),
+        "parquet",
+        "human",
+        clock.now(),
+        clock.now() + 1,
+      ],
+    );
+
+    expect(recoverOnStartup(db, clock.now() + 2)).toEqual([]);
+    expect(getWorkItem(db, waiting.id)?.state).toBe("awaiting_input");
+    expect(getRun(db, waitingRun.id)?.status).toBe("ended");
+    expect(getWorkItem(db, answered.id)).toMatchObject({
+      state: "running",
+      recoveryAttempts: 0,
+    });
+    expect(getRun(db, answeredRun.id)?.status).toBe("ended");
+    expect(listJobs(db)).toEqual([
+      expect.objectContaining({
+        queue: JOB_KIND.resume,
+        jobKey: "resume:answer:q-ans",
+        status: "pending",
+        payload: {
+          itemId: answered.id,
+          freshSession: true,
+          reason: "answer",
+          handoff: handoffNote({
+            question: "Which format?",
+            options: ["yes", "no"],
+            answer: "parquet",
+          }),
+        },
+      }),
+    ]);
+  });
+
+  test("a restart leaves an answered item to its pending answer resume", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    applyWorkItemEvent(db, item.id, "blocking_question");
+    markRun(db, run.id, "ended", clock.now());
+    applyWorkItemEvent(db, item.id, "answer_received");
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.resume,
+      jobKey: "resume:answer:q-1",
+      payload: { itemId: item.id, freshSession: true, reason: "answer", handoff: "Q and A" },
+      now: clock.now(),
+    });
+    expect(recoverOnStartup(db, clock.now() + 1)).toEqual([]);
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
+    expect(listJobs(db).map((job) => job.jobKey)).toEqual(["resume:answer:q-1"]);
   });
 
   test("illegal transitions do not change the row", () => {
