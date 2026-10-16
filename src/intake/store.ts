@@ -34,7 +34,7 @@ export type StoredWorkItem = {
 
 type ItemRow = {
   id: string;
-  epic_id: string;
+  delegation_id: string;
   linear_issue_id: string;
   linear_identifier: string;
   title: string;
@@ -45,7 +45,7 @@ type ItemRow = {
 };
 
 type DelegationRow = {
-  epic_id: string;
+  delegation_id: string;
   linear_identifier: string;
   title: string;
 };
@@ -63,7 +63,7 @@ export function findAcceptedIntake(
 ): { epic: StoredEpic; items: StoredWorkItem[] } | null {
   const delegated = db
     .query<DelegationRow, [string, string]>(
-      `SELECT epic_id,
+      `SELECT delegation_id,
               COALESCE(json_extract(brief, '$.epic.identifier'), linear_identifier) AS linear_identifier,
               COALESCE(json_extract(brief, '$.epic.title'), title) AS title
        FROM work_item
@@ -74,10 +74,10 @@ export function findAcceptedIntake(
     )
     .get(linearIssueId, taskKey);
   if (delegated) {
-    const items = listWorkItems(db, delegated.epic_id);
+    const items = listWorkItems(db, delegated.delegation_id);
     return {
       epic: {
-        id: delegated.epic_id,
+        id: delegated.delegation_id,
         linearIssueId,
         linearIdentifier: delegated.linear_identifier,
         title: delegated.title,
@@ -107,8 +107,8 @@ export function readAdoptedParent(db: Database, linearIssueId: string): StoredEp
 export function listWorkItems(db: Database, epicId: string): StoredWorkItem[] {
   return db
     .query<ItemRow, [string]>(
-      `SELECT id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version
-       FROM work_item WHERE epic_id = ? ORDER BY position, linear_identifier`,
+      `SELECT id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version
+       FROM work_item WHERE delegation_id = ? ORDER BY position, linear_identifier`,
     )
     .all(epicId)
     .map(mapItem);
@@ -145,7 +145,7 @@ export function insertRunningQueue(
     for (const item of items) {
       db.run(
         `INSERT INTO work_item (
-           id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key, session_key
+           id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at, brief, task_key, session_key
          ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, ?, ?, ?, ?)`,
         [
           item.id,
@@ -185,7 +185,7 @@ export function insertRunningQueue(
 function mapItem(row: ItemRow): StoredWorkItem {
   return {
     id: row.id,
-    epicId: row.epic_id,
+    epicId: row.delegation_id,
     linearIssueId: row.linear_issue_id,
     linearIdentifier: row.linear_identifier,
     title: row.title,

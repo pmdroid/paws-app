@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { EPIC_STATES, WORK_ITEM_STATES } from "../src/core";
+import { WORK_ITEM_STATES } from "../src/core";
 import { listTaskBlockers, migrations } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
@@ -18,12 +18,14 @@ const parent: EpicSnapshot = {
 };
 
 describe("intake", () => {
-  test("the migrated schema accepts every epic and work-item state", () => {
+  test("the migrated schema accepts every work-item state", () => {
     const db = tempDb();
     const schema = (name: string) =>
       db.query<{ sql: string }, [string]>("SELECT sql FROM sqlite_master WHERE name = ?").get(name)
         ?.sql;
-    for (const state of EPIC_STATES) expect(schema("epic")).toContain(`'${state}'`);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
+    ).toBeNull();
     for (const state of WORK_ITEM_STATES) expect(schema("work_item")).toContain(`'${state}'`);
     expect(migrations[0]?.id).toBe("001_jobs_outbox");
     db.close();
@@ -104,7 +106,10 @@ describe("intake", () => {
       linearIssueId: "parent",
       sessionId: "ses_1",
       adoptParent: () => {
-        epicExisted = db.query("SELECT 1 FROM epic").get() !== null;
+        epicExisted =
+          db
+            .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
+            .get() !== null;
         db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
         db.run(
           "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
@@ -123,7 +128,9 @@ describe("intake", () => {
     expect(result.items).toEqual([]);
     expect(result.epic.state).toBe("done");
     expect(result.epic.id).toBe("approval");
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     expect(tracker.progress.map((update) => update.body)).toEqual([
       "Picked up 1 sub-issue. Each one runs in its own session.",
     ]);
@@ -268,7 +275,9 @@ describe("intake", () => {
     expect(tracker.progress).toContainEqual(
       expect.objectContaining({ sessionId: "ses_2", kind: "error", body: message }),
     );
-    expect(db.query("SELECT id FROM epic").all()).toHaveLength(0);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toHaveLength(0);
     expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(db.query<{ state: string }, []>("SELECT state FROM work_item").get()?.state).toBe(
       "queued",
@@ -374,7 +383,9 @@ describe("intake", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.epic.state).toBe("running");
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "only",
       sessionId: "ses_9",
@@ -396,7 +407,9 @@ describe("intake", () => {
       sessionId: "ses_9",
     });
     expect(done.ok && done.epic.state).toBe("done");
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     db.close();
   });
 
@@ -438,7 +451,9 @@ describe("intake", () => {
       title: "Parent",
       state: "done",
     });
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
@@ -452,7 +467,9 @@ describe("intake", () => {
     expect(again.epic.id).toBe("approval");
     expect(again.items).toEqual([]);
     expect(tracker.progress).toHaveLength(1);
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     db.close();
   });
 
@@ -473,7 +490,9 @@ describe("intake", () => {
     expect(result.identifiers).toEqual(["ENG-2", "ENG-3"]);
     expect(result.epic.state).toBe("stalled");
     expect(result.alreadyExisted).toBe(false);
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     expect(db.query("SELECT id FROM work_item").all()).toEqual([]);
     const again = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
@@ -488,7 +507,9 @@ describe("intake", () => {
       cycleMessage(["ENG-2", "ENG-3"]),
       cycleMessage(["ENG-2", "ENG-3"]),
     ]);
-    expect(db.query("SELECT id FROM epic").all()).toEqual([]);
+    expect(
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").all(),
+    ).toEqual([]);
     db.close();
   });
 });

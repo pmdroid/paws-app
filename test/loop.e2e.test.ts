@@ -2427,10 +2427,6 @@ function stateOf(db: Database, identifier: string): string | null {
   return getWorkItem(db, row.id)?.state ?? null;
 }
 
-function epicState(db: Database): string | null {
-  return db.query<{ state: string }, []>("SELECT state FROM epic LIMIT 1").get()?.state ?? null;
-}
-
 function delegationMerged(db: Database): boolean {
   const items = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
   return items.length > 0 && items.every((item) => item.state === "merged");
@@ -2444,7 +2440,7 @@ function debug(layout: { pawsRoot: string }, db: Database): string {
         "SELECT linear_identifier, state FROM work_item ORDER BY position",
       )
       .all();
-    return JSON.stringify({ paws: layout.pawsRoot, epic: epicState(db), items, jobs });
+    return JSON.stringify({ paws: layout.pawsRoot, items, jobs });
   } catch {
     return "db closed";
   }

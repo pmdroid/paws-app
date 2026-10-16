@@ -45,7 +45,7 @@ export async function probeExecutionLifecycle(
   const state = (id: string) => {
     const items = db
       .query<{ state: string }, [string]>(
-        "SELECT state FROM work_item WHERE epic_id=? ORDER BY position, id",
+        "SELECT state FROM work_item WHERE delegation_id=? ORDER BY position, id",
       )
       .all(id);
     if (
@@ -58,14 +58,10 @@ export async function probeExecutionLifecycle(
       return items.every((item) => item.state === "cancelled") ? "cancelled" : "done";
     return "running";
   };
-  const seed = (id: string, states: string[], epicState = "running") => {
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,?,?)",
-      [id, `${id}-parent`, `${id}-parent`, id, epicState, clock.now()],
-    );
+  const seed = (id: string, states: string[]) => {
     states.forEach((itemState, index) =>
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
         [
           `${id}-${index}`,
           id,
@@ -90,7 +86,7 @@ export async function probeExecutionLifecycle(
   try {
     seed("mixed", ["merged", "cancelled", "completed"]);
     seed("abandoned", ["cancelled", "cancelled"]);
-    seed("already-stalled", ["merged"], "stalled");
+    seed("already-stalled", ["merged"]);
     seed("failed", ["failed"]);
     orchestrator.reconcileExecution();
     observe(
@@ -237,10 +233,7 @@ export async function probeExecutionLifecycle(
     });
     try {
       guardDb.run(
-        "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('guard','guard','G-1','Guard','running',1)",
-      );
-      guardDb.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('guard-item','guard','guard','G-1','Guard','queued','paws/guard',0,1)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('guard-item','guard','guard','G-1','Guard','queued','paws/guard',0,1)",
       );
       guard.reconcileExecution();
       allowed = false;

@@ -39,12 +39,11 @@ test("fake e2e rows show up on /api/status as live work", async () => {
       now: NOW,
     });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-2", waiting.id]);
-    db.run("UPDATE work_item SET epic_id = ?, linear_identifier = ? WHERE id = ?", [
+    db.run("UPDATE work_item SET delegation_id = ?, linear_identifier = ? WHERE id = ?", [
       waiting.epicId,
       "ENG-3",
       merging.id,
     ]);
-    db.run("DELETE FROM epic WHERE id = ?", [merging.epicId]);
     db.run(
       `INSERT INTO task_block (blocker_linear_issue_id, blocked_linear_issue_id)
        VALUES (?, ?)`,

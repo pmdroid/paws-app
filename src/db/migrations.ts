@@ -1689,4 +1689,25 @@ ALTER TABLE project_approval_issue_delegation RENAME TO project_approval_issue;
 CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(workspace_id, issue_id) WHERE released_at IS NULL;
 `,
   },
+  {
+    id: "065_drop_epic",
+    sql: `
+UPDATE work_item SET brief=json_set(work_item.brief,
+  '$.epic', json_object(
+    'source','linear','issueId',e.linear_issue_id,'identifier',e.linear_identifier,
+    'title',e.title,'description',NULL,'acceptanceCriteria',NULL))
+FROM epic e
+WHERE e.id=work_item.epic_id AND e.linear_issue_id<>work_item.linear_issue_id
+AND work_item.brief IS NOT NULL AND json_extract(work_item.brief,'$.epic.issueId') IS NULL;
+ALTER TABLE work_item RENAME COLUMN epic_id TO delegation_id;
+ALTER TABLE project_approval_issue RENAME COLUMN epic_id TO delegation_id;
+DROP INDEX work_item_epic_position;
+CREATE INDEX work_item_delegation_position ON work_item (delegation_id, position);
+DROP TABLE epic_dependency_snapshot;
+DROP TABLE epic_reconciliation_request;
+DROP TABLE epic_reconciliation_effect;
+DROP TABLE external_blocker_policy;
+DROP TABLE epic;
+`,
+  },
 ];

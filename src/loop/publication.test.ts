@@ -84,7 +84,10 @@ test.each(["push", "pr", "merge"] as const)(
         teamId: "team",
         observedAtMs: 1,
       });
-      db.run("UPDATE work_item SET session_key = ? WHERE epic_id = ?", ["session", task.epic.id]);
+      db.run("UPDATE work_item SET session_key = ? WHERE delegation_id = ?", [
+        "session",
+        task.epic.id,
+      ]);
       const access = createFakeLinearAccessReads({
         installation: scope,
         sessions: [{ ...scope, sessionId: "session", issueId: "issue", teamId: "team" }],

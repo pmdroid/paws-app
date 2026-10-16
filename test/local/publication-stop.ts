@@ -137,10 +137,7 @@ export async function probePublicationStop(
   });
   try {
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('epic','issue','STOP-1','Stop','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','STOP-1','Stop','merge_queue','paws/stop-1',0,1,'session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','STOP-1','Stop','merge_queue','paws/stop-1',0,1,'session')",
     );
     ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
     bindLinearSessionTask(db, "session", "epic");
@@ -301,10 +298,7 @@ export async function probePublicationStop(
       calls.at(-1),
     );
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('pending','pending','PEND-1','Pending','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('pending-item','pending','pending','PEND-1','Pending','merge_queue','paws/pending',0,1,'pending-session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('pending-item','pending','pending','PEND-1','Pending','merge_queue','paws/pending',0,1,'pending-session')",
     );
     ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
     bindLinearSessionTask(db, "pending-session", "pending");
@@ -341,12 +335,9 @@ export async function probePublicationStop(
       canceledItemIds: [],
       parentCanceled: true,
     });
-    db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('cycle','cycle-parent','CYC-1','Cycle','running',1)",
-    );
     for (const [position, id] of ["a", "b", "free"].entries()) {
       db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key,brief) VALUES(?,'cycle',?,?,?,'queued',?, ?,1,'cycle-session',?)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key,brief) VALUES(?,'cycle',?,?,?,'queued',?, ?,1,'cycle-session',?)",
         [
           `cycle-${id}`,
           id,
@@ -466,11 +457,7 @@ export async function probePublicationStop(
       ["delivered-history", "merged", "cancelled"],
     ] as const) {
       db.run(
-        "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,'running',1)",
-        [epicId, epicId, epicId, epicId],
-      );
-      db.run(
-        "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
+        "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
         [
           `${epicId}-old`,
           epicId,
@@ -487,7 +474,7 @@ export async function probePublicationStop(
       );
       if (newState) {
         db.run(
-          "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
+          "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
           [
             `${epicId}-new`,
             epicId,
@@ -532,10 +519,7 @@ export async function probePublicationStop(
       outcomes,
     );
     db.run(
-      "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('owned-refresh','owned-refresh','OWN-1','Owned','running',1)",
-    );
-    db.run(
-      "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('owned-refresh-item','owned-refresh','owned-refresh','OWN-1','Owned','merge_queue','paws/owned-refresh',0,1,'owned-refresh-session')",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('owned-refresh-item','owned-refresh','owned-refresh','OWN-1','Owned','merge_queue','paws/owned-refresh',0,1,'owned-refresh-session')",
     );
     ensureLinearSession(db, { sessionId: "owned-refresh-session", issueId: "owned-refresh" });
     bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
@@ -682,10 +666,6 @@ export async function probePublicationStop(
       ["handoff-history", "merged"],
       ["cancelled-history", "cancelled"],
     ] as const) {
-      db.run(
-        "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES(?,?,?,?,'running',1)",
-        [epicId, epicId, epicId, epicId],
-      );
       for (const [suffix, state, present] of [
         ["old", retiredState, 0],
         ["new", "merged", 1],
@@ -694,7 +674,7 @@ export async function probePublicationStop(
         const itemId = `${epicId}-${suffix}`;
         const issueId = suffix === "consumer" ? itemId : `${epicId}-issue`;
         db.run(
-          "INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
+          "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,1)",
           [itemId, epicId, issueId, itemId, itemId, state, `paws/${itemId}`],
         );
         db.run(

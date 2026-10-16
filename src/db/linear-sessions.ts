@@ -122,14 +122,14 @@ export function bindLinearSessionTask(
       const active =
         db
           .query<{ n: number }, [string]>(
-            "SELECT COUNT(*) AS n FROM work_item WHERE epic_id = ? AND state NOT IN ('merged','cancelled','completed')",
+            "SELECT COUNT(*) AS n FROM work_item WHERE delegation_id = ? AND state NOT IN ('merged','cancelled','completed')",
           )
           .get(current.epicId)?.n ?? 0;
       if (active) throw new Error("Linear session already owns active work");
       db.run("UPDATE linear_session SET active_item_id = NULL WHERE session_id = ?", [sessionId]);
     }
     db.run(
-      "UPDATE work_item SET session_key = ? WHERE epic_id = ? AND (session_key IS NULL OR session_key = ?)",
+      "UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND (session_key IS NULL OR session_key = ?)",
       [sessionId, epicId, sessionId],
     );
     const actorId = options.actorId ?? current.creatorId;
@@ -145,12 +145,12 @@ export function bindLinearSessionTask(
     const ownerColumn = columns.includes("owner_user_id");
     if (columns.includes("delegated_by"))
       db.run(
-        "UPDATE work_item SET delegated_by = COALESCE(delegated_by, ?) WHERE epic_id = ? AND session_key = ?",
+        "UPDATE work_item SET delegated_by = COALESCE(delegated_by, ?) WHERE delegation_id = ? AND session_key = ?",
         [actorId, epicId, sessionId],
       );
     if (owner && ownerColumn)
       db.run(
-        "UPDATE work_item SET owner_user_id = ? WHERE epic_id = ? AND session_key = ? AND owner_user_id IS NULL",
+        "UPDATE work_item SET owner_user_id = ? WHERE delegation_id = ? AND session_key = ? AND owner_user_id IS NULL",
         [owner.id, epicId, sessionId],
       );
   });
@@ -160,11 +160,11 @@ export function activateLinearItem(db: Database, sessionId: string, itemId: stri
   immediate(db, () => {
     const session = getLinearSession(db, sessionId);
     const item = db
-      .query<{ epic_id: string; session_key: string | null }, [string]>(
-        "SELECT epic_id, session_key FROM work_item WHERE id = ?",
+      .query<{ delegation_id: string; session_key: string | null }, [string]>(
+        "SELECT delegation_id, session_key FROM work_item WHERE id = ?",
       )
       .get(itemId);
-    if (!session || !item || (session.epicId !== null && session.epicId !== item.epic_id))
+    if (!session || !item || (session.epicId !== null && session.epicId !== item.delegation_id))
       throw new Error("Linear task route changed");
     if (session.activeItemId && session.activeItemId !== itemId) {
       if (listInFlightItems(db).some((entry) => entry.id === session.activeItemId))
@@ -185,8 +185,8 @@ export function workItemForSession(
   sessionId: string,
 ): { id: string; epicId: string; state: string } | null {
   const row = db
-    .query<{ id: string; epic_id: string; state: string }, [string]>(
-      `SELECT id, epic_id, state FROM work_item
+    .query<{ id: string; delegation_id: string; state: string }, [string]>(
+      `SELECT id, delegation_id, state FROM work_item
        WHERE session_key = ?
        ORDER BY CASE
          WHEN state IN ('running','verifying','recovering','awaiting_input','awaiting_signoff','paused','merge_queue') THEN 0
@@ -197,7 +197,7 @@ export function workItemForSession(
        LIMIT 1`,
     )
     .get(sessionId);
-  return row ? { id: row.id, epicId: row.epic_id, state: row.state } : null;
+  return row ? { id: row.id, epicId: row.delegation_id, state: row.state } : null;
 }
 
 export function delegatedLinearUserId(db: Database, itemId: string): string | null {
