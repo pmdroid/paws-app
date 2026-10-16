@@ -62,6 +62,8 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
         const detail = message !== null ? `: ${message}` : "";
         throw new Error(`Linear GraphQL HTTP ${response.status}${detail}`);
       }
+      if (message !== null && message.startsWith("Entity not found: "))
+        throw new LinearEntityNotFoundError(message);
       if (message !== null) throw new Error(`Linear GraphQL: ${message}`);
       if (!isRecord(json)) throw new Error("Linear GraphQL returned no data");
       if (json["data"] === undefined) throw new Error("Linear GraphQL returned no data");
@@ -88,4 +90,13 @@ async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promis
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export class LinearEntityNotFoundError extends Error {
+  readonly entity: string;
+  constructor(message: string) {
+    super(`Linear GraphQL: ${message}`);
+    this.name = "LinearEntityNotFoundError";
+    this.entity = message.slice("Entity not found: ".length).trim();
+  }
 }
