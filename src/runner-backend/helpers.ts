@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
+import { UserFacingError } from "../core";
 import { immediate, runnerHasCapacity } from "../db";
 import type { RunnerCommand } from "../runner-protocol";
 
@@ -83,7 +84,10 @@ export function createRemoteSessionAgentRunner(options: {
             break;
           } catch {}
         }
-        if (!command) throw new Error("No available paired runner can access this Linear session");
+        if (!command)
+          throw new UserFacingError(
+            `No paired runner can run ${profile.agent} for this issue. Check the ${profile.agent} sign-in on your runners.`,
+          );
         try {
           const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
           while (now() < deadline) {
