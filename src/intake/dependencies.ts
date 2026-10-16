@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { isTerminalWorkItemState, type WorkItemState, type TaskMode } from "../core";
+import {
+  delegationHasOpenWork,
+  isTerminalWorkItemState,
+  parentIssueIdSql,
+  type WorkItemState,
+  type TaskMode,
+} from "../core";
 import { saveTaskBlocks } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
@@ -72,27 +78,27 @@ function scope(db: Database, target: Target): Scope | null {
   if (located.present === 0) return null;
   const row = db
     .query<Item & Identity, [string, string]>(
-      `SELECT ${itemColumns},e.linear_issue_id AS epicIssueId,s.session_id AS sessionId,
+      `SELECT ${itemColumns},${parentIssueIdSql("i")} AS epicIssueId,s.session_id AS sessionId,
        s.organization_id AS organizationId,s.oauth_client_id AS clientId,s.app_user_id AS appUserId,
        s.generation AS sessionGeneration,s.team_id AS teamId,
        COALESCE((SELECT u.linear_user_id FROM workspace_user u
          JOIN work_item oi ON oi.owner_user_id=u.id
-         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id
+         WHERE oi.epic_id=i.epic_id AND oi.session_key=s.session_id
          ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
        (SELECT oi.delegated_by FROM work_item oi
-         WHERE oi.epic_id=e.id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
+         WHERE oi.epic_id=i.epic_id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
          ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS ownerActorId,
        s.creator_id AS creatorId
-       FROM work_item i JOIN epic e ON e.id=i.epic_id
+       FROM work_item i
        JOIN linear_session s ON s.session_id=(
          SELECT si.session_key FROM work_item si
          JOIN linear_session ls ON ls.session_id=si.session_key AND ls.stopped_at IS NULL
-         WHERE si.epic_id=e.id
+         WHERE si.epic_id=i.epic_id
          ORDER BY si.created_at, si.position, si.id LIMIT 1)
        JOIN workspace w ON w.linear_organization_id=s.organization_id
        LEFT JOIN work_item_task t ON t.item_id=i.id
        LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.id=? AND w.id=? AND e.state IN ('running','stalled')
+       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.epic_id")}
        AND s.stopped_at IS NULL
        AND s.oauth_client_id IS NOT NULL AND s.app_user_id IS NOT NULL
        AND s.team_id IS NOT NULL AND COALESCE(p.present,1)=1`,

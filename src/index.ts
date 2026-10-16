@@ -25,6 +25,7 @@ import {
 } from "./config";
 import {
   WORK_ITEM_STATES,
+  delegationHasOpenWork,
   type LinearCommand,
   type GitCommitPolicy,
   type AppBotIdentity,
@@ -263,9 +264,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       if (linked && session?.organizationId && session.stoppedAt === null) {
         const workspace = db
           .query<{ id: string }, [string, string]>(
-            "SELECT w.id FROM workspace w JOIN epic e ON e.id=? AND e.state IN ('running','stalled') WHERE w.linear_organization_id=?",
+            `SELECT w.id FROM workspace w WHERE w.linear_organization_id=? AND ${delegationHasOpenWork("?")}`,
           )
-          .get(linked.epicId, session.organizationId);
+          .get(session.organizationId, linked.epicId);
         if (workspace)
           await reconciler.reconcile({
             itemId: linked.id,
@@ -952,17 +953,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         const enqueueMissingSnapshots = () => {
           const targets = db
             .query<{ itemId: string; workspaceId: string }, []>(
-              `SELECT picked.id AS itemId,w.id AS workspaceId FROM epic e
-            JOIN work_item picked ON picked.id=(
-              SELECT i.id FROM work_item i
-              JOIN linear_session s ON s.session_id=i.session_key AND s.stopped_at IS NULL
-              WHERE i.epic_id=e.id AND i.state NOT IN ('completed','merged','cancelled')
-              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
-              ORDER BY i.position,i.id LIMIT 1)
+              `SELECT picked.id AS itemId,w.id AS workspaceId FROM work_item picked
             JOIN linear_session s ON s.session_id=picked.session_key
             JOIN workspace w ON w.linear_organization_id=s.organization_id
-            WHERE e.state IN ('running','stalled') AND s.stopped_at IS NULL
-            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.epic_id=e.id AND gap.state NOT IN ('completed','merged','cancelled')
+            WHERE picked.id=(
+              SELECT i.id FROM work_item i
+              JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
+              WHERE i.epic_id=picked.epic_id AND i.state NOT IN ('completed','merged','cancelled')
+              AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
+              ORDER BY i.position,i.id LIMIT 1)
+            AND ${delegationHasOpenWork("picked.epic_id")} AND s.stopped_at IS NULL
+            AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.epic_id=picked.epic_id AND gap.state NOT IN ('completed','merged','cancelled')
               AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
               AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
             )

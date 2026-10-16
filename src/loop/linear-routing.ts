@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { parentTaskKeySql } from "../core";
 import { ensureLinearSession, workItemForSession, type StoredLinearSession } from "../db";
 import type { AcceptedLinearEvent } from "../linear";
 
@@ -37,7 +38,9 @@ export function sessionTaskKey(db: Database, session: StoredLinearSession): stri
   const epicId = workItemForSession(db, session.sessionId)?.epicId ?? session.epicId;
   if (epicId) {
     const row = db
-      .query<{ task_key: string | null }, [string]>("SELECT task_key FROM epic WHERE id = ?")
+      .query<{ task_key: string | null }, [string]>(
+        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE epic_id = ? ORDER BY created_at, position, id LIMIT 1`,
+      )
       .get(epicId);
     if (row?.task_key) return row.task_key;
   }

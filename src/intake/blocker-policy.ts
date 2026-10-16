@@ -140,7 +140,7 @@ export function managedBlockerSatisfied(
       [string, string, string]
     >(
       `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha
-     FROM work_item i JOIN epic e ON e.id=i.epic_id
+     FROM work_item i
      JOIN linear_session s ON s.session_id=i.session_key
      JOIN workspace w ON w.linear_organization_id=s.organization_id
      LEFT JOIN work_item_task t ON t.item_id=i.id LEFT JOIN remote_merge_fact f ON f.item_id=i.id
