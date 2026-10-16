@@ -196,7 +196,7 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("063_item_reconciliation");
+    expect(ids.at(-1)).toBe("064_work_item_without_epic_fk");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
@@ -209,6 +209,9 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
     );
     expect(ids.indexOf("062_item_dependency_snapshot")).toBeLessThan(
       ids.indexOf("063_item_reconciliation"),
+    );
+    expect(ids.indexOf("063_item_reconciliation")).toBeLessThan(
+      ids.indexOf("064_work_item_without_epic_fk"),
     );
   } finally {
     db.close();
