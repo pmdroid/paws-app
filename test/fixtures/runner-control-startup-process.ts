@@ -452,10 +452,7 @@ try {
             await call(
               browserPort,
               "/api/runners/policy",
-              {
-                fallbackAllowed: false,
-                personalOrganizationHost: false,
-              },
+              { personalOrganizationHost: false },
               headers,
             )
           ).status,

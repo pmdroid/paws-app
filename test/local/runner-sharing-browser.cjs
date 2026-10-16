@@ -35,12 +35,15 @@ const observations = [];
         const sharing = page.locator("#runner-sharing");
         await sharing.locator("summary").focus();
         await page.keyboard.press("Space");
-        await page.getByRole("combobox", { name: "Host owner", exact: true }).waitFor();
+        await page.getByRole("combobox", { name: "Account type", exact: true }).waitFor();
         assert.equal(await sharing.evaluate((element) => element.open), true);
         assert.equal(
-          await page.getByRole("combobox", { name: "Host owner", exact: true }).isEnabled(),
+          await page.getByRole("combobox", { name: "Account type", exact: true }).isEnabled(),
           true,
         );
+        assert.equal(await page.getByRole("combobox", { name: "Host owner" }).count(), 0);
+        assert.equal(await page.locator('input[name="fallback"]').count(), 0);
+        assert.equal(await page.locator('input[name="fallbackAllowed"]').count(), 0);
         assert.equal(await page.getByText(/Usage limit reached/).count(), 1);
         const consent = page.getByRole("checkbox", {
           name: "Share this host with members of the same Linear project",

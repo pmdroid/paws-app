@@ -77,7 +77,7 @@ export async function probeRunnerPlacement(
   for (const [id, user] of [
     ["own", "owner"],
     ["shared", "colleague"],
-    ["fallback", "pool"],
+    ["pool", "pool"],
   ]) {
     const userId =
       user === "owner"
@@ -101,17 +101,19 @@ export async function probeRunnerPlacement(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
       [id!, workspace.id, userId, id!, now, now],
     );
-    db.run("INSERT INTO runner_policy(runner_id,host_owner,sharing,fallback) VALUES(?,?,?,?)", [
+    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [
       id!,
-      id === "fallback" ? "workspace" : "member",
       id === "shared" ? 1 : 0,
-      id === "fallback" ? 1 : 0,
     ]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES(?,'codex',?,1)", [
       id!,
       id === "own" ? "personal" : id === "shared" ? "organization" : "api",
     ]);
   }
+  db.run(
+    "INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,1)",
+    [workspace.id],
+  );
   const issue = {
     id: item.linearIssueId,
     teamId: "team",
@@ -228,17 +230,24 @@ export async function probeRunnerPlacement(
       true,
       { first: "own", shared: "shared", outsidersExcluded: true },
     );
-    db.run("INSERT INTO workspace_runner_policy(workspace_id,fallback_allowed) VALUES(?,1)", [
-      workspace.id,
-    ]);
-    assert.deepEqual(await ids(), ["own", "shared", "fallback"]);
+    db.run("UPDATE workspace_runner_policy SET personal_organization_host=0");
+    assert.deepEqual(await ids(), ["shared"]);
+    db.run("UPDATE workspace_runner_policy SET personal_organization_host=1");
+    assert.deepEqual(await ids(), ["own", "shared"]);
     db.run("UPDATE runner_agent_policy SET seat='personal' WHERE runner_id='shared'");
-    assert.deepEqual(await ids(), ["own", "fallback"]);
+    assert.deepEqual(await ids(), ["own"]);
     db.run("UPDATE runner_agent_policy SET seat='organization' WHERE runner_id='shared'");
-    observe("Fallback requires workspace permission and personal seats cannot be shared", true, {
-      fallback: "fallback",
-      personalSharingDenied: true,
-    });
+    members = ["colleague", "pool"];
+    assert.deepEqual(await ids(), ["own", "shared"]);
+    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='pool'");
+    assert.deepEqual(await ids(), ["own", "pool", "shared"]);
+    db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='pool'");
+    members = ["colleague"];
+    observe(
+      "Personal seats need workspace permission and serve only their owner; shared organization and API seats need explicit sharing",
+      true,
+      { personalNeedsPermission: true, personalSharingDenied: true, apiSharing: "pool" },
+    );
     await placement.candidates(request);
     saveCheckpoint(db, item.id, {
       phase: "running",
@@ -288,12 +297,12 @@ export async function probeRunnerPlacement(
       duplicateDenied: true,
     });
     membershipFailure = true;
-    assert.deepEqual(await ids(), ["own", "fallback"]);
+    assert.deepEqual(await ids(), ["own"]);
     membershipFailure = false;
     observe(
-      "Unverified project membership denies shared accounts without removing independent owner or API authority",
+      "Unverified project membership denies shared accounts without removing owner authority",
       true,
-      { sharedDenied: true, ownAllowed: true, explicitFallbackAllowed: true },
+      { sharedDenied: true, ownAllowed: true },
     );
     const quotaCommand = await start("own");
     assert.equal(
@@ -371,7 +380,7 @@ export async function probeRunnerPlacement(
         role: "reviewer",
         profile: { agent: "codex", model: "review-model" },
       }),
-      ["shared", "fallback", "own"],
+      ["shared", "own"],
     );
     assert.deepEqual(await ids({ ...request, role: "reviewer" }), []);
     const conflictCommand = await start("shared", "work", "reviewer", "review-model");
@@ -402,7 +411,7 @@ export async function probeRunnerPlacement(
       { preferred: "shared", sameModelDenied: true },
     );
     await placement.candidates(request);
-    db.run("UPDATE runner_policy SET host_owner='workspace' WHERE runner_id='own'");
+    db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
     assert.throws(
       () =>
         placement.started({
@@ -417,7 +426,7 @@ export async function probeRunnerPlacement(
         }),
       /selection authority changed/,
     );
-    db.run("UPDATE runner_policy SET host_owner='member' WHERE runner_id='own'");
+    db.run("UPDATE runner_policy SET sharing=0 WHERE runner_id='own'");
     observe("Policy changes between selection and assignment cannot admit stale authority", true, {
       denied: true,
     });

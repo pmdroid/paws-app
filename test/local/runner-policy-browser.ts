@@ -78,10 +78,8 @@ export async function probeRunnerPolicyBrowser(
     );
   const policy = {
     agent: "codex",
-    hostOwner: "member",
     seat: "organization",
     sharing: true,
-    fallback: false,
   };
   try {
     const memberPrincipal = principal(member, "member");
@@ -98,6 +96,7 @@ export async function probeRunnerPolicyBrowser(
       memberPrincipal,
     ))!.json()) as { sharing: number; agents: { seat: string }[] };
     assert.equal(saved.sharing, 1);
+    assert.deepEqual(Object.keys(saved).sort(), ["agents", "ownerUserId", "sharing"]);
     assert.equal(saved.agents[0]!.seat, "organization");
     observe(
       "The host owner can consent to sharing; an administrator cannot consent for them",
@@ -116,35 +115,50 @@ export async function probeRunnerPolicyBrowser(
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       403,
     );
+    for (const retired of [{ hostOwner: "member" }, { fallback: true }])
+      assert.equal(
+        (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
+          ...policy,
+          ...retired,
+        }))!.status,
+        400,
+      );
     assert.equal(
       (await request("/api/runners/policy", principal(owner, "owner"), {
         fallbackAllowed: true,
         personalOrganizationHost: true,
       }))!.status,
+      400,
+    );
+    assert.equal(
+      (await request("/api/runners/policy", principal(owner, "owner"), {
+        personalOrganizationHost: true,
+      }))!.status,
       200,
+    );
+    assert.deepEqual(
+      await (await request("/api/runners/policy", principal(owner, "owner")))!.json(),
+      { personalOrganizationHost: true },
     );
     assert.equal(
       (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       200,
     );
     assert.equal(
       (await request("/api/runners/policy", memberPrincipal, {
-        fallbackAllowed: false,
         personalOrganizationHost: false,
       }))!.status,
       403,
     );
     observe(
-      "Personal accounts and workspace fallback require explicit account and owner permission",
+      "Personal accounts require workspace owner permission and host owner and fallback settings are retired",
       true,
       { personalSharingDenied: true, workspacePermissionRequired: true },
     );

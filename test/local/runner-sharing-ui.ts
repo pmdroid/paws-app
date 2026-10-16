@@ -59,7 +59,7 @@ for (const runner of runners) {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     [runner.id, workspace.id, runner.ownerUserId, runner.name, now, now],
   );
-  db.run("INSERT INTO runner_policy(runner_id,host_owner) VALUES(?,'member')", [runner.id]);
+  db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runner.id]);
   db.run(
     "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready,quota_state,resets_at,cooldown_until) VALUES(?,'claude','organization',1,'exhausted',?,?)",
     [runner.id, now + 3600000, now + 3600000],

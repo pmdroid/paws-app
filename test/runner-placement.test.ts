@@ -17,7 +17,7 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
-async function placeItem(project: boolean, bindTask = true) {
+async function placeItem(project: boolean, bindTask = true, personalHost = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-owner-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -78,24 +78,20 @@ async function placeItem(project: boolean, bindTask = true) {
     project ? "approval" : null,
     item.id,
   ]);
-  db.run("INSERT INTO workspace_runner_policy(workspace_id,fallback_allowed) VALUES(?,1)", [
-    workspace.id,
-  ]);
-  for (const [id, userId, sharing, fallback, host, seat] of [
-    ["own", owner, 0, 0, "member", "personal"],
-    ["shared", colleague, 1, 0, "member", "organization"],
-    ["fallback", pool, 0, 1, "workspace", "api"],
+  db.run(
+    "INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,?)",
+    [workspace.id, personalHost ? 1 : 0],
+  );
+  for (const [id, userId, sharing, seat] of [
+    ["own", owner, 0, "personal"],
+    ["shared", colleague, 1, "organization"],
+    ["pool", pool, 0, "api"],
   ] as const) {
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
       [id, workspace.id, userId, id, now, now],
     );
-    db.run("INSERT INTO runner_policy(runner_id,host_owner,sharing,fallback) VALUES(?,?,?,?)", [
-      id,
-      host,
-      sharing,
-      fallback,
-    ]);
+    db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, sharing]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES(?,'codex',?,1)", [
       id,
       seat,
@@ -149,7 +145,7 @@ test("Runner placement uses actual ownership, explicit sharing, provider evidenc
 test("a solo item runs on its owner's runner and not another member's shared runner", async () => {
   const placed = await placeItem(false);
   try {
-    expect(await placed.ids()).toEqual(["own", "fallback"]);
+    expect(await placed.ids()).toEqual(["own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -159,7 +155,7 @@ test("a solo item runs on its owner's runner and not another member's shared run
 test("runner placement resolves its item through session_key alone", async () => {
   const placed = await placeItem(false, false);
   try {
-    expect(await placed.ids()).toEqual(["own", "fallback"]);
+    expect(await placed.ids()).toEqual(["own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
@@ -169,7 +165,17 @@ test("runner placement resolves its item through session_key alone", async () =>
 test("a project item runs on another project member's shared runner", async () => {
   const placed = await placeItem(true);
   try {
-    expect(await placed.ids()).toEqual(["own", "shared", "fallback"]);
+    expect(await placed.ids()).toEqual(["own", "shared"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a personal seat needs the workspace permission for personal subscriptions", async () => {
+  const placed = await placeItem(true, true, false);
+  try {
+    expect(await placed.ids()).toEqual(["shared"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
