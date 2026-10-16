@@ -333,7 +333,7 @@ export async function probeRunnerRepositories(
     repositories.publish(
       command,
       { ...candidate, bundle: verboseBundle },
-      AbortSignal.timeout(10_000),
+      AbortSignal.timeout(60_000),
     ),
     /Git output exceeds limit/,
   );
