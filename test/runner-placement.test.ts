@@ -156,12 +156,9 @@ test("a solo item runs on its owner's runner and not another member's shared run
   }
 });
 
-test("runner placement resolves its item through session_key with no linear_session_task row", async () => {
+test("runner placement resolves its item through session_key alone", async () => {
   const placed = await placeItem(false, false);
   try {
-    expect(
-      placed.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_session_task").get()?.n,
-    ).toBe(0);
     expect(await placed.ids()).toEqual(["own", "fallback"]);
   } finally {
     placed.db.close();

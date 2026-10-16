@@ -262,8 +262,8 @@ export async function probeDependencySnapshots(
     );
     for (const [change, restore] of [
       [
-        "UPDATE linear_session_task SET owner_actor_id='replacement'",
-        "UPDATE linear_session_task SET owner_actor_id='owner'",
+        "UPDATE linear_session SET creator_id='replacement' WHERE session_id='session'",
+        "UPDATE linear_session SET creator_id=NULL WHERE session_id='session'",
       ],
       [
         "UPDATE linear_session SET organization_id='outside-org'",
