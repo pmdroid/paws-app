@@ -1,3 +1,4 @@
+import { teamRepositoryAllowedSql } from "./repository-catalog";
 import type { Database } from "bun:sqlite";
 import { workspaceMember } from "./workspace";
 import { getLinearSessionAccess } from "./linear-access";
@@ -18,10 +19,7 @@ export function workspaceSessionIds(
         SELECT 1 FROM workspace_user_team t WHERE t.workspace_id=w.id AND t.user_id=? AND t.team_id=s.team_id
       )) AND NOT EXISTS(
         SELECT 1 FROM work_item i JOIN work_item_repository r ON r.item_id=i.id
-        WHERE i.session_key=s.session_id AND NOT EXISTS(
-          SELECT 1 FROM workspace_repository p WHERE p.workspace_id=w.id AND p.team_id=s.team_id
-          AND p.repository=lower(r.owner || '/' || r.repo)
-        )
+        WHERE i.session_key=s.session_id AND NOT ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(r.owner || '/' || r.repo)")}
       ) ORDER BY s.session_id`,
     )
     .all(workspaceId, clientId, member.role === "owner" || member.role === "admin" ? 1 : 0, userId)

@@ -1,3 +1,4 @@
+import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { TrackerAdapter } from "../linear";
@@ -61,8 +62,7 @@ function permitted(
     JOIN workspace_user_team t ON t.workspace_id=w.id AND t.user_id=m.user_id AND t.team_id=s.team_id
     WHERE w.id=? AND EXISTS(SELECT 1 FROM work_item i WHERE i.id=? AND i.session_key=s.session_id) AND s.stopped_at IS NULL
     AND m.active=1 AND m.role IN ('owner','admin','member')
-    AND (? IS NULL OR EXISTS(SELECT 1 FROM workspace_repository r
-      WHERE r.workspace_id=w.id AND r.team_id=s.team_id AND lower(r.repository)=lower(?)))`)
+    AND (?5 IS NULL OR ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(?5)")})`)
       .get(
         userId,
         target.workspaceId,
