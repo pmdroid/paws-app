@@ -277,6 +277,65 @@ test("Managed blockers in another epic require canonical delivery", async () => 
   }
 });
 
+test("Re-delegated managed blockers follow the latest active item", async () => {
+  const f = await fixture();
+  try {
+    f.tracker.epics.set("a", {
+      linearIssueId: "a",
+      identifier: "DEP-3",
+      title: "Code blocker",
+      description: null,
+      subIssues: [],
+    });
+    const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
+    if (!intake.ok) throw new Error("Intake failed");
+    recordLinearInstallation(f.db, {
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      sessionId: "other-session",
+      teamId: "team",
+      observedAtMs: 2000,
+    });
+    bindLinearSessionTask(f.db, "other-session", intake.epic.id, { actorId: "linear-person" });
+    const newer = intake.items[0]!;
+    f.db.run("UPDATE work_item SET state='merged', created_at=3000 WHERE id=?", [newer.id]);
+    f.db.run("INSERT INTO remote_merge_fact VALUES(?,'owner','repo',12,NULL,?,3000)", [
+      newer.id,
+      "b".repeat(40),
+    ]);
+    f.db.run(
+      `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,task_key,session_key)
+       VALUES(?,?,?,?,?,'cancelled',?,?,?,?,?)`,
+      [
+        "older-blocker",
+        intake.epic.id,
+        "a",
+        "DEP-3",
+        "Code blocker",
+        "paws/dep-3-older",
+        0,
+        1000,
+        "initial:a:item:a:reappearance:1",
+        "other-session",
+      ],
+    );
+    await f.refresh();
+    expect(f.ready()).toBe(true);
+    f.db.run("UPDATE work_item SET state='running' WHERE id=?", [newer.id]);
+    f.db.run("UPDATE work_item SET state='merged' WHERE id='older-blocker'");
+    f.db.run(
+      "INSERT INTO remote_merge_fact VALUES('older-blocker','owner','repo',11,NULL,?,1000)",
+      ["c".repeat(40)],
+    );
+    expect(f.ready()).toBe(false);
+    f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [newer.id]);
+    expect(f.ready()).toBe(true);
+  } finally {
+    f.db.close();
+  }
+});
+
 test("GitHub evidence distinguishes a closed unmerged pull from a real merge", async () => {
   const pull = {
     number: 12,

@@ -31,15 +31,15 @@ def main():
         installed = json.loads(fixture.run(['/usr/bin/python3', str(ROOT / 'install.py'), '--artifact', str(ROOT / 'package/artifact.tar'), '--manifest', str(ROOT / 'package/manifest.json'), '--signature', str(signature), '--release-key', str(public)]))
         agent = pwd.getpwnam('paws-agent')
         runner = pwd.getpwnam('paws-runner')
-        env = {'PATH': '/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin', 'HOME': agent.pw_dir, 'LANG': 'C'}
-        def agent_identity():
-            os.setgroups(os.getgrouplist(agent.pw_name, agent.pw_gid))
-            os.setgid(agent.pw_gid)
-            os.setuid(agent.pw_uid)
+        env = {'PATH': '/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin', 'HOME': '/var/lib/paws-agent', 'LANG': 'C'}
+        def runner_identity():
+            os.setgroups(os.getgrouplist(runner.pw_name, runner.pw_gid))
+            os.setgid(runner.pw_gid)
+            os.setuid(runner.pw_uid)
         checks_script = ROOT / 'login-status.ts'
         checks_script.write_text('import { checkDeveloperLogins } from "/opt/paws-runner/current/src/install/index.ts";console.log(JSON.stringify(await checkDeveloperLogins({env:process.env})));')
         checks_script.chmod(0o644)
-        status = subprocess.run(['/opt/paws-runner/bin/bun', '--no-env-file', str(checks_script)], env=env, cwd=agent.pw_dir, preexec_fn=agent_identity, capture_output=True, text=True, timeout=30)
+        status = subprocess.run(['/opt/paws-runner/bin/bun', '--no-env-file', str(checks_script)], env=env, cwd='/var/lib/paws-agent', preexec_fn=runner_identity, capture_output=True, text=True, timeout=30)
         if status.returncode != 0:
             raise RuntimeError(status.stderr)
         checks = json.loads(status.stdout)
@@ -49,7 +49,7 @@ def main():
         login_help = {}
         for provider, command in installed['providerLoginCommands'].items():
             args = shlex.split(command)
-            if args[:8] != ['/usr/sbin/runuser', '--user', 'paws-agent', '--', '/usr/bin/env', '-i', '--chdir=/var/lib/paws-agent', 'HOME=/var/lib/paws-agent']:
+            if args[:8] != ['/usr/sbin/runuser', '--user', 'paws-runner', '--', '/usr/bin/env', '-i', '--chdir=/var/lib/paws-agent', 'HOME=/var/lib/paws-agent']:
                 raise RuntimeError('Operator login identity or HOME is not fixed')
             executable = '/opt/paws-runner/bin/' + provider
             position = args.index(executable)
@@ -66,7 +66,7 @@ def main():
             if os.readlink('/opt/paws-runner/bin/' + provider) != '../current/node_modules/.bin/' + provider:
                 raise RuntimeError('Provider pointer does not select current')
         script = ROOT / 'scripted-login.py'
-        script.write_text("import os,pathlib,pwd,sys\nagent=pwd.getpwnam('paws-agent')\nassert os.getuid()==agent.pw_uid and os.getgid()==agent.pw_gid\nassert set(os.environ)<= {'HOME','PATH','LANG','LC_CTYPE'}\nassert os.environ['HOME']==agent.pw_dir and os.getcwd()==agent.pw_dir\nassert not pathlib.Path('/var/lib/paws-runner').exists() or not os.access('/var/lib/paws-runner',os.R_OK)\nprovider=sys.argv[1]\ncredential=pathlib.Path(agent.pw_dir)/('.'+provider)/'synthetic-credential'\ncredential.parent.mkdir(mode=0o700,exist_ok=True)\ncredential.write_text('synthetic-agent-only-login')\ncredential.chmod(0o600)\n")
+        script.write_text("import os,pathlib,pwd,sys\nrunner=pwd.getpwnam('paws-runner')\nassert os.getuid()==runner.pw_uid and os.getgid()==runner.pw_gid\nassert set(os.environ)<= {'HOME','PATH','LANG','LC_CTYPE'}\nassert os.environ['HOME']=='/var/lib/paws-agent' and os.getcwd()=='/var/lib/paws-agent'\nprovider=sys.argv[1]\ncredential=pathlib.Path('/var/lib/paws-agent')/('.'+provider)/'synthetic-credential'\ncredential.parent.mkdir(mode=0o700,exist_ok=True)\ncredential.write_text('synthetic-runner-login')\ncredential.chmod(0o600)\n")
         script.chmod(0o644)
         isolation = {}
         for provider, command in installed['providerLoginCommands'].items():
@@ -75,16 +75,17 @@ def main():
             scripted = subprocess.run(args[:position] + ['/usr/bin/python3', '-I', '-B', str(script), provider], env={'HOME': '/root', 'PATH': '/nonexistent', 'OPENAI_API_KEY': 'synthetic-parent-secret'}, cwd='/root', capture_output=True, text=True, timeout=30)
             if scripted.returncode != 0 or scripted.stdout or scripted.stderr:
                 raise RuntimeError('Scripted operator login failed: ' + scripted.stderr)
-            credential = pathlib.Path(agent.pw_dir) / ('.' + provider) / 'synthetic-credential'
+            credential = pathlib.Path('/var/lib/paws-agent') / ('.' + provider) / 'synthetic-credential'
             info = credential.stat()
-            def runner_identity():
-                os.setgroups(os.getgrouplist(runner.pw_name, runner.pw_gid))
-                os.setgid(runner.pw_gid)
-                os.setuid(runner.pw_uid)
-            denied = subprocess.run(['/usr/bin/python3', '-I', '-c', "import pathlib;pathlib.Path(" + repr(str(credential)) + ").read_bytes()"], env={'PATH': '/usr/bin:/bin', 'HOME': runner.pw_dir}, cwd='/', preexec_fn=runner_identity, capture_output=True, text=True, timeout=10)
-            if info.st_uid != agent.pw_uid or info.st_mode & 0o7777 != 0o600 or denied.returncode == 0:
-                raise RuntimeError('Agent credential isolation failed')
-            isolation[provider] = {'uid': info.st_uid, 'mode': oct(info.st_mode & 0o7777), 'daemonReadDenied': True}
+            def outsider():
+                os.setgroups(os.getgrouplist(agent.pw_name, agent.pw_gid))
+                os.setgid(agent.pw_gid)
+                os.setuid(agent.pw_uid)
+            readable = subprocess.run(['/usr/bin/python3', '-I', '-c', "import pathlib;pathlib.Path(" + repr(str(credential)) + ").read_bytes()"], env={'PATH': '/usr/bin:/bin', 'HOME': '/var/lib/paws-agent'}, cwd='/', preexec_fn=runner_identity, capture_output=True, text=True, timeout=10)
+            denied = subprocess.run(['/usr/bin/python3', '-I', '-c', "import pathlib;pathlib.Path(" + repr(str(credential)) + ").read_bytes()"], env={'PATH': '/usr/bin:/bin', 'HOME': agent.pw_dir}, cwd='/', preexec_fn=outsider, capture_output=True, text=True, timeout=10)
+            if info.st_uid != runner.pw_uid or info.st_mode & 0o7777 != 0o600 or readable.returncode != 0 or denied.returncode == 0:
+                raise RuntimeError('Runner credential ownership failed')
+            isolation[provider] = {'uid': info.st_uid, 'mode': oct(info.st_mode & 0o7777), 'workerRead': True, 'outsiderReadDenied': True}
         observations = {'verified': True, 'installerSha256': hashlib.sha256((ROOT / 'install.py').read_bytes()).hexdigest(), 'packageManifest': json.loads((ROOT / 'package/manifest.json').read_text()), 'agentUid': agent.pw_uid, 'runnerUid': runner.pw_uid, 'actualStatusChecks': checks, 'versions': versions, 'operatorLoginCommands': installed['providerLoginCommands'], 'loginHelp': login_help, 'scriptedCredentialIsolation': isolation, 'vendorLoginInvoked': False, 'network': 'none', 'systemctlBackend': 'recording fixture'}
         (ROOT / 'observations.json').write_text(json.dumps(observations, indent=2) + '\n')
         print(json.dumps(observations))

@@ -266,12 +266,26 @@ def guard(execution_id):
         return mark_once(directory, execution_id + ".launched")
 
 
+def matches(info, uid, gid, mode):
+    return info.st_uid == uid and info.st_gid == gid and stat.S_IMODE(info.st_mode) == mode
+
+
+def service_runner():
+    try:
+        return pwd.getpwnam("paws-runner")
+    except KeyError:
+        return None
+
+
 def prepare_results(execution_id, agent_uid, results_gid):
     root = open_directory(RESULTS)
     descriptor = None
     try:
         info = os.fstat(root)
-        if info.st_uid != 0 or info.st_gid != results_gid or stat.S_IMODE(info.st_mode) != 0o750:
+        runner = service_runner()
+        if not matches(info, 0, results_gid, 0o750) and not (
+            runner is not None and matches(info, runner.pw_uid, results_gid, 0o750)
+        ):
             raise ValueError("Unsafe results root")
         os.mkdir(execution_id, mode=0o700, dir_fd=root)
         descriptor = os.open(execution_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
@@ -290,7 +304,10 @@ def prepare_task_work(execution_id, agent_uid, agent_gid):
     directory = None
     try:
         info = os.fstat(root)
-        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o755:
+        runner = service_runner()
+        if not matches(info, 0, 0, 0o755) and not (
+            runner is not None and matches(info, runner.pw_uid, runner.pw_gid, 0o711)
+        ):
             raise ValueError("Unsafe task work root")
         os.mkdir(execution_id, mode=0o700, dir_fd=root)
         directory = os.open(execution_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
@@ -316,7 +333,13 @@ def prepare_member(execution_id, command, agent_uid, agent_gid, runner_uid, resu
     directory = None
     try:
         info = os.fstat(root)
-        if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o711:
+        try:
+            runner_gid = pwd.getpwuid(runner_uid).pw_gid
+        except KeyError:
+            runner_gid = None
+        if not matches(info, 0, 0, 0o711) and not (
+            runner_gid is not None and matches(info, runner_uid, runner_gid, 0o711)
+        ):
             raise ValueError("Unsafe member homes")
         try:
             os.mkdir(identity, mode=0o700, dir_fd=root)
