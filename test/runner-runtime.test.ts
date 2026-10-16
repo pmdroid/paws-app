@@ -253,3 +253,82 @@ test("an interrupted run whose broker never stops does not block the next run", 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a command for a repository the runner does not allow is reported once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runtime-denied-"));
+  const now = Date.now();
+  const paired = {
+    phase: "paired" as const,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    fingerprint: "fixture",
+    expiresAt: now + 3_600_000,
+  };
+  const errors: string[] = [];
+  const runtime = await openRunnerRuntime({
+    root,
+    repositoryRoot: join(root, "repositories"),
+    home: root,
+    spool: { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 },
+    results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
+    onError: (error) => errors.push(error.message),
+    broker: {
+      async start() {
+        return { alreadyAdmitted: false };
+      },
+      async stop() {},
+    },
+    daemon: {
+      status: () => paired,
+      async heartbeat() {
+        return { leases: [], fenced: [] };
+      },
+      async pollCommands() {
+        return {
+          commands: [],
+          rejected: ["repository_denied" as const],
+          deniedRepositories: ["fixture/denied"],
+        };
+      },
+      pendingCommands: () => [],
+      async acknowledgeCommand() {},
+      async issueRunGrant() {
+        throw new Error("unused");
+      },
+      async sendEvent() {
+        return { duplicate: false };
+      },
+      async answers() {
+        return { answers: [] };
+      },
+      async postResult() {
+        return { duplicate: false };
+      },
+      async repositoryCredential() {
+        throw new Error("unused");
+      },
+      async renewCertificate() {
+        return paired;
+      },
+      async uploadTranscript() {
+        throw new Error("unused");
+      },
+      async finishTranscript() {
+        throw new Error("unused");
+      },
+      async uploadArtifact() {
+        return { ok: true };
+      },
+    },
+  });
+  try {
+    await runtime.tick();
+    await runtime.tick();
+    expect(errors).toEqual([
+      "Runner refused a run for fixture/denied. Add it to allowedRepositories in the runner config.",
+    ]);
+  } finally {
+    await runtime.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

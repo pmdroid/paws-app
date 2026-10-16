@@ -136,7 +136,7 @@ test.each([
 
 test("repository authorization is separate from signer trust", () => {
   expect(verifyRunnerCommand(signed(), context({ allowedRepositories: ["acme/another"] }))).toEqual(
-    { ok: false, reason: "repository_denied" },
+    { ok: false, reason: "repository_denied", repository: "acme/project" },
   );
 });
 
