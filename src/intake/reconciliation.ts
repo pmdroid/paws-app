@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import type { IssueBrief, WorkBrief } from "../core";
+import {
+  delegationHasOpenWork,
+  delegationIssueIdSql,
+  parentIssueIdSql,
+  parentTaskKeySql,
+  type IssueBrief,
+  type WorkBrief,
+} from "../core";
 import type { EpicSnapshot, LinearIssueLifecycle, LinearSubIssue, TrackerAdapter } from "../linear";
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
@@ -53,16 +60,15 @@ function requestsFor(db: Database, epicId: string): RequestRow[] {
 function authority(db: Database, target: Target) {
   const row = db
     .query<Identity & { epicId: string }, [string, string]>(
-      `SELECT e.id AS epicId, e.linear_issue_id AS issueId, e.task_key AS taskKey,
+      `SELECT i.epic_id AS epicId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
        s.session_id AS sessionId, s.organization_id AS organizationId, s.team_id AS teamId,
        s.app_user_id AS appUserId, s.oauth_client_id AS clientId, s.creator_id AS creatorId,
        COALESCE(u.linear_user_id, i.delegated_by, s.creator_id) AS actorId, s.generation
        FROM work_item i
-       JOIN epic e ON e.id=i.epic_id
        JOIN linear_session s ON s.session_id=i.session_key
        JOIN workspace w ON w.linear_organization_id=s.organization_id
        LEFT JOIN workspace_user u ON u.id=i.owner_user_id
-       WHERE i.id=? AND w.id=? AND e.state IN ('running','stalled')
+       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.epic_id")}
        AND s.stopped_at IS NULL
        AND s.team_id IS NOT NULL AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
     )
@@ -277,7 +283,12 @@ export function createItemReconciler(input: {
     const changes = publication.change;
     await input.afterChanges?.(changes);
     target.signal?.throwIfAborted();
-    if (!changes.parentCanceled) {
+    const delegationOpen = db
+      .query(
+        `SELECT 1 FROM work_item WHERE epic_id=? AND state NOT IN ('completed','merged','cancelled')`,
+      )
+      .get(initial.epicId);
+    if (!changes.parentCanceled && delegationOpen) {
       const itemIds = db
         .query<{ id: string }, [string]>(
           `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
@@ -386,19 +397,18 @@ export function createItemReconciler(input: {
         [string | null, string | null, string | null, string | null, string | null, string | null]
       >(
         `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId FROM work_item i
-         JOIN epic e ON e.id=i.epic_id
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE e.state IN ('running','stalled') AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
+         WHERE ${delegationHasOpenWork("i.epic_id")} AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
          AND (? IS NULL OR s.organization_id=?)
-         AND (? IS NULL OR e.linear_issue_id=?
-          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.epic_id=e.id AND hit.linear_issue_id=?5)
-          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND e.id=(
+         AND (? IS NULL OR ${parentIssueIdSql("i")}=?
+          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.epic_id=i.epic_id AND hit.linear_issue_id=?5)
+          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND i.epic_id=(
             SELECT bi.epic_id FROM work_item bi
             WHERE bi.linear_issue_id=b.blocked_linear_issue_id AND bi.state<>'cancelled'
             AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=bi.id AND p.present=0)
             ORDER BY bi.created_at DESC, bi.id DESC LIMIT 1))
-          OR e.linear_issue_id=?6)`,
+          OR ${parentIssueIdSql("i")}=?6)`,
       )
       .all(
         issue?.organizationId ?? null,

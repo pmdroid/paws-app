@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, delegationHasOpenWork } from "../core";
 import { canAdvanceItem, hasPendingEpicChanges } from "./dependencies";
 import type { createItemReconciler } from "./reconciliation";
 
@@ -50,10 +50,10 @@ export function createPublicationReadiness(input: {
          COALESCE((SELECT u.linear_user_id FROM workspace_user u WHERE u.id=i.owner_user_id), i.delegated_by, s.creator_id) AS actorId
          FROM work_item i JOIN work_item_specification p ON p.item_id=i.id AND p.present=1
          JOIN run r ON r.id=i.current_run_id AND r.item_id=i.id
-         JOIN epic e ON e.id=i.epic_id AND e.state IN ('running','stalled')
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
          WHERE i.id=? AND i.state IN ('verifying','merge_queue') AND i.cancel_requested=0
+         AND ${delegationHasOpenWork("i.epic_id")}
          AND s.stopped_at IS NULL AND s.team_id IS NOT NULL
          AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
           )

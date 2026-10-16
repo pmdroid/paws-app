@@ -79,3 +79,10 @@ export {
   type GitCommitPolicy,
   type VerifiedGitHubCoauthor,
 } from "./commit-policy";
+
+export {
+  delegationHasOpenWork,
+  delegationIssueIdSql,
+  parentIssueIdSql,
+  parentTaskKeySql,
+} from "./delegation";
