@@ -14,6 +14,8 @@ export { checkGitHubSignature, handleGitHubWebhook } from "./webhook";
 export type { SignatureCheck } from "./webhook";
 export { signAppJwt } from "./jwt";
 export { assertScopedToken, createGitHubApp, mintInstallationToken } from "./token";
+export { listAppRepositories, listUserRepositories } from "./repository-catalog";
+export type { CatalogRepository } from "./repository-catalog";
 export type { GitHubAppOptions, MintedToken } from "./token";
 export { createFetchGitHubClient } from "./client";
 export { checkRepositoryWriteAccess, checkRepositoryReadAccess } from "./repository-access";
