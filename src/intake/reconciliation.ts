@@ -52,7 +52,7 @@ function requestsFor(db: Database, epicId: string): RequestRow[] {
   return db
     .query<RequestRow, [string]>(
       `SELECT r.item_id AS itemId, r.token FROM item_reconciliation_request r
-       JOIN work_item i ON i.id=r.item_id WHERE i.epic_id=? ORDER BY r.item_id`,
+       JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=? ORDER BY r.item_id`,
     )
     .all(epicId);
 }
@@ -60,7 +60,7 @@ function requestsFor(db: Database, epicId: string): RequestRow[] {
 function authority(db: Database, target: Target) {
   const row = db
     .query<Identity & { epicId: string }, [string, string]>(
-      `SELECT i.epic_id AS epicId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
+      `SELECT i.delegation_id AS epicId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
        s.session_id AS sessionId, s.organization_id AS organizationId, s.team_id AS teamId,
        s.app_user_id AS appUserId, s.oauth_client_id AS clientId, s.creator_id AS creatorId,
        COALESCE(u.linear_user_id, i.delegated_by, s.creator_id) AS actorId, s.generation
@@ -68,7 +68,7 @@ function authority(db: Database, target: Target) {
        JOIN linear_session s ON s.session_id=i.session_key
        JOIN workspace w ON w.linear_organization_id=s.organization_id
        LEFT JOIN workspace_user u ON u.id=i.owner_user_id
-       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.epic_id")}
+       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.delegation_id")}
        AND s.stopped_at IS NULL
        AND s.team_id IS NOT NULL AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
     )
@@ -79,7 +79,7 @@ function authority(db: Database, target: Target) {
     .query<Item, [string]>(
       `SELECT i.id,i.linear_issue_id AS issueId,i.brief,p.hash,p.revision,p.present
        FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.epic_id=? ORDER BY i.id`,
+       WHERE i.delegation_id=? ORDER BY i.id`,
     )
     .all(epicId);
   const active = items.filter((item) => item.present !== 0);
@@ -199,7 +199,7 @@ export function createItemReconciler(input: {
             ).length;
             const reappearance = previousOccurrences ? `:reappearance:${previousOccurrences}` : "";
             db.run(
-              `INSERT INTO work_item(id,epic_id,linear_issue_id,linear_identifier,title,state,
+              `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,
                branch_name,position,version,created_at,brief,task_key,session_key)
                VALUES(?,?,?,?,?,'queued',?,?,0,?,?,?,?)`,
               [
@@ -235,18 +235,13 @@ export function createItemReconciler(input: {
           if (change.parentCanceled || statuses.get(issue.linearIssueId) === "canceled")
             change.canceledItemIds.push(id);
         }
-        db.run("UPDATE epic SET title=?,linear_identifier=? WHERE id=?", [
-          snapshot.title,
-          snapshot.identifier,
-          initial.epicId,
-        ]);
         if (
           change.addedItemIds.length ||
           change.removedItemIds.length ||
           change.specChangedItemIds.length
         )
           db.run(
-            "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE epic_id=?)",
+            "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE delegation_id=?)",
             [initial.epicId],
           );
         for (const [kind, ids] of [
@@ -264,7 +259,7 @@ export function createItemReconciler(input: {
         const effects = db
           .query<{ itemId: string; kind: string; token: string }, [string]>(
             `SELECT e.item_id AS itemId,e.kind,e.token FROM item_reconciliation_effect e
-             JOIN work_item i ON i.id=e.item_id WHERE i.epic_id=?`,
+             JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=?`,
           )
           .all(initial.epicId);
         change.specChangedItemIds = effects
@@ -285,14 +280,14 @@ export function createItemReconciler(input: {
     target.signal?.throwIfAborted();
     const delegationOpen = db
       .query(
-        `SELECT 1 FROM work_item WHERE epic_id=? AND state NOT IN ('completed','merged','cancelled')`,
+        `SELECT 1 FROM work_item WHERE delegation_id=? AND state NOT IN ('completed','merged','cancelled')`,
       )
       .get(initial.epicId);
     if (!changes.parentCanceled && delegationOpen) {
       const itemIds = db
         .query<{ id: string }, [string]>(
           `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-           WHERE i.epic_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
+           WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
         )
         .all(initial.epicId)
         .map((item) => item.id);
@@ -399,12 +394,12 @@ export function createItemReconciler(input: {
         `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId FROM work_item i
          JOIN linear_session s ON s.session_id=i.session_key
          JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE ${delegationHasOpenWork("i.epic_id")} AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
+         WHERE ${delegationHasOpenWork("i.delegation_id")} AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
          AND (? IS NULL OR s.organization_id=?)
          AND (? IS NULL OR ${parentIssueIdSql("i")}=?
-          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.epic_id=i.epic_id AND hit.linear_issue_id=?5)
-          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND i.epic_id=(
-            SELECT bi.epic_id FROM work_item bi
+          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.delegation_id=i.delegation_id AND hit.linear_issue_id=?5)
+          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND i.delegation_id=(
+            SELECT bi.delegation_id FROM work_item bi
             WHERE bi.linear_issue_id=b.blocked_linear_issue_id AND bi.state<>'cancelled'
             AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=bi.id AND p.present=0)
             ORDER BY bi.created_at DESC, bi.id DESC LIMIT 1))
