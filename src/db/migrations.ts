@@ -1692,6 +1692,13 @@ CREATE UNIQUE INDEX project_approval_issue_active ON project_approval_issue(work
   {
     id: "065_drop_epic",
     sql: `
+UPDATE work_item SET brief=json_set(work_item.brief,
+  '$.epic', json_object(
+    'source','linear','issueId',e.linear_issue_id,'identifier',e.linear_identifier,
+    'title',e.title,'description',NULL,'acceptanceCriteria',NULL))
+FROM epic e
+WHERE e.id=work_item.epic_id AND e.linear_issue_id<>work_item.linear_issue_id
+AND work_item.brief IS NOT NULL AND json_extract(work_item.brief,'$.epic.issueId') IS NULL;
 ALTER TABLE work_item RENAME COLUMN epic_id TO delegation_id;
 ALTER TABLE project_approval_issue RENAME COLUMN epic_id TO delegation_id;
 DROP INDEX work_item_epic_position;
