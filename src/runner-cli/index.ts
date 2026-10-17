@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { openRunnerDaemon } from "../runner-daemon";
+import { createRunnerHostSampler, openRunnerDaemon } from "../runner-daemon";
 import { ExecutionIdSchema } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { runPairedDaemon } from "./daemon";
@@ -134,6 +134,7 @@ export async function runRunnerCli(
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...loadConfig(args[1]!, ids.runnerUid),
+      sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
     });
     try {
       if (daemonCommand) {
