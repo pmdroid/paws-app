@@ -1,5 +1,6 @@
 export { openRunnerDaemon, type RunnerDaemon, type RunnerDaemonOptions } from "./daemon";
 export { RunnerRequestError } from "./transport";
+export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,
   RunnerGrantRequest,
