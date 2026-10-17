@@ -120,12 +120,13 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     if (readiness.outcome !== "ready") {
       return {
         merged: false,
-        outcome: readiness.outcome === "sha_moved" ? "sha_moved" : "blocked",
+        outcome: readiness.outcome,
         branch,
         base: pushed.base,
         head: pushed.head,
         cycle,
         message: readiness.message,
+        ...(readiness.failedChecks ? { failedChecks: readiness.failedChecks } : {}),
       };
     }
     const mergeToken = await operationToken(input, "merge");
