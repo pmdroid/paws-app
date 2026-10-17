@@ -19,25 +19,6 @@ Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
-## Required autoreview
-
-The working agent must use the `autoreview` skill to complete both Grok review and native Bugbot review through Cursor Agent before committing, pushing, opening or updating a PR, merging, or reporting a change complete. This includes documentation and repository instructions.
-
-- Resolve `AUTOREVIEW` to the installed skill's bundled helper using its path instructions. Use `--engine grok` for Grok and Cursor Agent's `/review-bugbot` command for Bugbot. Ordinary `--engine cursor-agent` model review does not satisfy the Bugbot requirement.
-- Review the complete final change, including untracked files. For branch work, compare against the intended target branch; for an existing PR, resolve its actual base. A stacked PR uses its parent branch. Confirm the base and fetch it successfully before reviewing. Use uncommitted-only review only when that is the entire change being delivered.
-- When pending edits exist, also run `"$AUTOREVIEW" --mode local --engine grok` and `"$AUTOREVIEW" --mode local --preflight-only` before Bugbot so staged, unstaged, and untracked changes receive review and secret scanning alongside the committed branch changes.
-- Run both reviews read-only. Reviewers report findings without editing files or starting extra reviews; native Bugbot may use its built-in review workflow. Ask for concrete bugs, regressions, security problems, and violations of the task or repository instructions.
-- Verify findings against the code, fix actionable findings within the task, rerun affected checks, and rerun both reviews after any edit.
-- Report both commands, reviewed scope, results, and disposition of findings in the final response or PR description. A failed, unavailable, incomplete, or substituted review is not a pass. Report the blocker and do not commit, push, merge, or claim completion until both reviews complete with no accepted actionable findings.
-
-For branch or PR work, set `BASE_REF` to the successfully fetched target ref, then run:
-
-```sh
-"$AUTOREVIEW" --mode branch --base "$BASE_REF" --engine grok
-"$AUTOREVIEW" --mode branch --base "$BASE_REF" --preflight-only &&
-  cursor-agent --print --trust --mode ask --output-format json "/review-bugbot Review changes against $BASE_REF, including committed and uncommitted changes and new files. Report findings without editing files or running autofix."
-```
-
 ## Layout
 
 | Path            | Owns                                                     | Depends on                          |
