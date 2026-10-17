@@ -530,6 +530,8 @@ export function createRemoteAgentRunner(options: {
                   answer: JSON.stringify(publication),
                 });
               }
+              if (event.type === "pull_request")
+                await input.pullRequest?.update({ title: event.title, body: event.body });
               if (event.type === "plan")
                 await emit({
                   type: "session_update",

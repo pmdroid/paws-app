@@ -74,7 +74,7 @@ export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
-  | Extract<RunnerEvent, { type: "plan" }>;
+  | Extract<RunnerEvent, { type: "plan" | "pull_request" }>;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -449,6 +449,20 @@ export async function executeRunnerCommand(
                 const parsed = RunnerEventSchema.safeParse({ type: "plan", steps });
                 if (!parsed.success || parsed.data.type !== "plan")
                   throw new Error("update_plan requires 1 to 16 steps with content and status");
+                emit(parsed.data);
+              },
+            }
+          : undefined,
+      pullRequest:
+        command.type === "run"
+          ? {
+              async update(description) {
+                const parsed = RunnerEventSchema.safeParse({
+                  type: "pull_request",
+                  ...description,
+                });
+                if (!parsed.success || parsed.data.type !== "pull_request")
+                  throw new Error("open_pull_request requires a title and a body");
                 emit(parsed.data);
               },
             }

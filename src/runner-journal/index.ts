@@ -179,6 +179,16 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
+              raw.type === "pull_request"
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "pull_request")
+                throw new Error("Invalid runner pull request");
+              event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
               ["question", "artifact"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
