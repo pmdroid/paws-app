@@ -13,7 +13,13 @@ const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
   .strict();
 
-export function createRunnerHttp(control: RunnerControl) {
+export function createRunnerHttp(
+  control: RunnerControl,
+  options: {
+    /** Per-agent sign-in status added to each runner in the list. */
+    agents?: (principal: WorkspacePrincipal, runnerId: string) => readonly unknown[];
+  } = {},
+) {
   let enrolling = 0;
   return {
     async enrollment(request: Request): Promise<Response> {
@@ -39,7 +45,16 @@ export function createRunnerHttp(control: RunnerControl) {
       const path = new URL(request.url).pathname;
       try {
         if (path === "/api/runners" && request.method === "GET")
-          return json({ runners: control.list(principal), serverVersion: control.serverVersion() });
+          return json({
+            runners: control
+              .list(principal)
+              .map((runner) =>
+                options.agents
+                  ? { ...runner, agents: options.agents(principal, runner.id) }
+                  : runner,
+              ),
+            serverVersion: control.serverVersion(),
+          });
         if (path === "/api/runners/pairings/inspect" && request.method === "POST")
           return json(control.inspectPairing(principal, code.parse(await readJson(request)).code));
         if (path === "/api/runners/pairings/approve" && request.method === "POST")

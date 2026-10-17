@@ -28,7 +28,13 @@ const columns =
   "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId";
 const pending = (row: Row) => row.state === "starting" || row.state === "waiting";
 
-export function createRunnerLogin(options: { db: Database; work: RunnerWork; now?: () => number }) {
+export function createRunnerLogin(options: {
+  db: Database;
+  work: RunnerWork;
+  now?: () => number;
+  /** Called after a sign-in completes, outside its transaction. */
+  onSignedIn?: (input: { runnerId: string; memberId: string; agent: Agent }) => void;
+}) {
   const { db, work } = options;
   const now = options.now ?? Date.now;
   const inputs = new Map<string, { id: string; value: RunnerLoginInput }>();
@@ -183,7 +189,8 @@ export function createRunnerLogin(options: { db: Database; work: RunnerWork; now
     },
     exchange(runnerId: string, id: string, input: RunnerLoginUpdate) {
       const update = RunnerLoginUpdateSchema.parse(input);
-      return immediate(db, () => {
+      let signedIn: { runnerId: string; memberId: string; agent: Agent } | undefined;
+      const reply = immediate(db, () => {
         const row = read(id);
         if (row.runnerId !== runnerId) throw new Error("Login runner changed");
         try {
@@ -237,12 +244,21 @@ export function createRunnerLogin(options: { db: Database; work: RunnerWork; now
             [now(), runnerId, row.userId, row.agent],
           );
           inputs.delete(id);
+          signedIn = { runnerId, memberId: row.userId, agent: row.agent };
         }
         return {
           cancelled: false,
           input: !finished && answer && answer.id === update.inputId ? answer : null,
         };
       });
+      if (signedIn) {
+        try {
+          options.onSignedIn?.(signedIn);
+        } catch {
+          // The sign-in is already committed; the background check retries later.
+        }
+      }
+      return reply;
     },
     async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
       const match =
