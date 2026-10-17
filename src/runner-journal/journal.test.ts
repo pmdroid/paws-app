@@ -234,6 +234,28 @@ test("live deliveries include tool status and output while private thoughts stay
   }
 });
 
+test("pull request records carry the agent's title and description", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-pr-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const valid = `${JSON.stringify({ type: "pull_request", title: "Add rows", body: "Adds rows." })}\n`;
+    journal.ingest(execution.id, Buffer.from(valid));
+    expect(journal.pending(execution.id)).toEqual([
+      { sequence: 1, event: { type: "pull_request", title: "Add rows", body: "Adds rows." } },
+    ]);
+    expect(() =>
+      journal.ingest(
+        execution.id,
+        Buffer.from(valid + `${JSON.stringify({ type: "pull_request", title: "", body: "x" })}\n`),
+      ),
+    ).toThrow("Invalid runner pull request");
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("plan records replace the checklist without waiting for an answer", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-plan-"));
   const journal = openExecutionJournal(root);
