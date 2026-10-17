@@ -22,6 +22,8 @@ import {
   getWorkItem,
   getConfirmedRemoteMerge,
   enqueueJob,
+  enqueueJobOnce,
+  saveCheckpoint,
   recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
@@ -2142,6 +2144,106 @@ test("a CI failure sends the task back to its agent and the fixed head merges", 
     expect(tracker.progress.map((update) => update.body)).toContain(
       "CI failed (test). Sent it back to the agent to fix.",
     );
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
+test("a reverify after a pushed rebase uses the new main as its base", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "rebase-base",
+      identifier: "ENG-92",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  let readinessReads = 0;
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          if (req.path !== "/graphql") return client.request(req);
+          readinessReads += 1;
+          const body = fakeMergeReadiness(
+            (req.body as { variables: { head: string } }).variables.head,
+          );
+          body.data.repository.object.statusCheckRollup.state = "PENDING";
+          return { status: 200, body };
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `base-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement" ? path.join(layout.root, `base-result-${sequence}.json`) : "";
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [writeOk(input.worktree), { type: "end" }]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "rebase-base"));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && stateOf(db, "ENG-92") !== "merge_queue") {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    const before = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-92")!;
+    await commitOnMain(layout.bare, "side\n", "side.txt");
+    const main = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    while (Date.now() < deadline && readinessReads === 0) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    saveCheckpoint(db, before.id, before.checkpoint!);
+    const reverify = enqueueJobOnce(db, {
+      queue: JOB_KIND.reverify,
+      jobKey: "stale-reverify",
+      payload: { itemId: before.id },
+      now: Date.now(),
+    });
+    while (
+      Date.now() < deadline &&
+      !["done", "dead"].includes(listJobs(db).find((job) => job.id === reverify)?.status ?? "")
+    ) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    const item = listWorkItems(db).find((entry) => entry.id === before.id)!;
+    expect(item.checkpoint?.baseSha, debug(layout, db)).toBe(main);
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     db.close();
