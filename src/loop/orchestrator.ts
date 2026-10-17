@@ -1910,12 +1910,13 @@ export class Orchestrator {
       )
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
       const sessionId = item.sessionKey;
-      if (!sessionId || !getLinearSession(this.db, sessionId)) return;
-      const active = workItemForSession(this.db, sessionId);
+      const session = sessionId ? getLinearSession(this.db, sessionId) : null;
+      if (!sessionId || !session) return;
+      const activeId = session.activeItemId;
       if (
-        active &&
-        active.id !== item.id &&
-        listInFlightItems(this.db).some((entry) => entry.id === active.id)
+        activeId &&
+        activeId !== item.id &&
+        listInFlightItems(this.db).some((entry) => entry.id === activeId)
       )
         throw new LinearReconciliationPendingError("Another Linear task owns this session");
       activateLinearItem(this.db, sessionId, item.id);
