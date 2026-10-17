@@ -10,7 +10,9 @@ import {
   getWorkItem,
   getWorkItemRepository,
   immediate,
+  recordRunnerHostStatus,
   runnerHasCapacity,
+  type RunnerHostSample,
   taskRequiresRepository,
   workspaceSessionIds,
 } from "../db";
@@ -427,7 +429,7 @@ export function createRunnerWork(options: {
       )
         throw new Error("Runner command is unknown.");
     },
-    heartbeat(runnerId: string, capacity = 1) {
+    heartbeat(runnerId: string, capacity = 1, host: RunnerHostSample = {}) {
       return immediate(db, () => {
         runner(runnerId);
         if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 16)
@@ -438,6 +440,8 @@ export function createRunnerWork(options: {
         );
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
+        if (Object.values(host).some((value) => value !== undefined))
+          recordRunnerHostStatus(db, runnerId, host, at);
         const rows = db
           .query<Assignment, [string]>(
             `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
