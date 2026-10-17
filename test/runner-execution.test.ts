@@ -78,13 +78,16 @@ describe("Linux execution spool", () => {
       const job = join(files.root, id, "job.json");
       chmodSync(job, 0o660);
       expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
-      chmodSync(job, 0o2640);
-      expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
       chmodSync(job, 0o640);
-      chmodSync(join(files.root, id), 0o2750);
-      expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
-      chmodSync(join(files.root, id), 0o750);
-      chmodSync(files.root, 0o2750);
+      if (setgidAllowed()) {
+        chmodSync(job, 0o2640);
+        expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
+        chmodSync(job, 0o640);
+        chmodSync(join(files.root, id), 0o2750);
+        expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
+        chmodSync(join(files.root, id), 0o750);
+        chmodSync(files.root, 0o2750);
+      }
       expect(readRunnerJob(files, id)).toEqual(probe);
       linkSync(job, join(root, "hardlink"));
       expect(() => readRunnerJob(files, id)).toThrow("Unsafe");
@@ -204,3 +207,16 @@ describe("Linux execution spool", () => {
     }
   });
 });
+
+function setgidAllowed(): boolean {
+  const file = join(root, "setgid-probe");
+  writeFileSync(file, "");
+  try {
+    chmodSync(file, 0o2640);
+    return (statSync(file).mode & 0o2000) !== 0;
+  } catch {
+    return false;
+  } finally {
+    rmSync(file);
+  }
+}

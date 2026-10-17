@@ -17,7 +17,7 @@ async function fixture(purpose: "answer" | "artifact", context: boolean) {
     agentGid: process.getgid!(),
   };
   mkdirSync(spool.root);
-  chmodSync(spool.root, 0o2750);
+  chmodSync(spool.root, 0o750);
   const bytes = Buffer.from([0, 255, 20, 40]);
   const prompt = Buffer.from("restored Unicode context 🐕".repeat(4000));
   const command: Extract<RunnerCommand, { type: "task" }> = {
