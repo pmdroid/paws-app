@@ -1942,15 +1942,17 @@ export class Orchestrator {
         (live.sessionId === null ||
           getLinearSessionGeneration(this.db, live.sessionId) === live.generation),
       assert: async (purpose) => {
+        const current = getWorkItem(this.db, item.id);
+        if (!current) throw new Error("The published task no longer exists.");
         await this.assertPublicationReady(
-          item,
+          current,
           purpose === "merge" ? "merge" : "publish",
           live.controller.signal,
           publicationCandidate,
         );
-        await this.taskAccess()?.assert(item, live.controller.signal);
-        const auth = this.authorization(item);
-        if (auth && !(await auth.ensure(item, "publication", live.controller.signal)))
+        await this.taskAccess()?.assert(current, live.controller.signal);
+        const auth = this.authorization(current);
+        if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
       },
     });
