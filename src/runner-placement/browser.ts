@@ -4,14 +4,11 @@ import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
 import type { WorkspacePrincipal } from "../workspace";
 
 const policyInput = z.strictObject({
-  hostOwner: z.enum(["member", "workspace", "unknown"]),
   agent: z.enum(["claude", "codex", "grok"]),
   seat: z.enum(["unknown", "personal", "organization", "api"]),
   sharing: z.boolean(),
-  fallback: z.boolean(),
 });
 const workspaceInput = z.strictObject({
-  fallbackAllowed: z.boolean(),
   personalOrganizationHost: z.boolean(),
 });
 
@@ -77,12 +74,11 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       if (path === "/api/runners/policy") {
         if (request.method === "GET") {
           const row = db
-            .query<{ fallbackAllowed: number; personalOrganizationHost: number }, [string]>(
-              "SELECT fallback_allowed AS fallbackAllowed,personal_organization_host AS personalOrganizationHost FROM workspace_runner_policy WHERE workspace_id=?",
+            .query<{ personalOrganizationHost: number }, [string]>(
+              "SELECT personal_organization_host AS personalOrganizationHost FROM workspace_runner_policy WHERE workspace_id=?",
             )
             .get(principal.workspaceId);
           return json({
-            fallbackAllowed: row?.fallbackAllowed === 1,
             personalOrganizationHost: row?.personalOrganizationHost === 1,
           });
         }
@@ -90,16 +86,12 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         const input = workspaceInput.parse(await body(request));
         immediate(db, () => {
           if (member(principal).role !== "owner")
-            throw new Error("Only the workspace owner can update fallback permission.");
+            throw new Error("Only the workspace owner can update workspace runner permission.");
           recent(principal);
           db.run(
-            `INSERT INTO workspace_runner_policy(workspace_id,fallback_allowed,personal_organization_host) VALUES(?,?,?)
-            ON CONFLICT(workspace_id) DO UPDATE SET fallback_allowed=excluded.fallback_allowed,personal_organization_host=excluded.personal_organization_host`,
-            [
-              principal.workspaceId,
-              input.fallbackAllowed ? 1 : 0,
-              input.personalOrganizationHost ? 1 : 0,
-            ],
+            `INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,?)
+            ON CONFLICT(workspace_id) DO UPDATE SET personal_organization_host=excluded.personal_organization_host`,
+            [principal.workspaceId, input.personalOrganizationHost ? 1 : 0],
           );
           auditWorkspaceAccess(db, {
             workspaceId: principal.workspaceId,
@@ -126,8 +118,8 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         return json({
           ownerUserId: identity.ownerId,
           ...db
-            .query<{ hostOwner: string; sharing: number; fallback: number }, [string]>(
-              "SELECT host_owner AS hostOwner,sharing,fallback FROM runner_policy WHERE runner_id=?",
+            .query<{ sharing: number }, [string]>(
+              "SELECT sharing FROM runner_policy WHERE runner_id=?",
             )
             .get(runnerId),
           agents: db
@@ -146,19 +138,11 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
           host.ownerId !== principal.userId ||
           host.revokedAt !== null
         )
-          throw new Error("Only the active host owner can change its sharing settings.");
-        if (
-          input.sharing &&
-          (!["organization", "api"].includes(input.seat) || input.hostOwner === "unknown")
-        )
-          throw new Error(
-            "Sharing requires an organization or API account and a declared host owner.",
-          );
-        if (input.fallback && (input.seat !== "api" || input.hostOwner !== "workspace"))
-          throw new Error("Fallback requires an API account on a workspace host.");
+          throw new Error("Only the member who paired this host can change its sharing settings.");
+        if (input.sharing && !["organization", "api"].includes(input.seat))
+          throw new Error("Sharing requires an organization or API account.");
         if (
           input.seat === "personal" &&
-          input.hostOwner !== "member" &&
           !db
             .query(
               "SELECT 1 FROM workspace_runner_policy WHERE workspace_id=? AND personal_organization_host=1",
@@ -166,12 +150,12 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
             .get(principal.workspaceId)
         )
           throw new Error(
-            "Personal accounts require a personal host or workspace owner permission.",
+            "Personal accounts on workspace hosts require workspace owner permission.",
           );
         db.run(
-          `INSERT INTO runner_policy(runner_id,host_owner,sharing,fallback) VALUES(?,?,?,?) ON CONFLICT(runner_id)
-          DO UPDATE SET host_owner=excluded.host_owner,sharing=excluded.sharing,fallback=excluded.fallback`,
-          [runnerId, input.hostOwner, input.sharing ? 1 : 0, input.fallback ? 1 : 0],
+          `INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?) ON CONFLICT(runner_id)
+          DO UPDATE SET sharing=excluded.sharing`,
+          [runnerId, input.sharing ? 1 : 0],
         );
         db.run(
           `INSERT INTO runner_agent_policy(runner_id,agent,seat) VALUES(?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET seat=excluded.seat`,
@@ -188,7 +172,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       return json({ ok: true });
     } catch (error) {
       if (error instanceof z.ZodError || error instanceof SyntaxError)
-        return json({ error: "Choose a valid host owner, agent and account type." }, 400);
+        return json({ error: "Choose a valid agent and account type." }, 400);
       return json(
         { error: error instanceof Error ? error.message : "Runner settings are unavailable." },
         403,

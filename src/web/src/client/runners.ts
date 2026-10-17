@@ -29,9 +29,7 @@ type Runner = {
 type Session = { userId: string; role: string; authenticatedAt: number };
 type HostPolicy = {
   ownerUserId: string;
-  hostOwner?: string;
   sharing?: number;
-  fallback?: number;
   agents: {
     agent: string;
     seat: string;
@@ -42,7 +40,7 @@ type HostPolicy = {
     cooldownUntil: number;
   }[];
 };
-type WorkspacePolicy = { fallbackAllowed: boolean; personalOrganizationHost: boolean };
+type WorkspacePolicy = { personalOrganizationHost: boolean };
 type Usage = {
   commandId: string;
   runnerName: string;
@@ -334,13 +332,6 @@ export function createRunners() {
         ["grok", "Grok"],
       ],
       policyAgent,
-    )}</select></label><label class="field"><span>Host owner</span><select name="hostOwner">${options(
-      [
-        ["unknown", "Not declared"],
-        ["member", "Me"],
-        ["workspace", "My workspace"],
-      ],
-      hostPolicy.hostOwner ?? "unknown",
     )}</select></label><label class="field"><span>Account type</span><select name="seat">${options(
       [
         ["unknown", "Not declared"],
@@ -349,11 +340,11 @@ export function createRunners() {
         ["api", "API account"],
       ],
       agentPolicy?.seat ?? "unknown",
-    )}</select></label><label class="runner-consent"><input type="checkbox" name="sharing"${hostPolicy.sharing ? " checked" : ""}><span>Share this host with members of the same Linear project</span></label><label class="runner-consent"><input type="checkbox" name="fallback"${hostPolicy.fallback ? " checked" : ""}><span>Use this workspace API host as a fallback</span></label><button class="btn" type="submit">Save host settings</button></fieldset></form>${!own ? '<p class="muted">The host owner controls its sharing settings.</p>' : !recent() ? '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>' : ""}<p class="muted">${agentPolicy?.authExpired ? "Agent sign-in needs attention." : agentPolicy?.ready ? "Agent connection verified." : "Agent connection has not been checked."}${agentPolicy?.quotaState === "exhausted" ? ` Usage limit reached.${agentPolicy.resetsAt ? ` Resets ${esc(new Date(agentPolicy.resetsAt).toLocaleString())}.` : agentPolicy.cooldownUntil > Date.now() ? ` Next check ${esc(new Date(agentPolicy.cooldownUntil).toLocaleString())}.` : ""}` : agentPolicy?.quotaState === "low" ? " Remaining usage is low." : ""}</p></details>`;
+    )}</select></label><label class="runner-consent"><input type="checkbox" name="sharing"${hostPolicy.sharing ? " checked" : ""}><span>Share this host with members of the same Linear project</span></label><button class="btn" type="submit">Save host settings</button></fieldset></form>${!own ? '<p class="muted">Only the member who paired this host can change its sharing settings.</p>' : !recent() ? '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>' : ""}<p class="muted">${agentPolicy?.authExpired ? "Agent sign-in needs attention." : agentPolicy?.ready ? "Agent connection verified." : "Agent connection has not been checked."}${agentPolicy?.quotaState === "exhausted" ? ` Usage limit reached.${agentPolicy.resetsAt ? ` Resets ${esc(new Date(agentPolicy.resetsAt).toLocaleString())}.` : agentPolicy.cooldownUntil > Date.now() ? ` Next check ${esc(new Date(agentPolicy.cooldownUntil).toLocaleString())}.` : ""}` : agentPolicy?.quotaState === "low" ? " Remaining usage is low." : ""}</p></details>`;
   }
   function workspacePolicyView() {
     if (session?.role !== "owner" || !workspacePolicy) return "";
-    return `<details class="runner-section"><summary>Workspace execution permission</summary><form id="workspace-runner-policy"><fieldset${busy || !recent() ? " disabled" : ""}><label class="runner-consent"><input name="fallbackAllowed" type="checkbox"${workspacePolicy.fallbackAllowed ? " checked" : ""}><span>Allow configured API hosts to take over when another account is unavailable</span></label><label class="runner-consent"><input name="personalOrganizationHost" type="checkbox"${workspacePolicy.personalOrganizationHost ? " checked" : ""}><span>Allow personal subscriptions on workspace hosts</span></label><button class="btn" type="submit">Save workspace permission</button></fieldset></form></details>`;
+    return `<details class="runner-section"><summary>Workspace execution permission</summary><form id="workspace-runner-policy"><fieldset${busy || !recent() ? " disabled" : ""}><label class="runner-consent"><input name="personalOrganizationHost" type="checkbox"${workspacePolicy.personalOrganizationHost ? " checked" : ""}><span>Allow personal subscriptions on workspace hosts</span></label><button class="btn" type="submit">Save workspace permission</button></fieldset></form></details>`;
   }
   function usageView() {
     return `<details class="runner-section"><summary>Recent execution</summary>${
@@ -408,10 +399,8 @@ export function createRunners() {
       void change(async () => {
         await api(`/api/runners/${encodeURIComponent(selected!)}/policy`, {
           agent: String(data.get("agent")),
-          hostOwner: String(data.get("hostOwner")),
           seat: String(data.get("seat")),
           sharing: data.has("sharing"),
-          fallback: data.has("fallback"),
         });
         feedback = "Host settings saved.";
       }, false);
@@ -423,7 +412,6 @@ export function createRunners() {
         const data = new FormData(event.currentTarget as HTMLFormElement);
         void change(async () => {
           await api("/api/runners/policy", {
-            fallbackAllowed: data.has("fallbackAllowed"),
             personalOrganizationHost: data.has("personalOrganizationHost"),
           });
           feedback = "Workspace execution permission saved.";

@@ -78,10 +78,8 @@ export async function probeRunnerPolicyBrowser(
     );
   const policy = {
     agent: "codex",
-    hostOwner: "member",
     seat: "organization",
     sharing: true,
-    fallback: false,
   };
   try {
     const memberPrincipal = principal(member, "member");
@@ -100,7 +98,7 @@ export async function probeRunnerPolicyBrowser(
     assert.equal(saved.sharing, 1);
     assert.equal(saved.agents[0]!.seat, "organization");
     observe(
-      "The host owner can consent to sharing; an administrator cannot consent for them",
+      "The member who paired the host can consent to sharing; an administrator cannot consent for them",
       true,
       { ownerSaved: true, administratorDenied: true },
     );
@@ -116,38 +114,52 @@ export async function probeRunnerPolicyBrowser(
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       403,
     );
+    for (const removed of [{ hostOwner: "member" }, { fallback: false }])
+      assert.equal(
+        (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
+          ...policy,
+          ...removed,
+        }))!.status,
+        400,
+      );
     assert.equal(
       (await request("/api/runners/policy", principal(owner, "owner"), {
         fallbackAllowed: true,
         personalOrganizationHost: true,
       }))!.status,
+      400,
+    );
+    assert.equal(
+      (await request("/api/runners/policy", principal(owner, "owner"), {
+        personalOrganizationHost: true,
+      }))!.status,
       200,
+    );
+    assert.deepEqual(
+      await (await request("/api/runners/policy", principal(owner, "owner")))!.json(),
+      { personalOrganizationHost: true },
     );
     assert.equal(
       (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
         ...policy,
         sharing: false,
         seat: "personal",
-        hostOwner: "workspace",
       }))!.status,
       200,
     );
     assert.equal(
       (await request("/api/runners/policy", memberPrincipal, {
-        fallbackAllowed: false,
         personalOrganizationHost: false,
       }))!.status,
       403,
     );
-    observe(
-      "Personal accounts and workspace fallback require explicit account and owner permission",
-      true,
-      { personalSharingDenied: true, workspacePermissionRequired: true },
-    );
+    observe("Personal accounts require workspace owner permission and cannot be shared", true, {
+      personalSharingDenied: true,
+      workspacePermissionRequired: true,
+    });
     assert.equal(
       (await request(
         `/api/runners/${runnerId}/policy`,
