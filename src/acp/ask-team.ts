@@ -32,6 +32,12 @@ export interface UpdatePlanHook {
 
 export const OPEN_PULL_REQUEST_TOOL_NAME = "open_pull_request";
 
+const OPEN_PULL_REQUEST_FIRST = JSON.stringify({
+  decision: "block",
+  reason:
+    "Cannot finish yet. Commit your work, then call open_pull_request with a title and a description. If this task needs no code change, say why and finish.",
+});
+
 export interface PullRequestDescription {
   title: string;
   body: string;
@@ -113,6 +119,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
   await mkdir(dirname(options.socketPath), { recursive: true, mode: 0o700 });
   await unlink(options.socketPath).catch(() => undefined);
   const lifetime = new AbortController();
+  const finish = { pullRequestOpened: false, nudged: false };
   const sockets = new Set<Socket>();
   const onAbort = () => {
     lifetime.abort();
@@ -136,7 +143,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.on("error", () => undefined);
-    void handleConnection(socket, { ...bridge, signal: lifetime.signal });
+    void handleConnection(socket, { ...bridge, signal: lifetime.signal }, finish);
   });
   try {
     await listen(server, options.socketPath);
@@ -187,7 +194,11 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
 
 export const startHostToolBridge = startAskTeamBridge;
 
-async function handleConnection(socket: Socket, options: HostToolBridgeOptions): Promise<void> {
+async function handleConnection(
+  socket: Socket,
+  options: HostToolBridgeOptions,
+  finish: { pullRequestOpened: boolean; nudged: boolean },
+): Promise<void> {
   socket.setEncoding("utf8");
   let buffer = "";
   const readLine = () =>
@@ -251,10 +262,14 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
     if (parsed.tool === "closeout_finish") {
       options.onHookStart?.();
       try {
-        const answer =
+        let answer =
           options.closeout && options.allowCloseoutRun !== false
             ? closeoutFinishLine(await options.closeout.report())
             : CLOSEOUT_FINISH_UNAVAILABLE;
+        if (answer === "{}" && options.pullRequest && !finish.pullRequestOpened && !finish.nudged) {
+          finish.nudged = true;
+          answer = OPEN_PULL_REQUEST_FIRST;
+        }
         if (!socket.destroyed) socket.end(`${JSON.stringify({ id, answer })}\n`);
       } catch {
         if (!socket.destroyed) {
@@ -275,6 +290,7 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
     if (parsed.tool === "open_pull_request") {
       if (!options.pullRequest) throw new Error("open_pull_request is unavailable");
       await options.pullRequest.update(parsePullRequest(parsed.arguments ?? {}));
+      finish.pullRequestOpened = true;
       socket.end(
         `${JSON.stringify({ id, answer: "Saved. Paws opens or updates the pull request with this title and description after Closeout accepts the work." })}\n`,
       );
