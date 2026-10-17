@@ -2152,6 +2152,14 @@ test("a CI failure sends the task back to its agent and the fixed head merges", 
 }, 120_000);
 
 test("a reverify after a pushed rebase uses the new main as its base", async () => {
+  const identity = {
+    GIT_AUTHOR_NAME: "Paws Test",
+    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
+    GIT_COMMITTER_NAME: "Paws Test",
+    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
   const layout = await repoLayout();
   const tracker = createFakeTracker([
     {
@@ -2248,6 +2256,10 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     await orchestrator.shutdown().catch(() => undefined);
     db.close();
     await layout.cleanup();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }, 120_000);
 
