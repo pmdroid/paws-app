@@ -30,6 +30,17 @@ export interface UpdatePlanHook {
   update(steps: readonly PlanStep[]): Promise<void>;
 }
 
+export const OPEN_PULL_REQUEST_TOOL_NAME = "open_pull_request";
+
+export interface PullRequestDescription {
+  title: string;
+  body: string;
+}
+
+export interface PullRequestHook {
+  update(description: PullRequestDescription): Promise<void>;
+}
+
 /** Question the agent sends. QM-07 turns this into a Linear elicitation. */
 export interface AskTeamRequest {
   question: string;
@@ -83,6 +94,7 @@ interface HostToolBridgeOptions {
   socketPath: string;
   hook?: AskTeamHook;
   updatePlan?: UpdatePlanHook;
+  pullRequest?: PullRequestHook;
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
@@ -151,6 +163,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.hook ? "ask_team" : "",
             options.updatePlan ? "update_plan" : "",
             options.publishArtifact ? "publish_artifact" : "",
+            options.pullRequest ? "open_pull_request" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
           ]
@@ -183,7 +196,7 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       socket.on("error", onError);
       socket.on("data", (chunk: string) => {
         buffer += chunk;
-        if (buffer.length > 16_384) {
+        if (buffer.length > 65_536) {
           reject(new Error("host tool request too large"));
           socket.destroy();
           return;
@@ -257,6 +270,14 @@ async function handleConnection(socket: Socket, options: HostToolBridgeOptions):
       const steps = parsePlan(parsed.arguments ?? {});
       await options.updatePlan.update(steps);
       socket.end(`${JSON.stringify({ id, answer: "Plan updated." })}\n`);
+      return;
+    }
+    if (parsed.tool === "open_pull_request") {
+      if (!options.pullRequest) throw new Error("open_pull_request is unavailable");
+      await options.pullRequest.update(parsePullRequest(parsed.arguments ?? {}));
+      socket.end(
+        `${JSON.stringify({ id, answer: "Saved. Paws opens or updates the pull request with this title and description after Closeout accepts the work." })}\n`,
+      );
       return;
     }
     if (parsed.tool === "publish_artifact") {
@@ -375,6 +396,21 @@ function parsePlan(value: { steps?: unknown }): PlanStep[] {
       );
     return { content, status };
   });
+}
+
+export function parsePullRequest(value: {
+  title?: unknown;
+  body?: unknown;
+}): PullRequestDescription {
+  if (typeof value.title !== "string" || typeof value.body !== "string")
+    throw new Error("open_pull_request requires a title and a body");
+  const title = value.title.trim();
+  const body = value.body.trim();
+  if (title.length < 1 || title.length > 256 || !oneLine(title))
+    throw new Error("open_pull_request needs a one-line title of at most 256 characters");
+  if (body.length < 1 || body.length > 12_000)
+    throw new Error("open_pull_request needs a body of 1 to 12000 characters");
+  return { title, body };
 }
 
 function authorizeCloseout(

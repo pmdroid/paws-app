@@ -88,12 +88,19 @@ export async function openPullRequest(
     owner: string;
     repo: string;
     title?: string;
+    description?: string;
     evidence: string;
     client: GitHubClient;
   } & GitHubCredentialInput,
 ): Promise<OpenedPull> {
   const branch = branchForIssue(input.branchKey ?? input.issue);
-  const body = developerBody(input.tokenProvider, pullRequestBody(input.issue, input.evidence));
+  const body = developerBody(
+    input.tokenProvider,
+    pullRequestBody(
+      input.issue,
+      input.description ? `${input.description.trim()}\n\n${input.evidence}` : input.evidence,
+    ),
+  );
   const token = await acquireOperationToken(input, "pr");
   const created = await input.client.request({
     method: "POST",
@@ -118,7 +125,7 @@ export async function openPullRequest(
       method: "PATCH",
       path: repoApiPath(input.owner, input.repo, `/pulls/${existing.number}`),
       token,
-      body: { body },
+      body: input.title ? { title: input.title, body } : { body },
     });
     if (patched.status !== 200)
       throw new Error(`pull request update failed with status ${patched.status}`);
@@ -268,6 +275,7 @@ export async function publishAccepted(
     owner: string;
     repo: string;
     title?: string;
+    description?: string;
     remoteUrl?: string;
     gitExec?: GitExec;
     client: GitHubClient;
