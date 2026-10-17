@@ -4,6 +4,7 @@ import type {
   PublishArtifactHook,
   RunAgentOptions,
   RunAgentResult,
+  PullRequestHook,
   UpdatePlanHook,
 } from "../acp";
 import type { AgentProfile } from "../config";
@@ -38,6 +39,7 @@ export type AcpAgentDeps = {
   prepareInputFiles?: RunAgentOptions["prepareInputFiles"];
   onEvent?: RunAgentOptions["onEvent"];
   updatePlan?: UpdatePlanHook;
+  pullRequest?: PullRequestHook;
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -78,6 +80,7 @@ export function implementPrompt(input: {
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     closeoutPrompt(),
+    "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
     "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
@@ -165,6 +168,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         prepareInputFiles: deps.prepareInputFiles,
         onEvent: deps.onEvent,
         updatePlan: deps.updatePlan,
+        pullRequest: deps.pullRequest,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,

@@ -23,6 +23,8 @@ export {
 export {
   ASK_TEAM_TOOL_NAME,
   UPDATE_PLAN_TOOL_NAME,
+  OPEN_PULL_REQUEST_TOOL_NAME,
+  parsePullRequest,
   startAskTeamBridge,
   startHostToolBridge,
   type AskTeamBridge,
@@ -33,6 +35,8 @@ export {
   type AskTeamResponse,
   type PlanStep,
   type PlanStepStatus,
+  type PullRequestDescription,
+  type PullRequestHook,
   type UpdatePlanHook,
 } from "./ask-team";
 export {
