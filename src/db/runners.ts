@@ -77,6 +77,138 @@ export function listRunners(db: Database, workspaceId: string): RunnerRecord[] {
     .all(workspaceId);
 }
 
+export type RunnerHostSample = {
+  cpuPercent?: number;
+  memoryTotalBytes?: number;
+  memoryAvailableBytes?: number;
+  load1?: number;
+  load5?: number;
+  load15?: number;
+  diskTotalBytes?: number;
+  diskFreeBytes?: number;
+  osId?: string;
+  osVersion?: string;
+  runnerVersion?: string;
+};
+
+export type RunnerOverview = RunnerRecord & {
+  metrics: {
+    cpuPercent: number | null;
+    memoryTotalBytes: number | null;
+    memoryAvailableBytes: number | null;
+    load1: number | null;
+    load5: number | null;
+    load15: number | null;
+    diskTotalBytes: number | null;
+    diskFreeBytes: number | null;
+    reportedAt: number;
+  } | null;
+  os: { id: string | null; version: string | null } | null;
+  version: string | null;
+  idle: boolean;
+};
+
+/** Keeps only the latest host sample per runner. */
+export function recordRunnerHostStatus(
+  db: Database,
+  runnerId: string,
+  sample: RunnerHostSample,
+  reportedAt: number,
+): void {
+  db.run(
+    `INSERT INTO runner_host_status(runner_id,cpu_percent,memory_total_bytes,memory_available_bytes,
+    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,reported_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,
+    memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
+    load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
+    disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
+    os_id=excluded.os_id,os_version=excluded.os_version,runner_version=excluded.runner_version,
+    reported_at=excluded.reported_at`,
+    [
+      runnerId,
+      sample.cpuPercent ?? null,
+      sample.memoryTotalBytes ?? null,
+      sample.memoryAvailableBytes ?? null,
+      sample.load1 ?? null,
+      sample.load5 ?? null,
+      sample.load15 ?? null,
+      sample.diskTotalBytes ?? null,
+      sample.diskFreeBytes ?? null,
+      sample.osId ?? null,
+      sample.osVersion ?? null,
+      sample.runnerVersion ?? null,
+      reportedAt,
+    ],
+  );
+}
+
+/** Runners with their latest host sample. Idle means no open work and no pending command. */
+export function listRunnerOverview(
+  db: Database,
+  workspaceId: string,
+  now: number,
+): RunnerOverview[] {
+  type Row = RunnerRecord & {
+    cpuPercent: number | null;
+    memoryTotalBytes: number | null;
+    memoryAvailableBytes: number | null;
+    load1: number | null;
+    load5: number | null;
+    load15: number | null;
+    diskTotalBytes: number | null;
+    diskFreeBytes: number | null;
+    osId: string | null;
+    osVersion: string | null;
+    runnerVersion: string | null;
+    reportedAt: number | null;
+    busy: number;
+  };
+  return db
+    .query<Row, [number, string]>(
+      `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
+    h.cpu_percent AS cpuPercent,h.memory_total_bytes AS memoryTotalBytes,
+    h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
+    h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
+    h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
+    h.reported_at AS reportedAt,
+    (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
+     OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
+       AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy
+    FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
+    WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
+    )
+    .all(now, workspaceId)
+    .map((row) => ({
+      id: row.id,
+      workspaceId: row.workspaceId,
+      ownerUserId: row.ownerUserId,
+      name: row.name,
+      status: row.status,
+      fence: row.fence,
+      metrics:
+        row.reportedAt === null
+          ? null
+          : {
+              cpuPercent: row.cpuPercent,
+              memoryTotalBytes: row.memoryTotalBytes,
+              memoryAvailableBytes: row.memoryAvailableBytes,
+              load1: row.load1,
+              load5: row.load5,
+              load15: row.load15,
+              diskTotalBytes: row.diskTotalBytes,
+              diskFreeBytes: row.diskFreeBytes,
+              reportedAt: row.reportedAt,
+            },
+      os:
+        row.osId === null && row.osVersion === null
+          ? null
+          : { id: row.osId, version: row.osVersion },
+      version: row.runnerVersion,
+      idle: row.busy === 0,
+    }));
+}
+
 export function getRunnerCertificate(
   db: Database,
   fingerprint: string,

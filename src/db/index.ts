@@ -121,6 +121,8 @@ export {
   findRunnerPairing,
   getRunner,
   listRunners,
+  listRunnerOverview,
+  recordRunnerHostStatus,
   getRunnerCertificate,
   runnerForCertificate,
   approveRunnerPairing,
@@ -128,6 +130,8 @@ export {
   isCurrentRunnerCertificate,
   updateRunnerStatus,
   type RunnerRecord,
+  type RunnerOverview,
+  type RunnerHostSample,
   type RunnerPairing,
   type StoredRunnerCertificate,
 } from "./runners";
