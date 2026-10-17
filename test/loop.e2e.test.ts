@@ -2071,7 +2071,7 @@ test("a CI failure sends the task back to its agent and the fixed head merges", 
   const failedHeads = new Set<string>();
   const prompts: string[] = [];
   let sequence = 0;
-  let implements_ = 0;
+  let implementRuns = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -2109,12 +2109,12 @@ test("a CI failure sends the task back to its agent and the fixed head merges", 
       const resultPath =
         input.purpose === "implement" ? path.join(layout.root, `ci-result-${sequence}.json`) : "";
       if (input.purpose === "implement") {
-        implements_ += 1;
+        implementRuns += 1;
         prompts.push(input.prompt);
       }
       const steps: FakeScript["steps"] =
         input.purpose === "implement"
-          ? [writeOk(input.worktree, `ok-${implements_}\n`), { type: "end" }]
+          ? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }]
           : emptyReview().steps;
       writeFileSync(
         scriptPath,
@@ -2137,7 +2137,7 @@ test("a CI failure sends the task back to its agent and the fixed head merges", 
       if ((await jobs.tick()) === null) await Bun.sleep(25);
     }
     expect(stateOf(db, "ENG-91"), debug(layout, db)).toBe("merged");
-    expect(implements_).toBe(2);
+    expect(implementRuns).toBe(2);
     expect(prompts[1]).toContain("- test (https://ci.example/1)");
     expect(tracker.progress.map((update) => update.body)).toContain(
       "CI failed (test). Sent it back to the agent to fix.",
