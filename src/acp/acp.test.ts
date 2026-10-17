@@ -466,6 +466,49 @@ test.each(["hook failure", "signed URL"])(
   },
 );
 
+for (const leftover of [true, false]) {
+  test(`the agent's commits stand and Paws ${leftover ? "saves only leftovers" : "adds no commit"}`, async () => {
+    const layout = await layoutRepo();
+    const commit = (args: string[]) => ({
+      type: "terminal" as const,
+      command: "git",
+      args: ["-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", ...args],
+      cwd: layout.worktree,
+    });
+    const files = await writeScript(layout.root, {
+      steps: [
+        { type: "fs_write", path: join(layout.worktree, "a.txt"), content: "a\n" },
+        commit(["add", "a.txt"]),
+        commit(["commit", "-m", "Add a.txt"]),
+        ...(leftover
+          ? [{ type: "fs_write" as const, path: join(layout.worktree, "b.txt"), content: "b\n" }]
+          : []),
+        { type: "end" },
+      ],
+    });
+    await runAgent({
+      role: "implementer",
+      itemId: "ENG-1",
+      runId: "run-commits",
+      prompt: "Commit your work.",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      env: agentEnv(),
+    });
+    const subjects = (await git(["-C", layout.worktree, "log", "--format=%s", "-2"]))
+      .trim()
+      .split("\n");
+    expect(subjects).toEqual(
+      leftover
+        ? ["Save changes the agent left uncommitted (the agent finished)", "Add a.txt"]
+        : ["Add a.txt", subjects[1]!],
+    );
+  });
+}
+
 test("update_plan replaces the working checklist through the host tool", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {

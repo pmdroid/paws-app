@@ -555,8 +555,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         const checkpoint = await commitCheckpoint(
           options.worktreePath,
           commitPolicy
-            ? commitPolicyMessage(`wip: ${options.itemId} ${reason}`, commitPolicy)
-            : `wip: ${options.itemId} ${reason}`,
+            ? commitPolicyMessage(leftoverMessage(reason), commitPolicy)
+            : leftoverMessage(reason),
           options.signal,
           () => options.signal?.removeEventListener("abort", onAbort),
           options.checkpointEnv,
@@ -817,3 +817,12 @@ function baseResult(
 }
 
 export type { AskTeamHook };
+
+function leftoverMessage(reason: "timeout" | "error" | "prompt_complete"): string {
+  const why = {
+    timeout: "the run timed out",
+    error: "the run ended with an error",
+    prompt_complete: "the agent finished",
+  }[reason];
+  return `Save changes the agent left uncommitted (${why})`;
+}
