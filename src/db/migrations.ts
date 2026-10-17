@@ -1734,4 +1734,14 @@ CREATE TABLE pull_request_draft (
 ) STRICT;
 `,
   },
+  {
+    id: "068_release_stopped_parent_issues",
+    sql: `
+UPDATE project_approval_issue SET released_at = (
+  SELECT a.stopped_at FROM project_approval a WHERE a.id = project_approval_issue.approval_id
+) WHERE released_at IS NULL AND approval_id IN (
+  SELECT id FROM project_approval WHERE source = 'parent' AND stopped_at IS NOT NULL
+);
+`,
+  },
 ];

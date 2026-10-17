@@ -187,7 +187,7 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .query<{ id: string }, []>("SELECT id FROM schema_migration ORDER BY rowid")
       .all()
       .map((row) => row.id);
-    expect(ids.at(-1)).toBe("067_pull_request_draft");
+    expect(ids.at(-1)).toBe("068_release_stopped_parent_issues");
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
