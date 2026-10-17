@@ -479,19 +479,19 @@ export async function probeRunnerPlacement(
     selected = (await placement.candidates(request)).find((runner) => runner.id === "own");
     assert.equal(selected?.memberId, owner);
     lifecycle.issue.assigneeId = "owner";
-    const personalCommand = await start("own");
-    const personalUsage = db
+    const memberCommand = await start("own");
+    const memberUsage = db
       .query<{ owner: string; seat: string }, [string]>(
         "SELECT owner_user_id AS owner,seat FROM runner_execution_usage WHERE command_id=?",
       )
-      .get(personalCommand)!;
-    assert.equal(personalUsage.owner, owner);
-    assert.equal(personalUsage.seat, "personal");
+      .get(memberCommand)!;
+    assert.equal(memberUsage.owner, owner);
+    assert.equal(memberUsage.seat, "organization");
     placement.finished({
-      commandId: personalCommand,
+      commandId: memberCommand,
       runnerId: "own",
       finishedAt: now,
-      result: result(personalCommand, "implementation-model", {
+      result: result(memberCommand, "implementation-model", {
         errorMessage: "Rate limit exceeded; retry in 30 minutes",
         stopReason: "error",
       }),
