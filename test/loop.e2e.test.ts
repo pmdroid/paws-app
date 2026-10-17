@@ -2168,7 +2168,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
   const client = githubClient(layout.bare, github);
-  let readinessReads = 0;
+  const seen = { reads: 0 };
   let sequence = 0;
   const orchestrator = attachOrchestrator({
     db,
@@ -2185,7 +2185,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
       client: {
         async request(req) {
           if (req.path !== "/graphql") return client.request(req);
-          readinessReads += 1;
+          seen.reads += 1;
           const body = fakeMergeReadiness(
             (req.body as { variables: { head: string } }).variables.head,
           );
@@ -2226,7 +2226,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     const before = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-92")!;
     await commitOnMain(layout.bare, "side\n", "side.txt");
     const main = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
-    while (Date.now() < deadline && readinessReads === 0) {
+    while (Date.now() < deadline && seen.reads === 0) {
       if ((await jobs.tick()) === null) await Bun.sleep(25);
     }
     saveCheckpoint(db, before.id, before.checkpoint!);
