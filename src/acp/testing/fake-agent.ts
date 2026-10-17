@@ -355,6 +355,24 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "open_pull_request") {
+      const server = state.mcpServers[0];
+      try {
+        if (!server?.command) throw new Error("no mcp server");
+        const text = await callHostTool(server, "open_pull_request", {
+          title: step.title,
+          body: step.body,
+        });
+        state.pullRequest = { ok: true, text };
+      } catch (error) {
+        state.pullRequest = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      persist();
+      continue;
+    }
     if (step.type === "ask_team") {
       const server = state.mcpServers[0];
       if (!server?.command) {
