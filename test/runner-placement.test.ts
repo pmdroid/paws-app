@@ -173,6 +173,24 @@ test("a project item runs on another project member's shared runner", async () =
   }
 });
 
+test("a member's own signed-in account runs their work without the personal seat permission", async () => {
+  const placed = await placeItem(false, true, false);
+  try {
+    const owner = placed.db
+      .query<{ id: string }, []>("SELECT id FROM workspace_user WHERE linear_user_id='owner'")
+      .get()!.id;
+    placed.db.run("UPDATE runner_agent_policy SET seat='organization' WHERE runner_id='own'");
+    placed.db.run(
+      "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES('own',?,'codex',1,?)",
+      [owner, Date.now()],
+    );
+    expect(await placed.ids()).toEqual(["own"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
 test("a personal seat needs workspace permission even for the owner's own work", async () => {
   const placed = await placeItem(true, true, false);
   try {
