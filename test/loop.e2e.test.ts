@@ -189,7 +189,6 @@ test.each([false, true, "cap"] as const)(
       while (
         performance.now() < progressDeadline &&
         (!tracker.progress.some((update) => update.body === "Fixing the missing output.") ||
-          !tracker.progress.some((update) => update.body === "Write repaired output") ||
           !tracker.sessionUpdates.some(
             (update) => update.summary === "ENG-302: fixing Closeout findings",
           ) ||
@@ -199,7 +198,7 @@ test.each([false, true, "cap"] as const)(
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
       expect(tracker.progress.map((update) => update.body)).toContain("Fixing the missing output.");
-      expect(tracker.progress.map((update) => update.body)).toContain("Write repaired output");
+      expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
       expect(tracker.sessionUpdates.findLast((update) => update.summary)?.summary).toBe(
         "ENG-302: fixing Closeout findings",

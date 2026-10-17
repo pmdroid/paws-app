@@ -4,7 +4,7 @@ import { RunnerEventSchema } from "../src/runner-protocol";
 import { probeRunnerPublicActivity } from "./local/runner-public-activity";
 import { probeRunnerLinearOutput } from "./local/runner-linear-output";
 
-test("remote tool output reaches the Linear conversation as complete readable blocks", async () => {
+test("remote tool output stays out of the Linear conversation", async () => {
   const observations = await probeRunnerLinearOutput(tempHome());
   expect(observations.passed).toBe(true);
 }, 15000);

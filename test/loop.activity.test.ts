@@ -40,8 +40,8 @@ describe("activity mapping", () => {
         type: "session_update",
         sessionId: "s",
         update: { sessionUpdate: "tool_call", toolCallId: "t1", title: "Edit export" },
-      })?.kind,
-    ).toBe("action");
+      }),
+    ).toBeNull();
     expect(
       activityFromAcpEvent({
         type: "session_update",
@@ -110,11 +110,7 @@ describe("streamed activity", () => {
         rawInput: { command: "chromium" },
       },
     });
-    expect(posted[0]).toEqual({ kind: "thought", body: "Setting up." });
-    expect(posted[1]?.action).toMatchObject({
-      action: "Run browser",
-      parameter: '{"command":"chromium"}',
-    });
+    expect(posted).toEqual([{ kind: "thought", body: "Setting up." }]);
     expect(reporter.resultBody()).toBe("");
     reporter.onEvent(chunk("The screenshot is ready."));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
@@ -198,29 +194,6 @@ describe("streamed activity", () => {
     });
     expect(JSON.stringify(posted)).not.toContain("private-input-value");
     expect(JSON.stringify(posted)).not.toContain("private-output-value");
-  });
-
-  test("an already completed tool starts as a durable result", () => {
-    expect(
-      activityFromAcpEvent({
-        type: "session_update",
-        sessionId: "s",
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId: "check",
-          title: "Run checks",
-          status: "completed",
-        },
-      }),
-    ).toEqual({
-      kind: "action",
-      body: "Run checks",
-      action: {
-        action: "Run checks",
-        parameter: "",
-        result: "completed",
-      },
-    });
   });
 
   test("tool calls and their output post nothing to Linear", () => {
