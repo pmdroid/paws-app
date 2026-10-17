@@ -399,6 +399,13 @@ test("stopping the parent session stops its adoption so the parent can be delega
         .query<{ stopped_at: number | null }, []>("SELECT stopped_at FROM project_approval")
         .get()?.stopped_at,
     ).not.toBeNull();
+    expect(
+      fixture.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) AS n FROM project_approval_issue WHERE released_at IS NULL",
+        )
+        .get()?.n,
+    ).toBe(0);
   } finally {
     await fixture.close();
   }
