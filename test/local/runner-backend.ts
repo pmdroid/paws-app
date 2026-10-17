@@ -707,11 +707,7 @@ export async function probeRunnerBackend(
           ).length,
           1,
         );
-        assert(
-          publicActivities.some((activity) =>
-            JSON.stringify(activity.action ?? {}).includes("Screenshot saved"),
-          ),
-        );
+        assert(!JSON.stringify(publicActivities).includes("Screenshot saved"));
         assert(!JSON.stringify(publicActivities).includes("private-typed-input"));
         assert(!JSON.stringify(publicActivities).includes("private-typed-output"));
         assert(!JSON.stringify(publicActivities).includes("-credential"));
