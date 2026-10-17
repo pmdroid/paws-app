@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -254,4 +255,68 @@ function initRepo(root: string): void {
   git("add", "README.md");
   git("commit", "-m", "init");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
+}
+
+test("a code task's first finish asks for open_pull_request and the second finish ends", async () => {
+  const root = temp();
+  const runs = await finishTwice(root, false);
+  expect(JSON.parse(runs[0] ?? "")).toEqual({
+    decision: "block",
+    reason:
+      "Cannot finish yet. Commit your work, then call open_pull_request with a title and a description. If this task needs no code change, say why and finish.",
+  });
+  expect(runs[1]).toBe("{}");
+});
+
+test("finish ends right away once the agent called open_pull_request", async () => {
+  const root = temp();
+  expect(await finishTwice(root, true)).toEqual(["{}", "{}"]);
+});
+
+async function finishTwice(root: string, openFirst: boolean): Promise<string[]> {
+  const worktree = join(root, "work");
+  mkdirSync(worktree, { recursive: true });
+  const runDirectory = join(root, "run");
+  const socketPath = join(runDirectory, "ask-team.sock");
+  const controller = new AbortController();
+  const bridge = await startHostToolBridge({
+    socketPath,
+    context: { itemId: "ENG-1", runId: "pr", role: "implementer", worktreePath: worktree },
+    pullRequest: { async update() {} },
+    signal: controller.signal,
+  });
+  try {
+    if (openFirst)
+      await callTool(socketPath, "open_pull_request", { title: "Change", body: "Why." });
+    const installed = await installCloseoutStopHook({
+      agent: "claude",
+      runDirectory,
+      socketPath,
+      sourceEnv: {},
+    });
+    const first = await runScript(installed?.scriptPath ?? "");
+    const second = await runScript(installed?.scriptPath ?? "");
+    return [first.stdout.trim(), second.stdout.trim()];
+  } finally {
+    await bridge.close();
+  }
+}
+
+function callTool(
+  socketPath: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath, () =>
+      socket.write(`${JSON.stringify({ id: 1, tool, arguments: args })}\n`),
+    );
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      data += chunk;
+    });
+    socket.on("error", reject);
+    socket.on("end", () => resolve(data));
+  });
 }
