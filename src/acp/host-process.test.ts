@@ -85,6 +85,28 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
+test.skipIf(process.platform === "win32")(
+  "shutdown lets descendants finish their own SIGTERM handling after the command exits",
+  async () => {
+    const root = await tempDir();
+    const pidFile = join(root, "descendant.pid");
+    const saved = join(root, "saved");
+    const script = `const fs = require('fs'); process.on('SIGTERM', () => setTimeout(() => { fs.writeFileSync(${JSON.stringify(saved)}, 'ok'); process.exit(0); }, 300)); fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
+    const child = spawnAgent(
+      process.execPath,
+      [
+        "-e",
+        `process.on('SIGTERM', () => process.exit(0)); require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(script)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
+      ],
+      { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root },
+    );
+    for (let attempt = 0; attempt < 200 && !fs.existsSync(pidFile); attempt += 1)
+      await Bun.sleep(10);
+    expect(await stopChild(child, 2000)).toBe(true);
+    expect(fs.readFileSync(saved, "utf8")).toBe("ok");
+  },
+);
+
 async function processFamily(): Promise<{
   child: OwnedProcess;
   descendant: number;
