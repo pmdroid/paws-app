@@ -92,9 +92,15 @@ export function findAcceptedIntake(
 }
 
 export function stopAdoptedParent(db: Database, sessionId: string, now: number): void {
+  const generation = `parent:${sessionId}`;
+  db.run(
+    `UPDATE project_approval_issue SET released_at = ? WHERE released_at IS NULL AND approval_id IN
+       (SELECT id FROM project_approval WHERE source = 'parent' AND generation = ? AND stopped_at IS NULL)`,
+    [now, generation],
+  );
   db.run(
     "UPDATE project_approval SET stopped_at = ? WHERE source = 'parent' AND generation = ? AND stopped_at IS NULL",
-    [now, `parent:${sessionId}`],
+    [now, generation],
   );
 }
 
