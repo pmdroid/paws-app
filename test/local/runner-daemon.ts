@@ -449,11 +449,17 @@ export async function probeRunnerDaemon(
       ...config,
       allowedRepositories: ["local/fixture"],
       concurrency: 4,
+      sampleHost: () => ({ cpuPercent: 12.5, osId: "debian", runnerVersion: "1.4.0" }),
     });
     try {
       assert.equal(configured.capacity(), 4);
       await configured.heartbeat();
-      assert.deepEqual(heartbeatBodies.at(-1), { capacity: 4 });
+      assert.deepEqual(heartbeatBodies.at(-1), {
+        cpuPercent: 12.5,
+        osId: "debian",
+        runnerVersion: "1.4.0",
+        capacity: 4,
+      });
     } finally {
       configured.close();
     }

@@ -19,6 +19,7 @@ import {
   type RunnerCommandRejection,
   type RunnerHealthResult,
   type RunnerHelperResult,
+  type RunnerHostStatus,
   type RunnerResult,
 } from "../runner-protocol";
 import {
@@ -71,6 +72,8 @@ export type RunnerDaemonOptions = {
   allowedRepositories: readonly string[];
   concurrency?: number;
   now?: () => number;
+  /** Host metrics sent with every heartbeat. */
+  sampleHost?: () => RunnerHostStatus;
 };
 
 export function openRunnerDaemon(options: RunnerDaemonOptions) {
@@ -364,11 +367,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     },
     async heartbeat() {
       return RunnerHeartbeatSchema.parse(
-        await authenticated(
-          "/v1/heartbeat",
-          "POST",
-          options.concurrency === undefined ? {} : { capacity: concurrency },
-        ),
+        await authenticated("/v1/heartbeat", "POST", {
+          ...options.sampleHost?.(),
+          ...(options.concurrency === undefined ? {} : { capacity: concurrency }),
+        }),
       );
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {
