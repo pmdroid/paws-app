@@ -50,8 +50,10 @@ export function createHostSampler(options: {
     if (loads?.length === 3 && loads.every((value) => Number.isFinite(value) && value >= 0))
       [result.load1, result.load5, result.load15] = loads;
     if (disk) {
-      result.diskTotalBytes = disk.blocks * disk.bsize;
-      result.diskFreeBytes = disk.bavail * disk.bsize;
+      // Block counts are in fragment units; bsize is only the preferred I/O size.
+      const unit = (disk as { frsize?: number }).frsize || disk.bsize;
+      result.diskTotalBytes = disk.blocks * unit;
+      result.diskFreeBytes = disk.bavail * unit;
     }
     if (release !== null) {
       const fields = osReleaseFields(release);

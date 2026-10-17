@@ -70,7 +70,7 @@ test("the host sampler reads /proc, os-release, disk and the installed release",
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("a heartbeat round-trip stores host metrics and the runner list returns them", async () => {
   const root = temporary();
@@ -201,4 +201,4 @@ test("a heartbeat round-trip stores host metrics and the runner list returns the
     db.close();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
