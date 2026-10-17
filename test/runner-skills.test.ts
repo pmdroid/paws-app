@@ -108,7 +108,8 @@ test("paired runner consumes snapshotted external skills without committing the 
       runnerUid: process.getuid!(),
       agentGid: process.getgid!(),
     };
-    mkdirSync(spool.root, { mode: 0o750 });
+    mkdirSync(spool.root);
+    chmodSync(spool.root, 0o750);
     publishRunnerJob(spool, job, { repositoryBundle, inputFiles: [...attachments, bundle] });
     const trace = join(root, "trace.json");
     const adapter = join(root, "adapter.ts");
