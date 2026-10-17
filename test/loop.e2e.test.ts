@@ -1856,7 +1856,23 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
     },
   });
   host.account = { id: 7, login: "owner" };
-  const result = await runRebaseConflict("clean", host);
+  const identity = {
+    GIT_AUTHOR_NAME: "Paws Test",
+    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
+    GIT_COMMITTER_NAME: "Paws Test",
+    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
+  let result: Awaited<ReturnType<typeof runRebaseConflict>>;
+  try {
+    result = await runRebaseConflict("clean", host);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
   expect(checks).toBeGreaterThan(0);
