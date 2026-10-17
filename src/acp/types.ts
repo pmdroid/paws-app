@@ -6,7 +6,7 @@ import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
 import type { AgentRole } from "./adapters";
 import type { AuthCheckResult } from "./auth";
-import type { AskTeamHook, UpdatePlanHook } from "./ask-team";
+import type { AskTeamHook, PullRequestHook, UpdatePlanHook } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
 
 export const DEFAULT_RUN_TIMEOUT_MS = DEFAULT_MAX_AWAKE_MS;
@@ -108,6 +108,7 @@ export interface RunAgentOptions {
   onEvent?: AcpEventListener;
   askTeam?: AskTeamHook;
   updatePlan?: UpdatePlanHook;
+  pullRequest?: PullRequestHook;
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */

@@ -93,6 +93,26 @@ const ARTIFACT_TOOL = {
   },
 };
 
+const PULL_REQUEST_TOOL = {
+  name: "open_pull_request",
+  description:
+    "Set the title and description of this task's pull request. Paws opens or updates the pull request with them after Closeout accepts the work. Call again to replace them.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 256, description: "One-line title." },
+      body: {
+        type: "string",
+        minLength: 1,
+        maxLength: 12000,
+        description: "Markdown description: what changed, why, and how you verified it.",
+      },
+    },
+    required: ["title", "body"],
+    additionalProperties: false,
+  },
+};
+
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
@@ -199,9 +219,14 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
       return;
     case "tools/list":
       respond(message.id, {
-        tools: [TOOL, PLAN_TOOL, ARTIFACT_TOOL, GET_CLOSEOUT_TOOL, RUN_CLOSEOUT_TOOL].filter(
-          (tool) => enabledTools.has(tool.name),
-        ),
+        tools: [
+          TOOL,
+          PLAN_TOOL,
+          ARTIFACT_TOOL,
+          PULL_REQUEST_TOOL,
+          GET_CLOSEOUT_TOOL,
+          RUN_CLOSEOUT_TOOL,
+        ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;
     case "prompts/list":

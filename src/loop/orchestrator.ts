@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { AskTeamHook, AgentIdentity, UpdatePlanHook } from "../acp";
+import type { AskTeamHook, AgentIdentity, PullRequestHook, UpdatePlanHook } from "../acp";
 import {
   executeItem,
   validateCandidateAttribution,
@@ -97,6 +97,8 @@ import {
   isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
+  getPullRequestDraft,
+  savePullRequestDraft,
   immediate,
   insertRun,
   listInFlightItems,
@@ -1383,6 +1385,7 @@ export class Orchestrator {
         promptRunner,
         askTeam,
         updatePlan: this.planHook(item, sessionProgress),
+        pullRequest: this.pullRequestHook(item),
         publishArtifact: this.artifactPublisher(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
@@ -1674,6 +1677,7 @@ export class Orchestrator {
       ...deps,
       onEvent: activity.onEvent,
       updatePlan: this.planHook(item, sessionProgress),
+      pullRequest: this.pullRequestHook(item),
     });
     const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
@@ -1972,6 +1976,7 @@ export class Orchestrator {
       return;
     }
     this.sessionProgress(item)?.phase("publishing");
+    const draft = getPullRequestDraft(this.db, item.id);
     const published = await publishAccepted({
       accepted: true,
       evidence: summary + (policy ? `\n\n${policyPullRequestCredit(policy)}` : ""),
@@ -1980,7 +1985,8 @@ export class Orchestrator {
       branchKey: itemPathId(item),
       owner: repository.owner,
       repo: repository.repo,
-      title: item.title,
+      title: draft?.title ?? item.title,
+      ...(draft ? { description: draft.body } : {}),
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
@@ -2977,6 +2983,15 @@ export class Orchestrator {
           throw new Error("Plan updates are closed for this run");
         progress.plan(steps);
         await this.flush();
+      },
+    };
+  }
+
+  private pullRequestHook(item: WorkItemRecord): PullRequestHook {
+    return {
+      update: async (description) => {
+        if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
+        savePullRequestDraft(this.db, item.id, description, this.now());
       },
     };
   }
