@@ -146,19 +146,12 @@ describe("streamed activity", () => {
       sessionId: "s",
       update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Run checks" },
     });
-    expect(posted).toEqual([
-      { kind: "thought", body: "I will check." },
-      {
-        kind: "action",
-        body: "Run checks",
-        action: { action: "Run checks", parameter: "" },
-      },
-    ]);
+    expect(posted).toEqual([{ kind: "thought", body: "I will check." }]);
     reporter.onEvent(chunk("Verified"));
     reporter.onEvent(chunk(" locally."));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
     reporter.flush();
-    expect(posted.slice(2)).toEqual([{ kind: "thought", body: "Verified locally." }]);
+    expect(posted.slice(1)).toEqual([{ kind: "thought", body: "Verified locally." }]);
     expect(reporter.resultBody()).toBe("Verified locally.");
   });
 
@@ -205,8 +198,6 @@ describe("streamed activity", () => {
     });
     expect(JSON.stringify(posted)).not.toContain("private-input-value");
     expect(JSON.stringify(posted)).not.toContain("private-output-value");
-    expect(posted.at(-1)?.action?.result).toContain("[redacted]");
-    expect(posted[0]?.body).toContain("[redacted]");
   });
 
   test("an already completed tool starts as a durable result", () => {
@@ -232,7 +223,7 @@ describe("streamed activity", () => {
     });
   });
 
-  test("a known tool completion publishes a durable action with redacted tool output", () => {
+  test("tool calls and their output post nothing to Linear", () => {
     const posted: unknown[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent({
@@ -254,22 +245,7 @@ describe("streamed activity", () => {
         rawOutput: { secret: "private-tool-output" },
       },
     });
-    expect(posted).toEqual([
-      {
-        kind: "action",
-        body: "Run checks",
-        action: { action: "Run checks", parameter: "" },
-      },
-      {
-        kind: "thought",
-        body: 'Tool output: Run checks\n\n```text\n{"secret":"[redacted]"}\n```',
-      },
-      {
-        kind: "action",
-        body: "Run checks",
-        action: { action: "Run checks", parameter: "", result: '{"secret":"[redacted]"}' },
-      },
-    ]);
+    expect(posted).toEqual([]);
   });
 
   test("a title-free tool update does not publish its opaque identifier", () => {
