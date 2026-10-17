@@ -2032,6 +2032,7 @@ export class Orchestrator {
       owner: repository.owner,
       repo: repository.repo,
       prNumber: published.pull.number,
+      commitTitle: `${draft?.title ?? item.title} (#${published.pull.number})`,
       commitMessage: policy ? commitPolicyMessage(summary, policy) : undefined,
       commitEnv: policy ? commitIdentityEnv(appBotCommitIdentity(policy.bot)) : undefined,
       appId: github.appId,
