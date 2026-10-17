@@ -223,6 +223,7 @@ function claudeStopMeta(scriptPath: string, pythonPath: string): Record<string, 
       options: {
         settingSources: ["user", "project"],
         settings: {
+          attribution: { commit: "", pr: "" },
           hooks: {
             Stop: [
               {

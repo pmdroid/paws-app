@@ -1846,6 +1846,30 @@ test("Claude refuses finish through a session stop hook", async () => {
   expect(trace.codexHome).toBe(process.env.CODEX_HOME);
 });
 
+test("Claude adds no commit or pull request attribution of its own", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, { steps: [{ type: "end" }] });
+  await runAgent({
+    role: "implementer",
+    profile: { agent: "claude", model: null },
+    itemId: "ENG-1",
+    runId: "claude-attribution",
+    prompt: "implement",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+  });
+  const trace = await readResult(files.resultPath);
+  const meta = trace.sessionMeta as {
+    claudeCode: { options: { settings: { attribution: unknown } } };
+  };
+  expect(meta.claudeCode.options.settings.attribution).toEqual({ commit: "", pr: "" });
+});
+
 test("Codex refuses finish through a trusted stop hook in a session home", async () => {
   const layout = await layoutRepo();
   const source = join(layout.root, "codex-source");
