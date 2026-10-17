@@ -77,6 +77,93 @@ export function listRunners(db: Database, workspaceId: string): RunnerRecord[] {
     .all(workspaceId);
 }
 
+export type RunnerHostSample = {
+  cpuPercent?: number;
+  memoryTotalBytes?: number;
+  memoryAvailableBytes?: number;
+  load1?: number;
+  load5?: number;
+  load15?: number;
+  diskTotalBytes?: number;
+  diskFreeBytes?: number;
+  osId?: string;
+  osVersion?: string;
+  runnerVersion?: string;
+};
+export type RunnerHostStatus = { [K in keyof RunnerHostSample]-?: RunnerHostSample[K] | null } & {
+  reportedAt: number;
+};
+export type RunnerListing = RunnerRecord & {
+  lastSeenAt: number | null;
+  host: RunnerHostStatus | null;
+  idle: boolean;
+};
+
+const hostColumns = [
+  ["cpuPercent", "cpu_percent"],
+  ["memoryTotalBytes", "memory_total_bytes"],
+  ["memoryAvailableBytes", "memory_available_bytes"],
+  ["load1", "load1"],
+  ["load5", "load5"],
+  ["load15", "load15"],
+  ["diskTotalBytes", "disk_total_bytes"],
+  ["diskFreeBytes", "disk_free_bytes"],
+  ["osId", "os_id"],
+  ["osVersion", "os_version"],
+  ["runnerVersion", "runner_version"],
+] as const satisfies readonly (readonly [keyof RunnerHostSample, string])[];
+
+/** Keeps only the latest sample per runner. A field the runner left out is stored as null. */
+export function upsertRunnerHostStatus(
+  db: Database,
+  runnerId: string,
+  sample: RunnerHostSample,
+  now: number,
+) {
+  const names = hostColumns.map(([, column]) => column);
+  db.run(
+    `INSERT INTO runner_host_status (runner_id,${names.join(",")},reported_at)
+    VALUES (?,${names.map(() => "?").join(",")},?)
+    ON CONFLICT(runner_id) DO UPDATE SET ${[...names, "reported_at"].map((name) => `${name}=excluded.${name}`).join(",")}`,
+    [runnerId, ...hostColumns.map(([key]) => sample[key] ?? null), now],
+  );
+}
+
+/** Runners with their latest host sample and whether they have no open work or pending commands. */
+export function listRunnerStatus(db: Database, workspaceId: string, now: number): RunnerListing[] {
+  type Row = RunnerRecord & { lastSeenAt: number | null; idle: number; reportedAt: number | null };
+  const rows = db
+    .query<Row & Record<string, unknown>, [number, string]>(
+      `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
+      r.last_seen_at AS lastSeenAt,
+      ${hostColumns.map(([key, column]) => `h.${column} AS ${key}`).join(",")},h.reported_at AS reportedAt,
+      NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM runner_helper p WHERE p.runner_id=r.id AND p.ended_at IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
+        AND c.acknowledged_at IS NULL AND c.expires_at>?) AS idle
+    FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
+    WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
+    )
+    .all(now, workspaceId);
+  return rows.map((row) => ({
+    id: row.id,
+    workspaceId: row.workspaceId,
+    ownerUserId: row.ownerUserId,
+    name: row.name,
+    status: row.status,
+    fence: row.fence,
+    lastSeenAt: row.lastSeenAt,
+    idle: row.idle === 1,
+    host:
+      row.reportedAt === null
+        ? null
+        : ({
+            ...Object.fromEntries(hostColumns.map(([key]) => [key, row[key] ?? null])),
+            reportedAt: row.reportedAt,
+          } as RunnerHostStatus),
+  }));
+}
+
 export function getRunnerCertificate(
   db: Database,
   fingerprint: string,

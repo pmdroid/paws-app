@@ -126,7 +126,11 @@ export async function probeRunnerDaemon(
       }
       if (path === "/v1/commands") return deliver({ commands });
       if (path === "/v1/heartbeat") {
-        heartbeatBodies.push(await request.json());
+        const body = await request.json();
+        heartbeatBodies.push(body);
+        // Mimics a server whose strict heartbeat schema predates host metrics.
+        if ((body as { osId?: string }).osId === "legacy-server")
+          return Response.json({ error: "denied" }, { status: 403 });
         return deliver(heartbeatResponse);
       }
       if (path === "/v1/runs/run-one/grant") {
@@ -456,6 +460,36 @@ export async function probeRunnerDaemon(
       assert.deepEqual(heartbeatBodies.at(-1), { capacity: 4 });
     } finally {
       configured.close();
+    }
+    const host = { cpuPercent: 12.5, memoryTotalBytes: 1024, osId: "ubuntu", osVersion: "24.04" };
+    const reporting = openRunnerDaemon({
+      ...config,
+      allowedRepositories: ["local/fixture"],
+      hostStatus: async () => host,
+    });
+    try {
+      await reporting.heartbeat();
+      assert.deepEqual(heartbeatBodies.at(-1), host);
+    } finally {
+      reporting.close();
+    }
+    let samples = 0;
+    const legacy = openRunnerDaemon({
+      ...config,
+      allowedRepositories: ["local/fixture"],
+      hostStatus: async () => {
+        samples += 1;
+        return { osId: "legacy-server" };
+      },
+    });
+    try {
+      const sent = heartbeatBodies.length;
+      await legacy.heartbeat();
+      await legacy.heartbeat();
+      assert.deepEqual(heartbeatBodies.slice(sent), [{ osId: "legacy-server" }, {}, {}]);
+      assert.equal(samples, 1);
+    } finally {
+      legacy.close();
     }
     assert.throws(() => openRunnerDaemon({ ...config, allowedRepositories: [], concurrency: 0 }));
     assert.throws(() => openRunnerDaemon({ ...config, allowedRepositories: [], concurrency: 17 }));

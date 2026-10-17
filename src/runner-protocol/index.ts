@@ -58,3 +58,5 @@ export {
 } from "./login";
 
 export { RunnerActivitySchema } from "./activity";
+
+export { RunnerHostStatusSchema, releaseVersion, type RunnerHostStatus } from "./host";

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   approveRunnerPairing,
@@ -7,7 +8,7 @@ import {
   findRunnerPairing,
   getRunnerCertificate,
   immediate,
-  listRunners,
+  listRunnerStatus,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
@@ -16,6 +17,7 @@ import {
   type RunnerRecord,
 } from "../db";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
+import { releaseVersion } from "../runner-protocol";
 import {
   workspaceId,
   workspaceSecret,
@@ -28,10 +30,16 @@ export function createRunnerControl(options: {
   authority: RunnerAuthority;
   certificateRoot: string;
   disconnect(fingerprint: string): void;
+  /** Release this server runs; defaults to the release directory of the installed source. */
+  serverVersion?: string | null;
   now?: () => number;
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
+  const serverVersion =
+    options.serverVersion === undefined
+      ? releaseVersion(join(import.meta.dir, "../.."))
+      : options.serverVersion;
   function admin(principal: WorkspacePrincipal, at: number) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!member?.active || !["owner", "admin"].includes(member.role))
@@ -167,8 +175,9 @@ export function createRunnerControl(options: {
     list(principal: WorkspacePrincipal) {
       if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
         throw new Error("Workspace membership is required.");
-      return listRunners(db, principal.workspaceId);
+      return listRunnerStatus(db, principal.workspaceId, now());
     },
+    serverVersion,
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {
         const at = now();

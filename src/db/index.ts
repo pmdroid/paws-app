@@ -122,7 +122,12 @@ export {
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   updateRunnerStatus,
+  upsertRunnerHostStatus,
+  listRunnerStatus,
   type RunnerRecord,
+  type RunnerHostSample,
+  type RunnerHostStatus,
+  type RunnerListing,
   type RunnerPairing,
   type StoredRunnerCertificate,
 } from "./runners";

@@ -20,6 +20,7 @@ import {
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerResult,
+  type RunnerHostStatus,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -70,6 +71,8 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
   concurrency?: number;
+  /** Host metrics sent with each heartbeat. */
+  hostStatus?: () => Promise<RunnerHostStatus>;
   now?: () => number;
 };
 
@@ -93,6 +96,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let recovery = state?.phase === "paired" ? readRecovery(options.root, state.runnerId) : null;
   let closed = false;
+  let hostStatusRejected = false;
   if (
     state &&
     (state.controlPlaneUrl !== origins.controlPlaneUrl ||
@@ -363,13 +367,26 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return status();
     },
     async heartbeat() {
-      return RunnerHeartbeatSchema.parse(
-        await authenticated(
-          "/v1/heartbeat",
-          "POST",
-          options.concurrency === undefined ? {} : { capacity: concurrency },
-        ),
-      );
+      const body = options.concurrency === undefined ? {} : { capacity: concurrency };
+      const host =
+        options.hostStatus && !hostStatusRejected
+          ? await options.hostStatus().catch(() => ({}))
+          : {};
+      if (Object.keys(host).length === 0)
+        return RunnerHeartbeatSchema.parse(await authenticated("/v1/heartbeat", "POST", body));
+      try {
+        return RunnerHeartbeatSchema.parse(
+          await authenticated("/v1/heartbeat", "POST", { ...body, ...host }),
+        );
+      } catch (error) {
+        if (!(error instanceof RunnerRequestError) || error.status !== 403) throw error;
+        // A server older than this runner rejects unknown heartbeat fields.
+        const response = RunnerHeartbeatSchema.parse(
+          await authenticated("/v1/heartbeat", "POST", body),
+        );
+        hostStatusRejected = true;
+        return response;
+      }
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {
       z.uuid().parse(id);

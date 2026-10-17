@@ -1723,4 +1723,24 @@ CREATE TABLE repository_catalog (
 ) STRICT;
 `,
   },
+  {
+    id: "067_runner_host_status",
+    sql: `
+CREATE TABLE runner_host_status (
+  runner_id TEXT PRIMARY KEY REFERENCES runner(id),
+  cpu_percent REAL CHECK(cpu_percent BETWEEN 0 AND 100),
+  memory_total_bytes INTEGER CHECK(memory_total_bytes >= 0),
+  memory_available_bytes INTEGER CHECK(memory_available_bytes >= 0),
+  load1 REAL CHECK(load1 >= 0),
+  load5 REAL CHECK(load5 >= 0),
+  load15 REAL CHECK(load15 >= 0),
+  disk_total_bytes INTEGER CHECK(disk_total_bytes >= 0),
+  disk_free_bytes INTEGER CHECK(disk_free_bytes >= 0),
+  os_id TEXT CHECK(length(os_id) <= 64),
+  os_version TEXT CHECK(length(os_version) <= 64),
+  runner_version TEXT CHECK(length(runner_version) <= 32),
+  reported_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
