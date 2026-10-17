@@ -291,7 +291,7 @@ export function createRunnerPlacement(options: {
             memberId: accountUser,
             ownerId: accountUser,
             linearUserId: accountActor!,
-            seat: "personal",
+            seat: "organization",
             ready: 1,
             authExpired: 0,
             cooldownUntil: account.cooldownUntil,
@@ -395,7 +395,7 @@ export function createRunnerPlacement(options: {
         }
         db.run(
           `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,seat,role,purpose,started_at)
-          VALUES(?,?,?,?,?,?,?,CASE WHEN ? THEN 'personal' ELSE COALESCE((SELECT seat FROM runner_agent_policy WHERE runner_id=? AND agent=?),'unknown') END,?,?,?)`,
+          VALUES(?,?,?,?,?,?,?,CASE WHEN ? THEN 'organization' ELSE COALESCE((SELECT seat FROM runner_agent_policy WHERE runner_id=? AND agent=?),'unknown') END,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
