@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import type { Database } from "bun:sqlite";
 import {
   approveRunnerPairing,
@@ -7,7 +8,7 @@ import {
   findRunnerPairing,
   getRunnerCertificate,
   immediate,
-  listRunners,
+  listRunnerOverview,
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
@@ -16,6 +17,7 @@ import {
   type RunnerRecord,
 } from "../db";
 import { validateRunnerRequest, type RunnerAuthority, type RunnerPeer } from "../runner-identity";
+import { releaseVersionFromPath } from "../runner-protocol";
 import {
   workspaceId,
   workspaceSecret,
@@ -29,9 +31,13 @@ export function createRunnerControl(options: {
   certificateRoot: string;
   disconnect(fingerprint: string): void;
   now?: () => number;
+  /** Installed Paws release, or null for a source checkout. Read from the release path by default. */
+  serverVersion?: string | null;
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
+  const serverVersion =
+    options.serverVersion === undefined ? installedVersion() : options.serverVersion;
   function admin(principal: WorkspacePrincipal, at: number) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!member?.active || !["owner", "admin"].includes(member.role))
@@ -167,7 +173,10 @@ export function createRunnerControl(options: {
     list(principal: WorkspacePrincipal) {
       if (!workspaceMember(db, principal.workspaceId, principal.userId)?.active)
         throw new Error("Workspace membership is required.");
-      return listRunners(db, principal.workspaceId);
+      return listRunnerOverview(db, principal.workspaceId, now());
+    },
+    serverVersion() {
+      return serverVersion;
     },
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {
@@ -207,3 +216,11 @@ export function createRunnerControl(options: {
 }
 
 export type RunnerControl = ReturnType<typeof createRunnerControl>;
+
+function installedVersion() {
+  try {
+    return releaseVersionFromPath(realpathSync(import.meta.dir));
+  } catch {
+    return null;
+  }
+}
