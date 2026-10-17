@@ -3240,6 +3240,27 @@ export class Orchestrator {
         { followupBodies: turns.map((turn) => turn.body), conversation },
       );
       if (!result.ok) throw new Error("Follow-up task intake failed");
+      if (result.items.length === 0) {
+        const keys = turns.map((turn) => turn.eventKey);
+        immediate(this.db, () => {
+          discardLinearTurns(this.db, sessionId, keys);
+          enqueueOutboxOnce(this.db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: sessionId,
+            idempotencyKey: `parent-turn:${sessionId}:${keys[0]}`,
+            payload: {
+              sessionId,
+              kind: "response",
+              body: "Each sub-issue runs in its own session. Reply in a sub-issue's session to change its work, or stop this session to stop them all.",
+              id: crypto.randomUUID(),
+            },
+            now: this.now(),
+          });
+        });
+        await this.flush();
+        return;
+      }
       bindLinearSessionTask(this.db, sessionId, result.delegation.id, {
         actorId: turns[0]!.actorId,
       });
