@@ -185,6 +185,38 @@ describe("pull requests and serial merge", () => {
     expect((bodies[0] as { head: string }).head).toBe("paws/ENG-123");
   });
 
+  test("puts the agent's description before the evidence and updates an existing pull request", async () => {
+    const requests: { method: string; body: unknown }[] = [];
+    const client: GitHubClient = {
+      async request(req) {
+        if (req.path.endsWith("/access_tokens")) return { status: 201, body: tokenBody("ghs_1") };
+        requests.push({ method: req.method, body: req.body });
+        if (req.method === "POST") return { status: 422, body: {} };
+        if (req.method === "GET") return { status: 200, body: [{ number: 9 }] };
+        return { status: 200, body: { number: 9, body: (req.body as { body: string }).body } };
+      },
+    };
+    await openPullRequest({
+      issue: "ENG-123",
+      owner: "pmdroid",
+      repo: "paws-demo",
+      title: "Export rows as CSV",
+      description: "Adds exportRows.\n\nbun test: 3 pass",
+      evidence: "Closeout: accepted",
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client,
+    });
+    expect(requests.at(-1)).toEqual({
+      method: "PATCH",
+      body: {
+        title: "Export rows as CSV",
+        body: "Fixes ENG-123\n\nAdds exportRows.\n\nbun test: 3 pass\n\nCloseout: accepted\n",
+      },
+    });
+  });
+
   test("does not open a pull request when Closeout did not accept", async () => {
     let calls = 0;
     const client: GitHubClient = {

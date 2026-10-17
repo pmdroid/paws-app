@@ -1723,4 +1723,15 @@ CREATE TABLE repository_catalog (
 ) STRICT;
 `,
   },
+  {
+    id: "067_pull_request_draft",
+    sql: `
+CREATE TABLE pull_request_draft (
+  item_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

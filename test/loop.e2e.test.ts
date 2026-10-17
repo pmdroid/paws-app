@@ -1969,6 +1969,88 @@ test("the active task merges while a later task in its session also waits to mer
   }
 }, 120_000);
 
+test("the agent's open_pull_request title and description open the pull request", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "pr-tool",
+      identifier: "ENG-90",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `pr-tool-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement"
+          ? path.join(layout.root, `pr-tool-result-${sequence}.json`)
+          : "";
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [
+              writeOk(input.worktree),
+              {
+                type: "open_pull_request",
+                title: "Add ok.txt for the seeded check",
+                body: "Writes ok.txt.\n\nVerified with test -f ok.txt.",
+              },
+              { type: "end" },
+            ]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "pr-tool"));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-90") ?? "")) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
+    expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
+    expect(github.opened[0]?.body).toStartWith(
+      "Fixes ENG-90\n\nWrites ok.txt.\n\nVerified with test -f ok.txt.\n\nCloseout: accepted",
+    );
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("after 3 rebase conflict returns the item fails", async () => {
   const result = await runRebaseConflict("repeat");
   expect(result.state, result.detail).toBe("failed");
