@@ -444,7 +444,7 @@ test("a message on an adopted parent session is answered instead of failing inta
           "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE json_extract(payload,'$.kind')='response'",
         )
         .all()
-        .some((row) => row.body.includes("own sessions")),
+        .some((row) => row.body.startsWith("Each sub-issue runs in its own session.")),
     ).toBe(true);
   } finally {
     await fixture.close();
