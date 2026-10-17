@@ -1987,6 +1987,8 @@ test("the agent's open_pull_request title and description open the pull request"
   const jobs = new JobLoop(db, systemClock);
   const outbox = new OutboxDispatcher(db, systemClock);
   const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  const titles: string[] = [];
   let sequence = 0;
   const orchestrator = attachOrchestrator({
     db,
@@ -2000,7 +2002,13 @@ test("the agent's open_pull_request title and description open the pull request"
       appId: "1",
       installationId: "2",
       privateKeyPem: PRIVATE_KEY,
-      client: githubClient(layout.bare, github),
+      client: {
+        async request(req) {
+          if (req.method === "PUT" && req.path.endsWith("/merge"))
+            titles.push((req.body as { commit_title?: string }).commit_title ?? "");
+          return client.request(req);
+        },
+      },
     },
     launch(input) {
       sequence += 1;
@@ -2043,6 +2051,7 @@ test("the agent's open_pull_request title and description open the pull request"
     }
     expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
     expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
+    expect(titles).toEqual([`Add ok.txt for the seeded check (#${github.merged[0]?.number})`]);
     expect(github.opened[0]?.body).toStartWith(
       "Fixes ENG-90\n\nWrites ok.txt.\n\nVerified with test -f ok.txt.\n\nCloseout: accepted",
     );
