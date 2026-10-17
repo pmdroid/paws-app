@@ -122,33 +122,20 @@ export async function probeRunnerLinearOutput(root: string) {
       const content = activity["content"] as { type: string; body?: string };
       return content.type === "thought" ? [content.body!] : [];
     });
-    const blocks = visible.filter((body) => body.startsWith("Tool output: Run checks\n"));
-    const reconstructed = blocks
-      .map((body) => {
-        const match = /^Tool output: Run checks\n\n(`{3,})text\n([\s\S]*)\n\1$/.exec(body);
-        assert(match, body);
-        assert(!match[2]!.includes(match[1]!));
-        return match[2]!;
-      })
-      .join("");
-    assert.equal(reconstructed, output);
-    assert(visible.some((body) => body.includes("File unavailable. token=[redacted]")));
+    assert(visible.every((body) => !body.startsWith("Tool output:")));
+    assert(!JSON.stringify(received).includes(output.slice(0, 200)));
+    assert(!JSON.stringify(received).includes("File unavailable."));
+    assert(
+      received.every((activity) => (activity["content"] as { type: string }).type !== "action"),
+    );
     assert(published.every((activity) => !activity.ephemeral && activity.body.length <= 3500));
     assert(!JSON.stringify(received).includes("private-value"));
     assert(!JSON.stringify(received).includes("hidden-reasoning"));
-    const actions = received.flatMap((activity) => {
-      const content = activity["content"] as { type: string; result?: string };
-      return content.type === "action" && content.result ? [content.result] : [];
-    });
-    assert.equal(actions.slice(0, -1).join(""), output);
     const observations = {
       passed: true,
       journalReopened: true,
       realHttpActivities: received.length,
-      visibleOutputBytes: reconstructed.length,
-      outputBlocks: blocks.length,
-      failedOutputVisible: true,
-      structuredResultsRetained: true,
+      toolOutputHidden: true,
       secretsAndReasoningHidden: true,
     };
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2) + "\n");
