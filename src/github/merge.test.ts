@@ -60,7 +60,13 @@ describe("pull requests and serial merge", () => {
         });
         expect(result.merged).toBe(false);
         expect(merges).toBe(0);
-        expect(result.outcome).toBe(scenario === "moved PR head" ? "sha_moved" : "blocked");
+        expect(result.outcome).toBe(
+          scenario === "moved PR head"
+            ? "sha_moved"
+            : scenario === "failed CI"
+              ? "ci_failed"
+              : "blocked",
+        );
       } finally {
         await repo.cleanup();
       }

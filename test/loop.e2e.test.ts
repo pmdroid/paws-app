@@ -2051,6 +2051,104 @@ test("the agent's open_pull_request title and description open the pull request"
   }
 }, 120_000);
 
+test("a CI failure sends the task back to its agent and the fixed head merges", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "ci-fail",
+      identifier: "ENG-91",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  const failedHeads = new Set<string>();
+  const prompts: string[] = [];
+  let sequence = 0;
+  let implements_ = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          if (req.path !== "/graphql") return client.request(req);
+          const head = (req.body as { variables: { head: string } }).variables.head;
+          if (failedHeads.size > 0 && !failedHeads.has(head)) return client.request(req);
+          failedHeads.add(head);
+          const body = fakeMergeReadiness(head);
+          Object.assign(body.data.repository.object.statusCheckRollup, {
+            state: "FAILURE",
+            contexts: {
+              checkRunCount: 1,
+              statusContextCount: 0,
+              nodes: [{ name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" }],
+            },
+          });
+          return { status: 200, body };
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `ci-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement" ? path.join(layout.root, `ci-result-${sequence}.json`) : "";
+      if (input.purpose === "implement") {
+        implements_ += 1;
+        prompts.push(input.prompt);
+      }
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [writeOk(input.worktree, `ok-${implements_}\n`), { type: "end" }]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "ci-fail"));
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-91") ?? "")) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-91"), debug(layout, db)).toBe("merged");
+    expect(implements_).toBe(2);
+    expect(prompts[1]).toContain("- test (https://ci.example/1)");
+    expect(tracker.progress.map((update) => update.body)).toContain(
+      "CI failed (test). Sent it back to the agent to fix.",
+    );
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("after 3 rebase conflict returns the item fails", async () => {
   const result = await runRebaseConflict("repeat");
   expect(result.state, result.detail).toBe("failed");
