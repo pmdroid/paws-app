@@ -12,7 +12,6 @@ export class OwnedProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   private readonly anchor: ChildProcess;
   private readonly closed: Promise<void>;
-  private readonly commandExited: Promise<void>;
   private anchorClosed = false;
   private anchorKilled = false;
   private teardownConfirmed = false;
@@ -57,12 +56,13 @@ export class OwnedProcess extends EventEmitter {
     }
     this.anchor.on("message", (value) => {
       const message = value as {
-        type: "exit" | "error" | "teardown";
+        type: "exit" | "error" | "teardown" | "drained";
         code?: number | null;
         signal?: NodeJS.Signals | null;
         message?: string;
       };
       if (message.type === "teardown") this.teardownConfirmed = true;
+      else if (message.type === "drained") this.emit("drained");
       else if (message.type === "error") this.emit("error", new Error(message.message));
       else {
         this.exitCode = message.code ?? null;
@@ -81,7 +81,6 @@ export class OwnedProcess extends EventEmitter {
         this.closeCommand();
       }
     });
-    this.commandExited = new Promise((resolve) => this.once("exit", resolve));
     this.closed = new Promise((resolve) => {
       this.anchor.once("close", () => {
         this.anchorClosed = true;
@@ -125,10 +124,11 @@ export class OwnedProcess extends EventEmitter {
 
   private async teardown(graceMs: number): Promise<boolean> {
     if (!this.anchorClosed) {
+      const drained = new Promise((resolve) => this.once("drained", resolve));
       this.killGroup("SIGTERM");
       await Promise.race([
         this.closed,
-        this.commandExited,
+        drained,
         new Promise((resolve) => setTimeout(resolve, graceMs)),
       ]);
       this.killGroup("SIGKILL");
