@@ -64,6 +64,8 @@ export async function openRunnerCoordinator(options: {
   repositoryAccess?: RunnerRepositoryAccessOptions;
   transcriptObjects?: RunnerTranscriptObjects;
   discoverModels?: boolean;
+  /** Queue login_check commands in the background so agent sign-in status stays current. */
+  checkSignIn?: boolean;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -76,7 +78,6 @@ export async function openRunnerCoordinator(options: {
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
     now: options.now,
   });
-  const http = createRunnerHttp(control);
   const work = createRunnerWork({
     db: options.db,
     keyId: signing.signingKeys[0].keyId,
@@ -92,8 +93,22 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const results = createRunnerResults({ db: options.db, work, now: options.now });
-  const login = createRunnerLogin({ db: options.db, work, now: options.now });
   const health = createRunnerHealth({ db: options.db, work, now: options.now });
+  const login = createRunnerLogin({
+    db: options.db,
+    work,
+    now: options.now,
+    onSignedIn: ({ runnerId, memberId, agent }) => {
+      try {
+        health.afterSignIn(runnerId, memberId, agent);
+      } catch (error) {
+        options.onError(error);
+      }
+    },
+  });
+  const http = createRunnerHttp(control, {
+    agents: (principal, runnerId) => health.agents(principal, runnerId),
+  });
   const models = createRunnerModels({ db: options.db, work, now: options.now });
   const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
   const repository = options.repositoryAccess
@@ -153,6 +168,16 @@ export async function openRunnerCoordinator(options: {
   const modelTimer = options.discoverModels ? setInterval(refreshModels, 15_000) : undefined;
   modelTimer?.unref();
   if (options.discoverModels) refreshModels();
+  const checkSignIn = () => {
+    try {
+      health.refresh();
+    } catch (error) {
+      options.onError(error);
+    }
+  };
+  const signInTimer = options.checkSignIn ? setInterval(checkSignIn, 15_000) : undefined;
+  signInTimer?.unref();
+  if (options.checkSignIn) checkSignIn();
   return {
     port: listener.port,
     signingKeys: signing.signingKeys,
@@ -181,6 +206,7 @@ export async function openRunnerCoordinator(options: {
       login.stop();
       clearInterval(timer);
       clearInterval(modelTimer);
+      clearInterval(signInTimer);
       await listener?.stop();
     },
   };
