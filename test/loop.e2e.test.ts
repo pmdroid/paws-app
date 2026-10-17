@@ -1878,6 +1878,97 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
 
+test("the active task merges while a later task in its session also waits to merge", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "parent-pair",
+      identifier: "ENG-80",
+      title: "Two independent changes",
+      description: null,
+      subIssues: [
+        { linearIssueId: "pair-a", identifier: "ENG-81", title: "Write a.txt" },
+        { linearIssueId: "pair-b", identifier: "ENG-82", title: "Write b.txt" },
+      ],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          const response = await client.request(req);
+          if (req.path !== "/graphql" || stateOf(db, "ENG-82") === "merge_queue") return response;
+          const body = fakeMergeReadiness(
+            (req.body as { variables: { head: string } }).variables.head,
+          );
+          body.data.repository.object.statusCheckRollup.state = "PENDING";
+          return { status: 200, body };
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `pair-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement" ? path.join(layout.root, `pair-result-${sequence}.json`) : "";
+      const file = sourceIdentifier(input.itemId) === "ENG-81" ? "a.txt" : "b.txt";
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [
+              { type: "fs_write", path: path.join(input.worktree, file), content: "done\n" },
+              { type: "end" },
+            ]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await commitOnMain(layout.bare, "ok\n");
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent-pair"));
+    const deadline = Date.now() + 80_000;
+    while (Date.now() < deadline && stateOf(db, "ENG-81") !== "merge_queue") {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    db.run("UPDATE work_item SET state = 'merge_queue' WHERE linear_identifier = 'ENG-82'");
+    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-81")!)) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-81"), debug(layout, db)).toBe("merged");
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("after 3 rebase conflict returns the item fails", async () => {
   const result = await runRebaseConflict("repeat");
   expect(result.state, result.detail).toBe("failed");
