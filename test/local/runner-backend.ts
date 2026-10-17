@@ -1355,8 +1355,12 @@ export async function probeRunnerBackend(
     const placements: string[] = [];
     const observedFailures: string[] = [];
     const failoverItem = item();
+    db.run(
+      "INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,1)",
+      [workspace.id],
+    );
     for (const [index, id] of hostIds.entries()) {
-      db.run("INSERT INTO runner_policy(runner_id,host_owner) VALUES(?,'member')", [id]);
+      db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
       db.run(
         "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready,virtual_finish) VALUES(?,'codex','personal',1,?)",
         [id, index * 10],

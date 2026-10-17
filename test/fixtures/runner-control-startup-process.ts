@@ -453,7 +453,6 @@ try {
               browserPort,
               "/api/runners/policy",
               {
-                fallbackAllowed: false,
                 personalOrganizationHost: false,
               },
               headers,

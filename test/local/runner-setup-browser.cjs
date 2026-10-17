@@ -28,7 +28,7 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
           const values = {
             "/api/runners": { runners: [] },
             "/api/auth/session": { userId: "owner", role: "owner", authenticatedAt: Date.now() },
-            "/api/runners/policy": { fallbackAllowed: false, personalOrganizationHost: false },
+            "/api/runners/policy": { personalOrganizationHost: false },
             "/api/runners/usage": { usage: [] },
           };
           if (Object.hasOwn(values, endpoint)) return route.fulfill({ json: values[endpoint] });
