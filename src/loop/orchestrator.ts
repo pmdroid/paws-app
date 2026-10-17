@@ -277,7 +277,7 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
-const MAX_REBASE_CONFLICT_RETURNS = 3;
+const MAX_AGENT_RETURNS = 3;
 const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_CONFLICT_THOUGHT =
@@ -2101,7 +2101,33 @@ export class Orchestrator {
         await this.askCloseoutHelp(item, failure.result, failure.summary);
         return;
       }
-      if (merged.outcome === "conflict" && this.returnForRebaseConflict(item)) return;
+      if (
+        merged.outcome === "conflict" &&
+        this.returnToAgent(
+          item,
+          "rebase-conflict",
+          REBASE_CONFLICT_INSTRUCTION,
+          REBASE_CONFLICT_THOUGHT,
+        )
+      )
+        return;
+      if (merged.outcome === "ci_failed") {
+        const checks = merged.failedChecks ?? [];
+        const names = checks.map((check) => check.name).join(", ") || "unknown checks";
+        if (
+          this.returnToAgent(
+            item,
+            "ci-failed",
+            [
+              "CI failed on the pull request. Failed checks:",
+              ...checks.map((check) => `- ${check.name}${check.url ? ` (${check.url})` : ""}`),
+              "Run the same checks in this repository to reproduce the failures, fix the code so the change still does what the issue asks, and run the checks again.",
+            ].join("\n"),
+            `CI failed (${names}). Sent it back to the agent to fix.`,
+          )
+        )
+          return;
+      }
       this.post(
         item,
         "thought",
@@ -2138,43 +2164,39 @@ export class Orchestrator {
     await this.flush();
   }
 
-  private returnForRebaseConflict(item: WorkItemRecord): boolean {
+  private returnToAgent(
+    item: WorkItemRecord,
+    reason: "rebase-conflict" | "ci-failed",
+    handoff: string,
+    thought: string,
+  ): boolean {
     return immediate(this.db, () => {
       const current = getWorkItem(this.db, item.id);
       if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
-      const returns = this.rebaseConflictReturns(current.id);
-      if (returns >= MAX_REBASE_CONFLICT_RETURNS) return false;
+      const returns = this.agentReturns(current.id, reason);
+      if (returns >= MAX_AGENT_RETURNS) return false;
       const running = applyWorkItemEvent(this.db, current.id, "ejected");
       if (current.checkpoint)
         saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
-        jobKey: `rebase-conflict:${current.id}:${returns}`,
-        payload: {
-          itemId: current.id,
-          handoff: REBASE_CONFLICT_INSTRUCTION,
-          reason: "rebase-conflict",
-        },
+        jobKey: `${reason}:${current.id}:${returns}`,
+        payload: { itemId: current.id, handoff, reason },
         now: this.now(),
       });
-      this.post(
-        running,
-        "thought",
-        REBASE_CONFLICT_THOUGHT,
-        `${current.id}:rebase-conflict:${returns}`,
-      );
+      this.post(running, "thought", thought, `${current.id}:${reason}:${returns}`);
       return true;
     });
   }
 
-  private rebaseConflictReturns(itemId: string): number {
+  private agentReturns(itemId: string, reason: string): number {
     const row = this.db
-      .query<{ n: number }, [string, string]>(
+      .query<{ n: number }, [string, string, string]>(
         `SELECT COUNT(*) AS n FROM job
          WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-           AND json_extract(payload, '$.reason') = 'rebase-conflict'`,
+           AND json_extract(payload, '$.reason') = ?`,
       )
-      .get(JOB_KIND.resume, itemId);
+      .get(JOB_KIND.resume, itemId, reason);
     return Number(row?.n ?? 0);
   }
 

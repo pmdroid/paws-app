@@ -13,6 +13,20 @@ const responseSchema = z.object({
             contexts: z.object({
               checkRunCount: z.number().int().nonnegative(),
               statusContextCount: z.number().int().nonnegative(),
+              nodes: z
+                .array(
+                  z
+                    .object({
+                      name: z.string().optional(),
+                      conclusion: z.string().nullable().optional(),
+                      detailsUrl: z.string().nullable().optional(),
+                      context: z.string().optional(),
+                      state: z.string().optional(),
+                      targetUrl: z.string().nullable().optional(),
+                    })
+                    .nullable(),
+                )
+                .optional(),
             }),
           })
           .nullable(),
@@ -36,7 +50,14 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
         oid
         statusCheckRollup {
           state
-          contexts { checkRunCount statusContextCount }
+          contexts(first: 100) {
+            checkRunCount
+            statusContextCount
+            nodes {
+              ... on CheckRun { name conclusion detailsUrl }
+              ... on StatusContext { context state targetUrl }
+            }
+          }
         }
       }
     }
@@ -51,10 +72,22 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
   }
 }`;
 
+export type FailedCheck = { name: string; url: string | null };
+
 type Readiness = {
-  outcome: "ready" | "pending" | "blocked" | "sha_moved";
+  outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
+  failedChecks?: FailedCheck[];
 };
+
+const FAILED = new Set([
+  "FAILURE",
+  "ERROR",
+  "TIMED_OUT",
+  "CANCELLED",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+]);
 
 type ReadinessInput = {
   client: GitHubClient;
@@ -140,7 +173,17 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
       }
       const checks = commit.statusCheckRollup;
       if (checks?.state === "FAILURE" || checks?.state === "ERROR") {
-        return { outcome: "blocked", message: "CI failed on the candidate commit" };
+        return {
+          outcome: "ci_failed",
+          message: "CI failed on the candidate commit",
+          failedChecks: (checks.contexts.nodes ?? []).flatMap((node) => {
+            const name = node?.name ?? node?.context;
+            const failed = FAILED.has(node?.conclusion ?? node?.state ?? "");
+            return name && failed
+              ? [{ name, url: node?.detailsUrl ?? node?.targetUrl ?? null }]
+              : [];
+          }),
+        };
       }
       if (
         checks === null ||

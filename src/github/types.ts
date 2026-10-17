@@ -94,7 +94,8 @@ export type SerialMergeResult = {
     | "sha_moved"
     | "merge_denied"
     | "dirty"
-    | "fix_failed";
+    | "fix_failed"
+    | "ci_failed";
   branch: string;
   base?: string;
   head?: string;
@@ -102,6 +103,7 @@ export type SerialMergeResult = {
   summary?: string;
   cycle?: number;
   message?: string;
+  failedChecks?: { name: string; url: string | null }[];
 };
 
 export type ReverifyInput = {
