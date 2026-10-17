@@ -137,6 +137,7 @@ import {
   closeStoppedPull,
   branchForIssue,
   serialMerge,
+  UPSTREAM_MAIN_REF,
   type GitHubClient,
   type GitHubTokenProvider,
 } from "../github";
@@ -1843,8 +1844,18 @@ export class Orchestrator {
     let base = item.checkpoint?.baseSha ?? "";
     try {
       head = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
-      if (base === "") {
-        base = (await git(["-C", worktree, "merge-base", "HEAD", "origin/main"])).trim();
+      if (base === "" || item.checkpoint?.wipCommit !== head) {
+        const upstream = await git([
+          "-C",
+          worktree,
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          UPSTREAM_MAIN_REF,
+        ])
+          .then(() => UPSTREAM_MAIN_REF)
+          .catch(() => "origin/main");
+        base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
