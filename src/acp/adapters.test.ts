@@ -5,6 +5,7 @@ import { expect, test } from "bun:test";
 import type { AgentsConfig } from "../config";
 import {
   GROK_AGENT_ARGS,
+  adapterBinPath,
   pawsPackageRoot,
   resolveAdapter,
   resolveGrokCommand,
@@ -49,7 +50,7 @@ test("missing platform package is a clear error", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-no-platform-"));
   const binDir = join(root, "node_modules", ".bin");
   mkdirSync(binDir, { recursive: true });
-  writeFileSync(join(binDir, "grok"), "#!/bin/sh\n");
+  writeFileSync(join(binDir, process.platform === "win32" ? "grok.exe" : "grok"), "#!/bin/sh\n");
   const resolved = resolveGrokCommand(grok, root);
   expect(resolved.error).toContain("no platform binary");
   expect(resolved.error).toContain(`${process.platform}-${process.arch}`);
@@ -68,7 +69,7 @@ test("pinned grok resolves from node_modules/.bin on a supported platform", () =
 
 test("reviewer stays codex when the implementer is grok", () => {
   expect(resolveAdapter("reviewer", {}, undefined, undefined, grok)).toEqual({
-    command: join(pawsPackageRoot(), "node_modules", ".bin", "codex-acp"),
+    command: adapterBinPath("reviewer"),
     args: [],
   });
   expect(resolveAdapter("implementer", { PAWS_CLAUDE_ACP: "/bin/claude" })).toEqual({

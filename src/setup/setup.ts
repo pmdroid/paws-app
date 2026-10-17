@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { createInterface } from "node:readline";
 import { GROK_LOGIN_MESSAGE, resolveGrokCommand } from "../acp";
 import {
@@ -127,7 +128,7 @@ function grokReady(
 ): boolean {
   const resolved = resolveGrokCommand(agents, packageRoot);
   if (resolved.error) return false;
-  if (resolved.command.includes("/")) return true;
+  if (resolved.command.includes("/") || isAbsolute(resolved.command)) return true;
   return which(resolved.command) !== null;
 }
 
