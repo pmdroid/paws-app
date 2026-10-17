@@ -404,6 +404,53 @@ test("stopping the parent session stops its adoption so the parent can be delega
   }
 });
 
+test("a message on an adopted parent session is answered instead of failing intake", async () => {
+  const fixture = createProjectFixture();
+  try {
+    publish(fixture.tracker, parent);
+    ensureLinearSession(fixture.db, {
+      sessionId: "parent-session",
+      issueId: "parent",
+      organizationId: "org",
+      creatorId: "lead",
+      now: fixture.clock.now(),
+    });
+    await fixture.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
+    await fixture.orchestrator.onLinearEvent({
+      dedupeKey: "activity:parent-message",
+      deliveryId: null,
+      source: "webhook",
+      action: "prompted",
+      sessionId: "parent-session",
+      issueId: "parent",
+      activityId: "parent-message",
+      body: "How is it going?",
+      signal: null,
+      updatedAtMs: fixture.clock.now(),
+      payload: "{}",
+    });
+    for (let i = 0; i < 20; i++) await fixture.jobs.tick();
+    expect(fixture.db.query("SELECT id FROM work_item").all()).toEqual([]);
+    expect(
+      fixture.db
+        .query<{ status: string }, []>(
+          "SELECT status FROM job WHERE status IN ('pending','running','dead') AND queue != 'scheduler.tick'",
+        )
+        .all(),
+    ).toEqual([]);
+    expect(
+      fixture.db
+        .query<{ body: string }, []>(
+          "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE json_extract(payload,'$.kind')='response'",
+        )
+        .all()
+        .some((row) => row.body.includes("own sessions")),
+    ).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a sub-issue already managed in another session is rejected", async () => {
   const fixture = createProjectFixture();
   try {
