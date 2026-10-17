@@ -18,6 +18,23 @@ const requestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("login_check"), agent: z.enum(["claude", "codex", "grok"]) }),
 ]);
 type HealthRequest = z.infer<typeof requestSchema>;
+type Agent = "claude" | "codex" | "grok";
+export type AgentSignIn = {
+  agent: Agent;
+  status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
+  checkedAt: number | null;
+  resetsAt?: number | null;
+};
+type Target = { memberId?: string; agent: Agent };
+type History = {
+  inFlight: boolean;
+  issuedAt: number;
+  result: { authenticated: boolean; receivedAt: number } | null;
+};
+const SIGN_IN_INTERVAL_MS = 5 * 60_000;
+const RECENTLY_SEEN_MS = 60_000;
+const runnerAgents = ["claude", "codex", "grok"] as const;
+const memberAgents = ["claude", "codex"] as const;
 
 export function createRunnerHealth(options: {
   db: Database;
@@ -52,6 +69,82 @@ export function createRunnerHealth(options: {
       throw new Error("Runner health command binding changed");
     return value;
   }
+  function pendingChecks(runnerId: string, at: number) {
+    return db
+      .query<{ count: number }, [string, number]>(
+        "SELECT COUNT(*) AS count FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') AND c.expires_at>? AND h.command_id IS NULL",
+      )
+      .get(runnerId, at)!.count;
+  }
+  function memberAccounts(runnerId: string) {
+    return db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runnerId) !== null;
+  }
+  /** Latest sign-in checks per member and agent. Bounded so old command rows are not rescanned. */
+  function history(runnerId: string, at: number) {
+    const latest = new Map<string, History>();
+    const rows = db
+      .query<
+        {
+          id: string;
+          envelope: string;
+          expiresAt: number;
+          receivedAt: number | null;
+          resultJson: string | null;
+        },
+        [string]
+      >(
+        "SELECT c.id,c.envelope,c.expires_at AS expiresAt,h.received_at AS receivedAt,h.result_json AS resultJson FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind='login_check' ORDER BY c.ordinal DESC LIMIT 256",
+      )
+      .all(runnerId);
+    for (const row of rows) {
+      const envelope = JSON.parse(row.envelope) as { payload: string };
+      const value = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
+        id: string;
+        type: string;
+        runnerId: string;
+        memberId?: string;
+        agent: Agent;
+        issuedAt: number;
+      };
+      if (value.type !== "login_check" || value.id !== row.id || value.runnerId !== runnerId)
+        continue;
+      const key = `${value.memberId ?? ""}/${value.agent}`;
+      const entry = latest.get(key) ?? { inFlight: false, issuedAt: value.issuedAt, result: null };
+      latest.set(key, entry);
+      if (row.resultJson === null) {
+        if (row.expiresAt > at) entry.inFlight = true;
+      } else if (!entry.result) {
+        const login = RunnerHealthResultSchema.parse(JSON.parse(row.resultJson)).login;
+        if (login)
+          entry.result = { authenticated: login.authenticated, receivedAt: row.receivedAt! };
+      }
+    }
+    return (target: Target) => latest.get(`${target.memberId ?? ""}/${target.agent}`);
+  }
+  function targets(runnerId: string): Target[] {
+    if (!memberAccounts(runnerId)) return runnerAgents.map((agent) => ({ agent }));
+    return db
+      .query<{ memberId: string; agent: Agent }, [string]>(
+        `SELECT a.user_id AS memberId,a.agent FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=a.user_id
+        LEFT JOIN runner_policy p ON p.runner_id=r.id
+        WHERE a.runner_id=? AND m.active=1 AND m.role<>'observer'
+        AND (a.user_id=r.owner_user_id OR COALESCE(p.sharing,0)=1) ORDER BY a.user_id,a.agent`,
+      )
+      .all(runnerId);
+  }
+  function queueCheck(runner: { id: string; workspaceId: string }, target: Target, at: number) {
+    work.enqueue({
+      id: randomUUID(),
+      type: "login_check",
+      runnerId: runner.id,
+      workspaceId: runner.workspaceId,
+      ...(target.memberId ? { memberId: target.memberId } : {}),
+      agent: target.agent,
+      issuedAt: at,
+      expiresAt: at + 120_000,
+    });
+  }
   const api = {
     request(principal: WorkspacePrincipal, runnerId: string, input: HealthRequest) {
       const parsed = requestSchema.parse(input);
@@ -64,21 +157,15 @@ export function createRunnerHealth(options: {
           at - principal.authenticatedAt > 15 * 60_000
         )
           throw new Error("Sign in again as a workspace administrator");
-        const pending = db
-          .query<{ count: number }, [string, number]>(
-            "SELECT COUNT(*) AS count FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') AND c.expires_at>? AND h.command_id IS NULL",
-          )
-          .get(runnerId, at)!.count;
-        if (pending >= 4) throw new Error("Runner health checks are already pending");
+        if (pendingChecks(runnerId, at) >= 4)
+          throw new Error("Runner health checks are already pending");
         const commandId = randomUUID();
         const expiresAt = at + 120_000;
         work.enqueue({
           id: commandId,
           runnerId,
           workspaceId: runner.workspaceId,
-          ...(db.query("SELECT 1 FROM runner_member_account WHERE runner_id=?").get(runnerId)
-            ? { memberId: principal.userId }
-            : {}),
+          ...(memberAccounts(runnerId) ? { memberId: principal.userId } : {}),
           issuedAt: at,
           expiresAt,
           ...parsed,
@@ -91,6 +178,91 @@ export function createRunnerHealth(options: {
           now: at,
         });
         return { commandId, expiresAt };
+      });
+    },
+    /**
+     * Queues a login_check per agent on active, recently seen runners when the last check is older
+     * than five minutes and none is in flight. Never queues probe: it runs a model turn.
+     */
+    refresh() {
+      const at = now();
+      const runners = db
+        .query<{ id: string; workspaceId: string }, [number]>(
+          `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
+          JOIN workspace_member o ON o.workspace_id=r.workspace_id AND o.user_id=r.owner_user_id
+          WHERE r.status='active' AND r.revoked_at IS NULL AND o.active=1 AND r.last_seen_at>?
+          ORDER BY r.id`,
+        )
+        .all(at - RECENTLY_SEEN_MS);
+      const errors: unknown[] = [];
+      for (const runner of runners) {
+        try {
+          immediate(db, () => {
+            const last = history(runner.id, at);
+            let pending = pendingChecks(runner.id, at);
+            for (const target of targets(runner.id)) {
+              if (pending >= 4) return;
+              const entry = last(target);
+              if (
+                entry &&
+                (entry.inFlight ||
+                  entry.issuedAt > at - SIGN_IN_INTERVAL_MS ||
+                  (entry.result && entry.result.receivedAt > at - SIGN_IN_INTERVAL_MS))
+              )
+                continue;
+              queueCheck(runner, target, at);
+              pending += 1;
+            }
+          });
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw errors[0];
+    },
+    /** Checks an agent right after its sign-in completes, unless a check is already in flight. */
+    afterSignIn(runnerId: string, memberId: string, agent: Agent) {
+      return immediate(db, () => {
+        const at = now();
+        const runner = getRunner(db, runnerId);
+        if (
+          !runner ||
+          runner.status !== "active" ||
+          !workspaceMember(db, runner.workspaceId, runner.ownerUserId)?.active ||
+          history(runnerId, at)({ memberId, agent })?.inFlight ||
+          pendingChecks(runnerId, at) >= 4
+        )
+          return false;
+        queueCheck(runner, { memberId, agent }, at);
+        return true;
+      });
+    },
+    /** Sign-in status per agent, for the principal's own account on member-account runners. */
+    agents(principal: WorkspacePrincipal, runnerId: string): AgentSignIn[] {
+      const { runner } = visible(principal, runnerId);
+      const at = now();
+      const last = history(runnerId, at);
+      const member = memberAccounts(runnerId);
+      return (member ? memberAgents : runnerAgents).map((agent) => {
+        const entry = last(member ? { memberId: principal.userId, agent } : { agent });
+        const checkedAt = entry?.result?.receivedAt ?? null;
+        if (entry?.inFlight) return { agent, status: "checking", checkedAt };
+        if (entry?.result && !entry.result.authenticated)
+          return { agent, status: "signed_out", checkedAt };
+        const limit = member
+          ? db
+              .query<{ resetsAt: number }, [string, string, string, number]>(
+                "SELECT cooldown_until AS resetsAt FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=? AND cooldown_until>?",
+              )
+              .get(runnerId, principal.userId, agent, at)
+          : db
+              .query<{ resetsAt: number }, [string, string, number]>(
+                "SELECT COALESCE(resets_at,cooldown_until) AS resetsAt FROM runner_agent_policy WHERE runner_id=? AND agent=? AND quota_state='exhausted' AND cooldown_until>?",
+              )
+              .get(runner.id, agent, at);
+        if (limit) return { agent, status: "usage_limit", checkedAt, resetsAt: limit.resetsAt };
+        if (entry?.result) return { agent, status: "signed_in", checkedAt };
+        return { agent, status: "unknown", checkedAt };
       });
     },
     submit(runnerId: string, input: RunnerHealthResult) {
