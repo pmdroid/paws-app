@@ -135,6 +135,7 @@ import {
 import {
   publishAccepted,
   closeStoppedPull,
+  mergedPullHeads,
   branchForIssue,
   serialMerge,
   UPSTREAM_MAIN_REF,
@@ -186,6 +187,7 @@ import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import { sweepWorktrees } from "./worktree-sweep";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
@@ -2785,6 +2787,47 @@ export class Orchestrator {
 
   reconcileExecution(): void {
     this.pump();
+  }
+
+  sweepWorktrees(signal: AbortSignal): Promise<void> {
+    const busy = (itemId: string) =>
+      this.jobContexts.has(itemId) ||
+      [...this.live.values()].some((live) => live.itemId === itemId);
+    return sweepWorktrees({
+      db: this.db,
+      pawsRoot: this.options.pawsRoot,
+      now: this.now(),
+      signal,
+      repositoryForItem: (item) => this.repositoryForItem(item),
+      busy,
+      hold: async (itemIds, operation) => {
+        if (itemIds.some(busy)) return;
+        const held: JobContext = {
+          signal,
+          isCurrent: () => !signal.aborted,
+          extendLease: () => true,
+        };
+        for (const itemId of itemIds) this.jobContexts.set(itemId, held);
+        try {
+          await operation();
+        } finally {
+          for (const itemId of itemIds)
+            if (this.jobContexts.get(itemId) === held) this.jobContexts.delete(itemId);
+        }
+      },
+      mergedHeads: async (item, repository) => {
+        const github = this.githubForRepository(repository);
+        if (!github) return [];
+        return mergedPullHeads({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          branch: branchForIssue(itemPathId(item)),
+          ...this.gitHubCredentials(github),
+          signal,
+        });
+      },
+    });
   }
 
   dependencyHandoff(itemId: string): string | undefined {
