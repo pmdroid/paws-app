@@ -16,15 +16,6 @@ export const LINEAR_STALE_MS = 30 * 60 * 1000;
 
 const ACTIVITY_PART_LENGTH = 3_500;
 type AcpActivity = Omit<ProgressUpdate, "sessionId">;
-type ToolUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
-type ToolActivity = {
-  title: string;
-  kind?: string;
-  parameter: string;
-  result: string;
-  terminalOutput: string;
-  status?: string;
-};
 
 export function shouldPostFirstActivity(alreadyPosted: boolean, elapsedMs: number): boolean {
   return !alreadyPosted && elapsedMs >= FIRST_ACTIVITY_MS;
@@ -67,33 +58,10 @@ export function createAcpActivityReporter(
   let pending = "";
   let publicMessage = "";
   let resultBody = "";
-  const tools = new Map<string, ToolActivity>();
 
   function post(activity: AcpActivity) {
-    const action = activity.action;
-    const length = action
-      ? Math.max(action.parameter.length, action.result?.length ?? 0)
-      : activity.body.length;
-    const parts = Math.max(1, Math.ceil(length / ACTIVITY_PART_LENGTH));
-    for (let part = 0; part < parts; part++) {
-      const start = part * ACTIVITY_PART_LENGTH;
-      const end = start + ACTIVITY_PART_LENGTH;
-      emit({
-        ...activity,
-        body: action
-          ? activity.body.slice(0, ACTIVITY_PART_LENGTH)
-          : activity.body.slice(start, end),
-        ...(action
-          ? {
-              action: {
-                action: parts === 1 ? action.action : `${action.action} (${part + 1}/${parts})`,
-                parameter: action.parameter.slice(start, end),
-                ...(action.result === undefined ? {} : { result: action.result.slice(start, end) }),
-              },
-            }
-          : {}),
-      });
-    }
+    for (let start = 0; start === 0 || start < activity.body.length; start += ACTIVITY_PART_LENGTH)
+      emit({ ...activity, body: activity.body.slice(start, start + ACTIVITY_PART_LENGTH) });
   }
 
   function flushPublicMessage() {
@@ -130,30 +98,7 @@ export function createAcpActivityReporter(
           );
         }
         if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
-          const tool = updateTool(update, tools.get(update.toolCallId));
-          if (tool.status === "completed" || tool.status === "failed")
-            tools.delete(update.toolCallId);
-          else {
-            tools.set(update.toolCallId, tool);
-          }
-          const activity = toolActivity(tool);
-          if (activity) {
-            flush();
-            if ((tool.status === "completed" || tool.status === "failed") && tool.result) {
-              for (let offset = 0; offset < tool.result.length; offset += 1_000) {
-                const output = tool.result.slice(offset, offset + 1_000);
-                const fence = "`".repeat(
-                  Math.max(3, ...[...output.matchAll(/`+/g)].map(([run]) => run.length + 1)),
-                );
-                const title = tool.title.slice(0, 200).replace(/[\\`*_[\]<>]/g, "\\$&");
-                post({
-                  kind: "thought",
-                  body: `Tool output: ${title}\n\n${fence}text\n${output}\n${fence}`,
-                });
-              }
-            }
-            post(activity);
-          }
+          if (update.kind !== "think" && update.kind !== "switch_mode") flush();
           return;
         }
         if (update.sessionUpdate === "agent_thought_chunk") return;
@@ -180,9 +125,6 @@ function fromSessionUpdate(update: SessionUpdate): AcpActivity | null {
       return null;
     case "agent_message_chunk":
       return clip("thought", textOf(update.content));
-    case "tool_call":
-    case "tool_call_update":
-      return toolActivity(updateTool(update));
     case "plan": {
       const body = update.entries
         .map((entry) => entry.content)
@@ -203,64 +145,6 @@ function clip(kind: ActivityKind, body: string): AcpActivity | null {
   const clipped = body.trim();
   if (clipped === "") return null;
   return { kind, body: clipped };
-}
-
-function updateTool(update: ToolUpdate, previous?: ToolActivity): ToolActivity {
-  const tool: ToolActivity = {
-    title: previous?.title ?? "",
-    kind: previous?.kind,
-    parameter: previous?.parameter ?? "",
-    result: previous?.result ?? "",
-    terminalOutput: previous?.terminalOutput ?? "",
-    status: previous?.status,
-  };
-  if (update.title?.trim()) tool.title = publicToolText(update.title);
-  if (update.kind) tool.kind = update.kind;
-  if (update.status) tool.status = update.status;
-  if (update.rawInput !== undefined && update.rawInput !== null)
-    tool.parameter = publicToolText(update.rawInput);
-  else if (!tool.parameter && update.locations?.length)
-    tool.parameter = publicToolText(update.locations.map((location) => location.path));
-  if (update.rawOutput !== undefined && update.rawOutput !== null)
-    tool.result = publicToolText(update.rawOutput);
-  else if (update.content)
-    tool.result = publicToolText(
-      update.content
-        .flatMap((entry) =>
-          entry.type === "content" && entry.content.type === "text" ? [entry.content.text] : [],
-        )
-        .join("\n"),
-    );
-  for (const key of ["terminal_output", "terminal_output_delta"]) {
-    const data = terminalText(update["_meta"]?.[key]);
-    if (data !== null) tool.terminalOutput = tool.terminalOutput + data;
-  }
-  if ((tool.status === "completed" || tool.status === "failed") && tool.terminalOutput)
-    tool.result = publicToolText(tool.terminalOutput);
-  return tool;
-}
-
-function terminalText(value: unknown): string | null {
-  return value !== null &&
-    typeof value === "object" &&
-    "data" in value &&
-    typeof value.data === "string"
-    ? value.data
-    : null;
-}
-
-function toolActivity(tool: ToolActivity): AcpActivity | null {
-  if (!tool.title || tool.kind === "think" || tool.kind === "switch_mode") return null;
-  const terminal = tool.status === "completed" || tool.status === "failed";
-  return {
-    kind: "action",
-    body: tool.title,
-    action: {
-      action: tool.title,
-      parameter: tool.parameter,
-      ...(tool.result || terminal ? { result: tool.result || tool.status! } : {}),
-    },
-  };
 }
 
 function publicToolText(value: unknown): string {
