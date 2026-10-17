@@ -81,7 +81,7 @@ export function implementPrompt(input: {
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     closeoutPrompt(),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
-    "Commit is handled for you when you finish; leave the worktree in a reviewable state.",
+    "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;
   return `${input.handoff.trim()}\n\n${brief}`;
