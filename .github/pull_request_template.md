@@ -21,11 +21,9 @@ Closes
 >
 > For dashboard changes, run `bun --no-env-file scripts/verify-local.ts serve` and drive the printed disposable `/status` URL on desktop and a narrow mobile viewport. Capture the same flow before and after the change, record browser errors, and upload screenshots or a recording to the PR. Fill the Before/After table with hosted media links. Keep the task ID, stop only that disposable server, and confirm its port closes. Follow the skill's credential isolation rules; never use the operator's live instance for mutation tests.
 >
-> Use one verification row per promised behavior or state. Name the command or skill, assertion, observed result, and source commit. For backend-only changes, remove the Before/After table. When nothing is runnable, remove both tables and explain what was judged and against what evidence. Follow the complete [required autoreview procedure in AGENTS.md](https://github.com/pmdroid/paws-app/blob/main/AGENTS.md#required-autoreview), including fetching the intended base, reviewing the full change with Grok, secret preflight, and native Cursor `/review-bugbot`. Fill the verification field with the observed verdict or documentation judgment, and the autoreview field with both review commands, reviewed scope, results, and disposition of findings before removing this guidance.
+> Use one verification row per promised behavior or state. Name the command or skill, assertion, observed result, and source commit. For backend-only changes, remove the Before/After table. When nothing is runnable, remove both tables and explain what was judged and against what evidence. Fill the verification field with the observed verdict or documentation judgment before removing this guidance.
 
 **Verification:**
-
-**Autoreview:**
 
 | Behavior | How it was proven |
 | -------- | ----------------- |
