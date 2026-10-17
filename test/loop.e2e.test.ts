@@ -54,6 +54,7 @@ import {
   createAcpCodexReviewer,
   KEEPALIVE_MS,
   LinearTaskAccess,
+  FakeHostGitHubAuth,
   type AgentLaunch,
 } from "../src/loop";
 
@@ -1841,6 +1842,42 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
   expect(result.returnPhases, result.detail).toEqual(["running"]);
 }, 90_000);
 
+test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
+  let checks = 0;
+  const host = Object.assign(new FakeHostGitHubAuth(), {
+    integration: {
+      check: async () => {
+        checks += 1;
+        return true;
+      },
+      administrators: () => [],
+      recoveryUrl: "http://127.0.0.1:8787/status",
+      identity: () => "human",
+    },
+  });
+  host.account = { id: 7, login: "owner" };
+  const identity = {
+    GIT_AUTHOR_NAME: "Paws Test",
+    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
+    GIT_COMMITTER_NAME: "Paws Test",
+    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
+  let result: Awaited<ReturnType<typeof runRebaseConflict>>;
+  try {
+    result = await runRebaseConflict("clean", host);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.merged, result.detail).toBe(1);
+  expect(checks).toBeGreaterThan(0);
+}, 120_000);
+
 test("after 3 rebase conflict returns the item fails", async () => {
   const result = await runRebaseConflict("repeat");
   expect(result.state, result.detail).toBe("failed");
@@ -1877,7 +1914,10 @@ test("a rebase_failed merge fails the item", async () => {
   expect(result.thoughts, result.detail).toContain("rebase failed");
 }, 60_000);
 
-async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): Promise<{
+async function runRebaseConflict(
+  mode: "resolve" | "repeat" | "rebase-failed" | "clean",
+  githubAuth?: FakeHostGitHubAuth,
+): Promise<{
   state: string | null;
   thoughts: string[];
   prompts: string[];
@@ -1887,7 +1927,14 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
   detail: string;
 }> {
   const layout = await repoLayout();
-  const identifier = mode === "resolve" ? "ENG-70" : mode === "repeat" ? "ENG-71" : "ENG-72";
+  const identifier =
+    mode === "resolve"
+      ? "ENG-70"
+      : mode === "repeat"
+        ? "ENG-71"
+        : mode === "clean"
+          ? "ENG-73"
+          : "ENG-72";
   const tracker = createFakeTracker([
     {
       linearIssueId: `rebase-${mode}`,
@@ -1919,6 +1966,7 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
       privateKeyPem: PRIVATE_KEY,
       client: githubClient(layout.bare, github),
     },
+    ...(githubAuth ? { githubAuth } : {}),
     launch(input) {
       sequence += 1;
       const scriptPath = path.join(layout.root, `rebase-${mode}-${sequence}.json`);
@@ -1953,7 +2001,8 @@ async function runRebaseConflict(mode: "resolve" | "repeat" | "rebase-failed"): 
     if (mode === "rebase-failed") {
       await commitOnMain(layout.bare, "side\n", "side.txt");
       await installRebaseHook(layout.pawsRoot);
-    } else await commitOnMain(layout.bare, "from-main\n");
+    } else if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
+    else await commitOnMain(layout.bare, "from-main\n");
     const returnPhases: (string | null)[] = [];
     let idle = 0;
     for (let turn = 0; turn < 40;) {
