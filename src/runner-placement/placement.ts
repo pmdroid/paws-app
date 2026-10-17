@@ -21,8 +21,6 @@ type Candidate = {
   ownerId: string;
   linearUserId: string;
   sharing: number;
-  fallback: number;
-  hostOwner: string;
   seat: string;
   ready: number;
   authExpired: number;
@@ -77,7 +75,7 @@ export function createRunnerPlacement(options: {
           "SELECT id,workspace_id,owner_user_id,status,fence,revoked_at FROM runner WHERE id=?",
         )
         .get(id),
-      host: db.query("SELECT * FROM runner_policy WHERE runner_id=?").get(id),
+      host: db.query("SELECT runner_id,sharing FROM runner_policy WHERE runner_id=?").get(id),
       capacity: db.query("SELECT capacity FROM runner_capacity WHERE runner_id=?").get(id),
       agent: agent
         ? db.query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent=?").get(id, agent)
@@ -110,9 +108,8 @@ export function createRunnerPlacement(options: {
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
       throw new Error("Runner task session changed");
     const workspace = db
-      .query<{ id: string; fallbackAllowed: number; personalOrganizationHost: number }, [string]>(
-        `SELECT w.id,COALESCE(p.fallback_allowed,0) AS fallbackAllowed,
-       COALESCE(p.personal_organization_host,0) AS personalOrganizationHost FROM workspace w
+      .query<{ id: string; personalOrganizationHost: number }, [string]>(
+        `SELECT w.id,COALESCE(p.personal_organization_host,0) AS personalOrganizationHost FROM workspace w
        LEFT JOIN workspace_runner_policy p ON p.workspace_id=w.id WHERE w.linear_organization_id=?`,
       )
       .get(session.organizationId);
@@ -217,7 +214,7 @@ export function createRunnerPlacement(options: {
       const rows = db
         .query<Candidate, [string, string, number]>(
           `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,u.linear_user_id AS linearUserId,
-         COALESCE(p.sharing,0) AS sharing,COALESCE(p.fallback,0) AS fallback,COALESCE(p.host_owner,'unknown') AS hostOwner,
+         COALESCE(p.sharing,0) AS sharing,
          COALESCE(a.seat,'unknown') AS seat,COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
          COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
          COALESCE(a.virtual_finish,0) AS virtualFinish,COALESCE(a.last_used_at,0) AS lastUsedAt,a.resolved_model AS resolvedModel
@@ -313,7 +310,6 @@ export function createRunnerPlacement(options: {
           (input.purpose === "helper" && runner.ownerId === requester);
         const legacyShared =
           runner.sharing === 1 &&
-          runner.hostOwner !== "unknown" &&
           ["organization", "api"].includes(runner.seat) &&
           projectMembers.includes(runner.linearUserId);
         const projectItem = current.placement?.projectApprovalId != null;
@@ -322,16 +318,10 @@ export function createRunnerPlacement(options: {
             ? hostOwnerId === current.placement.ownerUserId
             : legacyOwn;
         const shared = current.placement?.ownerUserId && !projectItem ? false : legacyShared;
-        const fallback =
-          current.workspace.fallbackAllowed === 1 &&
-          runner.fallback === 1 &&
-          runner.seat === "api" &&
-          runner.hostOwner === "workspace";
-        if (!own && !shared && !fallback) return [];
+        if (!own && !shared) return [];
         if (
           runner.seat === "personal" &&
-          (!own ||
-            (runner.hostOwner !== "member" && current.workspace.personalOrganizationHost !== 1))
+          (!own || current.workspace.personalOrganizationHost !== 1)
         )
           return [];
         if (
@@ -349,7 +339,7 @@ export function createRunnerPlacement(options: {
           return [];
         const reviewRank =
           input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        return [{ runner, rank: reviewRank * 10 + (own ? 0 : shared ? 1 : 2) }];
+        return [{ runner, rank: reviewRank * 10 + (own ? 0 : 1) }];
       });
       ranked.sort(
         (a, b) =>
