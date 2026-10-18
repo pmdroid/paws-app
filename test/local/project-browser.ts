@@ -62,6 +62,23 @@ try {
       exact: true,
     }),
   ).toBeVisible();
+  await expect(page.getByLabel("Linear project URL or ID", { exact: true })).toBeHidden();
+  await expect(page.getByText("Lead lead", { exact: false })).toBeVisible();
+  await page.getByLabel("Filter by lead", { exact: true }).selectOption("lead");
+  await expect(page.getByRole("heading", { name: "Project", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Paused 0", exact: true }).click();
+  await expect(page.getByText("No projects match these filters.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await page.getByLabel("Search", { exact: true }).fill("nothing-matches");
+  await expect(page.getByLabel("Search", { exact: true })).toBeFocused();
+  await expect(page.getByText("Showing 0 of 1", { exact: true })).toBeVisible();
+  await page.getByLabel("Search", { exact: true }).fill("project");
+  await expect(page.getByRole("heading", { name: "Project", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  await expect(page.getByLabel("Linear project URL or ID", { exact: true })).toBeFocused();
+  if (directory)
+    await page.screenshot({ path: `${directory}/projects-list-desktop.png`, fullPage: true });
+  await page.getByRole("button", { name: "Close new project", exact: true }).click();
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await expect(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
