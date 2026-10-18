@@ -506,3 +506,62 @@ test("project execution guard declines parent adoption until runtime is ready", 
     await fixture.close();
   }
 });
+
+test("a delegated parent leaves its finished sub-issues out and still starts the issues they block", async () => {
+  const fixture = createProjectFixture();
+  const { db, projects, orchestrator, jobs, tracker, started } = fixture;
+  try {
+    publish(tracker, {
+      ...parent,
+      subIssues: [
+        { ...parent.subIssues[0]!, stateType: "completed" },
+        parent.subIssues[1]!,
+        {
+          linearIssueId: "child-c",
+          identifier: "PAR-4",
+          title: "Dropped child",
+          description: "No longer needed",
+          stateType: "canceled",
+        },
+      ],
+    });
+    tracker.deps.set("child-b", [
+      { blockerLinearIssueId: "child-a", blockedLinearIssueId: "child-b" },
+    ]);
+    ensureLinearSession(db, {
+      sessionId: "parent-session",
+      issueId: "parent",
+      organizationId: "org",
+      creatorId: "lead",
+      now: fixture.clock.now(),
+    });
+    const admitted = await orchestrator.intakeLinearTask("parent", "parent-session", "parent-task");
+    expect(admitted.ok).toBe(true);
+    expect(db.query("SELECT issue_id FROM project_approval_issue ORDER BY issue_id").all()).toEqual(
+      [{ issue_id: "child-b" }],
+    );
+    const preview = JSON.parse(
+      db.query<{ preview: string }, []>("SELECT preview FROM project_approval").get()!.preview,
+    ) as { includedIssueIds: string[]; edges: unknown[] };
+    expect(preview.includedIssueIds).toEqual(["child-b"]);
+    expect(preview.edges).toEqual([]);
+    expect(tracker.progress).toContainEqual(
+      expect.objectContaining({
+        sessionId: "parent-session",
+        body: "Picked up 1 sub-issue. Each one runs in its own session.",
+      }),
+    );
+
+    projects.register(jobs);
+    await jobs.tick();
+    expect(started).toEqual(["child-b"]);
+    const claim = db
+      .query<{ delegation_id: string }, []>(
+        "SELECT delegation_id FROM project_approval_issue WHERE issue_id='child-b'",
+      )
+      .get()!;
+    expect(projects.canDispatch(claim.delegation_id)).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
