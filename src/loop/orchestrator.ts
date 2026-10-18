@@ -204,6 +204,7 @@ import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
   chooseRepository,
+  hintedRepository,
   repositoryAnswer,
 } from "./repository-selection";
 
@@ -4013,13 +4014,34 @@ export class Orchestrator {
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;
       };
       candidates.sort((left, right) => recency(left) - recency(right));
-      const best = new Map<string, RepositorySuggestion>();
-      for (let attempt = 1; this.tracker?.issueRepositorySuggestions && attempt <= 3; attempt++) {
+      let hinted: ReturnType<typeof hintedRepository> = null;
+      if (this.tracker?.issueRepositoryHints) {
         try {
-          const read = await this.tracker.issueRepositorySuggestions(
+          hinted = hintedRepository(
+            candidates,
+            await this.tracker.issueRepositoryHints(item.linearIssueId, {
+              signal: controller.signal,
+            }),
+          );
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          console.error(
+            `repository hints for ${item.linearIdentifier} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      const best = new Map<string, RepositorySuggestion>();
+      const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const attempts =
+        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          const read = await this.tracker!.issueRepositorySuggestions!(
             {
               issueId: item.linearIssueId,
-              candidateRepositories: candidates.map((candidate) => ({
+              candidateRepositories: pool.map((candidate) => ({
                 hostname: "github.com",
                 repositoryFullName: `${candidate.owner}/${candidate.repo}`,
               })),
@@ -4042,7 +4064,8 @@ export class Orchestrator {
         }
       }
       if (this.stopped(item.id)) return false;
-      const choice = chooseRepository(candidates, [...best.values()]);
+      const choice =
+        hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
         const accessible =

@@ -15,7 +15,12 @@ import {
   type WorkItemRecord,
 } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
-import { attachOrchestrator, FakeHostGitHubAuth, repositoryAnswer } from "../src/loop";
+import {
+  attachOrchestrator,
+  FakeHostGitHubAuth,
+  hintedRepository,
+  repositoryAnswer,
+} from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { withCommentActivities } from "../src/comments";
 import { tempDb, tempHome } from "./helpers";
@@ -687,6 +692,141 @@ test("a confident suggestion passes an integration that checks the item's reposi
     };
     expect(item.state).not.toBe("cancelled");
     expect(getWorkItemRepository(f.db, item.id)).toEqual(repositories[1]!);
+  } finally {
+    f.db.close();
+  }
+});
+
+const hints = (
+  overrides: Partial<
+    Record<"mentions" | "issueLabels" | "parentLabels" | "projectLabels", string[]>
+  >,
+) => ({
+  mentions: [],
+  issueLabels: [],
+  parentLabels: [],
+  projectLabels: [],
+  ...overrides,
+});
+
+test("repository hints follow mention, issue, parent, then project precedence", () => {
+  const [one, two, third] = repositories as [
+    RepositoryBinding,
+    RepositoryBinding,
+    RepositoryBinding,
+  ];
+  expect(hintedRepository(repositories, hints({}))).toBeNull();
+  expect(
+    hintedRepository(
+      repositories,
+      hints({ mentions: ["acme/one", "ACME/Two"], issueLabels: ["acme/private"] }),
+    ),
+  ).toEqual({ bind: two });
+  expect(
+    hintedRepository(
+      repositories,
+      hints({
+        issueLabels: ["acme/private"],
+        parentLabels: ["acme/one"],
+        projectLabels: ["acme/two"],
+      }),
+    ),
+  ).toEqual({ bind: third });
+  expect(
+    hintedRepository(
+      repositories,
+      hints({ parentLabels: ["acme/one"], projectLabels: ["acme/two"] }),
+    ),
+  ).toEqual({ bind: one });
+  expect(hintedRepository(repositories, hints({ projectLabels: ["acme/two"] }))).toEqual({
+    bind: two,
+  });
+  expect(hintedRepository(repositories, hints({ issueLabels: ["acme/two", "acme/one"] }))).toEqual({
+    ask: [two, one],
+  });
+  expect(
+    hintedRepository(
+      repositories,
+      hints({ mentions: ["acme/missing"], projectLabels: ["acme/one"] }),
+    ),
+  ).toEqual({ bind: one });
+});
+
+test("a repo label on the issue binds without asking or reading suggestions", async () => {
+  const f = fixture();
+  try {
+    f.tracker.repositoryHints.set(
+      "issue",
+      hints({ issueLabels: ["acme/one"], projectLabels: ["acme/two"] }),
+    );
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[0]!);
+    expect(f.tracker.repositorySuggestionRequests).toEqual([]);
+    expect(f.checked).toContain("one");
+  } finally {
+    f.db.close();
+  }
+});
+
+test("two repo labels on the issue ask with just those repositories", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    f.denied.delete("private");
+    f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/private", "acme/one"] }));
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(findOpenQuestion(f.db, "session")!.options).toEqual([
+      "https://github.com/acme/private",
+      "https://github.com/acme/one",
+    ]);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a repo hint naming an inaccessible repository falls back to suggestions", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/private"] }));
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("Linear's suggestions break a tie between two repo labels", async () => {
+  const f = fixture();
+  try {
+    f.denied.delete("private");
+    f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/private", "acme/one"] }));
+    f.tracker.repositorySuggestions.set("issue", [
+      { hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.9 },
+      { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.95 },
+    ]);
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[0]!);
+    expect(
+      f.tracker.repositorySuggestionRequests[0]!.candidateRepositories.map(
+        (candidate) => candidate.repositoryFullName,
+      ),
+    ).toEqual(["acme/private", "acme/one"]);
   } finally {
     f.db.close();
   }
