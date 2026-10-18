@@ -147,7 +147,7 @@ function clip(kind: ActivityKind, body: string): AcpActivity | null {
   return { kind, body: clipped };
 }
 
-function publicToolText(value: unknown): string {
+export function publicToolText(value: unknown): string {
   const secrets = Object.entries(process.env).flatMap(([key, secret]) =>
     /API.?KEY|PASSWORD|SECRET|TOKEN|CREDENTIAL|PRIVATE.?KEY/i.test(key) && secret ? [secret] : [],
   );
