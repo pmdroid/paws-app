@@ -247,6 +247,14 @@ test("re-delegating a failed project issue starts it again and a running one sta
       });
     }
     expect(await f.projects.authorizeEvent(created("early"))).toBe(false);
+    const notice = f.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM outbox WHERE json_extract(payload,'$.sessionId')='early'",
+      )
+      .get();
+    expect(JSON.parse(notice?.payload ?? "{}").body).toBe(
+      "one is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
+    );
     expect(getWorkItem(f.db, failed)?.state).not.toBe("cancelled");
     f.db.run("UPDATE work_item SET state='failed' WHERE id=?", [failed]);
     expect(await f.projects.authorizeEvent(created("again"))).toBe(true);
