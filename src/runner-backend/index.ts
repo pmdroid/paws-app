@@ -18,6 +18,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
+  ArtifactRejectedError,
   DEFAULT_RUN_TIMEOUT_MS,
   git,
   recoverAcpConversation,
@@ -499,19 +500,27 @@ export function createRemoteAgentRunner(options: {
                   assigned.generation,
                   event.artifact,
                 );
-                const publication = await input.publishArtifact.publish(snapshot, {
-                  request: {
-                    path: snapshot.path,
-                    displayName: snapshot.displayName,
-                    mimeType: snapshot.mimeType,
-                    attachToIssue: event.artifact.attachToIssue,
-                  },
-                  itemId: input.itemId,
-                  runId: selected.runId,
-                  worktreePath: input.worktreePath,
-                  role: input.role,
-                  signal,
-                });
+                const evidence = event.artifact.evidence;
+                const publication = await input.publishArtifact
+                  .publish(snapshot, {
+                    request: {
+                      path: snapshot.path,
+                      displayName: snapshot.displayName,
+                      mimeType: snapshot.mimeType,
+                      attachToIssue: event.artifact.attachToIssue,
+                      ...(evidence ? { checkId: evidence.checkId } : {}),
+                    },
+                    itemId: input.itemId,
+                    runId: selected.runId,
+                    worktreePath: input.worktreePath,
+                    role: input.role,
+                    signal,
+                    ...(evidence ? { evidence } : {}),
+                  })
+                  .catch((error: unknown) => {
+                    if (error instanceof ArtifactRejectedError) return { error: error.message };
+                    throw error;
+                  });
                 publishedEffects = true;
                 signal.throwIfAborted();
                 results.answer({
