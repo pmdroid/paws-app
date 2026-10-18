@@ -30,7 +30,6 @@ export class EvidenceRejected extends Error {
 
 export type StoreEvidenceInput = {
   db: Database;
-  /** `~/.paws/evidence`. Created mode 0700. */
   dir: string;
   itemId: string;
   runId: string;
@@ -45,11 +44,6 @@ export type StoreEvidenceInput = {
 
 const HEAD = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-/**
- * Save one video or screenshot and its row. The type comes from the bytes.
- * The file is written mode 0600 under a temporary name and renamed into place,
- * so a reader never sees a partial file.
- */
 export function storeEvidence(input: StoreEvidenceInput): EvidenceRecord {
   const caps = input.caps ?? EVIDENCE_CAPS;
   const size = input.bytes.byteLength;
@@ -133,7 +127,6 @@ function validCheckId(id: string): boolean {
   return id.length > 0 && id.length <= 200 && withoutControls(id) === id;
 }
 
-/** The last path segment, without control characters, at most 200 characters. */
 function displayName(name: string): string {
   const leaf = name.split(/[\\/]/).at(-1) ?? "";
   const clean = withoutControls(leaf).trim().slice(0, 200);

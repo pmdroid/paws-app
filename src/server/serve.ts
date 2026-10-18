@@ -56,7 +56,6 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
-  /** `~/.paws/evidence`, the stored Closeout videos and screenshots. */
   evidenceDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
@@ -299,7 +298,6 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }
   }
   if (path.startsWith(EVIDENCE_API_PREFIX)) {
-    // Evidence needs a signed-in member even when the dashboard runs without workspace access.
     if (sessionIds === undefined || secrets.db === undefined)
       return Response.json({ error: "Sign in to Paws." }, { status: 401 });
     if (secrets.evidenceDir === undefined)

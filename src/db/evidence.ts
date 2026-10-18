@@ -7,7 +7,6 @@ export type EvidenceMediaType =
   | "image/jpeg"
   | "image/webp";
 
-/** One stored Closeout video or screenshot. The file lives at `<evidence dir>/<id>`. */
 export type EvidenceRecord = {
   id: string;
   itemId: string;
