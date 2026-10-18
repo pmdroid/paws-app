@@ -11,12 +11,24 @@ import type {
 } from "./catchup";
 import { activityKey, promptMetadata, type AcceptedLinearEvent } from "./events";
 import type { InboxStore } from "./inbox";
+import { lastVerifiedWebhookMs } from "./webhook";
 
 /** Poll while a work item is open or a question is unanswered. */
 export const POLL_INTERVAL_ACTIVE_MS = 5_000;
 
 /** Poll while nothing is in flight and no question is open. */
 export const POLL_INTERVAL_IDLE_MS = 15_000;
+
+/** Poll as a backstop while verified webhooks keep arriving. */
+export const POLL_INTERVAL_WEBHOOK_MS = 60_000;
+
+/** Poll while less than `LOW_BUDGET_FRACTION` of the Linear request budget is left. */
+export const POLL_INTERVAL_LOW_BUDGET_MS = 5 * 60_000;
+
+/** A verified webhook this recent means webhooks are healthy. */
+export const WEBHOOK_HEALTHY_MS = 10 * 60_000;
+
+export const LOW_BUDGET_FRACTION = 0.2;
 
 /** Wall clock ahead of monotonic time by more than this is a laptop wake. */
 export const WAKE_GAP_MS = 30_000;
@@ -26,8 +38,35 @@ const INITIAL_LOOKBACK_MS = 60 * 60 * 1000;
 const OVERLAP_MS = 5_000;
 const STOP_COMMENT = /^\/paws\s+stop\b/i;
 
-export function pollIntervalMs(workActive: boolean): number {
-  return workActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+export type PollSignals = {
+  now: number;
+  lastWebhookMs?: number | null;
+  budget?: LinearRateBudget | null;
+};
+
+/**
+ * 5s active, 15s idle. A verified webhook in the last 10 minutes stretches that to 60s,
+ * and a request budget under 20% stretches it to 5 minutes until the budget resets.
+ */
+export function pollIntervalMs(workActive: boolean, signals?: PollSignals): number {
+  let interval = workActive ? POLL_INTERVAL_ACTIVE_MS : POLL_INTERVAL_IDLE_MS;
+  if (signals === undefined) return interval;
+  const webhook = signals.lastWebhookMs ?? null;
+  if (webhook !== null && signals.now - webhook < WEBHOOK_HEALTHY_MS) {
+    interval = Math.max(interval, POLL_INTERVAL_WEBHOOK_MS);
+  }
+  if (budgetIsLow(signals.budget ?? null, signals.now)) {
+    interval = Math.max(interval, POLL_INTERVAL_LOW_BUDGET_MS);
+  }
+  return interval;
+}
+
+function budgetIsLow(budget: LinearRateBudget | null, now: number): boolean {
+  if (budget === null) return false;
+  const { requestsRemaining, requestsLimit, requestsResetMs } = budget;
+  if (requestsRemaining === null || requestsLimit === null || requestsLimit <= 0) return false;
+  if (requestsResetMs !== null && now >= requestsResetMs) return false;
+  return requestsRemaining / requestsLimit < LOW_BUDGET_FRACTION;
 }
 
 /** True when a non-terminal work item exists or a question is still open. */
@@ -95,7 +134,8 @@ export function createTimerSleeper(): Sleeper {
 
 /**
  * Intake poll. One tick asks Linear once, dedupes by id, and feeds the inbox.
- * Active work or an open question waits 5s; idle waits 15s. `RATELIMITED` waits
+ * Active work or an open question waits 5s; idle waits 15s. Healthy webhooks or a
+ * low request budget stretch that (see `pollIntervalMs`). `RATELIMITED` waits
  * out the reset, then the next tick resumes. The cursor is the SQLite sync row.
  */
 export function startCatchUpPoller(options: {
@@ -214,10 +254,18 @@ export function startCatchUpPoller(options: {
 
   const settled = (async () => {
     while (!control.stopped) {
-      let delay = pollIntervalMs(hot());
+      const workActive = hot();
+      let delay = pollIntervalMs(workActive);
       try {
         await pollOnce();
-        delay = Math.max(delay, budgetHoldMs(latestBudget, now()));
+        delay = Math.max(
+          pollIntervalMs(workActive, {
+            now: now(),
+            lastWebhookMs: lastVerifiedWebhookMs(options.store),
+            budget: latestBudget,
+          }),
+          budgetHoldMs(latestBudget, now()),
+        );
       } catch (error) {
         if (control.stopped) return;
         if (error instanceof LinearRateLimitError) {
