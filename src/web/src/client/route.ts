@@ -3,7 +3,7 @@ import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 
 export type Route =
   | { view: "overview" }
-  | { view: "runners" }
+  | { view: "runners"; id: string | null }
   | { view: "projects" }
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
@@ -24,7 +24,7 @@ export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Rout
     case "overview":
       return { view: "overview" };
     case "runners":
-      return { view: "runners" };
+      return { view: "runners", id };
     case "projects":
       return { view: "projects" };
     case "issues":
@@ -53,7 +53,7 @@ export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Rout
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "#/";
   if (route.view === "settings") return route.page ? `#/settings/${route.page}` : "#/settings";
-  if (route.view === "runners" || route.view === "projects") return `#/${route.view}`;
+  if (route.view === "projects") return "#/projects";
   return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
 }
 
