@@ -6,6 +6,88 @@ import {
 } from "../src/linear";
 import { previewProject, type ProjectSelection } from "../src/project-execution";
 
+test("project loads from its Linear URL, slug or UUID", async () => {
+  const uuid = "6a0e5c9e-1b2f-4c3d-9e8f-0123456789ab";
+  const lookups: unknown[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const body = (await request.json()) as {
+        query: string;
+        variables: { id?: string; hash?: string; slug?: string };
+      };
+      if (body.query.includes("PawsProjectSlug")) {
+        lookups.push([body.variables.hash, body.variables.slug]);
+        const nodes = {
+          f17b6d311237: [
+            { id: uuid, url: "https://linear.app/kyku/project/closeout-f17b6d311237" },
+          ],
+          "000000000000": [{ id: uuid, url: "https://linear.app/kyku/project/other-111111111111" }],
+          "222222222222": [
+            { id: uuid, url: "https://linear.app/kyku/project/other-33222222222222" },
+          ],
+        }[body.variables.hash ?? ""];
+        return Response.json({ data: { projects: { nodes: nodes ?? [] } } });
+      }
+      if (body.variables.id !== uuid) return Response.json({ errors: [{ message: "Not found" }] });
+      return Response.json({
+        data: {
+          viewer: { app: true, organization: { id: "organization" } },
+          project: {
+            id: uuid,
+            name: "Closeout output and evidence",
+            lead: null,
+            updatedAt: "2026-10-14T00:00:00Z",
+            issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          },
+        },
+      });
+    },
+  });
+  const reads = createLinearProjectScopeReads(
+    createLinearClient({
+      auth: {
+        hasToken: () => true,
+        ensureFresh: async () => "fixture",
+        forceRefresh: async () => "fixture",
+      },
+      fetch: (_input, init) => fetch(`http://127.0.0.1:${server.port}`, init),
+    }),
+  );
+  try {
+    for (const reference of [
+      "https://linear.app/kyku/project/closeout-output-and-evidence-f17b6d311237/overview",
+      "https://linear.app/kyku/project/closeout-output-and-evidence-f17b6d311237",
+      "closeout-output-and-evidence-f17b6d311237",
+      "F17B6D311237",
+      ` ${uuid} `,
+      `https://linear.app/kyku/project/${uuid}/overview`,
+    ])
+      expect((await reads.loadProject(reference)).id).toBe(uuid);
+    const slug = "closeout-output-and-evidence-f17b6d311237";
+    expect(lookups).toEqual([
+      ["f17b6d311237", slug],
+      ["f17b6d311237", slug],
+      ["f17b6d311237", slug],
+      ["f17b6d311237", "f17b6d311237"],
+    ]);
+    for (const reference of ["missing-000000000000", "missing-222222222222"])
+      await expect(reads.loadProject(reference)).rejects.toThrow("No Linear project");
+    for (const reference of [
+      "https://linear.app/kyku/issue/PAS-82",
+      "https://linear.app/project/issue/PAS-82",
+      "https://",
+      "https://linear.app/kyku/project/bad%E0-f17b6d311237",
+    ])
+      await expect(reads.loadProject(reference)).rejects.toThrow(
+        "Paste a Linear project URL or ID.",
+      );
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("project selection reads complete HTTP pages and rejects incomplete scope", async () => {
   let fault = "";
   let requests = 0;
