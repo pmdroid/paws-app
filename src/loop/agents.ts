@@ -4,6 +4,7 @@ import type {
   PublishArtifactHook,
   RunAgentOptions,
   RunAgentResult,
+  CloseoutSkipHook,
   PostUpdateHook,
   PullRequestHook,
   UpdatePlanHook,
@@ -42,6 +43,7 @@ export type AcpAgentDeps = {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
+  closeoutSkip?: CloseoutSkipHook;
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -176,6 +178,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         updatePlan: deps.updatePlan,
         pullRequest: deps.pullRequest,
         postUpdate: deps.postUpdate,
+        closeoutSkip: deps.closeoutSkip,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,

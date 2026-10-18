@@ -150,7 +150,11 @@ export {
 export {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
+  saveCloseoutSkipRequest,
+  takeCloseoutSkipRequest,
   type CloseoutRecovery,
+  type CloseoutSkip,
+  type CloseoutSkipRequest,
 } from "./closeout-recovery";
 export {
   recordGitHubDelivery,

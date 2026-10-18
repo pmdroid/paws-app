@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { listCloseoutRecoveries, type CloseoutRecovery } from "../db";
+import { listCloseoutRecoveries, type CloseoutRecovery, type CloseoutSkip } from "../db";
 import type { CloseoutBypass } from "../closeout";
 
 export type RecoveryAnswer =
@@ -56,6 +56,7 @@ export function recoveryQuestion(
     "Closeout needs your help.",
     ...(error ? [error] : []),
     recovery.summary,
+    ...(recovery.skip ? [skipRequestText(recovery.skip)] : []),
     `Base: ${recovery.base}. Head: ${recovery.head}. Policy: ${recovery.policyDigest || "unavailable"}.`,
     "Reply with guidance to send the task back to its configured agent and authorize a new round with the same Closeout retry limit.",
     ...(recovery.failedChecks.length
@@ -65,4 +66,19 @@ export function recoveryQuestion(
         ]
       : []),
   ].join("\n\n");
+}
+
+function skipRequestText(skip: CloseoutSkip): string {
+  return [
+    `The agent asks to skip ${skip.checkIds.join(", ")} after the last attempt failed.`,
+    `Reason: ${skip.reason}`,
+    ...(skip.evidence.length
+      ? [
+          "Evidence:",
+          ...skip.evidence.map(
+            (entry) => `- [${entry.label.replace(/[\\[\]]/g, "\\$&")}](<${entry.url}>)`,
+          ),
+        ]
+      : []),
+  ].join("\n");
 }

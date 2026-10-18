@@ -63,6 +63,19 @@ export interface PostUpdateHook {
   post(text: string): Promise<PostUpdateResult>;
 }
 
+export const REQUEST_CLOSEOUT_SKIP_TOOL_NAME = "request_closeout_skip";
+
+/** The agent's request to skip Closeout checks whose last attempt failed. */
+export interface CloseoutSkipRequest {
+  checkIds: string[];
+  reason: string;
+}
+
+export interface CloseoutSkipHook {
+  /** Saves the request. Asking again replaces it. */
+  request(request: CloseoutSkipRequest): Promise<void>;
+}
+
 /** At most one update per key per interval. */
 export function createUpdateLimiter(
   now: () => number = Date.now,
@@ -136,6 +149,7 @@ interface HostToolBridgeOptions {
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
+  closeoutSkip?: CloseoutSkipHook;
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
@@ -209,6 +223,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.postUpdate ? "post_update" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
+            closeout && allowCloseoutRun && options.closeoutSkip ? "request_closeout_skip" : "",
           ]
             .filter(Boolean)
             .join(","),
@@ -337,6 +352,22 @@ async function handleConnection(
       const result = await options.postUpdate.post(parsePostUpdate(parsed.arguments ?? {}));
       socket.end(
         `${JSON.stringify({ id, answer: result.posted ? "Posted." : `Too soon. The next update is allowed in ${result.waitSeconds} seconds.` })}\n`,
+      );
+      return;
+    }
+    if (parsed.tool === "request_closeout_skip") {
+      if (!options.closeoutSkip || !options.closeout || options.allowCloseoutRun === false)
+        throw new Error("request_closeout_skip is unavailable");
+      const request = parseCloseoutSkip(parsed.arguments ?? {});
+      options.onHookStart?.();
+      try {
+        exhaustedChecks(await options.closeout.report(), request.checkIds);
+      } finally {
+        options.onHookEnd?.();
+      }
+      await options.closeoutSkip.request(request);
+      socket.end(
+        `${JSON.stringify({ id, answer: "Saved. Finish with a short note. Paws adds your reason and the evidence for these checks to the Closeout recovery question in Linear, where the team can reply /paws bypass or with guidance. Asking again replaces this request." })}\n`,
       );
       return;
     }
@@ -546,6 +577,50 @@ export function parsePostUpdate(value: { text?: unknown }): string {
   if (text.length < 1 || text.length > 500)
     throw new Error("post_update needs text of 1 to 500 characters");
   return text;
+}
+
+export function parseCloseoutSkip(value: {
+  checkIds?: unknown;
+  reason?: unknown;
+}): CloseoutSkipRequest {
+  if (
+    !Array.isArray(value.checkIds) ||
+    value.checkIds.length < 1 ||
+    value.checkIds.length > 32 ||
+    value.checkIds.some(
+      (id) => typeof id !== "string" || !/^[A-Za-z0-9][\w./-]{0,127}$/.test(id.trim()),
+    )
+  )
+    throw new Error("request_closeout_skip needs 1 to 32 Closeout check ids from get_closeout");
+  if (typeof value.reason !== "string") throw new Error("request_closeout_skip requires a reason");
+  const reason = value.reason.trim();
+  if (reason.length < 1 || reason.length > 2000)
+    throw new Error("request_closeout_skip needs a reason of 1 to 2000 characters");
+  const checkIds = [...new Set(value.checkIds.map((id: string) => id.trim()))];
+  return { checkIds, reason };
+}
+
+/**
+ * Accepts only required checks whose last attempt failed, which Closeout reports as
+ * `exhausted`. Those are the checks a person can bypass after Paws' own Closeout.
+ */
+function exhaustedChecks(report: string, checkIds: readonly string[]): void {
+  let required: unknown;
+  try {
+    required = (JSON.parse(report) as { required?: unknown }).required;
+  } catch {
+    throw new Error("Closeout status is unavailable");
+  }
+  if (!Array.isArray(required)) throw new Error("Closeout status is unavailable");
+  for (const id of checkIds) {
+    const check = required.find((item) => item?.id === id) as { status?: unknown } | undefined;
+    if (!check)
+      throw new Error(`Closeout check ${id} is not required for the current changes. Call get_closeout.`);
+    if (check.status !== "exhausted")
+      throw new Error(
+        `Closeout check ${id} is ${String(check.status)}. You can ask to skip a check only after its last attempt failed.`,
+      );
+  }
 }
 
 function authorizeCloseout(
