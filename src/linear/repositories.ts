@@ -12,11 +12,26 @@ export type RepositorySuggestionsInput = {
   candidateRepositories: readonly CandidateRepository[];
 };
 
+export type RepositoryHints = {
+  mentions: string[];
+  issueLabels: string[];
+  parentLabels: string[];
+  projectLabels: string[];
+};
+
+export const NO_REPOSITORY_HINTS: RepositoryHints = {
+  mentions: [],
+  issueLabels: [],
+  parentLabels: [],
+  projectLabels: [],
+};
+
 export interface LinearRepositoryAdapter {
   issueRepositorySuggestions(
     input: RepositorySuggestionsInput,
     options?: TrackerRequestOptions,
   ): Promise<readonly RepositorySuggestion[]>;
+  issueRepositoryHints?(issueId: string, options?: TrackerRequestOptions): Promise<RepositoryHints>;
 }
 
 const SUGGESTIONS_QUERY = `query IssueRepositorySuggestions(
@@ -46,6 +61,9 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         throw new Error("Linear repository suggestions returned no suggestions array");
       }
       return authorizedRepositorySuggestions(candidates, result["suggestions"]);
+    },
+    async issueRepositoryHints() {
+      return NO_REPOSITORY_HINTS;
     },
   };
 }

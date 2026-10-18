@@ -1,5 +1,5 @@
 import type { RepositoryBinding } from "../core";
-import type { RepositorySuggestion } from "../linear";
+import type { RepositoryHints, RepositorySuggestion } from "../linear";
 import type { AgentProfile } from "../config";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -165,4 +165,11 @@ export function chooseRepository(
   if (top && top.confidence >= CONFIDENT && top.confidence - (next?.confidence ?? 0) >= LEAD)
     return { bind: ranked[0]! };
   return { ask: ranked.slice(0, OFFERED) };
+}
+
+export function hintedRepository(
+  _candidates: readonly RepositoryBinding[],
+  _hints: RepositoryHints,
+): { bind: RepositoryBinding } | { ask: RepositoryBinding[] } | null {
+  return null;
 }

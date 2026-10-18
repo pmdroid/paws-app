@@ -130,3 +130,62 @@ describe("Linear repository suggestions", () => {
     expect(tracker.repositorySuggestionRequests).toEqual([input]);
   });
 });
+
+test("repository hints read [repo=] mentions and repo group labels on the issue, parent and project", async () => {
+  const label = (name: string, group: string | null) => ({
+    name,
+    parent: group === null ? null : { name: group },
+  });
+  let seen: unknown;
+  const client: LinearClient = {
+    async query(query, variables) {
+      seen = { query, variables };
+      return {
+        issue: {
+          description: "Ship it in [repo=acme/api] please. Not [repo=bad name].",
+          labels: {
+            nodes: [label("acme/web", "Repo"), label("bug", null), label("acme/x", "area")],
+          },
+          parent: { labels: { nodes: [label("acme/parent", "repo")] } },
+          project: { labels: { nodes: [label("acme/docs", "repo"), label("not a repo", "repo")] } },
+          comments: {
+            nodes: [
+              { body: "Use [repo=acme/later] instead.", createdAt: "2026-10-18T02:00:00.000Z" },
+              { body: "First thoughts [repo=acme/earlier]", createdAt: "2026-10-18T01:00:00.000Z" },
+            ],
+          },
+        },
+      };
+    },
+  };
+  const tracker = createLinearTracker(client);
+  expect(await tracker.issueRepositoryHints!("issue-id")).toEqual({
+    mentions: ["acme/api", "acme/earlier", "acme/later"],
+    issueLabels: ["acme/web"],
+    parentLabels: ["acme/parent"],
+    projectLabels: ["acme/docs"],
+  });
+  expect(seen).toMatchObject({ variables: { id: "issue-id" } });
+});
+
+test("repository hints are empty when the issue has no parent, project or labels", async () => {
+  const client: LinearClient = {
+    async query() {
+      return {
+        issue: {
+          description: null,
+          labels: { nodes: [] },
+          parent: null,
+          project: null,
+          comments: { nodes: [] },
+        },
+      };
+    },
+  };
+  expect(await createLinearTracker(client).issueRepositoryHints!("issue-id")).toEqual({
+    mentions: [],
+    issueLabels: [],
+    parentLabels: [],
+    projectLabels: [],
+  });
+});
