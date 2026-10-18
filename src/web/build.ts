@@ -21,6 +21,8 @@ const built = await Bun.build({
   minify: true,
   target: "browser",
   format: "esm",
+  // video.js loads as its own chunk the first time a video plays.
+  splitting: true,
 });
 
 if (!built.success) {
@@ -28,7 +30,9 @@ if (!built.success) {
   process.exit(1);
 }
 
-const js = built.outputs.find((output) => output.path.endsWith(".js"));
+const js = built.outputs.find(
+  (output) => output.kind === "entry-point" && output.path.endsWith(".js"),
+);
 const jsName = js?.path.split(/[/\\]/).pop();
 if (!js || !jsName) {
   console.error("Client bundle did not emit JavaScript");
