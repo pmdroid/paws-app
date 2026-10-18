@@ -2,7 +2,6 @@ const ENCODING = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
-/** 26-character ULID. Time prefix plus 80 bits of randomness. */
 export function ulid(now = Date.now()): string {
   let time = now;
   let prefix = "";

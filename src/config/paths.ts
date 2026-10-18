@@ -11,7 +11,6 @@ export type PawsPaths = {
   worktreesDir: string;
   runsDir: string;
   logsDir: string;
-  /** Closeout videos and screenshots, one file per `evidence` row. */
   evidenceDir: string;
 };
 
