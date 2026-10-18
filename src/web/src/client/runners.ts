@@ -1,6 +1,7 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
+import { openAgentAccounts } from "./agent-accounts";
 
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
@@ -243,11 +244,15 @@ export function runnerCardMarkup(
       return `<li><div class="row"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</div></li>`;
     })
     .join("");
+  const signIn =
+    revoked || view.role === null || view.role === "observer"
+      ? ""
+      : `<div class="row"><button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button></div>`;
   const sharing =
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? (view.recent ? "" : '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>') : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<li data-runner-card="${id}"><section class="runner-section" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${sharing}${runnerActionsMarkup(
+  return `<li data-runner-card="${id}"><section class="runner-section" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
@@ -567,6 +572,13 @@ export function createRunners() {
           feedback = "Runner approved. The host can complete pairing.";
         }),
     );
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-signin]"))
+      button.addEventListener("click", () => {
+        const runner = runners.find((entry) => entry.id === button.dataset.runnerSignin);
+        if (!runner) return;
+        refocus(`signin:${runner.id}`);
+        openAgentAccounts(runner, () => void load(true));
+      });
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))
       button.addEventListener(
         "click",
