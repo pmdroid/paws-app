@@ -5,7 +5,8 @@ import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
-import { initializeAgentAccounts } from "./agent-accounts";
+import { routeHref } from "./route";
+import { clearSettingsLoads, loadWhenShown, settingsPageShown } from "./settings-loads";
 
 type BrowserSession = {
   role: string;
@@ -15,7 +16,7 @@ type BrowserSession = {
   workspaces: { id: string; name: string; role: string }[];
 };
 
-export async function initializeWorkspaceAccess(): Promise<boolean> {
+export async function initializeWorkspaceAccess(page: () => SettingsPage | null): Promise<boolean> {
   const root = document.querySelector<HTMLElement>("#workspace-access");
   let response: Response;
   try {
@@ -72,13 +73,14 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
   const csrf = document.querySelector('meta[name="paws-csrf"]');
   csrf?.setAttribute("content", session.csrfToken);
   if (root === null) return true;
+  clearSettingsLoads();
   root.hidden = false;
   root.dataset.loaded = "true";
   root.dataset.workspace = "true";
   root.className = "flex min-w-0 flex-col gap-8";
   renderMarkup(
     root,
-    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}${session.role === "owner" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="#/settings/integrations">Manage GitHub repositories</a></div></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace owner to change members, roles, or repository access.</p>'}${!["owner", "admin"].includes(session.role) ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace owners and admins.</p>' : ""}`,
+    `<section data-settings-page="account" class="settings-section"><div><h2>Linear account</h2><p class="sub">You are signed in to ${escapeHtml(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "your workspace")}.</p></div><div class="settings-account"><strong>${escapeHtml(session.user?.name ?? "Linear account")}</strong>${session.user?.email ? `<span>${escapeHtml(session.user.email)}</span>` : ""}<span class="muted">Workspace role: ${escapeHtml(session.role)}</span><button class="btn" id="workspace-signout">Sign out</button></div></section><p id="workspace-feedback" class="empty:hidden" data-settings-page="workspace" role="status"></p>${linearConnectionMarkup(session.workspaces.find((workspace) => workspace.id === session.workspaceId)?.name ?? "Workspace")}${session.role === "owner" ? '<section data-settings-page="workspace" id="workspace-members" class="settings-section"><div><h2>Members</h2><p class="sub">Choose who can manage and use this workspace.</p><button class="btn" type="button" data-members-refresh>Refresh members</button></div><div id="workspace-members-list"></div></section><section data-settings-page="workspace" class="settings-section"><div><h2>Repositories</h2><p class="sub">Give each Linear team access to its repositories.</p></div><div><p>Connect GitHub and match repositories to Linear teams in Integrations.</p><a class="btn" href="' + routeHref({ view: "settings", page: "integrations" }) + '">Manage GitHub repositories</a></div></section>' : '<p data-settings-page="workspace" class="sub">Ask a workspace owner to change members, roles, or repository access.</p>'}${!["owner", "admin"].includes(session.role) ? '<p data-settings-page="audit" class="sub">Audit history is available to workspace owners and admins.</p>' : ""}`,
   );
   async function change(path: string, method: string, body?: unknown) {
     const result = await fetch(path, {
@@ -109,18 +111,12 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
       }),
   );
   if (session.role === "owner") {
-    const initialMembers = await fetch("/api/workspaces/members", { cache: "no-store" }).catch(
-      () => null,
-    );
-    async function loadMembers(initialResponse?: Response | null) {
+    async function loadMembers() {
       const refresh = root!.querySelector<HTMLButtonElement>("[data-members-refresh]")!;
       refresh.disabled = true;
       try {
-        const memberResponse =
-          initialResponse === undefined
-            ? await fetch("/api/workspaces/members", { cache: "no-store" })
-            : initialResponse;
-        if (!memberResponse?.ok)
+        const memberResponse = await fetch("/api/workspaces/members", { cache: "no-store" });
+        if (!memberResponse.ok)
           throw new Error("Members could not be loaded. Refresh members to try again.");
         const data = (await memberResponse.json()) as {
           members: { id: string; name: string; role: string; active: number }[];
@@ -165,22 +161,17 @@ export async function initializeWorkspaceAccess(): Promise<boolean> {
     root
       .querySelector("[data-members-refresh]")!
       .addEventListener("click", () => void loadMembers());
-    await loadMembers(initialMembers);
+    loadWhenShown("workspace", () => void loadMembers());
   }
   if (["owner", "admin", "member"].includes(session.role))
     initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "owner");
   initializeDecisions(root, session.csrfToken, session.role !== "observer");
-  if (["owner", "admin", "member"].includes(session.role))
-    initializeAgentAccounts(root, session.csrfToken);
   if (["owner", "admin"].includes(session.role)) {
-    await initializeWorkspaceIdentities(root, session.csrfToken);
+    initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
   }
-  const route = location.hash.split("/");
-  showWorkspaceSettingsPage(
-    route[1] === "settings" ? ((route[2] as SettingsPage) ?? "agents") : null,
-  );
+  showWorkspaceSettingsPage(page());
   return true;
 }
 
@@ -189,6 +180,7 @@ export function showWorkspaceSettingsPage(page: SettingsPage | null): void {
     "#workspace-access [data-settings-page]",
   ))
     section.hidden = section.dataset.settingsPage !== page;
+  settingsPageShown(page);
 }
 
 export function linearConnectionMarkup(name: string): string {

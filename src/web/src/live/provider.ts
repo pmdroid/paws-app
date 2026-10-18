@@ -42,7 +42,6 @@ import {
   type CloseoutStepRecord,
 } from "../../../db";
 import { redactCloseoutText } from "../server/artifact";
-import { readAgentTranscript } from "./transcript";
 import {
   STATUS_API_VERSION,
   type ActivityKind,
@@ -53,6 +52,7 @@ import {
   type RunState,
   type StatusActivity,
   type StatusCheck,
+  type StatusCloseoutAttempt,
   type StatusEvent,
   type StatusItem,
   type StatusMergeEntry,
@@ -152,7 +152,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const itemsByIssue = latestByLinearIssue(records, facts);
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
-  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME, env);
+  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const items = records.map((record) =>
     toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts),
   );
@@ -209,7 +209,6 @@ function runsFor(
   generatedAt: string,
   db: Database,
   pawsHome: string | undefined,
-  env: NodeJS.ProcessEnv,
 ): StatusRun[] {
   const byItem = new Map(records.map((record) => [record.id, record]));
   const runs: StatusRun[] = [];
@@ -229,7 +228,6 @@ function runsFor(
       attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
-      transcript: readAgentTranscript(pawsHome, stored.id, iso(stored.createdAt), env),
       links: [],
     });
   }
@@ -421,7 +419,41 @@ function verdictFor(
     .at(-1);
   const base = best ? toVerdict(record, best) : impliedVerdict(record);
   if (base === null) return [];
-  return [live ? withProgress(base, live, nowMs, env) : base];
+  if (!live) return [base];
+  const verdict = withProgress(base, live, nowMs, env);
+  return [{ ...verdict, attempts: attemptsFor(record, progress, live, verdict, nowMs, env) }];
+}
+
+function attemptsFor(
+  record: WorkItemRecord,
+  progress: readonly CloseoutProgressRecord[],
+  live: CloseoutProgressRecord,
+  verdict: StatusVerdict,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): StatusCloseoutAttempt[] {
+  const mine = progress
+    .filter((row) => row.itemId === record.id && row.id !== live.id)
+    .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+  return [...mine, live].map((row, index) => ({
+    number: index + 1,
+    decision:
+      row === live
+        ? verdict.decision
+        : unfinished(row)
+          ? "running"
+          : (mapDecision(row.decision) ?? "running"),
+    startedAt: new Date(row.startedAt).toISOString(),
+    baseSha: blank(row.base),
+    headSha: blank(row.head),
+    policyDigest: blank(row.policyDigest),
+    checks:
+      row === live
+        ? verdict.checks
+        : row.steps
+            .filter((step) => step.state !== "skipped")
+            .map((step) => toLiveCheck(step, nowMs, env)),
+  }));
 }
 
 function progressFor(
@@ -476,7 +508,9 @@ function withProgress(
   nowMs: number,
   env: NodeJS.ProcessEnv,
 ): StatusVerdict {
-  const checks = live.steps.map((step) => toLiveCheck(step, nowMs, env));
+  const checks = live.steps
+    .filter((step) => step.state !== "skipped")
+    .map((step) => toLiveCheck(step, nowMs, env));
   const failing = checks.find(
     (check) => check.state === "failed" || check.state === "blocked" || check.state === "exhausted",
   );
@@ -936,7 +970,7 @@ function parseChecks(summary: string): StatusCheck[] {
     const id = match?.[1]?.trim();
     const kind = match?.[2]?.trim();
     const state = match?.[3]?.trim();
-    if (!match || !id || !kind || !state) continue;
+    if (!match || !id || !kind || !state || checkState(state) === "skipped") continue;
     const detail = match[4]?.trim() ?? "";
     checks.push({
       id,

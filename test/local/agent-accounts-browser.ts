@@ -27,11 +27,18 @@ const server = Bun.serve({
   port: 0,
   async fetch(req) {
     const url = new URL(req.url);
-    if (url.pathname.startsWith("/status/assets/") && !url.pathname.slice(15).includes("/"))
-      return new Response(Bun.file(`${root}/src/web/dist/assets/${url.pathname.slice(15)}`));
-    if (url.pathname === "/status/")
-      return new Response(Bun.file(`${root}/src/web/dist/index.html`));
-    if (url.pathname.endsWith("/config.json")) return Response.json({ engineUrl: null });
+    const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
+    if (asset !== url.pathname && !asset.includes("/"))
+      return new Response(Bun.file(`${root}/src/web/dist/assets/${asset}`));
+    if (url.pathname === "/status/" || url.pathname === "/")
+      return new Response(
+        (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
+          "</head>",
+          '<meta name="paws-csrf" content="synthetic-csrf"></head>',
+        ),
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname.endsWith("/config.json")) return Response.json({ engineUrl: url.origin });
     if (url.pathname === "/api/auth/session")
       return Response.json({
         userId: "person",
@@ -49,7 +56,11 @@ const server = Bun.serve({
     if (url.pathname === "/api/runners")
       return Response.json({
         runners: [{ id: "runner-a", name: "Team Linux runner", status: "active" }],
+        workspaceReady: true,
       });
+    if (url.pathname === "/api/runners/usage") return Response.json({ usage: [] });
+    if (url.pathname === "/api/runners/runner-a/policy")
+      return Response.json({ ownerUserId: "person", sharing: 0 });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
         accounts: ["claude", "codex"].map((agent) => ({
@@ -105,7 +116,8 @@ try {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(`http://127.0.0.1:${server.port}/status/#/settings/integrations`);
+  await page.goto(`http://127.0.0.1:${server.port}/status/#/runners`);
+  await page.getByRole("button", { name: "Sign in to agents", exact: true }).click();
   await page.getByRole("button", { name: "Sign in to Codex", exact: true }).click();
   await page.getByRole("link", { name: "Open Codex sign-in", exact: true }).waitFor();
   if (providerRequests !== 0) throw new Error("Provider fetched before acceptance");

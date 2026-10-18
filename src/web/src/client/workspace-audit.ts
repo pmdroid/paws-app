@@ -1,3 +1,4 @@
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 type AuditEntry = {
@@ -68,7 +69,7 @@ export function initializeWorkspaceAudit(root: HTMLElement) {
       older.hidden = nextBefore === null;
     }
   }
-  void load(false);
+  loadWhenShown("audit", () => void load(false));
   refresh.addEventListener("click", () => void load(false));
   older.addEventListener("click", () => void load(true));
 }

@@ -204,6 +204,7 @@ import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
   chooseRepository,
+  hintedRepository,
   repositoryAnswer,
 } from "./repository-selection";
 
@@ -1642,12 +1643,20 @@ export class Orchestrator {
         ]?.exclude ?? [])
       : [];
     const deps = this.agentDeps(item);
+    const networkGit =
+      repository && deps.signal
+        ? this.repositoryGit(item, repository, deps.signal, "write")
+        : undefined;
     for (const key of ["agentRunner", "promptRunner"] as const) {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
           assertCurrent();
-          const result = await runner({ ...options, checkoutExclusions });
+          const result = await runner({
+            ...options,
+            checkoutExclusions,
+            ...(networkGit && options.role === "implementer" ? { networkGit } : {}),
+          });
           assertCurrent();
           return result;
         };
@@ -3975,6 +3984,18 @@ export class Orchestrator {
         if (this.stopped(item.id)) return false;
         if (accessible) {
           bindWorkItemRepository(this.db, item.id, selected);
+          if (savedAnswer)
+            enqueueOutboxOnce(this.db, {
+              target: "linear",
+              op: "linear.repository_label",
+              orderingKey: this.activitySession(item) ?? item.id,
+              idempotencyKey: `repository-label:${item.id}`,
+              payload: {
+                issueId: item.linearIssueId,
+                repository: `${selected.owner}/${selected.repo}`,
+              },
+              now: this.now(),
+            });
           return true;
         }
         candidates.splice(selectedIndex, 1);
@@ -4013,13 +4034,34 @@ export class Orchestrator {
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;
       };
       candidates.sort((left, right) => recency(left) - recency(right));
-      const best = new Map<string, RepositorySuggestion>();
-      for (let attempt = 1; this.tracker?.issueRepositorySuggestions && attempt <= 3; attempt++) {
+      let hinted: ReturnType<typeof hintedRepository> = null;
+      if (this.tracker?.issueRepositoryHints) {
         try {
-          const read = await this.tracker.issueRepositorySuggestions(
+          hinted = hintedRepository(
+            candidates,
+            await this.tracker.issueRepositoryHints(item.linearIssueId, {
+              signal: controller.signal,
+            }),
+          );
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          console.error(
+            `repository hints for ${item.linearIdentifier} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      const best = new Map<string, RepositorySuggestion>();
+      const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const attempts =
+        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          const read = await this.tracker!.issueRepositorySuggestions!(
             {
               issueId: item.linearIssueId,
-              candidateRepositories: candidates.map((candidate) => ({
+              candidateRepositories: pool.map((candidate) => ({
                 hostname: "github.com",
                 repositoryFullName: `${candidate.owner}/${candidate.repo}`,
               })),
@@ -4042,7 +4084,8 @@ export class Orchestrator {
         }
       }
       if (this.stopped(item.id)) return false;
-      const choice = chooseRepository(candidates, [...best.values()]);
+      const choice =
+        hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
         const accessible =

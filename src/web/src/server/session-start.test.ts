@@ -48,7 +48,7 @@ test("local CSRF protected creation passes the selected thread to the host callb
   expect(response?.status).toBe(201);
   expect(calls[0]).toEqual([
     { kind: "comment", id: comment },
-    `${base}/status/#/`,
+    `${base}/status/`,
     expect.any(AbortSignal),
   ]);
   expect(response?.headers.get("access-control-allow-origin")).toBeNull();

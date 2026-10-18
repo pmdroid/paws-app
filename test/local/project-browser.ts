@@ -40,20 +40,24 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.port}/status/#/projects`);
-  await page.getByLabel("Linear project ID", { exact: true }).fill("project");
+  await page.getByLabel("Linear project URL or ID", { exact: true }).fill("project");
   await page.getByRole("button", { name: "Load project", exact: true }).click();
-  await page.getByLabel("Lead", { exact: true }).selectOption("lead");
-  await page.getByRole("checkbox", { name: "member", exact: true }).check();
-  await page.locator('input[name="issue"][value="one"]').check();
-  await page.locator('input[name="issue"][value="two"]').check();
-  await page.getByRole("button", { name: "Preview selected scope", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Approve 2 issues", exact: true })).toBeEnabled();
-  await expect(page.getByText("1 project issues excluded.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start 3 issues", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Lead", { exact: true })).toBeHidden();
   await page.evaluate("scrollTo(0,0)");
   if (directory)
-    await page.screenshot({ path: `${directory}/projects-preview-desktop.png`, fullPage: true });
-  await page.getByRole("button", { name: "Approve 2 issues", exact: true }).click();
-  await expect(page.getByText("Scope approved.", { exact: false })).toBeVisible();
+    await page.screenshot({ path: `${directory}/projects-start-desktop.png`, fullPage: true });
+  await page.getByText("Change issues, repository or lead", { exact: true }).click();
+  await page.getByLabel("Lead", { exact: true }).selectOption("lead");
+  await page.getByRole("checkbox", { name: "member", exact: true }).check();
+  await page.locator('input[name="issue"][value="unapproved"]').uncheck();
+  await expect(page.getByRole("button", { name: "Start 3 issues", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Update", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Start 2 issues", exact: true })).toBeEnabled();
+  await expect(page.getByText("1 other issue is left out.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Start 2 issues", exact: true }).click();
+  await expect(page.getByText("Started.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start 2 issues", exact: true })).toBeHidden();
   f.projects.register(f.jobs);
   await f.jobs.tick();
   await page.getByRole("button", { name: "Refresh projects", exact: true }).click();
@@ -62,6 +66,19 @@ try {
       exact: true,
     }),
   ).toBeVisible();
+  await expect(page.getByText("Lead lead", { exact: false })).toBeVisible();
+  await page.getByLabel("Filter by lead", { exact: true }).selectOption("lead");
+  await expect(page.getByRole("heading", { name: "Project", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Paused 0", exact: true }).click();
+  await expect(page.getByText("No projects match these filters.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await page.getByLabel("Search", { exact: true }).fill("nothing-matches");
+  await expect(page.getByLabel("Search", { exact: true })).toBeFocused();
+  await expect(page.getByText("Showing 0 of 1", { exact: true })).toBeVisible();
+  await page.getByLabel("Search", { exact: true }).fill("project");
+  await expect(page.getByRole("heading", { name: "Project", exact: true })).toBeVisible();
+  if (directory)
+    await page.screenshot({ path: `${directory}/projects-list-desktop.png`, fullPage: true });
   await page.getByRole("button", { name: "Pause", exact: true }).click();
   await expect(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });

@@ -9,6 +9,8 @@ import {
   type LinearRepositoryAdapter,
   type RepositorySuggestion,
   type RepositorySuggestionsInput,
+  type RepositoryHints,
+  NO_REPOSITORY_HINTS,
 } from "./repositories";
 import type {
   DependencyEdge,
@@ -29,6 +31,8 @@ export type FakeTracker = LinearSessionAdapter &
     issueContexts: Map<string, LinearIssueContext>;
     repositorySuggestionRequests: RepositorySuggestionsInput[];
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
+    repositoryHints: Map<string, RepositoryHints>;
+    repositoryLabels: { issueId: string; repository: string }[];
     epics: Map<string, EpicSnapshot>;
     deps: Map<string, readonly DependencyEdge[]>;
     progress: ProgressUpdate[];
@@ -53,6 +57,8 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const commentSessions: SessionOnComment[] = [];
   const repositorySuggestionRequests: RepositorySuggestionsInput[] = [];
   const repositorySuggestions = new Map<string, readonly RepositorySuggestion[]>();
+  const repositoryHints = new Map<string, RepositoryHints>();
+  const repositoryLabels: { issueId: string; repository: string }[] = [];
   async function createActivity(update: ProgressUpdate, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     activityInput(update);
@@ -98,6 +104,16 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     commentSessions,
     repositorySuggestionRequests,
     repositorySuggestions,
+    repositoryHints,
+    repositoryLabels,
+    async addRepositoryLabel(input, options) {
+      options?.signal?.throwIfAborted();
+      repositoryLabels.push({ ...input });
+    },
+    async issueRepositoryHints(issueId, options) {
+      options?.signal?.throwIfAborted();
+      return repositoryHints.get(issueId) ?? NO_REPOSITORY_HINTS;
+    },
     async issueRepositorySuggestions(input, options) {
       options?.signal?.throwIfAborted();
       const candidates = repositoryCandidates(input);
