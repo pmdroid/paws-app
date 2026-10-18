@@ -61,19 +61,26 @@ function setup(options: { fail?: boolean; returned?: unknown } = {}) {
   return { db, store, start, calls, seen };
 }
 
-test("explicit issue creation persists authoritative context before intake without webhooks", async () => {
+test("explicit issue creation persists authoritative context and links Linear to its Paws conversation", async () => {
   const env = setup();
   const signal = new AbortController().signal;
   expect(
-    await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/#/", signal),
+    await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/", signal),
   ).toEqual({ id: "session", url: "https://linear.app/team/issue/ENG-1/example" });
   expect(env.calls[0]?.variables).toEqual({
     input: {
       issueId: "ENG-1",
-      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/#/" }],
+      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/" }],
     },
   });
   expect(env.calls[0]?.signal).toBe(signal);
+  expect(env.calls[1]?.query).toContain("agentSessionUpdate");
+  expect(env.calls[1]?.variables).toEqual({
+    id: "session",
+    input: {
+      externalUrls: [{ label: "Paws", url: "http://127.0.0.1:8787/status/sessions/session" }],
+    },
+  });
   expect(env.seen).toHaveLength(1);
   const payload = JSON.parse(env.seen[0]!.payload);
   expect(payload).toMatchObject({
@@ -83,7 +90,7 @@ test("explicit issue creation persists authoritative context before intake witho
   });
   expect(payload.promptContext).toContain("Explain the screenshot");
   await Promise.resolve();
-  await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/#/");
+  await env.start({ kind: "issue", id: "ENG-1" }, "http://127.0.0.1:8787/status/");
   expect(env.seen).toHaveLength(1);
   env.db.close();
 });
