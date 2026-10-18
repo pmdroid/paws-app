@@ -204,9 +204,18 @@ export async function probeRunnerPolicyBrowser(
     assert.equal(privateUsage.usage.length, 1);
     assert.equal(privateUsage.usage[0]!.ownerUserId, member);
     assert.equal(adminUsage.usage.length, 2);
+    const hostUsage = (await (await request(
+      `/api/runners/usage?runner=${ownRunner}`,
+      principal(owner, "owner"),
+    ))!.json()) as { usage: { runnerId: string; commandId: string }[] };
+    assert.deepEqual(
+      hostUsage.usage.map((entry) => [entry.runnerId, entry.commandId]),
+      [[ownRunner, "owner-usage"]],
+    );
     observe("Execution usage is personal for members and workspace-wide for administrators", true, {
       memberRows: 1,
       ownerRows: 2,
+      hostRows: 1,
     });
     db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [member]);
     assert.equal((await request("/api/runners/usage", memberPrincipal))!.status, 403);
