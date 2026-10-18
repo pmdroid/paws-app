@@ -39,6 +39,12 @@ export type LinearWebhookDeps = {
 };
 
 const flights = new WeakMap<InboxStore, Set<string>>();
+const verifiedAt = new WeakMap<InboxStore, number>();
+
+/** When the last signed, well-formed delivery reached this inbox. Null before the first one. */
+export function lastVerifiedWebhookMs(store: InboxStore): number | null {
+  return verifiedAt.get(store) ?? null;
+}
 
 /**
  * HMAC-SHA256 of the raw body, hex-encoded in `Linear-Signature`.
@@ -100,6 +106,7 @@ export async function handleLinearWebhook(
   if (deps?.store === undefined) {
     return Response.json({ ok: false, reason: "not_persisted" }, { status: 500 });
   }
+  verifiedAt.set(deps.store, deps.now?.() ?? Date.now());
   const committed = deps.store.commit(event);
   if (committed.inserted || !committed.handled) schedule(deps, event);
   return Response.json({ ok: true, duplicate: !committed.inserted });
