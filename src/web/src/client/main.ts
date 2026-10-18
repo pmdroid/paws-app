@@ -258,7 +258,8 @@ function paint(): void {
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
   if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
-  if (runnerRoot) runners.mount(runnerRoot, currentEngine(), source());
+  if (runnerRoot && model.route.view === "runners")
+    runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
   const projectRoot = document.querySelector<HTMLElement>("#project-delivery");
   if (projectRoot) projects.mount(projectRoot, currentEngine(), source());
 }

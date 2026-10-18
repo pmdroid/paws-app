@@ -183,6 +183,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "a") {
+    if (has("runner-row"))
+      return styled(
+        "flex min-w-0 flex-col gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:flex-row sm:items-center sm:justify-between",
+      );
     if (has("node"))
       return styled(
         "flex flex-col gap-3 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none",
@@ -316,7 +320,12 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-4 font-mono text-xs",
     );
-  if (name === "table") return <Table {...props}>{children()}</Table>;
+  if (name === "table")
+    return (
+      <Table {...props} className={has("runner-history") ? "[overflow-wrap:normal]" : undefined}>
+        {children()}
+      </Table>
+    );
   if (name === "thead") return <TableHeader {...props}>{children()}</TableHeader>;
   if (name === "tbody") return <TableBody {...props}>{children()}</TableBody>;
   if (name === "tr") return <TableRow {...props}>{children()}</TableRow>;
@@ -341,6 +350,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
     );
+  if (name === "ul" && has("runner-rows"))
+    return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
+  if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
+  if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
   if (has("issue-row"))
     return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
   if (has("page-heading")) return styled("space-y-2");
