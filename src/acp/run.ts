@@ -191,7 +191,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const socketPath = `${directory}/ask-team.sock`;
   const stopHook =
-    (options.askTeam || options.updatePlan || options.pullRequest || options.publishArtifact) &&
+    (options.askTeam ||
+      options.updatePlan ||
+      options.pullRequest ||
+      options.postUpdate ||
+      options.publishArtifact) &&
     options.readOnly !== true
       ? await installCloseoutStopHook({
           agent: profile.agent,
@@ -327,12 +331,19 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   };
 
   try {
-    if (options.askTeam || options.updatePlan || options.pullRequest || options.publishArtifact) {
+    if (
+      options.askTeam ||
+      options.updatePlan ||
+      options.pullRequest ||
+      options.postUpdate ||
+      options.publishArtifact
+    ) {
       bridge = await startHostToolBridge({
         socketPath,
         hook: options.askTeam,
         updatePlan: options.updatePlan,
         pullRequest: options.pullRequest,
+        postUpdate: options.postUpdate,
         publishArtifact: options.publishArtifact,
         artifactLimits: options.artifactLimits,
         context: {

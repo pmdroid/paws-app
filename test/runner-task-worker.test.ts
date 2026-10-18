@@ -128,7 +128,7 @@ for (const purpose of ["answer", "artifact"] as const) {
         expect(trace.terminals).toMatchObject([{ ok: false }]);
         expect(trace.fs).toMatchObject([{ op: "write", ok: false }]);
         expect(trace.artifact.ok).toBe(false);
-        expect(trace.tools).toEqual(["ask_team", "update_plan", "get_closeout"]);
+        expect(trace.tools).toEqual(["ask_team", "update_plan", "post_update", "get_closeout"]);
         expect(existsSync(join(worktree, "note.txt"))).toBe(false);
         expect(existsSync(join(worktree, "report.txt"))).toBe(false);
       } else {
@@ -139,6 +139,7 @@ for (const purpose of ["answer", "artifact"] as const) {
           "ask_team",
           "update_plan",
           "publish_artifact",
+          "post_update",
           "get_closeout",
           "run_closeout",
         ]);

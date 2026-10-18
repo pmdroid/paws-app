@@ -286,10 +286,17 @@ export async function probeRunnerBackend(
     );
     const first = item();
     const events: AcpEvent[] = [];
+    const updates: string[] = [];
     const running = backend.forItem(first.id)(
       input(first, {
         onEvent: (e) => {
           events.push(e);
+        },
+        postUpdate: {
+          async post(text) {
+            updates.push(text);
+            return { posted: true };
+          },
         },
         publishArtifact: {
           async publish(snapshot, context) {
@@ -374,7 +381,7 @@ export async function probeRunnerBackend(
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
     assert.equal(getWorkItem(db, first.id)?.state, "running");
     assert.throws(() => work.current(first.run.id, 1), /fenced/);
-    assert(events.some((e) => e.type === "session_update"));
+    assert.deepEqual(updates, ["Implementation progress"]);
     observe(
       "signed remote implementation imports the exact candidate while canonical verification remains pending",
       true,
@@ -534,6 +541,7 @@ export async function probeRunnerBackend(
             .join(""),
         );
         const taskEvents: AcpEvent[] = [];
+        const taskUpdates: string[] = [];
         const publicActivities: { body: string; action?: unknown }[] = [];
         const reporter = createAcpActivityReporter((activity) => publicActivities.push(activity));
         const beforeFetch: number = fetched;
@@ -545,6 +553,12 @@ export async function probeRunnerBackend(
             onEvent(event) {
               taskEvents.push(event);
               reporter.onEvent(event);
+            },
+            postUpdate: {
+              async post(update) {
+                taskUpdates.push(update);
+                return { posted: true };
+              },
             },
             askTeam: {
               async ask(request) {
@@ -629,10 +643,7 @@ export async function probeRunnerBackend(
           if (i === 499) throw new Error("Response task callbacks did not answer");
           await delay(1);
         }
-        assert.deepEqual(
-          taskEvents.filter((event) => event.type === "progress"),
-          [{ type: "progress", text: "Bounded progress" }],
-        );
+        assert.deepEqual(taskUpdates, ["Bounded progress"]);
         let activitySequence = purpose === "artifact" ? 3 : 2;
         for (const update of [
           {
@@ -1025,13 +1036,11 @@ export async function probeRunnerBackend(
         input(sealed, {
           role: "reviewer",
           readOnly: true,
-          onEvent(event) {
-            if (
-              event.type === "session_update" &&
-              event.update.sessionUpdate === "agent_thought_chunk" &&
-              event.update.content.type === "text"
-            )
-              receivedProgress.push(event.update.content.text);
+          postUpdate: {
+            async post(update) {
+              receivedProgress.push(update);
+              return { posted: true };
+            },
           },
         }),
       );
@@ -1463,7 +1472,13 @@ export async function probeRunnerBackend(
       generation: firstAttempt.generation,
       token: firstToken.token,
       sequence: 1,
-      event: { type: "progress", text: "Retained work before heartbeat loss" },
+      event: {
+        type: "activity",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Retained work before heartbeat loss" },
+        },
+      },
     });
     for (
       let index = 0;
@@ -1543,7 +1558,13 @@ export async function probeRunnerBackend(
         generation: thirdAttempt.generation,
         token: thirdToken.token,
         sequence: eventSequence,
-        event: { type: "progress", text: `Final event ${eventSequence}` },
+        event: {
+          type: "activity",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Final event ${eventSequence}` },
+          },
+        },
       });
     results.submit({
       runnerId: hostIds[2]!,

@@ -6,9 +6,16 @@ import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { AskTeamHook, AgentIdentity, PullRequestHook, UpdatePlanHook } from "../acp";
+import type {
+  AskTeamHook,
+  AgentIdentity,
+  PostUpdateHook,
+  PullRequestHook,
+  UpdatePlanHook,
+} from "../acp";
 import {
   executeItem,
+  createUpdateLimiter,
   validateCandidateAttribution,
   git,
   removeWorktree,
@@ -164,7 +171,12 @@ import {
   questionReplyConsumed,
 } from "../questions";
 import { ciWaitVerification, enqueueVerifiedMerge, parkMergeForCi } from "./merge-jobs";
-import { createAcpActivityReporter, FIRST_ACTIVITY_MS, KEEPALIVE_MS } from "./activity";
+import {
+  createAcpActivityReporter,
+  FIRST_ACTIVITY_MS,
+  KEEPALIVE_MS,
+  publicToolText,
+} from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, worktreeBranch } from "./sources";
@@ -172,6 +184,7 @@ import {
   createAcpCodexReviewer,
   createAcpFixRunner,
   implementPrompt,
+  POST_UPDATE_PROMPT,
   type AgentLaunch,
   type AcpAgentDeps,
 } from "./agents";
@@ -318,6 +331,7 @@ export class Orchestrator {
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
+  private readonly updates = createUpdateLimiter(() => this.now());
   private readonly inputLoader: ReturnType<typeof createLinearInputLoader> | null;
   private readonly taskPlanner: ReturnType<typeof createTaskPlanner>;
   private readonly githubAuth: GitHubAuthQuestions | null;
@@ -1184,6 +1198,7 @@ export class Orchestrator {
           : "Create the requested deliverable files in this workspace, publish them using publish_artifact, and include the published file links in your complete final response.",
         "Use ask_team when a product decision is required.",
         "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled.",
+        POST_UPDATE_PROMPT,
         repositoryContext,
         this.workContext(item),
         handoff ?? "",
@@ -1216,6 +1231,7 @@ export class Orchestrator {
         signal: controller.signal,
         askTeam: this.askHook(item, run.id),
         updatePlan: this.planHook(item, sessionProgress),
+        postUpdate: this.updateHook(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
       });
@@ -1387,6 +1403,7 @@ export class Orchestrator {
         askTeam,
         updatePlan: this.planHook(item, sessionProgress),
         pullRequest: this.pullRequestHook(item),
+        postUpdate: this.updateHook(item),
         publishArtifact: this.artifactPublisher(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
@@ -1679,6 +1696,7 @@ export class Orchestrator {
       onEvent: activity.onEvent,
       updatePlan: this.planHook(item, sessionProgress),
       pullRequest: this.pullRequestHook(item),
+      postUpdate: this.updateHook(item),
     });
     const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
@@ -3026,6 +3044,21 @@ export class Orchestrator {
       update: async (description) => {
         if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
         savePullRequestDraft(this.db, item.id, description, this.now());
+      },
+    };
+  }
+
+  private updateHook(item: WorkItemRecord): PostUpdateHook {
+    return {
+      post: async (text) => {
+        if (!this.canReportProgress(item.id))
+          throw new Error("Progress updates are closed for this run");
+        const allowed = this.updates.take(item.id);
+        if (allowed.posted) {
+          this.post(item, "thought", publicToolText(text), `update:${item.id}:${this.now()}`);
+          await this.flush();
+        }
+        return allowed;
       },
     };
   }

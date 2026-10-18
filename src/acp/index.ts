@@ -24,6 +24,10 @@ export {
   ASK_TEAM_TOOL_NAME,
   UPDATE_PLAN_TOOL_NAME,
   OPEN_PULL_REQUEST_TOOL_NAME,
+  POST_UPDATE_INTERVAL_MS,
+  POST_UPDATE_TOOL_NAME,
+  createUpdateLimiter,
+  parsePostUpdate,
   parsePullRequest,
   startAskTeamBridge,
   startHostToolBridge,
@@ -37,6 +41,8 @@ export {
   type PlanStepStatus,
   type PullRequestDescription,
   type PullRequestHook,
+  type PostUpdateHook,
+  type PostUpdateResult,
   type UpdatePlanHook,
 } from "./ask-team";
 export {
