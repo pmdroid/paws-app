@@ -102,15 +102,8 @@ export async function probeRunnerPlacement(
       [id!, workspace.id, userId, id!, now, now],
     );
     db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id!, id === "own" ? 0 : 1]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES(?,'codex',?,1)", [
-      id!,
-      id === "own" ? "personal" : id === "shared" ? "organization" : "api",
-    ]);
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
-  db.run(
-    "INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,1)",
-    [workspace.id],
-  );
   const issue = {
     id: item.linearIssueId,
     teamId: "team",
@@ -229,22 +222,10 @@ export async function probeRunnerPlacement(
     );
     members = ["colleague", "pool"];
     assert.deepEqual(await ids(), ["own", "api", "shared"]);
-    db.run("UPDATE runner_agent_policy SET seat='personal' WHERE runner_id='shared'");
-    assert.deepEqual(await ids(), ["own", "api"]);
-    db.run("UPDATE runner_agent_policy SET seat='organization' WHERE runner_id='shared'");
-    db.run("UPDATE workspace_runner_policy SET personal_organization_host=0 WHERE workspace_id=?", [
-      workspace.id,
-    ]);
-    assert.deepEqual(await ids(), ["api", "shared"]);
-    db.run("UPDATE workspace_runner_policy SET personal_organization_host=1 WHERE workspace_id=?", [
-      workspace.id,
-    ]);
     members = ["colleague"];
-    observe(
-      "Organization and API seats are shared with project members and personal seats need workspace permission for own work",
-      true,
-      { shared: ["api", "shared"], personalSharingDenied: true, personalNeedsPermission: true },
-    );
+    observe("Every shared host is offered to its project members after the owner's host", true, {
+      shared: ["api", "shared"],
+    });
     await placement.candidates(request);
     saveCheckpoint(db, item.id, {
       phase: "running",
@@ -459,9 +440,7 @@ export async function probeRunnerPlacement(
       .query<{ id: string }, []>("SELECT id FROM workspace_user WHERE linear_user_id='colleague'")
       .get()!.id;
     db.run("UPDATE workspace_member SET active=1 WHERE user_id=?", [colleague]);
-    db.run(
-      "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES('own','claude','personal',1)",
-    );
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('own','claude',1)");
     const otherProvider: PlacementRequest = {
       ...request,
       profile: { agent: "claude", model: "implementation-model" },
@@ -481,12 +460,11 @@ export async function probeRunnerPlacement(
     lifecycle.issue.assigneeId = "owner";
     const memberCommand = await start("own");
     const memberUsage = db
-      .query<{ owner: string; seat: string }, [string]>(
-        "SELECT owner_user_id AS owner,seat FROM runner_execution_usage WHERE command_id=?",
+      .query<{ owner: string }, [string]>(
+        "SELECT owner_user_id AS owner FROM runner_execution_usage WHERE command_id=?",
       )
       .get(memberCommand)!;
     assert.equal(memberUsage.owner, owner);
-    assert.equal(memberUsage.seat, "organization");
     placement.finished({
       commandId: memberCommand,
       runnerId: "own",

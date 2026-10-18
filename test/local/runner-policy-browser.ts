@@ -76,11 +76,7 @@ export async function probeRunnerPolicyBrowser(
       }),
       actor,
     );
-  const policy = {
-    agent: "codex",
-    seat: "organization",
-    sharing: true,
-  };
+  const policy = { sharing: true };
   try {
     const memberPrincipal = principal(member, "member");
     assert.equal(
@@ -94,75 +90,35 @@ export async function probeRunnerPolicyBrowser(
     const saved = (await (await request(
       `/api/runners/${runnerId}/policy`,
       memberPrincipal,
-    ))!.json()) as { sharing: number; agents: { seat: string }[] };
+    ))!.json()) as { sharing: number };
     assert.equal(saved.sharing, 1);
-    assert.equal(saved.agents[0]!.seat, "organization");
     observe(
       "The host owner can consent to sharing; an administrator cannot consent for them",
       true,
       { ownerSaved: true, administratorDenied: true },
     );
+    for (const removed of [
+      { agent: "codex", seat: "organization" },
+      { hostOwner: "member" },
+      { fallback: true },
+    ])
+      assert.equal(
+        (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
+          ...policy,
+          ...removed,
+        }))!.status,
+        400,
+      );
     assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
-        ...policy,
-        seat: "personal",
-      }))!.status,
-      403,
-    );
-    assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
-        ...policy,
-        sharing: false,
-        seat: "personal",
-      }))!.status,
-      403,
-    );
-    assert.equal(
-      (await request("/api/runners/policy", principal(owner, "owner"), {
-        fallbackAllowed: true,
+      await request("/api/runners/policy", principal(owner, "owner"), {
         personalOrganizationHost: true,
-      }))!.status,
-      400,
-    );
-    assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
-        ...policy,
-        hostOwner: "member",
-      }))!.status,
-      400,
-    );
-    assert.equal(
-      (await request("/api/runners/policy", principal(owner, "owner"), {
-        personalOrganizationHost: true,
-      }))!.status,
-      200,
-    );
-    assert.deepEqual(
-      await (await request("/api/runners/policy", principal(owner, "owner")))!.json(),
-      { personalOrganizationHost: true },
-    );
-    assert.equal(
-      (await request(`/api/runners/${runnerId}/policy`, memberPrincipal, {
-        ...policy,
-        sharing: false,
-        seat: "personal",
-      }))!.status,
-      200,
-    );
-    assert.equal(
-      (await request("/api/runners/policy", memberPrincipal, {
-        personalOrganizationHost: false,
-      }))!.status,
-      403,
+      }),
+      null,
     );
     observe(
-      "Personal accounts require explicit account and workspace owner permission and host owner or fallback fields are rejected",
+      "Account type, workspace permission, host owner and fallback fields are no longer accepted",
       true,
-      {
-        personalSharingDenied: true,
-        workspacePermissionRequired: true,
-        removedFieldsRejected: true,
-      },
+      { removedFieldsRejected: true, workspacePolicyRouteRemoved: true },
     );
     assert.equal(
       (await request(
@@ -191,7 +147,7 @@ export async function probeRunnerPolicyBrowser(
       ["owner-usage", owner, ownRunner],
     ])
       db.run(
-        "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,seat,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'organization','implementer','helper',?,?,'success')",
+        "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'implementer','helper',?,?,'success')",
         [id!, host!, userId!, now, now + 1000],
       );
     const privateUsage = (await (await request("/api/runners/usage", memberPrincipal))!.json()) as {
