@@ -3976,6 +3976,18 @@ export class Orchestrator {
         if (this.stopped(item.id)) return false;
         if (accessible) {
           bindWorkItemRepository(this.db, item.id, selected);
+          if (savedAnswer)
+            enqueueOutboxOnce(this.db, {
+              target: "linear",
+              op: "linear.repository_label",
+              orderingKey: this.activitySession(item) ?? item.id,
+              idempotencyKey: `repository-label:${item.id}`,
+              payload: {
+                issueId: item.linearIssueId,
+                repository: `${selected.owner}/${selected.repo}`,
+              },
+              now: this.now(),
+            });
           return true;
         }
         candidates.splice(selectedIndex, 1);

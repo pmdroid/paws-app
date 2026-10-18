@@ -60,6 +60,34 @@ const HINTS_QUERY = `query IssueRepositoryHints($id: String!) {
   }
 }`;
 
+const LABEL_ISSUE = `query RepositoryLabelIssue($id: String!) {
+  issue(id: $id) { ${LABELS} }
+}`;
+
+const LABEL_GROUPS = `query RepositoryLabelGroups {
+  issueLabels(first: 1, filter: { isGroup: { eq: true }, name: { eqIgnoreCase: "repo" }, team: { null: true } }) {
+    nodes { id }
+  }
+}`;
+
+const LABELS_IN_GROUP = `query RepositoryLabels($group: ID!, $name: String!) {
+  issueLabels(first: 1, filter: { parent: { id: { eq: $group } }, name: { eqIgnoreCase: $name } }) {
+    nodes { id }
+  }
+}`;
+
+const CREATE_LABEL = `mutation RepositoryLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) { success issueLabel { id } }
+}`;
+
+const ADD_LABEL = `mutation RepositoryLabelAdd($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) { success }
+}`;
+
+function dig(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : null;
+}
+
 const REPO_NAME = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
 const REPO_MENTION = /\[repo=([a-z0-9_.-]+\/[a-z0-9_.-]+)\]/gi;
 
@@ -121,7 +149,49 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         projectLabels: repoLabels(isRecord(issue["project"]) ? issue["project"]["labels"] : null),
       };
     },
-    async addRepositoryLabel() {},
+    async addRepositoryLabel(input, options) {
+      const issue = dig(await client.query(LABEL_ISSUE, { id: input.issueId }, options), "issue");
+      if (!isRecord(issue)) throw new Error("Linear returned no issue for the repository label");
+      if (repoLabels(issue["labels"]).length > 0) return;
+      const groups = nodes(dig(await client.query(LABEL_GROUPS, {}, options), "issueLabels"));
+      const existing = isRecord(groups[0]) ? groups[0]["id"] : null;
+      const group =
+        typeof existing === "string"
+          ? existing
+          : await createLabel({ name: "repo", isGroup: true });
+      const found =
+        typeof existing === "string"
+          ? nodes(
+              dig(
+                await client.query(LABELS_IN_GROUP, { group, name: input.repository }, options),
+                "issueLabels",
+              ),
+            )
+          : [];
+      const label =
+        isRecord(found[0]) && typeof found[0]["id"] === "string"
+          ? found[0]["id"]
+          : await createLabel({ name: input.repository, parentId: group });
+      const added = dig(
+        await client.query(ADD_LABEL, { id: input.issueId, labelId: label }, options),
+        "issueAddLabel",
+      );
+      if (!isRecord(added) || added["success"] !== true)
+        throw new Error("Linear did not add the repository label");
+      async function createLabel(labelInput: Record<string, unknown>): Promise<string> {
+        const created = dig(
+          await client.query(CREATE_LABEL, { input: labelInput }, options),
+          "issueLabelCreate",
+        );
+        const id = isRecord(created) ? dig(created, "issueLabel") : null;
+        if (!isRecord(created) || created["success"] !== true || !isRecord(id))
+          throw new Error("Linear did not create the repository label");
+        const value = id["id"];
+        if (typeof value !== "string")
+          throw new Error("Linear did not create the repository label");
+        return value;
+      }
+    },
   };
 }
 
