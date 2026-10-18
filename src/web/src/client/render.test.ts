@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { demoStatus } from "../demo";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
+import { checkKey } from "./closeout";
 
 function model(patch: Partial<RenderModel> = {}): RenderModel {
   return {
@@ -11,7 +12,6 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
     ...patch,
   };
 }
@@ -59,7 +59,7 @@ describe("status views", () => {
       item.state = decision === "blocked" ? "needs_human" : "exhausted";
       run.state = "verifying";
       const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
-      expect(html).toContain("Verification");
+      expect(html).toContain("<h3>Closeout</h3>");
       expect(html).toContain(detail);
       expect(html).not.toContain("Closeout is verifying this candidate.");
     }
@@ -77,13 +77,14 @@ describe("status views", () => {
       snapshot,
       engineUrl: "https://engine.example/api/status",
       route: { view: "runs", id: run.id },
+      closeout: { attempt: {}, open: { [checkKey(verdict.itemId, 1, check.id)]: true }, wrap: {} },
     });
     expect(render(input).content).toContain('href="https://engine.example/api/closeout-artifact?');
     check.state = "running";
     check.active = true;
     const live = render(input).content;
     expect(live).not.toContain("/api/closeout-artifact?");
-    expect(live).toContain("Download log");
+    expect(live).toContain("Download output");
   });
 
   test("overview lists delivery entries and issue links without a demo banner", () => {
@@ -135,9 +136,9 @@ describe("status views", () => {
 
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
-    expect(html).toContain("Verification");
+    expect(html).toContain("<h3>Closeout</h3>");
     expect(html).toContain("Exhausted");
-    expect(html).toContain('data-action="select-check"');
+    expect(html).toContain('data-action="toggle-check"');
     expect(html).toContain('value="/runs/r-101"');
     expect(html).not.toContain("/verdicts");
   });

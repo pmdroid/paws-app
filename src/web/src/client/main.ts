@@ -12,6 +12,15 @@ import {
   renderGitHubSignIn,
   startGitHubDevice,
 } from "./github-auth";
+import {
+  attemptsOf,
+  checkAnchor,
+  checkHash,
+  checkKey,
+  emptyCloseoutView,
+  isOpen,
+  parseCheckHash,
+} from "./closeout";
 import { render, type RenderModel } from "./render";
 import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
 import type { SettingsPage } from "./settings-pages";
@@ -42,7 +51,8 @@ const painted = new Map<string, string>();
 
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
-let selectedCheck: { itemId: string; checkId: string } | null = null;
+const closeout = emptyCloseoutView();
+let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
 let via: RenderModel["via"] = null;
@@ -210,7 +220,7 @@ function paint(): void {
     via,
     error,
     engineUrl: currentEngine(),
-    selectedCheck,
+    closeout,
     conversations: canReadConversations(currentEngine(), source(), location.origin)
       ? conversations
       : { state: "unavailable", sessions: [] },
@@ -238,6 +248,7 @@ function paint(): void {
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
   applyIssueFilter();
+  if (openLinkedCheck()) return;
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
@@ -429,21 +440,82 @@ function onClick(event: MouseEvent): void {
       applyIssueFilter();
     }
   }
-  if (action === "select-check") {
-    const row = target.closest("[data-item][data-check]");
-    const itemId = row?.getAttribute("data-item");
-    const checkId = row?.getAttribute("data-check");
-    if (itemId && checkId) {
-      selectedCheck = { itemId, checkId };
-      paint();
-    }
+  const holder = target.closest("[data-item]");
+  const itemId = holder?.getAttribute("data-item") ?? "";
+  const attempt = Number(holder?.getAttribute("data-attempt") ?? "");
+  const checkId = holder?.getAttribute("data-check") ?? "";
+  if (!itemId || !Number.isInteger(attempt) || attempt < 1) return;
+  if (action === "closeout-attempt") {
+    closeout.attempt[itemId] = attempt;
+    paint();
   }
-  if (action === "download-output") {
-    const row = target.closest("[data-item][data-check]");
-    const itemId = row?.getAttribute("data-item");
-    const checkId = row?.getAttribute("data-check");
-    if (itemId && checkId) downloadOutput(itemId, checkId);
+  if (action === "closeout-expand-all") {
+    const checks = closeoutChecks(itemId, attempt);
+    const open = !checks.every((check) => isOpen(closeout, itemId, attempt, check));
+    for (const check of checks) closeout.open[checkKey(itemId, attempt, check.id)] = open;
+    paint();
   }
+  if (!checkId) return;
+  const key = checkKey(itemId, attempt, checkId);
+  if (action === "toggle-check") {
+    const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
+    if (check) closeout.open[key] = !isOpen(closeout, itemId, attempt, check);
+    paint();
+  }
+  if (action === "wrap-output") {
+    closeout.wrap[key] = !closeout.wrap[key];
+    paint();
+  }
+  if (action === "copy-check-link") {
+    const url = new URL(location.href);
+    url.hash = checkHash(attempt, checkId);
+    void navigator.clipboard?.writeText(url.href).then(
+      () => flashLabel(target.closest("button"), "Copied"),
+      () => flashLabel(target.closest("button"), "Copy failed"),
+    );
+  }
+  if (action === "download-output") downloadOutput(itemId, attempt, checkId);
+}
+
+function closeoutChecks(itemId: string, attempt: number) {
+  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  if (!verdict) return [];
+  return attemptsOf(verdict).find((entry) => entry.number === attempt)?.checks ?? [];
+}
+
+function flashLabel(button: HTMLButtonElement | null, label: string): void {
+  if (!button) return;
+  const before = button.textContent;
+  button.textContent = label;
+  window.setTimeout(() => {
+    button.textContent = before;
+  }, 1500);
+}
+
+/** A copied check link (`#check=<attempt>/<id>`) opens that attempt and row once, then scrolls to it. */
+function openLinkedCheck(): boolean {
+  const hash = location.hash;
+  if (hash === linkedHash) return false;
+  const linked = parseCheckHash(hash);
+  if (!linked) {
+    linkedHash = hash;
+    return false;
+  }
+  const itemId = document
+    .querySelector('#page-content section[aria-label="Closeout"] [data-item]')
+    ?.getAttribute("data-item");
+  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  if (!itemId || !verdict) return false;
+  linkedHash = hash;
+  const attempt = attemptsOf(verdict).find((entry) => entry.number === linked.attempt);
+  if (!attempt?.checks.some((check) => check.id === linked.checkId)) return false;
+  closeout.attempt[itemId] = attempt.number;
+  closeout.open[checkKey(itemId, attempt.number, linked.checkId)] = true;
+  paint();
+  document
+    .getElementById(checkAnchor(attempt.number, linked.checkId))
+    ?.scrollIntoView({ block: "start" });
+  return true;
 }
 
 async function paintGitHubAuth(
@@ -577,17 +649,15 @@ async function errorText(response: Response): Promise<string> {
   return `Engine responded ${response.status}`;
 }
 
-function downloadOutput(itemId: string, checkId: string): void {
-  const check = snapshot?.verdicts
-    .find((verdict) => verdict.itemId === itemId)
-    ?.checks.find((entry) => entry.id === checkId);
+function downloadOutput(itemId: string, attempt: number, checkId: string): void {
+  const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
   if (!check) return;
   const body = `STDOUT\n${check.stdout ?? ""}\nSTDERR\n${check.stderr ?? ""}\n`;
   const blob = new Blob([body], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${checkId}.log`;
+  link.download = `${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}-${attempt}.log`;
   link.click();
   URL.revokeObjectURL(url);
 }

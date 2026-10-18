@@ -11,7 +11,6 @@ const model = {
   via: "bundled" as const,
   error: null,
   engineUrl: null,
-  selectedCheck: null,
 };
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
