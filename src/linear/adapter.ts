@@ -42,6 +42,7 @@ export interface TrackerAdapter {
   ): Promise<readonly LinearActivitySnapshot[]>;
   issueRepositorySuggestions?: LinearRepositoryAdapter["issueRepositorySuggestions"];
   issueRepositoryHints?: LinearRepositoryAdapter["issueRepositoryHints"];
+  addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
   supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;

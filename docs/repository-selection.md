@@ -7,7 +7,7 @@ Paws works in one GitHub repository per Linear issue. It picks the repository in
 3. The same label on the parent issue.
 4. The same label on the issue's project.
 5. Linear's repository suggestions, when one repository is clearly ahead.
-6. A question in Linear with up to three options.
+6. A question in Linear with up to three options. Paws then adds your answer to the issue as a `repo` label, creating the label group and the label if needed, so later work on the issue doesn't ask again. If the issue already has a `repo` label, Paws leaves it as it is.
 
 Only repositories Paws has configured and can access count. A hint that names any other repository is skipped. When two labels on the same level match, Paws asks Linear's suggestions to choose between just those two, and asks you only if the suggestions are unsure too.
 
