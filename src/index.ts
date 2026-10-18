@@ -1053,6 +1053,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
       }
+      created.jobs.register("worktree.sweep", (_job, context) =>
+        attached.sweepWorktrees(context.signal),
+      );
+      enqueueJobOnce(db, {
+        queue: "worktree.sweep",
+        jobKey: "worktree.sweep",
+        recurringEveryMs: 3_600_000,
+        now: Date.now(),
+      });
       if (channel === "agent-session") {
         created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
         enqueueJobOnce(db, {
