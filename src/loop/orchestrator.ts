@@ -1516,6 +1516,7 @@ export class Orchestrator {
     if (after === null || after.state === "cancelled") return;
     if (verdict.decision === "accepted" && !verdict.exhausted) {
       const acceptedHead = (await git(["-C", worktree, "rev-parse", "HEAD"])).trim();
+      takeCloseoutSkipRequest(this.db, item.id);
       applyWorkItemEvent(this.db, item.id, "closeout_accepted");
       saveCheckpoint(this.db, item.id, {
         phase: "merge_queue",
