@@ -267,6 +267,7 @@ export function createRunners() {
   let workspaceReady = false;
   let usage: Usage[] = [];
   let inspection: Inspection | null = null;
+  let pairingOpen = false;
   let code = "";
   let busy = false;
   let feedback = "";
@@ -296,6 +297,7 @@ export function createRunners() {
     serverVersion = null;
     usage = [];
     inspection = null;
+    pairingOpen = false;
   }
   async function api<T>(path: string, body?: unknown): Promise<T> {
     if (!available) throw new Error("Connect to your Paws dashboard to see runners.");
@@ -362,7 +364,10 @@ export function createRunners() {
       session = identity;
       usage = activity.usage;
       stale = "";
-      if (!manages()) inspection = null;
+      if (!manages()) {
+        inspection = null;
+        pairingOpen = false;
+      }
     } catch (caught) {
       if (current !== generation) return;
       const message = caught instanceof Error ? caught.message : "Runners could not be loaded.";
@@ -375,6 +380,7 @@ export function createRunners() {
       ) {
         session = null;
         inspection = null;
+        pairingOpen = false;
       }
     } finally {
       if (current === generation) {
@@ -438,7 +444,15 @@ export function createRunners() {
         }),
       )
       .join("");
-    const html = `<h1 class="sr-only">Runners</h1><p class="sub">Manage the Linux hosts that execute work delegated in Linear. Status refreshes every 10 seconds.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !runners.length ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</section>` : ""}${runners.length ? `<ul class="runner-list">${cards}</ul>` : ""}${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>" : ""}${usageView()}`;
+    const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
+    const pairing = manages() && pairingOpen;
+    const dialog = pairing
+      ? `<dialog id="runner-pair-dialog" aria-labelledby="runner-pair-heading"><div class="dialog-body"><div class="between"><h2 id="runner-pair-heading">Pair a host</h2><button class="btn" data-runner-pair-close data-focus="pair-close">Close</button></div><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p>${alert}<form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</div></dialog>`
+      : "";
+    const empty = manages()
+      ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
+      : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
+    const html = `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">Manage the Linux hosts that execute work delegated in Linear. Status refreshes every 10 seconds.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair"${recent() ? "" : " disabled"}>Pair a host</button>` : ""}</div>${pairing ? "" : alert}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !runners.length ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${runners.length ? `<ul class="runner-list">${cards}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${usageView()}${dialog}`;
     return html.replace(/<details([^>]*) data-details="([^"]+)"/g, (match, before, key) =>
       open.has(key) ? `<details${before} data-details="${key}" open` : match,
     );
@@ -483,6 +497,10 @@ export function createRunners() {
       pendingFocus = null;
     } else pendingFocus = busy ? (key ?? null) : null;
   }
+  function refocus(key: string | null) {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    pendingFocus = key;
+  }
   function savePolicy(runnerId: string, body: { sharing: boolean }) {
     void change(async () => {
       await api(`/api/runners/${encodeURIComponent(runnerId)}/policy`, body);
@@ -495,6 +513,29 @@ export function createRunners() {
       box.addEventListener("change", () =>
         savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
       );
+    root!.querySelector<HTMLElement>("[data-runner-pair]")?.addEventListener("click", () => {
+      pairingOpen = true;
+      refocus("code");
+      paint();
+    });
+    const dialog = root!.querySelector<HTMLDialogElement>("#runner-pair-dialog");
+    if (dialog) {
+      dialog.showModal();
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      dialog.addEventListener("close", () => {
+        if (!dialog.isConnected || !pairingOpen) return;
+        pairingOpen = false;
+        error = "";
+        refocus("pair");
+        paint();
+      });
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog
+        .querySelector("[data-runner-pair-close]")
+        ?.addEventListener("click", () => dialog.close());
+    }
     root!
       .querySelector<HTMLInputElement>('input[name="code"]')
       ?.addEventListener("input", (event) => {
@@ -521,6 +562,8 @@ export function createRunners() {
           });
           inspection = null;
           code = "";
+          pairingOpen = false;
+          refocus("pair");
           feedback = "Runner approved. The host can complete pairing.";
         }),
     );
