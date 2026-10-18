@@ -31,6 +31,7 @@ import type { Job, OpenQuestionRecord, OutboxRow, WorkItemFact, WorkItemRecord }
 import {
   getLinearConversationSource,
   listCloseoutProgress,
+  listEvidence,
   listJobs,
   listOpenQuestions,
   listOutbox,
@@ -54,6 +55,7 @@ import {
   type StatusCheck,
   type StatusCloseoutAttempt,
   type StatusEvent,
+  type StatusEvidence,
   type StatusItem,
   type StatusMergeEntry,
   type StatusProject,
@@ -170,7 +172,37 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
+    evidence: evidenceFor(db, records, runs),
   };
+}
+
+/** Evidence of the visible items only, so a reader without the item's session sees none of it. */
+function evidenceFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+  runs: readonly StatusRun[],
+): StatusEvidence[] {
+  return records
+    .flatMap((record) =>
+      listEvidence(db, record.id).map((stored) => ({
+        id: stored.id,
+        itemId: publicId(record),
+        runId: stored.runId,
+        checkId: stored.checkId,
+        attempt: stored.attempt,
+        kind: stored.mediaType.startsWith("video/") ? ("video" as const) : ("image" as const),
+        mediaType: stored.mediaType,
+        displayName: stored.displayName,
+        sizeBytes: stored.sizeBytes,
+        headCommit: stored.headCommit,
+        publishedAt: new Date(stored.createdAt).toISOString(),
+        publisher: runs.find((run) => run.id === stored.runId)?.agent ?? "Paws",
+      })),
+    )
+    .sort(
+      (left, right) =>
+        left.publishedAt.localeCompare(right.publishedAt) || left.id.localeCompare(right.id),
+    );
 }
 
 function toItem(
