@@ -23,6 +23,7 @@ export type FakeStep =
   | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
   | { type: "update_plan"; steps: readonly { content: string; status: string }[] }
   | { type: "open_pull_request"; title: string; body: string }
+  | { type: "post_update"; text: string }
   | {
       type: "publish_artifact";
       path: string;
@@ -93,6 +94,7 @@ export interface FakeResult {
   closeouts?: string[];
   plan?: { ok: boolean; text?: string; error?: string };
   pullRequest?: { ok: boolean; text?: string; error?: string };
+  updates?: Array<{ ok: boolean; text?: string; error?: string }>;
   artifact?: { ok: boolean; text?: string; error?: string };
   tools?: string[];
 }

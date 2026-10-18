@@ -256,6 +256,28 @@ test("pull request records carry the agent's title and description", () => {
   }
 });
 
+test("progress records carry the agent's update text", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-progress-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const valid = `${JSON.stringify({ type: "progress", text: "Found the cause." })}\n`;
+    journal.ingest(execution.id, Buffer.from(valid));
+    expect(journal.pending(execution.id)).toEqual([
+      { sequence: 1, event: { type: "progress", text: "Found the cause." } },
+    ]);
+    expect(() =>
+      journal.ingest(
+        execution.id,
+        Buffer.from(valid + `${JSON.stringify({ type: "progress", text: "x".repeat(501) })}\n`),
+      ),
+    ).toThrow("Invalid runner progress");
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("plan records replace the checklist without waiting for an answer", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-plan-"));
   const journal = openExecutionJournal(root);

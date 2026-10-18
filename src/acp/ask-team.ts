@@ -47,6 +47,34 @@ export interface PullRequestHook {
   update(description: PullRequestDescription): Promise<void>;
 }
 
+export const POST_UPDATE_TOOL_NAME = "post_update";
+export const POST_UPDATE_INTERVAL_MS = 60_000;
+
+export type PostUpdateResult = { posted: true } | { posted: false; waitSeconds: number };
+
+export interface PostUpdateHook {
+  /** Posts the text as a Linear thought, or reports how long until the next update is allowed. */
+  post(text: string): Promise<PostUpdateResult>;
+}
+
+/** At most one update per key per interval. */
+export function createUpdateLimiter(
+  now: () => number = Date.now,
+  intervalMs: number = POST_UPDATE_INTERVAL_MS,
+): { take(key: string): PostUpdateResult } {
+  const last = new Map<string, number>();
+  return {
+    take(key) {
+      const at = now();
+      const previous = last.get(key);
+      if (previous !== undefined && at - previous < intervalMs)
+        return { posted: false, waitSeconds: Math.ceil((previous + intervalMs - at) / 1000) };
+      last.set(key, at);
+      return { posted: true };
+    },
+  };
+}
+
 /** Question the agent sends. QM-07 turns this into a Linear elicitation. */
 export interface AskTeamRequest {
   question: string;
@@ -101,6 +129,7 @@ interface HostToolBridgeOptions {
   hook?: AskTeamHook;
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
+  postUpdate?: PostUpdateHook;
   publishArtifact?: PublishArtifactHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
@@ -171,6 +200,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.updatePlan ? "update_plan" : "",
             options.publishArtifact ? "publish_artifact" : "",
             options.pullRequest ? "open_pull_request" : "",
+            options.postUpdate ? "post_update" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
           ]
@@ -293,6 +323,14 @@ async function handleConnection(
       finish.pullRequestOpened = true;
       socket.end(
         `${JSON.stringify({ id, answer: "Saved. Paws opens or updates the pull request with this title and description after Closeout accepts the work." })}\n`,
+      );
+      return;
+    }
+    if (parsed.tool === "post_update") {
+      if (!options.postUpdate) throw new Error("post_update is unavailable");
+      const result = await options.postUpdate.post(parsePostUpdate(parsed.arguments ?? {}));
+      socket.end(
+        `${JSON.stringify({ id, answer: result.posted ? "Posted." : `Too soon. The next update is allowed in ${result.waitSeconds} seconds.` })}\n`,
       );
       return;
     }
@@ -427,6 +465,14 @@ export function parsePullRequest(value: {
   if (body.length < 1 || body.length > 12_000)
     throw new Error("open_pull_request needs a body of 1 to 12000 characters");
   return { title, body };
+}
+
+export function parsePostUpdate(value: { text?: unknown }): string {
+  if (typeof value.text !== "string") throw new Error("post_update requires text");
+  const text = value.text.trim();
+  if (text.length < 1 || text.length > 500)
+    throw new Error("post_update needs text of 1 to 500 characters");
+  return text;
 }
 
 function authorizeCloseout(

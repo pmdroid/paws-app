@@ -172,6 +172,8 @@ export async function probeRunnerWorker(
     { type: "fs_write", path: "implemented.txt", content: "candidate\n" },
     { type: "fs_write", path: "report.txt", content: "actual worker artifact\n" },
     { type: "publish_artifact", path: "report.txt", displayName: "Report", attachToIssue: true },
+    { type: "post_update", text: "Found the cause." },
+    { type: "post_update", text: "Tests pass." },
     { type: "ask_team", question: "Include archived rows?", options: ["Yes", "No"] },
     { type: "end" },
   ]);
@@ -437,6 +439,14 @@ export async function probeRunnerWorker(
     .split("\n")
     .map((line) => JSON.parse(line));
   assert(journal.some((event) => event.type === "question" && event.requestId === answeredRequest));
+  assert.deepEqual(
+    journal.filter((event) => event.type === "progress"),
+    [{ type: "progress", text: "Found the cause." }],
+  );
+  assert.deepEqual(fake.updates, [
+    { ok: true, text: "Posted." },
+    { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
+  ]);
   assert.equal(readRunnerAnswer(spool, first.executionId, randomUUID()), null);
   observe(
     "genuine ACP ask_team resumes only from its immutable request-bound daemon answer",
