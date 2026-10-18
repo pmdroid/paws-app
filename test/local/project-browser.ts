@@ -40,7 +40,7 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.port}/status/#/projects`);
-  await page.getByLabel("Linear project ID", { exact: true }).fill("project");
+  await page.getByLabel("Linear project URL or ID", { exact: true }).fill("project");
   await page.getByRole("button", { name: "Load project", exact: true }).click();
   await page.getByLabel("Lead", { exact: true }).selectOption("lead");
   await page.getByRole("checkbox", { name: "member", exact: true }).check();
