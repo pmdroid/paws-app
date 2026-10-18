@@ -5,6 +5,7 @@ import {
   auditWorkspaceAccess,
   bindWorkItemRepository,
   enqueueJobOnce,
+  enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
   immediate,
@@ -442,7 +443,27 @@ export function createApprovedProjects(input: {
         return false;
       };
       const takeover = claim.sessionId !== event.sessionId;
-      if (takeover && (event.action !== "created" || !restartable(approval, claim))) return deny();
+      if (takeover && (event.action !== "created" || !restartable(approval, claim))) {
+        if (event.action === "created" && approval.stoppedAt === null) {
+          const identifier =
+            approval.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)
+              ?.identifier ?? "This issue";
+          enqueueOutboxOnce(db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: event.sessionId,
+            idempotencyKey: `project-running:${event.sessionId}`,
+            payload: {
+              sessionId: event.sessionId,
+              kind: "response",
+              body: `${identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
+              id: crypto.randomUUID(),
+            },
+            now: now(),
+          });
+        }
+        return deny();
+      }
       try {
         if (takeover || event.action === "prompted" || event.signal === "stop") {
           const actor = db
