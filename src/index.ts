@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
-import { commitCheckpointSync, restartFromFreshMain, worktreePath } from "./acp";
+import {
+  ArtifactRejectedError,
+  commitCheckpointSync,
+  restartFromFreshMain,
+  worktreePath,
+} from "./acp";
+import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   createCommentMode,
   createLinearCommentBoard,
@@ -878,6 +884,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
+        evidence: runtime.publicUrl
+          ? {
+              publicUrl: runtime.publicUrl,
+              store: {
+                save: (input) =>
+                  createEvidenceStore({ db, root: paths.evidenceDir })
+                    .save(input)
+                    .catch((error: unknown) => {
+                      if (error instanceof EvidenceRejectedError)
+                        throw new ArtifactRejectedError(error.message);
+                      throw error;
+                    }),
+              },
+            }
+          : null,
         catchUp: async () => {
           await running.catchUp();
         },
