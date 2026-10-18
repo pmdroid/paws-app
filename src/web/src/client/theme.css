@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "video.js/dist/video-js.css";
 @source "./**/*.{ts,tsx}";
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -314,4 +315,29 @@ html.dark
 .ansi-bg-15 {
   background: #101317;
   color: #fdfdfb;
+}
+
+/* Closeout evidence thumbnails on the evidence page (src/web/src/client/evidence.ts). */
+.evidence-more {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.evidence-more > li {
+  padding: 0;
+}
+a.evidence-thumb {
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-base, 5px);
+  background: var(--background);
+}
+a.evidence-thumb:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
 }
