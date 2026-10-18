@@ -4,6 +4,7 @@
   "buildCommand": "bun run build:status",
   "outputDirectory": "src/web/dist",
   "framework": null,
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "headers": [
     {
       "source": "/assets/(.*)",

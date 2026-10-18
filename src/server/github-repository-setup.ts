@@ -191,7 +191,7 @@ export function createGitHubRepositorySetup(options: {
           return new Response(null, {
             status: 303,
             headers: {
-              location: origin + "/status#/settings/integrations",
+              location: origin + "/status/settings/integrations",
               "cache-control": "no-store",
             },
           });

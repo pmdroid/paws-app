@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beginImplementRun, insertQueuedItem, openDatabase, migrate } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
-import { readAgentTranscript } from "./transcript";
+import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
 
 function tempHome() {
@@ -25,7 +25,7 @@ function message(text: string) {
   };
 }
 
-test("run transcript refreshes unfinished ACP output, tools and classification through the scoped status view", async () => {
+test("full transcript reads unfinished ACP output, tools and classification while the status view links to it", async () => {
   const db = tempDb();
   const home = tempHome();
   const item = insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
@@ -70,9 +70,11 @@ test("run transcript refreshes unfinished ACP output, tools and classification t
     sessionIds: ["visible"],
     env: { API_KEY: "fixture-secret-value" },
   });
+  const env = { API_KEY: "fixture-secret-value" };
+  const read = () => [...fullAgentTranscript(home, run.id, new Date(0).toISOString(), env)];
   const first = await provider.snapshot();
-  const transcript = first.runs[0]!.transcript!;
-  expect(transcript.map((x) => x.text)).toEqual([
+  expect("transcript" in first.runs[0]!).toBe(false);
+  expect(read().map((x) => x.text)).toEqual([
     "Preparing a screenshot task",
     "Opening create VM dialog <script>bad()</script>",
     "Start browser · in_progress",
@@ -87,13 +89,12 @@ test("run transcript refreshes unfinished ACP output, tools and classification t
     engineUrl: null,
     selectedCheck: null,
   }).content;
-  expect(html).toContain('aria-label="Agent transcript"');
-  expect(html).toContain("&lt;script&gt;");
+  expect(html).toContain(`href="/api/runs/transcript?run=${run.id}"`);
+  expect(html).toContain("Open full agent transcript");
+  expect(html).not.toContain("Opening create VM dialog");
   expect(html).not.toContain("private reasoning");
   appendFileSync(file, "}\n" + JSON.stringify(message("Screenshot captured")) + "\n");
-  expect((await provider.snapshot()).runs[0]!.transcript!.at(-1)?.text).toContain(
-    "Screenshot captured",
-  );
+  expect(read().at(-1)?.text).toContain("Screenshot captured");
   expect(
     (await createLiveStatusProvider(db, { pawsHome: home, sessionIds: ["other"] }).snapshot()).runs,
   ).toEqual([]);
@@ -106,9 +107,9 @@ test("transcript reader refuses outside directories, symlink files and incomplet
   mkdirSync(join(home, "runs"));
   writeFileSync(join(outside, "acp.jsonl"), JSON.stringify(message("outside")) + "\n");
   symlinkSync(outside, join(home, "runs", "outside"));
-  expect(readAgentTranscript(home, "outside", new Date(0).toISOString(), {})).toEqual([]);
+  expect([...fullAgentTranscript(home, "outside", new Date(0).toISOString(), {})]).toEqual([]);
   mkdirSync(join(home, "runs", "file-link"));
   symlinkSync(join(outside, "acp.jsonl"), join(home, "runs", "file-link", "acp.jsonl"));
-  expect(readAgentTranscript(home, "file-link", new Date(0).toISOString(), {})).toEqual([]);
-  expect(readAgentTranscript(home, "../outside", new Date(0).toISOString(), {})).toEqual([]);
+  expect([...fullAgentTranscript(home, "file-link", new Date(0).toISOString(), {})]).toEqual([]);
+  expect([...fullAgentTranscript(home, "../outside", new Date(0).toISOString(), {})]).toEqual([]);
 });

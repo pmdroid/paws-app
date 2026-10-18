@@ -88,7 +88,7 @@ sudo /usr/sbin/runuser --user paws-runner -- \
 
 Keep this command running. It prints JSON containing a 16-character `code`, `requestFingerprint`, and `expiresAt`. The request expires after ten minutes.
 
-1. Open your Paws dashboard at `https://paws.example.com:8787/status/#/runners`.
+1. Open your Paws dashboard at `https://paws.example.com:8787/status/runners`.
 2. Sign in as an owner or administrator. Approval requires a sign-in within the last fifteen minutes.
 3. Under **Pair a host**, enter the VM's `code` and select **Inspect host**.
 4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal.

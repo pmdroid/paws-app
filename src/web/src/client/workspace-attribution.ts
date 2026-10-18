@@ -1,3 +1,4 @@
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 
 export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: string): void {
@@ -28,7 +29,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
   }
   signIn.addEventListener("click", () => {
     try {
-      sessionStorage.setItem("paws.settingsReturn", "#/settings/account");
+      sessionStorage.setItem("paws.settingsReturn", "/settings/account");
     } catch {}
   });
   consent.addEventListener("change", () => {
@@ -117,5 +118,5 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
   refresh.addEventListener("click", () => {
     void load();
   });
-  void load();
+  loadWhenShown("account", () => void load());
 }

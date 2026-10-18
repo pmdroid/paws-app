@@ -9,10 +9,13 @@ import {
   enqueueJob,
   enqueueOutbox,
   enterMergeQueue,
+  finishCloseoutProgress,
   insertQueuedItem,
   migrate,
   openDatabase,
   saveTaskBlocks,
+  upsertCloseoutStep,
+  type CloseoutStepWrite,
 } from "../../../db";
 import { parseStatusSnapshot, statusIntegrity } from "../contract";
 import { handleStatusRequest, startStatusServer } from "../engine";
@@ -239,6 +242,7 @@ describe("live status provider", () => {
       "Items:",
       "- typecheck (command): passed — exited 0",
       "- adversarial-review (review): passed — no failing findings",
+      "- docs-lint (command): skipped — no changed path matches",
     ].join("\n");
     enqueueOutbox(db, {
       target: "linear",
@@ -340,6 +344,57 @@ describe("live status provider", () => {
       url: "https://github.com/pmdroid/paws-demo/pull/7",
     });
     expect(JSON.stringify(snapshot)).not.toContain("Audit log export");
+  });
+
+  test("Closeout checks leave out policy items that did not apply to the change", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "c".repeat(40);
+    const item = insertQueuedItem(db, {
+      id: "ENG-5",
+      title: "Docs only",
+      sessionKey: "ses_5",
+      now,
+    });
+    beginImplementRun(db, item.id, now);
+    enterMergeQueue(db, item.id, {
+      phase: "merge_queue",
+      baseSha: "d".repeat(40),
+      wipCommit: head,
+    });
+    const identity = {
+      taskId: item.id,
+      base: "d".repeat(40),
+      head,
+      policyDigest: "sha256:policy",
+      policyPath: ".agents/closeout.yaml",
+    };
+    const step = (id: string, state: CloseoutStepWrite["state"], ordinal: number) => ({
+      id,
+      kind: "command" as const,
+      state,
+      command: id,
+      detail: null,
+      attempt: 1,
+      timeoutSeconds: null,
+      startedAt: now,
+      finishedAt: now,
+      exitCode: state === "passed" ? 0 : null,
+      timedOut: false,
+      timeoutReason: null,
+      truncated: false,
+      logPath: null,
+      evidencePath: null,
+      findings: null,
+      ordinal,
+    });
+    upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
+    upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
+    finishCloseoutProgress(db, item.id, identity, "accepted", now);
+    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
+    expect(snapshot.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
+      ["test", "passed"],
+    ]);
   });
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {

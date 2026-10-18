@@ -33,15 +33,15 @@ describe("status views", () => {
     snapshot.verdicts = [];
     snapshot.mergeQueue = [];
     const running = render(model({ snapshot })).content;
-    expect(running).toContain('href="#/runs/current-run"');
-    expect(running).not.toContain('href="#/runs/old-run"');
+    expect(running).toContain('href="/runs/current-run"');
+    expect(running).not.toContain('href="/runs/old-run"');
     expect(running).toContain('class="st running"');
     item.state = "queued";
     item.runId = null;
     const queued = render(model({ snapshot })).content;
-    expect(queued).toContain(`href="#/issues/${item.id}"`);
-    expect(queued).not.toContain('href="#/runs/old-run"');
-    expect(queued).not.toContain('href="#/runs/current-run"');
+    expect(queued).toContain(`href="/issues/${item.id}"`);
+    expect(queued).not.toContain('href="/runs/old-run"');
+    expect(queued).not.toContain('href="/runs/current-run"');
     expect(queued).toContain('class="st queued"');
   });
 
@@ -94,9 +94,9 @@ describe("status views", () => {
     expect(view.content).toContain("Q-41");
     expect(view.content).toContain("Export job worker");
     expect(view.content).toContain("All issues");
-    expect(view.content).toContain('href="#/issues/ENG-101"');
-    expect(view.content).not.toContain('href="#/queue"');
-    expect(view.content).not.toContain("#/epics");
+    expect(view.content).toContain('href="/issues/ENG-101"');
+    expect(view.content).not.toContain('href="/queue"');
+    expect(view.content).not.toContain("/epics");
     expect(view.content).not.toContain("javascript:");
   });
 
@@ -127,10 +127,10 @@ describe("status views", () => {
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
     expect(detail).toContain("Jonas Berg");
     expect(detail).toContain("Audit log export");
-    expect(detail).toContain('href="#/runs/r-101"');
+    expect(detail).toContain('href="/runs/r-101"');
     expect(detail).toContain("PR #479");
-    expect(detail).toContain('href="#/issues/ENG-99"');
-    expect(detail).toContain('href="#/issues/ENG-104"');
+    expect(detail).toContain('href="/issues/ENG-99"');
+    expect(detail).toContain('href="/issues/ENG-104"');
   });
 
   test("a run detail renders the verification section", () => {
@@ -138,8 +138,8 @@ describe("status views", () => {
     expect(html).toContain("Verification");
     expect(html).toContain("Exhausted");
     expect(html).toContain('data-action="select-check"');
-    expect(html).toContain('value="#/runs/r-101"');
-    expect(html).not.toContain("#/verdicts");
+    expect(html).toContain('value="/runs/r-101"');
+    expect(html).not.toContain("/verdicts");
   });
 
   test("issues, runs, and questions each render", () => {
@@ -208,15 +208,15 @@ describe("status views", () => {
   test("retired hashes fall back to issues, the matching run, or overview", () => {
     const snapshot = demoStatus();
     expect(parseRoute("")).toEqual({ view: "overview" });
-    expect(parseRoute("#/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
-    expect(parseRoute("#/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
-    expect(parseRoute("#/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
-    expect(parseRoute("#/epics/x")).toEqual({ view: "issues", id: null });
-    expect(parseRoute("#/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
-    expect(parseRoute("#/queue")).toEqual({ view: "overview" });
-    expect(parseRoute("#/verdicts/ENG-101", snapshot)).toEqual({ view: "runs", id: "r-101" });
-    expect(parseRoute("#/verdicts/missing", snapshot)).toEqual({ view: "runs", id: "missing" });
-    expect(parseRoute("#/verdicts/ENG-101")).toEqual({ view: "runs", id: null });
+    expect(parseRoute("/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
+    expect(parseRoute("/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
+    expect(parseRoute("/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
+    expect(parseRoute("/epics/x")).toEqual({ view: "issues", id: null });
+    expect(parseRoute("/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
+    expect(parseRoute("/queue")).toEqual({ view: "overview" });
+    expect(parseRoute("/verdicts/ENG-101", snapshot)).toEqual({ view: "runs", id: "r-101" });
+    expect(parseRoute("/verdicts/missing", snapshot)).toEqual({ view: "runs", id: "missing" });
+    expect(parseRoute("/verdicts/ENG-101")).toEqual({ view: "runs", id: null });
   });
 });
 
