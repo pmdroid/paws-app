@@ -7,6 +7,7 @@ import {
   getWorkItem,
   delegatedLinearUserId,
   putWorkspaceUser,
+  recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
 import { createProjectFixture } from "./local/project-fixture";
@@ -214,5 +215,55 @@ await f.close();`,
   } finally {
     if (!closed) await fixture.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("re-delegating a failed project issue starts it again and a running one stays claimed", async () => {
+  const f = createProjectFixture();
+  try {
+    const preview = await f.projects.preview(f.actor, f.selection, AbortSignal.timeout(10_000));
+    await f.projects.approve(f.actor, preview.id, preview.generation, AbortSignal.timeout(10_000));
+    f.projects.register(f.jobs);
+    await f.jobs.tick();
+    const first = f.projects.progress(preview.id).find((claim) => claim.issueId === "one")!;
+    const failed = first.items[0]!.id;
+    const created = (sessionId: string): AcceptedLinearEvent => ({
+      action: "created",
+      sessionId,
+      issueId: "one",
+      dedupeKey: sessionId,
+      deliveryId: null,
+      source: "webhook",
+      activityId: null,
+      actorId: "actor",
+      body: null,
+      signal: null,
+      updatedAtMs: f.clock.now(),
+      payload: "{}",
+    });
+    for (const sessionId of ["early", "again"]) {
+      ensureLinearSession(f.db, { sessionId, issueId: "one", creatorId: "actor" });
+      recordLinearInstallation(f.db, {
+        sessionId,
+        organizationId: "org",
+        teamId: "team",
+        oauthClientId: "client",
+        appUserId: "app",
+        observedAtMs: f.clock.now(),
+      });
+    }
+    expect(await f.projects.authorizeEvent(created("early"))).toBe(false);
+    expect(getWorkItem(f.db, failed)?.state).not.toBe("cancelled");
+    f.db.run("UPDATE work_item SET state='failed' WHERE id=?", [failed]);
+    expect(await f.projects.authorizeEvent(created("again"))).toBe(true);
+    expect(getWorkItem(f.db, failed)?.state).toBe("cancelled");
+    await f.orchestrator.intakeLinearTask("one", "again", "again-task");
+    const claim = f.projects.progress(preview.id).find((entry) => entry.issueId === "one")!;
+    expect(claim.epicId).not.toBe(first.epicId);
+    expect(claim.items).toHaveLength(1);
+    expect(claim.items[0]!.id).not.toBe(failed);
+    expect(f.projects.canDispatch(claim.epicId!)).toBe(true);
+  } finally {
+    await f.close();
   }
 });
