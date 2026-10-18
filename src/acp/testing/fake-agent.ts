@@ -373,6 +373,24 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "post_update") {
+      const server = state.mcpServers[0];
+      state.updates ??= [];
+      try {
+        if (!server?.command) throw new Error("no mcp server");
+        state.updates.push({
+          ok: true,
+          text: await callHostTool(server, "post_update", { text: step.text }),
+        });
+      } catch (error) {
+        state.updates.push({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      persist();
+      continue;
+    }
     if (step.type === "ask_team") {
       const server = state.mcpServers[0];
       if (!server?.command) {
