@@ -194,7 +194,11 @@ import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
-import { createLinearArtifactPublisher } from "./artifacts";
+import {
+  createEvidenceArtifactPublisher,
+  createLinearArtifactPublisher,
+  type EvidenceSink,
+} from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
@@ -244,6 +248,8 @@ export type OrchestratorOptions = {
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
+  /** Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. */
+  evidence?: { store: EvidenceSink; publicUrl: string } | null;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
@@ -3591,14 +3597,28 @@ export class Orchestrator {
 
   private artifactPublisher(item: WorkItemRecord) {
     const sessionId = this.activitySession(item);
-    if (!sessionId || !this.options.files || !this.options.secretsDir) return undefined;
-    return createLinearArtifactPublisher({
+    if (!sessionId) return undefined;
+    const linear =
+      this.options.files && this.options.secretsDir
+        ? createLinearArtifactPublisher({
+            db: this.db,
+            files: this.options.files,
+            secretsDir: this.options.secretsDir,
+            itemId: item.id,
+            issueId: item.linearIssueId,
+            sessionId,
+            now: () => this.now(),
+          })
+        : undefined;
+    const evidence = this.options.evidence;
+    if (!evidence) return linear;
+    return createEvidenceArtifactPublisher({
       db: this.db,
-      files: this.options.files,
-      secretsDir: this.options.secretsDir,
+      evidence: evidence.store,
+      publicUrl: evidence.publicUrl,
       itemId: item.id,
-      issueId: item.linearIssueId,
       sessionId,
+      ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
   }

@@ -41,7 +41,12 @@ export { createRepositoryGit } from "./repository-git";
 export { createLinearInputLoader, inputSources } from "./input-files";
 export { createTaskPlanner } from "./task-planner";
 export { createLinearSessionProgress } from "./session-progress";
-export { createLinearArtifactPublisher, createLinearArtifactReader } from "./artifacts";
+export {
+  createEvidenceArtifactPublisher,
+  createLinearArtifactPublisher,
+  createLinearArtifactReader,
+  type EvidenceSink,
+} from "./artifacts";
 
 export { refreshLinearNotificationContext } from "./linear-notification-context";
 
