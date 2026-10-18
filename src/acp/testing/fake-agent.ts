@@ -339,6 +339,24 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "request_closeout_skip") {
+      const server = state.mcpServers[0];
+      try {
+        if (!server?.command) throw new Error("no mcp server");
+        const text = await callHostTool(server, step.type, {
+          checkIds: step.checkIds,
+          reason: step.reason,
+        });
+        state.closeouts = [...(state.closeouts ?? []), text];
+      } catch (error) {
+        state.closeouts = [
+          ...(state.closeouts ?? []),
+          error instanceof Error ? error.message : String(error),
+        ];
+      }
+      persist();
+      continue;
+    }
     if (step.type === "update_plan") {
       const server = state.mcpServers[0];
       if (!server?.command) {

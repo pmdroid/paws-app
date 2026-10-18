@@ -615,7 +615,9 @@ function exhaustedChecks(report: string, checkIds: readonly string[]): void {
   for (const id of checkIds) {
     const check = required.find((item) => item?.id === id) as { status?: unknown } | undefined;
     if (!check)
-      throw new Error(`Closeout check ${id} is not required for the current changes. Call get_closeout.`);
+      throw new Error(
+        `Closeout check ${id} is not required for the current changes. Call get_closeout.`,
+      );
     if (check.status !== "exhausted")
       throw new Error(
         `Closeout check ${id} is ${String(check.status)}. You can ask to skip a check only after its last attempt failed.`,

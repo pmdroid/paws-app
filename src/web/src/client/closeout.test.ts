@@ -7,6 +7,7 @@ import {
   emptyCloseoutView,
   parseCheckHash,
   renderCloseoutChecks,
+  renderSkipRequest,
   type CloseoutView,
 } from "./closeout";
 import { render, type RenderModel } from "./render";
@@ -135,5 +136,29 @@ describe("closeout checks", () => {
     });
     expect(parseCheckHash("#/runs/x")).toBeNull();
     expect(parseCheckHash("#check=1/%E0%A4%A")).toBeNull();
+  });
+
+  test("the run page shows an open skip request with a link to Linear and no skip button", () => {
+    const html = runPage({});
+    expect(html).toContain("Skip requested in Linear");
+    expect(html).toContain("The retention test depends on the nightly fixture");
+    expect(html).toContain('href="https://linear.app/acme/issue/ENG-100"');
+    expect(html).toContain("Open in Linear");
+    expect(html).not.toMatch(/<button[^>]*>[^<]*Skip/);
+    const answered = { ...verdict("ENG-100"), skipRequest: null };
+    expect(renderSkipRequest(answered)).toBe("");
+  });
+
+  test("the contract accepts only Linear links for a skip request", () => {
+    const status = JSON.parse(JSON.stringify(demoStatus()));
+    const parsed = parseStatusSnapshot(status);
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(
+      parsed.snapshot.verdicts.find((entry) => entry.itemId === "ENG-100")?.skipRequest,
+    ).toMatchObject({ checkIds: ["unit"], href: "https://linear.app/acme/issue/ENG-100" });
+    status.verdicts.find(
+      (entry: { itemId: string }) => entry.itemId === "ENG-100",
+    ).skipRequest.href = "javascript:alert(1)";
+    expect(parseStatusSnapshot(status).ok).toBe(false);
   });
 });
