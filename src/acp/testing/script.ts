@@ -30,6 +30,7 @@ export type FakeStep =
       displayName?: string;
       mimeType?: string;
       attachToIssue?: boolean;
+      checkId?: string;
     }
   | { type: "get_closeout" }
   | { type: "run_closeout"; id: string; model?: string }
