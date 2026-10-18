@@ -1,0 +1,238 @@
+import type { StatusCheck, StatusCloseoutAttempt, StatusVerdict } from "../contract";
+import { parseEngineUrl } from "../endpoint";
+import { ansiToHtml } from "./ansi";
+import { durationLabel, esc } from "./format";
+
+/**
+ * What the reader changed on the Closeout checks. It lives outside the
+ * snapshot so the five-second poll does not fold rows back up.
+ */
+export interface CloseoutView {
+  /** Chosen attempt number per item. Missing means the latest attempt. */
+  attempt: Record<string, number>;
+  /** Rows the reader opened or closed, by `checkKey`. Missing means the default. */
+  open: Record<string, boolean>;
+  /** Rows whose output wraps long lines, by `checkKey`. */
+  wrap: Record<string, boolean>;
+}
+
+export function emptyCloseoutView(): CloseoutView {
+  return { attempt: {}, open: {}, wrap: {} };
+}
+
+export function checkKey(itemId: string, attempt: number, checkId: string): string {
+  return `${itemId}\n${attempt}\n${checkId}`;
+}
+
+/** Every attempt, oldest first. A verdict without recorded attempts is one attempt. */
+export function attemptsOf(verdict: StatusVerdict): StatusCloseoutAttempt[] {
+  if (verdict.attempts && verdict.attempts.length > 0) return verdict.attempts;
+  return [
+    {
+      number: Math.max(verdict.attempt, 1),
+      decision: verdict.decision,
+      startedAt: "",
+      baseSha: verdict.baseSha,
+      headSha: verdict.headSha,
+      policyDigest: verdict.policyDigest ?? null,
+      checks: verdict.checks,
+    },
+  ];
+}
+
+export function shownAttempt(verdict: StatusVerdict, view: CloseoutView): StatusCloseoutAttempt {
+  const attempts = attemptsOf(verdict);
+  const chosen = view.attempt[verdict.itemId];
+  return attempts.find((entry) => entry.number === chosen) ?? attempts.at(-1)!;
+}
+
+export function isOpen(
+  view: CloseoutView,
+  itemId: string,
+  attempt: number,
+  check: StatusCheck,
+): boolean {
+  return view.open[checkKey(itemId, attempt, check.id)] ?? startsOpen(check);
+}
+
+/** Failed and running checks start open so their output is in view. */
+function startsOpen(check: StatusCheck): boolean {
+  return (
+    check.state === "failed" ||
+    check.state === "blocked" ||
+    check.state === "exhausted" ||
+    check.active === true
+  );
+}
+
+/** The fragment a copied link carries: `#check=<attempt>/<check id>`. */
+export function checkHash(attempt: number, checkId: string): string {
+  return `#check=${attempt}/${encodeURIComponent(checkId)}`;
+}
+
+export function parseCheckHash(hash: string): { attempt: number; checkId: string } | null {
+  const match = /^#check=(\d+)\/(.+)$/.exec(hash);
+  if (!match) return null;
+  try {
+    return { attempt: Number(match[1]), checkId: decodeURIComponent(match[2]!) };
+  } catch {
+    return null;
+  }
+}
+
+export function checkAnchor(attempt: number, checkId: string): string {
+  return `check-${attempt}-${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+export function renderCloseoutChecks(
+  verdict: StatusVerdict,
+  view: CloseoutView,
+  engineUrl: string | null,
+): string {
+  const attempts = attemptsOf(verdict);
+  const attempt = shownAttempt(verdict, view);
+  const item = esc(verdict.itemId);
+  const switcher =
+    attempts.length > 1
+      ? `<div class="row" role="group" aria-label="Closeout attempt">${attempts
+          .map((entry) => {
+            const on = entry.number === attempt.number;
+            return `<button type="button" class="btn sm${on ? " on" : ""}" data-action="closeout-attempt" data-item="${item}" data-attempt="${entry.number}" aria-pressed="${on}">Attempt ${entry.number} · ${esc(attemptLabel(entry))}</button>`;
+          })
+          .join("")}</div>`
+      : "";
+  const allOpen =
+    attempt.checks.length > 0 &&
+    attempt.checks.every((check) => isOpen(view, verdict.itemId, attempt.number, check));
+  const toggleAll = attempt.checks.length
+    ? `<button type="button" class="btn sm ghost" data-action="closeout-expand-all" data-item="${item}" data-attempt="${attempt.number}" aria-pressed="${allOpen}">${allOpen ? "Collapse all" : "Expand all"}</button>`
+    : "";
+  const rows = attempt.checks.length
+    ? attempt.checks.map((check) => checkRow(verdict, attempt, check, view, engineUrl)).join("")
+    : '<div class="dim">No checks recorded for this attempt yet.</div>';
+  return `<div class="between"><h3>Checks</h3>${toggleAll}</div>${switcher}${rows}`;
+}
+
+function attemptLabel(attempt: StatusCloseoutAttempt): string {
+  if (attempt.decision === "accepted") return "passed";
+  if (attempt.decision === "running") return "running";
+  if (attempt.decision === "blocked") return "blocked";
+  if (attempt.decision === "exhausted") return "exhausted";
+  return "failed";
+}
+
+function checkRow(
+  verdict: StatusVerdict,
+  attempt: StatusCloseoutAttempt,
+  check: StatusCheck,
+  view: CloseoutView,
+  engineUrl: string | null,
+): string {
+  const open = isOpen(view, verdict.itemId, attempt.number, check);
+  const anchor = checkAnchor(attempt.number, check.id);
+  const detail = check.detail ? `<div class="dim">${esc(check.detail)}</div>` : "";
+  const meta = checkMeta(check);
+  const head = `<button class="chk${open ? " on" : ""}" type="button" data-action="toggle-check" data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}" aria-expanded="${open}" aria-controls="${anchor}-out"><span class="ico ${esc(check.state)}" aria-label="${esc(check.state)}">${checkMark(check.state)}</span><span class="mono">${esc(check.id)}</span><span><span class="mono muted">${esc(check.command)}</span>${detail}${meta ? `<div class="dim">${meta}</div>` : ""}</span><span class="tag">${esc(check.kind)}</span></button>`;
+  const body = open
+    ? `<div class="check-detail" id="${anchor}-out">${checkBody(verdict, attempt, check, view, engineUrl)}</div>`
+    : "";
+  return `<div class="col" id="${anchor}">${head}${body}</div>`;
+}
+
+function checkBody(
+  verdict: StatusVerdict,
+  attempt: StatusCloseoutAttempt,
+  check: StatusCheck,
+  view: CloseoutView,
+  engineUrl: string | null,
+): string {
+  const key = checkKey(verdict.itemId, attempt.number, check.id);
+  const wrap = view.wrap[key] === true;
+  const data = `data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}"`;
+  const finished = check.state !== "running" && check.state !== "pending";
+  const fullLog =
+    finished && check.logPath
+      ? artifactLink(verdict, attempt, check, "log", "Full log", engineUrl)
+      : "";
+  const download =
+    fullLog ||
+    (check.stdout || check.stderr
+      ? `<button class="btn sm ghost" type="button" data-action="download-output" ${data}>Download output</button>`
+      : "");
+  const evidence =
+    finished && check.evidencePath
+      ? artifactLink(verdict, attempt, check, "evidence", "Evidence", engineUrl)
+      : "";
+  const tools = `<div class="row"><button class="btn sm" type="button" data-action="wrap-output" ${data} aria-pressed="${wrap}">Wrap lines</button><button class="btn sm ghost" type="button" data-action="copy-check-link" ${data}>Copy link</button>${download}${evidence}</div>`;
+  const truncated = check.truncated
+    ? `<p class="muted" role="note">Output was cut at the size limit. ${fullLog ? `${fullLog} has the complete output.` : "The full log is available once the check finishes."}</p>`
+    : "";
+  const findings = check.findings
+    ? `<div class="stream"><span>Findings</span><pre class="out ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}" tabindex="0" data-log="${logKey(verdict.itemId, attempt.number, check.id, "findings")}">${esc(check.findings)}</pre></div>`
+    : "";
+  return `${tools}${truncated}${output(verdict.itemId, attempt.number, check, wrap)}${findings}`;
+}
+
+function output(itemId: string, attempt: number, check: StatusCheck, wrap: boolean): string {
+  const stdout = check.stdout ?? "";
+  const stderr = check.stderr ?? "";
+  if (!stdout && !stderr) {
+    return check.state === "running"
+      ? '<p class="muted">Waiting for output.</p>'
+      : '<p class="muted">No output.</p>';
+  }
+  const lines = wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre";
+  return [
+    stdout
+      ? `<div class="stream"><span>stdout</span><pre class="out ${lines}" tabindex="0" data-log="${logKey(itemId, attempt, check.id, "stdout")}">${ansiToHtml(stdout)}</pre></div>`
+      : "",
+    stderr
+      ? `<div class="stream"><span>stderr</span><pre class="out ${lines}" tabindex="0" data-log="${logKey(itemId, attempt, check.id, "stderr")}">${ansiToHtml(stderr)}</pre></div>`
+      : "",
+  ].join("");
+}
+
+function artifactLink(
+  verdict: StatusVerdict,
+  attempt: StatusCloseoutAttempt,
+  check: StatusCheck,
+  kind: "log" | "evidence",
+  label: string,
+  engineUrl: string | null,
+): string {
+  const params = new URLSearchParams({
+    item: verdict.itemId,
+    check: check.id,
+    kind,
+    head: attempt.headSha ?? "",
+    policy: attempt.policyDigest ?? "",
+  });
+  const path = `/api/closeout-artifact?${params.toString()}`;
+  const engine = parseEngineUrl(engineUrl ?? "");
+  const href = engine === null ? path : new URL(path, engine).href;
+  const file = `${check.id.replace(/[^A-Za-z0-9_-]/g, "_")}-${attempt.number}.${kind === "log" ? "log" : "json"}`;
+  return `<a href="${esc(href)}" download="${esc(file)}">${label}</a>`;
+}
+
+function logKey(itemId: string, attempt: number, checkId: string, stream: string): string {
+  return `${encodeURIComponent(itemId)}:${attempt}:${encodeURIComponent(checkId)}:${stream}`;
+}
+
+function checkMeta(check: StatusCheck): string {
+  const parts: string[] = [];
+  if (check.attempt) parts.push(`attempt ${check.attempt}`);
+  if (typeof check.elapsedMs === "number") parts.push(durationLabel(check.elapsedMs));
+  if (typeof check.timeoutSeconds === "number") {
+    parts.push(`timeout ${durationLabel(check.timeoutSeconds * 1000)}`);
+  }
+  if (typeof check.exitCode === "number") parts.push(`exit ${check.exitCode}`);
+  if (check.timedOut) parts.push(esc(check.timeoutReason || "timed out"));
+  return parts.join(" · ");
+}
+
+function checkMark(state: string): string {
+  if (state === "passed") return "✓";
+  if (state === "failed" || state === "blocked" || state === "exhausted") return "✕";
+  if (state === "skipped") return "–";
+  return "";
+}

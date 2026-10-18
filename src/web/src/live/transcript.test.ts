@@ -87,7 +87,6 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     via: "engine",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
   }).content;
   expect(html).toContain(`href="/api/runs/transcript?run=${run.id}"`);
   expect(html).toContain("Open full agent transcript");
