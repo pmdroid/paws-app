@@ -13,7 +13,7 @@ test("remote artifact evidence uses immutable bounded private chunks and scoped 
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 3);
+    assert.equal(observations.length, 4);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
