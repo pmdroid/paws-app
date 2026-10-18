@@ -35,6 +35,7 @@ export type Runner = {
   os: { id: string | null; version: string | null } | null;
   version: string | null;
   idle: boolean;
+  slots?: { used: number; total: number };
   agents?: AgentSignIn[];
 };
 export type HostPolicy = {
@@ -179,6 +180,9 @@ export function runnerRowMarkup(
       : "Never reported",
     os,
     runner.version ? `Runner ${runner.version}` : "",
+    runner.slots && runner.status !== "revoked"
+      ? `${runner.slots.used} of ${runner.slots.total} slots in use`
+      : "",
     runner.status === "revoked"
       ? ""
       : signedIn.length
@@ -298,6 +302,9 @@ export function runnerDetailMarkup(
         ? `<span title="${esc(new Date(metrics.reportedAt).toLocaleString())}">${esc(seenLabel(metrics.reportedAt, view.now))}</span>`
         : "Never",
     ],
+    ...(runner.slots
+      ? [["Slots", esc(`${runner.slots.used} of ${runner.slots.total} in use`)]]
+      : []),
     ["OS", os ? esc(os) : "Not reported"],
     ["CPU", known(metrics?.cpuPercent, (value) => `${Math.round(value)}%`)],
     ["Memory", memory ? esc(memory) : "Not reported"],

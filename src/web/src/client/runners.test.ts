@@ -153,6 +153,12 @@ describe("runner details", () => {
     expect(html).toContain("12 GB used of 16 GB");
     expect(html).toContain("0.50 / 0.25 / 0.13");
     expect(html).toContain("40 GB free of 100 GB");
+    expect(runnerDetailMarkup({ ...runner, slots: { used: 2, total: 10 } }, view)).toContain(
+      "<dt>Slots</dt><dd>2 of 10 in use</dd>",
+    );
+    expect(
+      runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
+    ).toContain("2 of 10 slots in use");
     expect(html).toContain('<span class="tag ok">Signed in</span>');
     expect(html).toContain('<span class="tag ">Not checked</span>');
     expect(html).not.toContain("account type");
