@@ -555,8 +555,8 @@ export async function probeRunnerBackend(
               reporter.onEvent(event);
             },
             postUpdate: {
-              async post(text) {
-                taskUpdates.push(text);
+              async post(update) {
+                taskUpdates.push(update);
                 return { posted: true };
               },
             },
@@ -1037,8 +1037,8 @@ export async function probeRunnerBackend(
           role: "reviewer",
           readOnly: true,
           postUpdate: {
-            async post(text) {
-              receivedProgress.push(text);
+            async post(update) {
+              receivedProgress.push(update);
               return { posted: true };
             },
           },
