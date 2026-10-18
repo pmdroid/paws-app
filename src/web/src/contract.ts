@@ -176,6 +176,18 @@ export interface StatusVerdict {
   links: StatusLink[];
   policyDigest?: string | null;
   policyPath?: string | null;
+  attempts?: StatusCloseoutAttempt[];
+}
+
+/** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
+export interface StatusCloseoutAttempt {
+  number: number;
+  decision: VerdictDecision;
+  startedAt: string;
+  baseSha: string | null;
+  headSha: string | null;
+  policyDigest: string | null;
+  checks: StatusCheck[];
 }
 
 export interface StatusMergeStep {
@@ -448,6 +460,32 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
     links: readLinks(body.links, `${path}.links`),
     policyDigest: optionalText(body, "policyDigest"),
     policyPath: optionalText(body, "policyPath"),
+    ...(body.attempts === undefined
+      ? {}
+      : {
+          attempts: array(body, "attempts", path).map((entry, attempt) =>
+            readAttempt(entry, `${path}.attempts[${attempt}]`),
+          ),
+        }),
+  };
+}
+
+function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
+  const body = object(input, path);
+  const number = body.number;
+  if (typeof number !== "number" || !Number.isInteger(number) || number < 1) {
+    throw new StatusContractError(`${path}.number must be an integer >= 1`);
+  }
+  return {
+    number,
+    decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
+    startedAt: dateString(body, "startedAt", path),
+    baseSha: optionalText(body, "baseSha"),
+    headSha: optionalText(body, "headSha"),
+    policyDigest: optionalText(body, "policyDigest"),
+    checks: array(body, "checks", path).map((entry, check) =>
+      readCheck(entry, `${path}.checks[${check}]`),
+    ),
   };
 }
 
