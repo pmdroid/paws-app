@@ -18,6 +18,11 @@ export type {
   CloseoutStepKind,
   CloseoutStepState,
 } from "./progress";
-export { PAWS_CLOSEOUT_PRODUCER, runCloseoutCommands } from "./run";
-export type { CloseoutRunInput, CloseoutRunResult, CommandDisposition } from "./run";
+export { CLOSEOUT_MEDIA_ENV, PAWS_CLOSEOUT_PRODUCER, runCloseoutCommands } from "./run";
+export type {
+  CloseoutMediaSink,
+  CloseoutRunInput,
+  CloseoutRunResult,
+  CommandDisposition,
+} from "./run";
 export { createStreamScrubber, scrubText } from "./scrub";

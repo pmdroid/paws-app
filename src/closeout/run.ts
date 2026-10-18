@@ -29,6 +29,7 @@ import {
   scrubText,
   type CloseoutProgress,
   type PawsCommandRunner,
+  type CloseoutMediaSink,
   type CloseoutProgressIdentity,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
@@ -51,6 +52,8 @@ export type EvaluateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  /** Videos and screenshots a command leaves in `CLOSEOUT_MEDIA_DIR`. */
+  media?: CloseoutMediaSink;
 };
 
 export type Evaluation = {
@@ -83,6 +86,8 @@ export type GateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  /** Videos and screenshots a command leaves in `CLOSEOUT_MEDIA_DIR`. */
+  media?: CloseoutMediaSink;
 };
 
 /**
@@ -164,6 +169,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(input.progress !== undefined ? { progress: input.progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
+      ...(input.media ? { media: input.media } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

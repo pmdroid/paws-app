@@ -1,5 +1,5 @@
 import { checkoutPatterns, exclusionPatterns } from "../../worktree-checkout";
-import { mkdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   CandidateIdentity,
@@ -43,6 +43,20 @@ export type CommandDisposition = {
   message: string;
 };
 
+/** Environment variable naming the directory a command may leave videos and screenshots in. */
+export const CLOSEOUT_MEDIA_ENV = "CLOSEOUT_MEDIA_DIR";
+
+/**
+ * Receives the regular files a command left in its `CLOSEOUT_MEDIA_DIR`.
+ * The directory is removed after this returns, so the sink copies what it keeps.
+ */
+export type CloseoutMediaSink = (input: {
+  checkId: string;
+  attempt: number;
+  head: string;
+  files: string[];
+}) => Promise<void>;
+
 export type CloseoutRunResult = {
   /**
    * Set when the runner refuses to execute. A changed-path failure starts
@@ -71,6 +85,8 @@ export type CloseoutRunInput = {
   progress?: CloseoutProgress;
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
+  /** Commands get `CLOSEOUT_MEDIA_DIR` only when this is set. */
+  media?: CloseoutMediaSink;
 };
 
 type Runnable = ResolvedSetup | ResolvedCommand;
@@ -306,6 +322,12 @@ async function runOne(
     logPath: relative,
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
+  const mediaDir =
+    input.media !== undefined && item.kind === "command" ? `${cwd}-media-${ordinal}` : null;
+  if (mediaDir !== null) {
+    rmSync(mediaDir, { recursive: true, force: true });
+    mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
+  }
   const exec = await runner.runLogged({
     cwd,
     argv: item.exec,
@@ -316,6 +338,7 @@ async function runOne(
     onOutput: (stream, text, truncated) => {
       input.progress?.output(identity, item.id, stream, text, truncated);
     },
+    ...(mediaDir === null ? {} : { extraEnv: { [CLOSEOUT_MEDIA_ENV]: mediaDir } }),
   });
   const task = input.candidate.task;
   const record: CommandRecord = {
@@ -342,6 +365,7 @@ async function runOne(
   };
   await input.evidence.add(record);
   records.push(record);
+  if (mediaDir !== null) await collectMedia(input.media!, mediaDir, item.id, attempt, head);
   const failed = executionFailed(record.exec, item.kind === "setup");
   input.progress?.step(identity, {
     ...blankStep(item, ordinal),
@@ -358,6 +382,27 @@ async function runOne(
     evidencePath: evidenceRelative(digest, head, item.id, attempt),
   });
   return record.exec;
+}
+
+/** Media never changes the command's result: a refused or unreadable file is dropped. */
+async function collectMedia(
+  sink: CloseoutMediaSink,
+  dir: string,
+  checkId: string,
+  attempt: number,
+  head: string,
+): Promise<void> {
+  try {
+    const files = readdirSync(dir)
+      .sort()
+      .map((name) => join(dir, name))
+      .filter((file) => lstatSync(file).isFile());
+    if (files.length > 0) await sink({ checkId, attempt, head, files });
+  } catch {
+    // The command's record is already stored; missing media is not a check failure.
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function needsChangedPaths(policy: ResolvedPolicy, gate: Gate): boolean {

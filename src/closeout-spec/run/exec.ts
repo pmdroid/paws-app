@@ -34,6 +34,8 @@ export type LoggedCommandRequest = CommandRunRequest & {
   artifactPath: string;
   expectedHead: string;
   onOutput?: (stream: CloseoutOutputStream, text: string, truncated: boolean) => void;
+  /** Variables added for this command only, such as `CLOSEOUT_MEDIA_DIR`. */
+  extraEnv?: Record<string, string>;
 };
 
 export type PawsCommandRunner = CommandRunner & {
@@ -70,7 +72,9 @@ export function createCommandRunner(options: CommandRunnerOptions = {}): PawsCom
         cwd: request.cwd,
         argv: request.argv,
         timeoutSeconds: request.timeoutSeconds,
-        env: options.env,
+        env: request.extraEnv
+          ? { ...(options.env ?? process.env), ...request.extraEnv }
+          : options.env,
         expectedHead: request.expectedHead,
         logFile: request.logFile,
         artifactPath: request.artifactPath,
