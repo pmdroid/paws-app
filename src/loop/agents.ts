@@ -4,6 +4,7 @@ import type {
   PublishArtifactHook,
   RunAgentOptions,
   RunAgentResult,
+  PostUpdateHook,
   PullRequestHook,
   UpdatePlanHook,
 } from "../acp";
@@ -40,6 +41,7 @@ export type AcpAgentDeps = {
   onEvent?: RunAgentOptions["onEvent"];
   updatePlan?: UpdatePlanHook;
   pullRequest?: PullRequestHook;
+  postUpdate?: PostUpdateHook;
   profiles?: { implementer: AgentProfile; reviewer: AgentProfile };
   onCandidate?: (identity: AgentIdentity) => void;
   home?: string;
@@ -67,6 +69,9 @@ export function closeoutPrompt(): string {
   ].join(" ");
 }
 
+export const POST_UPDATE_PROMPT =
+  "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";
+
 export function implementPrompt(input: {
   identifier: string;
   title: string;
@@ -79,6 +84,7 @@ export function implementPrompt(input: {
     "Work only in this repository.",
     "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
+    POST_UPDATE_PROMPT,
     closeoutPrompt(),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
     "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",
@@ -169,6 +175,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         onEvent: deps.onEvent,
         updatePlan: deps.updatePlan,
         pullRequest: deps.pullRequest,
+        postUpdate: deps.postUpdate,
         role: "implementer",
         publishArtifact: deps.publishArtifact,
         profile: deps.profiles?.implementer,
@@ -206,6 +213,7 @@ export function fixPrompt(request: FixRequest, brief?: string): string {
   return [
     "Fix Closeout findings.",
     "Call update_plan with the full working checklist as the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
+    POST_UPDATE_PROMPT,
     closeoutPrompt(),
     ...(brief ? [brief] : []),
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
