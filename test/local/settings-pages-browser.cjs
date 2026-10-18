@@ -285,14 +285,8 @@ const errors = [];
     const attribution = page.locator("#workspace-github-attribution");
     await control(context, { expire: true });
     await page.reload();
-    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
-    assert.equal(
-      await attribution.getByRole("button", { name: "Link GitHub identity" }).isVisible(),
-      false,
-    );
-    await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
+    assert.equal(await page.getByRole("link", { name: "Sign in again" }).count(), 0);
     assert.equal(
       await attribution.getByRole("button", { name: "Link GitHub identity" }).isDisabled(),
       true,
@@ -342,7 +336,7 @@ const errors = [];
       auditRead: true,
     });
     await settings(page, "Integrations");
-    await github.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await github.getByRole("button", { name: "Switch GitHub account", exact: true }).waitFor();
     await github.getByRole("table", { name: "GitHub repositories" }).waitFor();
     assert.equal(await github.getByRole("combobox", { name: "GitHub account" }).inputValue(), "22");
     for (const width of [1440, 768, 390]) {
@@ -439,12 +433,9 @@ const errors = [];
     await adminGitHub.getByRole("button", { name: "Connect GitHub" }).waitFor();
     await control(context, { expire: true });
     await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
-    await adminGitHub.getByRole("link", { name: "Sign in again" }).waitFor();
-    await adminGitHub.getByRole("link", { name: "Sign in again" }).click();
-    await member.page.waitForURL((url) => url.pathname === "/status/settings/integrations");
-    await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
     await adminGitHub.getByText("Connected", { exact: true }).waitFor();
-    observations.push({ expiredSignInRecovery: true, settingsReturnRestored: true });
+    assert.equal(await member.page.getByRole("link", { name: "Sign in again" }).count(), 0);
+    observations.push({ olderSignInConnectsGitHub: true });
     await control(context, { unavailable: true });
     await adminGitHub.getByRole("button", { name: "Refresh status" }).click();
     await adminGitHub.getByText("Connection unavailable", { exact: true }).waitFor();
@@ -466,26 +457,14 @@ const errors = [];
     assert.equal((await page.content()).includes("PRIVATE KEY"), false);
     await settings(page, "Your account");
     await attribution.getByRole("button", { name: "Refresh attribution" }).click();
-    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
-    await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByRole("button", { name: "Revoke attribution consent" }).click();
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     observations.push({ consentRevocation: true });
     await control(context, { expire: true });
     await attribution.getByRole("checkbox").check();
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
-    await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
-    await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.pathname === "/status/settings/account");
-    await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
-    await attribution.getByRole("checkbox").check();
-    await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
     await attribution.getByText("Public attribution is enabled for @fixture-human.").waitFor();
-    observations.push({
-      attributionExpiryDuringSubmitRecovery: true,
-      realMouseLinkAfterFreshSignIn: true,
-    });
+    observations.push({ olderSignInLinksAttribution: true });
     assert.deepEqual(errors, []);
     observations.push({
       providerOutageRecovery: true,

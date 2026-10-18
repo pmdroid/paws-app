@@ -452,18 +452,14 @@ test("missing installations offer a verified GitHub install URL without persisti
   }
 });
 
-test("connection status remains readable after recent sign-in expires and identifies the recovery", async () => {
+test("an administrator signed in hours ago can still manage the connection", async () => {
   const f = fixture();
   try {
-    f.advance(16 * 60_000);
+    f.advance(6 * 60 * 60_000);
     const response = await f.handler()(automaticRequest(f, "GET"));
     expect(response?.status).toBe(200);
-    expect(await response?.json()).toMatchObject({ canManage: true, requiresSignIn: true });
-    const calls = f.calls.length;
-    const denied = await f.handler()(automaticRequest(f));
-    expect(denied?.status).toBe(403);
-    expect(await denied?.json()).toMatchObject({ code: "reauth_required" });
-    expect(f.calls.length).toBe(calls);
+    expect(await response?.json()).toMatchObject({ canManage: true, requiresSignIn: false });
+    expect((await f.handler()(automaticRequest(f)))?.status).toBe(200);
     const member = await f.handler()(automaticRequest(f, "POST", "member"));
     expect(await member?.json()).toMatchObject({ code: "admin_required" });
   } finally {
@@ -496,7 +492,7 @@ for (const change of ["logout", "demotion", "repositories", "credentials", "expi
           now: Date.now(),
         });
       if (change === "credentials") f.env.PAWS_GITHUB_CLIENT_ID = "Iv1.changed";
-      if (change === "expiry") f.advance(16 * 60_000);
+      if (change === "expiry") f.advance(31 * 24 * 60 * 60_000);
       released.resolve();
       const response = await pending;
       expect(response?.status).toBe(

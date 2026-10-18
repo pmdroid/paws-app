@@ -206,11 +206,10 @@ test("member accounts reject shared execution and expired memberships while lega
   );
 });
 
-test("login rejects observers, stale sign-in, foreign runners and provider URL substitution", () => {
+test("login rejects observers, foreign runners and provider URL substitution", () => {
   const f = fixture();
   expect(() => f.login.start(f.observer, f.runnerId, "codex")).toThrow();
-  expect(() => f.login.start({ ...f.member, authenticatedAt: 0 }, f.runnerId, "codex")).toThrow();
-  const session = f.login.start(f.member, f.runnerId, "codex");
+  const session = f.login.start({ ...f.member, authenticatedAt: 0 }, f.runnerId, "codex");
   expect(() => f.login.exchange(workspaceId(), session.id, f.waiting)).toThrow();
   expect(() =>
     f.login.exchange(f.runnerId, session.id, {

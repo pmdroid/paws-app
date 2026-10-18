@@ -246,7 +246,7 @@ for (const scenario of [
   "wrong-state",
   "wrong-browser",
   "expired-state",
-  "stale-auth",
+  "expired-session",
   "stale-inactive",
   "stale-guest",
   "logout",
@@ -276,8 +276,8 @@ for (const scenario of [
         pending.cookie = `__Host-paws-attribution=${"b".repeat(43)}`;
       if (scenario === "expired-state")
         f.db.run("UPDATE github_attribution_request SET expires_at=?", [f.now]);
-      if (scenario === "stale-auth")
-        f.db.run("UPDATE workspace_session SET authenticated_at=?", [f.now - 900_001]);
+      if (scenario === "expired-session")
+        f.db.run("UPDATE workspace_session SET expires_at=?", [f.now]);
       if (scenario === "logout") deleteWorkspaceSession(f.db, f.alice.session.tokenHash);
       if (scenario === "demotion") f.guest = true;
       if (scenario === "removed") f.active = false;
@@ -318,7 +318,6 @@ test("missing App credentials keep attribution readable and revocable without st
     expect(await response.json()).toEqual({
       configured: false,
       identity: null,
-      requiresSignIn: false,
     });
     const start = await f.request("POST", f.alice, { consent: true });
     expect(start.status).toBe(503);
@@ -354,29 +353,19 @@ test("missing App credentials keep attribution readable and revocable without st
   }
 });
 
-test("stale sign-in keeps own attribution readable and requires fresh sign-in before changes", async () => {
+test("an older sign-in can still change its own attribution while the session is valid", async () => {
   const f = fixture();
   try {
     const pending = await f.begin();
     expect((await f.callback(pending)).status).toBe(303);
-    f.db.run("UPDATE workspace_session SET authenticated_at=?", [f.now - 900_001]);
+    f.db.run("UPDATE workspace_session SET authenticated_at=?", [f.now - 2 * 24 * 60 * 60_000]);
     const status = await f.request("GET");
     expect(status.status).toBe(200);
-    expect(await status.json()).toMatchObject({
-      configured: true,
-      identity: { login: "verified-human" },
-      requiresSignIn: true,
-    });
-    for (const method of ["POST", "DELETE"]) {
-      const denied = await f.request(
-        method,
-        f.alice,
-        method === "POST" ? { consent: true } : undefined,
-      );
-      expect(denied.status).toBe(403);
-      expect(await denied.json()).toMatchObject({ code: "reauth_required" });
-    }
-    expect(githubAttribution(f.db, "workspace", "alice")?.login).toBe("verified-human");
+    const body = await status.json();
+    expect(body).toMatchObject({ configured: true, identity: { login: "verified-human" } });
+    expect(body).not.toHaveProperty("requiresSignIn");
+    expect((await f.request("DELETE")).status).toBe(200);
+    expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
     expect((await f.request("GET", f.other)).status).toBe(403);
     f.guest = true;
     expect((await f.request("GET")).status).toBe(403);

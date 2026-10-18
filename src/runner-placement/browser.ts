@@ -17,10 +17,6 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
     if (!current?.active) throw new Error("Workspace access is unavailable.");
     return current;
   }
-  function recent(principal: WorkspacePrincipal) {
-    if (now() < principal.authenticatedAt || now() - principal.authenticatedAt > 900_000)
-      throw new Error("Sign in again to update runner settings.");
-  }
   async function body(request: Request) {
     if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
       throw new Error("Use a JSON request.");
@@ -98,7 +94,6 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       immediate(db, () => {
         const actor = member(principal);
         const host = runner();
-        recent(principal);
         if (
           actor.role === "observer" ||
           host.ownerId !== principal.userId ||

@@ -123,20 +123,12 @@ export async function probeRunnerPolicyBrowser(
     assert.equal(
       (await request(
         `/api/runners/${runnerId}/policy`,
-        { ...memberPrincipal, authenticatedAt: now - 900001 },
-        policy,
-      ))!.status,
-      403,
-    );
-    assert.equal(
-      (await request(
-        `/api/runners/${runnerId}/policy`,
         { ...memberPrincipal, workspaceId: "other" },
         policy,
       ))!.status,
       403,
     );
-    observe("Stale sign-in and cross-workspace settings changes fail closed", true, { denied: 2 });
+    observe("Cross-workspace settings changes fail closed", true, { denied: 1 });
     const ownRunner = workspaceId();
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,'Owner host','active',?)",
