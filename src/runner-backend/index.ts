@@ -488,18 +488,8 @@ export function createRemoteAgentRunner(options: {
                     update: event.update,
                   });
               }
-              if (event.type === "progress" && taskScope)
-                await emit({ type: "progress", text: event.text });
-              else if (event.type === "progress")
-                await emit({
-                  type: "session_update",
-                  sessionId: assigned.id,
-                  update: {
-                    sessionUpdate:
-                      input.role === "reviewer" ? "agent_thought_chunk" : "agent_message_chunk",
-                    content: { type: "text", text: event.text },
-                  },
-                });
+              if (event.type === "progress")
+                await input.postUpdate?.post(event.text).catch(() => undefined);
               if (event.type === "artifact") {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
