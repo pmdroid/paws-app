@@ -418,6 +418,9 @@ export function withCommentActivities(
     ...(tracker.issueRepositoryHints
       ? { issueRepositoryHints: tracker.issueRepositoryHints.bind(tracker) }
       : {}),
+    ...(tracker.addRepositoryLabel
+      ? { addRepositoryLabel: tracker.addRepositoryLabel.bind(tracker) }
+      : {}),
     loadEpic: (linearIssueId) => tracker.loadEpic(linearIssueId),
     listDeps: (linearIssueId) => tracker.listDeps(linearIssueId),
     setStatus: (update) => tracker.setStatus(update),

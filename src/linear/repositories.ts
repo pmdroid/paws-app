@@ -32,6 +32,10 @@ export interface LinearRepositoryAdapter {
     options?: TrackerRequestOptions,
   ): Promise<readonly RepositorySuggestion[]>;
   issueRepositoryHints?(issueId: string, options?: TrackerRequestOptions): Promise<RepositoryHints>;
+  addRepositoryLabel?(
+    input: { issueId: string; repository: string },
+    options?: TrackerRequestOptions,
+  ): Promise<void>;
 }
 
 const SUGGESTIONS_QUERY = `query IssueRepositorySuggestions(
@@ -117,6 +121,7 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         projectLabels: repoLabels(isRecord(issue["project"]) ? issue["project"]["labels"] : null),
       };
     },
+    async addRepositoryLabel() {},
   };
 }
 
