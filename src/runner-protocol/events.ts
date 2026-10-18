@@ -46,6 +46,11 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     title: z.string().min(1).max(256),
     body: z.string().min(1).max(12000),
   }),
+  z.strictObject({
+    type: z.literal("closeout_skip"),
+    checkIds: z.array(z.string().regex(/^[A-Za-z0-9][\w./-]{0,127}$/)).min(1).max(32),
+    reason: z.string().min(1).max(2000),
+  }),
   z.strictObject({ type: z.literal("candidate"), sha: z.string().regex(/^[a-f0-9]{40}$/) }),
   z.strictObject({ type: z.literal("completed") }),
   z.strictObject({ type: z.literal("failed"), message: z.string().max(16384) }),

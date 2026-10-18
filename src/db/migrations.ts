@@ -1791,4 +1791,16 @@ CREATE TABLE evidence (
 CREATE INDEX evidence_item ON evidence (item_id, created_at);
 `,
   },
+  {
+    id: "072_closeout_skip_request",
+    sql: `
+CREATE TABLE closeout_skip_request (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  check_ids TEXT NOT NULL CHECK (json_valid(check_ids)),
+  reason TEXT NOT NULL,
+  requested_at INTEGER NOT NULL
+) STRICT;
+ALTER TABLE closeout_recovery ADD COLUMN skip TEXT CHECK (skip IS NULL OR json_valid(skip));
+`,
+  },
 ];

@@ -185,6 +185,16 @@ export function openExecutionJournal(root: string) {
               if (!parsed.success || parsed.data.type !== "pull_request")
                 throw new Error("Invalid runner pull request");
               event = parsed.data;
+            } else if (
+              raw &&
+              typeof raw === "object" &&
+              "type" in raw &&
+              raw.type === "closeout_skip"
+            ) {
+              const parsed = RunnerEventSchema.safeParse(raw);
+              if (!parsed.success || parsed.data.type !== "closeout_skip")
+                throw new Error("Invalid runner Closeout skip request");
+              event = parsed.data;
             } else if (raw && typeof raw === "object" && "type" in raw && raw.type === "progress") {
               const parsed = RunnerEventSchema.safeParse(raw);
               if (!parsed.success || parsed.data.type !== "progress")

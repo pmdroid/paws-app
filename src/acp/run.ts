@@ -344,6 +344,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         updatePlan: options.updatePlan,
         pullRequest: options.pullRequest,
         postUpdate: options.postUpdate,
+        closeoutSkip: options.closeoutSkip,
         publishArtifact: options.publishArtifact,
         artifactLimits: options.artifactLimits,
         context: {
