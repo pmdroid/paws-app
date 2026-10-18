@@ -77,22 +77,12 @@ export function createGitHubAttributionLink(options: {
         )
           throw new Error("Session changed.");
         if (access.principal.role === "observer") throw new Error("Membership is required.");
-        const checkedAt = now();
-        const requiresSignIn =
-          checkedAt < access.principal.authenticatedAt ||
-          checkedAt - access.principal.authenticatedAt > 900_000;
         if (url.pathname === PATH && request.method === "GET")
           return reply({
             configured: options.client !== undefined,
             identity: githubAttribution(options.db, binding.workspaceId, binding.userId),
-            requiresSignIn,
           });
-        if (url.pathname === PATH && requiresSignIn)
-          return reply(
-            { error: "Sign in again to change your GitHub credit.", code: "reauth_required" },
-            403,
-          );
-        requireAttributionSession(options.db, binding, checkedAt);
+        requireAttributionSession(options.db, binding, now());
         if (url.pathname === PATH) {
           if (request.method === "DELETE") {
             revokeGitHubAttribution(options.db, binding, now());
@@ -227,7 +217,7 @@ export function createGitHubAttributionLink(options: {
         return new Response(null, {
           status: 303,
           headers: {
-            location: `${origin}/status#/settings/account`,
+            location: `${origin}/status/settings/account`,
             "cache-control": "no-store",
             "referrer-policy": "no-referrer",
             "set-cookie": `${COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,

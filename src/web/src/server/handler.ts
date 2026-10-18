@@ -301,8 +301,9 @@ function indexHtml(staticDir: string | null, csrfToken?: string): Response {
 
 /** Engine pages live at `/status`, so relative asset URLs need that base. The Vercel build does not. */
 function withBase(body: string): string {
-  if (body.includes("<base ")) return body;
   const tag = '<base href="/status/" />';
+  if (body.includes('<base href="/" />')) return body.replace('<base href="/" />', tag);
+  if (body.includes("<base ")) return body;
   if (body.includes("<head>")) return body.replace("<head>", `<head>\n    ${tag}`);
   return `${tag}\n${body}`;
 }

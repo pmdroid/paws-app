@@ -1,3 +1,4 @@
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
@@ -20,7 +21,7 @@ type Answer = { id: string; body: string; answer: string; author: string; reposi
 export function initializeDecisions(root: HTMLElement, csrfToken: string, canEdit: boolean) {
   const section = document.createElement("section");
   section.dataset.settingsPage = "decisions";
-  section.hidden = location.hash !== "#/settings/decisions";
+  section.hidden = true;
   section.className = "settings-section";
   root.append(section);
   let query = "";
@@ -114,5 +115,5 @@ export function initializeDecisions(root: HTMLElement, csrfToken: string, canEdi
       section.querySelector("button")!.addEventListener("click", () => void load());
     }
   }
-  void load();
+  loadWhenShown("decisions", () => void load());
 }

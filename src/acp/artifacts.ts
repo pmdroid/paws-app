@@ -6,12 +6,40 @@ import type { AgentRole } from "./adapters";
 
 export const PUBLISH_ARTIFACT_TOOL_NAME = "publish_artifact";
 export const DEFAULT_MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+/** Caps for Closeout evidence. Mirrors `EVIDENCE_LIMITS` in `src/evidence`. */
+export const EVIDENCE_ARTIFACT_LIMITS = {
+  video: 200 * 1024 * 1024,
+  image: 20 * 1024 * 1024,
+} as const;
+const EVIDENCE_MIME_TYPES = new Set([
+  "video/webm",
+  "video/mp4",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
 
 export interface PublishArtifactRequest {
   path: string;
   displayName?: string;
   mimeType?: string;
   attachToIssue?: boolean;
+  checkId?: string;
+}
+
+/** Closeout evidence the file belongs to. Set only for a video or screenshot with a check id. */
+export interface ArtifactEvidence {
+  checkId: string;
+  attempt: number;
+  headCommit: string;
+}
+
+/** A refusal whose message is safe to return to the agent. */
+export class ArtifactRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactRejectedError";
+  }
 }
 
 export interface ArtifactLimits {
@@ -34,6 +62,7 @@ export interface PublishArtifactContext {
   worktreePath: string;
   role: AgentRole;
   signal: AbortSignal;
+  evidence?: ArtifactEvidence;
 }
 
 export interface PublishedArtifact {
@@ -113,7 +142,7 @@ export async function snapshotArtifactFile(
     const current = await stat(openedPath);
     if (current.dev !== info.dev || current.ino !== info.ino)
       throw new Error("artifact file changed");
-    const buffer = Buffer.alloc(maxBytes + 1);
+    const buffer = Buffer.alloc(Math.min(info.size, maxBytes) + 1);
     let size = 0;
     while (size < buffer.length) {
       signal?.throwIfAborted();
@@ -173,6 +202,19 @@ export function assertNonSecretArtifactPath(path: string): void {
   }
 }
 
+/** The MIME type `snapshotArtifactFile` uses for a request, before the file is opened. */
+export function artifactMimeType(request: PublishArtifactRequest): string {
+  return request.mimeType ?? mimeFor(request.path);
+}
+
+/** The evidence cap for a video or screenshot type, or null when the type is not evidence. */
+export function evidenceByteLimit(mimeType: string): number | null {
+  if (!EVIDENCE_MIME_TYPES.has(mimeType)) return null;
+  return mimeType.startsWith("video/")
+    ? EVIDENCE_ARTIFACT_LIMITS.video
+    : EVIDENCE_ARTIFACT_LIMITS.image;
+}
+
 function mimeFor(path: string): string {
   const types: Record<string, string> = {
     ".png": "image/png",
@@ -180,6 +222,8 @@ function mimeFor(path: string): string {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".webm": "video/webm",
+    ".mp4": "video/mp4",
     ".svg": "image/svg+xml",
     ".pdf": "application/pdf",
     ".json": "application/json",

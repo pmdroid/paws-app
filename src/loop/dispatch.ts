@@ -45,6 +45,13 @@ export async function deliverLinearOutbox(
       throw new Error("Issue attachment is missing required fields");
     return tracker.createIssueAttachment({ id, issueId, title, url }, options);
   }
+  if (message.op === "linear.repository_label") {
+    if (!tracker.addRepositoryLabel) throw new Error("Linear repository labels are unavailable");
+    const issueId = readString(payload, "issueId");
+    const repository = readString(payload, "repository");
+    if (!issueId || !repository) throw new Error("Repository label is missing required fields");
+    return tracker.addRepositoryLabel({ issueId, repository }, options);
+  }
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker, options);
   }

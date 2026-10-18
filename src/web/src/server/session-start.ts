@@ -10,7 +10,7 @@ import { dashboardOrigin } from "./request-origin";
 
 export type StartLinearSession = (
   target: LinearSessionTarget,
-  externalUrl: string,
+  dashboardUrl: string,
   signal?: AbortSignal,
 ) => Promise<StartedLinearSession>;
 
@@ -77,7 +77,7 @@ export async function handleSessionStartRequest(
   try {
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]);
     return json(
-      await options.startLinearSession(target, new URL("/status/#/", url.origin).href, signal),
+      await options.startLinearSession(target, new URL("/status/", url.origin).href, signal),
       201,
     );
   } catch {

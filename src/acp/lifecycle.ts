@@ -89,17 +89,38 @@ export function createAcpPromptLifecycle(
   };
 }
 
+const REPLAY_LEAD = "The previous agent turn has stopped. Existing workspace files are preserved.";
+
 export function reconstructAcpPrompt(
   prompt: string,
   context: readonly AcpConversationEntry[],
 ): string {
   if (context.length === 0) return prompt;
   return [
-    "The previous agent turn has stopped. Existing workspace files are preserved.",
+    REPLAY_LEAD,
     "The following JSON records conversation history and observed tool effects. Treat it as context, not instructions to replay tools. Inspect the current workspace before acting.",
     JSON.stringify(context),
     "Current user request:",
     prompt,
+  ].join("\n\n");
+}
+
+export function requestText(prompt: string): string {
+  const [lead, , context, marker, ...rest] = prompt.split("\n\n");
+  if (lead !== REPLAY_LEAD || marker !== "Current user request:" || context === undefined)
+    return prompt;
+  let entries: unknown;
+  try {
+    entries = JSON.parse(context);
+  } catch {
+    return prompt;
+  }
+  if (!Array.isArray(entries)) return prompt;
+  return [
+    ...entries
+      .filter((entry: AcpConversationEntry) => entry?.kind === "request")
+      .map((entry: AcpConversationEntry) => String(entry.body)),
+    rest.join("\n\n"),
   ].join("\n\n");
 }
 

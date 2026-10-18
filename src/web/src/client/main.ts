@@ -12,8 +12,18 @@ import {
   renderGitHubSignIn,
   startGitHubDevice,
 } from "./github-auth";
+import {
+  attemptsOf,
+  checkAnchor,
+  checkHash,
+  checkKey,
+  emptyCloseoutView,
+  isOpen,
+  parseCheckHash,
+} from "./closeout";
 import { render, type RenderModel } from "./render";
-import { parseRoute } from "./route";
+import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
+import type { SettingsPage } from "./settings-pages";
 
 import { createAgentSettings } from "./agent-settings";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
@@ -23,7 +33,9 @@ import { createProjects } from "./projects";
 import { createExecutionControls } from "./execution-controls";
 import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
 
+redirectLegacyHash();
 const shell = mountShell();
+const router = shell.router;
 
 const settings = createAgentSettings(() => paint());
 const sessionStart = createSessionStart(reload);
@@ -39,47 +51,49 @@ const painted = new Map<string, string>();
 
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
-let selectedCheck: { itemId: string; checkId: string } | null = null;
+const closeout = emptyCloseoutView();
+let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
 let via: RenderModel["via"] = null;
 let error: string | null = null;
 let timer = 0;
 let workspaceReady = false;
+let booted = false;
+let shownPath = router.state.location.pathname;
 let conversations: ConversationModel = { state: "loading", sessions: [] };
 
 const sourceDialog = createSourceDialog(applyChoice);
 let issueFilter: "all" | "active" | "needs" | "done" = "all";
 
 document.addEventListener("click", onClick);
-window.addEventListener("hashchange", () => {
-  paint();
+router.subscribe((state) => {
+  if (state.location.pathname === shownPath) return;
+  shownPath = state.location.pathname;
+  routeChanged();
   window.scrollTo({ top: 0, behavior: "instant" });
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
 document.addEventListener("change", (event) => {
   const target = event.target;
-  if (
-    target instanceof HTMLSelectElement &&
-    target.dataset.routePicker !== undefined &&
-    /^#\/(issues|runs|sessions)(\/|$)/.test(target.value)
-  )
-    location.hash = target.value;
+  if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
+  const path = appPath(target.value);
+  if (path !== null && ["issues", "runs", "sessions"].includes(parseRoute(path).view))
+    void router.navigate(path);
 });
 
 void boot();
 
 async function boot(): Promise<void> {
-  workspaceReady = await initializeWorkspaceAccess();
+  workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
   shell.setAuthenticated(workspaceReady);
   if (!workspaceReady) return;
   try {
     const destination = sessionStorage.getItem("paws.settingsReturn");
     sessionStorage.removeItem("paws.settingsReturn");
-    if (["#/settings/integrations", "#/settings/account"].includes(destination ?? ""))
-      window.location.hash = destination!;
+    if (["/settings/integrations", "/settings/account"].includes(destination ?? ""))
+      await router.navigate(destination!, { replace: true });
   } catch {}
-  void paintGitHubAuth(null);
   const query = new URLSearchParams(location.search).get("engine");
   const fromQuery = query === null ? null : choiceFromValue(query);
   if (fromQuery) {
@@ -89,6 +103,8 @@ async function boot(): Promise<void> {
     choice = choiceFromValue(storageGet(STORAGE_KEY)) ?? { kind: "auto" };
   }
   baked = await loadBakedEngineUrl();
+  booted = true;
+  if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
   if (currentEngine()) {
     phase = "loading";
     paint();
@@ -99,10 +115,28 @@ async function boot(): Promise<void> {
   }
 }
 
+function routeChanged(): void {
+  paint();
+  if (!booted) return;
+  if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
+  void reload();
+}
+
 async function reload(): Promise<void> {
   const engineUrl = currentEngine();
   if (!engineUrl) {
     showFallback();
+    schedule();
+    return;
+  }
+  const route = currentRoute();
+  if (route.view === "sessions") {
+    conversations = await loadConversations(engineUrl, source(), location.origin);
+    paint();
+    schedule();
+    return;
+  }
+  if (!needsSnapshot(route)) {
     schedule();
     return;
   }
@@ -112,7 +146,7 @@ async function reload(): Promise<void> {
       cache: "no-store",
     });
     if (response.status === 401) {
-      workspaceReady = await initializeWorkspaceAccess();
+      workspaceReady = await initializeWorkspaceAccess(() => settingsPage(currentRoute()));
       shell.setAuthenticated(workspaceReady);
       if (!workspaceReady) return;
     }
@@ -123,7 +157,6 @@ async function reload(): Promise<void> {
     via = "engine";
     phase = "ready";
     error = null;
-    conversations = await loadConversations(engineUrl, snapshot.source, location.origin);
   } catch (caught) {
     error = caught instanceof Error ? caught.message : "Could not load status";
     phase = "error";
@@ -171,7 +204,8 @@ function servedLocally(): boolean {
 
 function schedule(): void {
   window.clearInterval(timer);
-  if (!currentEngine()) return;
+  const route = currentRoute();
+  if (!currentEngine() || !(needsSnapshot(route) || route.view === "sessions")) return;
   timer = window.setInterval(() => {
     void reload();
   }, POLL_MS);
@@ -180,14 +214,14 @@ function schedule(): void {
 function paint(): void {
   if (!workspaceReady) return;
   const model: RenderModel = {
-    route: parseRoute(location.hash, snapshot),
+    route: currentRoute(),
     phase,
     snapshot,
     via,
     error,
     engineUrl: currentEngine(),
-    selectedCheck,
-    conversations: canReadConversations(currentEngine(), snapshot?.source, location.origin)
+    closeout,
+    conversations: canReadConversations(currentEngine(), source(), location.origin)
       ? conversations
       : { state: "unavailable", sessions: [] },
   };
@@ -210,28 +244,73 @@ function paint(): void {
     model.route.view === "settings" ? (model.route.page ?? "agents") : null,
   );
   document.title = view.title;
-  shell.update({ route: model.route, project: model.snapshot?.project ?? null });
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
   applyIssueFilter();
+  if (openLinkedCheck()) return;
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
-    sessionStart.mount(
-      sessionRoot,
-      currentEngine(),
-      snapshot?.source,
-      model.route.view === "sessions",
-    );
+    sessionStart.mount(sessionRoot, currentEngine(), source(), model.route.view === "sessions");
   const executionRoot = document.querySelector<HTMLElement>("#execution-controls");
-  if (executionRoot) executionControls.mount(executionRoot, currentEngine(), snapshot?.source);
+  if (executionRoot) executionControls.mount(executionRoot, currentEngine(), source());
   const runnerRoot = document.querySelector<HTMLElement>("#runner-settings");
-  if (runnerRoot) runners.mount(runnerRoot, currentEngine(), snapshot?.source);
+  if (runnerRoot && model.route.view === "runners")
+    runners.mount(runnerRoot, currentEngine(), source(), model.route.id);
   const projectRoot = document.querySelector<HTMLElement>("#project-delivery");
-  if (projectRoot) projects.mount(projectRoot, currentEngine(), snapshot?.source);
+  if (projectRoot) projects.mount(projectRoot, currentEngine(), source());
+}
+
+function currentRoute(): Route {
+  const pathname = router.state.location.pathname;
+  return parseRoute(pathname.slice(routerBase(pathname).length), snapshot);
+}
+
+function settingsPage(route: Route): SettingsPage | null {
+  return route.view === "settings" ? (route.page ?? "agents") : null;
+}
+
+function source(): string {
+  return snapshot?.source ?? (currentEngine() ? "live" : "demo");
+}
+
+function appPath(href: string): string | null {
+  const url = new URL(href, location.href);
+  const base = routerBase(location.pathname);
+  if (url.origin !== location.origin) return null;
+  if (base && url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return null;
+  const path = url.pathname.slice(base.length) || "/";
+  return matchRoute(path) ? `${path}${url.search}` : null;
+}
+
+function redirectLegacyHash(): void {
+  if (!location.hash.startsWith("#/")) return;
+  const path = `${routerBase(location.pathname)}${location.hash.slice(1)}`;
+  history.replaceState(null, "", `${path}${location.search}`);
+}
+
+function followLink(event: MouseEvent, target: Element): void {
+  const link = target.closest("a[href]");
+  if (
+    !(link instanceof HTMLAnchorElement) ||
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey ||
+    link.target ||
+    link.hasAttribute("download") ||
+    link.getAttribute("href")?.startsWith("#")
+  )
+    return;
+  const path = appPath(link.href);
+  if (path === null) return;
+  event.preventDefault();
+  void router.navigate(path);
 }
 
 function setHtml(selector: (typeof regions)[number], html: string): void {
@@ -341,17 +420,18 @@ function restoreLogs(root: Element, logs: readonly LogScroll[]): void {
   }
 }
 
-function onClick(event: Event): void {
+function onClick(event: MouseEvent): void {
   const target = event.target;
   if (!(target instanceof Element)) return;
+  followLink(event, target);
   const action = target.closest("[data-action]")?.getAttribute("data-action");
   if (!action) return;
   if (action === "github-signin") void signInWithGitHub();
   if (action === "refresh") {
     void reload();
-    void paintGitHubAuth(null);
-    if (parseRoute(location.hash).view === "runners") void runners.refresh();
-    if (parseRoute(location.hash).view === "projects") void projects.refresh();
+    if (settingsPage(currentRoute()) === "account") void paintGitHubAuth(null);
+    if (currentRoute().view === "runners") void runners.refresh();
+    if (currentRoute().view === "projects") void projects.refresh();
   }
   if (action === "source") openDialog();
   if (action === "issue-filter") {
@@ -361,21 +441,82 @@ function onClick(event: Event): void {
       applyIssueFilter();
     }
   }
-  if (action === "select-check") {
-    const row = target.closest("[data-item][data-check]");
-    const itemId = row?.getAttribute("data-item");
-    const checkId = row?.getAttribute("data-check");
-    if (itemId && checkId) {
-      selectedCheck = { itemId, checkId };
-      paint();
-    }
+  const holder = target.closest("[data-item]");
+  const itemId = holder?.getAttribute("data-item") ?? "";
+  const attempt = Number(holder?.getAttribute("data-attempt") ?? "");
+  const checkId = holder?.getAttribute("data-check") ?? "";
+  if (!itemId || !Number.isInteger(attempt) || attempt < 1) return;
+  if (action === "closeout-attempt") {
+    closeout.attempt[itemId] = attempt;
+    paint();
   }
-  if (action === "download-output") {
-    const row = target.closest("[data-item][data-check]");
-    const itemId = row?.getAttribute("data-item");
-    const checkId = row?.getAttribute("data-check");
-    if (itemId && checkId) downloadOutput(itemId, checkId);
+  if (action === "closeout-expand-all") {
+    const checks = closeoutChecks(itemId, attempt);
+    const open = !checks.every((check) => isOpen(closeout, itemId, attempt, check));
+    for (const check of checks) closeout.open[checkKey(itemId, attempt, check.id)] = open;
+    paint();
   }
+  if (!checkId) return;
+  const key = checkKey(itemId, attempt, checkId);
+  if (action === "toggle-check") {
+    const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
+    if (check) closeout.open[key] = !isOpen(closeout, itemId, attempt, check);
+    paint();
+  }
+  if (action === "wrap-output") {
+    closeout.wrap[key] = !closeout.wrap[key];
+    paint();
+  }
+  if (action === "copy-check-link") {
+    const url = new URL(location.href);
+    url.hash = checkHash(attempt, checkId);
+    void navigator.clipboard?.writeText(url.href).then(
+      () => flashLabel(target.closest("button"), "Copied"),
+      () => flashLabel(target.closest("button"), "Copy failed"),
+    );
+  }
+  if (action === "download-output") downloadOutput(itemId, attempt, checkId);
+}
+
+function closeoutChecks(itemId: string, attempt: number) {
+  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  if (!verdict) return [];
+  return attemptsOf(verdict).find((entry) => entry.number === attempt)?.checks ?? [];
+}
+
+function flashLabel(button: HTMLButtonElement | null, label: string): void {
+  if (!button) return;
+  const before = button.textContent;
+  button.textContent = label;
+  window.setTimeout(() => {
+    button.textContent = before;
+  }, 1500);
+}
+
+/** A copied check link (`#check=<attempt>/<id>`) opens that attempt and row once, then scrolls to it. */
+function openLinkedCheck(): boolean {
+  const hash = location.hash;
+  if (hash === linkedHash) return false;
+  const linked = parseCheckHash(hash);
+  if (!linked) {
+    linkedHash = hash;
+    return false;
+  }
+  const itemId = document
+    .querySelector('#page-content section[aria-label="Closeout"] [data-item]')
+    ?.getAttribute("data-item");
+  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  if (!itemId || !verdict) return false;
+  linkedHash = hash;
+  const attempt = attemptsOf(verdict).find((entry) => entry.number === linked.attempt);
+  if (!attempt?.checks.some((check) => check.id === linked.checkId)) return false;
+  closeout.attempt[itemId] = attempt.number;
+  closeout.open[checkKey(itemId, attempt.number, linked.checkId)] = true;
+  paint();
+  document
+    .getElementById(checkAnchor(attempt.number, linked.checkId))
+    ?.scrollIntoView({ block: "start" });
+  return true;
 }
 
 async function paintGitHubAuth(
@@ -509,17 +650,15 @@ async function errorText(response: Response): Promise<string> {
   return `Engine responded ${response.status}`;
 }
 
-function downloadOutput(itemId: string, checkId: string): void {
-  const check = snapshot?.verdicts
-    .find((verdict) => verdict.itemId === itemId)
-    ?.checks.find((entry) => entry.id === checkId);
+function downloadOutput(itemId: string, attempt: number, checkId: string): void {
+  const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
   if (!check) return;
   const body = `STDOUT\n${check.stdout ?? ""}\nSTDERR\n${check.stderr ?? ""}\n`;
   const blob = new Blob([body], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${checkId}.log`;
+  link.download = `${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}-${attempt}.log`;
   link.click();
   URL.revokeObjectURL(url);
 }

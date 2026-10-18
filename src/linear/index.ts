@@ -31,6 +31,7 @@ export type {
   CandidateRepository,
   LinearRepositoryAdapter,
   RepositorySuggestion,
+  RepositoryHints,
   RepositorySuggestionsInput,
 } from "./repositories";
 export { createInboxStore } from "./inbox";

@@ -26,46 +26,25 @@ const observations = [];
         const page = await context.newPage();
         page.on("pageerror", (error) => errors.push(String(error)));
         await page.goto(fixture.origin);
-        await page.getByRole("button", { name: "View health" }).first().waitFor();
+        const label = "Share this host with members of the same Linear project";
         const index = identity === "owner" ? 0 : 1;
-        await page.getByRole("button", { name: "View health" }).nth(index).click();
-        await page
-          .getByRole("heading", { name: fixture.runners[index].name + " health" })
-          .waitFor();
-        const sharing = page.locator("#runner-sharing");
-        await sharing.locator("summary").focus();
-        await page.keyboard.press("Space");
-        await page.getByRole("combobox", { name: "Account type", exact: true }).waitFor();
-        assert.equal(await sharing.evaluate((element) => element.open), true);
-        assert.equal(
-          await page.getByRole("combobox", { name: "Account type", exact: true }).isEnabled(),
-          true,
-        );
-        assert.equal(await page.getByText(/Usage limit reached/).count(), 1);
-        const consent = page.getByRole("checkbox", {
-          name: "Share this host with members of the same Linear project",
-        });
+        const card = (at) => page.locator(`[data-runner-card="${fixture.runners[at].id}"]`);
+        const consent = card(index).getByRole("checkbox", { name: label });
+        await consent.waitFor();
+        assert.equal(await consent.isEnabled(), true);
+        assert.equal(await page.locator("select").count(), 0);
+        const before = await consent.isChecked();
         await consent.focus();
-        if (!(await consent.isChecked())) await page.keyboard.press("Space");
-        await page.getByRole("button", { name: "Save host settings" }).click();
+        await page.keyboard.press("Space");
         await page.getByRole("status").filter({ hasText: "Host settings saved." }).waitFor();
-        await page.locator("#runner-sharing summary").click();
-        assert.equal(
-          await page
-            .getByLabel("Share this host with members of the same Linear project")
-            .isChecked(),
-          true,
-        );
+        assert.equal(await card(index).getByRole("checkbox", { name: label }).isChecked(), !before);
         await page.getByText("Recent execution", { exact: true }).click();
         const usage = page
           .locator("details")
           .filter({ has: page.locator("summary", { hasText: "Recent execution" }) });
         const rows = await usage.locator("li").count();
         assert.equal(rows, identity === "owner" ? 2 : 1);
-        assert.equal(
-          await page.locator("#workspace-runner-policy").count(),
-          identity === "owner" ? 1 : 0,
-        );
+        assert.equal(await page.locator("#workspace-runner-policy").count(), 0);
         assert(
           await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         );
@@ -78,18 +57,10 @@ const observations = [];
           passed: true,
           observed: { usageRows: rows, overflow: false },
         });
-        await page
-          .getByRole("button", { name: "View health" })
-          .nth(identity === "owner" ? 1 : 0)
-          .click();
-        await page
-          .getByRole("heading", {
-            name: fixture.runners[identity === "owner" ? 1 : 0].name + " health",
-          })
-          .waitFor();
-        await page.locator("#runner-sharing summary").click();
         assert.equal(
-          await page.getByRole("button", { name: "Save host settings" }).isEnabled(),
+          await card(identity === "owner" ? 1 : 0)
+            .getByRole("checkbox", { name: label })
+            .isEnabled(),
           false,
         );
         observations.push({

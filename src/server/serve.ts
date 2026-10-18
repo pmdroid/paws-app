@@ -17,6 +17,7 @@ import {
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../web";
+import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
@@ -55,6 +56,7 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
@@ -115,6 +117,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(statusEnv ? { statusEnv } : {}),
         ...(closeoutHome ? { closeoutHome } : {}),
         ...(evidenceRoot ? { evidenceRoot } : {}),
+        ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
       });
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -150,6 +153,7 @@ type Secrets = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceDir?: string;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -229,11 +233,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/auth/github") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      const recent =
-        Date.now() >= access.principal.authenticatedAt &&
-        Date.now() - access.principal.authenticatedAt <= 15 * 60_000;
       if (
-        (privileged && (access.principal.role !== "owner" || (unsafe && !recent))) ||
+        (privileged && access.principal.role !== "owner") ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -246,7 +247,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           now: Date.now(),
         });
         return Response.json(
-          { error: "Workspace ownership, recent sign-in and a valid CSRF token are required." },
+          { error: "Workspace ownership and a valid CSRF token are required." },
           { status: 403 },
         );
       }
@@ -291,6 +292,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
     }
+  }
+  if (path.startsWith(EVIDENCE_API_PATH)) {
+    if (secrets.db === undefined || secrets.evidenceDir === undefined)
+      return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleEvidenceRequest(request, {
+      db: secrets.db,
+      root: secrets.evidenceDir,
+      sessionIds,
+    }))!;
   }
   if (path === "/api/runners" && request.method === "GET" && !secrets.runnerControl)
     return Response.json({

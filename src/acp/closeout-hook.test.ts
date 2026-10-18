@@ -28,7 +28,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("finish is allowed only when nothing required is pending or blocked", () => {
+test("finish is allowed when nothing is pending and only exhausted checks block it", () => {
   expect(closeoutFinishLine(JSON.stringify({ pending: [], blocked: null }))).toBe("{}");
   expect(closeoutFinishLine('{"pending":["test"],"blocked":null}')).toBe(
     JSON.stringify({
@@ -42,12 +42,18 @@ test("finish is allowed only when nothing required is pending or blocked", () =>
   expect(
     closeoutFinishLine(
       JSON.stringify({
+        required: [{ id: "prepare", status: "exhausted" }],
         pending: [],
         blocked:
           "Cannot finish yet. Check prepare is exhausted. Failed attempts 1 of 1. Hint: Run true.",
       }),
     ),
-  ).toContain("Check prepare is exhausted.");
+  ).toBe("{}");
+  expect(
+    closeoutFinishLine(
+      JSON.stringify({ required: [], pending: [], blocked: "The Closeout policy is invalid." }),
+    ),
+  ).toContain("The Closeout policy is invalid.");
   expect(
     closeoutFinishLine('{"pending":["engine"],"blocked":"changed paths are unavailable"}'),
   ).toBe(

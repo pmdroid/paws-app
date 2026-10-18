@@ -1,6 +1,5 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
-  StatusCheck,
   StatusItem,
   StatusQuestion,
   StatusRun,
@@ -12,7 +11,6 @@ import {
   ago,
   avatar,
   clock,
-  durationLabel,
   esc,
   itemLabel,
   linkList,
@@ -22,8 +20,15 @@ import {
   verdictDetail,
   verdictLabel,
 } from "./format";
-import { routeHref, type Route } from "./route";
+import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
+import {
+  attemptsOf,
+  emptyCloseoutView,
+  renderCloseoutChecks,
+  shownAttempt,
+  type CloseoutView,
+} from "./closeout";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { PAGES } from "./navigation";
 
@@ -35,7 +40,7 @@ export interface RenderModel {
   via: "bundled" | "engine" | null;
   error: string | null;
   engineUrl: string | null;
-  selectedCheck: { itemId: string; checkId: string } | null;
+  closeout?: CloseoutView;
 }
 
 export interface Rendered {
@@ -65,9 +70,11 @@ export function render(model: RenderModel): Rendered {
           ? '<div id="project-delivery"></div>'
           : model.route.view === "settings"
             ? renderSettingsPage(model.route.page)
-            : snapshot && model.phase !== "loading"
-              ? renderView(snapshot, model)
-              : renderPending(model),
+            : model.route.view === "sessions"
+              ? renderConversations(model.conversations, model.route.id)
+              : snapshot && model.phase !== "loading"
+                ? renderView(snapshot, model)
+                : renderPending(model),
     title,
   };
 }
@@ -77,7 +84,7 @@ function renderTop(_model: RenderModel): string {
 }
 
 function renderBanner(model: RenderModel): string {
-  if (model.phase === "error") {
+  if (model.phase === "error" && needsSnapshot(model.route)) {
     return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${model.snapshot ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
@@ -91,15 +98,18 @@ function renderPending(model: RenderModel): string {
 }
 
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
-  if (model.route.view === "sessions")
-    return renderConversations(model.conversations, model.route.id);
   switch (model.route.view) {
     case "overview":
       return viewOverview(snapshot);
     case "issues":
       return viewIssues(snapshot, model.route.id);
     case "runs":
-      return viewRuns(snapshot, model.route.id, model.selectedCheck, model.engineUrl);
+      return viewRuns(
+        snapshot,
+        model.route.id,
+        model.closeout ?? emptyCloseoutView(),
+        model.engineUrl,
+      );
     case "questions":
       return viewQuestions(snapshot, model.route.id);
     case "runners":
@@ -108,6 +118,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return '<div id="project-delivery"></div>';
     case "settings":
       return renderSettingsPage(model.route.page);
+    case "sessions":
+      return renderConversations(model.conversations, model.route.id);
   }
 }
 
@@ -242,13 +254,13 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
   return `${pageHeading("issues")}
     <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
     <div class="issue-head">
-      <div class="row"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
-      <h2>${esc(item.title)}</h2>
-      <div class="row wrap">${issueMeta(item)}</div>
+      <span class="lin-id">${esc(item.id)}</span>
+      <div class="issue-title"><h2>${esc(item.title)}</h2>${statePill(item.state, itemLabel(item.state))}</div>
+      <div class="issue-facts">${issueMeta(item)}</div>
       <div class="row">${linkList(item.links)}</div>
     </div>
     <h3>Runs</h3>
-    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a> ${statePill(run.state, runLabel(run.state))}</li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
+    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
     ${relatedIssues(item.blockers)}
     <h3>Blocks</h3>
@@ -257,7 +269,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = unmergedBlockers(snapshot, item);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><div class="row wrap">${statePill(item.state, itemLabel(item.state))}${issueMeta(item)}${blockers.length ? `<span>Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${blockers.length ? `<span class="muted">Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
@@ -292,7 +304,7 @@ function unmergedBlockers(snapshot: StatusSnapshot, item: StatusItem): string[] 
 function viewRuns(
   snapshot: StatusSnapshot,
   id: string | null,
-  selectedCheck: { itemId: string; checkId: string } | null,
+  closeout: CloseoutView,
   engineUrl: string | null,
 ): string {
   const runs = [...snapshot.runs].sort(
@@ -322,12 +334,9 @@ function viewRuns(
       <p class="muted">${esc(selected.summary)}</p>
       ${phaseStrip(item, selected, verdict)}
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
-      <h3>Agent transcript</h3>
-      ${snapshot.source === "live" ? `<p><a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full transcript</a></p>` : ""}
-      <div class="log" role="log" aria-label="Agent transcript" data-log="transcript-${esc(selected.id)}">${selected.transcript?.length ? selected.transcript.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind === "system" ? "agent" : line.kind)}</span><span class="tx whitespace-pre-wrap break-words">${esc(line.text)}</span></div>`).join("") : '<p class="muted">Waiting for agent output.</p>'}</div>
-      <h3>Task activity</h3>
+      <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-      ${verificationSection(snapshot, selected.itemId, selectedCheck, engineUrl)}
+      ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
     </div>
     <div class="card"><h3>Run</h3><div class="kv">
       <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>
@@ -381,126 +390,6 @@ function questionCard(
     </div></article>`;
 }
 
-function checks(
-  verdict: StatusVerdict,
-  selectedCheck: { itemId: string; checkId: string } | null,
-  engineUrl: string | null,
-): string {
-  const picked = chosenCheck(verdict, selectedCheck);
-  const rows = verdict.checks
-    .map((check) => {
-      const on = check.id === picked?.id ? " on" : "";
-      const current = check.id === picked?.id ? ` aria-current="true"` : "";
-      const detail = check.detail ? `<div class="dim">${esc(check.detail)}</div>` : "";
-      const meta = checkMeta(check);
-      return `<button class="chk${on}" type="button" data-action="select-check" data-item="${esc(verdict.itemId)}" data-check="${esc(check.id)}"${current}><span class="ico ${esc(check.state)}">${checkMark(check.state)}</span><span class="mono">${esc(check.id)}</span><span><span class="mono muted">${esc(check.command)}</span>${detail}${meta ? `<div class="dim">${meta}</div>` : ""}</span><span class="tag">${esc(check.kind)}</span></button>`;
-    })
-    .join("");
-  return `${rows}${picked ? checkDetail(verdict, picked, engineUrl) : ""}`;
-}
-
-function chosenCheck(
-  verdict: StatusVerdict,
-  selectedCheck: { itemId: string; checkId: string } | null,
-): StatusCheck | undefined {
-  if (selectedCheck?.itemId === verdict.itemId) {
-    const chosen = verdict.checks.find((check) => check.id === selectedCheck.checkId);
-    if (chosen) return chosen;
-  }
-  return (
-    verdict.checks.find((check) => check.active) ??
-    verdict.checks.find((check) => check.state === "failed" || check.state === "blocked") ??
-    verdict.checks[0]
-  );
-}
-
-function checkDetail(verdict: StatusVerdict, check: StatusCheck, engineUrl: string | null): string {
-  const meta = checkMeta(check);
-  const findings = check.findings
-    ? `<h3>Findings</h3><pre class="out" tabindex="0" data-log="${logKey(verdict.itemId, check.id, "findings")}">${esc(check.findings)}</pre>`
-    : "";
-  const paths =
-    check.state === "running" || check.state === "pending"
-      ? ""
-      : [
-          check.logPath
-            ? artifactLink(verdict, check, "log", "Log", "closeout.log", engineUrl)
-            : "",
-          check.evidencePath
-            ? artifactLink(verdict, check, "evidence", "Evidence", "evidence.json", engineUrl)
-            : "",
-        ].join("");
-  const download =
-    check.stdout || check.stderr
-      ? `<button class="btn sm ghost" type="button" data-action="download-output" data-item="${esc(verdict.itemId)}" data-check="${esc(check.id)}">Download log</button>`
-      : "";
-  return `<div class="check-detail"><div class="between"><h3>${esc(check.id)}</h3>${download}</div>${meta ? `<div class="dim">${meta}</div>` : ""}${commandOutput(verdict.itemId, check)}${findings}${paths ? `<div class="artifact">${paths}</div>` : ""}</div>`;
-}
-
-function artifactLink(
-  verdict: StatusVerdict,
-  check: StatusCheck,
-  kind: "log" | "evidence",
-  label: string,
-  filename: string,
-  engineUrl: string | null,
-): string {
-  const params = new URLSearchParams({
-    item: verdict.itemId,
-    check: check.id,
-    kind,
-    head: verdict.headSha ?? "",
-    policy: verdict.policyDigest ?? "",
-  });
-  const path = `/api/closeout-artifact?${params.toString()}`;
-  const engine = parseEngineUrl(engineUrl ?? "");
-  const href = engine === null ? path : new URL(path, engine).href;
-  return `<a href="${esc(href)}" download="${filename}">${label}</a>`;
-}
-
-function commandOutput(itemId: string, check: StatusCheck): string {
-  const stdout = check.stdout ?? "";
-  const stderr = check.stderr ?? "";
-  if (!stdout && !stderr) {
-    return check.state === "running" ? `<p class="muted">Waiting for output.</p>` : "";
-  }
-  const blocks = [
-    stdout
-      ? `<div class="stream"><span>stdout</span><pre class="out" tabindex="0" data-log="${logKey(itemId, check.id, "stdout")}">${esc(stdout)}</pre></div>`
-      : "",
-    stderr
-      ? `<div class="stream"><span>stderr</span><pre class="out" tabindex="0" data-log="${logKey(itemId, check.id, "stderr")}">${esc(stderr)}</pre></div>`
-      : "",
-  ].join("");
-  const note = check.truncated ? `<p class="muted">Output truncated.</p>` : "";
-  return `${blocks}${note}`;
-}
-
-function logKey(itemId: string, checkId: string, stream: string): string {
-  return `${encodeURIComponent(itemId)}:${encodeURIComponent(checkId)}:${stream}`;
-}
-
-function checkMeta(check: StatusCheck): string {
-  const parts: string[] = [];
-  if (check.attempt) parts.push(`attempt ${check.attempt}`);
-  if (typeof check.elapsedMs === "number") {
-    parts.push(`${durationLabel(check.elapsedMs)} elapsed`);
-  }
-  if (typeof check.timeoutSeconds === "number") {
-    parts.push(`timeout ${durationLabel(check.timeoutSeconds * 1000)}`);
-  }
-  if (typeof check.exitCode === "number") parts.push(`exit ${check.exitCode}`);
-  if (check.timedOut) parts.push(check.timeoutReason || "timed out");
-  return parts.join(" · ");
-}
-
-function checkMark(state: string): string {
-  if (state === "passed") return "✓";
-  if (state === "failed" || state === "blocked" || state === "exhausted") return "✕";
-  if (state === "skipped") return "–";
-  return "";
-}
-
 function phaseStrip(
   item: StatusItem | undefined,
   run: StatusRun | undefined,
@@ -538,13 +427,14 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   return statePill(run.state, runLabel(run.state));
 }
 
-function verificationSection(
+function closeoutSection(
   snapshot: StatusSnapshot,
   itemId: string,
-  selectedCheck: { itemId: string; checkId: string } | null,
+  closeout: CloseoutView,
   engineUrl: string | null,
 ): string {
   const selected = snapshot.verdicts.find((verdict) => verdict.itemId === itemId);
+  if (!selected) return "";
   const picker = entityPicker(
     "Candidate",
     snapshot.verdicts.flatMap((verdict) => {
@@ -553,10 +443,8 @@ function verificationSection(
         ? [{ value: href, label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}` }]
         : [];
     }),
-    selected ? (runHrefForItem(snapshot, selected.itemId) ?? "") : "",
+    runHrefForItem(snapshot, selected.itemId) ?? "",
   );
-  if (!selected)
-    return `<h3>Verification</h3>${picker}<div class="empty">No verification for this run yet. Results appear after the agent produces a candidate.</div>`;
   const item = findItem(snapshot, selected.itemId);
   const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
     const n = index + 1;
@@ -567,21 +455,23 @@ function verificationSection(
     selected.failingCheck && selected.decision !== "accepted"
       ? `<div class="mono">${esc(selected.failingCheck)}</div>`
       : "";
-  return `<h3>Verification</h3>${picker}
+  const attempt = shownAttempt(selected, closeout);
+  const latest = attempt.number === attemptsOf(selected).at(-1)?.number;
+  return `<section class="col" aria-label="Closeout"><h3>Closeout</h3>${picker}
     <div class="between closeout-head"><div>
       <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
       <div class="muted">${esc(selected.summary)}</div>
     </div>
     <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
     <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card">${checks(selected, selectedCheck, engineUrl)}</div>
+    <div class="card">${renderCloseoutChecks(selected, closeout, engineUrl)}</div>
     <div class="card"><h3>Report</h3><div class="kv">
-      <span class="k">Base</span><span class="mono">${esc(selected.baseSha ?? "—")}</span>
-      <span class="k">Head</span><span class="mono">${esc(selected.headSha ?? "—")}</span>
-      <span class="k">Policy</span><span class="mono">${esc(policyLabel(selected))}</span>
-      <span class="k">Sealed</span><span>${selected.sealed ? "yes" : "no"}</span>
+      <span class="k">Base</span><span class="mono">${esc(attempt.baseSha ?? "—")}</span>
+      <span class="k">Head</span><span class="mono">${esc(attempt.headSha ?? "—")}</span>
+      <span class="k">Policy</span><span class="mono">${esc(latest ? policyLabel(selected) : (attempt.policyDigest ?? "—"))}</span>
+      <span class="k">Sealed</span><span>${latest ? (selected.sealed ? "yes" : "no") : attempt.decision === "running" ? "no" : "yes"}</span>
       <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div>`;
+    </div></div></section>`;
 }
 
 function runHrefForItem(snapshot: StatusSnapshot, itemId: string): string | null {
