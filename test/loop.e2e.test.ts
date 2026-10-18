@@ -2061,6 +2061,90 @@ test("the agent's open_pull_request title and description open the pull request"
   }
 }, 120_000);
 
+test("post_update posts one Linear thought and refuses a second update within a minute", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "update-tool",
+      identifier: "ENG-93",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const resultPath = path.join(layout.root, "update-tool-result.json");
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `update-tool-${sequence}.json`);
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [
+              { type: "post_update", text: "Found the cause: ok.txt was never written." },
+              { type: "post_update", text: "Tests pass." },
+              writeOk(input.worktree),
+              { type: "end" },
+            ]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, input.purpose === "implement" ? resultPath : "", scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "update-tool"));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !existsSync(resultPath)) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    const result = JSON.parse(await readFile(resultPath, "utf8")) as FakeResult;
+    expect(result.updates).toEqual([
+      { ok: true, text: "Posted." },
+      { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
+    ]);
+    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-93") ?? "")) {
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("merged");
+    expect(
+      tracker.progress.filter((update) => update.body.startsWith("Found the cause")),
+    ).toMatchObject([{ kind: "thought", body: "Found the cause: ok.txt was never written." }]);
+    expect(tracker.progress.some((update) => update.body === "Tests pass.")).toBe(false);
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
 test("a CI failure sends the task back to its agent and the fixed head merges", async () => {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
