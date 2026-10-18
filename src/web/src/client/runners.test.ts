@@ -125,6 +125,16 @@ describe("runner cards", () => {
     expect(html).toContain("Offline");
     expect(html).not.toContain("data-runner-sharing");
     expect(html).not.toContain("data-runner-status");
+    expect(html).not.toContain("data-runner-signin");
+  });
+
+  test("members sign in to the agents from the runner card, observers cannot", () => {
+    expect(runnerCardMarkup(runner, { ...view, userId: "member", role: "member" })).toContain(
+      `data-runner-signin="${runner.id}"`,
+    );
+    expect(runnerCardMarkup(runner, { ...view, userId: "guest", role: "observer" })).not.toContain(
+      "data-runner-signin",
+    );
   });
 });
 

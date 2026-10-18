@@ -1,5 +1,4 @@
-import { routeHref } from "./route";
-import { loadWhenShown } from "./settings-loads";
+import { readCsrfToken } from "./github-auth";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
@@ -18,23 +17,18 @@ type Account = {
   updatedAt: number | null;
   session: Login | null;
 };
-type Runner = { id: string; name: string; status: string };
 
-export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): void {
-  const section = document.createElement("section");
-  section.id = "agent-accounts";
-  section.dataset.settingsPage = "integrations";
-  section.className = "settings-section";
+export function openAgentAccounts(runner: { id: string; name: string }, onClose: () => void): void {
+  const host = document.createElement("div");
+  document.body.append(host);
   renderMarkup(
-    section,
-    '<div><h2>Your agent accounts</h2><p class="sub">Connect Claude and Codex on the runner that executes your work. Each member signs in separately.</p></div><div class="settings-account min-w-0"><label class="field"><span>Runner</span><select data-account-runner disabled><option>Loading runners…</option></select></label><p data-account-feedback role="alert"></p><div data-account-list class="flex flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div>',
+    host,
+    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude and Codex on this runner. Each member signs in separately.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
   );
-  root.append(section);
-  const runnerSelect = section.querySelector<HTMLSelectElement>("[data-account-runner]")!;
-  const feedback = section.querySelector<HTMLElement>("[data-account-feedback]")!;
-  const list = section.querySelector<HTMLElement>("[data-account-list]")!;
-  const refresh = section.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
-  let selected = "";
+  const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
+  const feedback = dialog.querySelector<HTMLElement>("[data-account-feedback]")!;
+  const list = dialog.querySelector<HTMLElement>("[data-account-list]")!;
+  const refresh = dialog.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
   let accounts: Account[] = [];
   let busy = false;
   let timer = 0;
@@ -45,13 +39,12 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
   }
 
   function controls() {
-    runnerSelect.disabled = busy || accounts.some((account) => pending(account.session));
     refresh.disabled = busy;
     for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.disabled = busy;
   }
 
   function paint() {
-    if (!section.isConnected) return;
+    if (!dialog.isConnected) return;
     for (const agent of ["claude", "codex"] as const) {
       const account = accounts.find((entry) => entry.agent === agent);
       if (!account) continue;
@@ -118,7 +111,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
       method,
       cache: "no-store",
       headers: {
-        ...(method === "GET" ? {} : { "x-paws-csrf": csrfToken }),
+        ...(method === "GET" ? {} : { "x-paws-csrf": readCsrfToken(document) }),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -132,51 +125,28 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
   }
 
   function accountPath(agent?: Agent, login?: Login): string {
-    return `/api/runners/${encodeURIComponent(selected)}/accounts${agent ? `/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}` : ""}`;
+    return `/api/runners/${encodeURIComponent(runner.id)}/accounts${agent ? `/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}` : ""}`;
   }
 
   function schedule() {
     window.clearTimeout(timer);
-    if (!section.isConnected) return;
+    if (!dialog.isConnected) return;
     if (accounts.some((account) => pending(account.session)))
       timer = window.setTimeout(() => {
-        if (!section.hidden && !root.hidden && document.visibilityState === "visible")
-          void load(false);
+        if (document.visibilityState === "visible") void load();
         else schedule();
       }, 2000);
   }
 
-  async function load(reloadRunners: boolean) {
-    if (busy || !section.isConnected) return;
+  async function load() {
+    if (busy || !dialog.isConnected) return;
     const current = ++generation;
     busy = true;
     controls();
     feedback.textContent = "";
     try {
-      if (reloadRunners) {
-        const response = await request<{ runners: Runner[] }>("/api/runners");
-        const available = response.runners.filter((runner) => runner.status !== "revoked");
-        if (!available.some((runner) => runner.id === selected)) {
-          selected = available[0]?.id ?? "";
-          accounts = [];
-          renderMarkup(list, "");
-        }
-        runnerSelect.replaceChildren(
-          ...available.map((runner) => new Option(runner.name, runner.id)),
-        );
-        runnerSelect.value = selected;
-        if (!selected) {
-          accounts = [];
-          runnerSelect.replaceChildren(new Option("No paired runners", ""));
-          renderMarkup(
-            list,
-            `<p>Pair a runner in <a href="${routeHref({ view: "runners" })}">Runners</a> to connect your agent accounts.</p>`,
-          );
-          return;
-        }
-      }
       const result = await request<{ accounts: Account[] }>(accountPath());
-      if (!section.isConnected || current !== generation) return;
+      if (!dialog.isConnected || current !== generation) return;
       accounts = result.accounts;
       paint();
     } catch (error) {
@@ -189,7 +159,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
   }
 
   async function act(agent: Agent, action: "start" | "cancel" | "input", input?: unknown) {
-    if (busy || !selected || !section.isConnected) return;
+    if (busy || !dialog.isConnected) return;
     const account = accounts.find((entry) => entry.agent === agent);
     if (!account || (action !== "start" && !pending(account.session))) return;
     busy = true;
@@ -214,14 +184,19 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
     }
   }
 
-  runnerSelect.addEventListener("change", () => {
-    selected = runnerSelect.value;
-    accounts = [];
-    renderMarkup(list, "");
-    void load(false);
+  refresh.addEventListener("click", () => void load());
+  dialog.querySelector("[data-account-close]")!.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    window.clearTimeout(timer);
+    renderMarkup(host, "");
+    host.remove();
+    onClose();
   });
-  refresh.addEventListener("click", () => void load(true));
-  section.addEventListener("click", (event) => {
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      dialog.close();
+      return;
+    }
     const target = (event.target as Element).closest<HTMLElement>(
       "[data-agent-action], [data-agent-open]",
     );
@@ -232,7 +207,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
       else if (agent === "codex") void act(agent, "input", { accept: true });
     } else void act(agent, target.dataset.agentAction as "start" | "cancel");
   });
-  section.addEventListener("submit", (event) => {
+  dialog.addEventListener("submit", (event) => {
     const form = event.target as HTMLFormElement;
     if (!form.matches("[data-agent-input]")) return;
     event.preventDefault();
@@ -243,7 +218,8 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
     input.value = "";
     void act(agent, "input", { text: `${text}\r` });
   });
-  loadWhenShown("integrations", () => void load(true));
+  dialog.showModal();
+  void load();
 }
 
 function providerUrl(value: string, agent: Agent): string {
