@@ -43,6 +43,7 @@ import {
   type GateResult,
   type CloseoutVerdict,
   type CandidateIdentity,
+  type CloseoutMediaSink,
 } from "../closeout";
 import {
   CommandBus,
@@ -260,6 +261,18 @@ export type OrchestratorOptions = {
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   launch?: AgentLaunch;
+  /**
+   * Saves one video or screenshot a local Closeout command left in `CLOSEOUT_MEDIA_DIR`.
+   * The composition root backs this with the `~/.paws/evidence` store.
+   */
+  saveEvidenceMedia?: (input: {
+    itemId: string;
+    runId: string;
+    checkId: string;
+    attempt: number;
+    headCommit: string;
+    path: string;
+  }) => Promise<void>;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
@@ -1616,6 +1629,19 @@ export class Orchestrator {
     }
   }
 
+  /** Each file is saved on its own, so one refused file does not drop the rest. */
+  private evidenceMediaSink(
+    itemId: string,
+    save: NonNullable<OrchestratorOptions["saveEvidenceMedia"]>,
+  ): CloseoutMediaSink {
+    return async ({ checkId, attempt, head, files }) => {
+      const runId = getWorkItem(this.db, itemId)?.currentRunId;
+      if (!runId) return;
+      for (const path of files)
+        await save({ itemId, runId, checkId, attempt, headCommit: head, path }).catch(() => {});
+    };
+  }
+
   private async verifyCandidate(
     item: WorkItemRecord,
     worktree: string,
@@ -1704,6 +1730,9 @@ export class Orchestrator {
       checkoutExclusions,
       candidate,
       ...(commands ? { commandRunner: commands } : {}),
+      ...(this.options.saveEvidenceMedia && !commands
+        ? { media: this.evidenceMediaSink(item.id, this.options.saveEvidenceMedia) }
+        : {}),
       reviewer: {
         async review(request) {
           await checkoutPatterns(request.worktree, exclusionPatterns(checkoutExclusions));

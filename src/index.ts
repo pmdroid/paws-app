@@ -1,5 +1,5 @@
 import { runRunnerCli } from "./runner-cli";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -134,6 +134,7 @@ import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./inta
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
+import { createEvidenceMediaStore } from "./evidence-media";
 import { runSetup } from "./setup";
 import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion } from "./questions";
@@ -648,6 +649,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     comment !== null
       ? commentTracker(db, comment.tracker, comment.mode)
       : (linear?.tracker ?? null);
+  const evidenceMedia = createEvidenceMediaStore({ db, dir: paths.evidenceDir });
   const loops = startLoops({
     db,
     signal: abort.signal,
@@ -659,6 +661,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         jobs: created.jobs,
         outbox: created.outbox,
         pawsRoot: paths.home,
+        saveEvidenceMedia: async ({ path, ...fields }) => {
+          await evidenceMedia.save({
+            ...fields,
+            displayName: basename(path),
+            file: Bun.file(path),
+          });
+        },
         closeoutPolicyRoot: ({ owner, repo }) =>
           closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
         tracker,
