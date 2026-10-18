@@ -113,6 +113,20 @@ const PULL_REQUEST_TOOL = {
   },
 };
 
+const POST_UPDATE_TOOL = {
+  name: "post_update",
+  description:
+    "Post a short progress update to the Linear session. At most one update per minute; a call within the window posts nothing and says when the next one is allowed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      text: { type: "string", minLength: 1, maxLength: 500, description: "The update." },
+    },
+    required: ["text"],
+    additionalProperties: false,
+  },
+};
+
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
@@ -224,6 +238,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           PLAN_TOOL,
           ARTIFACT_TOOL,
           PULL_REQUEST_TOOL,
+          POST_UPDATE_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),

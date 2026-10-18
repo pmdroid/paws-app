@@ -9,6 +9,7 @@ import { minimalAgentEnv } from "./env";
 import { executeItem } from "./executor";
 import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
+import { createUpdateLimiter } from "./ask-team";
 import { createAcpPromptLifecycle } from "./lifecycle";
 import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
 import type { FakeResult, FakeScript } from "./testing/script";
@@ -581,6 +582,61 @@ test("update_plan rejects an empty checklist before calling the hook", async () 
   expect(trace.plan?.ok).toBe(false);
   expect(trace.plan?.error).toContain("1 to 16 steps");
   expect(called).toBe(false);
+});
+
+test("post_update posts once and answers a second call within a minute with the wait", async () => {
+  const layout = await layoutRepo();
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "post_update", text: "  Found the cause: the cache key ignores the locale.  " },
+      { type: "post_update", text: "Tests pass." },
+      { type: "post_update", text: "" },
+      { type: "end" },
+    ],
+  });
+  const limiter = createUpdateLimiter(() => 1_000);
+  const posted: string[] = [];
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-update",
+    prompt: "Post an update.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    postUpdate: {
+      post: async (text) => {
+        const allowed = limiter.take("ENG-1");
+        if (allowed.posted) posted.push(text);
+        return allowed;
+      },
+    },
+  });
+  const trace = await readResult(files.resultPath);
+  expect(trace.tools).toEqual(["post_update", "get_closeout", "run_closeout"]);
+  expect(trace.updates).toEqual([
+    { ok: true, text: "Posted." },
+    { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
+    { ok: false, error: "post_update needs text of 1 to 500 characters" },
+  ]);
+  expect(posted).toEqual(["Found the cause: the cache key ignores the locale."]);
+});
+
+test("the update limiter allows one update per key per minute", () => {
+  let now = 0;
+  const limiter = createUpdateLimiter(() => now);
+  expect(limiter.take("a")).toEqual({ posted: true });
+  now = 15_500;
+  expect(limiter.take("a")).toEqual({ posted: false, waitSeconds: 45 });
+  expect(limiter.take("b")).toEqual({ posted: true });
+  now = 59_999;
+  expect(limiter.take("a")).toEqual({ posted: false, waitSeconds: 1 });
+  now = 60_000;
+  expect(limiter.take("a")).toEqual({ posted: true });
 });
 
 test("ask_team and publish_artifact share one MCP server", async () => {

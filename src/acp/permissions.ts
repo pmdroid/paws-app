@@ -56,6 +56,7 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
     subject.name === "ask_team" ||
     subject.name === "update_plan" ||
     subject.name === "open_pull_request" ||
+    subject.name === "post_update" ||
     subject.name === "get_closeout" ||
     subject.name === "run_closeout"
   ) {
