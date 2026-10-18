@@ -5,7 +5,6 @@ import { initializeWorkspaceIdentities } from "./workspace-identities";
 import { initializeWorkspaceAudit } from "./workspace-audit";
 import { initializeWorkspaceGitHub } from "./workspace-github";
 import { initializeWorkspaceAttribution } from "./workspace-attribution";
-import { initializeAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
 import { clearSettingsLoads, loadWhenShown, settingsPageShown } from "./settings-loads";
 
@@ -168,8 +167,6 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     initializeWorkspaceAttribution(root, session.csrfToken);
   initializeWorkspaceGitHub(root, session.csrfToken, session.role === "owner");
   initializeDecisions(root, session.csrfToken, session.role !== "observer");
-  if (["owner", "admin", "member"].includes(session.role))
-    initializeAgentAccounts(root, session.csrfToken);
   if (["owner", "admin"].includes(session.role)) {
     initializeWorkspaceIdentities(root, session.csrfToken);
     initializeWorkspaceAudit(root);
