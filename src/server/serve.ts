@@ -18,6 +18,7 @@ import {
   type StartLinearSession,
 } from "../web";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
+import { EVIDENCE_API_PREFIX, handleEvidenceRequest } from "../evidence";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -55,6 +56,8 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  /** `~/.paws/evidence`, the stored Closeout videos and screenshots. */
+  evidenceDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
@@ -73,6 +76,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
   const evidenceRoot = options.evidenceRoot;
+  const evidenceDir = options.evidenceDir;
   const githubAuth = createDashboardGitHubAuth({ env: process.env });
   const csrfToken = crypto.randomUUID();
   let workspaceAccess: WorkspaceAccess | null | undefined =
@@ -115,6 +119,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(statusEnv ? { statusEnv } : {}),
         ...(closeoutHome ? { closeoutHome } : {}),
         ...(evidenceRoot ? { evidenceRoot } : {}),
+        ...(evidenceDir ? { evidenceDir } : {}),
       });
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -150,6 +155,7 @@ type Secrets = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceDir?: string;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -291,6 +297,18 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
     }
+  }
+  if (path.startsWith(EVIDENCE_API_PREFIX)) {
+    // Evidence needs a signed-in member even when the dashboard runs without workspace access.
+    if (sessionIds === undefined || secrets.db === undefined)
+      return Response.json({ error: "Sign in to Paws." }, { status: 401 });
+    if (secrets.evidenceDir === undefined)
+      return Response.json({ error: "Not found." }, { status: 404 });
+    return handleEvidenceRequest(request, {
+      db: secrets.db,
+      dir: secrets.evidenceDir,
+      sessionIds,
+    });
   }
   if (path === "/api/runners" && request.method === "GET" && !secrets.runnerControl)
     return Response.json({
