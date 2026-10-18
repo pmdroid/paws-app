@@ -1458,7 +1458,7 @@ export function createLinearGitHubAuth(input: {
     ...(input.runtime.githubAuth === "app"
       ? {
           integration: {
-            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status#/settings`,
+            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
             administrators: input.administratorsForItem ?? (() => []),
             current: input.currentIntegrationItem ?? (() => true),
             identity:

@@ -23,7 +23,7 @@ import {
   verdictDetail,
   verdictLabel,
 } from "./format";
-import { routeHref, type Route } from "./route";
+import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { PAGES } from "./navigation";
@@ -66,9 +66,11 @@ export function render(model: RenderModel): Rendered {
           ? '<div id="project-delivery"></div>'
           : model.route.view === "settings"
             ? renderSettingsPage(model.route.page)
-            : snapshot && model.phase !== "loading"
-              ? renderView(snapshot, model)
-              : renderPending(model),
+            : model.route.view === "sessions"
+              ? renderConversations(model.conversations, model.route.id)
+              : snapshot && model.phase !== "loading"
+                ? renderView(snapshot, model)
+                : renderPending(model),
     title,
   };
 }
@@ -78,7 +80,7 @@ function renderTop(_model: RenderModel): string {
 }
 
 function renderBanner(model: RenderModel): string {
-  if (model.phase === "error") {
+  if (model.phase === "error" && needsSnapshot(model.route)) {
     return `<div class="err-bar" role="status"><span class="n">Offline</span><span>${esc(model.error ?? "Could not load status")}.${model.snapshot ? " Showing the last snapshot." : ""}</span></div>`;
   }
   return "";
@@ -94,8 +96,6 @@ function renderPending(model: RenderModel): string {
 const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
 
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
-  if (model.route.view === "sessions")
-    return renderConversations(model.conversations, model.route.id);
   switch (model.route.view) {
     case "overview":
       return viewOverview(snapshot);
@@ -111,6 +111,8 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       return '<div id="project-delivery"></div>';
     case "settings":
       return renderSettingsPage(model.route.page);
+    case "sessions":
+      return renderConversations(model.conversations, model.route.id);
   }
 }
 
@@ -270,10 +272,7 @@ function viewRuns(
       <p class="muted">${esc(selected.summary)}</p>
       ${phaseStrip(item, selected, verdict)}
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
-      <h3>Agent transcript</h3>
-      ${snapshot.source === "live" ? `<p><a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full transcript</a></p>` : ""}
-      <div class="log" role="log" aria-label="Agent transcript" data-log="transcript-${esc(selected.id)}">${selected.transcript?.length ? selected.transcript.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind === "system" ? "agent" : line.kind)}</span><span class="tx whitespace-pre-wrap break-words">${esc(line.text)}</span></div>`).join("") : '<p class="muted">Waiting for agent output.</p>'}</div>
-      <h3>Task activity</h3>
+      <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
       ${verificationSection(snapshot, selected.itemId, selectedCheck, engineUrl)}
     </div>

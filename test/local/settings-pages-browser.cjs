@@ -291,7 +291,7 @@ const errors = [];
       false,
     );
     await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     assert.equal(
       await attribution.getByRole("button", { name: "Link GitHub identity" }).isDisabled(),
@@ -308,7 +308,7 @@ const errors = [];
       explicitConsentRequired: true,
     });
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
-    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByText("Public attribution is enabled for @fixture-human.").waitFor();
     assert.equal(
       await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).isVisible(),
@@ -441,7 +441,7 @@ const errors = [];
     await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
     await adminGitHub.getByRole("link", { name: "Sign in again" }).waitFor();
     await adminGitHub.getByRole("link", { name: "Sign in again" }).click();
-    await member.page.waitForURL((url) => url.hash === "#/settings/integrations");
+    await member.page.waitForURL((url) => url.pathname === "/status/settings/integrations");
     await adminGitHub.getByRole("button", { name: "Connect GitHub" }).click();
     await adminGitHub.getByText("Connected", { exact: true }).waitFor();
     observations.push({ expiredSignInRecovery: true, settingsReturnRestored: true });
@@ -468,7 +468,7 @@ const errors = [];
     await attribution.getByRole("button", { name: "Refresh attribution" }).click();
     await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
     await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByRole("button", { name: "Revoke attribution consent" }).click();
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     observations.push({ consentRevocation: true });
@@ -477,7 +477,7 @@ const errors = [];
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();
     await attribution.getByRole("link", { name: "Sign in again" }).waitFor();
     await attribution.getByRole("link", { name: "Sign in again" }).click();
-    await page.waitForURL((url) => url.hash === "#/settings/account");
+    await page.waitForURL((url) => url.pathname === "/status/settings/account");
     await attribution.getByText("No verified GitHub attribution.", { exact: false }).waitFor();
     await attribution.getByRole("checkbox").check();
     await attribution.getByRole("button", { name: "Link GitHub identity" }).click();

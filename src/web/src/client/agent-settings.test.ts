@@ -54,8 +54,8 @@ describe("agent settings", () => {
   });
 
   test("settings remain reachable before any status items exist", () => {
-    expect(parseRoute("#/settings")).toEqual({ view: "settings" });
-    expect(routeHref({ view: "settings" })).toBe("#/settings");
+    expect(parseRoute("/settings")).toEqual({ view: "settings" });
+    expect(routeHref({ view: "settings" })).toBe("/settings");
     const rendered = render({
       route: { view: "settings" },
       phase: "loading",
@@ -76,7 +76,7 @@ describe("agent settings", () => {
     expect(html).toContain('<select id="defaults-implementer-model"');
     expect(html).toContain('class="settings-roles"');
     expect(html).toContain("Agents run on an installed runner");
-    expect(html).toContain('href="#/runners"');
+    expect(html).toContain('href="/runners"');
     expect(html).not.toContain("Test connection");
     expect(html).not.toContain("API key");
     const data = settings();

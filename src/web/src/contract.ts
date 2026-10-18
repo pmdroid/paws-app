@@ -122,7 +122,6 @@ export interface StatusRun {
   attempt: number;
   summary: string;
   activity: StatusActivity[];
-  transcript?: StatusActivity[];
   links: StatusLink[];
 }
 
@@ -374,12 +373,6 @@ function readRun(input: unknown, index: number): StatusRun {
     activity: array(body, "activity", path).map((entry, step) =>
       readActivity(entry, `${path}.activity[${step}]`),
     ),
-    transcript:
-      body.transcript === undefined
-        ? []
-        : array(body, "transcript", path).map((entry, step) =>
-            readActivity(entry, `${path}.transcript[${step}]`),
-          ),
     links: readLinks(body.links, `${path}.links`),
   };
 }

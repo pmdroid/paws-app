@@ -1,3 +1,4 @@
+import { routeHref } from "./route";
 import type { readLinearConversations } from "../live/conversations";
 import { esc } from "./format";
 
@@ -60,7 +61,7 @@ export function renderConversations(
     model.sessions.find((session) => session.id === id) ??
     (id === null ? model.sessions[0] : undefined);
   if (!selected)
-    return `${heading}<div class="empty">${id ? 'Conversation not found. <a href="#/sessions">View conversations</a>.' : "Delegate an issue to Paws or start a Linear session to see its conversation here."}</div>`;
+    return `${heading}<div class="empty">${id ? `Conversation not found. <a href="${routeHref({ view: "sessions", id: null })}">View conversations</a>.` : "Delegate an issue to Paws or start a Linear session to see its conversation here."}</div>`;
   const current =
     selected.items.find((item) => item.id === selected.activeItemId) ?? selected.items.at(-1);
   const questions = selected.questions.filter((question) => question.state === "open");
@@ -71,7 +72,7 @@ export function renderConversations(
       : current
         ? taskState(current.state)
         : "Starting";
-  const picker = `<label class="entity-picker"><span>Conversation</span><select data-route-picker aria-label="Conversation">${model.sessions.map((session) => `<option value="#/sessions/${encodeURIComponent(session.id)}"${session.id === selected.id ? " selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label>`;
+  const picker = `<label class="entity-picker"><span>Conversation</span><select data-route-picker aria-label="Conversation">${model.sessions.map((session) => `<option value="${routeHref({ view: "sessions", id: session.id })}"${session.id === selected.id ? " selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label>`;
   const links = selected.links
     .map(
       (link) =>

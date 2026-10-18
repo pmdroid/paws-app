@@ -42,19 +42,15 @@ const assert = require("node:assert/strict");
       );
       const page = await context.newPage();
       page.on("pageerror", (error) => errors.push(String(error)));
-      await page.goto(`${manifest.origin}/status/#/runs/${manifest.runId}`);
-      const transcript = page.getByRole("log", { name: "Agent transcript" });
-      await transcript.getByText("Opening the create VM dialog", { exact: true }).waitFor();
-      assert((await transcript.innerText()).includes("Launch Chromium"));
-      assert(!(await page.locator("body").innerText()).includes("private reasoning"));
+      await page.goto(`${manifest.origin}/status/runs/${manifest.runId}`);
+      const link = page.getByRole("link", { name: "Open full agent transcript" });
+      await link.waitFor();
+      assert.equal(await page.getByRole("log", { name: "Agent transcript" }).count(), 0);
+      const body = await page.locator("body").innerText();
+      assert(!body.includes("Opening the create VM dialog"));
+      assert(!body.includes("private reasoning"));
       if (name === "desktop") await page.request.post(`${manifest.origin}/__append`);
-      await transcript
-        .getByText("Screenshot captured on the runner", { exact: true })
-        .waitFor({ timeout: 15000 });
-      const [fullTranscript] = await Promise.all([
-        context.waitForEvent("page"),
-        page.getByRole("link", { name: "Open full transcript" }).click(),
-      ]);
+      const [fullTranscript] = await Promise.all([context.waitForEvent("page"), link.click()]);
       await fullTranscript.waitForURL(
         `${manifest.origin}/api/runs/transcript?run=${manifest.runId}`,
       );
@@ -69,7 +65,7 @@ const assert = require("node:assert/strict");
       await page.screenshot({ path: path.join(root, `${name}.png`), fullPage: true });
       observations.push({
         name,
-        liveOutput: true,
+        inlineTranscriptHidden: true,
         toolVisible: true,
         fullTranscriptLink: true,
         privateReasoningHidden: true,

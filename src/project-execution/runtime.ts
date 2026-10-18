@@ -600,7 +600,7 @@ export function createApprovedProjects(input: {
               }
               await input.startSession(
                 { kind: "issue", id: claim.issueId },
-                new URL("/status/#/projects", input.origin).href,
+                new URL("/status/", input.origin).href,
                 context.signal,
                 (event) => {
                   if (!context.isCurrent()) throw new Error("The project dispatch claim changed.");
