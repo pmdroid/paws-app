@@ -1643,12 +1643,20 @@ export class Orchestrator {
         ]?.exclude ?? [])
       : [];
     const deps = this.agentDeps(item);
+    const networkGit =
+      repository && deps.signal
+        ? this.repositoryGit(item, repository, deps.signal, "write")
+        : undefined;
     for (const key of ["agentRunner", "promptRunner"] as const) {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
           assertCurrent();
-          const result = await runner({ ...options, checkoutExclusions });
+          const result = await runner({
+            ...options,
+            checkoutExclusions,
+            ...(networkGit && options.role === "implementer" ? { networkGit } : {}),
+          });
           assertCurrent();
           return result;
         };
