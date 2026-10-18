@@ -44,6 +44,38 @@ const SUGGESTIONS_QUERY = `query IssueRepositorySuggestions(
   }
 }`;
 
+const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
+
+const HINTS_QUERY = `query IssueRepositoryHints($id: String!) {
+  issue(id: $id) {
+    description
+    ${LABELS}
+    parent { ${LABELS} }
+    project { ${LABELS} }
+    comments(first: 100) { nodes { body createdAt } }
+  }
+}`;
+
+const REPO_NAME = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
+const REPO_MENTION = /\[repo=([a-z0-9_.-]+\/[a-z0-9_.-]+)\]/gi;
+
+function nodes(connection: unknown): unknown[] {
+  return isRecord(connection) && Array.isArray(connection["nodes"]) ? connection["nodes"] : [];
+}
+
+function repoLabels(connection: unknown): string[] {
+  return nodes(connection).flatMap((label) =>
+    isRecord(label) &&
+    typeof label["name"] === "string" &&
+    REPO_NAME.test(label["name"]) &&
+    isRecord(label["parent"]) &&
+    typeof label["parent"]["name"] === "string" &&
+    label["parent"]["name"].toLowerCase() === "repo"
+      ? [label["name"]]
+      : [],
+  );
+}
+
 export function createLinearRepositoryMethods(client: LinearClient): LinearRepositoryAdapter {
   return {
     async issueRepositorySuggestions(input, options) {
@@ -62,8 +94,28 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
       }
       return authorizedRepositorySuggestions(candidates, result["suggestions"]);
     },
-    async issueRepositoryHints() {
-      return NO_REPOSITORY_HINTS;
+    async issueRepositoryHints(issueId, options) {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(HINTS_QUERY, { id: issueId }, options);
+      options?.signal?.throwIfAborted();
+      const issue = isRecord(data) ? data["issue"] : null;
+      if (!isRecord(issue)) throw new Error("Linear returned no issue for repository hints");
+      const comments = nodes(issue["comments"])
+        .filter(isRecord)
+        .map((comment) => ({
+          body: typeof comment["body"] === "string" ? comment["body"] : "",
+          at: typeof comment["createdAt"] === "string" ? comment["createdAt"] : "",
+        }))
+        .sort((left, right) => left.at.localeCompare(right.at));
+      const description = typeof issue["description"] === "string" ? issue["description"] : "";
+      return {
+        mentions: [description, ...comments.map((comment) => comment.body)].flatMap((text) =>
+          [...text.matchAll(REPO_MENTION)].map((match) => match[1]!),
+        ),
+        issueLabels: repoLabels(issue["labels"]),
+        parentLabels: repoLabels(isRecord(issue["parent"]) ? issue["parent"]["labels"] : null),
+        projectLabels: repoLabels(isRecord(issue["project"]) ? issue["project"]["labels"] : null),
+      };
     },
   };
 }
