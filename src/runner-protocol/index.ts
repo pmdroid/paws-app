@@ -32,6 +32,8 @@ export {
 export { RunnerHealthResultSchema, type RunnerHealthResult } from "./health";
 
 export {
+  RUNNER_ARTIFACT_MAX_BYTES,
+  RUNNER_EVIDENCE_MAX_BYTES,
   RunnerArtifactSchema,
   RunnerArtifactChunkSchema,
   type RunnerArtifact,

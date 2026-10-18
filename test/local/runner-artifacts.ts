@@ -149,6 +149,37 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     const snapshot = artifacts.snapshot(run.id, 1, descriptor);
     assert.deepEqual(Buffer.from(await snapshot.bytes.arrayBuffer()), bytes);
     assert.equal(snapshot.sha256, descriptor.sha256);
+    assert.equal(snapshot.evidence, undefined);
+    const videoBytes = Buffer.alloc(21 * RUNNER_ARTIFACT_CHUNK_BYTES + 7, 66);
+    const video: RunnerArtifact = {
+      id: randomUUID(),
+      path: "videos/flow.webm",
+      displayName: "flow.webm",
+      mimeType: "video/webm",
+      sizeBytes: videoBytes.length,
+      sha256: createHash("sha256").update(videoBytes).digest("hex"),
+      attachToIssue: false,
+      evidence: { checkId: "ui-video", attempt: 1, headCommit: "c".repeat(40) },
+    };
+    const videoChunk = (index: number, artifact: RunnerArtifact = video) => ({
+      generation: 1,
+      artifact,
+      index,
+      data: videoBytes
+        .subarray(index * RUNNER_ARTIFACT_CHUNK_BYTES, (index + 1) * RUNNER_ARTIFACT_CHUNK_BYTES)
+        .toString("base64"),
+    });
+    const { evidence: _evidence, ...plain } = video;
+    assert.equal(
+      (await artifacts.fetch(request(videoChunk(0, { ...plain, id: randomUUID() })), runnerId))!
+        .status,
+      403,
+    );
+    for (let index = 0; index < 22; index++)
+      assert.equal((await artifacts.fetch(request(videoChunk(index)), runnerId))!.status, 200);
+    const recorded = artifacts.snapshot(run.id, 1, video);
+    assert.deepEqual(Buffer.from(await recorded.bytes.arrayBuffer()), videoBytes);
+    assert.deepEqual(recorded.evidence, video.evidence);
     work.event({
       ...access,
       generation: 1,
@@ -227,7 +258,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
         fileMode: 0o600,
       },
     );
-    for (let count = 1; count < 20; count++)
+    for (let count = 2; count < 20; count++)
       artifacts.upload({
         ...access,
         chunk: {
