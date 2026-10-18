@@ -31,7 +31,12 @@ import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
 import { createProjects } from "./projects";
 import { createExecutionControls } from "./execution-controls";
-import { initializeWorkspaceAccess, showWorkspaceSettingsPage } from "./workspace";
+import { createEvidenceMedia } from "./evidence-media";
+import {
+  initializeWorkspaceAccess,
+  showWorkspaceSettingsPage,
+  takeSignInReturn,
+} from "./workspace";
 
 redirectLegacyHash();
 const shell = mountShell();
@@ -42,6 +47,7 @@ const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const projects = createProjects();
 const executionControls = createExecutionControls(reload);
+const evidence = createEvidenceMedia(() => paint());
 
 const STORAGE_KEY = "paws.statusEngineUrl";
 const POLL_MS = 5000;
@@ -93,6 +99,10 @@ async function boot(): Promise<void> {
     sessionStorage.removeItem("paws.settingsReturn");
     if (["/settings/integrations", "/settings/account"].includes(destination ?? ""))
       await router.navigate(destination!, { replace: true });
+    else {
+      const back = signInReturn();
+      if (back !== null) await router.navigate(back, { replace: true });
+    }
   } catch {}
   const query = new URLSearchParams(location.search).get("engine");
   const fromQuery = query === null ? null : choiceFromValue(query);
@@ -206,6 +216,8 @@ function schedule(): void {
   window.clearInterval(timer);
   const route = currentRoute();
   if (!currentEngine() || !(needsSnapshot(route) || route.view === "sessions")) return;
+  // Stored evidence does not change, and a repaint would interrupt the video.
+  if (route.view === "evidence") return;
   timer = window.setInterval(() => {
     void reload();
   }, POLL_MS);
@@ -221,6 +233,7 @@ function paint(): void {
     error,
     engineUrl: currentEngine(),
     closeout,
+    mediaInfo: evidence.info,
     conversations: canReadConversations(currentEngine(), source(), location.origin)
       ? conversations
       : { state: "unavailable", sessions: [] },
@@ -247,6 +260,7 @@ function paint(): void {
   setHtml("#top", view.top);
   setHtml("#banner", view.banner);
   setHtml("#page-content", view.content);
+  evidence.attach(snapshot, currentEngine());
   applyIssueFilter();
   if (openLinkedCheck()) return;
 
@@ -286,6 +300,14 @@ function appPath(href: string): string | null {
   return matchRoute(path) ? `${path}${url.search}` : null;
 }
 
+/** The link a signed-out reader opened, so sign-in returns there instead of the overview. */
+function signInReturn(): string | null {
+  const stored = takeSignInReturn();
+  if (stored === null) return null;
+  const path = appPath(stored);
+  return path === null ? null : `${path}${new URL(stored, location.href).hash}`;
+}
+
 function redirectLegacyHash(): void {
   if (!location.hash.startsWith("#/")) return;
   const path = `${routerBase(location.pathname)}${location.hash.slice(1)}`;
@@ -320,6 +342,7 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
   const logs = selector === "#page-content" ? captureLogs(element) : [];
   const scroll = selector === "#page-content" ? window.scrollY : 0;
   painted.set(selector, html);
+  if (selector === "#page-content") evidence.detach();
   renderMarkup(element, html);
   if (selector !== "#page-content") return;
   window.scrollTo({ top: scroll, behavior: "instant" });
@@ -440,6 +463,10 @@ function onClick(event: MouseEvent): void {
       issueFilter = filter;
       applyIssueFilter();
     }
+  }
+  if (action === "evidence-copy") {
+    const button = target.closest<HTMLButtonElement>("button[data-evidence]");
+    if (button) evidence.copyLink(button.dataset.evidence ?? "", button);
   }
   const holder = target.closest("[data-item]");
   const itemId = holder?.getAttribute("data-item") ?? "";
