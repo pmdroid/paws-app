@@ -63,6 +63,7 @@ const MODULES = [
   "runner-transcript-config",
   "runner-artifacts",
   "runner-inputs",
+  "evidence",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -88,7 +89,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   questions: ["core"],
   decisions: ["db", "scheduler"],
   web: ["db"],
+  evidence: ["db"],
   server: [
+    "evidence",
     "slack",
     "config",
     "linear",

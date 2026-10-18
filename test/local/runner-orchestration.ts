@@ -136,7 +136,7 @@ export async function probeRunnerOrchestration(
     const clock = leaseScenario || mergeDependencyYield ? new FakeClock(Date.now()) : systemClock;
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
-    const calls: { role: string; prepare: boolean; prompt: string }[] = [];
+    const calls: { role: string; prepare: boolean; prompt: string; networkGit: boolean }[] = [];
     const witnessCalls = 0;
     const appChecks: { currentRunId: string | null; checkpoint: unknown }[] = [];
     let implementationCount = 0;
@@ -333,6 +333,7 @@ export async function probeRunnerOrchestration(
               role: options.role,
               prepare: !!options.prepareOnly,
               prompt: options.prompt,
+              networkGit: !!options.networkGit,
             });
             if (unavailable) throw new Error("fixture remote transport unavailable");
             if (initialLease && !options.prepareOnly && options.role === "implementer")
@@ -555,6 +556,10 @@ export async function probeRunnerOrchestration(
         const fix = calls.filter((call) => call.role === "implementer" && !call.prepare)[1]!;
         assert(fix.prompt.includes("PUBLIC_REMOTE_RESPONSE"));
         assert(fix.prompt.includes("Write output"));
+        const implementation = calls.filter(
+          (call) => call.role === "implementer" && !call.prepare,
+        )[0]!;
+        assert.equal(fix.networkGit, implementation.networkGit);
         assert.equal(witnessCalls, 0);
       }
       assert.equal(getRun(db, item.currentRunId!)?.status, "ended");

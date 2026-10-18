@@ -78,4 +78,5 @@ export type { GitHubWebhook } from "./webhook";
 export { defaultGitExec } from "./git";
 
 export { closeStoppedPull } from "./stopped";
+export { mergedPullHeads } from "./merged-pulls";
 export { inspectPullRequestMerge } from "./blocker-merge";

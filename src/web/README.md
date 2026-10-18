@@ -46,7 +46,7 @@ if (response) return response;
 
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
-The process binds `127.0.0.1`. `GET /api/status` responds with `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`, so a static deployment can poll a tunnel of that route. HTML served by the process gets `<base href="/status/">` so relative assets resolve. The Vercel build does not include that tag.
+The process binds `127.0.0.1`. `GET /api/status` responds with `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`, so a static deployment can poll a tunnel of that route. The dashboard uses path routes such as `/status/runs/<id>`. HTML served by the process gets `<base href="/status/">` so relative assets resolve on every route; the Vercel build keeps `<base href="/">` and rewrites every path to `index.html`.
 
 ## Local
 

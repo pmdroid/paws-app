@@ -3,7 +3,7 @@ import { SETTINGS_PAGES, type SettingsPage } from "./settings-pages";
 
 export type Route =
   | { view: "overview" }
-  | { view: "runners" }
+  | { view: "runners"; id: string | null }
   | { view: "projects" }
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
@@ -11,8 +11,18 @@ export type Route =
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
 
-export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Route {
-  const parts = hash
+const ENGINE_BASE = "/status";
+
+export function routerBase(pathname: string): string {
+  return pathname === ENGINE_BASE || pathname.startsWith(`${ENGINE_BASE}/`) ? ENGINE_BASE : "";
+}
+
+export function parseRoute(path: string, snapshot?: StatusSnapshot | null): Route {
+  return matchRoute(path, snapshot) ?? { view: "overview" };
+}
+
+export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Route | null {
+  const parts = path
     .replace(/^#/, "")
     .split("/")
     .filter((part) => part.length > 0)
@@ -22,9 +32,10 @@ export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Rout
   switch (head) {
     case undefined:
     case "overview":
+    case "queue":
       return { view: "overview" };
     case "runners":
-      return { view: "runners" };
+      return { view: "runners", id };
     case "projects":
       return { view: "projects" };
     case "issues":
@@ -39,22 +50,29 @@ export function parseRoute(hash: string, snapshot?: StatusSnapshot | null): Rout
       return { view: "questions", id };
     case "verdicts":
       return { view: "runs", id: runForVerdict(id, snapshot) ?? (snapshot ? id : null) };
-    case "queue":
-      return { view: "overview" };
     case "settings":
       return SETTINGS_PAGES.some((entry) => entry.id === id)
         ? { view: "settings", page: id as SettingsPage }
         : { view: "settings" };
     default:
-      return { view: "overview" };
+      return null;
   }
 }
 
+export function routePath(route: Route): string {
+  if (route.view === "overview") return "/";
+  if (route.view === "settings") return route.page ? `/settings/${route.page}` : "/settings";
+  if (route.view === "projects") return "/projects";
+  return route.id ? `/${route.view}/${encodeURIComponent(route.id)}` : `/${route.view}`;
+}
+
 export function routeHref(route: Route): string {
-  if (route.view === "overview") return "#/";
-  if (route.view === "settings") return route.page ? `#/settings/${route.page}` : "#/settings";
-  if (route.view === "runners" || route.view === "projects") return `#/${route.view}`;
-  return route.id ? `#/${route.view}/${encodeURIComponent(route.id)}` : `#/${route.view}`;
+  const page = (globalThis as { location?: { pathname: string } }).location;
+  return `${routerBase(page?.pathname ?? "")}${routePath(route)}`;
+}
+
+export function needsSnapshot(route: Route): boolean {
+  return ["overview", "issues", "runs", "questions"].includes(route.view);
 }
 
 function runForVerdict(

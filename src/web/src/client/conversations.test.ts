@@ -99,11 +99,11 @@ test("conversation outcomes, queued prompts, publication failures and files rema
   expect(html).toContain('href="/api/linear/artifacts/file?download=1"');
   expect(html).toContain("Chart &lt;1&gt;.png");
   expect(html).not.toContain("Use <annual>");
-  expect(parseRoute("#/sessions/session%2Fthread")).toEqual({
+  expect(parseRoute("/sessions/session%2Fthread")).toEqual({
     view: "sessions",
     id: "session/thread",
   });
-  expect(routeHref({ view: "sessions", id: "session/thread" })).toBe("#/sessions/session%2Fthread");
+  expect(routeHref({ view: "sessions", id: "session/thread" })).toBe("/sessions/session%2Fthread");
   model.sessions[0]!.questions.push({
     id: "question",
     itemId: "answer",

@@ -11,7 +11,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../db";
-import { recoverAcpConversation, type RunAgentOptions } from "../acp";
+import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
 import { createRunnerHelpers } from "../runner-helpers";
 import { workspaceId, workspaceTokenHash, issueWorkspaceBootstrap } from "../workspace";
 import { createRemoteSessionAgentRunner } from "./helpers";
@@ -411,6 +411,29 @@ test("Human continuation time does not exhaust the remote execution retry budget
   );
   expect(attempts).toBe(3);
   expect(result.stopReason).toBe("end_turn");
+});
+
+test("A remote run without a timeout gets the item's awake budget, not 45 minutes", async () => {
+  const { timeoutMs, ...input } = fixture().input;
+  let granted = 0;
+  await runWithFailover(
+    input,
+    async (attempt) => {
+      granted = attempt.timeoutMs ?? 0;
+      return {
+        role: "implementer",
+        stopReason: "end_turn",
+        cancelled: false,
+        timedOut: false,
+        authRequired: false,
+        agentExited: true,
+        transcriptPath: "unused",
+      };
+    },
+    async () => {},
+  );
+  expect(timeoutMs).toBeUndefined();
+  expect(granted).toBeGreaterThan(DEFAULT_RUN_TIMEOUT_MS - 1000);
 });
 
 test("a helper waits for the runner's busy helper slot instead of failing", async () => {

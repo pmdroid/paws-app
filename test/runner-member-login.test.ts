@@ -206,11 +206,10 @@ test("member accounts reject shared execution and expired memberships while lega
   );
 });
 
-test("login rejects observers, stale sign-in, foreign runners and provider URL substitution", () => {
+test("login rejects observers, foreign runners and provider URL substitution", () => {
   const f = fixture();
   expect(() => f.login.start(f.observer, f.runnerId, "codex")).toThrow();
-  expect(() => f.login.start({ ...f.member, authenticatedAt: 0 }, f.runnerId, "codex")).toThrow();
-  const session = f.login.start(f.member, f.runnerId, "codex");
+  const session = f.login.start({ ...f.member, authenticatedAt: 0 }, f.runnerId, "codex");
   expect(() => f.login.exchange(workspaceId(), session.id, f.waiting)).toThrow();
   expect(() =>
     f.login.exchange(f.runnerId, session.id, {
@@ -272,4 +271,32 @@ test("delayed login input is rejected after cancellation, revocation, expiry or 
     expect((await pending)!.status).toBe(403);
     expect(f.login.exchange(f.runnerId, session.id, current).input).toBeNull();
   }
+});
+
+test("assigned work keeps its account on a paused or draining runner while new work is refused", () => {
+  const f = fixture();
+  const run: RunnerCommand = {
+    id: randomUUID(),
+    type: "probe",
+    runnerId: f.runnerId,
+    workspaceId: f.member.workspaceId,
+    memberId: f.member.userId,
+    profile: { agent: "codex", model: null },
+    issuedAt: Date.now(),
+    expiresAt: Date.now() + 60000,
+  };
+  const session = f.login.start(f.member, f.runnerId, "codex");
+  f.login.exchange(f.runnerId, session.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  for (const status of ["paused", "draining"]) {
+    f.db.run("UPDATE runner SET status=? WHERE id=?", [status, f.runnerId]);
+    expect(() => authorizeRunnerAccount(f.db, run, true)).not.toThrow();
+    expect(() => authorizeRunnerAccount(f.db, run)).toThrow(`Runner is ${status}`);
+  }
+  f.db.run("UPDATE runner SET status='revoked',revoked_at=1 WHERE id=?", [f.runnerId]);
+  expect(() => authorizeRunnerAccount(f.db, run, true)).toThrow("Runner is revoked");
 });

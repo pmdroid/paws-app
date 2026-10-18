@@ -184,6 +184,8 @@ const assert = require("node:assert/strict");
       verifierPublicKeyPem: verifierKey.export({ type: "spki", format: "pem" }).toString(),
     });
     assert.equal(pairing.status, 200);
+    await owner.getByRole("button", { name: "Pair a host" }).click();
+    await owner.getByRole("dialog", { name: "Pair a host" }).waitFor();
     await owner.getByLabel("Pairing code from the host").fill("0000000000000000");
     await owner.getByRole("button", { name: "Inspect host" }).click();
     await owner.getByRole("alert").waitFor();
@@ -252,6 +254,7 @@ const assert = require("node:assert/strict");
       csr: manifest.client.csr,
     });
     assert.equal(pendingPairing.status, 200);
+    await owner.getByRole("button", { name: "Pair a host" }).click();
     await owner.getByLabel("Pairing code from the host").fill(pendingPairing.body.code);
     await submit(owner, "Inspect host", "/inspect");
     await owner.getByText("Pending proof host", { exact: true }).waitFor();
@@ -355,18 +358,21 @@ const assert = require("node:assert/strict");
     );
     const member = await pageFor("member");
     await member.locator(".runner-list h2").waitFor();
-    assert.equal(await member.locator("#runner-pairing,[data-runner-status]").count(), 0);
+    assert.equal(
+      await member.locator("[data-runner-pair],#runner-pairing,[data-runner-status]").count(),
+      0,
+    );
     await member.getByRole("button", { name: "View health" }).click();
     await member.getByText("Signed in via subscription", { exact: true }).waitFor();
     assert.equal(await member.locator("#runner-health").count(), 0);
     assert.equal(await mutation(member, healthPath, { type: "login_check", agent: "codex" }), 403);
     const stale = await pageFor("stale");
-    await stale.getByRole("link", { name: "Sign in again", exact: true }).waitFor();
-    assert(await stale.getByRole("button", { name: "Inspect host" }).isDisabled());
-    assert.equal(await mutation(stale, healthPath, { type: "login_check", agent: "codex" }), 403);
+    await stale.getByRole("button", { name: "Pair a host" }).waitFor();
+    assert(await stale.getByRole("button", { name: "Pair a host" }).isEnabled());
+    assert.equal(await stale.getByRole("link", { name: "Sign in again" }).count(), 0);
     observe(
-      "persisted member and stale administrator roles deny mutations and missing CSRF fails closed",
-      { member: 403, stale: 403, csrf: 403 },
+      "persisted member role denies mutations, missing CSRF fails closed and an older administrator sign-in keeps its controls",
+      { member: 403, csrf: 403, olderAdministratorControls: true },
     );
     await owner.screenshot({ path: path.join(root, "desktop.png"), fullPage: true });
     await member.setViewportSize({ width: 390, height: 844 });

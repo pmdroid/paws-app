@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
-import { commitCheckpointSync, restartFromFreshMain, worktreePath } from "./acp";
+import {
+  ArtifactRejectedError,
+  commitCheckpointSync,
+  restartFromFreshMain,
+  worktreePath,
+} from "./acp";
+import { createEvidenceStore, EvidenceRejectedError } from "./evidence";
 import {
   createCommentMode,
   createLinearCommentBoard,
@@ -624,6 +630,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db,
       statusEnv: envSource,
       closeoutHome: paths.home,
+      evidenceDir: paths.evidenceDir,
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       agentSettings: {
@@ -877,6 +884,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
+        evidence: runtime.publicUrl
+          ? {
+              publicUrl: runtime.publicUrl,
+              store: {
+                save: (input) =>
+                  createEvidenceStore({ db, root: paths.evidenceDir })
+                    .save(input)
+                    .catch((error: unknown) => {
+                      if (error instanceof EvidenceRejectedError)
+                        throw new ArtifactRejectedError(error.message);
+                      throw error;
+                    }),
+              },
+            }
+          : null,
         catchUp: async () => {
           await running.catchUp();
         },
@@ -1053,6 +1075,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
       }
+      created.jobs.register("worktree.sweep", (_job, context) =>
+        attached.sweepWorktrees(context.signal),
+      );
+      enqueueJobOnce(db, {
+        queue: "worktree.sweep",
+        jobKey: "worktree.sweep",
+        recurringEveryMs: 3_600_000,
+        now: Date.now(),
+      });
       if (channel === "agent-session") {
         created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
         enqueueJobOnce(db, {
@@ -1458,7 +1489,7 @@ export function createLinearGitHubAuth(input: {
     ...(input.runtime.githubAuth === "app"
       ? {
           integration: {
-            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status#/settings`,
+            recoveryUrl: `${input.runtime.publicUrl ?? "http://127.0.0.1:8787"}/status/settings/integrations`,
             administrators: input.administratorsForItem ?? (() => []),
             current: input.currentIntegrationItem ?? (() => true),
             identity:

@@ -248,7 +248,6 @@ test("an empty live snapshot asks the operator to delegate a Linear issue", asyn
       via: "engine",
       error: null,
       engineUrl: "http://127.0.0.1:8787",
-      selectedCheck: null,
     });
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.items).toEqual([]);

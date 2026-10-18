@@ -227,6 +227,95 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  test("a failed fix round is retried with its reason and accepts on the next attempt", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([commandUntilOk("test")]),
+    });
+    const fixes: number[] = [];
+    const summaries: string[] = [];
+    const committing = committingFixer(repo.dir, fixes, "ok.txt", "ok\n");
+    const result = await runCloseoutGate({
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          summaries.push(request.summary);
+          if (request.fixAttempt === 1) throw new Error("runner import refused");
+          return committing.applyFix(request);
+        },
+      },
+    });
+    expect(result.outcome).toBe("accepted");
+    expect(result.fixAttempts).toBe(2);
+    expect(result.evaluations).toBe(2);
+    expect(fixes).toEqual([2]);
+    expect(summaries[1]).toContain("runner import refused");
+    await repo.cleanup();
+  });
+
+  test("fix rounds that never commit exhaust the budget and report each reason", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
+    });
+    const attempts: number[] = [];
+    const result = await runCloseoutGate({
+      maxFixAttempts: 3,
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          attempts.push(request.fixAttempt);
+          return { ok: false, reason: `agent error ${request.fixAttempt}` };
+        },
+      },
+    });
+    expect(result.outcome).toBe("exhausted");
+    expect(result.fixAttempts).toBe(3);
+    expect(result.evaluations).toBe(1);
+    expect(attempts).toEqual([1, 2, 3]);
+    for (const attempt of attempts) expect(result.summary).toContain(`agent error ${attempt}`);
+    await repo.cleanup();
+  });
+
+  test("a cancelled fix stops without retrying", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
+    });
+    const attempts: number[] = [];
+    const result = await runCloseoutGate({
+      maxFixAttempts: 3,
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          attempts.push(request.fixAttempt);
+          return { ok: false, reason: "fix cancelled" };
+        },
+      },
+    });
+    expect(result.outcome).toBe("fix_failed");
+    expect(attempts).toEqual([1]);
+    await repo.cleanup();
+  });
+
   test("an explicit fix cap stops after two failed fixes", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
