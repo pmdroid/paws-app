@@ -293,13 +293,6 @@ const DEMO: StatusSnapshot = {
           "bun test",
           "retention.test.ts keeps rows under legal hold: expected 0 deletions, received 14",
         ),
-        check(
-          "adversarial-review",
-          "review",
-          "skipped",
-          "reviewer Codex",
-          "not run after the failing command",
-        ),
       ],
       links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
     },

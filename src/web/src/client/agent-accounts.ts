@@ -1,3 +1,5 @@
+import { routeHref } from "./route";
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
@@ -168,7 +170,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
           runnerSelect.replaceChildren(new Option("No paired runners", ""));
           renderMarkup(
             list,
-            '<p>Pair a runner in <a href="#/runners">Runners</a> to connect your agent accounts.</p>',
+            `<p>Pair a runner in <a href="${routeHref({ view: "runners" })}">Runners</a> to connect your agent accounts.</p>`,
           );
           return;
         }
@@ -241,7 +243,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
     input.value = "";
     void act(agent, "input", { text: `${text}\r` });
   });
-  void load(true);
+  loadWhenShown("integrations", () => void load(true));
 }
 
 function providerUrl(value: string, agent: Agent): string {

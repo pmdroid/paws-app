@@ -1,4 +1,5 @@
 import type { ComponentProps } from "react";
+import { Link } from "react-router";
 import { cn } from "./utils";
 
 export function Sidebar({ className, ...props }: ComponentProps<"aside">) {
@@ -57,9 +58,9 @@ export function SidebarMenuLink({
   className,
   active,
   ...props
-}: ComponentProps<"a"> & { active: boolean }) {
+}: ComponentProps<typeof Link> & { active: boolean }) {
   return (
-    <a
+    <Link
       data-slot="sidebar-menu-button"
       data-active={active || undefined}
       aria-current={active ? "page" : undefined}

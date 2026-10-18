@@ -2,6 +2,13 @@ import { memo, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import {
+  createBrowserRouter,
+  Link,
+  RouterProvider,
+  useLocation,
+  type DataRouter,
+} from "react-router";
+import {
   LayoutDashboard,
   GitBranch,
   ListTodo,
@@ -17,8 +24,7 @@ import {
   Menu,
   BookOpen,
 } from "lucide-react";
-import type { StatusSnapshot } from "../contract";
-import { parseRoute, routeHref, type Route } from "./route";
+import { parseRoute, routePath, routerBase, type Route } from "./route";
 import { NAVIGATION, PAGES } from "./navigation";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { AppearanceControl, initializeAppearance } from "./appearance";
@@ -48,7 +54,6 @@ const ICONS = {
   audit: History,
   decisions: BookOpen,
 };
-type ShellState = { route: Route; project: StatusSnapshot["project"] | null };
 const ControllerRegions = memo(function ControllerRegions() {
   return (
     <>
@@ -76,7 +81,7 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
               return (
                 <li key={view}>
                   <SidebarMenuLink
-                    href={routeHref({ view, id: null } as Route)}
+                    to={routePath({ view, id: null } as Route)}
                     active={route.view === view}
                     onClick={onNavigate}
                   >
@@ -97,7 +102,7 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
             return (
               <li key={page.id}>
                 <SidebarMenuLink
-                  href={routeHref({ view: "settings", page: page.id })}
+                  to={routePath({ view: "settings", page: page.id })}
                   active={route.view === "settings" && (route.page ?? "agents") === page.id}
                   onClick={onNavigate}
                 >
@@ -114,25 +119,20 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
 }
 
 export function mountShell(): {
-  update(state: ShellState): void;
+  router: DataRouter;
   setAuthenticated(value: boolean): void;
 } {
   initializeAppearance();
   const root = document.querySelector<HTMLElement>("#app");
   if (!root) throw new Error("Dashboard root is missing");
-  let update = (_state: ShellState) => {};
   let authenticate = (_value: boolean) => {};
   function Shell() {
-    const [state, setState] = useState<ShellState>({
-      route: parseRoute(location.hash),
-      project: null,
-    });
-    const route = state.route;
+    const { pathname } = useLocation();
+    const route = parseRoute(pathname);
     const [authenticated, setAuthenticated] = useState(false);
     const [open, setOpen] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
     const navigating = useRef(false);
-    update = setState;
     authenticate = (value) => {
       setAuthenticated(value);
       if (!value) setOpen(false);
@@ -146,16 +146,12 @@ export function mountShell(): {
         }
       };
       media.addEventListener("change", close);
-      const routeChanged = () => {
-        navigating.current = true;
-        setOpen(false);
-      };
-      window.addEventListener("hashchange", routeChanged);
-      return () => {
-        media.removeEventListener("change", close);
-        window.removeEventListener("hashchange", routeChanged);
-      };
+      return () => media.removeEventListener("change", close);
     }, []);
+    useEffect(() => {
+      navigating.current = true;
+      setOpen(false);
+    }, [pathname]);
     return (
       <div className="flex min-h-dvh bg-background text-foreground">
         <a
@@ -172,12 +168,12 @@ export function mountShell(): {
           <Sidebar className="hidden md:block">
             <div className="sticky top-0 flex h-dvh min-h-0 flex-col">
               <SidebarHeader>
-                <a href="#/" className="text-xl font-bold tracking-tight">
+                <Link to="/" className="text-xl font-bold tracking-tight">
                   Paws
-                </a>
+                </Link>
               </SidebarHeader>
               <SidebarContent>
-                <Navigation route={state.route} />
+                <Navigation route={route} />
               </SidebarContent>
             </div>
           </Sidebar>
@@ -222,7 +218,7 @@ export function mountShell(): {
                     </div>
                     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
                       <Navigation
-                        route={state.route}
+                        route={route}
                         onNavigate={() => {
                           navigating.current = true;
                           setOpen(false);
@@ -236,7 +232,7 @@ export function mountShell(): {
                 {authenticated
                   ? route.view === "settings"
                     ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
-                    : PAGES[state.route.view].title
+                    : PAGES[route.view].title
                   : "Paws"}
               </span>
             </div>
@@ -255,11 +251,12 @@ export function mountShell(): {
       </div>
     );
   }
-  flushSync(() => createRoot(root).render(<Shell />));
+  const router = createBrowserRouter([{ path: "*", element: <Shell /> }], {
+    basename: routerBase(location.pathname) || "/",
+  });
+  flushSync(() => createRoot(root).render(<RouterProvider router={router} />));
   return {
-    update(state) {
-      flushSync(() => update(state));
-    },
+    router,
     setAuthenticated(value) {
       flushSync(() => authenticate(value));
     },
