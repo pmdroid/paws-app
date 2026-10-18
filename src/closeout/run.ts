@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { applyBypasses, bypassSummary, type CloseoutBypass } from "./bypass";
-import type { FixRunner } from "./fixer";
+import type { FixRequest, FixRunner } from "./fixer";
 import { appendDecisionHistory, writeVerdictReport, type VerdictRecorder } from "./report";
 import type { CodexReviewer } from "./reviewer";
 import { formatEvidenceSummary, formatFixFeedback } from "./summary";
@@ -297,10 +297,23 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
 
-    fixAttempts += 1;
-    let fix;
-    try {
-      fix = await input.fixer.applyFix({
+    const feedback = await repairFeedback(input, evaluation);
+    const failures: string[] = [];
+    let fixed: string | undefined;
+    while (fixed === undefined) {
+      if (fixAttempts >= maxFixAttempts) {
+        return finalResult(
+          input,
+          "exhausted",
+          fixAttempts,
+          evaluations,
+          head,
+          evaluation,
+          failures.join("\n"),
+        );
+      }
+      fixAttempts += 1;
+      const outcome = await attemptFix(input, {
         worktree: input.worktree,
         taskId: input.taskId,
         fixAttempt: fixAttempts,
@@ -309,43 +322,50 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
         head,
         items: evaluation.decision?.items ?? [],
         reviewFindings: evaluation.reviewFindings,
-        summary: await repairFeedback(input, evaluation),
+        summary: [feedback, ...failures].join("\n\n"),
       });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return finalResult(input, "fix_failed", fixAttempts, evaluations, head, evaluation, message);
+      if ("head" in outcome) fixed = outcome.head;
+      else if (outcome.final)
+        return finalResult(
+          input,
+          "fix_failed",
+          fixAttempts,
+          evaluations,
+          outcome.at ?? head,
+          evaluation,
+          outcome.reason,
+        );
+      else failures.push(`Fix attempt ${fixAttempts} failed: ${outcome.reason}`);
     }
-    if (!fix.ok) {
-      return finalResult(
-        input,
-        "fix_failed",
-        fixAttempts,
-        evaluations,
-        head,
-        evaluation,
-        fix.reason,
-      );
-    }
-    let actual: string;
-    try {
-      actual = await readHead(input.worktree);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return finalResult(input, "fix_failed", fixAttempts, evaluations, head, evaluation, message);
-    }
-    if (fix.head !== actual || fix.head === head) {
-      return finalResult(
-        input,
-        "fix_failed",
-        fixAttempts,
-        evaluations,
-        actual,
-        evaluation,
-        "fix did not move HEAD to a new commit",
-      );
-    }
-    head = fix.head;
+    head = fixed;
   }
+}
+
+async function attemptFix(
+  input: GateInput,
+  request: FixRequest,
+): Promise<{ head: string } | { reason: string; final: boolean; at?: string }> {
+  let fix;
+  try {
+    fix = await input.fixer.applyFix(request);
+  } catch (error) {
+    return {
+      reason: error instanceof Error ? error.message : String(error),
+      final: error instanceof Error && error.name === "AbortError",
+    };
+  }
+  if (!fix.ok) return { reason: fix.reason, final: fix.reason === "fix cancelled" };
+  let actual: string;
+  try {
+    actual = await readHead(input.worktree);
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : String(error), final: true };
+  }
+  if (fix.head !== actual)
+    return { reason: "fix did not move HEAD to a new commit", final: true, at: actual };
+  if (fix.head === request.head)
+    return { reason: "fix did not move HEAD to a new commit", final: false };
+  return { head: fix.head };
 }
 
 export function snapshotRetryBaseline(taskId: string, pawsHome?: string): Promise<string[]> {
