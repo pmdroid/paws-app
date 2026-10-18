@@ -447,7 +447,7 @@ export function createApprovedProjects(input: {
         if (takeover || event.action === "prompted" || event.signal === "stop") {
           const actor = db
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-            .get(event.actorId ?? "");
+            .get(event.actorId ?? (takeover ? sessionCreator(event.payload) : null) ?? "");
           const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
           if (!member?.active || member.role === "observer") return deny();
         }
@@ -659,4 +659,14 @@ export function createApprovedProjects(input: {
       });
     },
   };
+}
+
+function sessionCreator(payload: string): string | null {
+  try {
+    const creator = (JSON.parse(payload) as { agentSession?: { creatorId?: unknown } }).agentSession
+      ?.creatorId;
+    return typeof creator === "string" ? creator : null;
+  } catch {
+    return null;
+  }
 }
