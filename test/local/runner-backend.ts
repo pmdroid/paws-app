@@ -32,6 +32,7 @@ import {
   type RunnerInputFile,
 } from "../../src/runner-protocol";
 import {
+  ArtifactRejectedError,
   prepareRepositorySnapshot,
   recoverAcpConversation,
   runDir,
@@ -300,6 +301,16 @@ export async function probeRunnerBackend(
         },
         publishArtifact: {
           async publish(snapshot, context) {
+            if (context.evidence) {
+              assert.deepEqual(context.evidence, {
+                checkId: "browser-proof",
+                attempt: 2,
+                headCommit: "c".repeat(40),
+              });
+              assert.equal(context.request?.checkId, "browser-proof");
+              assert.equal(snapshot.mimeType, "video/webm");
+              throw new ArtifactRejectedError("The file is larger than 200 MB.");
+            }
             assert.equal(await snapshot.bytes.text(), "Remote evidence");
             assert.equal(context.request?.attachToIssue, true);
             assert.equal(context.itemId, `display-${first.id}`);
@@ -361,6 +372,36 @@ export async function probeRunnerBackend(
       sequence: 2,
       event: { type: "artifact", artifact },
     });
+    const videoBytes = Buffer.from("Remote video");
+    const video = {
+      id: randomUUID(),
+      path: "reports/proof.webm",
+      displayName: "proof.webm",
+      mimeType: "video/webm",
+      sizeBytes: videoBytes.length,
+      sha256: createHash("sha256").update(videoBytes).digest("hex"),
+      attachToIssue: false,
+      evidence: { checkId: "browser-proof", attempt: 2, headCommit: "c".repeat(40) },
+    };
+    artifacts.upload({
+      runnerId,
+      runId: assigned.runId,
+      token: grant.token,
+      chunk: {
+        generation: assigned.generation,
+        artifact: video,
+        index: 0,
+        data: videoBytes.toString("base64"),
+      },
+    });
+    work.event({
+      runnerId,
+      runId: assigned.runId,
+      generation: assigned.generation,
+      token: grant.token,
+      sequence: 3,
+      event: { type: "artifact", artifact: video },
+    });
     results.submit({
       runnerId,
       runId: assigned.runId,
@@ -371,6 +412,12 @@ export async function probeRunnerBackend(
     const completed = await running;
     assert.equal(completed.stopReason, "end_turn");
     assert.equal(published, true);
+    const refusal = db
+      .query<{ answer: string }, [string]>(
+        "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=3",
+      )
+      .get(assigned.runId);
+    assert.deepEqual(JSON.parse(refusal!.answer), { error: "The file is larger than 200 MB." });
     const publicationAnswer = db
       .query<{ answer: string }, [string]>(
         "SELECT answer FROM runner_question_answer WHERE run_id=? AND sequence=2",
