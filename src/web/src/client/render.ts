@@ -202,13 +202,13 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
   return `${pageHeading("issues")}
     <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
     <div class="issue-head">
-      <div class="row"><span class="lin-id">${esc(item.id)}</span>${statePill(item.state, itemLabel(item.state))}</div>
-      <h2>${esc(item.title)}</h2>
-      <div class="row wrap">${issueMeta(item)}</div>
+      <span class="lin-id">${esc(item.id)}</span>
+      <div class="issue-title"><h2>${esc(item.title)}</h2>${statePill(item.state, itemLabel(item.state))}</div>
+      <div class="issue-facts">${issueMeta(item)}</div>
       <div class="row">${linkList(item.links)}</div>
     </div>
     <h3>Runs</h3>
-    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a> ${statePill(run.state, runLabel(run.state))}</li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
+    ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
     ${relatedIssues(item.blockers)}
     <h3>Blocks</h3>
@@ -217,7 +217,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = unmergedBlockers(snapshot, item);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a><div class="row wrap">${statePill(item.state, itemLabel(item.state))}${issueMeta(item)}${blockers.length ? `<span>Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${blockers.length ? `<span class="muted">Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {

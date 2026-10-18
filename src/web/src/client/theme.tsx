@@ -354,8 +354,11 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
   if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
   if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
-  if (has("issue-row"))
-    return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
+  if (has("issue-row", "issue-title"))
+    return styled(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
+    );
+  if (has("issue-facts")) return styled("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
   if (has("overview-columns"))
