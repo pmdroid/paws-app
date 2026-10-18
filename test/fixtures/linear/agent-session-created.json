@@ -1,0 +1,45 @@
+{
+  "type": "AgentSessionEvent",
+  "action": "created",
+  "createdAt": "2026-10-18T18:38:06.000Z",
+  "organizationId": "org",
+  "oauthClientId": "client",
+  "appUserId": "app",
+  "agentSession": {
+    "id": "again",
+    "createdAt": "2026-10-18T18:38:06.000Z",
+    "updatedAt": "2026-10-18T18:38:06.000Z",
+    "archivedAt": null,
+    "creatorId": "actor",
+    "appUserId": "app",
+    "commentId": null,
+    "sourceCommentId": null,
+    "issueId": "one",
+    "status": "pending",
+    "startedAt": null,
+    "endedAt": null,
+    "dismissedAt": null,
+    "summary": null,
+    "url": "https://linear.example/agent-session/again",
+    "organizationId": "org",
+    "creator": {
+      "id": "actor",
+      "name": "Actor",
+      "email": "actor@example.test",
+      "url": "https://linear.example/profiles/actor"
+    },
+    "comment": null,
+    "issue": {
+      "id": "one",
+      "title": "One",
+      "teamId": "team",
+      "identifier": "ENG-1",
+      "url": "https://linear.example/issue/ENG-1"
+    }
+  },
+  "previousComments": [],
+  "guidance": null,
+  "promptContext": "",
+  "webhookTimestamp": 1792348686000,
+  "webhookId": "delivery"
+}

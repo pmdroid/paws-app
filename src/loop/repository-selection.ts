@@ -1,5 +1,5 @@
 import type { RepositoryBinding } from "../core";
-import type { RepositorySuggestion } from "../linear";
+import type { RepositoryHints, RepositorySuggestion } from "../linear";
 import type { AgentProfile } from "../config";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -165,4 +165,29 @@ export function chooseRepository(
   if (top && top.confidence >= CONFIDENT && top.confidence - (next?.confidence ?? 0) >= LEAD)
     return { bind: ranked[0]! };
   return { ask: ranked.slice(0, OFFERED) };
+}
+
+export function hintedRepository(
+  candidates: readonly RepositoryBinding[],
+  hints: RepositoryHints,
+): { bind: RepositoryBinding } | { ask: RepositoryBinding[] } | null {
+  const levels = [
+    [...hints.mentions].reverse(),
+    hints.issueLabels,
+    hints.parentLabels,
+    hints.projectLabels,
+  ];
+  for (const [index, names] of levels.entries()) {
+    const matches: RepositoryBinding[] = [];
+    for (const name of names) {
+      const match = candidates.find(
+        (candidate) => `${candidate.owner}/${candidate.repo}`.toLowerCase() === name.toLowerCase(),
+      );
+      if (match && !matches.includes(match)) matches.push(match);
+    }
+    if (index === 0 && matches.length > 0) return { bind: matches[0]! };
+    if (matches.length === 1) return { bind: matches[0]! };
+    if (matches.length > 1) return { ask: matches.slice(0, OFFERED) };
+  }
+  return null;
 }

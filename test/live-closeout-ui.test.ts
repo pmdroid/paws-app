@@ -23,6 +23,7 @@ import {
 } from "../src/db";
 import { handleStatusRequest } from "../src/web";
 import { render, type RenderModel } from "../src/web/src/client/render";
+import { attemptsOf, checkKey } from "../src/web/src/client/closeout";
 import { createLiveStatusProvider } from "../src/web/src/live/provider";
 import type { StatusSnapshot, StatusVerdict } from "../src/web/src/contract";
 
@@ -149,6 +150,7 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
       ? item.runId
       : snapshot.runs.find((run) => run.itemId === id)?.id;
   if (!runId) throw new Error(`missing run for ${id}`);
+  const latest = attemptsOf(verdictOf(snapshot, id)).at(-1)?.number ?? 1;
   const model: RenderModel = {
     route: { view: "runs", id: runId },
     phase: "ready",
@@ -156,7 +158,7 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
     via: "engine",
     error: null,
     engineUrl: "http://127.0.0.1:8787",
-    selectedCheck: { itemId: id, checkId },
+    closeout: { attempt: {}, open: { [checkKey(id, latest, checkId)]: true }, wrap: {} },
   };
   return render(model).content;
 }
@@ -245,10 +247,10 @@ describe("live closeout ui", () => {
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("line one");
     expect(html).toContain("line two");
-    expect(html).toContain('data-log="ENG-74:typecheck:stdout"');
+    expect(html).toContain('data-log="ENG-74:1:typecheck:stdout"');
     expect(html).not.toContain("/api/closeout-artifact?");
-    expect(html).toContain("Download log");
-    expect(html).toContain('aria-current="true"');
+    expect(html).toContain("Download output");
+    expect(html).toContain('aria-expanded="true"');
   });
 
   test("keeps a merge-queue recheck running until the new decision is stored", () => {
@@ -306,6 +308,71 @@ describe("live closeout ui", () => {
     expect(finished.checks.map((check) => [check.id, check.state])).toEqual([
       ["recheck", "failed"],
     ]);
+  });
+
+  test("lists every Closeout attempt of an item, oldest first, and renders the latest", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const id = "ENG-77";
+    const firstHead = sha("a");
+    const secondHead = sha("e");
+    insertQueuedItem(db, { id, title: "Fix loop", now });
+    seedVerifying(db, id, secondHead, now);
+    const first = identity(id, firstHead, policy("a"));
+    ensureCloseoutProgress(db, id, first, now + 1, true);
+    upsertCloseoutStep(db, id, first, step("unit", "running"), now + 2);
+    appendCloseoutOutput(
+      db,
+      id,
+      first,
+      "unit",
+      "stderr",
+      "\u001b[31mFAIL\u001b[0m <x>",
+      true,
+      now + 3,
+    );
+    upsertCloseoutStep(
+      db,
+      id,
+      first,
+      step("unit", "failed", {
+        exitCode: 1,
+        logPath: portable("logs", policy("a"), firstHead, "unit"),
+      }),
+      now + 4,
+    );
+    finishCloseoutProgress(db, id, first, "rejected", now + 5);
+    const second = identity(id, secondHead, policy("a"));
+    ensureCloseoutProgress(db, id, second, now + 6, true);
+    upsertCloseoutStep(db, id, second, step("unit", "passed", { exitCode: 0 }), now + 7);
+    finishCloseoutProgress(db, id, second, "accepted", now + 8);
+
+    const snapshot = snapshotOf(db, now + 9);
+    const verdict = verdictOf(snapshot, id);
+    expect(verdict.attempts?.map((entry) => [entry.number, entry.decision, entry.headSha])).toEqual(
+      [
+        [1, "rejected", firstHead],
+        [2, "accepted", secondHead],
+      ],
+    );
+    const failed = verdict.attempts?.[0]?.checks[0];
+    expect([failed?.state, failed?.exitCode, failed?.truncated]).toEqual(["failed", 1, true]);
+    const html = paint(snapshot, id, "unit");
+    expect(html).toContain('data-attempt="2" aria-pressed="true">Attempt 2 · passed');
+    expect(html).toContain('id="check-2-unit"');
+    const earlier = render({
+      route: { view: "runs", id: snapshot.runs.find((run) => run.itemId === id)!.id },
+      phase: "ready",
+      snapshot,
+      via: "engine",
+      error: null,
+      engineUrl: null,
+      closeout: { attempt: { [id]: 1 }, open: {}, wrap: {} },
+    }).content;
+    expect(earlier).toContain('<span class="ansi-fg-1">FAIL</span> &lt;x&gt;');
+    expect(earlier).toContain("Output was cut at the size limit.");
+    expect(earlier).toContain(`head=${firstHead}`);
+    expect(earlier).toContain(">Full log</a> has the complete output.");
   });
 
   test("does not attach an older accepted verdict to another candidate or policy", () => {

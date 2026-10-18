@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, tests, the status dashboard build, and Markdown links must pass before a pull request.
+description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, and an independent review must pass before a pull request.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -38,3 +38,11 @@ items:
     gate: beforePR
     exec: ["bun", "run", "links"]
     timeoutSeconds: 300
+  - id: independent-review
+    kind: review
+    gate: beforePR
+    skill: .agents/skills/review-paws/SKILL.md
+    independence:
+      differentSession: true
+      differentModel: true
+    failOn: P1

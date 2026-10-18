@@ -1,4 +1,9 @@
-import { recoverAcpConversation, type RunAgentOptions, type RunAgentResult } from "../acp";
+import {
+  DEFAULT_RUN_TIMEOUT_MS,
+  recoverAcpConversation,
+  type RunAgentOptions,
+  type RunAgentResult,
+} from "../acp";
 
 export class RetryableRunnerError extends Error {
   constructor(
@@ -18,7 +23,7 @@ export async function runWithFailover(
 ): Promise<RunAgentResult> {
   const excluded: string[] = [];
   let prompt = input.prompt;
-  let deadline = performance.now() + (input.timeoutMs ?? 2_700_000);
+  let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   for (let index = 0; index < 3; index++) {
     input.signal?.throwIfAborted();
     try {

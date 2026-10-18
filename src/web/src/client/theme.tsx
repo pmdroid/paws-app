@@ -320,7 +320,12 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-4 font-mono text-xs",
     );
-  if (name === "table") return <Table {...props}>{children()}</Table>;
+  if (name === "table")
+    return (
+      <Table {...props} className={has("runner-history") ? "[overflow-wrap:normal]" : undefined}>
+        {children()}
+      </Table>
+    );
   if (name === "thead") return <TableHeader {...props}>{children()}</TableHeader>;
   if (name === "tbody") return <TableBody {...props}>{children()}</TableBody>;
   if (name === "tr") return <TableRow {...props}>{children()}</TableRow>;
@@ -377,6 +382,11 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-1 items-end gap-4 sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0 [&>button]:justify-self-start",
     );
   if (has("settings-field")) return styled("flex min-w-0 flex-col gap-2");
+  if (name === "dialog")
+    return styled(
+      "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow outline-none backdrop:bg-overlay sm:max-w-lg",
+    );
+  if (has("dialog-body")) return styled("flex min-w-0 flex-col gap-4 p-6 [overflow-wrap:anywhere]");
   if (name === "details")
     return styled(
       inRow(node)

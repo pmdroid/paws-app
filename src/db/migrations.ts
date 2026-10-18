@@ -1764,4 +1764,12 @@ CREATE TABLE runner_host_status (
 ) STRICT;
 `,
   },
+  {
+    id: "070_drop_runner_seat",
+    sql: `
+ALTER TABLE runner_agent_policy DROP COLUMN seat;
+ALTER TABLE runner_execution_usage DROP COLUMN seat;
+DROP TABLE workspace_runner_policy;
+`,
+  },
 ];

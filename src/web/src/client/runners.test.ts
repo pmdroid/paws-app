@@ -43,7 +43,6 @@ const view = {
   policy: {
     ownerUserId: "owner",
     sharing: 1,
-    agents: [{ agent: "claude", seat: "organization" }],
   },
   userId: "owner",
   role: "owner",
@@ -56,7 +55,7 @@ describe("runner list rows", () => {
 
   test("a row links to the runner and summarizes its state", () => {
     const html = runnerRowMarkup(runner, row);
-    expect(html).toContain('href="#/runners/01JRUNNER0000000000000000A"');
+    expect(html).toContain('href="/runners/01JRUNNER0000000000000000A"');
     expect(html).toContain("<b>build-box</b>");
     expect(html).toContain('<span class="tag ok">Idle</span>');
     expect(html).toContain("Seen just now · ubuntu 24.04 · Runner 1.2.0 · Claude signed in");
@@ -119,7 +118,7 @@ describe("runner execution history", () => {
         endedAt: null,
       },
     ]);
-    expect(html).toContain('<a href="#/runs/run-7">Work</a>');
+    expect(html).toContain('<a href="/runs/run-7">Work</a>');
     expect(html).toContain("claude-opus");
     expect(html).toContain("2m 5s");
     expect(html).toContain('<span class="tag ok">Success</span>');
@@ -133,14 +132,14 @@ describe("runner execution history", () => {
 });
 
 test("runner routes carry the selected runner", () => {
-  expect(parseRoute("#/runners")).toEqual({ view: "runners", id: null });
-  expect(parseRoute("#/runners/runner-1")).toEqual({ view: "runners", id: "runner-1" });
-  expect(routeHref({ view: "runners", id: "runner-1" })).toBe("#/runners/runner-1");
-  expect(routeHref({ view: "runners", id: null })).toBe("#/runners");
+  expect(parseRoute("/runners")).toEqual({ view: "runners", id: null });
+  expect(parseRoute("/runners/runner-1")).toEqual({ view: "runners", id: "runner-1" });
+  expect(routeHref({ view: "runners", id: "runner-1" })).toBe("/runners/runner-1");
+  expect(routeHref({ view: "runners", id: null })).toBe("/runners");
 });
 
 describe("runner details", () => {
-  test("an idle runner shows its host metrics, sign-in, account type and controls", () => {
+  test("an idle runner shows its host metrics, sign-in, sharing and controls", () => {
     const html = runnerDetailMarkup(runner, view);
     expect(html).toContain("build-box");
     expect(html).toContain("Active");
@@ -157,7 +156,7 @@ describe("runner details", () => {
     expect(html).toContain("40 GB free of 100 GB");
     expect(html).toContain('<span class="tag ok">Signed in</span>');
     expect(html).toContain('<span class="tag ">Not checked</span>');
-    expect(html).toMatch(/data-agent="claude"[^>]*>.*<option value="organization" selected>/);
+    expect(html).not.toContain("account type");
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* checked/);
     expect(html).toContain(">Pause<");
     expect(html).toContain(">Drain<");
@@ -216,9 +215,18 @@ describe("runner details", () => {
     const html = runnerDetailMarkup({ ...runner, status: "revoked" }, view);
     expect(html).toContain("Revoked");
     expect(html).toContain("Offline");
-    expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("data-runner-sharing");
     expect(html).not.toContain("data-runner-status");
+    expect(html).not.toContain("data-runner-signin");
+  });
+
+  test("members sign in to the agents from the runner card, observers cannot", () => {
+    expect(runnerDetailMarkup(runner, { ...view, userId: "member", role: "member" })).toContain(
+      `data-runner-signin="${runner.id}"`,
+    );
+    expect(
+      runnerDetailMarkup(runner, { ...view, userId: "guest", role: "observer" }),
+    ).not.toContain("data-runner-signin");
   });
 });
 

@@ -227,7 +227,7 @@ export function createGitHubAttributionLink(options: {
         return new Response(null, {
           status: 303,
           headers: {
-            location: `${origin}/status#/settings/account`,
+            location: `${origin}/status/settings/account`,
             "cache-control": "no-store",
             "referrer-policy": "no-referrer",
             "set-cookie": `${COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,

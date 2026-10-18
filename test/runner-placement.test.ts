@@ -17,7 +17,7 @@ import { createRunnerPlacement } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
-async function placeItem(project: boolean, bindTask = true, personalOrganizationHost = true) {
+async function placeItem(project: boolean, bindTask = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-owner-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -78,25 +78,18 @@ async function placeItem(project: boolean, bindTask = true, personalOrganization
     project ? "approval" : null,
     item.id,
   ]);
-  db.run(
-    "INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,?)",
-    [workspace.id, personalOrganizationHost ? 1 : 0],
-  );
-  for (const [id, userId, sharing, seat] of [
-    ["own", owner, 0, "personal"],
-    ["shared", colleague, 1, "organization"],
-    ["api", pool, 1, "api"],
-    ["unshared", pool, 0, "api"],
+  for (const [id, userId, sharing] of [
+    ["own", owner, 0],
+    ["shared", colleague, 1],
+    ["api", pool, 1],
+    ["unshared", pool, 0],
   ] as const) {
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
       [id, workspace.id, userId, id, now, now],
     );
     db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, sharing]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,seat,ready) VALUES(?,'codex',?,1)", [
-      id,
-      seat,
-    ]);
+    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id]);
   }
   const placement = createRunnerPlacement({
     db,
@@ -173,28 +166,17 @@ test("a project item runs on another project member's shared runner", async () =
   }
 });
 
-test("a member's own signed-in account runs their work without the personal seat permission", async () => {
-  const placed = await placeItem(false, true, false);
+test("a member's own signed-in account runs their work", async () => {
+  const placed = await placeItem(false);
   try {
     const owner = placed.db
       .query<{ id: string }, []>("SELECT id FROM workspace_user WHERE linear_user_id='owner'")
       .get()!.id;
-    placed.db.run("UPDATE runner_agent_policy SET seat='organization' WHERE runner_id='own'");
     placed.db.run(
       "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES('own',?,'codex',1,?)",
       [owner, Date.now()],
     );
     expect(await placed.ids()).toEqual(["own"]);
-  } finally {
-    placed.db.close();
-    rmSync(placed.root, { recursive: true, force: true });
-  }
-});
-
-test("a personal seat needs workspace permission even for the owner's own work", async () => {
-  const placed = await placeItem(true, true, false);
-  try {
-    expect(await placed.ids()).toEqual(["api", "shared"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });

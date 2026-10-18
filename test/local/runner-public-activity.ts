@@ -211,15 +211,15 @@ export async function probeRunnerPublicActivity(root: string) {
       });
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
-    const preview = createLiveStatusProvider(db, {
+    const statusRun = createLiveStatusProvider(db, {
       pawsHome: root,
       sessionIds: options.sessionIds,
       env: options.env,
-    }).snapshot().runs[0]!.transcript!;
-    assert(preview.length <= 200);
+    }).snapshot().runs[0]!;
+    assert(!("transcript" in statusRun));
     assert(
       text.includes("Source 0 inspected") &&
-        !JSON.stringify(preview).includes("Source 0 inspected"),
+        !JSON.stringify(statusRun).includes("Source 0 inspected"),
     );
     const observations = [
       {
@@ -234,7 +234,7 @@ export async function probeRunnerPublicActivity(root: string) {
       {
         name: "full scoped transcript retains early and late tools while hiding private content",
         passed: true,
-        previewEntries: preview.length,
+        statusTranscriptEntries: 0,
         fullTranscriptBytes: Buffer.byteLength(text),
         foreignSession: 404,
         foreignOrigin: 403,
