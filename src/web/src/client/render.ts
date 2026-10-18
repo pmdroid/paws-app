@@ -27,6 +27,7 @@ import {
   attemptsOf,
   emptyCloseoutView,
   renderCloseoutChecks,
+  renderSkipRequest,
   shownAttempt,
   type CloseoutView,
 } from "./closeout";
@@ -431,6 +432,7 @@ function closeoutSection(
     </div>
     <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
     <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
+    ${renderSkipRequest(selected)}
     <div class="card">${renderCloseoutChecks(selected, closeout, engineUrl)}</div>
     <div class="card"><h3>Report</h3><div class="kv">
       <span class="k">Base</span><span class="mono">${esc(attempt.baseSha ?? "—")}</span>

@@ -113,6 +113,13 @@ export function renderCloseoutChecks(
   return `<div class="between"><h3>Checks</h3>${toggleAll}</div>${switcher}${rows}`;
 }
 
+/** The agent's open skip request. People answer it in Linear; Paws has no skip button. */
+export function renderSkipRequest(verdict: StatusVerdict): string {
+  const skip = verdict.skipRequest;
+  if (!skip) return "";
+  return `<div class="card" role="status"><div class="between"><h3>Skip requested in Linear</h3><a href="${esc(skip.href)}" target="_blank" rel="noopener noreferrer">Open in Linear</a></div><div class="mono">${esc(skip.checkIds.join(", "))}</div><p class="break-words whitespace-pre-wrap">${esc(skip.reason)}</p></div>`;
+}
+
 function attemptLabel(attempt: StatusCloseoutAttempt): string {
   if (attempt.decision === "accepted") return "passed";
   if (attempt.decision === "running") return "running";

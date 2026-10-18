@@ -32,6 +32,7 @@ import {
   getLinearConversationSource,
   listCloseoutProgress,
   listJobs,
+  listCloseoutRecoveries,
   listOpenQuestions,
   listOutbox,
   listRuns,
@@ -166,7 +167,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     runs,
     questions: questionsFor(db, records, rows, runs, openQuestions),
     verdicts: records.flatMap((record) =>
-      verdictFor(record, rows, jobs, progress, now.getTime(), env),
+      verdictFor(record, rows, jobs, progress, now.getTime(), env).map((verdict) =>
+        withSkipRequest(db, record, verdict, openQuestions),
+      ),
     ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
@@ -381,6 +384,24 @@ function questionsFor(
     });
   }
   return questions;
+}
+
+/** The agent's skip request on the open Closeout recovery question, until someone answers. */
+function withSkipRequest(
+  db: Database,
+  record: WorkItemRecord,
+  verdict: StatusVerdict,
+  openQuestions: readonly OpenQuestionRecord[],
+): StatusVerdict {
+  const question = openQuestions.find((entry) => entry.itemId === record.id);
+  if (question === undefined) return verdict;
+  const skip = listCloseoutRecoveries(db, record.id).find(
+    (recovery) => recovery.questionId === question.id,
+  )?.skip;
+  if (!skip) return verdict;
+  const href = questionLinks(db, question.sessionId, record.linearIdentifier)[0]?.href;
+  if (href === undefined) return verdict;
+  return { ...verdict, skipRequest: { checkIds: skip.checkIds, reason: skip.reason, href } };
 }
 
 function questionLinks(
