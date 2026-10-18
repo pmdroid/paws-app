@@ -118,6 +118,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "github",
     "questions",
     "config",
+    "evidence",
   ],
   doctor: [
     "credentials",

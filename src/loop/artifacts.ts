@@ -3,11 +3,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type {
-  ArtifactSnapshot,
-  PublishArtifactHook,
-  PublishArtifactRequest,
-  PublishedArtifact,
+import {
+  ArtifactRejectedError,
+  evidenceKind,
+  type ArtifactEvidence,
+  type ArtifactSnapshot,
+  type PublishArtifactHook,
+  type PublishArtifactRequest,
+  type PublishedArtifact,
 } from "../acp";
 import {
   beginArtifactAttempt,
@@ -20,6 +23,7 @@ import {
   markArtifact,
   saveArtifact,
 } from "../db";
+import { EvidenceRejectedError, type EvidenceStore } from "../evidence";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
@@ -52,6 +56,8 @@ export function createLinearArtifactPublisher(options: {
   itemId: string;
   issueId?: string;
   sessionId: string;
+  /** Closeout videos and screenshots stay in Paws and Linear gets `<publicUrl>/evidence/<id>`. */
+  evidence?: { store: EvidenceStore; publicUrl: string };
   now?: () => number;
 }): PublishArtifactHook {
   const now = options.now ?? Date.now;
@@ -65,6 +71,8 @@ export function createLinearArtifactPublisher(options: {
   return {
     begin(request, context) {
       context.signal.throwIfAborted();
+      // Evidence is not a requested deliverable, so a refused file must not hold the run.
+      if (evidenceKind(request) !== null) return { complete() {} };
       const identityHash = publicationIdentity(request);
       if (request.attachToIssue === true && !options.issueId)
         throw new Error("Issue attachment is unavailable");
@@ -81,6 +89,8 @@ export function createLinearArtifactPublisher(options: {
       };
     },
     publish(artifact, context) {
+      if (artifact.evidence)
+        return publishEvidence(artifact, artifact.evidence, context.runId, context.signal);
       const key = JSON.stringify([
         artifact.path,
         artifact.displayName,
@@ -99,6 +109,58 @@ export function createLinearArtifactPublisher(options: {
       return pending;
     },
   };
+
+  async function publishEvidence(
+    artifact: ArtifactSnapshot,
+    evidence: ArtifactEvidence,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<PublishedArtifact> {
+    signal.throwIfAborted();
+    if (!options.evidence)
+      throw new ArtifactRejectedError(
+        "Paws cannot keep Closeout evidence without a public URL. Publish the file without checkId.",
+      );
+    let stored;
+    try {
+      stored = await options.evidence.store.save({
+        itemId: options.itemId,
+        runId,
+        checkId: evidence.checkId,
+        attempt: evidence.attempt,
+        displayName: artifact.displayName,
+        headCommit: evidence.headCommit,
+        source: artifact.bytes,
+      });
+    } catch (error) {
+      if (error instanceof EvidenceRejectedError) throw new ArtifactRejectedError(error.message);
+      throw error;
+    }
+    if (stored.sha256 !== artifact.sha256 || stored.sizeBytes !== artifact.sizeBytes)
+      throw new Error("Artifact snapshot integrity check failed");
+    signal.throwIfAborted();
+    const url = `${options.evidence.publicUrl.replace(/\/+$/, "")}/evidence/${stored.id}`;
+    const label = stored.displayName.replace(/[\\[\]]/g, "\\$&");
+    const check = evidence.checkId.replace(/`/g, "'");
+    const kind = stored.mediaType.startsWith("video/") ? "Video" : "Screenshot";
+    enqueueOutboxOnce(options.db, {
+      target: "linear",
+      op: "activity",
+      delivery: "ordered",
+      priority: 0,
+      orderingKey: options.sessionId,
+      idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
+      generation,
+      now: now(),
+      payload: {
+        id: randomUUID(),
+        sessionId: options.sessionId,
+        kind: "thought",
+        body: `${kind} for Closeout check \`${check}\`, attempt ${stored.attempt}: [${label}](<${url}>)`,
+      },
+    });
+    return { url, displayName: stored.displayName };
+  }
 
   async function publish(
     artifact: ArtifactSnapshot,

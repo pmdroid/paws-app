@@ -195,6 +195,7 @@ import { createLinearSessionProgress } from "./session-progress";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import { createLinearArtifactPublisher } from "./artifacts";
+import type { EvidenceStore } from "../evidence";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
@@ -244,6 +245,7 @@ export type OrchestratorOptions = {
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
+  evidence?: { store: EvidenceStore; publicUrl: string };
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
@@ -3599,6 +3601,7 @@ export class Orchestrator {
       itemId: item.id,
       issueId: item.linearIssueId,
       sessionId,
+      ...(this.options.evidence ? { evidence: this.options.evidence } : {}),
       now: () => this.now(),
     });
   }

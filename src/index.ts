@@ -23,6 +23,7 @@ import {
   type PawsPaths,
   type RuntimeConfig,
 } from "./config";
+import { createEvidenceStore } from "./evidence";
 import {
   WORK_ITEM_STATES,
   delegationHasOpenWork,
@@ -878,6 +879,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         commitPolicyForItem: runtime.githubAuth === "app" ? commitPolicyForItem : undefined,
         files: linear?.files,
         secretsDir: paths.secretsDir,
+        ...(runtime.publicUrl
+          ? {
+              evidence: {
+                store: createEvidenceStore({ db, root: paths.evidenceDir }),
+                publicUrl: runtime.publicUrl,
+              },
+            }
+          : {}),
         catchUp: async () => {
           await running.catchUp();
         },
