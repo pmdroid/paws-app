@@ -831,3 +831,38 @@ test("Linear's suggestions break a tie between two repo labels", async () => {
     f.db.close();
   }
 });
+
+test("an answered repository question labels the issue with that repository", async () => {
+  const f = fixture();
+  try {
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    const question = findOpenQuestion(f.db, "session")!;
+    await orchestrator.onLinearEvent(event("acme/two"));
+    await f.jobs.tick();
+    expect(getWorkItemRepository(f.db, question.itemId)).toEqual(repositories[1]!);
+    const rows = f.db
+      .query<{ payload: string }, []>(
+        "SELECT payload FROM outbox WHERE op='linear.repository_label'",
+      )
+      .all();
+    expect(rows.map((row) => JSON.parse(row.payload))).toEqual([
+      { issueId: "issue", repository: "acme/two" },
+    ]);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("a repository bound from a hint or a suggestion writes no label", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(f.db.query("SELECT 1 FROM outbox WHERE op='linear.repository_label'").get()).toBeNull();
+  } finally {
+    f.db.close();
+  }
+});
