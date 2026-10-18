@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitCheckpoint, git } from "../src/acp";
+import { commitCheckpoint, git, reconstructAcpPrompt } from "../src/acp";
 import { listLinearInputs } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
 import { createLinearInputLoader, inputSources } from "../src/loop";
@@ -180,4 +180,19 @@ test("a Linear link that cannot be downloaded stays a link and the turn continue
     expect(result.prompt).toContain("https://uploads.linear.app/workspace/missing.png");
     expect(result.prompt).not.toContain(`(${URL})`);
   }
+});
+
+test("replayed agent output is not scanned for Linear files, replayed requests are", async () => {
+  const prompt = reconstructAcpPrompt(`Now see ${URL}?signature=current`, [
+    { kind: "request", body: "Earlier ![mock](https://uploads.linear.app/workspace/mock.png)" },
+    {
+      kind: "tool_result",
+      body: "(pass) falls back from https://uploads.linear.app/workspace/fake?signature=secret",
+    },
+    { kind: "response", body: "See https://uploads.linear.app/workspace/agent.png" },
+  ]);
+  expect([...inputSources(prompt).keys()].sort()).toEqual([
+    URL,
+    "https://uploads.linear.app/workspace/mock.png",
+  ]);
 });
