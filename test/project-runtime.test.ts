@@ -235,14 +235,14 @@ test("re-delegating a failed project issue starts it again and a running one sta
       deliveryId: null,
       source: "webhook",
       activityId: null,
-      actorId: "actor",
+      actorId: null,
       body: null,
       signal: null,
       updatedAtMs: f.clock.now(),
-      payload: "{}",
+      payload: JSON.stringify({ agentSession: { creatorId: "actor" } }),
     });
     for (const sessionId of ["early", "again"]) {
-      ensureLinearSession(f.db, { sessionId, issueId: "one", creatorId: "actor" });
+      ensureLinearSession(f.db, { sessionId, issueId: "one", creatorId: null });
       recordLinearInstallation(f.db, {
         sessionId,
         organizationId: "org",
