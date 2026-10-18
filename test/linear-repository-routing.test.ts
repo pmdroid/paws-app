@@ -804,3 +804,30 @@ test("a repo hint naming an inaccessible repository falls back to suggestions", 
     f.db.close();
   }
 });
+
+test("Linear's suggestions break a tie between two repo labels", async () => {
+  const f = fixture();
+  try {
+    f.denied.delete("private");
+    f.tracker.repositoryHints.set("issue", hints({ issueLabels: ["acme/private", "acme/one"] }));
+    f.tracker.repositorySuggestions.set("issue", [
+      { hostname: "github.com", repositoryFullName: "acme/one", confidence: 0.9 },
+      { hostname: "github.com", repositoryFullName: "acme/two", confidence: 0.95 },
+    ]);
+    const orchestrator = f.attach();
+    await orchestrator.onLinearEvent(event());
+    await f.jobs.tick();
+    expect(
+      f.db.query("SELECT 1 FROM question WHERE body LIKE 'Which repository%'").get(),
+    ).toBeNull();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[0]!);
+    expect(
+      f.tracker.repositorySuggestionRequests[0]!.candidateRepositories.map(
+        (candidate) => candidate.repositoryFullName,
+      ),
+    ).toEqual(["acme/private", "acme/one"]);
+  } finally {
+    f.db.close();
+  }
+});
