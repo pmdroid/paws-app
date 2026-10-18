@@ -291,6 +291,7 @@ export async function executeRunnerCommand(
       );
       options.signal?.throwIfAborted();
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
+      await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", base]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }

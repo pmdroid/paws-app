@@ -143,6 +143,8 @@ process.exit(await child.exited);
       "result.txt",
     );
     expect(readFileSync(join(checkout, "result.txt"), "utf8")).toBe("remote skill ran");
+    expect((await git(["-C", checkout, "merge-base", "HEAD", "origin/main"])).trim()).toBe(baseSha);
+    expect((await git(["-C", checkout, "remote"])).trim()).toBe("");
     expect(existsSync(join(checkout, "private-skills.json"))).toBe(false);
     expect(readdirSync(workRoot).some((name) => name.startsWith(".paws-skills-"))).toBe(false);
     const prompts = JSON.stringify(JSON.parse(readFileSync(trace, "utf8")).prompts);
