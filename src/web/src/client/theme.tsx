@@ -345,10 +345,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
-  if (has("overview-columns"))
-    return styled(
-      "grid min-w-0 grid-cols-1 items-stretch gap-6 xl:grid-cols-2 [&>*]:h-full [&>*]:min-w-0",
-    );
+  if (has("overview-row"))
+    return styled("flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-4");
+  if (has("overview-copy")) return styled("min-w-0 flex-1 basis-72 space-y-1 break-words");
+  if (has("overview-summary")) return styled("text-sm font-semibold leading-relaxed");
   if (has("split", "conversation-layout"))
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",

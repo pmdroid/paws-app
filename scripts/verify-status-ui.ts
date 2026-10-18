@@ -96,6 +96,27 @@ try {
     await expect(page.locator("#content h1")).toHaveText("Overview");
     await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs you", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Working now", exact: true })).toBeVisible();
+    await expect(page.locator(".overview-summary")).toHaveText(
+      "2 need you · 1 working · 1 queued · 1 waiting to merge",
+    );
+    await expect(page.locator("#content")).not.toContainText("Recent events");
+    await expect(page.locator("#content")).not.toContainText("Export job worker");
+    await page.getByRole("link", { name: "Answer question: ENG-103", exact: true }).click();
+    await expect(page).toHaveURL(/#\/questions\/Q-41$/);
+    await expect(page.locator("#q-Q-41")).toBeVisible();
+    await page.goBack();
+    await page.getByRole("link", { name: "Answer question: ENG-100", exact: true }).click();
+    await expect(page).toHaveURL(/#\/questions\/Q-40$/);
+    await expect(page.locator("#q-Q-40")).toBeVisible();
+    await page.goBack();
+    await page.locator('.overview-work a[href="#/runs/r-102"]').click();
+    await expect(page).toHaveURL(/#\/runs\/r-102$/);
+    await expect(
+      page.getByRole("heading", { name: "Agent transcript", exact: true }),
+    ).toBeVisible();
+    await page.goBack();
     if (width < 768) {
       await page.getByRole("button", { name: "Open navigation" }).click();
       await expect(page.getByRole("dialog", { name: "Paws navigation" })).toBeVisible();
@@ -215,7 +236,7 @@ try {
     await navigate(page, "Runners", width);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
-    await expect(page.getByText("curl -fsSL https://get.paws.boo | sudo sh")).toBeVisible();
+    await expect(page.getByText("curl -fsSL https://get.paws.boo/ | sudo sh")).toBeVisible();
     await page.getByRole("button", { name: "Check setup", exact: true }).click();
     await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
     await navigate(page, "Agents", width);
