@@ -37,6 +37,15 @@ export function closeoutFinishLine(report: string): string {
   }
   if (blocked !== null && typeof blocked !== "string") return CLOSEOUT_FINISH_UNAVAILABLE;
   const ids = pending.filter((id): id is string => typeof id === "string");
+  const required = Array.isArray(record.required) ? record.required : [];
+  const onlyExhausted =
+    ids.length === 0 &&
+    required.some((item) => item?.status === "exhausted") &&
+    required.every(
+      (item) =>
+        item?.status === "exhausted" || item?.status === "passed" || item?.kind === "review",
+    );
+  if (onlyExhausted) return "{}";
   if (typeof blocked === "string" && blocked.length > 0) {
     const lead = blocked.startsWith("Cannot finish yet.")
       ? blocked
