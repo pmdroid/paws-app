@@ -11,6 +11,8 @@ export type PawsPaths = {
   worktreesDir: string;
   runsDir: string;
   logsDir: string;
+  /** Closeout videos and screenshots. Created 0700 by the evidence store. */
+  evidenceDir: string;
 };
 
 export function pawsPaths(home: string): PawsPaths {
@@ -23,6 +25,7 @@ export function pawsPaths(home: string): PawsPaths {
     worktreesDir: join(home, "worktrees"),
     runsDir: join(home, "runs"),
     logsDir: join(home, "logs"),
+    evidenceDir: join(home, "evidence"),
   };
 }
 
