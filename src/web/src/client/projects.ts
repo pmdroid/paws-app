@@ -85,8 +85,6 @@ export function createProjects() {
   let feedback = "";
   let previewCurrent = false;
   let generation = 0;
-  let composing = false;
-  let composerTouched = false;
   let status: Status = "all";
   let leadFilter = "";
   let repositoryFilter = "";
@@ -137,7 +135,6 @@ export function createProjects() {
     overview = result;
     repository ||= result.repositories[0]?.repository ?? "";
     leadUserId ||= result.userId;
-    if (!composerTouched && !result.approvals.length) composing = true;
   }
   function readSelection(): Selection {
     const form = root?.querySelector<HTMLFormElement>("#project-selection");
@@ -148,6 +145,9 @@ export function createProjects() {
       selected = new Set(fields.getAll("issue").map(String));
       steeringRoles = fields.getAll("steering").map(String);
     }
+    return currentSelection();
+  }
+  function currentSelection(): Selection {
     return {
       projectId: project!.id,
       issueIds: [...selected],
@@ -189,12 +189,20 @@ export function createProjects() {
     const name = overview?.members.find((member) => member.id === id)?.name ?? "Former member";
     return id === overview?.userId ? `${name} (you)` : name;
   }
-  function composer(disabled: string) {
-    const names = new Map(project?.issues.map((issue) => [issue.linearIssueId, issue.identifier]));
-    const eligible = (issue: Issue) =>
-      !["completed", "canceled", "duplicate"].includes(issue.stateType) &&
-      Boolean(issue.description?.trim());
-    const eligibleCount = project?.issues.filter(eligible).length ?? 0;
+  async function checkScope(selection: Selection) {
+    const current = generation;
+    const result = await api<{ approval: Approval }>({ action: "preview", selection });
+    if (current !== generation) return;
+    preview = result.approval;
+    previewCurrent = true;
+  }
+  function starter(disabled: string) {
+    if (!project || !overview) return "";
+    const names = new Map(
+      project.issues.map((issue) => [issue.linearIssueId, `${issue.identifier} ${issue.title}`]),
+    );
+    const ready = project.issues.filter(eligible);
+    const policies = policyFields();
     const policyComplete = preview?.preview.externalBlockerIds.every((id) =>
       blockers.some(
         (policy) =>
@@ -202,25 +210,30 @@ export function createProjects() {
           (policy.outcome === "completion" || policy.pullRequestNumber > 0),
       ),
     );
-    return `<section id="project-new" class="card space-y-6" aria-labelledby="project-new-title"><div class="space-y-2"><h2 id="project-new-title">Start a project</h2><p class="sub">Paste a Linear project link, choose its issues, then review and approve. Later changes to approved requirements hold delivery until you stop the project and approve it again.</p></div><form id="project-load" class="settings-controls"><label class="field flex-1"><span>Linear project URL or ID</span><input name="project" required value="${esc(projectId)}" autocomplete="off" placeholder="https://linear.app/team/project/…"></label><button class="btn" type="submit"${disabled}>Load project</button></form>${
-      project && overview
-        ? `<form id="project-selection"><h3>${esc(project.name)}</h3><div class="grid gap-4 sm:grid-cols-2"><label class="field"><span>Repository</span><select name="repository" aria-label="Repository" required>${[...new Set(overview.repositories.map((entry) => entry.repository))].map((name) => `<option${name === repository ? " selected" : ""}>${esc(name)}</option>`).join("")}</select></label><label class="field"><span>Lead</span><select name="lead" aria-label="Lead">${overview.members.map((member) => `<option value="${esc(member.id)}"${member.id === leadUserId ? " selected" : ""}>${esc(member.name)}</option>`).join("")}</select></label></div><p class="sub">Target branch: main. The lead steers execution. Work uses the assignee on each issue and the configured <a href="${routeHref({ view: "runners" })}">runner account policy</a>.</p><fieldset><legend>Who else can steer</legend><div class="row">${["owner", "admin", "member"].map((role) => `<label class="flex min-h-11 items-center gap-3"><input name="steering" type="checkbox" value="${role}"${steeringRoles.includes(role) ? " checked" : ""}><span>${role}</span></label>`).join("")}</div></fieldset><fieldset><legend>Issues to execute</legend><div class="between"><p class="sub" data-selected-count>${selected.size} of ${eligibleCount} ready issues selected</p><div class="row"><button type="button" class="btn" data-project-issues="all"${disabled}>Select all ready</button><button type="button" class="btn" data-project-issues="none"${disabled}>Clear</button></div></div>${project.issues
-            .map(
-              (issue) =>
-                `<label class="flex min-h-11 items-start gap-3"><input name="issue" type="checkbox" value="${esc(issue.linearIssueId)}"${selected.has(issue.linearIssueId) ? " checked" : ""}${!eligible(issue) || busy ? " disabled" : ""}><span><strong>${esc(issue.identifier)}</strong> ${esc(issue.title)}${eligible(issue) ? "" : `<span class="block muted">${issue.description?.trim() ? esc(issue.stateType) : "Add requirements in Linear."}</span>`}</span></label>`,
-            )
-            .join(
-              "",
-            )}</fieldset>${policyFields()}<button class="btn" type="submit"${disabled}>Preview selected scope</button></form>`
+    const count = preview?.preview.includedIssueIds.length ?? 0;
+    const summary = !ready.length
+      ? `<p class="empty">No issue in this project is ready. Give the issues you want Paws to work on a description in Linear, then load the project again.</p>`
+      : preview
+        ? `<p>Paws will work on ${count} ${count === 1 ? "issue" : "issues"} in this order, on ${esc(preview.preview.selection.repository)} (main), with ${esc(memberName(preview.preview.selection.leadUserId))} as lead.</p><ol>${preview.preview.order.map((id) => `<li>${esc(names.get(id) ?? id)}</li>`).join("")}</ol>${preview.preview.excludedIssueIds.length ? `<p class="sub">${preview.preview.excludedIssueIds.length} other ${preview.preview.excludedIssueIds.length === 1 ? "issue is" : "issues are"} left out.</p>` : ""}${preview.preview.problems.map((problem) => `<p class="err">${esc(problem)}</p>`).join("")}`
+        : "";
+    const options = `<details${preview ? "" : " open"}><summary>Change issues, repository or lead</summary><div class="grid gap-4 sm:grid-cols-2"><label class="field"><span>Repository</span><select name="repository" aria-label="Repository" required>${[...new Set(overview.repositories.map((entry) => entry.repository))].map((name) => `<option${name === repository ? " selected" : ""}>${esc(name)}</option>`).join("")}</select></label><label class="field"><span>Lead</span><select name="lead" aria-label="Lead">${overview.members.map((member) => `<option value="${esc(member.id)}"${member.id === leadUserId ? " selected" : ""}>${esc(member.name)}</option>`).join("")}</select></label></div><fieldset><legend>Who else can pause or stop it</legend><div class="row">${["owner", "admin", "member"].map((role) => `<label class="flex min-h-11 items-center gap-3"><input name="steering" type="checkbox" value="${role}"${steeringRoles.includes(role) ? " checked" : ""}><span>${role}</span></label>`).join("")}</div></fieldset><fieldset><legend>Issues</legend>${project.issues
+      .map(
+        (issue) =>
+          `<label class="flex min-h-11 items-start gap-3"><input name="issue" type="checkbox" value="${esc(issue.linearIssueId)}"${selected.has(issue.linearIssueId) ? " checked" : ""}${!eligible(issue) || busy ? " disabled" : ""}><span><strong>${esc(issue.identifier)}</strong> ${esc(issue.title)}${eligible(issue) ? "" : `<span class="block muted">${issue.description?.trim() ? esc(issue.stateType) : "Add requirements in Linear."}</span>`}</span></label>`,
+      )
+      .join("")}</fieldset><button class="btn" type="submit"${disabled}>Update</button></details>`;
+    return `<section id="project-start" class="card space-y-6" aria-labelledby="project-start-title"><div class="between"><h2 id="project-start-title">${esc(project.name)}</h2><button type="button" class="btn" data-project-cancel${disabled}>Cancel</button></div>${summary}${
+      ready.length
+        ? `<form id="project-selection">${policies ? `<p>Some issues wait on issues outside this project. Say what has to happen to each one, then check again.</p>${policies}<button class="btn" type="submit"${disabled}>Check again</button>` : ""}${options}</form>${preview ? `<div class="row"><button class="btn primary" data-project-approve${busy || !previewCurrent || preview.preview.problems.length || !policyComplete ? " disabled" : ""}>Start ${count} ${count === 1 ? "issue" : "issues"}</button></div>` : ""}`
         : ""
-    }${preview ? `<section class="space-y-4" aria-label="Approval preview"><h3>Review ${preview.preview.includedIssueIds.length} issues</h3><p>${preview.preview.excludedIssueIds.length} project issues excluded.</p><ol>${preview.preview.order.map((id) => `<li>${esc(names.get(id) ?? id)}</li>`).join("")}</ol>${preview.preview.problems.map((problem) => `<p class="err">${esc(problem)}</p>`).join("")}${preview.preview.externalBlockerIds.length ? "<p>Confirm each external blocker's required outcome, then preview the scope again.</p>" : ""}<button class="btn primary" data-project-approve${busy || !previewCurrent || preview.preview.problems.length || !policyComplete ? " disabled" : ""}>Approve ${preview.preview.includedIssueIds.length} issues</button></section>` : ""}</section>`;
+    }</section>`;
   }
   function approvedList(disabled: string) {
     const approvals = [...(overview?.approvals ?? [])].sort(
       (a, b) => Number(a.stoppedAt !== null) - Number(b.stoppedAt !== null),
     );
     if (!approvals.length)
-      return `<section class="card space-y-4" aria-labelledby="projects-title"><h2 id="projects-title">Projects</h2><p class="empty">No project has been approved yet. Choose New project to approve Linear issues for Paws to deliver.</p></section>`;
+      return `<section class="card space-y-4" aria-labelledby="projects-title"><h2 id="projects-title">Projects</h2><p class="empty">No projects yet. Paste a Linear project link above to start one.</p></section>`;
     const leads = [...new Set(approvals.map((entry) => entry.leadUserId))].sort((a, b) =>
       a === overview?.userId
         ? -1
@@ -294,7 +307,7 @@ export function createProjects() {
     const disabled = busy ? " disabled" : "";
     renderMarkup(
       root,
-      `<h1 class="sr-only">Projects</h1><div class="between"><p class="sub">Approve Linear issues for Paws to deliver, then follow their progress.</p><div class="row"><button class="btn" data-project-refresh${disabled}>Refresh projects</button><button class="btn primary" data-project-new aria-expanded="${composing}" aria-controls="project-new"${disabled}>${composing ? "Close new project" : "New project"}</button></div></div>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Checking project scope…" : esc(feedback)}</p>${composing ? composer(disabled) : ""}${overview && (overview.approvals.length || !composing) ? approvedList(disabled) : ""}`,
+      `<h1 class="sr-only">Projects</h1><div class="between"><form id="project-load" class="row flex-1"><label class="field min-w-0 flex-1"><span>Linear project URL or ID</span><input name="project" required value="${esc(projectId)}" autocomplete="off" placeholder="https://linear.app/team/project/…"></label><button class="btn primary self-end" type="submit"${disabled}>Load project</button></form><button class="btn self-end" data-project-refresh${disabled}>Refresh projects</button></div>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}<p role="status">${busy ? "Checking project scope…" : esc(feedback)}</p>${starter(disabled)}${overview ? approvedList(disabled) : ""}`,
     );
     if (busy)
       for (const control of root.querySelectorAll<
@@ -310,11 +323,12 @@ export function createProjects() {
     root
       .querySelector("[data-project-refresh]")
       ?.addEventListener("click", () => void change(load));
-    root.querySelector("[data-project-new]")?.addEventListener("click", () => {
-      composing = !composing;
-      composerTouched = true;
+    root.querySelector("[data-project-cancel]")?.addEventListener("click", () => {
+      project = null;
+      preview = null;
+      projectId = "";
+      blockers = [];
       paint();
-      if (composing) root?.querySelector<HTMLInputElement>('input[name="project"]')?.focus();
     });
     root
       .querySelector<HTMLInputElement>('input[name="project-query"]')
@@ -360,36 +374,19 @@ export function createProjects() {
         );
         if (current !== generation) return;
         project = loaded.project;
-        selected.clear();
+        selected = new Set(project.issues.filter(eligible).map((issue) => issue.linearIssueId));
         preview = null;
+        previewCurrent = false;
         blockers = [];
+        if (selected.size) await checkScope(currentSelection());
       });
     });
-    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-project-issues]"))
-      button.addEventListener("click", () => {
-        readPolicies();
-        readSelection();
-        selected = new Set(
-          button.dataset["projectIssues"] === "all"
-            ? [
-                ...(root?.querySelectorAll<HTMLInputElement>(
-                  'input[name="issue"]:not(:disabled)',
-                ) ?? []),
-              ].map((input) => input.value)
-            : [],
-        );
-        previewCurrent = false;
-        paint();
-      });
     root.querySelector<HTMLFormElement>("#project-selection")?.addEventListener("change", () => {
       readPolicies();
       readSelection();
       previewCurrent = false;
       const button = root?.querySelector<HTMLButtonElement>("[data-project-approve]");
       if (button) button.disabled = true;
-      const count = root?.querySelector("[data-selected-count]");
-      const ready = root?.querySelectorAll('input[name="issue"]:not(:disabled)').length ?? 0;
-      if (count) count.textContent = `${selected.size} of ${ready} ready issues selected`;
     });
     root
       .querySelector<HTMLFormElement>("#project-selection")
@@ -397,13 +394,7 @@ export function createProjects() {
         event.preventDefault();
         readPolicies();
         const selection = readSelection();
-        void change(async () => {
-          const current = generation;
-          const result = await api<{ approval: Approval }>({ action: "preview", selection });
-          if (current !== generation) return;
-          preview = result.approval;
-          previewCurrent = true;
-        });
+        void change(() => checkScope(selection));
       });
     root.querySelector("[data-project-approve]")?.addEventListener(
       "click",
@@ -415,9 +406,7 @@ export function createProjects() {
           projectId = "";
           selected.clear();
           blockers = [];
-          composing = false;
-          composerTouched = true;
-          feedback = "Scope approved. Paws will start the selected issues as dependencies allow.";
+          feedback = "Started. Paws picks up each issue once the issues it depends on are done.";
           await load();
         }),
     );
@@ -469,4 +458,11 @@ function matchesStatus(entry: Approval, status: Status): boolean {
   if (entry.stoppedAt !== null) return false;
   if (status === "attention") return entry.lastError !== null;
   return status === "paused" ? entry.pausedAt !== null : entry.pausedAt === null;
+}
+
+function eligible(issue: Issue): boolean {
+  return (
+    !["completed", "canceled", "duplicate"].includes(issue.stateType) &&
+    Boolean(issue.description?.trim())
+  );
 }
