@@ -227,6 +227,27 @@ export interface StatusSnapshot {
   verdicts: StatusVerdict[];
   mergeQueue: StatusMergeEntry[];
   events: StatusEvent[];
+  /** Closeout videos and screenshots of the visible items, oldest first. */
+  evidence?: StatusEvidence[];
+}
+
+export const EVIDENCE_KINDS = ["video", "image"] as const;
+export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
+
+/** One stored Closeout video or screenshot. The file is `GET /api/evidence/<id>`. */
+export interface StatusEvidence {
+  id: string;
+  itemId: string;
+  runId: string;
+  checkId: string;
+  attempt: number;
+  kind: EvidenceKind;
+  mediaType: string;
+  displayName: string;
+  sizeBytes: number;
+  headCommit: string;
+  publishedAt: string;
+  publisher: string;
 }
 
 export type ParseResult = { ok: true; snapshot: StatusSnapshot } | { ok: false; error: string };
@@ -325,7 +346,40 @@ function readSnapshot(input: unknown): StatusSnapshot {
     verdicts: array(body, "verdicts", "status").map((entry, index) => readVerdict(entry, index)),
     mergeQueue: array(body, "mergeQueue", "status").map((entry, index) => readMerge(entry, index)),
     events: array(body, "events", "status").map((entry, index) => readEvent(entry, index)),
+    ...(body.evidence === undefined
+      ? {}
+      : {
+          evidence: array(body, "evidence", "status").map((entry, index) =>
+            readEvidence(entry, `evidence[${index}]`),
+          ),
+        }),
   };
+}
+
+function readEvidence(input: unknown, path: string): StatusEvidence {
+  const body = object(input, path);
+  return {
+    id: text(body, "id", path),
+    itemId: text(body, "itemId", path),
+    runId: text(body, "runId", path),
+    checkId: text(body, "checkId", path),
+    attempt: positiveInteger(body, "attempt", path),
+    kind: oneOf(string(body, "kind", path), EVIDENCE_KINDS, `${path}.kind`),
+    mediaType: text(body, "mediaType", path),
+    displayName: text(body, "displayName", path),
+    sizeBytes: positiveInteger(body, "sizeBytes", path),
+    headCommit: text(body, "headCommit", path),
+    publishedAt: dateString(body, "publishedAt", path),
+    publisher: text(body, "publisher", path),
+  };
+}
+
+function positiveInteger(body: Record<string, unknown>, key: string, path: string): number {
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new StatusContractError(`${path}.${key} must be an integer >= 1`);
+  }
+  return value;
 }
 
 function readProject(input: unknown): StatusProject {
