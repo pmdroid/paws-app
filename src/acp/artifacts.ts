@@ -6,16 +6,35 @@ import type { AgentRole } from "./adapters";
 
 export const PUBLISH_ARTIFACT_TOOL_NAME = "publish_artifact";
 export const DEFAULT_MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
+/** Matches `EVIDENCE_LIMITS` in `src/evidence`, which checks the bytes again on the host. */
+export const DEFAULT_MAX_EVIDENCE_BYTES = { video: 200 * 1024 * 1024, image: 20 * 1024 * 1024 };
+
+const EVIDENCE_MIME_TYPES: Record<string, "video" | "image"> = {
+  "video/webm": "video",
+  "video/mp4": "video",
+  "image/png": "image",
+  "image/jpeg": "image",
+  "image/webp": "image",
+};
 
 export interface PublishArtifactRequest {
   path: string;
   displayName?: string;
   mimeType?: string;
   attachToIssue?: boolean;
+  checkId?: string;
 }
 
 export interface ArtifactLimits {
   maxBytes?: number;
+  evidence?: { video: number; image: number };
+}
+
+/** Closeout evidence a video or screenshot belongs to. Set when it was published with a check id. */
+export interface ArtifactEvidence {
+  checkId: string;
+  attempt: number;
+  headCommit: string;
 }
 
 export interface ArtifactSnapshot {
@@ -25,6 +44,7 @@ export interface ArtifactSnapshot {
   sizeBytes: number;
   sha256: string;
   bytes: Blob;
+  evidence?: ArtifactEvidence;
 }
 
 export interface PublishArtifactContext {
@@ -46,6 +66,36 @@ export interface PublishArtifactHook {
   publish(artifact: ArtifactSnapshot, context: PublishArtifactContext): Promise<PublishedArtifact>;
 }
 
+/** A refusal the agent can act on, such as a file over the evidence cap. Its message reaches the agent. */
+export class ArtifactRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactRejectedError";
+  }
+}
+
+/**
+ * Videos and screenshots published with a check id go to the Paws evidence store.
+ * Anything else, with or without a check id, is published the usual way.
+ */
+export function evidenceKind(request: PublishArtifactRequest): "video" | "image" | null {
+  if (request.checkId === undefined) return null;
+  const mimeType = request.mimeType ?? mimeFor(request.path);
+  return EVIDENCE_MIME_TYPES[mimeType.toLowerCase()] ?? null;
+}
+
+export function parseCheckId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 128 ||
+    [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  )
+    throw new Error("checkId must be a Closeout check id from get_closeout");
+  return value.trim();
+}
+
 export async function snapshotArtifactFile(
   worktreePath: string,
   request: PublishArtifactRequest,
@@ -63,7 +113,11 @@ export async function snapshotArtifactFile(
   ) {
     throw new Error("publish_artifact requires a workspace-relative path");
   }
-  const maxBytes = limits.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
+  const kind = typeof request.path === "string" ? evidenceKind(request) : null;
+  const maxBytes =
+    kind === null
+      ? (limits.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES)
+      : (limits.evidence ?? DEFAULT_MAX_EVIDENCE_BYTES)[kind];
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
     throw new Error("invalid artifact byte limit");
   assertNonSecretArtifactPath(request.path);
@@ -104,7 +158,7 @@ export async function snapshotArtifactFile(
     signal?.throwIfAborted();
     const info = await file.stat();
     if (!info.isFile()) throw new Error("artifact must be a regular file");
-    if (info.size > maxBytes) throw new Error(`artifact exceeds ${maxBytes} bytes`);
+    if (info.size > maxBytes) throw new ArtifactRejectedError(`artifact exceeds ${maxBytes} bytes`);
     const openedPath =
       process.platform === "linux"
         ? await realpath(`/proc/self/fd/${file.fd}`)
@@ -113,7 +167,7 @@ export async function snapshotArtifactFile(
     const current = await stat(openedPath);
     if (current.dev !== info.dev || current.ino !== info.ino)
       throw new Error("artifact file changed");
-    const buffer = Buffer.alloc(maxBytes + 1);
+    const buffer = Buffer.alloc(Math.min(info.size, maxBytes) + 1);
     let size = 0;
     while (size < buffer.length) {
       signal?.throwIfAborted();
@@ -121,7 +175,7 @@ export async function snapshotArtifactFile(
       if (bytesRead === 0) break;
       size += bytesRead;
     }
-    if (size > maxBytes) throw new Error(`artifact exceeds ${maxBytes} bytes`);
+    if (size > maxBytes) throw new ArtifactRejectedError(`artifact exceeds ${maxBytes} bytes`);
     const after = await file.stat();
     if (
       after.size !== info.size ||
@@ -180,6 +234,8 @@ function mimeFor(path: string): string {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".webm": "video/webm",
+    ".mp4": "video/mp4",
     ".svg": "image/svg+xml",
     ".pdf": "application/pdf",
     ".json": "application/json",

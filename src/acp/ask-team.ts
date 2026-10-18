@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
 import {
+  ArtifactRejectedError,
+  evidenceKind,
+  parseCheckId,
   snapshotArtifactFile,
+  type ArtifactEvidence,
   type ArtifactLimits,
   type PublishArtifactHook,
   type PublishArtifactRequest,
@@ -13,6 +17,7 @@ import {
 import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
 import { decidePermission, type GuardContext } from "./permissions";
+import { git } from "./git";
 
 export type AskTeamOption = string | { label?: string; value: string };
 
@@ -339,6 +344,8 @@ async function handleConnection(
         throw new Error("publish_artifact is unavailable");
       }
       const request = (parsed.arguments ?? {}) as unknown as PublishArtifactRequest;
+      const checkId = parseCheckId(request.checkId);
+      if (checkId !== undefined) request.checkId = checkId;
       const context = {
         ...options.context,
         request,
@@ -349,22 +356,25 @@ async function handleConnection(
       if (request.attachToIssue !== undefined && typeof request.attachToIssue !== "boolean") {
         throw new Error("attachToIssue must be a boolean");
       }
+      const evidence =
+        checkId !== undefined && evidenceKind(request) !== null
+          ? await evidenceFor(checkId, options.context.worktreePath, options)
+          : undefined;
       const artifact = await snapshotArtifactFile(
         options.context.worktreePath,
         request,
         options.artifactLimits,
         options.signal,
       );
+      if (evidence) artifact.evidence = evidence;
       options.signal.throwIfAborted();
-      let published;
-      try {
-        published = await abortable(
-          options.publishArtifact.publish(artifact, context),
-          options.signal,
-        );
-      } catch {
-        throw new Error("artifact upload failed");
-      }
+      // Only a refusal reaches the agent. Other upload errors can carry signed URLs or tokens.
+      const published = await abortable(
+        options.publishArtifact.publish(artifact, context),
+        options.signal,
+      ).catch((error: unknown) => {
+        throw error instanceof ArtifactRejectedError ? error : new Error("artifact upload failed");
+      });
       options.signal.throwIfAborted();
       let url: URL;
       try {
@@ -390,7 +400,7 @@ async function handleConnection(
       attempt?.complete();
       const label = name.replace(/[\\[\]]/g, "\\$&");
       socket.end(
-        `${JSON.stringify({ id, answer: `${artifact.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
+        `${JSON.stringify({ id, answer: `${artifact.mimeType.startsWith("image/") && !evidence ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
       );
       return;
     }
@@ -491,6 +501,29 @@ function authorizeCloseout(
     guard,
   );
   if (!decision.allow) throw new Error(decision.reason);
+}
+
+/** The check must be required now. The attempt is the one the next `run_closeout` of it makes. */
+async function evidenceFor(
+  checkId: string,
+  worktreePath: string,
+  options: HostToolBridgeOptions,
+): Promise<ArtifactEvidence> {
+  if (!options.closeout) throw new Error("Closeout evidence is unavailable");
+  const report = JSON.parse(await options.closeout.report()) as {
+    required?: { id?: unknown; failed_attempts?: unknown }[];
+  };
+  const check = report.required?.find((item) => item.id === checkId);
+  if (!check)
+    throw new Error(`${checkId} is not a required Closeout check. Call get_closeout for the ids.`);
+  const failed = typeof check.failed_attempts === "number" ? check.failed_attempts : 0;
+  const headCommit = (
+    await git(["rev-parse", "--verify", "HEAD^{commit}"], {
+      cwd: worktreePath,
+      signal: options.signal,
+    })
+  ).trim();
+  return { checkId, attempt: failed + 1, headCommit };
 }
 
 function closeoutId(value: Record<string, unknown>): string {
