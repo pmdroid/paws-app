@@ -49,7 +49,18 @@ export function createLinearInputLoader(options: {
         cached = load(id, url, request.signal).finally(() => inflight.delete(id));
         inflight.set(id, cached);
       }
-      const file = await cached;
+      let file: CachedInput;
+      try {
+        file = await cached;
+      } catch (error) {
+        request.signal.throwIfAborted();
+        if (
+          error instanceof Error &&
+          /^Linear file download HTTP (401|403|404)$/.test(error.message)
+        )
+          continue;
+        throw error;
+      }
       request.signal.throwIfAborted();
       const bytes = Buffer.from(file.data, "base64");
       total += bytes.byteLength;
