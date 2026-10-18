@@ -4,9 +4,13 @@ import {
   livePoll,
   RUNNER_POLL_MS,
   runnerActionsMarkup,
-  runnerCardMarkup,
+  runnerDetailMarkup,
+  runnerHistoryMarkup,
+  runnerRowMarkup,
   type Runner,
+  type Usage,
 } from "./runners";
+import { parseRoute, routeHref } from "./route";
 
 const now = 1_000_000_000;
 const runner: Runner = {
@@ -47,9 +51,97 @@ const view = {
   recent: true,
 };
 
-describe("runner cards", () => {
+describe("runner list rows", () => {
+  const row = { now, serverVersion: "1.2.0" };
+
+  test("a row links to the runner and summarizes its state", () => {
+    const html = runnerRowMarkup(runner, row);
+    expect(html).toContain('href="#/runners/01JRUNNER0000000000000000A"');
+    expect(html).toContain("<b>build-box</b>");
+    expect(html).toContain('<span class="tag ok">Idle</span>');
+    expect(html).toContain("Seen just now · ubuntu 24.04 · Runner 1.2.0 · Claude signed in");
+    expect(html).not.toContain("Update available");
+    expect(html).not.toContain("data-runner-seat");
+    expect(html).not.toContain("<dl");
+  });
+
+  test("a row flags offline hosts, paused status, signed-out agents and old versions", () => {
+    const html = runnerRowMarkup(
+      {
+        ...runner,
+        status: "paused",
+        version: "1.1.0",
+        metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 },
+        agents: [{ agent: "codex", status: "signed_out", checkedAt: now }],
+      },
+      row,
+    );
+    expect(html).toContain('<span class="tag bad">Offline</span>');
+    expect(html).toContain('<span class="tag paused">Paused</span>');
+    expect(html).toContain('<span class="tag bad">Codex signed out</span>');
+    expect(html).toContain("Update available");
+    expect(html).toContain("No agent signed in");
+  });
+
+  test("a revoked runner without reports says so", () => {
+    const html = runnerRowMarkup({ ...runner, status: "revoked", metrics: null }, row);
+    expect(html).toContain('<span class="tag bad">Revoked</span>');
+    expect(html).toContain("Never reported");
+    expect(html).not.toContain("signed in");
+  });
+});
+
+describe("runner execution history", () => {
+  const entry: Usage = {
+    commandId: "command-1",
+    runnerId: runner.id,
+    runnerName: runner.name,
+    runId: "run-7",
+    agent: "claude",
+    resolvedModel: "claude-opus",
+    purpose: "work",
+    outcome: "success",
+    startedAt: now - 125_000,
+    endedAt: now,
+  };
+
+  test("lists each execution with its run, agent, duration and outcome", () => {
+    const html = runnerHistoryMarkup([
+      entry,
+      {
+        ...entry,
+        commandId: "command-2",
+        runId: null,
+        agent: null,
+        resolvedModel: null,
+        purpose: "check",
+        outcome: null,
+        endedAt: null,
+      },
+    ]);
+    expect(html).toContain('<a href="#/runs/run-7">Work</a>');
+    expect(html).toContain("claude-opus");
+    expect(html).toContain("2m 5s");
+    expect(html).toContain('<span class="tag ok">Success</span>');
+    expect(html).toContain("<td>Checks</td><td>None</td>");
+    expect(html).toContain('<span class="tag running">Running</span>');
+  });
+
+  test("an unused runner has an empty history", () => {
+    expect(runnerHistoryMarkup([])).toContain("has not executed any work yet");
+  });
+});
+
+test("runner routes carry the selected runner", () => {
+  expect(parseRoute("#/runners")).toEqual({ view: "runners", id: null });
+  expect(parseRoute("#/runners/runner-1")).toEqual({ view: "runners", id: "runner-1" });
+  expect(routeHref({ view: "runners", id: "runner-1" })).toBe("#/runners/runner-1");
+  expect(routeHref({ view: "runners", id: null })).toBe("#/runners");
+});
+
+describe("runner details", () => {
   test("an idle runner shows its host metrics, sign-in, account type and controls", () => {
-    const html = runnerCardMarkup(runner, view);
+    const html = runnerDetailMarkup(runner, view);
     expect(html).toContain("build-box");
     expect(html).toContain("Active");
     expect(html).toContain("Online");
@@ -77,13 +169,13 @@ describe("runner cards", () => {
   });
 
   test("a busy runner says so", () => {
-    const html = runnerCardMarkup({ ...runner, idle: false }, view);
+    const html = runnerDetailMarkup({ ...runner, idle: false }, view);
     expect(html).toContain('<span class="tag running">Busy</span>');
     expect(html).not.toContain(">Idle<");
   });
 
   test("an offline runner says when it was last seen and hides idle or busy", () => {
-    const html = runnerCardMarkup(
+    const html = runnerDetailMarkup(
       { ...runner, idle: false, metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 } },
       view,
     );
@@ -94,14 +186,14 @@ describe("runner cards", () => {
   });
 
   test("a runner that never reported is offline", () => {
-    const html = runnerCardMarkup({ ...runner, metrics: null, os: null, version: null }, view);
+    const html = runnerDetailMarkup({ ...runner, metrics: null, os: null, version: null }, view);
     expect(html).toContain("Offline");
     expect(html).toContain("<dt>Last seen</dt><dd>Never</dd>");
     expect(html).toContain("<dt>CPU</dt><dd>Not reported</dd>");
   });
 
   test("a signed-out agent and an older runner version are flagged", () => {
-    const html = runnerCardMarkup(
+    const html = runnerDetailMarkup(
       {
         ...runner,
         version: "1.1.9",
@@ -114,14 +206,14 @@ describe("runner cards", () => {
   });
 
   test("members who do not own the host see disabled sharing settings", () => {
-    const html = runnerCardMarkup(runner, { ...view, userId: "someone", role: "member" });
+    const html = runnerDetailMarkup(runner, { ...view, userId: "someone", role: "member" });
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* disabled/);
     expect(html).toContain("The host owner controls its sharing settings.");
     expect(html).not.toContain(">Pause<");
   });
 
   test("a revoked runner has no settings or controls", () => {
-    const html = runnerCardMarkup({ ...runner, status: "revoked" }, view);
+    const html = runnerDetailMarkup({ ...runner, status: "revoked" }, view);
     expect(html).toContain("Revoked");
     expect(html).toContain("Offline");
     expect(html).not.toContain("data-runner-seat");

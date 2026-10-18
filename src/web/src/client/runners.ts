@@ -1,5 +1,5 @@
 import { renderMarkup } from "./theme";
-import { esc } from "./format";
+import { durationLabel, esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
 /** The runner list refreshes this often while the page is visible. */
@@ -43,9 +43,11 @@ export type HostPolicy = {
 };
 type Session = { userId: string; role: string; authenticatedAt: number };
 type WorkspacePolicy = { personalOrganizationHost: boolean };
-type Usage = {
+export type Usage = {
   commandId: string;
+  runnerId: string;
   runnerName: string;
+  runId: string | null;
   agent: string | null;
   resolvedModel: string | null;
   purpose: string;
@@ -138,6 +140,92 @@ function seenLabel(at: number, now: number): string {
   return new Date(at).toLocaleString();
 }
 
+function updateAvailable(runner: Runner, serverVersion: string | null): boolean {
+  return (
+    runner.version !== null &&
+    serverVersion !== null &&
+    (compareVersions(runner.version, serverVersion) ?? 0) < 0
+  );
+}
+
+function availability(runner: Runner, now: number): [string, string] {
+  if (runner.status === "revoked") return ["bad", "Revoked"];
+  if (!runnerOnline(runner, now)) return ["bad", "Offline"];
+  return runner.idle ? ["ok", "Idle"] : ["running", "Busy"];
+}
+
+export function runnerRowMarkup(
+  runner: Runner,
+  view: { now: number; serverVersion: string | null },
+): string {
+  const id = esc(runner.id);
+  const [tone, state] = availability(runner, view.now);
+  const agents = runner.agents ?? [];
+  const signedIn = agents
+    .filter((entry) => entry.status === "signed_in")
+    .map((entry) => AGENT_LABELS[entry.agent] ?? entry.agent);
+  const tags = [
+    `<span class="tag ${tone}">${state}</span>`,
+    runner.status === "paused" || runner.status === "draining"
+      ? `<span class="tag ${runner.status === "paused" ? "paused" : "warn"}">${runner.status === "paused" ? "Paused" : "Draining"}</span>`
+      : "",
+    ...agents
+      .filter((entry) => entry.status === "signed_out" || entry.status === "usage_limit")
+      .map(
+        (entry) =>
+          `<span class="tag ${entry.status === "signed_out" ? "bad" : "warn"}">${esc(AGENT_LABELS[entry.agent] ?? entry.agent)} ${entry.status === "signed_out" ? "signed out" : "usage limit"}</span>`,
+      ),
+    updateAvailable(runner, view.serverVersion)
+      ? '<span class="tag warn">Update available</span>'
+      : "",
+  ].join("");
+  const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
+  const meta = [
+    runner.metrics
+      ? `Seen ${seenLabel(runner.metrics.reportedAt, view.now).replace(/^Just now$/, "just now")}`
+      : "Never reported",
+    os,
+    runner.version ? `Runner ${runner.version}` : "",
+    runner.status === "revoked"
+      ? ""
+      : signedIn.length
+        ? `${signedIn.join(", ")} signed in`
+        : "No agent signed in",
+  ]
+    .filter(Boolean)
+    .map(esc)
+    .join(" · ");
+  return `<li data-runner-row="${id}"><a class="runner-row" href="#/runners/${encodeURIComponent(runner.id)}" data-focus="open:${id}"><span class="runner-row-name"><b>${esc(runner.name)}</b><span class="muted">${meta}</span></span><span class="runner-row-tags">${tags}</span></a></li>`;
+}
+
+const PURPOSES: Record<string, string> = {
+  prepare: "Prepare",
+  work: "Work",
+  check: "Checks",
+  helper: "Helper",
+};
+
+export function runnerHistoryMarkup(usage: Usage[]): string {
+  if (!usage.length) return '<p class="muted">This runner has not executed any work yet.</p>';
+  const rows = usage
+    .map((entry) => {
+      const purpose = esc(PURPOSES[entry.purpose] ?? entry.purpose);
+      const work = entry.runId
+        ? `<a href="#/runs/${encodeURIComponent(entry.runId)}">${purpose}</a>`
+        : purpose;
+      const agent = entry.agent ? (AGENT_LABELS[entry.agent] ?? entry.agent) : "None";
+      const outcome =
+        entry.outcome === null
+          ? '<span class="tag running">Running</span>'
+          : `<span class="tag ${entry.outcome === "success" ? "ok" : entry.outcome === "cancelled" ? "warn" : "bad"}">${esc(entry.outcome[0]!.toUpperCase() + entry.outcome.slice(1).replaceAll("_", " "))}</span>`;
+      const duration =
+        entry.endedAt === null ? "Running" : durationLabel(entry.endedAt - entry.startedAt);
+      return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td>${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;
+    })
+    .join("");
+  return `<table><thead><tr><th>Started</th><th>Task</th><th>Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
   state: { manages: boolean; busy: boolean; recent: boolean },
@@ -156,8 +244,7 @@ export function runnerActionsMarkup(
   return `<div class="row">${pause}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
 }
 
-/** One always-expanded runner card. */
-export function runnerCardMarkup(
+export function runnerDetailMarkup(
   runner: Runner,
   view: {
     now: number;
@@ -190,10 +277,7 @@ export function runnerCardMarkup(
         : '<span class="tag running">Busy</span>'
       : "",
   ].join("");
-  const behind =
-    runner.version !== null &&
-    view.serverVersion !== null &&
-    (compareVersions(runner.version, view.serverVersion) ?? 0) < 0;
+  const behind = updateAvailable(runner, view.serverVersion);
   const known = (value: number | null | undefined, format: (value: number) => string) =>
     value === null || value === undefined ? "Not reported" : esc(format(value));
   const memory =
@@ -262,18 +346,20 @@ export function runnerCardMarkup(
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? (view.recent ? "" : '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>') : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<li data-runner-card="${id}"><section class="runner-section" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${sharing}${runnerActionsMarkup(
+  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${sharing}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
       busy: view.busy,
       recent: view.recent,
     },
-  )}</section></li>`;
+  )}</section>`;
 }
 
 export function createRunners() {
   let root: HTMLElement | null = null;
+  let selected: string | null = null;
+  let loaded = false;
   let runners: Runner[] = [];
   let serverVersion: string | null = null;
   let policies = new Map<string, HostPolicy>();
@@ -282,6 +368,7 @@ export function createRunners() {
   let setupRequired = false;
   let workspaceReady = false;
   let usage: Usage[] = [];
+  let usageRunner: string | null = null;
   let inspection: Inspection | null = null;
   let code = "";
   let busy = false;
@@ -307,11 +394,13 @@ export function createRunners() {
   }
   function reset() {
     session = null;
+    loaded = false;
     runners = [];
     policies = new Map();
     serverVersion = null;
     workspacePolicy = null;
     usage = [];
+    usageRunner = null;
     inspection = null;
   }
   async function api<T>(path: string, body?: unknown): Promise<T> {
@@ -339,6 +428,7 @@ export function createRunners() {
   /** A quiet load refreshes in the background without disabling controls. */
   async function load(quiet = false) {
     const current = ++generation;
+    const target = selected;
     if (!quiet) {
       busy = true;
       error = "";
@@ -361,7 +451,9 @@ export function createRunners() {
       const [identity, policy, activity, hosts] = await Promise.all([
         api<Session>("/api/auth/session"),
         api<WorkspacePolicy>("/api/runners/policy"),
-        api<{ usage: Usage[] }>("/api/runners/usage"),
+        target === null
+          ? { usage: [] }
+          : api<{ usage: Usage[] }>(`/api/runners/usage?runner=${encodeURIComponent(target)}`),
         Promise.all(
           list.runners
             .filter((runner) => runner.status !== "revoked")
@@ -375,11 +467,13 @@ export function createRunners() {
       ]);
       if (current !== generation) return;
       runners = list.runners;
+      loaded = true;
       serverVersion = list.serverVersion ?? null;
       policies = new Map(hosts.filter((entry) => entry !== null));
       session = identity;
       workspacePolicy = policy;
       usage = activity.usage;
+      usageRunner = target;
       stale = "";
       if (!manages()) inspection = null;
     } catch (caught) {
@@ -430,38 +524,37 @@ export function createRunners() {
     if (session?.role !== "owner" || !workspacePolicy) return "";
     return `<details class="runner-section" data-details="workspace-policy"><summary data-focus="summary:workspace-policy">Workspace execution permission</summary><form id="workspace-runner-policy"><fieldset${busy || !recent() ? " disabled" : ""}><label class="runner-consent"><input name="personalOrganizationHost" type="checkbox" data-focus="workspace-policy"${workspacePolicy.personalOrganizationHost ? " checked" : ""}><span>Allow personal subscriptions on workspace hosts</span></label><button class="btn" type="submit">Save workspace permission</button></fieldset></form></details>`;
   }
-  function usageView() {
-    return `<details class="runner-section" data-details="usage"><summary data-focus="summary:usage">Recent execution</summary>${
-      usage.length
-        ? `<ul class="runner-checks">${usage
-            .slice(0, 30)
-            .map(
-              (entry) =>
-                `<li><b>${esc(entry.runnerName)} · ${esc(entry.purpose)}</b><p>${esc(entry.agent ?? "Checks")}${entry.resolvedModel ? ` · ${esc(entry.resolvedModel)}` : ""} · ${esc(entry.outcome?.replaceAll("_", " ") ?? "Running")}</p><p class="muted">${esc(new Date(entry.startedAt).toLocaleString())}${entry.endedAt === null ? "" : ` · ${Math.max(0, Math.round((entry.endedAt - entry.startedAt) / 1000))} seconds`}</p></li>`,
-            )
-            .join("")}</ul>`
-        : '<p class="muted">No execution has been recorded yet.</p>'
-    }</details>`;
+  function listView(now: number, disabled: string, notices: string): string {
+    const rows = runners.map((runner) => runnerRowMarkup(runner, { now, serverVersion })).join("");
+    const pairing = manages()
+      ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</section>`
+      : "";
+    return `<h1 class="sr-only">Runners</h1><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${notices}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>" : ""}${pairing}${workspacePolicyView()}`;
+  }
+  function detailView(id: string, now: number, notices: string): string {
+    const back =
+      '<nav class="crumbs" aria-label="Breadcrumb"><a href="#/runners" data-focus="back">All runners</a></nav>';
+    const runner = runners.find((entry) => entry.id === id);
+    if (!runner)
+      return `<h1 class="sr-only">Runners</h1>${back}${notices}${loaded ? `<div class="empty">This runner is not paired with your workspace. <a href="#/runners">Choose another runner</a>.</div>` : ""}`;
+    return `<h1 class="sr-only">Runners</h1>${back}${notices}${runnerDetailMarkup(runner, {
+      now,
+      serverVersion,
+      policy: policies.get(runner.id) ?? null,
+      userId: session?.userId ?? null,
+      role: session?.role ?? null,
+      busy,
+      recent: recent(),
+    })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
       return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
     const disabled = busy || !recent() ? " disabled" : "";
     const now = Date.now();
-    const cards = runners
-      .map((runner) =>
-        runnerCardMarkup(runner, {
-          now,
-          serverVersion,
-          policy: policies.get(runner.id) ?? null,
-          userId: session?.userId ?? null,
-          role: session?.role ?? null,
-          busy,
-          recent: recent(),
-        }),
-      )
-      .join("");
-    const html = `<h1 class="sr-only">Runners</h1><p class="sub">Manage the Linux hosts that execute work delegated in Linear. Status refreshes every 10 seconds.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !runners.length ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</section>` : ""}${runners.length ? `<ul class="runner-list">${cards}</ul>` : ""}${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>" : ""}${workspacePolicyView()}${usageView()}`;
+    const notices = `${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}`;
+    const html =
+      selected === null ? listView(now, disabled, notices) : detailView(selected, now, notices);
     return html.replace(/<details([^>]*) data-details="([^"]+)"/g, (match, before, key) =>
       open.has(key) ? `<details${before} data-details="${key}" open` : match,
     );
@@ -600,9 +693,26 @@ export function createRunners() {
     if (!busy) void load(true);
   }
   return {
-    mount(element: HTMLElement, engine: string | null, source: string | undefined) {
+    mount(
+      element: HTMLElement,
+      engine: string | null,
+      source: string | undefined,
+      runnerId: string | null,
+    ) {
       const nextConnection = `${engine}:${source}`;
-      if (root === element && connection === nextConnection) return;
+      const moved = selected !== runnerId;
+      selected = runnerId;
+      if (moved) {
+        feedback = "";
+        error = "";
+      }
+      if (root === element && connection === nextConnection) {
+        if (moved && available) {
+          painted = "";
+          void load();
+        }
+        return;
+      }
       root = element;
       connection = nextConnection;
       painted = "";
