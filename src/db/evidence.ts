@@ -7,7 +7,6 @@ export type EvidenceMediaType =
   | "image/jpeg"
   | "image/webp";
 
-/** A Closeout video or screenshot kept under `~/.paws/evidence`. The file is named by `id`. */
 export type StoredEvidence = {
   id: string;
   itemId: string;

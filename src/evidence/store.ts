@@ -6,7 +6,6 @@ import { saveEvidence, type StoredEvidence } from "../db";
 import { mediaKind, sniffMedia, SNIFF_BYTES } from "./media";
 import { ulid } from "./ulid";
 
-/** Per-file caps in bytes. */
 export type EvidenceLimits = { video: number; image: number };
 
 export const EVIDENCE_LIMITS: EvidenceLimits = {
@@ -21,13 +20,11 @@ export type EvidenceInput = {
   attempt: number;
   displayName: string;
   headCommit: string;
-  /** The file. `Bun.file(path)` streams it without reading it into memory. */
   source: Blob;
 };
 
 export type EvidenceStoreOptions = {
   db: Database;
-  /** `~/.paws/evidence`. Created with mode 0700. */
   root: string;
   limits?: EvidenceLimits;
   now?: () => number;
@@ -35,7 +32,6 @@ export type EvidenceStoreOptions = {
 
 export type EvidenceStore = {
   readonly root: string;
-  /** Write the file with mode 0600 and record its row. Throws `EvidenceRejectedError`. */
   save(input: EvidenceInput): Promise<StoredEvidence>;
 };
 

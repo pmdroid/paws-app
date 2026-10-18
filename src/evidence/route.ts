@@ -8,10 +8,6 @@ export const EVIDENCE_API_PATH = "/api/evidence/";
 export type EvidenceRequestOptions = {
   db: Database;
   root: string;
-  /**
-   * Linear sessions the signed-in member may see. The workspace's repository-to-team mapping
-   * already filtered them. `undefined` means nobody is signed in.
-   */
   sessionIds: readonly string[] | undefined;
 };
 
@@ -20,7 +16,6 @@ const PRIVATE = {
   "x-content-type-options": "nosniff",
 };
 
-/** `GET /api/evidence/:id`. `null` for any other path. */
 export async function handleEvidenceRequest(
   request: Request,
   options: EvidenceRequestOptions,
@@ -69,15 +64,10 @@ export async function handleEvidenceRequest(
   });
 }
 
-/** Unknown ids and evidence the member may not see get the same answer. */
 function notFound(): Response {
   return Response.json({ error: "Not found." }, { status: 404, headers: PRIVATE });
 }
 
-/**
- * One `bytes=` range. A malformed or multi-part header is ignored and the whole file is sent,
- * as RFC 9110 allows.
- */
 export function parseRange(
   header: string,
   size: number,

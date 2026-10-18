@@ -1,6 +1,5 @@
 import type { EvidenceMediaType } from "../db";
 
-/** Bytes `sniffMedia` needs from the start of a file. */
 export const SNIFF_BYTES = 64;
 
 const MP4_BRANDS = new Set([
@@ -17,10 +16,6 @@ const MP4_BRANDS = new Set([
   "M4V ",
 ]);
 
-/**
- * Media type from the file's leading bytes. The name and any claimed type are ignored.
- * Anything else, SVG included, is `null`.
- */
 export function sniffMedia(head: Uint8Array): EvidenceMediaType | null {
   if (starts(head, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (starts(head, [0xff, 0xd8, 0xff])) return "image/jpeg";
@@ -43,7 +38,6 @@ function ascii(head: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...head.subarray(offset, offset + length));
 }
 
-/** DocType (element 0x4282) inside the EBML header, so Matroska files are not taken for WebM. */
 function ebmlDocType(head: Uint8Array): string | null {
   for (let index = 4; index + 2 < head.length; index++) {
     if (head[index] !== 0x42 || head[index + 1] !== 0x82) continue;
