@@ -18,7 +18,14 @@ import {
   type StartLinearSession,
 } from "../web";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
-import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
+import {
+  auditWorkspaceAccess,
+  getArtifact,
+  getWorkItem,
+  getWorkItemRepository,
+  workspaceSessionIds,
+} from "../db";
+import { EVIDENCE_PATH_PREFIX, handleEvidenceRequest } from "../evidence-media";
 import {
   handleWorkspaceGitHubIntegration,
   requestWorkspaceSession,
@@ -55,6 +62,8 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  /** `~/.paws/evidence`, served by `GET /api/evidence/:id`. Omit it and every id is 404. */
+  evidenceMediaDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
@@ -115,6 +124,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(statusEnv ? { statusEnv } : {}),
         ...(closeoutHome ? { closeoutHome } : {}),
         ...(evidenceRoot ? { evidenceRoot } : {}),
+        ...(options.evidenceMediaDir ? { evidenceMediaDir: options.evidenceMediaDir } : {}),
       });
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -150,6 +160,7 @@ type Secrets = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceMediaDir?: string;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -278,6 +289,23 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         access.principal.userId,
         workspace.clientId,
       );
+      if (path.startsWith(EVIDENCE_PATH_PREFIX)) {
+        const db = secrets.db;
+        const scope = sessionIds;
+        return handleEvidenceRequest(request, {
+          db,
+          dir: secrets.evidenceMediaDir ?? "",
+          canRead: (row) => {
+            const item = getWorkItem(db, row.itemId);
+            return (
+              secrets.evidenceMediaDir !== undefined &&
+              item?.sessionKey != null &&
+              scope.includes(item.sessionKey) &&
+              getWorkItemRepository(db, item.id) !== null
+            );
+          },
+        });
+      }
       if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
         if (response !== null) return response;
@@ -292,6 +320,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
     }
   }
+  if (path.startsWith(EVIDENCE_PATH_PREFIX))
+    return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   if (path === "/api/runners" && request.method === "GET" && !secrets.runnerControl)
     return Response.json({
       runners: [],
