@@ -11,6 +11,7 @@ export type PawsPaths = {
   worktreesDir: string;
   runsDir: string;
   logsDir: string;
+  evidenceDir: string;
 };
 
 export function pawsPaths(home: string): PawsPaths {
@@ -23,6 +24,7 @@ export function pawsPaths(home: string): PawsPaths {
     worktreesDir: join(home, "worktrees"),
     runsDir: join(home, "runs"),
     logsDir: join(home, "logs"),
+    evidenceDir: join(home, "evidence"),
   };
 }
 
@@ -35,6 +37,7 @@ export function ensureLayout(paths: PawsPaths): void {
     paths.worktreesDir,
     paths.runsDir,
     paths.logsDir,
+    paths.evidenceDir,
   ];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });

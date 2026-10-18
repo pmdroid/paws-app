@@ -314,3 +314,5 @@ export {
   attributionItemScope,
 } from "./github-attribution";
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
+export { getEvidence, insertEvidence, listEvidence } from "./evidence";
+export type { EvidenceMediaType, EvidenceRecord } from "./evidence";
