@@ -1309,6 +1309,18 @@ test("the agent's skip request joins the exhausted Closeout question and a bypas
     return parsed.snapshot.verdicts.find((verdict) => verdict.itemId === "ENG-9");
   };
   try {
+    db.run(
+      "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('skip-created', 'webhook', 'created', 'ses_1', 1, ?, 1)",
+      [
+        JSON.stringify({
+          agentSession: {
+            id: "ses_1",
+            comment: { id: "9d77495c-0ec1-4eb8-abe7-a80d51f168c8" },
+            issue: { url: "https://linear.app/acme/issue/ENG-9/skip-an-exhausted-check" },
+          },
+        }),
+      ],
+    );
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
     await jobs.tick();
     expect(stateOf(db, "ENG-9"), debug(layout, db)).toBe("awaiting_input");
@@ -1330,7 +1342,7 @@ test("the agent's skip request joins the exhausted Closeout question and a bypas
     expect((await snapshot())?.skipRequest).toEqual({
       checkIds: ["test"],
       reason: "The fixture service is down",
-      href: "https://linear.app/issue/ENG-9",
+      href: "https://linear.app/acme/issue/ENG-9/skip-an-exhausted-check#comment-9d77495c",
     });
     await orchestrator.onLinearEvent({
       ...linearEvent("prompted", "/paws bypass test -- Fixture outage", null),
