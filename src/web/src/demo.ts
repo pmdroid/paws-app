@@ -304,6 +304,12 @@ const DEMO: StatusSnapshot = {
         checks: retentionChecks(number),
       })),
       links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
+      skipRequest: {
+        checkIds: ["unit"],
+        reason:
+          "The retention test depends on the nightly fixture, which is down. The video shows the purge job deleting the expected rows.",
+        href: "https://linear.app/acme/issue/ENG-100",
+      },
     },
   ],
   mergeQueue: [

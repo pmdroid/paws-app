@@ -177,6 +177,15 @@ export interface StatusVerdict {
   policyDigest?: string | null;
   policyPath?: string | null;
   attempts?: StatusCloseoutAttempt[];
+  skipRequest?: StatusSkipRequest | null;
+}
+
+/** The agent's open request in Linear to skip exhausted checks. Paws has no skip button. */
+export interface StatusSkipRequest {
+  checkIds: string[];
+  reason: string;
+  /** The Closeout recovery question in Linear. */
+  href: string;
 }
 
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
@@ -467,7 +476,18 @@ function readVerdict(input: unknown, index: number): StatusVerdict {
             readAttempt(entry, `${path}.attempts[${attempt}]`),
           ),
         }),
+    ...(body.skipRequest === undefined || body.skipRequest === null
+      ? {}
+      : { skipRequest: readSkipRequest(body.skipRequest, `${path}.skipRequest`) }),
   };
+}
+
+function readSkipRequest(input: unknown, path: string): StatusSkipRequest {
+  const body = object(input, path);
+  const href = text(body, "href", path);
+  if (!href.startsWith("https://linear.app/"))
+    throw new StatusContractError(`${path}.href must be a Linear link`);
+  return { checkIds: stringArray(body, "checkIds", path), reason: text(body, "reason", path), href };
 }
 
 function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
