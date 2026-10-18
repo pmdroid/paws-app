@@ -56,7 +56,6 @@ export function createLinearArtifactPublisher(options: {
   itemId: string;
   issueId?: string;
   sessionId: string;
-  /** Closeout videos and screenshots stay in Paws and Linear gets `<publicUrl>/evidence/<id>`. */
   evidence?: { store: EvidenceStore; publicUrl: string };
   now?: () => number;
 }): PublishArtifactHook {
@@ -71,7 +70,6 @@ export function createLinearArtifactPublisher(options: {
   return {
     begin(request, context) {
       context.signal.throwIfAborted();
-      // Evidence is not a requested deliverable, so a refused file must not hold the run.
       if (evidenceKind(request) !== null) return { complete() {} };
       const identityHash = publicationIdentity(request);
       if (request.attachToIssue === true && !options.issueId)

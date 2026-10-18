@@ -368,7 +368,6 @@ async function handleConnection(
       );
       if (evidence) artifact.evidence = evidence;
       options.signal.throwIfAborted();
-      // Only a refusal reaches the agent. Other upload errors can carry signed URLs or tokens.
       const published = await abortable(
         options.publishArtifact.publish(artifact, context),
         options.signal,
@@ -503,7 +502,6 @@ function authorizeCloseout(
   if (!decision.allow) throw new Error(decision.reason);
 }
 
-/** The check must be required now. The attempt is the one the next `run_closeout` of it makes. */
 async function evidenceFor(
   checkId: string,
   worktreePath: string,

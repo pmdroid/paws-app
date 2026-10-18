@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 export const RUNNER_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024;
-/** Closeout videos are larger than other artifacts. The host evidence store applies its own caps. */
 export const RUNNER_EVIDENCE_MAX_BYTES = 200 * 1024 * 1024;
 
 export const RunnerArtifactSchema = z

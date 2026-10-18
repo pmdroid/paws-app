@@ -6,7 +6,6 @@ import type { AgentRole } from "./adapters";
 
 export const PUBLISH_ARTIFACT_TOOL_NAME = "publish_artifact";
 export const DEFAULT_MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
-/** Matches `EVIDENCE_LIMITS` in `src/evidence`, which checks the bytes again on the host. */
 export const DEFAULT_MAX_EVIDENCE_BYTES = { video: 200 * 1024 * 1024, image: 20 * 1024 * 1024 };
 
 const EVIDENCE_MIME_TYPES: Record<string, "video" | "image"> = {
@@ -30,7 +29,6 @@ export interface ArtifactLimits {
   evidence?: { video: number; image: number };
 }
 
-/** Closeout evidence a video or screenshot belongs to. Set when it was published with a check id. */
 export interface ArtifactEvidence {
   checkId: string;
   attempt: number;
@@ -66,7 +64,6 @@ export interface PublishArtifactHook {
   publish(artifact: ArtifactSnapshot, context: PublishArtifactContext): Promise<PublishedArtifact>;
 }
 
-/** A refusal the agent can act on, such as a file over the evidence cap. Its message reaches the agent. */
 export class ArtifactRejectedError extends Error {
   constructor(message: string) {
     super(message);
@@ -74,13 +71,10 @@ export class ArtifactRejectedError extends Error {
   }
 }
 
-/**
- * Videos and screenshots published with a check id go to the Paws evidence store.
- * Anything else, with or without a check id, is published the usual way.
- */
 export function evidenceKind(request: PublishArtifactRequest): "video" | "image" | null {
-  if (request.checkId === undefined) return null;
+  if (request.checkId === undefined || typeof request.path !== "string") return null;
   const mimeType = request.mimeType ?? mimeFor(request.path);
+  if (typeof mimeType !== "string") return null;
   return EVIDENCE_MIME_TYPES[mimeType.toLowerCase()] ?? null;
 }
 
@@ -113,7 +107,7 @@ export async function snapshotArtifactFile(
   ) {
     throw new Error("publish_artifact requires a workspace-relative path");
   }
-  const kind = typeof request.path === "string" ? evidenceKind(request) : null;
+  const kind = evidenceKind(request);
   const maxBytes =
     kind === null
       ? (limits.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES)
