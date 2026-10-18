@@ -49,9 +49,13 @@ export {
 } from "./oauth";
 export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
 export {
+  LOW_BUDGET_FRACTION,
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_IDLE_MS,
+  POLL_INTERVAL_LOW_BUDGET_MS,
+  POLL_INTERVAL_WEBHOOK_MS,
   WAKE_GAP_MS,
+  WEBHOOK_HEALTHY_MS,
   createTimerSleeper,
   linearWorkIsHot,
   persistStopCommand,
@@ -59,7 +63,7 @@ export {
   sleepGapMs,
   startCatchUpPoller,
 } from "./poller";
-export type { CatchUpPoller, Sleeper } from "./poller";
+export type { CatchUpPoller, PollSignals, Sleeper } from "./poller";
 export { linearTokenPath, openLinear } from "./runtime";
 export type { LinearRunning, OpenLinear } from "./runtime";
 export { createLinearTracker } from "./tracker";
@@ -92,6 +96,7 @@ export {
   TIMESTAMP_WINDOW_MS,
   checkLinearSignature,
   handleLinearWebhook,
+  lastVerifiedWebhookMs,
   parseAgentEvent,
 } from "./webhook";
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
