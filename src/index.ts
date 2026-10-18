@@ -624,6 +624,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db,
       statusEnv: envSource,
       closeoutHome: paths.home,
+      evidenceMediaDir: paths.evidenceDir,
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
       agentSettings: {
