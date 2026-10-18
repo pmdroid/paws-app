@@ -64,7 +64,7 @@ type SettingsView = {
 
 export function renderAgentSettings(view: SettingsView): string {
   if (view.denied) return '<p class="sub">Only workspace owners can change agent profiles.</p>';
-  const intro = `<p class="sub">Agents run on an installed runner. Model and effort choices refresh automatically from your signed-in <a href="${routeHref({ view: "runners" })}">Runners</a>.</p>`;
+  const intro = `<p class="sub">Agents run on an installed runner. Model and effort choices refresh automatically from your signed-in <a href="${routeHref({ view: "runners", id: null })}">Runners</a>.</p>`;
   if (!view.data)
     return `${intro}<div class="settings-message" role="${view.error ? "alert" : "status"}">${esc(view.error ?? "Loading agent settings…")}</div>${view.error ? '<button class="btn" type="button" data-settings="reload">Try again</button>' : ""}`;
   const problems = settingsProblems(view.data);
