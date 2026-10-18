@@ -18,6 +18,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
+  DEFAULT_RUN_TIMEOUT_MS,
   git,
   recoverAcpConversation,
   snapshotAgentInputs,
@@ -341,7 +342,7 @@ export function createRemoteAgentRunner(options: {
               )
               .get(selected.runId)?.generation ?? 0) + 1;
           const issuedAt = now();
-          const deadline = issuedAt + (input.timeoutMs ?? 2_700_000);
+          const deadline = issuedAt + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
           const checkpointBot =
             !taskScope && input.role === "implementer"
               ? await options.checkpointBot?.(
