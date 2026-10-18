@@ -90,7 +90,7 @@ Keep this command running. It prints JSON containing a 16-character `code`, `req
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/status/#/runners`.
 2. Sign in as an owner or administrator. Approval requires a sign-in within the last fifteen minutes.
-3. Under **Pair a host**, enter the VM's `code` and select **Inspect host**.
+3. Select **Pair a host** at the top right, enter the VM's `code` and select **Inspect host**.
 4. Compare the displayed connection fingerprint with `requestFingerprint` in the VM terminal.
 5. When they match, select **Approve runner**.
 
