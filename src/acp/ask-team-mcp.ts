@@ -161,7 +161,33 @@ const RUN_CLOSEOUT_TOOL = {
   },
 };
 
-const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
+const SKIP_TOOL = {
+  name: "request_closeout_skip",
+  description:
+    "Ask the team to skip Closeout checks that get_closeout reports as exhausted, after their last attempt failed. Paws adds your reason and the evidence published for those checks to the Closeout recovery question in Linear, where a person replies /paws bypass or with guidance. Call again to replace the request. Then finish with a short note.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      checkIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 32,
+        items: { type: "string", minLength: 1 },
+        description: "Exhausted Closeout check ids from get_closeout.",
+      },
+      reason: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Why the checks should be skipped and what the evidence shows.",
+      },
+    },
+    required: ["checkIds", "reason"],
+    additionalProperties: false,
+  },
+};
+
+const enabledTools =new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
   jsonrpc?: string;
@@ -246,6 +272,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           POST_UPDATE_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
+          SKIP_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;
