@@ -17,6 +17,7 @@ import {
   type ReadLinearArtifact,
   type StartLinearSession,
 } from "../web";
+import { EVIDENCE_API_PATH, handleEvidenceRequest } from "../evidence";
 import { handleAgentSettingsRequest, type AgentSettingsOptions } from "../settings";
 import { auditWorkspaceAccess, getArtifact, getWorkItem, workspaceSessionIds } from "../db";
 import {
@@ -55,6 +56,7 @@ export type ServerOptions = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceDir?: string;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
@@ -115,6 +117,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
         ...(statusEnv ? { statusEnv } : {}),
         ...(closeoutHome ? { closeoutHome } : {}),
         ...(evidenceRoot ? { evidenceRoot } : {}),
+        ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
       });
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -150,6 +153,7 @@ type Secrets = {
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
+  evidenceDir?: string;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -291,6 +295,15 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         if (response !== null) return response;
       }
     }
+  }
+  if (path.startsWith(EVIDENCE_API_PATH)) {
+    if (secrets.db === undefined || secrets.evidenceDir === undefined)
+      return Response.json({ error: "Not found." }, { status: 404 });
+    return (await handleEvidenceRequest(request, {
+      db: secrets.db,
+      root: secrets.evidenceDir,
+      sessionIds,
+    }))!;
   }
   if (path === "/api/runners" && request.method === "GET" && !secrets.runnerControl)
     return Response.json({
