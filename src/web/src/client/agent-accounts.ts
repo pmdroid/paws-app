@@ -17,6 +17,25 @@ type Account = {
   updatedAt: number | null;
   session: Login | null;
 };
+type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
+
+function pending(login: Login | null): boolean {
+  return login?.state === "starting" || login?.state === "waiting";
+}
+
+export function accountStatus(account: Account, runnerStatus: string | undefined): string {
+  const login = account.session;
+  if (pending(login))
+    return login?.state === "starting"
+      ? "Starting sign-in…"
+      : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`;
+  if (account.connected) return "Connected to your account";
+  if (runnerStatus === "signed_in") return "Signed in on this runner";
+  if (login?.state === "expired") return "Sign-in expired. Start again to connect.";
+  if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
+  if (login?.state === "cancelled") return "Sign-in cancelled";
+  return "Not connected";
+}
 
 export function openAgentAccounts(runner: { id: string; name: string }, onClose: () => void): void {
   const host = document.createElement("div");
@@ -30,13 +49,10 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
   const list = dialog.querySelector<HTMLElement>("[data-account-list]")!;
   const refresh = dialog.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
   let accounts: Account[] = [];
+  let runnerStatus = new Map<string, string>();
   let busy = false;
   let timer = 0;
   let generation = 0;
-
-  function pending(login: Login | null): boolean {
-    return login?.state === "starting" || login?.state === "waiting";
-  }
 
   function controls() {
     refresh.disabled = busy;
@@ -62,19 +78,10 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
       }
       const login = account.session;
       const active = pending(login);
-      row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = active
-        ? login?.state === "starting"
-          ? "Starting sign-in…"
-          : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`
-        : account.connected
-          ? "Connected to your account"
-          : login?.state === "expired"
-            ? "Sign-in expired. Start again to connect."
-            : login?.state === "failed"
-              ? "Sign-in failed. Start again to try another sign-in."
-              : login?.state === "cancelled"
-                ? "Sign-in cancelled"
-                : "Not connected";
+      row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = accountStatus(
+        account,
+        runnerStatus.get(agent),
+      );
       const actions = row.querySelector<HTMLElement>("[data-agent-actions]")!;
       const action = active ? "cancel" : "start";
       if (actions.dataset.action !== action) {
@@ -145,9 +152,18 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
     controls();
     feedback.textContent = "";
     try {
-      const result = await request<{ accounts: Account[] }>(accountPath());
+      const [result, listed] = await Promise.all([
+        request<{ accounts: Account[] }>(accountPath()),
+        request<{ runners: RunnerSignIns[] }>("/api/runners"),
+      ]);
       if (!dialog.isConnected || current !== generation) return;
       accounts = result.accounts;
+      runnerStatus = new Map(
+        (listed.runners.find((entry) => entry.id === runner.id)?.agents ?? []).map((entry) => [
+          entry.agent,
+          entry.status,
+        ]),
+      );
       paint();
     } catch (error) {
       feedback.textContent = error instanceof Error ? error.message : "Refresh to try again.";
