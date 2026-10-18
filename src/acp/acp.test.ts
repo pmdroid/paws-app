@@ -11,7 +11,11 @@ import { probeAgentProfile } from "./probe";
 import { checkOwnLogin, runAgent } from "./run";
 import { createUpdateLimiter } from "./ask-team";
 import { createAcpPromptLifecycle } from "./lifecycle";
-import type { ArtifactSnapshot, PublishArtifactContext } from "./artifacts";
+import {
+  ArtifactRejectedError,
+  type ArtifactSnapshot,
+  type PublishArtifactContext,
+} from "./artifacts";
 import type { FakeResult, FakeScript } from "./testing/script";
 import { FOLLOW_UP_INTERRUPTION, type AcpEvent, type RunAgentOptions } from "./types";
 
@@ -669,6 +673,151 @@ test("ask_team and publish_artifact share one MCP server", async () => {
   expect(trace.tools).toEqual(["ask_team", "publish_artifact", "get_closeout", "run_closeout"]);
   expect(trace.askTeam?.text).toBe("yes");
   expect(trace.artifact?.ok).toBe(true);
+});
+
+async function writeVideoPolicy(worktree: string): Promise<void> {
+  await mkdir(join(worktree, ".agents"), { recursive: true });
+  await writeFile(
+    join(worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: ui-video",
+      "    kind: command",
+      "    gate: beforePR",
+      '    exec: ["true"]',
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+}
+
+async function publishWithCheck(
+  layout: Awaited<ReturnType<typeof layoutRepo>>,
+  input: { path: string; content: string; checkId: string; maxBytes?: number },
+) {
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, input.path), content: input.content },
+      { type: "publish_artifact", path: input.path, checkId: input.checkId },
+      { type: "end" },
+    ],
+  });
+  const received: ArtifactSnapshot[] = [];
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-evidence",
+    prompt: "Record the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    artifactLimits: { maxBytes: 64, evidence: { video: input.maxBytes ?? 64, image: 64 } },
+    publishArtifact: {
+      publish: async (artifact) => {
+        received.push(artifact);
+        if (artifact.evidence) return { url: "https://paws.example/evidence/01ABC" };
+        return { url: "https://uploads.example/asset" };
+      },
+    },
+  });
+  return { received, trace: await readResult(files.resultPath) };
+}
+
+test("publish_artifact with a check id hands a video to the host as Closeout evidence", async () => {
+  const layout = await layoutRepo();
+  await writeVideoPolicy(layout.worktree);
+  const { received, trace } = await publishWithCheck(layout, {
+    path: "flow.webm",
+    content: "webm bytes",
+    checkId: "ui-video",
+  });
+  const head = (await git(["rev-parse", "HEAD"], { cwd: layout.worktree })).trim();
+  expect(received).toHaveLength(1);
+  expect(received[0]?.mimeType).toBe("video/webm");
+  expect(received[0]?.evidence).toEqual({ checkId: "ui-video", attempt: 1, headCommit: head });
+  expect(trace.artifact).toEqual({
+    ok: true,
+    text: "[flow.webm](<https://paws.example/evidence/01ABC>)",
+  });
+});
+
+test.each([
+  { name: "an unknown check id", checkId: "missing", content: "webm", message: "not a required" },
+  {
+    name: "a video over the evidence cap",
+    checkId: "ui-video",
+    content: "x".repeat(65),
+    message: "exceeds 64 bytes",
+  },
+])("publish_artifact refuses $name and tells the agent", async (input) => {
+  const layout = await layoutRepo();
+  await writeVideoPolicy(layout.worktree);
+  const { received, trace } = await publishWithCheck(layout, {
+    path: "flow.webm",
+    content: input.content,
+    checkId: input.checkId,
+  });
+  expect(received).toHaveLength(0);
+  expect(trace.artifact?.error).toContain(input.message);
+});
+
+test("publish_artifact passes a host evidence refusal through to the agent", async () => {
+  const layout = await layoutRepo();
+  await writeVideoPolicy(layout.worktree);
+  const files = await writeScript(layout.root, {
+    steps: [
+      { type: "fs_write", path: join(layout.worktree, "flow.mp4"), content: "not a video" },
+      { type: "publish_artifact", path: "flow.mp4", checkId: "ui-video" },
+      { type: "end" },
+    ],
+  });
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-evidence-refused",
+    prompt: "Record the change.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    publishArtifact: {
+      publish: async () => {
+        throw new ArtifactRejectedError("Only WebM and MP4 videos are accepted.");
+      },
+    },
+  });
+  expect((await readResult(files.resultPath)).artifact?.error).toBe(
+    "Only WebM and MP4 videos are accepted.",
+  );
+});
+
+test("publish_artifact keeps the usual cap and upload for other files with a check id", async () => {
+  const layout = await layoutRepo();
+  await writeVideoPolicy(layout.worktree);
+  const { received, trace } = await publishWithCheck(layout, {
+    path: "report.txt",
+    content: "report",
+    checkId: "ui-video",
+    maxBytes: 1024,
+  });
+  expect(received[0]?.evidence).toBeUndefined();
+  expect(trace.artifact?.text).toBe("[report.txt](<https://uploads.example/asset>)");
+  const large = await publishWithCheck(layout, {
+    path: "large.txt",
+    content: "x".repeat(65),
+    checkId: "ui-video",
+    maxBytes: 1024,
+  });
+  expect(large.received).toHaveLength(0);
+  expect(large.trace.artifact?.error).toContain("exceeds 64 bytes");
 });
 
 test("get_closeout lists the pending check and run_closeout runs it", async () => {
