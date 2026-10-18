@@ -4,12 +4,7 @@ import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
 import type { WorkspacePrincipal } from "../workspace";
 
 const policyInput = z.strictObject({
-  agent: z.enum(["claude", "codex", "grok"]),
-  seat: z.enum(["unknown", "personal", "organization", "api"]),
   sharing: z.boolean(),
-});
-const workspaceInput = z.strictObject({
-  personalOrganizationHost: z.boolean(),
 });
 
 export function createRunnerPlacementBrowser(options: { db: Database; now?: () => number }) {
@@ -55,7 +50,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
   ): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/policy$/.exec(path);
-    if (!match && path !== "/api/runners/policy" && path !== "/api/runners/usage") return null;
+    if (!match && path !== "/api/runners/usage") return null;
     try {
       const current = member(principal);
       if (path === "/api/runners/usage") {
@@ -64,44 +59,12 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         return json({
           usage: db
             .query(`SELECT u.command_id AS commandId,u.runner_id AS runnerId,r.name AS runnerName,
-          u.owner_user_id AS ownerUserId,u.agent,u.model,u.resolved_model AS resolvedModel,u.seat,u.role,u.purpose,
+          u.owner_user_id AS ownerUserId,u.agent,u.model,u.resolved_model AS resolvedModel,u.role,u.purpose,
           u.started_at AS startedAt,u.ended_at AS endedAt,u.outcome,u.output_bytes AS outputBytes
           FROM runner_execution_usage u JOIN runner r ON r.id=u.runner_id WHERE r.workspace_id=?
           AND (?=1 OR u.owner_user_id=?) ORDER BY u.started_at DESC,u.rowid DESC LIMIT 100`)
             .all(principal.workspaceId, all ? 1 : 0, principal.userId),
         });
-      }
-      if (path === "/api/runners/policy") {
-        if (request.method === "GET") {
-          const row = db
-            .query<{ personalOrganizationHost: number }, [string]>(
-              "SELECT personal_organization_host AS personalOrganizationHost FROM workspace_runner_policy WHERE workspace_id=?",
-            )
-            .get(principal.workspaceId);
-          return json({
-            personalOrganizationHost: row?.personalOrganizationHost === 1,
-          });
-        }
-        if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
-        const input = workspaceInput.parse(await body(request));
-        immediate(db, () => {
-          if (member(principal).role !== "owner")
-            throw new Error("Only the workspace owner can update runner permission.");
-          recent(principal);
-          db.run(
-            `INSERT INTO workspace_runner_policy(workspace_id,personal_organization_host) VALUES(?,?)
-            ON CONFLICT(workspace_id) DO UPDATE SET personal_organization_host=excluded.personal_organization_host`,
-            [principal.workspaceId, input.personalOrganizationHost ? 1 : 0],
-          );
-          auditWorkspaceAccess(db, {
-            workspaceId: principal.workspaceId,
-            userId: principal.userId,
-            action: "runner.workspace_policy.updated",
-            subject: principal.workspaceId,
-            now: now(),
-          });
-        });
-        return json({ ok: true });
       }
       const runnerId = match![1]!;
       function runner() {
@@ -123,7 +86,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
             )
             .get(runnerId),
           agents: db
-            .query(`SELECT agent,seat,ready,auth_expired AS authExpired,quota_state AS quotaState,
+            .query(`SELECT agent,ready,auth_expired AS authExpired,quota_state AS quotaState,
         resets_at AS resetsAt,cooldown_until AS cooldownUntil,resolved_model AS resolvedModel FROM runner_agent_policy WHERE runner_id=? ORDER BY agent`)
             .all(runnerId),
         });
@@ -139,25 +102,10 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
           host.revokedAt !== null
         )
           throw new Error("Only the active host owner can change its sharing settings.");
-        if (input.sharing && !["organization", "api"].includes(input.seat))
-          throw new Error("Sharing requires an organization or API account.");
-        if (
-          input.seat === "personal" &&
-          !db
-            .query(
-              "SELECT 1 FROM workspace_runner_policy WHERE workspace_id=? AND personal_organization_host=1",
-            )
-            .get(principal.workspaceId)
-        )
-          throw new Error("Personal accounts require workspace owner permission.");
         db.run(
           `INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?) ON CONFLICT(runner_id)
           DO UPDATE SET sharing=excluded.sharing`,
           [runnerId, input.sharing ? 1 : 0],
-        );
-        db.run(
-          `INSERT INTO runner_agent_policy(runner_id,agent,seat) VALUES(?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET seat=excluded.seat`,
-          [runnerId, input.agent, input.seat],
         );
         auditWorkspaceAccess(db, {
           workspaceId: principal.workspaceId,
@@ -170,7 +118,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       return json({ ok: true });
     } catch (error) {
       if (error instanceof z.ZodError || error instanceof SyntaxError)
-        return json({ error: "Choose a valid agent and account type." }, 400);
+        return json({ error: "Choose a valid sharing setting." }, 400);
       return json(
         { error: error instanceof Error ? error.message : "Runner settings are unavailable." },
         403,

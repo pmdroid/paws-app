@@ -28,7 +28,6 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
           const values = {
             "/api/runners": { runners: [] },
             "/api/auth/session": { userId: "owner", role: "owner", authenticatedAt: Date.now() },
-            "/api/runners/policy": { personalOrganizationHost: false },
             "/api/runners/usage": { usage: [] },
           };
           if (Object.hasOwn(values, endpoint)) return route.fulfill({ json: values[endpoint] });
@@ -73,7 +72,7 @@ assert.equal(new URL(origin).hostname, "127.0.0.1");
       );
       assert.equal(
         await page.getByText("Workspace execution permission", { exact: true }).count(),
-        1,
+        0,
       );
       assert.equal(await page.getByRole("heading", { name: "Set up remote runners" }).count(), 0);
       assert.deepEqual(errors, []);

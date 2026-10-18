@@ -21,7 +21,6 @@ type Candidate = {
   ownerId: string;
   linearUserId: string;
   sharing: number;
-  seat: string;
   ready: number;
   authExpired: number;
   quotaState: string;
@@ -108,10 +107,7 @@ export function createRunnerPlacement(options: {
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
       throw new Error("Runner task session changed");
     const workspace = db
-      .query<{ id: string; personalOrganizationHost: number }, [string]>(
-        `SELECT w.id,COALESCE(p.personal_organization_host,0) AS personalOrganizationHost FROM workspace w
-       LEFT JOIN workspace_runner_policy p ON p.workspace_id=w.id WHERE w.linear_organization_id=?`,
-      )
+      .query<{ id: string }, [string]>("SELECT id FROM workspace WHERE linear_organization_id=?")
       .get(session.organizationId);
     if (!workspace) throw new Error("Runner workspace is unavailable");
     const repository = item ? getWorkItemRepository(db, item.id) : null;
@@ -215,7 +211,7 @@ export function createRunnerPlacement(options: {
         .query<Candidate, [string, string, number]>(
           `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerId,u.linear_user_id AS linearUserId,
          COALESCE(p.sharing,0) AS sharing,
-         COALESCE(a.seat,'unknown') AS seat,COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
+         COALESCE(a.ready,0) AS ready,COALESCE(a.auth_expired,0) AS authExpired,
          COALESCE(a.quota_state,'ok') AS quotaState,COALESCE(a.cooldown_until,0) AS cooldownUntil,
          COALESCE(a.virtual_finish,0) AS virtualFinish,COALESCE(a.last_used_at,0) AS lastUsedAt,a.resolved_model AS resolvedModel
          FROM runner r JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
@@ -291,7 +287,6 @@ export function createRunnerPlacement(options: {
             memberId: accountUser,
             ownerId: accountUser,
             linearUserId: accountActor!,
-            seat: "organization",
             ready: 1,
             authExpired: 0,
             cooldownUntil: account.cooldownUntil,
@@ -308,10 +303,7 @@ export function createRunnerPlacement(options: {
         const legacyOwn =
           issue.assigneeId === runner.linearUserId ||
           (input.purpose === "helper" && runner.ownerId === requester);
-        const legacyShared =
-          runner.sharing === 1 &&
-          ["organization", "api"].includes(runner.seat) &&
-          projectMembers.includes(runner.linearUserId);
+        const legacyShared = runner.sharing === 1 && projectMembers.includes(runner.linearUserId);
         const projectItem = current.placement?.projectApprovalId != null;
         const own =
           current.placement && (projectItem || current.placement.ownerUserId)
@@ -319,11 +311,6 @@ export function createRunnerPlacement(options: {
             : legacyOwn;
         const shared = current.placement?.ownerUserId && !projectItem ? false : legacyShared;
         if (!own && !shared) return [];
-        if (
-          runner.seat === "personal" &&
-          (!own || current.workspace.personalOrganizationHost !== 1)
-        )
-          return [];
         if (
           input.profile &&
           input.purpose !== "prepare" &&
@@ -394,8 +381,8 @@ export function createRunnerPlacement(options: {
           );
         }
         db.run(
-          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,seat,role,purpose,started_at)
-          VALUES(?,?,?,?,?,?,?,CASE WHEN ? THEN 'organization' ELSE COALESCE((SELECT seat FROM runner_agent_policy WHERE runner_id=? AND agent=?),'unknown') END,?,?,?)`,
+          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`,
           [
             input.commandId,
             input.runnerId,
@@ -404,9 +391,6 @@ export function createRunnerPlacement(options: {
             input.runId ?? null,
             input.profile?.agent ?? null,
             input.profile?.model ?? null,
-            admission.memberId ? 1 : 0,
-            input.runnerId,
-            input.profile?.agent ?? "",
             input.role,
             input.purpose,
             input.startedAt,
