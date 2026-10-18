@@ -30,6 +30,7 @@ import {
   type CloseoutView,
 } from "./closeout";
 import { renderConversations, type ConversationModel } from "./conversations";
+import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 
 export interface RenderModel {
@@ -41,6 +42,7 @@ export interface RenderModel {
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
+  mediaInfo?: ReadonlyMap<string, MediaInfo>;
 }
 
 export interface Rendered {
@@ -112,6 +114,13 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
       );
     case "questions":
       return viewQuestions(snapshot, model.route.id);
+    case "evidence":
+      return renderEvidencePage(
+        snapshot,
+        model.route.id,
+        model.mediaInfo ?? new Map(),
+        model.engineUrl,
+      );
     case "runners":
       return '<div id="runner-settings"></div>';
     case "projects":
@@ -337,6 +346,7 @@ function viewRuns(
       <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
       ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
+      ${evidenceSlot(snapshot, selected.id)}
     </div>
     <div class="card"><h3>Run</h3><div class="kv">
       <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>

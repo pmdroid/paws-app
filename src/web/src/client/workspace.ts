@@ -16,6 +16,28 @@ type BrowserSession = {
   workspaces: { id: string; name: string; role: string }[];
 };
 
+const SIGN_IN_RETURN = "paws.signInReturn";
+
+/** Sign-in always lands on the overview, so the page a signed-out reader opened is kept here. */
+function rememberSignInReturn(): void {
+  const path = `${location.pathname}${location.search}${location.hash}`;
+  try {
+    if (location.pathname.replace(/\/+$/, "") === "/status" || location.pathname === "/")
+      sessionStorage.removeItem(SIGN_IN_RETURN);
+    else sessionStorage.setItem(SIGN_IN_RETURN, path);
+  } catch {}
+}
+
+export function takeSignInReturn(): string | null {
+  try {
+    const path = sessionStorage.getItem(SIGN_IN_RETURN);
+    sessionStorage.removeItem(SIGN_IN_RETURN);
+    return path?.startsWith("/") && !path.startsWith("//") ? path : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function initializeWorkspaceAccess(page: () => SettingsPage | null): Promise<boolean> {
   const root = document.querySelector<HTMLElement>("#workspace-access");
   let response: Response;
@@ -42,10 +64,16 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     document.body.classList.add("paws-login");
     setLoginLayout(true);
     const content = document.querySelector("#page-content");
+    rememberSignInReturn();
+    const evidence = /^(?:\/status)?\/evidence\/[^/]+\/?$/.test(location.pathname);
+    const heading = evidence ? "Sign in to view this evidence" : "Sign in to Paws";
+    const lead = evidence
+      ? "Use your Linear account to see this Closeout video or screenshot. Paws opens this link again after you sign in."
+      : "Use your Linear account to open your workspace.";
     if (content !== null)
       renderMarkup(
         content,
-        `<section class="login-panel"><h1>Sign in to Paws</h1><p class="muted">Use your Linear account to open your workspace.</p><a class="btn primary" href="/auth/linear">Sign in with Linear</a><details><summary>Set up your first workspace</summary><form action="/auth/linear" method="post"><label class="field"><span>Setup code from the Paws operator</span><input name="bootstrap" required autocomplete="off" pattern="[A-Za-z0-9_-]{43}" /></label><button class="btn" type="submit">Connect workspace</button></form></details></section>`,
+        `<section class="login-panel"><h1>${heading}</h1><p class="muted">${lead}</p><a class="btn primary" href="/auth/linear">Sign in with Linear</a><details><summary>Set up your first workspace</summary><form action="/auth/linear" method="post"><label class="field"><span>Setup code from the Paws operator</span><input name="bootstrap" required autocomplete="off" pattern="[A-Za-z0-9_-]{43}" /></label><button class="btn" type="submit">Connect workspace</button></form></details></section>`,
       );
     if (root !== null) root.hidden = true;
     return false;
