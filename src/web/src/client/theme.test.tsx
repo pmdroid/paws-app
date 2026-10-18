@@ -20,7 +20,6 @@ function ready(view: "overview" | "questions" | "runs", id: string | null = null
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
   });
 }
 
@@ -61,7 +60,6 @@ test("every dashboard view renders without authored inline styles", () => {
       via: "bundled",
       error: null,
       engineUrl: null,
-      selectedCheck: null,
     });
     expect(rendered.content).not.toContain("style=");
     expect(markup(rendered.content).length).toBeGreaterThan(0);
@@ -212,7 +210,6 @@ test("issues list shows blockers without positioned CSS", () => {
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
   });
   expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");
