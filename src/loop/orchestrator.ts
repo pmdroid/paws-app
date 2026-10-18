@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type {
   AskTeamHook,
   AgentIdentity,
+  CloseoutSkipHook,
   PostUpdateHook,
   PullRequestHook,
   UpdatePlanHook,
@@ -111,7 +112,11 @@ import {
   listInFlightItems,
   listCloseoutRecoveries,
   saveCloseoutRecovery,
+  saveCloseoutSkipRequest,
+  takeCloseoutSkipRequest,
+  listEvidence,
   type CloseoutRecovery,
+  type CloseoutSkip,
   markRun,
   releaseRunCapacity,
   saveCheckpoint,
@@ -1395,6 +1400,7 @@ export class Orchestrator {
         prompt,
       });
 
+      takeCloseoutSkipRequest(this.db, item.id);
       const executed = await executeItem({
         role: "implementer",
         profile: profiles.implementer,
@@ -1413,6 +1419,7 @@ export class Orchestrator {
         updatePlan: this.planHook(item, sessionProgress),
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
+        closeoutSkip: this.closeoutSkipHook(item),
         publishArtifact: this.artifactPublisher(item),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
@@ -1714,6 +1721,7 @@ export class Orchestrator {
       updatePlan: this.planHook(item, sessionProgress),
       pullRequest: this.pullRequestHook(item),
       postUpdate: this.updateHook(item),
+      closeoutSkip: this.closeoutSkipHook(item),
     });
     const reviewer = createAcpCodexReviewer(deps);
     const gate = createCloseoutGate({
@@ -1822,9 +1830,29 @@ export class Orchestrator {
           .map((check) => check.id) ?? [],
       retryBaseline,
       summary,
+      skip: null as CloseoutSkip | null,
     };
+    context.skip = this.closeoutSkip(item, context.failedChecks);
     this.openCloseoutQuestion(item, sessionId, context);
     await this.flush();
+  }
+
+  /** The agent's pending skip request, narrowed to checks a person can bypass for this gate. */
+  private closeoutSkip(item: WorkItemRecord, failedChecks: readonly string[]): CloseoutSkip | null {
+    const request = takeCloseoutSkipRequest(this.db, item.id);
+    const checkIds = request?.checkIds.filter((id) => failedChecks.includes(id)) ?? [];
+    if (request === null || checkIds.length === 0) return null;
+    const publicUrl = this.options.evidence?.publicUrl.replace(/\/+$/, "");
+    const since = item.currentRunId ? (getRun(this.db, item.currentRunId)?.createdAt ?? 0) : 0;
+    const evidence = publicUrl
+      ? listEvidence(this.db, item.id)
+          .filter((row) => checkIds.includes(row.checkId) && row.createdAt >= since)
+          .map((row) => ({
+            label: `${row.checkId}: ${row.displayName}`,
+            url: `${publicUrl}/evidence/${encodeURIComponent(row.id)}`,
+          }))
+      : [];
+    return { checkIds, reason: request.reason, evidence };
   }
 
   private openCloseoutQuestion(
@@ -3102,6 +3130,15 @@ export class Orchestrator {
       update: async (description) => {
         if (this.stopped(item.id)) throw new Error("Pull request updates are closed for this run");
         savePullRequestDraft(this.db, item.id, description, this.now());
+      },
+    };
+  }
+
+  private closeoutSkipHook(item: WorkItemRecord): CloseoutSkipHook {
+    return {
+      request: async (request) => {
+        if (this.stopped(item.id)) throw new Error("Skip requests are closed for this run");
+        saveCloseoutSkipRequest(this.db, { itemId: item.id, ...request, requestedAt: this.now() });
       },
     };
   }

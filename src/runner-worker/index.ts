@@ -76,7 +76,7 @@ export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
-  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" }>;
+  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" | "closeout_skip" }>;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -470,6 +470,17 @@ export async function executeRunnerCommand(
                 });
                 if (!parsed.success || parsed.data.type !== "pull_request")
                   throw new Error("open_pull_request requires a title and a body");
+                emit(parsed.data);
+              },
+            }
+          : undefined,
+      closeoutSkip:
+        command.type === "run"
+          ? {
+              async request(request) {
+                const parsed = RunnerEventSchema.safeParse({ type: "closeout_skip", ...request });
+                if (!parsed.success || parsed.data.type !== "closeout_skip")
+                  throw new Error("request_closeout_skip needs check ids and a reason");
                 emit(parsed.data);
               },
             }
