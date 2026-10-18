@@ -60,6 +60,7 @@ import {
   getTaskMode,
   taskRequiresRepository,
   listWorkItemsByStates,
+  saveQuestionComment,
   listWorkItems,
   migrate,
   openDatabase,
@@ -1251,6 +1252,10 @@ export function commentTracker(
     async askQuestion(question) {
       bindIssue(db, mode, question.sessionId);
       await mode.askQuestion(question);
+      const commentId =
+        question.questionId === undefined ? null : mode.questionComment(question.questionId);
+      if (question.questionId !== undefined && commentId !== null)
+        saveQuestionComment(db, question.questionId, commentId);
     },
   });
 }

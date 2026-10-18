@@ -1801,6 +1801,10 @@ CREATE TABLE closeout_skip_request (
   requested_at INTEGER NOT NULL
 ) STRICT;
 ALTER TABLE closeout_recovery ADD COLUMN skip TEXT CHECK (skip IS NULL OR json_valid(skip));
+CREATE TABLE question_comment (
+  question_id TEXT PRIMARY KEY REFERENCES question(id),
+  comment_id TEXT NOT NULL
+) STRICT;
 `,
   },
 ];

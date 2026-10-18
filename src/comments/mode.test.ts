@@ -59,6 +59,17 @@ describe("comment mode", () => {
     expect(replies.map((comment) => comment.body)).toEqual(["Paws: Merged ENG-1."]);
   });
 
+  test("remembers the comment it posted for a question", async () => {
+    const clock = new FakeClock(1_000);
+    const board = createFakeCommentBoard({ clock, selfUserId: "paws" });
+    const mode = createCommentMode({ board, clock, selfUserId: "paws" });
+    mode.bind({ itemId: "item-1", linearIssueId: "iss-1", sessionId: "sess-1" });
+    await mode.askQuestion({ sessionId: "sess-1", questionId: "q-closeout", body: "Help" });
+    const [posted] = await board.list("iss-1");
+    expect(mode.questionComment("q-closeout")).toBe(posted!.id);
+    expect(mode.questionComment("q-other")).toBeNull();
+  });
+
   test("a human reply resumes the parked run and Paws comments do not", async () => {
     const clock = new FakeClock(1_000);
     const board = createFakeCommentBoard({ clock, selfUserId: "paws" });

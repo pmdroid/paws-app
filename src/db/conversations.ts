@@ -152,6 +152,36 @@ export function getLinearConversationSource(db: Database, sessionId: string): st
   return null;
 }
 
+/**
+ * The comment a Linear agent session hangs off, with its issue link. Session activities,
+ * including elicitations, appear in that comment's thread.
+ */
+export function getLinearSessionComment(
+  db: Database,
+  sessionId: string,
+): { commentId: string; issueUrl: string | null } | null {
+  for (const [table, order] of [
+    ["inbox_event", "received_at"],
+    ["linear_turn", "ordinal"],
+  ] as const) {
+    if (!hasTable(db, table)) continue;
+    const row = db
+      .query<{ comment_id: string; issue_url: unknown }, [string]>(`SELECT
+        json_extract(payload, '$.agentSession.comment.id') AS comment_id,
+        json_extract(payload, '$.agentSession.issue.url') AS issue_url
+        FROM ${table} WHERE session_id = ? AND json_valid(payload)
+        AND typeof(json_extract(payload, '$.agentSession.comment.id')) = 'text'
+        ORDER BY ${order} LIMIT 1`)
+      .get(sessionId);
+    if (row)
+      return {
+        commentId: row.comment_id,
+        issueUrl: typeof row.issue_url === "string" && row.issue_url ? row.issue_url : null,
+      };
+  }
+  return null;
+}
+
 function hasTable(db: Database, name: string): boolean {
   return (
     db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null

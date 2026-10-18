@@ -112,3 +112,22 @@ export function takeCloseoutSkipRequest(db: Database, itemId: string): CloseoutS
     requestedAt: row.requested_at,
   };
 }
+
+/** The Linear comment that carries a question in comment mode. */
+export function saveQuestionComment(db: Database, questionId: string, commentId: string): void {
+  db.run(
+    `INSERT INTO question_comment (question_id, comment_id) VALUES (?, ?)
+     ON CONFLICT (question_id) DO UPDATE SET comment_id = excluded.comment_id`,
+    [questionId, commentId],
+  );
+}
+
+export function getQuestionComment(db: Database, questionId: string): string | null {
+  return (
+    db
+      .query<{ comment_id: string }, [string]>(
+        `SELECT comment_id FROM question_comment WHERE question_id = ?`,
+      )
+      .get(questionId)?.comment_id ?? null
+  );
+}
