@@ -43,6 +43,8 @@ export type CommentMode = Pick<TrackerAdapter, "postProgress" | "askQuestion"> &
     phase(itemId: string): CommentRunPhase;
     /** Resolves when a human reply resumes this question. Rejects if the item stops. */
     wait(questionId: string): Promise<TeamAnswer>;
+    /** The Linear comment Paws posted for this question, if it posted one. */
+    questionComment(questionId: string): string | null;
     answers: TeamAnswer[];
   };
 
@@ -393,6 +395,7 @@ export function createCommentMode(options: CommentModeOptions): CommentMode {
     bind,
     postProgress,
     askQuestion,
+    questionComment: (questionId) => questions.get(questionId)?.commentId ?? null,
     ask,
     deliverAnswer,
     sync,
