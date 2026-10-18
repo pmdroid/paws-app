@@ -30,6 +30,8 @@ import { join } from "node:path";
 import type { Job, OpenQuestionRecord, OutboxRow, WorkItemFact, WorkItemRecord } from "../../../db";
 import {
   getLinearConversationSource,
+  getLinearSessionComment,
+  getQuestionComment,
   listCloseoutProgress,
   listJobs,
   listCloseoutRecoveries,
@@ -399,9 +401,36 @@ function withSkipRequest(
     (recovery) => recovery.questionId === question.id,
   )?.skip;
   if (!skip) return verdict;
-  const href = questionLinks(db, question.sessionId, record.linearIdentifier)[0]?.href;
-  if (href === undefined) return verdict;
+  const href = recoveryCommentLink(db, question, record.linearIdentifier);
+  if (href === null) return verdict;
   return { ...verdict, skipRequest: { checkIds: skip.checkIds, reason: skip.reason, href } };
+}
+
+/**
+ * Links to the Linear comment that carries the recovery question: the question comment in
+ * comment mode, otherwise the agent session comment whose thread holds the elicitation.
+ * Linear permalinks a comment as `#comment-` and the first eight characters of its id.
+ */
+function recoveryCommentLink(
+  db: Database,
+  question: OpenQuestionRecord,
+  identifier: string,
+): string | null {
+  const session = getLinearSessionComment(db, question.sessionId);
+  const commentId = getQuestionComment(db, question.id) ?? session?.commentId ?? null;
+  const fallback = questionLinks(db, question.sessionId, identifier)[0]?.href ?? null;
+  const short = commentId?.replace(/-/g, "").slice(0, 8).toLowerCase() ?? "";
+  if (!/^[0-9a-f]{8}$/.test(short)) return fallback;
+  let issue = `https://linear.app/issue/${encodeURIComponent(identifier)}`;
+  try {
+    const url = new URL(session?.issueUrl ?? "");
+    if (url.origin === "https://linear.app" && !url.username && !url.password) {
+      url.hash = "";
+      url.search = "";
+      issue = url.href;
+    }
+  } catch {}
+  return `${issue}#comment-${short}`;
 }
 
 function questionLinks(
