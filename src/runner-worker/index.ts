@@ -23,6 +23,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
+  createUpdateLimiter,
   validateCandidateAttribution,
   git,
   runAgent,
@@ -74,7 +75,7 @@ export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
-  | Extract<RunnerEvent, { type: "plan" | "pull_request" }>;
+  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" }>;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -166,6 +167,7 @@ export async function executeRunnerCommand(
   }
   const eventJournal = journal;
   let journalSize = 0;
+  const updates = createUpdateLimiter();
   function emit(event: RunnerWorkerEvent): void {
     const line = `${JSON.stringify(event)}\n`;
     const length = Buffer.byteLength(line);
@@ -465,6 +467,19 @@ export async function executeRunnerCommand(
                 if (!parsed.success || parsed.data.type !== "pull_request")
                   throw new Error("open_pull_request requires a title and a body");
                 emit(parsed.data);
+              },
+            }
+          : undefined,
+      postUpdate:
+        command.type === "run" || command.type === "task"
+          ? {
+              async post(text) {
+                const parsed = RunnerEventSchema.safeParse({ type: "progress", text });
+                if (!parsed.success || parsed.data.type !== "progress")
+                  throw new Error("post_update needs text of 1 to 500 characters");
+                const allowed = updates.take(job.executionId);
+                if (allowed.posted) emit(parsed.data);
+                return allowed;
               },
             }
           : undefined,
