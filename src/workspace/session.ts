@@ -20,6 +20,7 @@ export type WorkspacePrincipal = {
 };
 
 export const WORKSPACE_COOKIE = "__Host-paws-session";
+export const WORKSPACE_SESSION_MS = 30 * 24 * 60 * 60_000;
 
 export function workspaceSecret(): string {
   return randomBytes(32).toString("base64url");
@@ -74,7 +75,7 @@ export function issueWorkspaceSession(
     csrfToken: workspaceSecret(),
     authenticatedAt: input.now,
     lastSeenAt: input.now,
-    expiresAt: input.now + 7 * 24 * 60 * 60_000,
+    expiresAt: input.now + WORKSPACE_SESSION_MS,
   };
   saveWorkspaceSession(db, session);
   auditWorkspaceAccess(db, {
@@ -92,7 +93,7 @@ export function requestWorkspaceSession(
 ): { principal: WorkspacePrincipal; session: WorkspaceSession } | null {
   const token = cookieValue(request, WORKSPACE_COOKIE);
   if (token === null || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const session = readWorkspaceSession(db, workspaceTokenHash(token), now);
+  const session = readWorkspaceSession(db, workspaceTokenHash(token), now, WORKSPACE_SESSION_MS);
   if (session === null) return null;
   const member = workspaceMember(db, session.workspaceId, session.userId);
   if (!member?.active) {
@@ -112,7 +113,7 @@ export function requestWorkspaceSession(
 }
 
 export function workspaceSessionCookie(token: string): string {
-  return `${WORKSPACE_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`;
+  return `${WORKSPACE_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=34560000`;
 }
 
 export function clearWorkspaceSessionCookie(): string {
