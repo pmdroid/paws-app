@@ -164,7 +164,7 @@ const RUN_CLOSEOUT_TOOL = {
 const SKIP_TOOL = {
   name: "request_closeout_skip",
   description:
-    "Ask the team to skip Closeout checks that get_closeout reports as exhausted, after their last attempt failed. Paws adds your reason and the evidence published for those checks to the Closeout recovery question in Linear, where a person replies /paws bypass or with guidance. Call again to replace the request. Then finish with a short note.",
+    "Ask the team to skip Closeout checks that get_closeout reports as exhausted, after their last attempt failed, or an independent review whose findings you were asked to fix. A review request counts only if that review ends failed. Paws adds your reason and the evidence published for those checks to the Closeout recovery question in Linear, where a person replies /paws bypass or with guidance. Call again to replace the request. Then finish with a short note.",
   inputSchema: {
     type: "object",
     properties: {

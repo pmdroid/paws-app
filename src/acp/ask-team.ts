@@ -601,10 +601,12 @@ export function parseCloseoutSkip(value: {
 }
 
 /**
- * Accepts only required checks whose last attempt failed, which Closeout reports as
- * `exhausted`. Those are the checks a person can bypass after Paws' own Closeout.
+ * Accepts required command checks whose last attempt failed, which Closeout reports as
+ * `exhausted`. Reviews run outside this session, so their status here stays `missing`.
+ * A review request is accepted and Paws keeps it only if the review ends failed in its
+ * own Closeout, which is when the recovery question opens.
  */
-function exhaustedChecks(report: string, checkIds: readonly string[]): void {
+export function exhaustedChecks(report: string, checkIds: readonly string[]): void {
   let required: unknown;
   try {
     required = (JSON.parse(report) as { required?: unknown }).required;
@@ -613,12 +615,14 @@ function exhaustedChecks(report: string, checkIds: readonly string[]): void {
   }
   if (!Array.isArray(required)) throw new Error("Closeout status is unavailable");
   for (const id of checkIds) {
-    const check = required.find((item) => item?.id === id) as { status?: unknown } | undefined;
+    const check = required.find((item) => item?.id === id) as
+      | { status?: unknown; kind?: unknown }
+      | undefined;
     if (!check)
       throw new Error(
         `Closeout check ${id} is not required for the current changes. Call get_closeout.`,
       );
-    if (check.status !== "exhausted")
+    if (check.kind !== "review" && check.status !== "exhausted")
       throw new Error(
         `Closeout check ${id} is ${String(check.status)}. You can ask to skip a check only after its last attempt failed.`,
       );
