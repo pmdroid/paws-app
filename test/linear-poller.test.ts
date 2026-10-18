@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -6,8 +7,13 @@ import { configureWorkItem } from "../src/db";
 import {
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_IDLE_MS,
+  POLL_INTERVAL_LOW_BUDGET_MS,
+  POLL_INTERVAL_WEBHOOK_MS,
   WAKE_GAP_MS,
+  WEBHOOK_HEALTHY_MS,
   createInboxStore,
+  handleLinearWebhook,
+  lastVerifiedWebhookMs,
   createIntakePollSource,
   createLinearClient,
   createLinearTracker,
@@ -20,6 +26,7 @@ import {
   startCatchUpPoller,
   webhookChecksNeeded,
   type LinearAuth,
+  type LinearRateBudget,
   type AcceptedLinearEvent,
   type Sleeper,
 } from "../src/linear";
@@ -207,6 +214,126 @@ describe("linear intake poll", () => {
     gate.release?.();
     await waitFor(() => waits.length > 1);
     expect(waits[1]).toBe(POLL_INTERVAL_ACTIVE_MS);
+    await poller.stop();
+    await poller.settled;
+    db.close();
+  });
+
+  test("backs off to 60s while verified webhooks arrive and 5 minutes on a low budget", () => {
+    const fresh = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS + 1 };
+    expect(pollIntervalMs(true, fresh)).toBe(POLL_INTERVAL_WEBHOOK_MS);
+    expect(pollIntervalMs(false, fresh)).toBe(60_000);
+
+    const stale = { now: NOW, lastWebhookMs: NOW - WEBHOOK_HEALTHY_MS };
+    expect(pollIntervalMs(true, stale)).toBe(POLL_INTERVAL_ACTIVE_MS);
+    expect(pollIntervalMs(false, stale)).toBe(POLL_INTERVAL_IDLE_MS);
+    expect(pollIntervalMs(true, { now: NOW, lastWebhookMs: null, budget: null })).toBe(5_000);
+
+    const low = rateBudget({
+      requestsRemaining: 199,
+      requestsLimit: 1_000,
+      requestsResetMs: NOW + 1,
+    });
+    expect(pollIntervalMs(true, { now: NOW, budget: low })).toBe(POLL_INTERVAL_LOW_BUDGET_MS);
+    expect(pollIntervalMs(false, { now: NOW, budget: low, lastWebhookMs: NOW })).toBe(300_000);
+    expect(pollIntervalMs(true, { now: NOW + 1, budget: low })).toBe(POLL_INTERVAL_ACTIVE_MS);
+    const enough = rateBudget({ requestsRemaining: 200, requestsLimit: 1_000 });
+    expect(pollIntervalMs(false, { now: NOW, budget: enough })).toBe(POLL_INTERVAL_IDLE_MS);
+    expect(pollIntervalMs(false, { now: NOW, budget: rateBudget({}) })).toBe(POLL_INTERVAL_IDLE_MS);
+  });
+
+  test("waits 60s after a verified webhook and keeps today's intervals without one", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const waits: number[] = [];
+    const gate = hold();
+    let clock = NOW;
+    const poller = startCatchUpPoller({
+      source: sourceFrom(async () => emptyPage()),
+      store,
+      onEvent: () => {},
+      hot: () => true,
+      sleeper: recordingSleeper(waits, gate),
+      now: () => clock,
+      mono: () => clock - NOW,
+    });
+    await waitFor(() => waits.length > 0);
+    expect(waits[0]).toBe(POLL_INTERVAL_ACTIVE_MS);
+
+    const body = JSON.stringify({
+      type: "AgentSessionEvent",
+      action: "created",
+      webhookTimestamp: NOW,
+      agentSession: { id: "session-webhook", issueId: "iss_webhook" },
+    });
+    const response = await handleLinearWebhook(
+      new Request("http://127.0.0.1/webhooks/linear", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "linear-signature": createHmac("sha256", "secret").update(body).digest("hex"),
+          "linear-delivery": "delivery-1",
+        },
+        body,
+      }),
+      "secret",
+      { store, now: () => NOW },
+    );
+    expect(response.status).toBe(200);
+    expect(lastVerifiedWebhookMs(store)).toBe(NOW);
+    gate.release?.();
+    await waitFor(() => waits.length > 1);
+    expect(waits[1]).toBe(POLL_INTERVAL_WEBHOOK_MS);
+
+    clock = NOW + WEBHOOK_HEALTHY_MS;
+    gate.release?.();
+    await waitFor(() => waits.length > 2);
+    expect(waits[2]).toBe(POLL_INTERVAL_ACTIVE_MS);
+    await poller.stop();
+    await poller.settled;
+    db.close();
+  });
+
+  test("waits 5 minutes while the remembered request budget is under 20%", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const waits: number[] = [];
+    const gate = hold();
+    let clock = NOW;
+    const budget = rateBudget({
+      requestsRemaining: 100,
+      requestsLimit: 1_000,
+      requestsResetMs: NOW + 600_000,
+    });
+    const poller = startCatchUpPoller({
+      source: {
+        async poll() {
+          return {
+            sessions: [],
+            issues: [],
+            comments: [],
+            activities: [],
+            budget,
+            caughtUp: true,
+            queried: true,
+          };
+        },
+      },
+      store,
+      onEvent: () => {},
+      hot: () => false,
+      sleeper: recordingSleeper(waits, gate),
+      now: () => clock,
+      mono: () => clock - NOW,
+    });
+    await waitFor(() => waits.length > 0);
+    expect(poller.budget()).toEqual(budget);
+    expect(waits[0]).toBe(POLL_INTERVAL_LOW_BUDGET_MS);
+
+    clock = NOW + 600_000;
+    gate.release?.();
+    await waitFor(() => waits.length > 1);
+    expect(waits[1]).toBe(POLL_INTERVAL_IDLE_MS);
     await poller.stop();
     await poller.settled;
     db.close();
@@ -685,6 +812,19 @@ function json(data: unknown, headers: Record<string, string> = {}): Response {
     status: 200,
     headers: { "content-type": "application/json", ...headers },
   });
+}
+
+function rateBudget(overrides: Partial<LinearRateBudget>): LinearRateBudget {
+  return {
+    requestsRemaining: null,
+    requestsLimit: null,
+    requestsResetMs: null,
+    complexityRemaining: null,
+    complexityLimit: null,
+    complexityResetMs: null,
+    complexity: null,
+    ...overrides,
+  };
 }
 
 function hold(): { release: (() => void) | null } {
