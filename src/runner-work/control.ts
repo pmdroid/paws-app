@@ -224,7 +224,7 @@ export function createRunnerWork(options: {
       command.generation !== work.generation
     )
       throw new Error("Run command binding changed.");
-    authorizeRunnerAccount(db, command);
+    authorizeRunnerAccount(db, command, true);
     return command;
   }
   function authorized(
