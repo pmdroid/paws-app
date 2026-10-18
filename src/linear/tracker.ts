@@ -23,7 +23,7 @@ const CHILDREN_QUERY = `query IssueSnapshot($id: String!, $after: String) {
     assignee { id }
     priority
     children(first: 50, after: $after) {
-      nodes { id identifier title description subIssueSortOrder team { id } project { id } assignee { id } priority }
+      nodes { id identifier title description subIssueSortOrder state { type } team { id } project { id } assignee { id } priority }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -131,6 +131,7 @@ export function createLinearTracker(
             identifier,
             title,
             description: readString(node, "description"),
+            stateType: readString(dig(node, ["state"]) ?? {}, "type"),
             sort: readNumber(node, "subIssueSortOrder"),
             ...schedulingMetadata(node),
           });

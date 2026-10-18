@@ -11,6 +11,7 @@ export type LinearSubIssue = LinearSchedulingMetadata & {
   title: string;
   description?: string | null;
   acceptanceCriteria?: string | null;
+  stateType?: string | null;
 };
 
 export type EpicSnapshot = LinearSchedulingMetadata & {
