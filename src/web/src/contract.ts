@@ -487,7 +487,11 @@ function readSkipRequest(input: unknown, path: string): StatusSkipRequest {
   const href = text(body, "href", path);
   if (!href.startsWith("https://linear.app/"))
     throw new StatusContractError(`${path}.href must be a Linear link`);
-  return { checkIds: stringArray(body, "checkIds", path), reason: text(body, "reason", path), href };
+  return {
+    checkIds: stringArray(body, "checkIds", path),
+    reason: text(body, "reason", path),
+    href,
+  };
 }
 
 function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {

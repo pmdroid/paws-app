@@ -34,6 +34,7 @@ export type FakeStep =
     }
   | { type: "get_closeout" }
   | { type: "run_closeout"; id: string; model?: string }
+  | { type: "request_closeout_skip"; checkIds: string[]; reason: string }
   | { type: "hang" }
   | {
       type: "end";
