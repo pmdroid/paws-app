@@ -52,6 +52,7 @@ import {
   type RunState,
   type StatusActivity,
   type StatusCheck,
+  type StatusCloseoutAttempt,
   type StatusEvent,
   type StatusItem,
   type StatusMergeEntry,
@@ -418,7 +419,41 @@ function verdictFor(
     .at(-1);
   const base = best ? toVerdict(record, best) : impliedVerdict(record);
   if (base === null) return [];
-  return [live ? withProgress(base, live, nowMs, env) : base];
+  if (!live) return [base];
+  const verdict = withProgress(base, live, nowMs, env);
+  return [{ ...verdict, attempts: attemptsFor(record, progress, live, verdict, nowMs, env) }];
+}
+
+function attemptsFor(
+  record: WorkItemRecord,
+  progress: readonly CloseoutProgressRecord[],
+  live: CloseoutProgressRecord,
+  verdict: StatusVerdict,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): StatusCloseoutAttempt[] {
+  const mine = progress
+    .filter((row) => row.itemId === record.id && row.id !== live.id)
+    .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+  return [...mine, live].map((row, index) => ({
+    number: index + 1,
+    decision:
+      row === live
+        ? verdict.decision
+        : unfinished(row)
+          ? "running"
+          : (mapDecision(row.decision) ?? "running"),
+    startedAt: new Date(row.startedAt).toISOString(),
+    baseSha: blank(row.base),
+    headSha: blank(row.head),
+    policyDigest: blank(row.policyDigest),
+    checks:
+      row === live
+        ? verdict.checks
+        : row.steps
+            .filter((step) => step.state !== "skipped")
+            .map((step) => toLiveCheck(step, nowMs, env)),
+  }));
 }
 
 function progressFor(
