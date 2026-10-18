@@ -72,7 +72,14 @@ export async function intakeDelegatedIssue(
     return result;
   }
   const loaded = await tracker.loadEpic(input.linearIssueId);
-  const snapshot = input.singleIssue ? { ...loaded, subIssues: [] } : loaded;
+  const snapshot = input.singleIssue
+    ? { ...loaded, subIssues: [] }
+    : {
+        ...loaded,
+        subIssues: loaded.subIssues.filter(
+          (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
+        ),
+      };
   const delegatedAlone = snapshot.subIssues.length === 0;
   const nodes = workNodes(snapshot);
   const edges = await collectEdges(tracker, snapshot);

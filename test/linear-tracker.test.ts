@@ -18,7 +18,13 @@ describe("linear tracker", () => {
               description: null,
               children: {
                 nodes: [
-                  { id: "b", identifier: "ENG-3", title: "b", subIssueSortOrder: 2 },
+                  {
+                    id: "b",
+                    identifier: "ENG-3",
+                    title: "b",
+                    subIssueSortOrder: 2,
+                    state: { type: "completed" },
+                  },
                   { id: "a", identifier: "ENG-2", title: "a", subIssueSortOrder: 1 },
                 ],
                 pageInfo: { hasNextPage: false, endCursor: null },
@@ -68,6 +74,7 @@ describe("linear tracker", () => {
     const tracker = createLinearTracker(client);
     const epic = await tracker.loadEpic("parent");
     expect(epic.subIssues.map((issue) => issue.identifier)).toEqual(["ENG-2", "ENG-3"]);
+    expect(epic.subIssues.map((issue) => issue.stateType)).toEqual([null, "completed"]);
     expect(await tracker.listDeps("a")).toEqual([
       { blockerLinearIssueId: "a", blockedLinearIssueId: "b" },
     ]);
