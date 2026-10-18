@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
@@ -22,6 +23,8 @@ import {
   sniffMediaType,
 } from "../src/evidence-media";
 import { createLinearMembershipReads } from "../src/linear";
+import { runCloseoutCommands, type CloseoutMediaSink } from "../src/closeout-spec/run";
+import type { EvidenceRecord } from "../src/closeout-spec";
 import { startServer } from "../src/server";
 import {
   createWorkspaceAccess,
@@ -377,4 +380,112 @@ test("the server needs a Paws session and repository access", async () => {
     now,
   });
   expect((await fetch(url(row.id), { headers: { cookie: cookie("member") } })).status).toBe(404);
+});
+
+test("a Closeout command's screenshot in CLOSEOUT_MEDIA_DIR is saved as evidence", async () => {
+  const db = tempDb();
+  closers.push(() => db.close());
+  const { item, run } = seedItem(db, Date.now());
+  const root = tempHome();
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  git("config", "user.email", "paws-test@example.com");
+  git("config", "user.name", "Paws Test");
+  git("config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "README.md"), "paws\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+  const head = git("rev-parse", "HEAD");
+  const fixtures = join(root, "fixtures");
+  mkdirSync(fixtures);
+  writeFileSync(join(fixtures, "shot.png"), PNG);
+  writeFileSync(join(fixtures, "logo.svg"), SVG);
+  const script = [
+    "const { copyFileSync } = require('node:fs');",
+    "const dir = process.env.CLOSEOUT_MEDIA_DIR;",
+    `copyFileSync(${JSON.stringify(join(fixtures, "shot.png"))}, dir + '/login.png');`,
+    `copyFileSync(${JSON.stringify(join(fixtures, "logo.svg"))}, dir + '/logo.png');`,
+  ].join("\n");
+  const evidence = store(db);
+  const seen: string[] = [];
+  const media: CloseoutMediaSink = async ({ checkId, attempt, head: commit, files }) => {
+    for (const path of files) {
+      seen.push(path);
+      await evidence
+        .save({
+          itemId: item.id,
+          runId: run.id,
+          checkId,
+          attempt,
+          headCommit: commit,
+          displayName: path.slice(path.lastIndexOf("/") + 1),
+          file: Bun.file(path),
+        })
+        .catch(() => {});
+    }
+  };
+  const records: EvidenceRecord[] = [];
+  const result = await runCloseoutCommands({
+    repo,
+    policy: {
+      source: "repo",
+      entryPath: ".agents/closeout.yaml",
+      digest: `sha256:${"ab".repeat(32)}`,
+      files: [],
+      setup: [],
+      items: [
+        {
+          id: "ui-smoke",
+          kind: "command",
+          gate: "beforePR",
+          exec: [process.execPath, "-e", script],
+          timeoutSeconds: 30,
+        },
+      ],
+    },
+    base: head,
+    head,
+    candidate: { session: "impl", model: "test", provider: "paws" },
+    evidence: {
+      load: async () => ({ records: [...records] }),
+      add: async (record) => {
+        records.push(record);
+      },
+    },
+    evidenceDir: join(root, "closeout"),
+    home: join(root, "home"),
+    media,
+  });
+  expect(result.blocked).toBeUndefined();
+  expect(records[0]?.recordType === "command" && records[0].exec.exitCode).toBe(0);
+  expect(records[0]?.recordType === "command" && records[0].exec.dirty).toBe(false);
+  expect(seen.map((path) => path.slice(path.lastIndexOf("/") + 1))).toEqual([
+    "login.png",
+    "logo.png",
+  ]);
+  for (const path of seen) expect(existsSync(path)).toBe(false);
+  const rows = db
+    .query<
+      {
+        check_id: string;
+        attempt: number;
+        media_type: string;
+        head_commit: string;
+        display_name: string;
+      },
+      []
+    >("SELECT check_id, attempt, media_type, head_commit, display_name FROM evidence")
+    .all();
+  expect(rows).toEqual([
+    {
+      check_id: "ui-smoke",
+      attempt: 1,
+      media_type: "image/png",
+      head_commit: head,
+      display_name: "login.png",
+    },
+  ]);
 });

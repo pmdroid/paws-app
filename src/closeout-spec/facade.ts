@@ -24,7 +24,7 @@ import { scrubCommandEnv } from "./run/env";
 import { changedPaths as diffPaths, resolveCommit, type PawsCommandRunner } from "./run/exec";
 import { withRetryLock } from "./run/lock";
 import type { CloseoutProgress } from "./run/progress";
-import { runCloseoutCommands } from "./run/run";
+import { runCloseoutCommands, type CloseoutMediaSink } from "./run/run";
 import {
   SPEC_VERSION,
   type CandidateIdentity,
@@ -104,6 +104,7 @@ export type RunRequest = {
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  media?: CloseoutMediaSink;
 };
 
 export type ReviewIntake =
@@ -290,6 +291,7 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
     ...(input.progress !== undefined ? { progress: input.progress } : {}),
     ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
     ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+    ...(input.media ? { media: input.media } : {}),
   });
   if (ran.blocked !== undefined) {
     return evaluate(

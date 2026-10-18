@@ -105,6 +105,8 @@ export type {
 } from "./review/index";
 
 export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";
+export { CLOSEOUT_MEDIA_ENV } from "./run/run";
+export type { CloseoutMediaSink } from "./run/run";
 export {
   createCloseoutSession,
   type CloseoutSession,

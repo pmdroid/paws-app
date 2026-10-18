@@ -1,5 +1,7 @@
 export { FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export { reviewRequirements } from "../closeout-spec";
+export { CLOSEOUT_MEDIA_ENV } from "../closeout-spec";
+export type { CloseoutMediaSink } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";
 export type { FakeCloseoutGate } from "./fake";
 export { createCloseoutGate } from "./gate";
