@@ -4000,13 +4000,15 @@ export class Orchestrator {
         }
       }
       const best = new Map<string, RepositorySuggestion>();
-      const attempts = !hinted && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+      const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const attempts =
+        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
           const read = await this.tracker!.issueRepositorySuggestions!(
             {
               issueId: item.linearIssueId,
-              candidateRepositories: candidates.map((candidate) => ({
+              candidateRepositories: pool.map((candidate) => ({
                 hostname: "github.com",
                 repositoryFullName: `${candidate.owner}/${candidate.repo}`,
               })),
@@ -4029,7 +4031,8 @@ export class Orchestrator {
         }
       }
       if (this.stopped(item.id)) return false;
-      const choice = hinted ?? chooseRepository(candidates, [...best.values()]);
+      const choice =
+        hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
         const accessible =

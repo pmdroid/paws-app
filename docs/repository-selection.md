@@ -9,7 +9,7 @@ Paws works in one GitHub repository per Linear issue. It picks the repository in
 5. Linear's repository suggestions, when one repository is clearly ahead.
 6. A question in Linear with up to three options.
 
-Only repositories Paws has configured and can access count. A hint that names any other repository is skipped. Two matching labels on the same level make Paws ask with just those two.
+Only repositories Paws has configured and can access count. A hint that names any other repository is skipped. When two labels on the same level match, Paws asks Linear's suggestions to choose between just those two, and asks you only if the suggestions are unsure too.
 
 ## Set up repo labels
 
