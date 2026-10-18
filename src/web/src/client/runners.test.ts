@@ -39,7 +39,6 @@ const view = {
   policy: {
     ownerUserId: "owner",
     sharing: 1,
-    agents: [{ agent: "claude", seat: "organization" }],
   },
   userId: "owner",
   role: "owner",
@@ -48,7 +47,7 @@ const view = {
 };
 
 describe("runner cards", () => {
-  test("an idle runner shows its host metrics, sign-in, account type and controls", () => {
+  test("an idle runner shows its host metrics, sign-in, sharing and controls", () => {
     const html = runnerCardMarkup(runner, view);
     expect(html).toContain("build-box");
     expect(html).toContain("Active");
@@ -65,7 +64,7 @@ describe("runner cards", () => {
     expect(html).toContain("40 GB free of 100 GB");
     expect(html).toContain('<span class="tag ok">Signed in</span>');
     expect(html).toContain('<span class="tag ">Not checked</span>');
-    expect(html).toMatch(/data-agent="claude"[^>]*>.*<option value="organization" selected>/);
+    expect(html).not.toContain("account type");
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* checked/);
     expect(html).toContain(">Pause<");
     expect(html).toContain(">Drain<");
@@ -124,7 +123,6 @@ describe("runner cards", () => {
     const html = runnerCardMarkup({ ...runner, status: "revoked" }, view);
     expect(html).toContain("Revoked");
     expect(html).toContain("Offline");
-    expect(html).not.toContain("data-runner-seat");
     expect(html).not.toContain("data-runner-sharing");
     expect(html).not.toContain("data-runner-status");
   });

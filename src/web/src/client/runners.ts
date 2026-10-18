@@ -8,7 +8,6 @@ export const RUNNER_POLL_MS = 10_000;
 export const RUNNER_OFFLINE_MS = 60_000;
 
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
-type Seat = "unknown" | "personal" | "organization" | "api";
 export type AgentSignIn = {
   agent: string;
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
@@ -39,10 +38,8 @@ export type Runner = {
 export type HostPolicy = {
   ownerUserId: string;
   sharing?: number;
-  agents: { agent: string; seat: string }[];
 };
 type Session = { userId: string; role: string; authenticatedAt: number };
-type WorkspacePolicy = { personalOrganizationHost: boolean };
 type Usage = {
   commandId: string;
   runnerName: string;
@@ -67,12 +64,6 @@ type Visibility = Pick<Document, "visibilityState" | "addEventListener" | "remov
 
 const AGENTS = ["claude", "codex", "grok"] as const;
 const AGENT_LABELS: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok" };
-const SEATS: readonly [Seat, string][] = [
-  ["unknown", "Not declared"],
-  ["personal", "Personal subscription"],
-  ["organization", "Organization account"],
-  ["api", "API account"],
-];
 const SIGN_IN: Record<AgentSignIn["status"], [string, string]> = {
   signed_in: ["ok", "Signed in"],
   signed_out: ["bad", "Signed out"],
@@ -245,17 +236,11 @@ export function runnerCardMarkup(
     .map((entry) => {
       const label = AGENT_LABELS[entry.agent] ?? entry.agent;
       const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-      const seat =
-        view.policy?.agents.find((value) => value.agent === entry.agent)?.seat ?? "unknown";
       const resets =
         entry.status === "usage_limit" && entry.resetsAt
           ? ` <span class="muted">Resets ${esc(new Date(entry.resetsAt).toLocaleString())}</span>`
           : "";
-      const account =
-        view.policy === null || revoked
-          ? ""
-          : `<label class="field"><span>${esc(label)} account type</span><select data-runner-seat="${id}" data-agent="${esc(entry.agent)}" data-focus="seat:${id}:${esc(entry.agent)}"${editable}>${SEATS.map(([value, name]) => `<option value="${value}"${value === seat ? " selected" : ""}>${name}</option>`).join("")}</select></label>`;
-      return `<li><div class="row"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</div>${account}</li>`;
+      return `<li><div class="row"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</div></li>`;
     })
     .join("");
   const sharing =
@@ -278,7 +263,6 @@ export function createRunners() {
   let serverVersion: string | null = null;
   let policies = new Map<string, HostPolicy>();
   let session: Session | null = null;
-  let workspacePolicy: WorkspacePolicy | null = null;
   let setupRequired = false;
   let workspaceReady = false;
   let usage: Usage[] = [];
@@ -310,7 +294,6 @@ export function createRunners() {
     runners = [];
     policies = new Map();
     serverVersion = null;
-    workspacePolicy = null;
     usage = [];
     inspection = null;
   }
@@ -358,9 +341,8 @@ export function createRunners() {
         reset();
         return;
       }
-      const [identity, policy, activity, hosts] = await Promise.all([
+      const [identity, activity, hosts] = await Promise.all([
         api<Session>("/api/auth/session"),
-        api<WorkspacePolicy>("/api/runners/policy"),
         api<{ usage: Usage[] }>("/api/runners/usage"),
         Promise.all(
           list.runners
@@ -378,7 +360,6 @@ export function createRunners() {
       serverVersion = list.serverVersion ?? null;
       policies = new Map(hosts.filter((entry) => entry !== null));
       session = identity;
-      workspacePolicy = policy;
       usage = activity.usage;
       stale = "";
       if (!manages()) inspection = null;
@@ -426,10 +407,6 @@ export function createRunners() {
       paint();
     }
   }
-  function workspacePolicyView() {
-    if (session?.role !== "owner" || !workspacePolicy) return "";
-    return `<details class="runner-section" data-details="workspace-policy"><summary data-focus="summary:workspace-policy">Workspace execution permission</summary><form id="workspace-runner-policy"><fieldset${busy || !recent() ? " disabled" : ""}><label class="runner-consent"><input name="personalOrganizationHost" type="checkbox" data-focus="workspace-policy"${workspacePolicy.personalOrganizationHost ? " checked" : ""}><span>Allow personal subscriptions on workspace hosts</span></label><button class="btn" type="submit">Save workspace permission</button></fieldset></form></details>`;
-  }
   function usageView() {
     return `<details class="runner-section" data-details="usage"><summary data-focus="summary:usage">Recent execution</summary>${
       usage.length
@@ -461,7 +438,7 @@ export function createRunners() {
         }),
       )
       .join("");
-    const html = `<h1 class="sr-only">Runners</h1><p class="sub">Manage the Linux hosts that execute work delegated in Linear. Status refreshes every 10 seconds.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !runners.length ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</section>` : ""}${runners.length ? `<ul class="runner-list">${cards}</ul>` : ""}${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>" : ""}${workspacePolicyView()}${usageView()}`;
+    const html = `<h1 class="sr-only">Runners</h1><p class="sub">Manage the Linux hosts that execute work delegated in Linear. Status refreshes every 10 seconds.</p>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !runners.length ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}${manages() ? `<section class="runner-section"><h2>Pair a host</h2><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p><form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</section>` : ""}${runners.length ? `<ul class="runner-list">${cards}</ul>` : ""}${!busy && !runners.length && !error ? "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>" : ""}${usageView()}`;
     return html.replace(/<details([^>]*) data-details="([^"]+)"/g, (match, before, key) =>
       open.has(key) ? `<details${before} data-details="${key}" open` : match,
     );
@@ -506,7 +483,7 @@ export function createRunners() {
       pendingFocus = null;
     } else pendingFocus = busy ? (key ?? null) : null;
   }
-  function savePolicy(runnerId: string, body: { agent: string; seat: string; sharing: boolean }) {
+  function savePolicy(runnerId: string, body: { sharing: boolean }) {
     void change(async () => {
       await api(`/api/runners/${encodeURIComponent(runnerId)}/policy`, body);
       feedback = "Host settings saved.";
@@ -514,42 +491,10 @@ export function createRunners() {
   }
   function bind() {
     root!.querySelector("[data-runners-setup]")?.addEventListener("click", () => void load());
-    for (const select of root!.querySelectorAll<HTMLSelectElement>("select[data-runner-seat]"))
-      select.addEventListener("change", () => {
-        const runnerId = select.dataset.runnerSeat!;
-        savePolicy(runnerId, {
-          agent: select.dataset.agent!,
-          seat: select.value,
-          sharing: Boolean(policies.get(runnerId)?.sharing),
-        });
-      });
     for (const box of root!.querySelectorAll<HTMLInputElement>("input[data-runner-sharing]"))
-      box.addEventListener("change", () => {
-        const runnerId = box.dataset.runnerSharing!;
-        const seats = policies.get(runnerId)?.agents ?? [];
-        const target = box.checked
-          ? seats.find((entry) => entry.seat === "organization" || entry.seat === "api")
-          : (seats[0] ?? { agent: "claude", seat: "unknown" });
-        if (!target) {
-          error = "Sharing requires an organization or API account. Choose one for an agent first.";
-          painted = "";
-          paint();
-          return;
-        }
-        savePolicy(runnerId, { agent: target.agent, seat: target.seat, sharing: box.checked });
-      });
-    root!
-      .querySelector<HTMLFormElement>("#workspace-runner-policy")
-      ?.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const data = new FormData(event.currentTarget as HTMLFormElement);
-        void change(async () => {
-          await api("/api/runners/policy", {
-            personalOrganizationHost: data.has("personalOrganizationHost"),
-          });
-          feedback = "Workspace execution permission saved.";
-        });
-      });
+      box.addEventListener("change", () =>
+        savePolicy(box.dataset.runnerSharing!, { sharing: box.checked }),
+      );
     root!
       .querySelector<HTMLInputElement>('input[name="code"]')
       ?.addEventListener("input", (event) => {

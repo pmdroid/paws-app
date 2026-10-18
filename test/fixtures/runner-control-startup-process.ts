@@ -445,21 +445,6 @@ try {
         { memberMutationStatus: 403, memberReadStatus: 200, healthPersisted: true },
       );
       if (mode === "enabled") {
-        const policy = await call(browserPort, "/api/runners/policy", undefined, headers);
-        assert.equal(policy.status, 200);
-        assert.equal(
-          (
-            await call(
-              browserPort,
-              "/api/runners/policy",
-              {
-                personalOrganizationHost: false,
-              },
-              headers,
-            )
-          ).status,
-          200,
-        );
         assert.equal(
           (
             await call(
@@ -471,8 +456,7 @@ try {
           ).status,
           200,
         );
-        observe("Production Paws startup wires current workspace and host account policy routes", {
-          workspacePolicy: true,
+        observe("Production Paws startup wires the host sharing policy route", {
           hostPolicy: true,
         });
         const controlled = insertQueuedItem(paws.db, {
