@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,82 +7,101 @@ import { git } from "./git";
 import { decidePermission } from "./permissions";
 import { prepareRepositorySnapshot } from "./repository-snapshot";
 
-test("repository snapshots pin tracked source, preserve deliverables and keep host paths guarded", async () => {
-  const root = await mkdtemp(join(tmpdir(), "paws-source-snapshot-"));
-  const source = join(root, "source");
-  const workspace = join(root, "task", "artifact");
-  const signal = new AbortController().signal;
+function tarExtractsNested(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), "paws-tar-probe-"));
   try {
-    await git(["init", "-b", "main", source]);
-    writeFileSync(join(source, "app.txt"), "Original application");
-    for (const folder of ["large", "nested/a [b]*!", "nested/keep"]) {
-      mkdirSync(join(source, folder), { recursive: true });
-      writeFileSync(join(source, folder, "file"), "tracked");
-    }
-    writeFileSync(join(root, "host-secret"), "PRIVATE");
-    await symlink(join(root, "host-secret"), join(source, "escaped"));
-    await git(["-C", source, "add", "."]);
-    await git([
-      "-C",
-      source,
-      "-c",
-      "user.name=Paws Test",
-      "-c",
-      "user.email=paws@example.com",
-      "commit",
-      "-m",
-      "Seed",
-    ]);
-    const original = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
-    writeFileSync(join(source, "untracked-secret"), "PRIVATE");
-    const input = {
-      owner: "acme",
-      repo: "app",
-      remoteUrl: source,
-      workspace,
-      signal,
-      checkoutExclusions: ["large", "nested/a [b]*!"],
-    };
-    const snapshot = await prepareRepositorySnapshot(input);
-    expect(snapshot.commit).toBe(original);
-    expect(existsSync(join(snapshot.path, "large"))).toBe(false);
-    expect(existsSync(join(snapshot.path, "nested/a [b]*!"))).toBe(false);
-    expect(readFileSync(join(snapshot.path, "nested/keep/file"), "utf8")).toBe("tracked");
-    await expect(prepareRepositorySnapshot({ ...input, checkoutExclusions: [] })).rejects.toThrow(
-      "ownership changed",
-    );
-    expect(readFileSync(join(snapshot.path, "app.txt"), "utf8")).toBe("Original application");
-    expect(existsSync(join(snapshot.path, ".git"))).toBe(false);
-    expect(existsSync(join(snapshot.path, "untracked-secret"))).toBe(false);
-    expect(
-      decidePermission(
-        { kind: "read", locations: [{ path: "repository/escaped" }] },
-        { worktree: workspace, home: root, pawsRoot: join(root, "paws") },
-      ).allow,
-    ).toBe(false);
-    writeFileSync(join(workspace, "deliverable.txt"), "Keep this output");
-    writeFileSync(join(source, "app.txt"), "New source");
-    await git([
-      "-C",
-      source,
-      "-c",
-      "user.name=Paws Test",
-      "-c",
-      "user.email=paws@example.com",
-      "commit",
-      "-am",
-      "Change source",
-    ]);
-    expect(await prepareRepositorySnapshot(input)).toEqual(snapshot);
-    expect(readFileSync(join(snapshot.path, "app.txt"), "utf8")).toBe("Original application");
-    expect(readFileSync(join(workspace, "deliverable.txt"), "utf8")).toBe("Keep this output");
-    await expect(prepareRepositorySnapshot({ ...input, repo: "other" })).rejects.toThrow(
-      "ownership changed",
+    mkdirSync(join(dir, "in", "nested", "keep"), { recursive: true });
+    writeFileSync(join(dir, "in", "nested", "keep", "file"), "probe");
+    mkdirSync(join(dir, "out"));
+    const archive = join(dir, "probe.tar");
+    return (
+      Bun.spawnSync(["tar", "-cf", archive, "-C", join(dir, "in"), "nested"]).exitCode === 0 &&
+      Bun.spawnSync(["tar", "-xf", archive, "-C", join(dir, "out")]).exitCode === 0
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
-});
+}
+
+test.skipIf(!tarExtractsNested())(
+  "repository snapshots pin tracked source, preserve deliverables and keep host paths guarded",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "paws-source-snapshot-"));
+    const source = join(root, "source");
+    const workspace = join(root, "task", "artifact");
+    const signal = new AbortController().signal;
+    try {
+      await git(["init", "-b", "main", source]);
+      writeFileSync(join(source, "app.txt"), "Original application");
+      for (const folder of ["large", "nested/a [b]*!", "nested/keep"]) {
+        mkdirSync(join(source, folder), { recursive: true });
+        writeFileSync(join(source, folder, "file"), "tracked");
+      }
+      writeFileSync(join(root, "host-secret"), "PRIVATE");
+      await symlink(join(root, "host-secret"), join(source, "escaped"));
+      await git(["-C", source, "add", "."]);
+      await git([
+        "-C",
+        source,
+        "-c",
+        "user.name=Paws Test",
+        "-c",
+        "user.email=paws@example.com",
+        "commit",
+        "-m",
+        "Seed",
+      ]);
+      const original = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+      writeFileSync(join(source, "untracked-secret"), "PRIVATE");
+      const input = {
+        owner: "acme",
+        repo: "app",
+        remoteUrl: source,
+        workspace,
+        signal,
+        checkoutExclusions: ["large", "nested/a [b]*!"],
+      };
+      const snapshot = await prepareRepositorySnapshot(input);
+      expect(snapshot.commit).toBe(original);
+      expect(existsSync(join(snapshot.path, "large"))).toBe(false);
+      expect(existsSync(join(snapshot.path, "nested/a [b]*!"))).toBe(false);
+      expect(readFileSync(join(snapshot.path, "nested/keep/file"), "utf8")).toBe("tracked");
+      await expect(prepareRepositorySnapshot({ ...input, checkoutExclusions: [] })).rejects.toThrow(
+        "ownership changed",
+      );
+      expect(readFileSync(join(snapshot.path, "app.txt"), "utf8")).toBe("Original application");
+      expect(existsSync(join(snapshot.path, ".git"))).toBe(false);
+      expect(existsSync(join(snapshot.path, "untracked-secret"))).toBe(false);
+      expect(
+        decidePermission(
+          { kind: "read", locations: [{ path: "repository/escaped" }] },
+          { worktree: workspace, home: root, pawsRoot: join(root, "paws") },
+        ).allow,
+      ).toBe(false);
+      writeFileSync(join(workspace, "deliverable.txt"), "Keep this output");
+      writeFileSync(join(source, "app.txt"), "New source");
+      await git([
+        "-C",
+        source,
+        "-c",
+        "user.name=Paws Test",
+        "-c",
+        "user.email=paws@example.com",
+        "commit",
+        "-am",
+        "Change source",
+      ]);
+      expect(await prepareRepositorySnapshot(input)).toEqual(snapshot);
+      expect(readFileSync(join(snapshot.path, "app.txt"), "utf8")).toBe("Original application");
+      expect(readFileSync(join(workspace, "deliverable.txt"), "utf8")).toBe("Keep this output");
+      await expect(prepareRepositorySnapshot({ ...input, repo: "other" })).rejects.toThrow(
+        "ownership changed",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("an already stopped snapshot never creates a workspace or starts Git", async () => {
   const root = await mkdtemp(join(tmpdir(), "paws-source-stop-"));
