@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createProjectFixture } from "./local/project-fixture";
-import type { AcceptedLinearEvent } from "../src/linear";
+import { parseAgentEvent, type AcceptedLinearEvent } from "../src/linear";
 
 test("approved project sessions use canonical single-issue intake, dependency holds and controls", async () => {
   const fixture = createProjectFixture();
@@ -227,22 +228,15 @@ test("re-delegating a failed project issue starts it again and a running one sta
     await f.jobs.tick();
     const first = f.projects.progress(preview.id).find((claim) => claim.issueId === "one")!;
     const failed = first.items[0]!.id;
-    const created = (sessionId: string): AcceptedLinearEvent => ({
-      action: "created",
-      sessionId,
-      issueId: "one",
-      dedupeKey: sessionId,
-      deliveryId: null,
-      source: "webhook",
-      activityId: null,
-      actorId: "actor",
-      body: null,
-      signal: null,
-      updatedAtMs: f.clock.now(),
-      payload: "{}",
-    });
+    const created = (sessionId: string): AcceptedLinearEvent => {
+      const body = JSON.parse(
+        readFileSync(join(import.meta.dir, "fixtures/linear/agent-session-created.json"), "utf8"),
+      );
+      body.agentSession.id = sessionId;
+      return parseAgentEvent(JSON.stringify(body), `delivery-${sessionId}`, f.clock.now())!;
+    };
     for (const sessionId of ["early", "again"]) {
-      ensureLinearSession(f.db, { sessionId, issueId: "one", creatorId: "actor" });
+      ensureLinearSession(f.db, { sessionId, issueId: "one", creatorId: null });
       recordLinearInstallation(f.db, {
         sessionId,
         organizationId: "org",
