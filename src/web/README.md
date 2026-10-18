@@ -44,6 +44,8 @@ if (response) return response;
 
 `?engine=demo` or `PAWS_STATUS_DEMO=1` serves the sample snapshot instead.
 
+Closeout videos and screenshots arrive in the snapshot's `evidence` list, limited to the items the reader can see. The run page shows them in a gallery, and `/status/evidence/<id>` (or `/evidence/<id>`, which redirects there) shows one of them. Files load from `GET /api/evidence/<id>`. video.js is bundled as a separate chunk the first time a video plays; nothing loads from a CDN.
+
 `null` means the request is not `/status` or `/api/status`. Leave webhook routes alone.
 
 The process binds `127.0.0.1`. `GET /api/status` responds with `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`, so a static deployment can poll a tunnel of that route. The dashboard uses path routes such as `/status/runs/<id>`. HTML served by the process gets `<base href="/status/">` so relative assets resolve on every route; the Vercel build keeps `<base href="/">` and rewrites every path to `index.html`.

@@ -17,6 +17,10 @@ export const PAGES = {
     title: "Runs",
     description: "Agent activity, execution controls and verification evidence.",
   },
+  evidence: {
+    title: "Evidence",
+    description: "A Closeout video or screenshot the agent published with a run.",
+  },
   questions: {
     title: "Questions",
     description: "Review blocked work and answer questions in Linear.",
