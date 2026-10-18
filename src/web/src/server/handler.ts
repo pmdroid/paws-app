@@ -80,6 +80,18 @@ export async function handleStatusRequest(
       headers: { Location: `${STATUS_PAGE_PATH}/${url.search}`, "Cache-Control": "no-store" },
     });
   }
+  const evidence = /^\/evidence\/([0-9A-HJKMNP-TV-Z]{26})\/?$/.exec(pathname);
+  if (evidence) {
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return text("Method not allowed", 405);
+    return new Response(null, {
+      status: 307,
+      headers: {
+        Location: `${STATUS_PAGE_PATH}/evidence/${evidence[1]}${url.search}`,
+        "Cache-Control": "no-store",
+      },
+    });
+  }
   const transcript = handleAgentTranscriptRequest(request, options);
   if (transcript !== null) return transcript;
   const artifact = await handleLinearArtifactRequest(
