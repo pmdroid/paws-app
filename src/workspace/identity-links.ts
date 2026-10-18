@@ -86,11 +86,6 @@ export function createWorkspaceIdentityLinks(options: {
         !validWorkspaceCsrf(request, context.session)
       )
         return deny("CSRF token required.");
-      if (
-        context.now < principal.authenticatedAt ||
-        context.now - principal.authenticatedAt > 15 * 60_000
-      )
-        return deny("Sign in again before changing identity links.");
       try {
         const body = await readWorkspaceJson(request);
         const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);

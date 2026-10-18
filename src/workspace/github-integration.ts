@@ -37,7 +37,7 @@ export async function handleWorkspaceGitHubIntegration(
   const deny = () => {
     audit("access.denied");
     return Response.json(
-      { error: "Workspace administration, recent sign-in and a valid CSRF token are required." },
+      { error: "Workspace administration and a valid CSRF token are required." },
       { status: 403 },
     );
   };
@@ -57,9 +57,7 @@ export async function handleWorkspaceGitHubIntegration(
   const authorized = () =>
     permitted() &&
     request.headers.get("origin") === options.origin &&
-    validWorkspaceCsrf(request, options.session) &&
-    options.now() >= principal.authenticatedAt &&
-    options.now() - principal.authenticatedAt <= 15 * 60_000;
+    validWorkspaceCsrf(request, options.session);
   if (!authorized()) return deny();
   const snapshot = JSON.stringify(repositories);
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
