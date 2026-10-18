@@ -145,11 +145,6 @@ export async function probeWorkspaceIdentityLinks(
   const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[0]!, now });
   const admin = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[1]!, now });
   const member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[2]!, now });
-  const old = issueWorkspaceSession(db, {
-    workspaceId: workspace.id,
-    userId: ids[0]!,
-    now: now - 16 * 60_000,
-  });
   const read = (session = owner) =>
     fetch(`${origin}/api/workspaces/identity-links`, {
       headers: { cookie: `${WORKSPACE_COOKIE}=${session.token}` },
@@ -198,15 +193,13 @@ export async function probeWorkspaceIdentityLinks(
     const denied = await read(member);
     const deniedWrite = await save(member, ids[9]!, "github", "member-nine");
     const badCsrf = await save(owner, ids[9]!, "github", "member-nine", "wrong");
-    const stale = await save(old, ids[9]!, "github", "member-nine");
     observe(
-      "identity administration requires owner or admin, CSRF and recent authentication",
-      [denied, deniedWrite, badCsrf, stale].every((response) => response.status === 403),
+      "identity administration requires owner or admin and CSRF",
+      [denied, deniedWrite, badCsrf].every((response) => response.status === 403),
       {
         read: denied.status,
         write: deniedWrite.status,
         csrf: badCsrf.status,
-        recent: stale.status,
       },
     );
     let releaseBody!: () => void;

@@ -229,11 +229,8 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         path.startsWith("/api/auth/github") ||
         (path === "/api/linear/sessions" && request.method !== "GET");
       const unsafe = !["GET", "HEAD", "OPTIONS"].includes(request.method);
-      const recent =
-        Date.now() >= access.principal.authenticatedAt &&
-        Date.now() - access.principal.authenticatedAt <= 15 * 60_000;
       if (
-        (privileged && (access.principal.role !== "owner" || (unsafe && !recent))) ||
+        (privileged && access.principal.role !== "owner") ||
         (unsafe &&
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
@@ -246,7 +243,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           now: Date.now(),
         });
         return Response.json(
-          { error: "Workspace ownership, recent sign-in and a valid CSRF token are required." },
+          { error: "Workspace ownership and a valid CSRF token are required." },
           { status: 403 },
         );
       }

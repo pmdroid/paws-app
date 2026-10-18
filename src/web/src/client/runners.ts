@@ -41,7 +41,7 @@ export type HostPolicy = {
   ownerUserId: string;
   sharing?: number;
 };
-type Session = { userId: string; role: string; authenticatedAt: number };
+type Session = { userId: string; role: string };
 export type Usage = {
   commandId: string;
   runnerId: string;
@@ -221,10 +221,10 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
 
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
-  state: { manages: boolean; busy: boolean; recent: boolean },
+  state: { manages: boolean; busy: boolean },
 ): string {
   if (!state.manages || runner.status === "revoked") return "";
-  const disabled = state.busy || !state.recent ? " disabled" : "";
+  const disabled = state.busy ? " disabled" : "";
   const id = esc(runner.id);
   const pause =
     runner.status === "active"
@@ -246,7 +246,6 @@ export function runnerDetailMarkup(
     userId: string | null;
     role: string | null;
     busy: boolean;
-    recent: boolean;
     open?: ReadonlySet<string>;
   },
 ): string {
@@ -314,7 +313,7 @@ export function runnerDetailMarkup(
     view.role !== null &&
     view.role !== "observer" &&
     !revoked;
-  const editable = owns && !view.busy && view.recent ? "" : " disabled";
+  const editable = owns && !view.busy ? "" : " disabled";
   const signIns = runner.agents?.length
     ? runner.agents
     : AGENTS.map((agent): AgentSignIn => ({ agent, status: "unknown", checkedAt: null }));
@@ -336,13 +335,12 @@ export function runnerDetailMarkup(
   const sharing =
     view.policy === null || revoked
       ? ""
-      : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? (view.recent ? "" : '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>') : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
+      : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
   return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
       busy: view.busy,
-      recent: view.recent,
     },
   )}</section>`;
 }
@@ -375,13 +373,6 @@ export function createRunners() {
 
   function manages() {
     return session !== null && ["owner", "admin"].includes(session.role);
-  }
-  function recent() {
-    return (
-      session !== null &&
-      session.authenticatedAt <= Date.now() &&
-      Date.now() - session.authenticatedAt <= 15 * 60_000
-    );
   }
   function reset() {
     session = null;
@@ -491,11 +482,8 @@ export function createRunners() {
   }
   async function change(action: () => Promise<void>, administrator = true) {
     if (busy) return;
-    if (
-      (administrator ? !manages() : session === null || session.role === "observer") ||
-      !recent()
-    ) {
-      error = "Sign in again with permission to update these runner settings.";
+    if (administrator ? !manages() : session === null || session.role === "observer") {
+      error = "You do not have permission to update these runner settings.";
       paint();
       return;
     }
@@ -523,7 +511,7 @@ export function createRunners() {
     const empty = manages()
       ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
       : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair"${recent() ? "" : " disabled"}>Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${dialog}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -538,15 +526,14 @@ export function createRunners() {
       userId: session?.userId ?? null,
       role: session?.role ?? null,
       busy,
-      recent: recent(),
     })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
       return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
-    const disabled = busy || !recent() ? " disabled" : "";
+    const disabled = busy ? " disabled" : "";
     const now = Date.now();
-    const status = `${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>${manages() && !recent() ? '<p><a href="/auth/linear">Sign in again</a> to manage runners.</p>' : ""}`;
+    const status = `${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>`;
     const html =
       selected === null
         ? listView(now, disabled, status)

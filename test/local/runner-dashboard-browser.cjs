@@ -367,12 +367,12 @@ const assert = require("node:assert/strict");
     assert.equal(await member.locator("#runner-health").count(), 0);
     assert.equal(await mutation(member, healthPath, { type: "login_check", agent: "codex" }), 403);
     const stale = await pageFor("stale");
-    await stale.getByRole("link", { name: "Sign in again", exact: true }).waitFor();
-    assert(await stale.getByRole("button", { name: "Pair a host" }).isDisabled());
-    assert.equal(await mutation(stale, healthPath, { type: "login_check", agent: "codex" }), 403);
+    await stale.getByRole("button", { name: "Pair a host" }).waitFor();
+    assert(await stale.getByRole("button", { name: "Pair a host" }).isEnabled());
+    assert.equal(await stale.getByRole("link", { name: "Sign in again" }).count(), 0);
     observe(
-      "persisted member and stale administrator roles deny mutations and missing CSRF fails closed",
-      { member: 403, stale: 403, csrf: 403 },
+      "persisted member role denies mutations, missing CSRF fails closed and an older administrator sign-in keeps its controls",
+      { member: 403, csrf: 403, olderAdministratorControls: true },
     );
     await owner.screenshot({ path: path.join(root, "desktop.png"), fullPage: true });
     await member.setViewportSize({ width: 390, height: 844 });

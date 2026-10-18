@@ -47,7 +47,6 @@ const view = {
   userId: "owner",
   role: "owner",
   busy: false,
-  recent: true,
 };
 
 describe("runner list rows", () => {
@@ -233,16 +232,13 @@ describe("runner details", () => {
 test("runner actions share one row and resume a paused runner", () => {
   const html = runnerActionsMarkup(
     { id: "runner-1", status: "paused" },
-    { manages: true, busy: false, recent: true },
+    { manages: true, busy: false },
   );
   expect(html.startsWith('<div class="row">')).toBe(true);
   expect(html).toContain(">Resume<");
   expect(html.indexOf("Resume")).toBeLessThan(html.indexOf("Revoke access"));
   expect(
-    runnerActionsMarkup(
-      { id: "runner-1", status: "active" },
-      { manages: true, busy: true, recent: true },
-    ),
+    runnerActionsMarkup({ id: "runner-1", status: "active" }, { manages: true, busy: true }),
   ).toContain(" disabled");
 });
 

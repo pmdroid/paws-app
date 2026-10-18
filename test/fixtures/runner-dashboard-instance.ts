@@ -115,7 +115,7 @@ const sessions = Object.fromEntries(
   [
     ["owner", owner, now],
     ["member", member, now],
-    ["stale", owner, now - 16 * 60_000],
+    ["stale", owner, now - 2 * 24 * 60 * 60_000],
   ].map(([name, userId, authenticatedAt]) => {
     const issued = issueWorkspaceSession(paws.db, {
       userId: String(userId),

@@ -8,7 +8,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
   section.className = "settings-section";
   renderMarkup(
     section,
-    '<div><h2>GitHub credit</h2><p class="sub">Link GitHub to credit you on commits and pull requests.</p></div><div class="settings-account"><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><a class="btn primary" href="/auth/linear" data-signin hidden>Sign in again</a><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button></div>',
+    '<div><h2>GitHub credit</h2><p class="sub">Link GitHub to credit you on commits and pull requests.</p></div><div class="settings-account"><p role="status">Loading your attribution…</p><form><label class="field"><span><input type="checkbox" name="consent" required /> I consent to public commit and pull request credit using my verified GitHub identity.</span></label><button class="btn" type="submit" disabled>Link GitHub identity</button></form><button class="btn" type="button" data-revoke hidden>Revoke attribution consent</button><button class="btn" type="button" data-refresh>Refresh attribution</button></div>',
   );
   root.append(section);
   const feedback = section.querySelector<HTMLElement>('[role="status"]')!;
@@ -17,21 +17,7 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
   const refresh = section.querySelector<HTMLButtonElement>("[data-refresh]")!;
   const form = section.querySelector<HTMLFormElement>("form")!;
   const consent = form.querySelector<HTMLInputElement>('input[name="consent"]')!;
-  const signIn = section.querySelector<HTMLAnchorElement>("[data-signin]")!;
   let canLink = false;
-  function offerSignIn() {
-    canLink = false;
-    form.hidden = true;
-    connect.disabled = true;
-    revoke.hidden = true;
-    signIn.hidden = false;
-    feedback.textContent = "Sign in again to change your GitHub credit.";
-  }
-  signIn.addEventListener("click", () => {
-    try {
-      sessionStorage.setItem("paws.settingsReturn", "/settings/account");
-    } catch {}
-  });
   consent.addEventListener("change", () => {
     connect.disabled = !canLink || !consent.checked;
   });
@@ -44,14 +30,11 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
     });
     const data = (await response.json().catch(() => null)) as {
       configured?: boolean;
-      requiresSignIn?: boolean;
-      code?: string;
       identity?: { login: string } | null;
       authorizeUrl?: string;
       error?: string;
     } | null;
     if (!response.ok || data === null) {
-      if (data?.code === "reauth_required") offerSignIn();
       throw new Error(data?.error ?? "Attribution could not be checked. Try Refresh attribution.");
     }
     return data;
@@ -63,11 +46,6 @@ export function initializeWorkspaceAttribution(root: HTMLElement, csrfToken: str
     refresh.disabled = true;
     try {
       const data = await request("GET");
-      signIn.hidden = true;
-      if (data.requiresSignIn) {
-        offerSignIn();
-        return;
-      }
       feedback.textContent = data.identity
         ? `Public attribution is enabled for @${data.identity.login}.`
         : data.configured === false
