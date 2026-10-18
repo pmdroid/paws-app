@@ -18,6 +18,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
+  ArtifactRejectedError,
   DEFAULT_RUN_TIMEOUT_MS,
   git,
   recoverAcpConversation,
@@ -499,20 +500,27 @@ export function createRemoteAgentRunner(options: {
                   assigned.generation,
                   event.artifact,
                 );
-                const publication = await input.publishArtifact.publish(snapshot, {
-                  request: {
-                    path: snapshot.path,
-                    displayName: snapshot.displayName,
-                    mimeType: snapshot.mimeType,
-                    attachToIssue: event.artifact.attachToIssue,
-                  },
-                  itemId: input.itemId,
-                  runId: selected.runId,
-                  worktreePath: input.worktreePath,
-                  role: input.role,
-                  signal,
-                });
-                publishedEffects = true;
+                let publication: { url: string; displayName?: string } | { error: string };
+                try {
+                  publication = await input.publishArtifact.publish(snapshot, {
+                    request: {
+                      path: snapshot.path,
+                      displayName: snapshot.displayName,
+                      mimeType: snapshot.mimeType,
+                      attachToIssue: event.artifact.attachToIssue,
+                      ...(snapshot.evidence ? { checkId: snapshot.evidence.checkId } : {}),
+                    },
+                    itemId: input.itemId,
+                    runId: selected.runId,
+                    worktreePath: input.worktreePath,
+                    role: input.role,
+                    signal,
+                  });
+                  publishedEffects = true;
+                } catch (error) {
+                  if (!(error instanceof ArtifactRejectedError)) throw error;
+                  publication = { error: error.message };
+                }
                 signal.throwIfAborted();
                 results.answer({
                   runId: assigned.runId,

@@ -23,6 +23,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
+  ArtifactRejectedError,
   createUpdateLimiter,
   validateCandidateAttribution,
   git,
@@ -418,6 +419,7 @@ export async function executeRunnerCommand(
                 sizeBytes: snapshot.sizeBytes,
                 sha256: snapshot.sha256,
                 attachToIssue: context.request?.attachToIssue ?? false,
+                ...(snapshot.evidence ? { evidence: snapshot.evidence } : {}),
               });
               if (
                 bytes.length !== artifact.sizeBytes ||
@@ -438,7 +440,9 @@ export async function executeRunnerCommand(
               emit({ type: "artifact", requestId: artifact.id, artifact });
               const reply = await options.answer(artifact.id, context.signal);
               context.signal.throwIfAborted();
-              const publication = JSON.parse(reply.answer) as { url?: unknown };
+              const publication = JSON.parse(reply.answer) as { url?: unknown; error?: unknown };
+              if (typeof publication.error === "string")
+                throw new ArtifactRejectedError(publication.error);
               if (typeof publication.url !== "string")
                 throw new Error("Runner artifact publication response is invalid");
               return { url: publication.url };

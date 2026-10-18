@@ -168,6 +168,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
           sizeBytes: artifact.sizeBytes,
           sha256: artifact.sha256,
           bytes: new Blob([bytes], { type: artifact.mimeType }),
+          ...(artifact.evidence ? { evidence: artifact.evidence } : {}),
         };
       } finally {
         closeSync(fd);
