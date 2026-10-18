@@ -15,18 +15,9 @@ const PRIVATE = {
 export type EvidenceRequestOptions = {
   db: Database;
   dir: string;
-  /**
-   * Linear sessions the signed-in member may see. They already apply the
-   * workspace's repository-to-team mapping, so evidence on a work item outside
-   * them belongs to a repository the member cannot open.
-   */
   sessionIds: readonly string[];
 };
 
-/**
- * `GET /api/evidence/:id`. The caller has already required a Paws session.
- * Evidence the member may not see answers exactly like an unknown id.
- */
 export function handleEvidenceRequest(request: Request, options: EvidenceRequestOptions): Response {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { ...PRIVATE, Allow: "GET, HEAD" } });
@@ -75,10 +66,6 @@ function notFound(): Response {
   return Response.json({ error: "Not found." }, { status: 404, headers: PRIVATE });
 }
 
-/**
- * One `bytes=` range, or null for the whole file. Several ranges, other units
- * and malformed values are ignored and served whole, as RFC 9110 allows.
- */
 export function parseRange(
   header: string | null,
   size: number,
@@ -102,5 +89,12 @@ export function parseRange(
 
 function inline(name: string): string {
   const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
-  return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encodeRfc5987(name)}`;
+}
+
+function encodeRfc5987(value: string): string {
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }

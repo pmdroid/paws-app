@@ -172,6 +172,17 @@ describe("GET /api/evidence/:id", () => {
     expect(response.headers.get("accept-ranges")).toBe("bytes");
     expect(response.headers.get("content-length")).toBe("64");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(WEBM);
+    const head = handleEvidenceRequest(
+      new Request(get(f.record.id), { method: "HEAD" }),
+      f.options,
+    );
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe("64");
+    const post = handleEvidenceRequest(
+      new Request(get(f.record.id), { method: "POST" }),
+      f.options,
+    );
+    expect(post.status).toBe(405);
   });
 
   test("a Range request is 206 with the requested bytes", async () => {

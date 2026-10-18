@@ -1,6 +1,5 @@
 import type { EvidenceMediaType } from "../db";
 
-/** Per-file caps. A video may be longer than a screenshot is large. */
 export type EvidenceCaps = { video: number; image: number };
 
 export const EVIDENCE_CAPS: EvidenceCaps = {
@@ -8,7 +7,6 @@ export const EVIDENCE_CAPS: EvidenceCaps = {
   image: 20 * 1024 * 1024,
 };
 
-/** ISO base media major brands that browsers play as MP4. QuickTime, HEIF and AVIF are not here. */
 const MP4_BRANDS = new Set([
   "isom",
   "iso2",
@@ -23,11 +21,6 @@ const MP4_BRANDS = new Set([
   "M4V ",
 ]);
 
-/**
- * The media type the bytes start with, or null. Only the content counts: a
- * file name or a declared type is never consulted, so SVG, HTML and anything
- * else without one of these signatures is refused.
- */
 export function sniffEvidence(bytes: Uint8Array): EvidenceMediaType | null {
   if (starts(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (starts(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
@@ -52,7 +45,6 @@ function ascii(bytes: Uint8Array, from: number, to: number): string {
   return String.fromCharCode(...bytes.subarray(from, to));
 }
 
-/** Matroska and WebM share the EBML magic. The DocType element (0x4282) tells them apart. */
 function ebmlDocType(bytes: Uint8Array): string | null {
   const end = Math.min(bytes.length, 64);
   for (let index = 4; index + 2 < end; index++) {
