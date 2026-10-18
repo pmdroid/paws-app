@@ -208,6 +208,7 @@ export {
   type StoredArtifact,
 } from "./artifacts";
 
+export { getEvidence, insertEvidence, type EvidenceMediaType, type EvidenceRow } from "./evidence";
 export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
 export {
   listLinearSessions,
