@@ -1203,6 +1203,152 @@ for (const recovery of [
   }, 60_000);
 }
 
+test("the agent's skip request joins the exhausted Closeout question and a bypass reverifies", async () => {
+  const layout = await repoLayout();
+  const seed = path.join(layout.root, "seed");
+  await writeFile(
+    path.join(seed, ".agents", "closeout.yaml"),
+    JSON.stringify({
+      specVersion: "0.1",
+      retry: { maxFailedAttemptsPerItem: 2, scope: "task" },
+      items: [
+        {
+          id: "test",
+          kind: "command",
+          gate: "beforePR",
+          exec: ["sh", "-c", "test -f ok.txt"],
+          timeoutSeconds: 30,
+        },
+        {
+          id: "lint",
+          kind: "command",
+          gate: "beforePR",
+          exec: ["sh", "-c", "true"],
+          timeoutSeconds: 30,
+        },
+      ],
+    }),
+  );
+  await exec("git", ["-C", seed, "add", "."]);
+  await exec("git", ["-C", seed, "commit", "-m", "bounded skip policy"]);
+  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "iss-9",
+      identifier: "ENG-9",
+      title: "Skip an exhausted check",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const github = createFakeGitHub();
+  const client = githubClient(layout.bare, github);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const launches: string[] = [];
+  const results: string[] = [];
+  const launch: AgentLaunch = (input) => {
+    launches.push(input.purpose);
+    const scriptPath = path.join(layout.root, `skip-${launches.length}.json`);
+    const resultPath = path.join(layout.root, `skip-${launches.length}.result.json`);
+    results.push(resultPath);
+    const implement = input.purpose === "implement";
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        steps: [
+          {
+            type: "fs_write",
+            path: path.join(input.worktree, `attempt-${launches.length}.txt`),
+            content: "done\n",
+          },
+          ...(implement
+            ? [
+                { type: "request_closeout_skip", checkIds: ["test"], reason: "Too early" },
+                { type: "run_closeout", id: "test" },
+                { type: "run_closeout", id: "test" },
+                { type: "run_closeout", id: "lint" },
+                { type: "request_closeout_skip", checkIds: ["lint"], reason: "Passed check" },
+                { type: "request_closeout_skip", checkIds: ["test"], reason: "First reason" },
+                {
+                  type: "request_closeout_skip",
+                  checkIds: ["test"],
+                  reason: "The fixture service is down",
+                },
+              ]
+            : []),
+          { type: "end", stopReason: "end_turn" },
+        ],
+      }),
+    );
+    return {
+      command: process.execPath,
+      args: [fakeAgent, resultPath, scriptPath],
+      env: process.env,
+    };
+  };
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    launch,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client },
+  });
+  const snapshot = async () => {
+    const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
+      db,
+    });
+    const parsed = parseStatusSnapshot(await response!.json());
+    if (!parsed.ok) throw new Error("Invalid status snapshot");
+    return parsed.snapshot.verdicts.find((verdict) => verdict.itemId === "ENG-9");
+  };
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-9"));
+    await jobs.tick();
+    expect(stateOf(db, "ENG-9"), debug(layout, db)).toBe("awaiting_input");
+    const answers = (JSON.parse(await readFile(results[0]!, "utf8")) as FakeResult).closeouts ?? [];
+    expect(answers[0]).toContain("You can ask to skip a check only after its last attempt failed");
+    expect(answers[4]).toContain("Closeout check lint is passed");
+    expect(answers[5]).toContain("Saved.");
+    const question = findOpenQuestion(db, "ses_1")!;
+    const recoveries = listCloseoutRecoveries(db, question.itemId);
+    expect(recoveries).toHaveLength(1);
+    expect(recoveries[0]?.skip).toEqual({
+      checkIds: ["test"],
+      reason: "The fixture service is down",
+      evidence: [],
+    });
+    expect(question.body).toContain("The agent asks to skip test after the last attempt failed.");
+    expect(question.body).toContain("Reason: The fixture service is down");
+    expect(question.body).not.toContain("First reason");
+    expect((await snapshot())?.skipRequest).toEqual({
+      checkIds: ["test"],
+      reason: "The fixture service is down",
+      href: "https://linear.app/issue/ENG-9",
+    });
+    await orchestrator.onLinearEvent({
+      ...linearEvent("prompted", "/paws bypass test -- Fixture outage", null),
+      payload: JSON.stringify({ questionId: question.id, answeredBy: "pascal" }),
+    });
+    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect((await snapshot())?.skipRequest).toBeUndefined();
+    for (let tick = 0; tick < 5; tick += 1) {
+      if ((await jobs.tick()) === null) break;
+    }
+    expect(stateOf(db, "ENG-9"), debug(layout, db)).toBe("merged");
+    expect(github.opened[0]?.body).toContain("approved by pascal");
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+}, 60_000);
+
 test("grok implementer runs the demo delegation with ask_team and one Closeout fix", async () => {
   const layout = await repoLayout();
   const argvLog = path.join(layout.root, "grok-argv.log");

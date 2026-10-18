@@ -187,7 +187,7 @@ const SKIP_TOOL = {
   },
 };
 
-const enabledTools =new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
+const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
   jsonrpc?: string;
