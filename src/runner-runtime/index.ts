@@ -545,7 +545,7 @@ export async function openRunnerRuntime(options: {
       journal.answered(entry.execution.id, answer.sequence);
     }
   }
-  async function resumeIfCrashed(entry: Active) {
+  async function resumeIfCrashed(entry: Active): Promise<boolean> {
     const id = entry.execution.id;
     if (
       entry.execution.phase !== "running" ||
@@ -555,16 +555,17 @@ export async function openRunnerRuntime(options: {
       broker.alive(id) ||
       (entry.restarts ?? 0) >= 2
     )
-      return;
+      return false;
     try {
       readRunnerResultFile(options.results, id, "result.json");
-      return;
+      return false;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     check(entry);
     entry.restarts = (entry.restarts ?? 0) + 1;
     await broker.resume(id);
+    return true;
   }
   async function complete(entry: Active) {
     let raw: Buffer;
@@ -719,8 +720,7 @@ export async function openRunnerRuntime(options: {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
       try {
         await deliver(entry);
-        await resumeIfCrashed(entry);
-        await complete(entry);
+        if (!(await resumeIfCrashed(entry))) await complete(entry);
       } catch (error) {
         if (error instanceof RemoteFailure) {
           report(error);
