@@ -68,7 +68,10 @@ export async function intakeDelegatedIssue(
   const existing = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (existing !== null) {
     const result = { ok: true as const, ...existing, alreadyExisted: true as const };
-    input.onAccepted?.(result);
+    db.transaction(() => {
+      if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+      input.onAccepted?.(result);
+    }).immediate();
     return result;
   }
   const loaded = await tracker.loadEpic(input.linearIssueId);
@@ -88,7 +91,10 @@ export async function intakeDelegatedIssue(
   const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
-    input.onAccepted?.(result);
+    db.transaction(() => {
+      if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+      input.onAccepted?.(result);
+    }).immediate();
     return result;
   }
   if (!ordered.ok) {
@@ -117,6 +123,8 @@ export async function intakeDelegatedIssue(
   try {
     result = db
       .transaction(() => {
+        if (input.isCurrent && !input.isCurrent())
+          throw new Error("Delegated intake was superseded");
         input.beforeAdmit?.();
         if (
           snapshot.subIssues.length > 0 &&
@@ -159,6 +167,8 @@ export async function intakeDelegatedIssue(
           items: saved.items,
           alreadyExisted: false,
         } as const;
+        if (input.isCurrent && !input.isCurrent())
+          throw new Error("Delegated intake was superseded");
         input.onAccepted?.(admitted);
         return admitted;
       })
