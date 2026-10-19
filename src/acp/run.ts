@@ -180,8 +180,10 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const attributionEnv = commitPolicy
     ? commitIdentityEnv(appBotCommitIdentity(commitPolicy.bot))
     : {};
-  if (commitPolicy)
-    preparedInput.prompt += `\n\nUse the configured App bot author and committer for every new commit. Include these exact human attribution trailers in every new commit message:\n${commitPolicyMessage("", commitPolicy).trim()}`;
+  if (commitPolicy) {
+    const trailers = commitPolicyMessage("", commitPolicy).trim();
+    preparedInput.prompt += `\n\nUse the configured App bot author and committer for every new commit. ${trailers ? `Include these exact human attribution trailers in every new commit message:\n${trailers}` : "Do not add human Co-authored-by trailers."}`;
+  }
   const adapter = options.command
     ? { command: options.command, args: options.args ?? [] }
     : resolveAdapter(options.role, sourceEnv, undefined, undefined, agents, profile.agent);
