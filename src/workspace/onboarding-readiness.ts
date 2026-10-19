@@ -26,6 +26,8 @@ export type OnboardingReadiness = {
   state: "waiting" | "unavailable" | "ready";
   reason: "metadata" | "vm" | "agents" | "github" | "authority_changed" | null;
   prepared: OnboardingPreparation | null;
+  vm: { id: string; fence: number } | null;
+  agents: ReturnType<typeof onboardingAgentsState>;
   memberGitHub: TaskRepositoryAccessResult | null;
   expiresAt: number;
 };
@@ -151,6 +153,8 @@ export function createOnboardingReadiness(options: {
         state: "waiting",
         reason: "metadata",
         prepared: initial.prepared,
+        vm: initial.runner ? { id: initial.runner.id, fence: initial.runner.fence } : null,
+        agents: initial.agents,
         memberGitHub: null,
         expiresAt: initial.deadline,
       };
