@@ -157,7 +157,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "button") {
     if (has("chk"))
       return styled(
-        "grid w-full grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 rounded-base border-2 border-border bg-secondary-background p-4 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:grid-cols-[3rem_12rem_minmax(0,1fr)_auto] [&>:nth-child(2)]:min-w-0 [&>:nth-child(2)]:break-words [&>:nth-child(3)]:col-span-full [&>:nth-child(3)]:row-start-2 [&>:nth-child(3)]:min-w-0 sm:[&>:nth-child(3)]:col-span-1 sm:[&>:nth-child(3)]:col-start-3 sm:[&>:nth-child(3)]:row-start-1 [&>:nth-child(4)]:col-start-3 [&>:nth-child(4)]:row-start-1 sm:[&>:nth-child(4)]:col-start-4",
+        "focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
       );
     return createElement(
       "button",

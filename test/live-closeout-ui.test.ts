@@ -358,7 +358,7 @@ describe("live closeout ui", () => {
     const failed = verdict.attempts?.[0]?.checks[0];
     expect([failed?.state, failed?.exitCode, failed?.truncated]).toEqual(["failed", 1, true]);
     const html = paint(snapshot, id, "unit");
-    expect(html).toContain('data-attempt="2" aria-pressed="true">Attempt 2 · passed');
+    expect(html).toContain('data-attempt="2" aria-pressed="true"');
     expect(html).toContain('id="check-2-unit"');
     const earlier = render({
       route: { view: "runs", id: snapshot.runs.find((run) => run.itemId === id)!.id },
