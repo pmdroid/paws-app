@@ -23,6 +23,8 @@ import type {
 } from "../linear";
 import { workspaceSecret, workspaceTokenHash, type WorkspacePrincipal } from "./session";
 
+import { onboardingVmState } from "./onboarding-vm";
+
 const QUEUE = "workspace.assignment";
 
 type Hold = {
@@ -136,6 +138,49 @@ export function createWorkspaceAssignments(options: {
       session.creatorId === hold.actorId
     );
   }
+  function onboardingContext(sessionId: string, generation: number, principal: WorkspacePrincipal) {
+    if (!options.onboarding) return null;
+    const hold = holds(sessionId);
+    if (
+      !hold ||
+      hold.generation !== generation ||
+      hold.workspaceId !== principal.workspaceId ||
+      !["ready", "accepted", "continued"].includes(hold.status) ||
+      !current(hold)
+    )
+      return null;
+    const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+    const expected = JSON.parse(hold.fingerprint) as {
+      installation: {
+        teamId: string;
+        organizationId: string;
+        oauthClientId: string;
+        appUserId: string;
+      };
+      spec: EpicSnapshot;
+    };
+    const installation = getLinearSessionInstallation(db, sessionId);
+    if (
+      !member?.active ||
+      member.userId !== principal.userId ||
+      member.role === "observer" ||
+      !member.teamIds.includes(expected.installation.teamId) ||
+      !installation ||
+      installation.organizationId !== expected.installation.organizationId ||
+      installation.oauthClientId !== expected.installation.oauthClientId ||
+      installation.appUserId !== expected.installation.appUserId ||
+      installation.teamId !== expected.installation.teamId ||
+      getLinearSession(db, sessionId)?.issueId !== expected.spec.linearIssueId
+    )
+      return null;
+    return {
+      sessionId,
+      generation,
+      workspaceId: hold.workspaceId,
+      userId: member.userId,
+      issue: expected.spec,
+    };
+  }
   function issueAction(hold: Omit<Hold, "tokenHash" | "expiresAt" | "status">) {
     const token = workspaceSecret();
     const tokenHash = workspaceTokenHash(token);
@@ -222,6 +267,7 @@ export function createWorkspaceAssignments(options: {
     );
   }
   return {
+    onboardingContext,
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
       const hold = holds(sessionId);
       if (!hold) return true;
@@ -342,49 +388,17 @@ export function createWorkspaceAssignments(options: {
       return `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
     },
     onboarding(sessionId: string, generation: number, principal: WorkspacePrincipal) {
-      if (!options.onboarding) return null;
-      const hold = holds(sessionId);
-      if (
-        !hold ||
-        hold.generation !== generation ||
-        hold.workspaceId !== principal.workspaceId ||
-        !["ready", "accepted", "continued"].includes(hold.status) ||
-        !current(hold)
-      )
-        return null;
-      const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
-      const expected = JSON.parse(hold.fingerprint) as {
-        installation: {
-          teamId: string;
-          organizationId: string;
-          oauthClientId: string;
-          appUserId: string;
-        };
-        spec: EpicSnapshot;
-      };
-      const installation = getLinearSessionInstallation(db, sessionId);
-      if (
-        !member?.active ||
-        member.userId !== principal.userId ||
-        member.role === "observer" ||
-        !member.teamIds.includes(expected.installation.teamId) ||
-        !installation ||
-        installation.organizationId !== expected.installation.organizationId ||
-        installation.oauthClientId !== expected.installation.oauthClientId ||
-        installation.appUserId !== expected.installation.appUserId ||
-        installation.teamId !== expected.installation.teamId ||
-        getLinearSession(db, sessionId)?.issueId !== expected.spec.linearIssueId
-      )
-        return null;
+      const context = onboardingContext(sessionId, generation, principal);
+      if (!context) return null;
       return {
         issue: {
-          id: expected.spec.linearIssueId,
-          identifier: expected.spec.identifier,
-          title: expected.spec.title,
+          id: context.issue.linearIssueId,
+          identifier: context.issue.identifier,
+          title: context.issue.title,
         },
         linear: { state: "connected", detail: "Linear connected" },
         github: { state: "not_checked", detail: "Member repository access has not been checked." },
-        vm: { state: "not_linked", detail: "No VM is linked to this assignment." },
+        vm: onboardingVmState(db, context, now()),
       };
     },
     complete(hash: string, workspaceId: string, linearUserId: string): string {

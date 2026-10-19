@@ -331,3 +331,6 @@ export {
   type MemberGitHubBinding,
   type MemberGitHubRecord,
 } from "./member-github";
+
+export { listOnboardingRunners, readOnboardingVm, saveOnboardingVm } from "./onboarding-vm";
+export type { OnboardingVmScope } from "./onboarding-vm";
