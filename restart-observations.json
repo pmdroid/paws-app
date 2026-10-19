@@ -1,0 +1,6 @@
+[
+  {
+    "name": "workspace session and authorization survive process restart",
+    "passed": true
+  }
+]

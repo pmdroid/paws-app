@@ -1,0 +1,26 @@
+[
+  {
+    "name": "desktop light fresh onboarding",
+    "passed": true
+  },
+  {
+    "name": "desktop dark fresh onboarding",
+    "passed": true
+  },
+  {
+    "name": "mobile light fresh onboarding",
+    "passed": true
+  },
+  {
+    "name": "mobile dark fresh onboarding",
+    "passed": true
+  },
+  {
+    "name": "browser authorization starts the connected service and continues to GitHub",
+    "passed": true
+  },
+  {
+    "name": "revoked Linear access reconnects through the browser without changing ownership",
+    "passed": true
+  }
+]

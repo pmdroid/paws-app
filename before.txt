@@ -1,0 +1,2 @@
+Base 89f45c88: a fresh HTTPS instance with Linear app credentials but no installed token cannot start browser onboarding.
+Public dashboard requires the Linear app OAuth client.
