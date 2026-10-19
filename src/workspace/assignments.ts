@@ -49,6 +49,15 @@ export function createWorkspaceAssignments(options: {
   accept: (event: AcceptedLinearEvent, signal: AbortSignal) => Promise<boolean>;
   continue: (event: AcceptedLinearEvent) => Promise<void | boolean>;
   onboarding?: {
+    refresh?: (
+      assignment: {
+        sessionId: string;
+        generation: number;
+        workspaceId: string;
+        linearUserId: string;
+      },
+      signal: AbortSignal,
+    ) => Promise<unknown>;
     readyToContinue?: (assignment: {
       sessionId: string;
       generation: number;
@@ -325,7 +334,11 @@ export function createWorkspaceAssignments(options: {
         getLinearSessionAccess(db, event.sessionId) !== "allowed"
       )
         return false;
-      if (workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null) return true;
+      if (
+        !options.onboarding?.refresh &&
+        workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null
+      )
+        return true;
       return immediate(db, () => {
         if (holds(event.sessionId!)?.generation === verified.generation) return false;
         const session = getLinearSession(db, event.sessionId!)!;
@@ -336,6 +349,22 @@ export function createWorkspaceAssignments(options: {
         )
           return false;
         issueAction({ sessionId: event.sessionId!, ...verified, event: JSON.stringify(event) });
+        if (
+          options.onboarding &&
+          workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null
+        ) {
+          const created = holds(event.sessionId!)!;
+          db.run("UPDATE workspace_assignment SET status='ready' WHERE token_hash=?", [
+            created.tokenHash,
+          ]);
+          enqueueJobOnce(db, {
+            queue: QUEUE,
+            jobKey: `assignment:${created.tokenHash}`,
+            payload: { sessionId: created.sessionId, tokenHash: created.tokenHash },
+            recurringEveryMs: 60_000,
+            now: now(),
+          });
+        }
         return false;
       });
     },
@@ -495,6 +524,18 @@ export function createWorkspaceAssignments(options: {
         if (!current(hold)) {
           invalidate(hold);
           return;
+        }
+        if (options.onboarding?.refresh) {
+          await options.onboarding.refresh(
+            {
+              sessionId: hold.sessionId,
+              generation: hold.generation,
+              workspaceId: hold.workspaceId,
+              linearUserId: hold.actorId,
+            },
+            context.signal,
+          );
+          if (!context.isCurrent() || !current(hold)) return;
         }
         if (!ready(hold)) return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
