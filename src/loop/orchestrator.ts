@@ -338,6 +338,7 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
+  private readonly projectOverviews = new Map<string, string>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -3228,6 +3229,7 @@ export class Orchestrator {
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
     try {
+      await this.loadProjectOverview(itemId, context.signal);
       await operation();
       if (!context.isCurrent()) throw context.signal.reason;
     } finally {
@@ -3608,6 +3610,21 @@ export class Orchestrator {
     });
   }
 
+  private async loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void> {
+    const item = getWorkItem(this.db, itemId);
+    const tracker = this.options.tracker;
+    if (!item || this.projectOverviews.has(itemId) || !tracker?.projectOverview) return;
+    try {
+      const overview = await tracker.projectOverview(item.linearIssueId, { signal });
+      this.projectOverviews.set(
+        itemId,
+        overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+      );
+    } catch {
+      signal.throwIfAborted();
+    }
+  }
+
   private workContext(item: WorkItemRecord): string {
     const taskKey = this.parentTaskKey(item);
     const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
@@ -3618,6 +3635,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
+      this.projectOverviews.get(item.id) ?? "",
       ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
       classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
