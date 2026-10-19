@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { RepositoryBinding } from "../core";
 import { immediate } from "./tx";
 
 export type CatalogEntry = {
@@ -68,4 +69,29 @@ export function listTeamRepositories(db: Database, sessionId: string): string[] 
     )
     .all(sessionId)
     .map((row) => row.repository);
+}
+
+export function listRepositoryCandidates(
+  db: Database,
+  sessionId: string | null,
+  configured: readonly RepositoryBinding[],
+): RepositoryBinding[] {
+  const teamLinks = sessionId ? listTeamRepositories(db, sessionId) : [];
+  const candidates = [
+    ...configured,
+    ...listRepositoryCatalog(db),
+    ...teamLinks.map((name) => {
+      const [owner, repo] = name.split("/");
+      return { owner: owner!, repo: repo!, remoteUrl: `https://github.com/${name}.git` };
+    }),
+  ];
+  const seen = new Set<string>();
+  return candidates
+    .filter((candidate) => {
+      const name = `${candidate.owner}/${candidate.repo}`.toLowerCase();
+      if (seen.has(name) || (teamLinks.length > 0 && !teamLinks.includes(name))) return false;
+      seen.add(name);
+      return true;
+    })
+    .map(({ owner, repo, remoteUrl }) => ({ owner, repo, remoteUrl }));
 }

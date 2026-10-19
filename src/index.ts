@@ -52,6 +52,7 @@ import {
   workspaceForOrganization,
   listWorkspaceMembers,
   listWorkspaceRepositories,
+  listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
   getLinearSessionAccess,
@@ -801,12 +802,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const selected =
                     getWorkItemRepositoryChoice(db, item.id) ??
                     (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
-                  const configured = repositories.filter(
-                    (candidate, index) =>
-                      repositories.findIndex(
-                        (other) => other.owner === candidate.owner && other.repo === candidate.repo,
-                      ) === index,
-                  );
+                  const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
                   return selected
                     ? (configured.find(
                         (candidate) =>
