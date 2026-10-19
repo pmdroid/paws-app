@@ -334,3 +334,9 @@ export {
 
 export { listOnboardingRunners, readOnboardingVm, saveOnboardingVm } from "./onboarding-vm";
 export type { OnboardingVmScope } from "./onboarding-vm";
+
+export {
+  bindOnboardingIntake,
+  readOnboardingItemBinding,
+  type OnboardingAdmission,
+} from "./onboarding-intake";

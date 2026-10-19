@@ -1,3 +1,4 @@
+import { bindOnboardingIntake, type OnboardingAdmission } from "../db";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -235,6 +236,10 @@ export type OrchestratorOptions = {
   closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
+  onboardingIntake?: {
+    admission(sessionId: string): OnboardingAdmission | null;
+    assertAdmission(snapshot: OnboardingAdmission): void;
+  };
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
@@ -664,6 +669,15 @@ export class Orchestrator {
     const tracker = this.tracker;
     if (!tracker) throw new Error("Linear is not connected");
     const initialSession = sessionId ? getLinearSession(this.db, sessionId) : null;
+    const prepared =
+      this.options.onboardingIntake && sessionId
+        ? this.options.onboardingIntake.admission(sessionId)
+        : null;
+    if (this.options.onboardingIntake && !prepared) throw new Error("Onboarding intake is held.");
+    const assertPrepared = () => {
+      if (prepared) this.options.onboardingIntake!.assertAdmission(prepared);
+    };
+    assertPrepared();
     const isCurrent = () => {
       if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
@@ -672,7 +686,8 @@ export class Orchestrator {
     };
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
     const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
-    const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
+    const redirect =
+      !prepared && savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
     const progressTracker =
       sessionId && this.options.channel !== "comments"
@@ -688,19 +703,32 @@ export class Orchestrator {
         : tracker;
     let authorizedSnapshot: EpicSnapshot | null = null;
     const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      assertPrepared();
       if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
-      return sessionId
+      const scoped = sessionId
         ? (this.options.linearIntakeScope?.(sessionId, snapshot) ?? snapshot)
         : snapshot;
+      if (
+        prepared &&
+        (scoped.linearIssueId !== prepared.issueId ||
+          scoped.subIssues.some(
+            (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
+          ))
+      )
+        throw new Error("Extra issues require their own onboarding answer.");
+      if (prepared && JSON.stringify(scoped) !== prepared.issueFingerprint)
+        throw new Error("The prepared issue changed before intake.");
+      return scoped;
     };
     let intakeTracker = {
       ...progressTracker,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
-    const classification =
-      this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
+    const classification = prepared
+      ? { mode: prepared.mode, repository: prepared.repositoryContext }
+      : this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
         ? await this.taskPlanner.plan({
             taskKey,
             sessionId,
@@ -750,11 +778,15 @@ export class Orchestrator {
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
-      isCurrent: () =>
-        isCurrent() &&
-        (!sessionId ||
-          authorizedSnapshot === null ||
-          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false),
+      isCurrent: () => {
+        assertPrepared();
+        return (
+          isCurrent() &&
+          (!sessionId ||
+            authorizedSnapshot === null ||
+            this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false)
+        );
+      },
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -774,7 +806,16 @@ export class Orchestrator {
               bindLinearSessionTask(this.db, sessionId, accepted.delegation.id, { actorId });
             this.assignSession(accepted.delegation.id, sessionId);
             this.options.onLinearIntake?.(sessionId, accepted);
-            if (accepted.ok) assignUnownedItems(actorId, accepted.items);
+            if (accepted.ok) {
+              if (prepared)
+                bindOnboardingIntake(
+                  this.db,
+                  prepared,
+                  accepted.items,
+                  this.options.onboardingIntake!.assertAdmission,
+                );
+              else assignUnownedItems(actorId, accepted.items);
+            }
           }
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)

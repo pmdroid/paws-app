@@ -1891,4 +1891,18 @@ CREATE TABLE onboarding_readiness (
 ) STRICT;
 `,
   },
+  {
+    id: "079_onboarding_item_binding",
+    sql: `
+CREATE TABLE onboarding_item_binding (
+ item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ readiness_revision INTEGER NOT NULL,
+ fingerprint TEXT NOT NULL,
+ snapshot TEXT NOT NULL CHECK(json_valid(snapshot)),
+ FOREIGN KEY(session_id,generation) REFERENCES onboarding_readiness(session_id,generation)
+) STRICT;
+`,
+  },
 ];

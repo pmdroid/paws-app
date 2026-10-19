@@ -1,4 +1,5 @@
 import { SIGN_IN_INTERVAL_MS } from "../src/runner-health";
+import { attachOrchestrator } from "../src/loop";
 import { systemClock } from "../src/core";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,6 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   JobLoop,
+  OutboxDispatcher,
+  getTaskMode,
+  getWorkItemRepository,
+  readOnboardingItemBinding,
   ensureLinearSession,
   migrate,
   openDatabase,
@@ -13,7 +18,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeTracker } from "../src/linear";
+import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { createFakeMemberGitHubClient } from "../src/github";
 import {
   createMemberGitHubAccounts,
@@ -197,6 +202,8 @@ async function fixture() {
   });
   return {
     db,
+    root,
+    tracker,
     memberships,
     spec,
     assignments,
@@ -401,3 +408,262 @@ test("agent health freshness is strict and bounds joint readiness expiry", async
   f.checkedAt.set("claude", f.now() - 2 * SIGN_IN_INTERVAL_MS + 1);
   expect((await f.readiness.refresh(context, signal())).state).toBe("ready");
 });
+
+function intakeRuntime(
+  f: Awaited<ReturnType<typeof fixture>>,
+  overrides: Partial<Parameters<typeof attachOrchestrator>[0]> = {},
+) {
+  return attachOrchestrator({
+    db: f.db,
+    jobs: new JobLoop(f.db, systemClock),
+    outbox: new OutboxDispatcher(f.db, systemClock),
+    pawsRoot: f.root,
+    tracker: f.tracker,
+    linearTaskModes: true,
+    launch() {
+      throw new Error("No agent launch");
+    },
+    onboardingIntake: {
+      admission: () => f.readiness.admission(context),
+      assertAdmission: f.readiness.assertAdmission,
+    },
+    ...overrides,
+  });
+}
+
+test("accepted readiness binds canonical mode repository owner and immutable fingerprint without ACP", async () => {
+  const f = await fixture();
+  await f.readiness.refresh(context, signal());
+  const admission = f.readiness.admission(context)!;
+  const runtime = intakeRuntime(f);
+  try {
+    const result = await runtime.intakeLinearTask("issue", "session", "session:session");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error();
+    const item = result.items[0]!;
+    expect(getTaskMode(f.db, item.id)).toBe("code");
+    expect(getWorkItemRepository(f.db, item.id)).toEqual(admission.repository);
+    expect(
+      f.db.query("SELECT owner_user_id,delegated_by FROM work_item WHERE id=?").get(item.id),
+    ).toEqual({ owner_user_id: "member", delegated_by: "member" });
+    expect(readOnboardingItemBinding(f.db, item.id)).toEqual(admission);
+    const replay = await runtime.intakeLinearTask("issue", "session", "session:session");
+    expect(replay.ok && replay.alreadyExisted).toBe(true);
+    expect(f.db.query("SELECT * FROM onboarding_item_binding").all()).toHaveLength(1);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+for (const fault of [
+  "missing",
+  "delayed",
+  "fanout",
+  "project-owner",
+  "repository-conflict",
+] as const)
+  test(`onboarding intake holds ${fault} atomically`, async () => {
+    const f = await fixture();
+    await f.readiness.refresh(context, signal());
+    if (fault === "missing") f.connected.set("codex", false);
+    if (fault === "delayed") {
+      const original = f.tracker.loadEpic.bind(f.tracker);
+      f.tracker.loadEpic = async (id) => {
+        const spec = await original(id);
+        f.connected.set("claude", false);
+        return spec;
+      };
+    }
+    if (fault === "fanout") {
+      const original = f.tracker.loadEpic.bind(f.tracker);
+      f.tracker.loadEpic = async (id) => ({
+        ...(await original(id)),
+        subIssues: [
+          {
+            linearIssueId: "child",
+            identifier: "CHILD",
+            title: "Unprepared child",
+            description: "",
+            blockedBy: [],
+          },
+        ],
+      });
+    }
+    const runtime = intakeRuntime(f, {
+      onLinearIntake: (_session, result) => {
+        if (!result.ok) return;
+        if (fault === "project-owner") f.db.run("UPDATE work_item SET owner_user_id='different'");
+        if (fault === "repository-conflict")
+          f.db.run(
+            "INSERT INTO work_item_repository(item_id,owner,repo,remote_url) VALUES(?,'foreign','repo','https://github.com/foreign/repo.git')",
+            [result.items[0]!.id],
+          );
+      },
+    });
+    if (fault === "project-owner")
+      putWorkspaceUser(f.db, {
+        id: "different",
+        linearUserId: "different",
+        name: "Other",
+        email: "other@example.invalid",
+      });
+    try {
+      await expect(
+        runtime.intakeLinearTask("issue", "session", "session:session"),
+      ).rejects.toThrow();
+      expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
+      expect(f.db.query("SELECT * FROM onboarding_item_binding").all()).toEqual([]);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+for (const phase of ["spec", "dependencies", "transaction", "binding-row"] as const)
+  test(`canonical admission fences ${phase} and rolls back related writes`, async () => {
+    const f = await fixture();
+    await f.readiness.refresh(context, signal());
+    if (phase === "spec") {
+      const original = f.tracker.loadEpic.bind(f.tracker);
+      f.tracker.loadEpic = async (id) => ({
+        ...(await original(id)),
+        description: "Changed acceptance",
+      });
+    }
+    if (phase === "dependencies")
+      f.tracker.listDeps = async () => {
+        f.connected.set("codex", false);
+        return [];
+      };
+    const other = openDatabase(join(f.root, "db.sqlite"));
+    let assertions = 0;
+    const runtime = intakeRuntime(f, {
+      onboardingIntake: {
+        admission: () => f.readiness.admission(context),
+        assertAdmission(value) {
+          assertions++;
+          if (phase === "transaction" && assertions === 3)
+            other.run("UPDATE runner SET fence=fence+1");
+          if (assertions === 4) expect(f.db.inTransaction).toBe(true);
+          f.readiness.assertAdmission(value);
+        },
+      },
+      onLinearIntake(_session, result) {
+        if (phase === "binding-row" && result.ok) {
+          f.db.run("INSERT INTO job(queue,payload,run_at,created_at) VALUES('fixture','{}',0,0)");
+          const changed = { ...f.readiness.admission(context)!, fingerprint: "foreign" };
+          f.db.run("INSERT INTO onboarding_item_binding VALUES(?,?,?,?,?,?)", [
+            result.items[0]!.id,
+            "session",
+            0,
+            changed.revision,
+            changed.fingerprint,
+            JSON.stringify(changed),
+          ]);
+        }
+      },
+    });
+    try {
+      await expect(
+        runtime.intakeLinearTask("issue", "session", "session:session"),
+      ).rejects.toThrow();
+      expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
+      expect(f.db.query("SELECT * FROM job WHERE queue='fixture'").all()).toEqual([]);
+      expect(f.db.query("SELECT * FROM onboarding_item_binding").all()).toEqual([]);
+    } finally {
+      other.close();
+      await runtime.shutdown();
+    }
+  });
+
+test("readonly intake persists read permission and approved project scope without planner", async () => {
+  const f = await fixture();
+  const selected = f.preparation.read(context)!;
+  f.preparation.answer(context, f.binding, {
+    revision: selected.revision,
+    mode: "answer_repository",
+    repository: "acme/repo",
+  });
+  await f.readiness.refresh(context, signal());
+  const runtime = intakeRuntime(f, {
+    linearIntakeScope: (_session, snapshot) => snapshot,
+    onLinearIntake(_session, accepted) {
+      if (accepted.ok) f.db.run("UPDATE work_item SET owner_user_id='member'");
+    },
+  });
+  try {
+    const result = await runtime.intakeLinearTask("issue", "session", "session:session");
+    if (!result.ok) throw new Error();
+    expect(getTaskMode(f.db, result.items[0]!.id)).toBe("answer");
+    expect(readOnboardingItemBinding(f.db, result.items[0]!.id)).toMatchObject({
+      mode: "answer",
+      permission: "read",
+      userId: "member",
+    });
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("approved project child gets only its exact scoped onboarding binding", async () => {
+  const f = await fixture();
+  await f.readiness.refresh(context, signal());
+  const original = f.tracker.loadEpic.bind(f.tracker);
+  f.tracker.loadEpic = async (id) => ({
+    linearIssueId: "parent",
+    identifier: "PARENT",
+    title: "Parent",
+    description: "",
+    subIssues: [{ ...(await original(id)), blockedBy: [] }],
+  });
+  const runtime = intakeRuntime(f, { linearIntakeScope: () => f.spec });
+  try {
+    const result = await runtime.intakeLinearTask("issue", "session", "session:session");
+    if (!result.ok) throw new Error();
+    expect(result.items.map((item) => item.linearIssueId)).toEqual(["issue"]);
+    expect(readOnboardingItemBinding(f.db, result.items[0]!.id)?.issueId).toBe("issue");
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+for (const childState of ["completed", "canceled", "started"] as const)
+  test(`exact target intake handles ${childState} children conservatively`, async () => {
+    const f = await fixture();
+    const child = {
+      linearIssueId: "child",
+      identifier: "CHILD",
+      title: "Child",
+      description: "",
+      stateType: childState,
+      blockedBy: [],
+    };
+    const spec: EpicSnapshot = { ...f.spec, subIssues: [child] };
+    const hold = f.db
+      .query<{ fingerprint: string }, []>("SELECT fingerprint FROM workspace_assignment")
+      .get()!;
+    f.db.run("UPDATE workspace_assignment SET fingerprint=?", [
+      JSON.stringify({ ...JSON.parse(hold.fingerprint), spec }),
+    ]);
+    f.tracker.loadEpic = async () => spec;
+    const preparation = await f.preparation.refresh(context, signal());
+    f.preparation.answer(context, f.binding, { revision: preparation.revision, mode: "code" });
+    await f.readiness.refresh(context, signal());
+    const runtime = intakeRuntime(f);
+    try {
+      if (childState === "started") {
+        await expect(
+          runtime.intakeLinearTask("issue", "session", "session:session"),
+        ).rejects.toThrow();
+        expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
+      } else {
+        const result = await runtime.intakeLinearTask("issue", "session", "session:session");
+        if (!result.ok) throw new Error();
+        expect(result.items.map((item) => item.linearIssueId)).toEqual(["issue"]);
+        expect(readOnboardingItemBinding(f.db, result.items[0]!.id)?.issueFingerprint).toBe(
+          JSON.stringify(spec),
+        );
+      }
+    } finally {
+      await runtime.shutdown();
+    }
+  });
