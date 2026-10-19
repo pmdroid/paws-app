@@ -1828,4 +1828,19 @@ BEGIN
 END;
 `,
   },
+  {
+    id: "075_member_github_oauth",
+    sql: `
+CREATE TABLE member_github_oauth_request (
+  state_hash TEXT PRIMARY KEY,
+  browser_hash TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  session_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY(workspace_id,user_id) REFERENCES member_github_account(workspace_id,user_id)
+) STRICT;
+`,
+  },
 ];

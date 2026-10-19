@@ -29,3 +29,5 @@ export { createCommitPolicyForItem, MissingCommitAttributionError } from "./comm
 
 export { readWorkspaceJson } from "./administration";
 export { createMemberGitHubAccounts } from "./member-github";
+
+export { createMemberGitHubOAuth } from "./member-github-oauth";
