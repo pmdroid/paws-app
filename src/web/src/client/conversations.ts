@@ -15,8 +15,7 @@ export function canReadConversations(
 ): boolean {
   if (engineUrl === null || source !== "live") return false;
   try {
-    const url = new URL(engineUrl);
-    return url.origin === origin && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+    return new URL(engineUrl).origin === origin;
   } catch {
     return false;
   }
@@ -54,7 +53,7 @@ export function renderConversations(
   if (!model || model.state === "loading")
     return `${heading}<div class="empty" role="status">Loading Linear conversations…</div>`;
   if (model.state === "unavailable")
-    return `${heading}<div class="empty">Open the local Paws dashboard to read private Linear conversations.</div>`;
+    return `${heading}<div class="empty">Open this Paws dashboard to read its Linear conversations.</div>`;
   if (model.state === "error")
     return `${heading}<div class="empty" role="alert">Could not load Linear conversations. <button class="btn" type="button" data-action="refresh">Retry</button></div>`;
   const selected =

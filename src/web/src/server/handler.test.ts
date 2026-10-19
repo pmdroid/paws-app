@@ -120,6 +120,14 @@ describe("status HTTP stub", () => {
     expect(slash.status).toBe(200);
     expect(await slash.text()).toContain('<base href="/status/"');
 
+    const session = await fetch(
+      `${base}/status/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0?engine=demo`,
+      { redirect: "manual" },
+    );
+    expect(session.status).toBe(200);
+    expect(session.headers.get("location")).toBeNull();
+    expect(await session.text()).toContain("status-dashboard");
+
     const escaped = await fetch(`${base}/status/assets/..%2f..%2fpackage.json`);
     expect(escaped.status).toBe(404);
 
