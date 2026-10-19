@@ -1,3 +1,6 @@
+import { startBrowserOnboarding } from "./onboarding-start";
+import { createBrowserOnboarding, createLinearReconnect } from "./onboarding";
+import { runSetup } from "./setup";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
@@ -101,6 +104,7 @@ import {
   createIntakePollSource,
   createLinearTracker,
   openLinear,
+  readStoredToken,
   startCatchUpPoller,
   parseLinearAdministration,
   sessionCreatedKey,
@@ -140,8 +144,6 @@ import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./inta
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
-import { runSetup } from "./setup";
-import { createLinearReconnect } from "./linear-reconnect";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
@@ -183,6 +185,7 @@ export type PawsProcess = {
 };
 
 export type StartOptions = {
+  server?: Bun.Server<undefined>;
   noTunnel?: boolean;
   hostClock?: Clock;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy>;
@@ -224,7 +227,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       origin.hash !== ""
     )
       throw new Error("Public dashboard requires an HTTPS origin in PAWS_PUBLIC_URL.");
-    if (runtime.linearClientId === null || runtime.linearMode !== "agent-session")
+    if (runtime.linearMode !== "agent-session")
       throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
   const placeOnRunner = remotePlacementReady;
@@ -237,6 +240,42 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
+  const linearRevoked = () =>
+    isLinearAppRevoked(db, {
+      oauthClientId: runtime.linearClientId,
+      appUserId: runtime.linearViewerId,
+    });
+  if (
+    publicDashboard &&
+    (linearRevoked() ||
+      (runtime.linearAccessToken === null &&
+        readStoredToken(join(paths.secretsDir, "linear-oauth.json")) === null))
+  ) {
+    const reconnect = linearRevoked();
+    db.close();
+    return startBrowserOnboarding(
+      runtime,
+      tls!,
+      (server) => startPaws(envSource, { ...options, server }),
+      envSource,
+      reconnect,
+    );
+  }
+  if (publicDashboard && runtime.linearClientId === null) {
+    db.close();
+    throw new Error("Public dashboard requires the Linear app OAuth client.");
+  }
+  const reconnectLinear = publicDashboard
+    ? createBrowserOnboarding({
+        db,
+        home: paths.home,
+        origin: runtime.publicUrl!,
+        clientId: runtime.linearClientId,
+        clientSecret: runtime.linearClientSecret,
+        reconnect: true,
+        installed() {},
+      })
+    : null;
   const appActivation = createWorkspaceGitHubActivation(db, runtime.env.home, envSource);
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
@@ -588,6 +627,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let server: Bun.Server<undefined>;
   try {
     server = startServer({
+      server: options?.server,
+      onboarding: async (request) =>
+        reconnectLinear &&
+        !new URL(request.url).pathname.startsWith("/webhooks/") &&
+        linearRevoked()
+          ? reconnectLinear(request)
+          : null,
       hostname: env.host,
       executionControls: async (...args) =>
         executionControls?.handle(...args) ??

@@ -3,11 +3,7 @@ import { join } from "node:path";
 import { insertQueuedItem, migrate, openDatabase, recordLinearInstallation } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
-import {
-  createWorkspaceAccess,
-  issueWorkspaceBootstrap,
-  type WorkspaceAccess,
-} from "../../src/workspace";
+import { createWorkspaceAccess, type WorkspaceAccess } from "../../src/workspace";
 
 const root = process.env.PAWS_VERIFY_ROOT;
 if (root === undefined) throw new Error("Use scripts/verify-local.ts workspace-serve.");
@@ -57,7 +53,7 @@ ready.resolve(
             id: variables?.["id"],
             active: true,
             guest: false,
-            admin: false,
+            admin: variables?.["id"] === "owner",
             organization: { id: "fixture-org" },
             teams: {
               nodes: [{ id: "fixture-team" }],
@@ -107,10 +103,7 @@ ready.resolve(
     }) as typeof fetch,
   }),
 );
-writeFileSync(
-  join(root, "workspace-ui.json"),
-  JSON.stringify({ origin, bootstrap: issueWorkspaceBootstrap(db, "fixture-org") }),
-);
+writeFileSync(join(root, "workspace-ui.json"), JSON.stringify({ origin }));
 console.log(`Workspace browser fixture: ${origin}/status/`);
 const stopped = Promise.withResolvers<void>();
 const stop = () => stopped.resolve();

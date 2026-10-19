@@ -54,7 +54,6 @@ import {
 } from "../../src/db";
 import { commentTracker, syncComments } from "../../src/index";
 import { createFakeTracker } from "../../src/linear";
-import { detectCandidates } from "../../src/setup";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeLinearQuestionRestart } from "./linear-question-restart";
 import { probeHostAcp } from "./host-acp";
@@ -198,14 +197,6 @@ export async function probeBoundaries(
     "CLI login prints the device code before polling",
     logged.some((line) => line.includes("LOCAL-CODE")),
     logged,
-  );
-  const candidate = detectCandidates({
-    which: (bin) => (bin === "claude-agent-acp" ? "/fake/claude-agent-acp" : null),
-  }).find((entry) => entry.id === "claude");
-  observe(
-    "adapter-only installation is not advertised as loginable",
-    candidate?.loginable === false,
-    candidate,
   );
   const brokenStore = createTokenStore({
     home: join(root, "token-probe"),

@@ -328,7 +328,7 @@ describe("paws setup", () => {
           callback.searchParams.set("code", "fake-browser-code");
           const response = await fetch(callback);
           expect(response.status).toBe(200);
-          expect(await response.text()).toContain("Return to Paws setup");
+          expect(await response.text()).toContain("Return to Paws");
         },
       },
     });
@@ -482,7 +482,7 @@ describe("paws setup", () => {
       },
     });
     expect(result.code).toBe(1);
-    expect(result.stderr).toEqual(["Linear authorization was denied. Run paws setup again."]);
+    expect(result.stderr).toEqual(["Linear authorization was denied. Retry Linear authorization."]);
     expect(existsSync(linearTokenPath(scene.paths.secretsDir))).toBe(false);
     expect(existsSync(join(scene.paths.secretsDir, "linear-client.json"))).toBe(false);
     expect(existsSync(scene.paths.configFile)).toBe(false);
