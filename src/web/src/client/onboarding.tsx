@@ -90,7 +90,7 @@ function OnboardingPage() {
                 Try again
               </Button>
               <a
-                href="/auth/linear"
+                href={`/auth/linear?return=${encodeURIComponent(window.location.pathname.replace(/\/$/, ""))}`}
                 className="flex min-h-control items-center px-2 font-semibold underline underline-offset-4"
               >
                 Sign in with Linear
