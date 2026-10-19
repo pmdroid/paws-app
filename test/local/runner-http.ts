@@ -109,7 +109,8 @@ export async function probeRunnerHttp(
     db,
     authority,
     certificateRoot: authorityRoot,
-    disconnect: (fingerprint) => listener?.revoke(fingerprint),
+    disconnect: (fingerprint, permanent) =>
+      permanent ? listener?.revoke(fingerprint) : listener?.disconnect(fingerprint),
   });
   const routes = createRunnerHttp(control);
   const browser = Bun.serve({
