@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   closeSync,
   constants,
   fchmodSync,
@@ -199,10 +198,15 @@ export function createDirectWorkerSupervisor(options: {
         child = launch(executionId, home, log);
         child.on?.("exit", (code, signal) => {
           try {
-            appendFileSync(
-              logPath(executionId),
-              `Runner worker exited with ${signal ? `signal ${signal}` : `code ${code}`}\n`,
-            );
+            const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);
+            try {
+              writeSync(
+                exit,
+                `Runner worker exited with ${signal ? `signal ${signal}` : `code ${code}`}\n`,
+              );
+            } finally {
+              closeSync(exit);
+            }
           } catch {}
         });
         if (child.pid === undefined) throw new Error("Runner worker did not start");
