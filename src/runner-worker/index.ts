@@ -124,7 +124,7 @@ export async function executeRunnerCommand(
     (task && command.repository !== undefined) !== (options.repositorySnapshot !== undefined)
   )
     throw new Error("Invalid runner worker configuration");
-  for (const provider of [".codex", ".claude"]) {
+  for (const provider of [".codex", ".claude", ".grok"]) {
     mkdirSync(join(options.home, provider), { recursive: true, mode: 0o700 });
     chmodSync(join(options.home, provider), 0o700);
   }

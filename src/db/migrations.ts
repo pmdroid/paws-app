@@ -1764,4 +1764,39 @@ CREATE TABLE runner_host_status (
 ) STRICT;
 `,
   },
+  {
+    id: "070_grok_runner_login",
+    sql: `
+CREATE TABLE runner_member_account_grok (
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
+ connected INTEGER NOT NULL DEFAULT 0 CHECK(connected IN (0,1)),
+ cooldown_until INTEGER NOT NULL DEFAULT 0,
+ resolved_model TEXT,
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(runner_id,user_id,agent)
+) STRICT;
+INSERT INTO runner_member_account_grok SELECT * FROM runner_member_account;
+DROP TABLE runner_member_account;
+ALTER TABLE runner_member_account_grok RENAME TO runner_member_account;
+CREATE TABLE runner_login_grok (
+ id TEXT PRIMARY KEY REFERENCES runner_command(id),
+ runner_id TEXT NOT NULL REFERENCES runner(id),
+ workspace_id TEXT NOT NULL REFERENCES workspace(id),
+ user_id TEXT NOT NULL REFERENCES workspace_user(id),
+ agent TEXT NOT NULL CHECK(agent IN ('claude','codex','grok')),
+ state TEXT NOT NULL CHECK(state IN ('starting','waiting','connected','failed','cancelled','expired')),
+ expires_at INTEGER NOT NULL,
+ terminal TEXT NOT NULL DEFAULT '',
+ authorization TEXT,
+ input_id TEXT,
+ updated_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO runner_login_grok SELECT * FROM runner_login;
+DROP TABLE runner_login;
+ALTER TABLE runner_login_grok RENAME TO runner_login;
+CREATE INDEX runner_login_account ON runner_login(runner_id,user_id,agent,updated_at);
+`,
+  },
 ];
