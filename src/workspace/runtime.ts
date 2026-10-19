@@ -13,6 +13,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   memberships: LinearMembershipReads;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  memberGitHub?: { secretsDir: string; client?: { clientId: string; clientSecret: string } };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 }) {

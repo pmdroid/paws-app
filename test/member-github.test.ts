@@ -296,13 +296,21 @@ test("missing, corrupt or mismatched member secrets never grant repository acces
 test("real GitHub adapter checks user permissions rather than installation authority", async () => {
   const requests: { url: string; init?: RequestInit }[] = [];
   let status = 200;
-  let body: unknown = { permissions: { push: false } };
+  let body: unknown = { permissions: { pull: true, push: false } };
   const client = createMemberGitHubClient(async (input, init) => {
     requests.push({ url: String(input), init });
     return Response.json(body, { status });
   });
   expect(await client.repository("fixture-user-token", "owner/repo", "read", signal())).toBe(true);
   expect(await client.repository("fixture-user-token", "owner/repo", "push", signal())).toBe(false);
+  body = { private: true, permissions: { pull: false, push: false } };
+  expect(await client.repository("fixture-user-token", "owner/repo", "read", signal())).toBe(false);
+  for (const incomplete of [{}, { permissions: {} }, { permissions: { pull: "true" } }]) {
+    body = incomplete;
+    await expect(
+      client.repository("fixture-user-token", "owner/repo", "read", signal()),
+    ).rejects.toThrow("incomplete");
+  }
   body = { permissions: { push: true } };
   expect(await client.repository("fixture-user-token", "owner/repo", "push", signal())).toBe(true);
   body = {};

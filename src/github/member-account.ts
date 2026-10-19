@@ -1,5 +1,4 @@
 import type { FetchLike } from "./client";
-import { checkRepositoryReadAccess, checkRepositoryWriteAccess } from "./repository-access";
 
 export type MemberGitHubIdentity = { id: number; login: string };
 export interface MemberGitHubClient {
@@ -49,22 +48,36 @@ export function createMemberGitHubClient(http: FetchLike = fetch): MemberGitHubC
         throw new Error("A verified GitHub user is required.");
       return { id: Number(user.id), login: user.login };
     },
-    repository(token, repository, permission, signal) {
+    async repository(token, repository, permission, signal) {
       const parts = repository.split("/");
       if (
         parts.length !== 2 ||
         !parts.every((part) => /^[A-Za-z0-9_.-]+$/.test(part) && part !== "." && part !== "..")
       )
         throw new Error("A GitHub owner/repository is required.");
-      const check = permission === "push" ? checkRepositoryWriteAccess : checkRepositoryReadAccess;
-      return check({
-        owner: parts[0]!,
-        repo: parts[1]!,
-        token,
-        app: false,
-        signal,
-        fetch: checked,
-      });
+      signal.throwIfAborted();
+      const response = await checked(
+        `https://api.github.com/repos/${encodeURIComponent(parts[0]!)}/${encodeURIComponent(parts[1]!)}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+          redirect: "error",
+        },
+      );
+      signal.throwIfAborted();
+      if (response.status === 404) return false;
+      if (!response.ok)
+        throw new Error(`GitHub repository access check failed (${response.status})`);
+      const data = (await response.json()) as { permissions?: { pull?: unknown; push?: unknown } };
+      signal.throwIfAborted();
+      const allowed = permission === "read" ? data?.permissions?.pull : data?.permissions?.push;
+      if (typeof allowed !== "boolean")
+        throw new Error("GitHub returned incomplete repository permissions");
+      return allowed;
     },
   };
 }
