@@ -619,10 +619,14 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     if (bridge && options.readOnly !== true) {
       try {
         const report = await bridge.closeoutReport();
-        if (report !== undefined && Buffer.byteLength(report) <= 65_536)
+        if (report !== undefined && Buffer.byteLength(report) <= 65_536) {
           result.closeoutReport = report;
+          const runs = await bridge.closeoutRuns();
+          if (runs.length) result.closeoutRuns = runs;
+        }
       } catch {
         result.closeoutReport = undefined;
+        result.closeoutRuns = undefined;
       }
     }
     await bridge?.close();

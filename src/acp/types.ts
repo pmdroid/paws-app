@@ -1,4 +1,5 @@
 import type { GitCommitIdentity, GitCommitPolicy } from "../core";
+import type { CloseoutCommandRun } from "../closeout-spec";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
@@ -135,6 +136,8 @@ export interface RunAgentResult {
   authRequired: boolean;
   errorMessage?: string;
   closeoutReport?: string;
+  /** The agent's own `run_closeout` command output for the reported changes. */
+  closeoutRuns?: CloseoutCommandRun[];
   pid?: number;
   agentExited: boolean;
 }

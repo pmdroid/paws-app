@@ -106,7 +106,9 @@ export type {
 
 export type { PawsCommandRunner, LoggedCommandRequest } from "./run/exec";
 export {
+  CLOSEOUT_RUN_STREAM_LIMIT,
   createCloseoutSession,
+  type CloseoutCommandRun,
   type CloseoutSession,
   type CloseoutSessionOptions,
 } from "./session";

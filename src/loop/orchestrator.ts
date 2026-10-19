@@ -1460,6 +1460,7 @@ export class Orchestrator {
           sessionCloseoutPath(this.options.pawsRoot, pathId),
           head,
           executed.run.closeoutReport,
+          executed.run.closeoutRuns,
         );
       else markRunEnded(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
@@ -1678,7 +1679,7 @@ export class Orchestrator {
           async runLogged(request: Parameters<typeof loggedSessionCloseout>[1]) {
             assertCurrent();
             const saved = readSessionCloseout(sessionPath);
-            const result = loggedSessionCloseout(saved?.report, request);
+            const result = loggedSessionCloseout(saved, request);
             assertCurrent();
             return result;
           },
@@ -1754,7 +1755,12 @@ export class Orchestrator {
               deps.signal,
             );
           if (result.ok && this.options.remoteExecution)
-            writeSessionCloseout(sessionPath, result.head, result.closeoutReport);
+            writeSessionCloseout(
+              sessionPath,
+              result.head,
+              result.closeoutReport,
+              result.closeoutRuns,
+            );
           if (result.ok && !this.stopped(item.id)) {
             sessionProgress?.phase("verifying");
             report(
