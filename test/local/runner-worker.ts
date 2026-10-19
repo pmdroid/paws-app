@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { git } from "../../src/acp";
+import { encodePolicyFiles, git } from "../../src/acp";
+import { workspacePolicyFiles } from "../../src/closeout-spec";
 import { publishRunnerAnswer, readRunnerAnswer } from "../../src/runner-answers";
 import {
   publishRunnerJob,
@@ -213,6 +214,16 @@ export async function probeRunnerWorker(
         resultsGid: process.getgid!(),
         launch: firstAgent.launch,
         async answer(requestId) {
+          if (
+            readFileSync(join(firstOutput, "events.jsonl"), "utf8").includes(
+              JSON.stringify({ type: "closeout_policy", requestId }),
+            )
+          )
+            return {
+              answer: encodePolicyFiles(
+                workspacePolicyFiles(join(root, "work", first.executionId)),
+              ),
+            };
           const publication = artifactAnswer(firstOutput, requestId);
           if (publication) {
             writeFileSync(

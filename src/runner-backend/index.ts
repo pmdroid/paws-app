@@ -28,6 +28,7 @@ import {
   type AcpEvent,
   type RunAgentOptions,
   type RunAgentResult,
+  encodePolicyFiles,
 } from "../acp";
 import type { RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
@@ -492,6 +493,24 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "progress")
                 await input.postUpdate?.post(event.text).catch(() => undefined);
+              if (event.type === "closeout_policy") {
+                const policy = input.closeoutPolicy
+                  ? await input.closeoutPolicy().catch((error: unknown) => ({
+                      ok: false as const,
+                      message: error instanceof Error ? error.message : String(error),
+                    }))
+                  : {
+                      ok: false as const,
+                      message: "Paws has no trusted Closeout policy for this run",
+                    };
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: encodePolicyFiles(policy),
+                });
+              }
               if (event.type === "artifact") {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");

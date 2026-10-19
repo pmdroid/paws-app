@@ -30,6 +30,8 @@ export {
   parsePostUpdate,
   parsePullRequest,
   startAskTeamBridge,
+  decodePolicyFiles,
+  encodePolicyFiles,
   startHostToolBridge,
   type AskTeamBridge,
   type AskTeamContext,
@@ -86,6 +88,7 @@ export { isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";
+export type { PolicyFilesLoad } from "./ask-team";
 export { GitError, git } from "./git";
 export { prepareRepositorySnapshot } from "./repository-snapshot";
 export {

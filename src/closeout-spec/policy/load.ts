@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type {
   DecisionWarning,
   PolicyLoadResult,
@@ -71,22 +71,70 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
       ],
     };
   }
-  const fetched = input.git.fetchOriginMain(input.repo);
-  if (!fetched.ok) return blocked("repo", unavailable(fetched.stderr));
-  const commit = fetched.commit.trim().toLowerCase();
-  if (!isSha(commit)) return blocked("repo", "origin/main is unavailable");
-  const listed = input.git.lsRemoteOriginMain(input.repo);
-  if (!listed.ok) return blocked("repo", unavailable(listed.stderr));
-  const remote = remoteSha(listed.stdout);
-  if (remote === undefined || remote !== commit)
-    return blocked("repo", "origin/main is unavailable");
-
-  const staged = materialize(input.git, input.repo, commit);
+  const staged = originMainFiles(input);
   if (!staged.ok) return blocked("repo", staged.message);
   const loaded = loadMemoryPolicy(staged.files);
   if (!loaded.ok) return blocked("repo", loaded.message);
   if (loaded.absent) return loadGlobal(input);
   return { ok: true, policy: present("repo", loaded.policy), warnings: [] };
+}
+
+export type PolicyFilesLoad =
+  | { ok: true; absent: true }
+  | { ok: true; absent: false; digest: string; files: ReadonlyMap<string, Uint8Array> }
+  | { ok: false; message: string };
+
+export function loadPolicyFiles(input: LoadPolicyInput): PolicyFilesLoad {
+  if (input.policyRoot !== undefined) {
+    const root = resolve(input.policyRoot);
+    if (!input.policyRoot.trim() || !isDirectory(root))
+      return { ok: false, message: "local policy root is not a directory" };
+    const local = treeFiles(root);
+    return local.ok && local.absent
+      ? { ok: false, message: `local policy is missing: ${join(root, PUBLIC_POLICY_PATH)}` }
+      : local;
+  }
+  const staged = originMainFiles(input);
+  if (!staged.ok) return staged;
+  const loaded = loadMemoryPolicy(staged.files);
+  if (!loaded.ok) return loaded;
+  if (!loaded.absent)
+    return { ok: true, absent: false, digest: loaded.policy.digest, files: staged.files };
+  const home = resolveHome(input);
+  if (home === undefined) return { ok: false, message: "HOME is unset" };
+  if (!isDirectory(home)) return { ok: false, message: "policy root is not a directory" };
+  return treeFiles(home);
+}
+
+export function treeFiles(root: string): PolicyFilesLoad {
+  const loaded = loadHomePolicy(root);
+  if (!loaded.ok || loaded.absent) return loaded;
+  return {
+    ok: true,
+    absent: false,
+    digest: loaded.policy.digest,
+    files: new Map(
+      loaded.policy.files.map((file) => [
+        file.path,
+        new Uint8Array(readFileSync(join(root, file.path))),
+      ]),
+    ),
+  };
+}
+
+function originMainFiles(
+  input: LoadPolicyInput,
+): { ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string } {
+  const fetched = input.git.fetchOriginMain(input.repo);
+  if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
+  const commit = fetched.commit.trim().toLowerCase();
+  if (!isSha(commit)) return { ok: false, message: "origin/main is unavailable" };
+  const listed = input.git.lsRemoteOriginMain(input.repo);
+  if (!listed.ok) return { ok: false, message: unavailable(listed.stderr) };
+  const remote = remoteSha(listed.stdout);
+  if (remote === undefined || remote !== commit)
+    return { ok: false, message: "origin/main is unavailable" };
+  return materialize(input.git, input.repo, commit);
 }
 
 function loadGlobal(input: LoadPolicyInput): PolicyLoadOutcome {

@@ -16,7 +16,7 @@ import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
-import { loadPolicy } from "./policy/load";
+import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -176,6 +176,23 @@ const gitReader: GitReader = {
     return { ok: true, bytes: new Uint8Array(read.stdout) };
   },
 };
+
+export function trustedPolicyFiles(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): PolicyFilesLoad {
+  return loadPolicyFiles({
+    repo,
+    git: gitReader,
+    ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
+  });
+}
+
+export function workspacePolicyFiles(root: string): PolicyFilesLoad {
+  return treeFiles(root);
+}
 
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
 export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {

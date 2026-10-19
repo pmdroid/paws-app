@@ -37,6 +37,8 @@ import {
   type AcpEvent,
   type RunAgentOptions,
   type RunAgentResult,
+  decodePolicyFiles,
+  type PolicyFilesLoad,
 } from "../acp";
 import {
   readRunnerJob,
@@ -105,8 +107,29 @@ export async function runWithFollowUps(
   }
 }
 
+export function remoteCloseoutPolicy(
+  emit: (event: { type: "closeout_policy"; requestId: string }) => void,
+  answer: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>,
+  signal: AbortSignal,
+): () => Promise<PolicyFilesLoad> {
+  return async () => {
+    const requestId = randomUUID();
+    try {
+      emit({ type: "closeout_policy", requestId });
+      return decodePolicyFiles((await answer(requestId, signal)).answer);
+    } catch (error) {
+      signal.throwIfAborted();
+      return {
+        ok: false,
+        message: `Paws could not provide the Closeout policy: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  };
+}
+
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
+  | { type: "closeout_policy"; requestId: string }
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
@@ -434,6 +457,15 @@ export async function executeRunnerCommand(
       env: agentEnv,
       checkpointEnv: env,
       commitPolicy: command.type === "run" ? command.commitPolicy : undefined,
+      ...(command.type === "run" && options.answer
+        ? {
+            closeoutPolicy: remoteCloseoutPolicy(
+              emit,
+              options.answer,
+              options.signal ?? new AbortController().signal,
+            ),
+          }
+        : {}),
       checkpointIdentity:
         command.type === "run" && command.checkpointBot
           ? appBotCommitIdentity(command.checkpointBot)
