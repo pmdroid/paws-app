@@ -616,15 +616,7 @@ export async function openRunnerRuntime(options: {
       entry.execution.command.type !== "task" &&
       result.candidateSha !== entry.execution.command.repository.baseSha
     ) {
-      if (
-        entry.execution.command.type !== "run" ||
-        result.stopReason !== "end_turn" ||
-        result.cancelled ||
-        result.timedOut ||
-        result.authRequired ||
-        !result.agentExited ||
-        result.errorMessage
-      )
+      if (entry.execution.command.type !== "run" || result.cancelled || !result.agentExited)
         throw new Error("Unsafe runner candidate result");
       const token = await grant(entry);
       const credential = await remote(() =>
