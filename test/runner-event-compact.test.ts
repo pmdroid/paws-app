@@ -22,7 +22,9 @@ function imageRead(): AcpEvent {
 }
 
 test("a screenshot read becomes a small event that still describes the image", () => {
-  const compacted = compactAcpEvent(imageRead());
+  const original = imageRead();
+  const compacted = compactAcpEvent(original);
+  expect(JSON.stringify(original)).toContain(png);
   const text = JSON.stringify(compacted);
   expect(Buffer.byteLength(text)).toBeLessThan(262_144);
   expect(text).not.toContain("iVBORw0KGgo");
@@ -49,4 +51,34 @@ test("oversized text output is shortened to fit and small events are unchanged",
     update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
   } as AcpEvent;
   expect(compactAcpEvent(small)).toEqual(small);
+});
+
+test("text below the compaction budget is preserved", () => {
+  const event: AcpEvent = { type: "progress", text: "x".repeat(190_000) };
+  expect(compactAcpEvent(event)).toEqual(event);
+});
+
+test("UTF-8 and escaped text fit the serialized worker line limit", () => {
+  for (const text of ["日本語".repeat(80_000), "\u0000".repeat(240_000)]) {
+    const compacted = compactAcpEvent({ type: "progress", text });
+    expect(
+      Buffer.byteLength(`${JSON.stringify({ type: "acp", event: compacted })}\n`),
+    ).toBeLessThan(262_144);
+    expect(JSON.stringify(compacted)).toContain("characters omitted");
+  }
+});
+
+test("events with too many fields fall back to a bounded progress note", () => {
+  const event: AcpEvent = {
+    type: "session_update",
+    sessionId: "session",
+    update: {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "toolu_log",
+      rawOutput: Array.from({ length: 20_000 }, () => "x".repeat(20)),
+    },
+  };
+  const compacted = compactAcpEvent(event);
+  expect(compacted.type).toBe("progress");
+  expect(Buffer.byteLength(JSON.stringify(compacted))).toBeLessThan(200_000);
 });
