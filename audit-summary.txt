@@ -1,0 +1,13 @@
+Source: a2b8309a
+Command: bun --no-env-file scripts/verify-local.ts audit
+Result: FAILED
+396 passed; 4 failed.
+
+two items merge in dependency order after a question and a real failing check/fix
+{"states": ["awaiting_input", "queued"], "parked": ["awaiting_input", "queued"], "merges": 0}
+Linear work publishes GitHub pull requests with issue references and evidence
+{"publications": [], "pulls": []}
+default OAuth client is configured
+{"configuredDefault": "Iv1.paws-oauth-placeholder"}
+advertised Codex implementer completes independent review
+{"states": ["awaiting_input", "queued"], "merges": 0, "profiles": [{"agent": "codex", "model": "test-codex-implementer"}, {"agent": "codex", "model": "test-codex-implementer"}]}
