@@ -52,14 +52,44 @@ const assert = require("node:assert/strict");
       if (name === "desktop") await page.request.post(`${manifest.origin}/__append`);
       const [fullTranscript] = await Promise.all([context.waitForEvent("page"), link.click()]);
       await fullTranscript.waitForURL(
-        `${manifest.origin}/api/runs/transcript?run=${manifest.runId}`,
+        `${manifest.origin}/status/runs/${manifest.runId}/transcript`,
       );
-      await fullTranscript.waitForLoadState();
-      const fullText = await fullTranscript.locator("body").innerText();
+      fullTranscript.on("pageerror", (error) => errors.push(String(error)));
+      const log = fullTranscript.getByRole("log", { name: "Agent transcript" });
+      await log.getByText("Screenshot captured on the runner", { exact: true }).waitFor();
+      const fullText = await log.innerText();
       assert(fullText.includes("Opening the create VM dialog"));
       assert(fullText.includes("Launch Chromium"));
-      assert(fullText.includes("Screenshot captured on the runner"));
-      assert(!fullText.includes("private reasoning"));
+      assert(!(await fullTranscript.locator("body").innerText()).includes("private reasoning"));
+      assert.equal(await fullTranscript.getByRole("navigation").count(), 0);
+      const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 2;
+      await fullTranscript.waitForFunction(atBottom);
+      assert(await fullTranscript.evaluate(() => scrollY > 0));
+      const jump = fullTranscript.getByRole("button", { name: /Jump to latest message/ });
+      assert.equal(await jump.count(), 0);
+      await fullTranscript.screenshot({ path: path.join(root, `${name}-transcript-latest.png`) });
+      await fullTranscript.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+      await jump.waitFor();
+      const followUp = `Capture ${name} screenshot`;
+      await fullTranscript.request.post(
+        `${manifest.origin}/__append?tool=${encodeURIComponent(followUp)}`,
+      );
+      await log.getByText(`${followUp} · completed`, { exact: true }).waitFor();
+      assert(await fullTranscript.evaluate(() => scrollY < 8));
+      await fullTranscript.getByRole("button", { name: "Jump to latest message, 1 new" }).waitFor();
+      await fullTranscript.screenshot({ path: path.join(root, `${name}-transcript-scrolled.png`) });
+      await jump.click();
+      await fullTranscript.waitForFunction(atBottom);
+      await jump.waitFor({ state: "detached" });
+      assert(
+        await fullTranscript.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      );
+      if (name === "desktop") {
+        await fullTranscript.emulateMedia({ colorScheme: "dark" });
+        await fullTranscript.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+        await jump.waitFor();
+        await fullTranscript.screenshot({ path: path.join(root, "desktop-transcript-dark.png") });
+      }
       await fullTranscript.close();
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(root, `${name}.png`), fullPage: true });
@@ -68,6 +98,10 @@ const assert = require("node:assert/strict");
         inlineTranscriptHidden: true,
         toolVisible: true,
         fullTranscriptLink: true,
+        transcriptPageWithoutNavigation: true,
+        autoscrollsToLatest: true,
+        holdsPositionWhenScrolledBack: true,
+        jumpToLatest: true,
         privateReasoningHidden: true,
         noHorizontalOverflow: true,
         passed: true,

@@ -40,7 +40,52 @@ writeFileSync(
         update: { sessionUpdate: "tool_call", title: "Launch Chromium", status: "in_progress" },
       },
     }) +
-    "\n",
+    "\n" +
+    [
+      [
+        "Read src/vm/create-dialog.tsx",
+        'export function CreateVmDialog() {\n  const [name, setName] = useState("");\n  return <Dialog title="Create VM">…</Dialog>;\n}',
+      ],
+      [
+        "bun test src/vm",
+        "src/vm/create-dialog.test.tsx:\n✓ opens with an empty name [12.40ms]\n✓ rejects a duplicate name [8.11ms]\n✗ keeps the region after a validation error [5.02ms]\n\n 2 pass\n 1 fail",
+      ],
+      [
+        "Edit src/vm/create-dialog.tsx",
+        "Keep the selected region in form state when validation fails.",
+      ],
+      [
+        "bun test src/vm",
+        "src/vm/create-dialog.test.tsx:\n✓ opens with an empty name [11.87ms]\n✓ rejects a duplicate name [7.95ms]\n✓ keeps the region after a validation error [4.63ms]\n\n 3 pass\n 0 fail",
+      ],
+    ]
+      .map(
+        ([title, output], index) =>
+          message(
+            [
+              "Reading the dialog before changing it.",
+              "Running the dialog tests first.",
+              "One test fails: the region resets after a validation error. Fixing the form state.",
+              "The dialog keeps the region now. Running the suite again.",
+            ][index]!,
+          ) +
+          JSON.stringify({
+            t: new Date().toISOString(),
+            event: {
+              type: "session_update",
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: `tool-${index}`,
+                title,
+                kind: "execute",
+                status: "completed",
+                rawOutput: output,
+              },
+            },
+          }) +
+          "\n",
+      )
+      .join(""),
 );
 const provider = createLiveStatusProvider(db, {
   pawsHome: root,
@@ -50,8 +95,21 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
-    if (new URL(request.url).pathname === "/__append" && request.method === "POST") {
-      appendFileSync(file, message("Screenshot captured on the runner"));
+    const url = new URL(request.url);
+    if (url.pathname === "/__append" && request.method === "POST") {
+      const title = url.searchParams.get("tool");
+      appendFileSync(
+        file,
+        title === null
+          ? message("Screenshot captured on the runner")
+          : JSON.stringify({
+              t: new Date().toISOString(),
+              event: {
+                type: "session_update",
+                update: { sessionUpdate: "tool_call", title, status: "completed" },
+              },
+            }) + "\n",
+      );
       return Response.json({ ok: true });
     }
     return (
