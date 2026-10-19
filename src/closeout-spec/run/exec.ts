@@ -30,6 +30,7 @@ export type CommandRunnerOptions = {
 
 /** Extra fields the orchestrator sets so the log lands in the evidence directory. */
 export type LoggedCommandRequest = CommandRunRequest & {
+  itemId?: string;
   logFile: string;
   artifactPath: string;
   expectedHead: string;
