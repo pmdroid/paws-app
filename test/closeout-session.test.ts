@@ -100,6 +100,25 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
   expect(stale.pending).toEqual(["engine", "docs"]);
 });
 
+test("review reports expose both configured limits rather than an ordinary remaining scalar", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "retry:",
+    "  maxFailedAttemptsPerItem: 3",
+    "  scope: task",
+    "  maxFailedReviewAttempts: 12",
+    "items:",
+    review("src/**"),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "changed\n");
+  const report = JSON.parse(await createCloseoutSession(root).report());
+  expect(report.required[0]).toMatchObject({
+    remaining_attempts: null,
+    retry_limits: { max_failed_attempts_per_key: 3, max_failed_review_attempts: 12 },
+  });
+});
+
 test("a path miss is not required and is not run", async () => {
   const root = initRepo();
   const mark = join(root, "ran.txt");

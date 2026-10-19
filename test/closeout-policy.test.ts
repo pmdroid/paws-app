@@ -276,6 +276,27 @@ describe("policy errors", () => {
     expectBlocked(result, "repo", "retry is only allowed on the entry policy");
   });
 
+  test("the review cap is entry-only and absent fields preserve canonical identity", () => {
+    const text = 'specVersion: "0.1"\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task\n';
+    const legacy = present(origin({ [PUBLIC_POLICY_PATH]: text }).result);
+    const capped = present(
+      origin({ [PUBLIC_POLICY_PATH]: text + "  maxFailedReviewAttempts: 12\n" }).result,
+    );
+    expect(legacy.digest).toBe(
+      "sha256:57b6d478e6a18c6877982e4a7d37b0c01219b4b27fdc87e540f45917a6dcb977",
+    );
+    expect(policyCanonicalJson(legacy)).not.toContain("maxFailedReviewAttempts");
+    expect(policyCanonicalJson(capped)).toContain('"maxFailedReviewAttempts":12');
+    const withoutCap = { ...capped, files: legacy.files, retry: legacy.retry };
+    expect(policyCanonicalJson(withoutCap)).toBe(policyCanonicalJson(legacy));
+    const imported = origin({
+      [PUBLIC_POLICY_PATH]:
+        'specVersion: "0.1"\nimports:\n  - path: .agents/child.yaml\n    as: child\n',
+      ".agents/child.yaml": text + "  maxFailedReviewAttempts: 12\n",
+    });
+    expectBlocked(imported.result, "repo", "retry is only allowed on the entry policy");
+  });
+
   test("import escape, missing file, cycle, and duplicate name", () => {
     expectBlocked(
       origin({
