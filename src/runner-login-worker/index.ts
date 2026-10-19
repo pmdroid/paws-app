@@ -1,3 +1,4 @@
+import { runGrokLogin } from "./grok";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -7,7 +8,7 @@ import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import { RunnerLoginInputSchema, type RunnerLoginUpdate } from "../runner-protocol";
 
 export async function runProviderLogin(options: {
-  agent: "claude" | "codex";
+  agent: "claude" | "codex" | "grok";
   home: string;
   signal: AbortSignal;
   emit(update: RunnerLoginUpdate): void;
@@ -31,7 +32,9 @@ export async function runProviderLogin(options: {
   };
   options.signal.throwIfAborted();
   try {
-    if (options.agent === "claude") {
+    if (options.agent === "grok") {
+      await runGrokLogin({ ...options, env });
+    } else if (options.agent === "claude") {
       state.state = "waiting";
       state.inputId = randomUUID();
       const decoder = new TextDecoder();
@@ -166,13 +169,15 @@ export async function runProviderLogin(options: {
         await exited;
       }
     }
-    const checked = await checkDeveloperLogin({
-      cli: options.agent,
-      env,
-      run: options.loginCommand,
-    });
+    if (options.agent !== "grok") {
+      const checked = await checkDeveloperLogin({
+        cli: options.agent,
+        env,
+        run: options.loginCommand,
+      });
+      if (!checked.loggedIn) throw new Error("Provider did not confirm sign-in");
+    }
     options.signal.throwIfAborted();
-    if (!checked.loggedIn) throw new Error("Provider did not confirm sign-in");
     options.emit({ state: "connected", terminal: "", authorization: null, inputId: null });
   } catch {
     options.emit({ state: "failed", terminal: "", authorization: null, inputId: null });
