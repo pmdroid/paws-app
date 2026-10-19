@@ -156,7 +156,22 @@ export async function probeRunnerWorker(
   const firstOutput = output(1);
   const checkpointEnvironment = join(root, "checkpoint-env.json");
   const monitor = fileURLToPath(new URL("../fixtures/runner-checkpoint-env.py", import.meta.url));
+  const screenshot = "iVBORw0KGgo".padEnd(400_000, "A");
   const firstAgent = launch(1, [
+    {
+      type: "update",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "toolu_screenshot",
+        status: "completed",
+        content: [
+          { type: "content", content: { type: "image", data: screenshot, mimeType: "image/png" } },
+        ],
+        rawOutput: [
+          { type: "image", source: { type: "base64", data: screenshot, media_type: "image/png" } },
+        ],
+      },
+    },
     ...Array.from({ length: 3 }, () => ({
       type: "update",
       update: {
@@ -371,6 +386,15 @@ export async function probeRunnerWorker(
     fake.env,
   );
   const retainedJournal = readFileSync(join(firstOutput, "events.jsonl"));
+  assert(!retainedJournal.toString().includes(screenshot));
+  assert(retainedJournal.toString().includes("image/png image omitted"));
+  assert(
+    retainedJournal
+      .toString()
+      .trim()
+      .split("\n")
+      .every((line) => Buffer.byteLength(`${line}\n`) <= 262_144),
+  );
   const retainedResult = readFileSync(join(firstOutput, "result.json"));
   await assert.rejects(
     execute({
