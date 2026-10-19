@@ -1,6 +1,5 @@
 import { startBrowserOnboarding } from "./onboarding-start";
-import { createBrowserOnboarding, createLinearReconnect } from "./onboarding";
-import { runSetup } from "./setup";
+import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
@@ -1687,9 +1686,6 @@ if (import.meta.main) {
   }
   if (command === "doctor") {
     process.exit(await doctorMain());
-  }
-  if (command === "setup") {
-    process.exit(await runSetup(argv, { linearReconnect: createLinearReconnect() }));
   }
   if (command === "login" && argv[1] === "github") {
     process.exit(await loginGitHubCommand(argv.slice(2)));
