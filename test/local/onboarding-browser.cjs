@@ -58,6 +58,10 @@ const assert = require("node:assert/strict");
       });
       const page = await context.newPage();
       page.on("pageerror", (error) => errors.push(String(error)));
+      page.on("console", (message) => {
+        if (message.text().includes("PRIVATE"))
+          errors.push("Private challenge appeared in console");
+      });
       if (name === "desktop") {
         await page.goto(manifest.origin + manifest.assignment);
         await page.waitForURL(manifest.origin + manifest.page);
@@ -106,6 +110,10 @@ const assert = require("node:assert/strict");
       await context.unroute("**/api/workspaces/member-github");
       await page.getByRole("button", { name: "Refresh GitHub connection" }).click();
       await connect.waitFor();
+      if (name === "desktop")
+        await page
+          .getByText("Select your VM before signing in to Claude and Codex.", { exact: true })
+          .waitFor();
       await page.request.post(`${manifest.origin}/__vm-fixture`);
       await page.reload();
       const vm = page.getByRole("combobox", { name: "Your paired VM" });
@@ -129,6 +137,48 @@ const assert = require("node:assert/strict");
       await page.getByText("Selected VM: Member VM 1", { exact: true }).waitFor();
       await page.reload();
       await page.getByText("Selected VM: Member VM 1", { exact: true }).waitFor();
+      const accounts = page.getByRole("region", { name: "Your agent accounts" });
+      await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture`);
+      await page
+        .getByRole("region", { name: "Private Claude sign-in" })
+        .getByText("PRIVATE CLAUDE CHALLENGE", { exact: true })
+        .waitFor();
+      const broad = await (
+        await page.request.get(
+          `${manifest.origin}/api/workspaces/onboarding/agents?session=session&generation=0`,
+        )
+      ).text();
+      assert(
+        !broad.includes("PRIVATE") &&
+          !broad.includes("terminal") &&
+          !broad.includes("authorization"),
+      );
+      assert(!page.url().includes("PRIVATE"));
+      assert(!(await page.evaluate(() => JSON.stringify(localStorage))).includes("PRIVATE"));
+      await page.getByLabel("Claude sign-in reply").fill("PRIVATE INPUT");
+      await page.getByRole("button", { name: "Send reply", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+      await page
+        .getByRole("region", { name: "Private Claude sign-in" })
+        .waitFor({ state: "detached" });
+      await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture?mode=failed`);
+      await page
+        .getByRole("region", { name: "Private Claude sign-in" })
+        .waitFor({ state: "detached" });
+      await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture?mode=expired`);
+      await page
+        .getByRole("region", { name: "Private Claude sign-in" })
+        .waitFor({ state: "detached" });
+      await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture`);
+      await page.getByText("PRIVATE CLAUDE CHALLENGE", { exact: true }).waitFor();
       await page.request.post(`${manifest.origin}/__vm-fixture?mode=remove`);
       await page.reload();
       await vm.waitFor();
@@ -136,12 +186,43 @@ const assert = require("node:assert/strict");
       await vm.selectOption({ label: "Member VM 2" });
       await page.getByRole("button", { name: "Use this VM" }).click();
       await page.getByText("Selected VM: Member VM 2", { exact: true }).waitFor();
+      assert.equal(await page.getByText("PRIVATE CLAUDE CHALLENGE", { exact: true }).count(), 0);
+      await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture?mode=connected`);
+      await page
+        .getByRole("region", { name: "Private Claude sign-in" })
+        .waitFor({ state: "detached" });
+      await accounts.getByRole("button", { name: "Sign in to Codex", exact: true }).click();
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture`);
+      const codex = page.getByRole("region", { name: "Private Codex sign-in" });
+      await codex.getByText("PRIVATE DEVICE CODE ABCD-1234", { exact: true }).waitFor();
+      await page.screenshot({
+        path: path.join(root, `${name}-private-code-light.png`),
+        fullPage: true,
+      });
+      await page.getByRole("combobox", { name: "Appearance" }).selectOption("dark");
+      await page.screenshot({
+        path: path.join(root, `${name}-private-code-dark.png`),
+        fullPage: true,
+      });
+      await page.getByRole("combobox", { name: "Appearance" }).selectOption("light");
+      await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__agent-fixture?mode=connected`);
+      await page.getByText("Both agent accounts are ready", { exact: true }).waitFor();
+      const readiness = await (
+        await page.request.get(
+          `${manifest.origin}/api/workspaces/onboarding/agents?session=session&generation=0`,
+        )
+      ).json();
+      assert.equal(readiness.ready, true);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(root, `${name}-light.png`), fullPage: true });
       await page.getByRole("combobox", { name: "Appearance" }).selectOption("dark");
       await page.screenshot({ path: path.join(root, `${name}-dark.png`), fullPage: true });
       await page.reload();
-      await page.getByRole("heading", { name: "Your VM" }).waitFor();
+      await page.getByRole("heading", { name: "Your VM", exact: true }).waitFor();
       await context.clearCookies();
       await page.reload();
       const signIn = page.getByRole("link", { name: "Sign in with Linear" });
@@ -149,7 +230,7 @@ const assert = require("node:assert/strict");
       assert(!(await page.locator("body").innerText()).includes("PAS-339"));
       await signIn.click();
       await page.waitForURL(manifest.origin + manifest.page);
-      await page.getByRole("heading", { name: "Your VM" }).waitFor();
+      await page.getByRole("heading", { name: "Your VM", exact: true }).waitFor();
       if (name === "desktop")
         fs.writeFileSync(path.join(root, "session.json"), JSON.stringify(await context.cookies()));
       await context.route("**/api/workspaces/onboarding?*", (route) =>
@@ -172,6 +253,10 @@ const assert = require("node:assert/strict");
         outageClearsIssue: true,
         keyboardRetry: true,
         signedOutShellAndSafeReturn: true,
+        privateAgentCodesRedactedFromBroadState: true,
+        agentCancelFailureExpiryRetry: true,
+        bothAgentsReady: true,
+        vmChangeClearsPrivateChallenge: true,
         vmSelectionPersistsAndInvalidates: true,
         connectReconnectUnlink: true,
         linkedIdentityNotRepositoryPermission: true,

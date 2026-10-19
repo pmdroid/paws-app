@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Check, GitBranch, Monitor, RefreshCw } from "lucide-react";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { Button } from "./ui/button";
+import { OnboardingAgents } from "./onboarding-agents";
 import { NativeSelect } from "./ui/native-select";
 
 export type Onboarding = {
@@ -351,6 +352,14 @@ function OnboardingPage() {
                 ))}
               </ol>
             </section>
+            {state.vm.selectedRunner ? (
+              <OnboardingAgents
+                key={state.vm.selectedRunner.id}
+                runnerId={state.vm.selectedRunner.id}
+              />
+            ) : (
+              <p className="text-sm">Select your VM before signing in to Claude and Codex.</p>
+            )}
             <div className="space-y-3 text-sm leading-6">
               <p>
                 Your assignment waits for setup. You can close this page and reopen it from your
