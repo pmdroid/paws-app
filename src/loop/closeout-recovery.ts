@@ -52,8 +52,17 @@ export function recoveryQuestion(
   recovery: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
   error?: string,
 ): string {
+  const unsupported =
+    /\.ya?ml: \S* ?must NOT have additional properties \('([^']+)' was unexpected\)/.exec(
+      recovery.summary,
+    )?.[1];
   return [
     "Closeout needs your help.",
+    ...(unsupported
+      ? [
+          `The Closeout policy on origin/main uses \`${unsupported}\`, which this version of Paws does not support. Update Paws, then reply retry.`,
+        ]
+      : []),
     ...(error ? [error] : []),
     recovery.summary,
     `Base: ${recovery.base}. Head: ${recovery.head}. Policy: ${recovery.policyDigest || "unavailable"}.`,
