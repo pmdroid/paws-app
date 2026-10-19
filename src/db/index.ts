@@ -321,3 +321,13 @@ export {
   attributionItemScope,
 } from "./github-attribution";
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
+export {
+  beginMemberGitHubLink,
+  memberGitHubRecord,
+  requireMemberGitHubSession,
+  revokeMemberGitHub,
+  saveMemberGitHubLink,
+  unlinkMemberGitHub,
+  type MemberGitHubBinding,
+  type MemberGitHubRecord,
+} from "./member-github";
