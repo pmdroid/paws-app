@@ -70,6 +70,7 @@ export async function probeRunnerPairing(
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const client = await createRunnerKey(join(root, "client"));
+  now = Date.now();
   const disconnected: string[] = [];
   const control = createRunnerControl({
     db,
