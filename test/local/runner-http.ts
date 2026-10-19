@@ -164,12 +164,16 @@ export async function probeRunnerHttp(
       oversized: oversized.status,
       plaintext: plaintext.status,
     });
+    const memberPairing = await control.beginPairing({ name: "Member VM", csr: client.csr });
     const memberApproval = await send(
       "/api/runners/pairings/approve",
-      { code: pairing.code },
+      { code: memberPairing.code },
       { "x-fixture-user": "member" },
     );
-    assert.equal(memberApproval.status, 403);
+    assert.equal(memberApproval.status, 200);
+    const memberClaim = control.claimPairing(memberPairing.id, memberPairing.claim);
+    assert.equal(memberClaim.status, "approved");
+    if (memberClaim.status !== "approved") throw new Error("Member approval missing");
     const inspected = await send("/api/runners/pairings/inspect", { code: pairing.code });
     assert.equal(JSON.parse(inspected.body).name, "Linux VM");
     const approval = await send("/api/runners/pairings/approve", { code: pairing.code });
@@ -203,6 +207,13 @@ export async function probeRunnerHttp(
         return (await routes.runner(input, peer)) ?? new Response(null, { status: 404 });
       },
     });
+    const memberRenewal = await exchange(listener.port, "/v1/certificate", tls.cert, {
+      body: { csr: client.csr },
+      certificate: memberClaim.certificate,
+      key: readFileSync(client.keyPath, "utf8"),
+    });
+    assert.equal(memberRenewal.status, 200);
+    assert.equal(JSON.parse(memberRenewal.body).runnerId, JSON.parse(memberApproval.body).runnerId);
     const renewed = await exchange(listener.port, "/v1/certificate", tls.cert, {
       body: { csr: client.csr },
       certificate: identity.certificate,
