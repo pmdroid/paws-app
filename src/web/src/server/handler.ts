@@ -254,6 +254,8 @@ function pageResponse(request: Request, staticDir: string | null, csrfToken?: st
   const relative =
     url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
   if (!relative) return text("Not found", 404);
+  if (/^onboarding\/[A-Za-z0-9_-]{1,128}\/(0|[1-9][0-9]{0,9})\/?$/.test(relative))
+    return pageHtml(staticDir, "onboarding.html", csrfToken);
   if (/^runs\/[A-Za-z0-9_-]{1,128}\/transcript\/?$/.test(relative))
     return pageHtml(staticDir, "transcript.html", csrfToken);
   if (relative === "index.html" || !isPublicFile(relative)) return indexHtml(staticDir, csrfToken);
