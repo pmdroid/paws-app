@@ -80,6 +80,7 @@ const memberships = {
 };
 const configured = "https://paws.example.invalid";
 const assignments = createWorkspaceAssignments({
+  onboarding: {},
   db,
   origin: configured,
   clientId: "client",
