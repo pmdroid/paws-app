@@ -1,3 +1,4 @@
+import { handleOnboardingAgents, type OnboardingAgents } from "./onboarding-agents";
 import { handleOnboardingVm } from "./onboarding-vm";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
@@ -34,6 +35,7 @@ import {
 export type WorkspaceAccessOptions = {
   db: Database;
   assignments?: WorkspaceAssignments;
+  onboardingAgents?: () => OnboardingAgents | undefined;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -61,6 +63,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
+  const agentChallenges = new Map<string, { binding: string; expiresAt: number }>();
   const authorizeLinearEvent = createWorkspaceLinearActions({
     db: options.db,
     organizationId: options.installedOrganization.id,
@@ -188,6 +191,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(path);
     if (
       !onboardingPage &&
+      !path.startsWith("/api/workspaces/onboarding/agents") &&
       ![
         "/api/workspaces/onboarding",
         "/api/workspaces/onboarding/vm",
@@ -358,6 +362,20 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);
+    if (path.startsWith("/api/workspaces/onboarding/agents")) {
+      const dependencies = options.onboardingAgents?.();
+      if (!options.assignments || !dependencies)
+        return json({ error: "Agent onboarding is unavailable." }, 503);
+      return handleOnboardingAgents(request, {
+        db: options.db,
+        assignments: options.assignments,
+        dependencies,
+        challenges: agentChallenges,
+        ...access,
+        origin,
+        now,
+      });
+    }
     if (path === "/api/workspaces/onboarding/vm") {
       if (!options.assignments) return json({ error: "Onboarding is unavailable." }, 404);
       return handleOnboardingVm(request, {
