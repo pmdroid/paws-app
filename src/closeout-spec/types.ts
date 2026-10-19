@@ -23,7 +23,7 @@ export const SPEC_VERSION = "0.1" as const;
  * `pmdroid/closeout` commit whose `schema/*.schema.json` and `spec/0.1.md`
  * these types follow. Short id; the full id is `baac33e8715aac9d646796035ecc9ba7aaee02ef`.
  */
-export const SPEC_COMMIT = "baac33e" as const;
+export const SPEC_COMMIT = "4d0b6d8" as const;
 
 export type SpecVersion = typeof SPEC_VERSION;
 
@@ -45,6 +45,7 @@ export type RetryScope = "task" | "candidate";
 export type RetryPolicy = {
   /** Integer from 1 to 100000. */
   maxFailedAttemptsPerItem: number;
+  maxFailedReviewAttempts?: number;
   /**
    * `candidate` shares `itemId`, `policyDigest`, `base`, and `head`.
    * `task` shares `itemId`, `policyDigest`, and `task` across every base and head.
