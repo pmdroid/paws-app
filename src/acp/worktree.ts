@@ -173,6 +173,20 @@ export async function removeWorktree(options: {
   await git(["--git-dir", gitDir, "worktree", "remove", "--force", path]);
 }
 
+export async function worktreeMergedInto(path: string, heads: readonly string[]): Promise<boolean> {
+  if (heads.length === 0) return false;
+  const status = await git(["-C", path, "status", "--porcelain"]).catch(() => null);
+  if (status === null || status.trim()) return false;
+  for (const head of heads) {
+    const contained = await git(["-C", path, "merge-base", "--is-ancestor", "HEAD", head]).then(
+      () => true,
+      () => false,
+    );
+    if (contained) return true;
+  }
+  return false;
+}
+
 async function isRegisteredWorktree(gitDir: string, path: string): Promise<boolean> {
   const listed = await git(["--git-dir", gitDir, "worktree", "list", "--porcelain"]);
   const resolved = path.endsWith("/") ? path.slice(0, -1) : path;

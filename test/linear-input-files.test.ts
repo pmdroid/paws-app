@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitCheckpoint, git } from "../src/acp";
+import { commitCheckpoint, git, reconstructAcpPrompt } from "../src/acp";
 import { listLinearInputs } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
 import { createLinearInputLoader, inputSources } from "../src/loop";
@@ -143,4 +143,56 @@ test("foreign URLs, excessive files, and canceled turns cannot acquire host cred
   ).rejects.toThrow("file limit");
   expect(env.requests).toHaveLength(0);
   env.db.close();
+});
+
+test("a Linear link that cannot be downloaded stays a link and the turn continues", async () => {
+  for (const status of [401, 403, 404]) {
+    const workspace = await mkdtemp(join(tmpdir(), "paws-inputs-"));
+    const files = createLinearFileTransfer({
+      client: {
+        async query() {
+          throw new Error("no upload");
+        },
+      },
+      auth: {
+        async ensureFresh() {
+          return "host-token-private";
+        },
+      },
+      fetch: async (url) =>
+        String(url).includes("missing")
+          ? new Response("denied", { status })
+          : new Response(bytes, { headers: { "content-type": "image/png" } }),
+    });
+    const missing = "https://uploads.linear.app/workspace/missing.png?signature=secret";
+    const result = await createLinearInputLoader({
+      db: tempDb(),
+      files,
+      cacheDir: join(tempHome(), "inputs"),
+    })({
+      workspace,
+      sessionId: "session",
+      turnId: `turn-${status}`,
+      signal: new AbortController().signal,
+      prompt: `Test output mentions ${missing} and the design is ![design](${URL})`,
+    });
+    expect(result.inputFiles).toHaveLength(1);
+    expect(result.prompt).toContain("https://uploads.linear.app/workspace/missing.png");
+    expect(result.prompt).not.toContain(`(${URL})`);
+  }
+});
+
+test("replayed agent output is not scanned for Linear files, replayed requests are", async () => {
+  const prompt = reconstructAcpPrompt(`Now see ${URL}?signature=current`, [
+    { kind: "request", body: "Earlier ![mock](https://uploads.linear.app/workspace/mock.png)" },
+    {
+      kind: "tool_result",
+      body: "(pass) falls back from https://uploads.linear.app/workspace/fake?signature=secret",
+    },
+    { kind: "response", body: "See https://uploads.linear.app/workspace/agent.png" },
+  ]);
+  expect([...inputSources(prompt).keys()].sort()).toEqual([
+    URL,
+    "https://uploads.linear.app/workspace/mock.png",
+  ]);
 });

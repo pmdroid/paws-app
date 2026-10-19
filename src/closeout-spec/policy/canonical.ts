@@ -41,6 +41,9 @@ export function policyCanonicalJson(policy: {
     body.retry = {
       maxFailedAttemptsPerItem: policy.retry.maxFailedAttemptsPerItem,
       scope: policy.retry.scope,
+      ...(policy.retry.maxFailedReviewAttempts !== undefined
+        ? { maxFailedReviewAttempts: policy.retry.maxFailedReviewAttempts }
+        : {}),
     };
   }
   if (policy.setup.length > 0) body.setup = policy.setup.map(setupJson);

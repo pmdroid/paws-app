@@ -15,6 +15,7 @@ import tempfile
 spec = importlib.util.spec_from_file_location("paws_release", pathlib.Path(__file__).with_name("release.py"))
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+SAFE_NAME = re.compile(r"[A-Za-z0-9@._+-]+")
 
 
 def read_package_file(path, limit):
@@ -99,12 +100,12 @@ def pack(arguments):
             if base.is_symlink() or not base.is_dir():
                 raise ValueError("Runtime source and dependencies must be directories")
             for current, directories, files in os.walk(base, followlinks=False):
-                directories[:] = sorted(name for name in directories if not name.startswith(".") or name == ".bin")
+                directories[:] = sorted(name for name in directories if (not name.startswith(".") or name == ".bin") and (directory == "src" or SAFE_NAME.fullmatch(name)))
                 for name in directories:
                     if (pathlib.Path(current) / name).is_symlink():
                         raise ValueError("Linked package directories are unsupported")
                 for name in sorted(files):
-                    if name.startswith("."):
+                    if name.startswith(".") or directory == "node_modules" and not SAFE_NAME.fullmatch(name) and not (pathlib.Path(current) / name).is_symlink():
                         continue
                     path = pathlib.Path(current) / name
                     if path.parent == source / "node_modules/.bin" and name in provider_targets:

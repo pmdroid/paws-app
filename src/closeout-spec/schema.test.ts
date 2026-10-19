@@ -20,7 +20,7 @@ import {
 
 const SCHEMA_DIR = new URL("./schema/", import.meta.url).pathname;
 
-const COMMIT_FULL = "baac33e8715aac9d646796035ecc9ba7aaee02ef";
+const COMMIT_FULL = "4d0b6d871ca29b5f3d39868b2db80498e21e6e74";
 
 type Manifest = {
   specVersion: string;
@@ -33,7 +33,7 @@ describe("closeout spec schemas", () => {
   test("vendored schema hashes match the manifest", () => {
     const manifest = readManifest();
     expect(SPEC_VERSION).toBe("0.1");
-    expect(SPEC_COMMIT).toBe("baac33e");
+    expect(SPEC_COMMIT).toBe("4d0b6d8");
     expect(manifest.specVersion).toBe(SPEC_VERSION);
     expect(manifest.commit).toBe(SPEC_COMMIT);
     expect(manifest.commitFull).toBe(COMMIT_FULL);

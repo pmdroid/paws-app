@@ -52,6 +52,7 @@ import {
   RunnerAnswersSchema,
   RunnerEventDeliverySchema,
   RunnerEventReceiptSchema,
+  RunnerFollowUpsSchema,
   RunnerGrantRequestSchema,
   RunnerGrantSchema,
   RunnerGrantTokenSchema,
@@ -506,6 +507,25 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       for (const answer of response.answers) {
         if (answer.sequence <= previous) throw new Error("Runner answer sequence is invalid.");
         previous = answer.sequence;
+      }
+      return response;
+    },
+    async followUps(runId: string, generation: number, after: number, grantToken: string) {
+      identifier.parse(runId);
+      const body = RunnerAnswersRequestSchema.parse({ generation, after });
+      RunnerGrantTokenSchema.parse(grantToken);
+      const response = RunnerFollowUpsSchema.parse(
+        await authenticated(
+          `/v1/runs/${encodeURIComponent(runId)}/follow-ups`,
+          "POST",
+          body,
+          grantToken,
+        ),
+      );
+      let previous = after;
+      for (const followUp of response.followUps) {
+        if (followUp.sequence <= previous) throw new Error("Runner follow-up sequence is invalid.");
+        previous = followUp.sequence;
       }
       return response;
     },

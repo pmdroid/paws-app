@@ -135,8 +135,6 @@ export function createRunnerLogin(options: {
         });
         const at = now();
         for (const sessionId of inputs.keys()) read(sessionId);
-        if (principal.authenticatedAt > at || at - principal.authenticatedAt > 15 * 60_000)
-          throw new Error("Sign in again before connecting your account");
         const existing = db
           .query<{ id: string }, [string, string, string, number]>(
             "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND state IN ('starting','waiting') AND expires_at>?",

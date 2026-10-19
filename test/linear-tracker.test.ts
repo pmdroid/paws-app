@@ -190,7 +190,7 @@ describe("linear tracker", () => {
       ["thought", FIRST_ACTIVITY_BODY],
       [
         "error",
-        "Paws did not start this work. Only an active member of the Paws workspace can delegate issues to Paws.",
+        "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
       ],
     ]);
   });

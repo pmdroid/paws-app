@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { demoStatus } from "../demo";
 import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
+import { checkKey } from "./closeout";
 
 function model(patch: Partial<RenderModel> = {}): RenderModel {
   return {
@@ -11,19 +12,19 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
     ...patch,
   };
 }
 
 describe("status views", () => {
-  test("overview follows the current run after recovery and falls back to the item before a new run", () => {
+  test("overview follows only the current run after recovery and summarizes queued work", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs[0];
     const item = snapshot.items.find((entry) => entry.id === run?.itemId);
     if (!run || !item) throw new Error("missing fixture");
     item.state = "running";
     item.runId = "current-run";
+    item.blockers = [];
     snapshot.items = [item];
     snapshot.runs = [
       { ...run, id: "old-run", state: "done" },
@@ -33,16 +34,17 @@ describe("status views", () => {
     snapshot.verdicts = [];
     snapshot.mergeQueue = [];
     const running = render(model({ snapshot })).content;
-    expect(running).toContain('href="#/runs/current-run"');
-    expect(running).not.toContain('href="#/runs/old-run"');
+    expect(running).toContain('href="/runs/current-run"');
+    expect(running).not.toContain('href="/runs/old-run"');
     expect(running).toContain('class="st running"');
     item.state = "queued";
     item.runId = null;
     const queued = render(model({ snapshot })).content;
-    expect(queued).toContain(`href="#/issues/${item.id}"`);
-    expect(queued).not.toContain('href="#/runs/old-run"');
-    expect(queued).not.toContain('href="#/runs/current-run"');
-    expect(queued).toContain('class="st queued"');
+    expect(queued).toContain("1 queued");
+    expect(queued).toContain('href="/issues"');
+    expect(queued).not.toContain('href="/runs/old-run"');
+    expect(queued).not.toContain('href="/runs/current-run"');
+    expect(queued).not.toContain("Working now</h2>\n      <ul");
   });
 
   test("terminal closeout outcomes override a stale verifying run in both views", () => {
@@ -59,7 +61,7 @@ describe("status views", () => {
       item.state = decision === "blocked" ? "needs_human" : "exhausted";
       run.state = "verifying";
       const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
-      expect(html).toContain("Verification");
+      expect(html).toContain("<h3>Closeout</h3>");
       expect(html).toContain(detail);
       expect(html).not.toContain("Closeout is verifying this candidate.");
     }
@@ -77,27 +79,95 @@ describe("status views", () => {
       snapshot,
       engineUrl: "https://engine.example/api/status",
       route: { view: "runs", id: run.id },
+      closeout: { attempt: {}, open: { [checkKey(verdict.itemId, 1, check.id)]: true }, wrap: {} },
     });
     expect(render(input).content).toContain('href="https://engine.example/api/closeout-artifact?');
     check.state = "running";
     check.active = true;
     const live = render(input).content;
     expect(live).not.toContain("/api/closeout-artifact?");
-    expect(live).toContain("Download log");
+    expect(live).toContain("Download output");
   });
 
-  test("overview lists delivery entries and issue links without a demo banner", () => {
+  test("overview leads with actions and active work instead of delivery and raw events", () => {
     const view = render(model());
     expect(view.top).not.toContain("Demo data");
     expect(view.top).not.toContain("Refresh");
     expect(view.banner).toBe("");
-    expect(view.content).toContain("Q-41");
-    expect(view.content).toContain("Export job worker");
+    expect(view.content).toContain("Needs you");
+    expect(view.content).toContain("Working now");
+    expect(view.content).toContain('href="/questions/Q-41"');
+    expect(view.content).toContain("Answer question");
+    expect(view.content).toContain("Closeout requirement unit exhausted (3/3)");
+    expect(view.content).toContain("2 need you · 1 working · 1 queued · 1 waiting to merge");
+    expect(view.content).toContain('href="/runs/r-102"');
     expect(view.content).toContain("All issues");
-    expect(view.content).toContain('href="#/issues/ENG-101"');
-    expect(view.content).not.toContain('href="#/queue"');
-    expect(view.content).not.toContain("#/epics");
+    expect(view.content).not.toContain("Delivery");
+    expect(view.content).not.toContain("Recent events");
+    expect(view.content).not.toContain("Export job worker");
+    expect(view.content).not.toContain("Admin export UI");
+    expect(view.content).not.toContain('href="/queue"');
+    expect(view.content).not.toContain("/epics");
     expect(view.content).not.toContain("javascript:");
+    expect(view.content.match(/Signed URL delivery/g)).toHaveLength(1);
+    expect(view.content.match(/Retention policy enforcement job/g)).toHaveLength(1);
+  });
+
+  test("overview includes sign-off and input holds without a question and excludes blocked or paused work", () => {
+    const snapshot = demoStatus();
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    snapshot.items[0]!.state = "signoff";
+    snapshot.items[2]!.blockers = [snapshot.items[0]!.id];
+    const html = render(model({ snapshot })).content;
+    expect(html).toContain("Review sign-off");
+    expect(html).toContain("Waiting for your input.");
+    expect(html).toContain("0 working");
+    expect(html).not.toContain('href="/runs/r-102"');
+    snapshot.items[2]!.blockers = [];
+    snapshot.runs[0]!.state = "paused";
+    const paused = render(model({ snapshot })).content;
+    expect(paused).toContain("This run is paused.");
+    expect(paused).toContain("0 working");
+  });
+
+  test("overview does not count stale runs and keeps completed work out of active work", () => {
+    const snapshot = demoStatus();
+    snapshot.questions = [];
+    snapshot.items = snapshot.items.filter((item) => item.state === "merged");
+    const html = render(model({ snapshot })).content;
+    expect(html).toContain("0 need you · 0 working");
+    expect(html).toContain("Nothing needs your attention.");
+    expect(html).toContain("No work is running right now.");
+    expect(html).not.toContain("Audit event schema v2");
+  });
+
+  test("overview keeps questions reachable with no items and gives new work a useful empty state", () => {
+    const snapshot = demoStatus();
+    snapshot.items = [];
+    const html = render(model({ snapshot })).content;
+    expect(html).toContain('href="/questions/Q-41"');
+    snapshot.questions = [];
+    expect(render(model({ snapshot })).content).toContain("Delegate an issue to Paws in Linear.");
+  });
+
+  test("overview bounds the active list and links to all remaining work", () => {
+    const snapshot = demoStatus();
+    const item = snapshot.items[2]!;
+    snapshot.items = Array.from({ length: 9 }, (_, index) => ({
+      ...item,
+      id: `WORK-${index}`,
+      title: `Task ${index}`,
+      runId: null,
+      blockers: [],
+    }));
+    snapshot.questions = [];
+    snapshot.verdicts = [];
+    const html = render(model({ snapshot })).content;
+    expect(html).toContain("9 working");
+    expect(html).toContain("View all 9 working issues");
+    expect(html.match(/class="overview-row"/g)).toHaveLength(6);
+    expect(html).not.toContain("Task 6");
   });
 
   test("issue filters keep in-progress work out of Done", () => {
@@ -127,19 +197,19 @@ describe("status views", () => {
     const detail = render(model({ route: { view: "issues", id: "ENG-101" } })).content;
     expect(detail).toContain("Jonas Berg");
     expect(detail).toContain("Audit log export");
-    expect(detail).toContain('href="#/runs/r-101"');
+    expect(detail).toContain('href="/runs/r-101"');
     expect(detail).toContain("PR #479");
-    expect(detail).toContain('href="#/issues/ENG-99"');
-    expect(detail).toContain('href="#/issues/ENG-104"');
+    expect(detail).toContain('href="/issues/ENG-99"');
+    expect(detail).toContain('href="/issues/ENG-104"');
   });
 
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
-    expect(html).toContain("Verification");
+    expect(html).toContain("<h3>Closeout</h3>");
     expect(html).toContain("Exhausted");
-    expect(html).toContain('data-action="select-check"');
-    expect(html).toContain('value="#/runs/r-101"');
-    expect(html).not.toContain("#/verdicts");
+    expect(html).toContain('data-action="toggle-check"');
+    expect(html).toContain('value="/runs/r-101"');
+    expect(html).not.toContain("/verdicts");
   });
 
   test("issues, runs, and questions each render", () => {
@@ -189,7 +259,7 @@ describe("status views", () => {
     expect(view.banner.toLowerCase()).not.toContain("sample");
   });
 
-  test("an empty live database tells the operator to label a Linear issue", () => {
+  test("an empty live database tells the operator to delegate a Linear issue", () => {
     const snapshot = demoStatus();
     snapshot.source = "live";
     snapshot.items = [];
@@ -201,22 +271,22 @@ describe("status views", () => {
     const view = render(model({ snapshot, via: "engine", engineUrl: "http://127.0.0.1:8787" }));
     expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
-    expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
+    expect(view.content).toContain("No issues yet. Delegate an issue to Paws in Linear.");
     expect(view.content).not.toContain("Audit log export");
   });
 
   test("retired hashes fall back to issues, the matching run, or overview", () => {
     const snapshot = demoStatus();
     expect(parseRoute("")).toEqual({ view: "overview" });
-    expect(parseRoute("#/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
-    expect(parseRoute("#/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
-    expect(parseRoute("#/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
-    expect(parseRoute("#/epics/x")).toEqual({ view: "issues", id: null });
-    expect(parseRoute("#/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
-    expect(parseRoute("#/queue")).toEqual({ view: "overview" });
-    expect(parseRoute("#/verdicts/ENG-101", snapshot)).toEqual({ view: "runs", id: "r-101" });
-    expect(parseRoute("#/verdicts/missing", snapshot)).toEqual({ view: "runs", id: "missing" });
-    expect(parseRoute("#/verdicts/ENG-101")).toEqual({ view: "runs", id: null });
+    expect(parseRoute("/issues/ENG-104")).toEqual({ view: "issues", id: "ENG-104" });
+    expect(parseRoute("/runs/r-102")).toEqual({ view: "runs", id: "r-102" });
+    expect(parseRoute("/questions/Q-41")).toEqual({ view: "questions", id: "Q-41" });
+    expect(parseRoute("/epics/x")).toEqual({ view: "issues", id: null });
+    expect(parseRoute("/epics/ENG-98", snapshot)).toEqual({ view: "issues", id: null });
+    expect(parseRoute("/queue")).toEqual({ view: "overview" });
+    expect(parseRoute("/verdicts/ENG-101", snapshot)).toEqual({ view: "runs", id: "r-101" });
+    expect(parseRoute("/verdicts/missing", snapshot)).toEqual({ view: "runs", id: "missing" });
+    expect(parseRoute("/verdicts/ENG-101")).toEqual({ view: "runs", id: null });
   });
 });
 

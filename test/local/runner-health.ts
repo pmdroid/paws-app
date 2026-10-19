@@ -133,8 +133,6 @@ export async function probeRunnerHealth(
     for (const actor of [
       { ...principal, userId: memberId },
       { ...principal, workspaceId: workspaceId() },
-      { ...principal, authenticatedAt: now - 16 * 60_000 },
-      { ...principal, authenticatedAt: now + 1 },
     ])
       assert.throws(() => health.request(actor, runnerId, requestInput));
     assert.throws(() =>
@@ -154,15 +152,11 @@ export async function probeRunnerHealth(
       { ...principal, userId: memberId },
     );
     assert.equal(memberWrite?.status, 403);
-    observe(
-      "health administration uses current workspace membership and recent authentication",
-      true,
-      {
-        deniedActors: 4,
-        unknownRequestFieldDenied: true,
-        memberRead: true,
-      },
-    );
+    observe("health administration uses current workspace membership", true, {
+      deniedActors: 2,
+      unknownRequestFieldDenied: true,
+      memberRead: true,
+    });
     assert.equal(health.list(principal, runnerId).lastSeenAt, null);
     work.heartbeat(runnerId);
     assert.equal(health.list(principal, runnerId).lastSeenAt, now);

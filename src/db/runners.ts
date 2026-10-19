@@ -106,6 +106,7 @@ export type RunnerOverview = RunnerRecord & {
   os: { id: string | null; version: string | null } | null;
   version: string | null;
   idle: boolean;
+  slots: { used: number; total: number };
 };
 
 /** Keeps only the latest host sample per runner. */
@@ -163,9 +164,11 @@ export function listRunnerOverview(
     runnerVersion: string | null;
     reportedAt: number | null;
     busy: number;
+    used: number;
+    total: number;
   };
   return db
-    .query<Row, [number, string]>(
+    .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
     h.cpu_percent AS cpuPercent,h.memory_total_bytes AS memoryTotalBytes,
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
@@ -174,11 +177,14 @@ export function listRunnerOverview(
     h.reported_at AS reportedAt,
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
-       AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy
+       AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
+    (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) +
+    (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used,
+    COALESCE((SELECT capacity FROM runner_capacity c WHERE c.runner_id=r.id),1) AS total
     FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
     WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
     )
-    .all(now, workspaceId)
+    .all(now, now, now, workspaceId)
     .map((row) => ({
       id: row.id,
       workspaceId: row.workspaceId,
@@ -206,6 +212,7 @@ export function listRunnerOverview(
           : { id: row.osId, version: row.osVersion },
       version: row.runnerVersion,
       idle: row.busy === 0,
+      slots: { used: row.used, total: row.total },
     }));
 }
 

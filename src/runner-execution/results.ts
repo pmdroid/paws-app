@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { ExecutionIdSchema } from "./jobs";
-import { RunnerArtifactSchema } from "../runner-protocol";
+import { RUNNER_ARTIFACT_LIMITS, RunnerArtifactSchema } from "../runner-protocol";
 
 export interface RunnerResults {
   root: string;
@@ -79,7 +79,7 @@ export function readRunnerResultFile(
     : name.startsWith("artifact-") &&
         name.endsWith(".bytes") &&
         RunnerArtifactSchema.shape.id.safeParse(name.slice(9, -6)).success
-      ? 10 * 1024 * 1024
+      ? RUNNER_ARTIFACT_LIMITS.video
       : null;
   if (limit === null) throw new Error("Invalid runner result filename");
   const directory = openResults(options, executionId);

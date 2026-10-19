@@ -101,20 +101,20 @@ function fixture() {
   };
 }
 
-test("only recently authenticated owners and administrators can revalidate the App", async () => {
+test("signed-in owners and administrators can revalidate the App regardless of sign-in age", async () => {
   const f = fixture();
   try {
     for (const role of ["owner", "admin"]) expect((await f.request(role)).status).toBe(200);
     for (const role of ["member", "observer"]) expect((await f.request(role)).status).toBe(403);
-    expect((await f.request("admin", { stale: true })).status).toBe(403);
+    expect((await f.request("admin", { stale: true })).status).toBe(200);
     expect((await f.request("admin", { csrf: false })).status).toBe(403);
     expect((await f.request("admin", { origin: "https://other.example" })).status).toBe(403);
-    expect(listJobs(f.db)).toHaveLength(2);
+    expect(listJobs(f.db)).toHaveLength(3);
     expect(
       f.db
         .query("SELECT * FROM workspace_access_audit WHERE action='github.integration.revalidated'")
         .all(),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(workspaceMember(f.db, "workspace", "admin")?.role).toBe("admin");
   } finally {
     f.db.close();

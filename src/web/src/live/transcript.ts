@@ -3,34 +3,15 @@ import { join, sep } from "node:path";
 import type { StatusActivity } from "../contract";
 import { redactCloseoutText } from "../server/artifact";
 
-export function readAgentTranscript(
-  home: string | undefined,
-  runId: string,
-  fallbackAt: string,
-  env: NodeJS.ProcessEnv,
-): StatusActivity[] {
-  return [...transcriptEntries(home, runId, fallbackAt, env, false)].slice(-200);
-}
-
 export function* fullAgentTranscript(
   home: string | undefined,
   runId: string,
   fallbackAt: string,
   env: NodeJS.ProcessEnv,
 ): Generator<StatusActivity> {
-  yield* transcriptEntries(home, runId, fallbackAt, env, true);
-}
-
-function* transcriptEntries(
-  home: string | undefined,
-  runId: string,
-  fallbackAt: string,
-  env: NodeJS.ProcessEnv,
-  full: boolean,
-): Generator<StatusActivity> {
   if (!home || !/^[A-Za-z0-9_-]+$/.test(runId)) return;
-  yield* readFile(home, `${runId}-classify`, fallbackAt, env, full);
-  yield* readFile(home, runId, fallbackAt, env, full);
+  yield* readFile(home, `${runId}-classify`, fallbackAt, env);
+  yield* readFile(home, runId, fallbackAt, env);
 }
 
 function* readFile(
@@ -38,7 +19,6 @@ function* readFile(
   runId: string,
   fallbackAt: string,
   env: NodeJS.ProcessEnv,
-  full: boolean,
 ): Generator<StatusActivity> {
   let fd: number | undefined;
   try {
@@ -51,15 +31,11 @@ function* readFile(
     );
     const info = fstatSync(fd);
     if (!info.isFile() || info.size > 16_777_216) return;
-    const start = full ? 0 : Math.max(0, info.size - 131_072);
-    const bytes = Buffer.alloc(info.size - start);
-    const size = readSync(fd, bytes, 0, bytes.length, start);
-    const source = bytes.subarray(0, size).toString("utf8");
-    const lines = source.split("\n");
-    if (start) lines.shift();
+    const bytes = Buffer.alloc(info.size);
+    const size = readSync(fd, bytes, 0, bytes.length, 0);
+    const lines = bytes.subarray(0, size).toString("utf8").split("\n");
     let pending: StatusActivity | undefined;
     let message = false;
-    let messageBoundary = start === 0;
     const terminal = new Map<string, { at: string; title: string; text: string }>();
     const tools = new Map<string, { title?: string; kind?: string }>();
     for (const line of lines) {
@@ -129,30 +105,21 @@ function* readFile(
         } else if (event?.type === "prompt_complete")
           text = `Agent turn ended: ${event.stopReason}`;
         if (typeof text !== "string" || !text.length || (!chunk && !text.trim())) continue;
-        if (chunk && !messageBoundary) continue;
-        if (!chunk) messageBoundary = true;
         const entryText = text;
         if (chunk && message && pending) pending.text += entryText;
         else {
-          if (pending)
-            yield {
-              ...pending,
-              text: redactTranscriptText(pending.text, env).slice(full ? 0 : -65_536),
-            };
+          if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
           pending = { at, kind, text: entryText };
         }
         message = chunk;
       } catch {}
     }
-    if (pending)
-      yield { ...pending, text: redactTranscriptText(pending.text, env).slice(full ? 0 : -65_536) };
+    if (pending) yield { ...pending, text: redactTranscriptText(pending.text, env) };
     for (const output of terminal.values())
       yield {
         at: output.at,
         kind: "tool",
-        text: redactTranscriptText(`${output.title}\n${output.text}`, env).slice(
-          full ? 0 : -65_536,
-        ),
+        text: redactTranscriptText(`${output.title}\n${output.text}`, env),
       };
   } catch {
     return;

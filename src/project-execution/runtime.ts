@@ -1,11 +1,14 @@
 import type { Database } from "bun:sqlite";
 import type { CommandBus, RepositoryBinding } from "../core";
 import {
+  applyWorkItemEvent,
   auditWorkspaceAccess,
   bindWorkItemRepository,
   enqueueJobOnce,
+  enqueueOutboxOnce,
   getLinearSession,
   getWorkItem,
+  immediate,
   submitCommand,
   syncWorkspaceMember,
   workspaceForOrganization,
@@ -167,6 +170,17 @@ export function createApprovedProjects(input: {
       });
     }
     authority(readProjectApproval(db, approval.id)!);
+  }
+  function restartable(approval: ProjectApproval, claim: Claim): boolean {
+    return (
+      approval.stoppedAt === null &&
+      claim.epicId !== null &&
+      db
+        .query(
+          "SELECT 1 FROM work_item WHERE delegation_id=? AND state NOT IN ('failed','cancelled')",
+        )
+        .get(claim.epicId) === null
+    );
   }
   function canDispatch(epicId: string): boolean {
     const claim = db
@@ -428,17 +442,55 @@ export function createApprovedProjects(input: {
         });
         return false;
       };
-      if (claim.sessionId !== event.sessionId) return deny();
+      const takeover = claim.sessionId !== event.sessionId;
+      if (takeover && (event.action !== "created" || !restartable(approval, claim))) {
+        if (event.action === "created" && approval.stoppedAt === null) {
+          const identifier =
+            approval.preview.project.issues.find((issue) => issue.linearIssueId === claim.issueId)
+              ?.identifier ?? "This issue";
+          enqueueOutboxOnce(db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: event.sessionId,
+            idempotencyKey: `project-running:${event.sessionId}`,
+            payload: {
+              sessionId: event.sessionId,
+              kind: "response",
+              body: `${identifier} is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.`,
+              id: crypto.randomUUID(),
+            },
+            now: now(),
+          });
+        }
+        return deny();
+      }
       try {
-        if (event.action === "prompted" || event.signal === "stop") {
+        if (takeover || event.action === "prompted" || event.signal === "stop") {
           const actor = db
             .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-            .get(event.actorId ?? "");
+            .get(event.actorId ?? (takeover ? sessionCreator(event.payload) : null) ?? "");
           const member = actor ? workspaceMember(db, approval.workspaceId, actor.id) : null;
           if (!member?.active || member.role === "observer") return deny();
         }
         if (event.signal === "stop") return true;
         await refreshAuthority(approval, AbortSignal.timeout(30_000));
+        if (takeover) {
+          const moved = immediate(db, () => {
+            if (!restartable(approval, claim)) return false;
+            for (const item of db
+              .query<{ id: string }, [string]>(
+                "SELECT id FROM work_item WHERE delegation_id=? AND state='failed'",
+              )
+              .all(claim.epicId!))
+              applyWorkItemEvent(db, item.id, "cancel");
+            db.run(
+              "UPDATE project_approval_issue SET session_id=?,delegation_id=NULL WHERE approval_id=? AND issue_id=? AND session_id=?",
+              [event.sessionId, claim.approvalId, claim.issueId, claim.sessionId],
+            );
+            return true;
+          });
+          if (!moved) return deny();
+        }
         return true;
       } catch {
         return deny();
@@ -600,7 +652,7 @@ export function createApprovedProjects(input: {
               }
               await input.startSession(
                 { kind: "issue", id: claim.issueId },
-                new URL("/status/#/projects", input.origin).href,
+                new URL("/status/", input.origin).href,
                 context.signal,
                 (event) => {
                   if (!context.isCurrent()) throw new Error("The project dispatch claim changed.");
@@ -628,4 +680,14 @@ export function createApprovedProjects(input: {
       });
     },
   };
+}
+
+function sessionCreator(payload: string): string | null {
+  try {
+    const creator = (JSON.parse(payload) as { agentSession?: { creatorId?: unknown } }).agentSession
+      ?.creatorId;
+    return typeof creator === "string" ? creator : null;
+  } catch {
+    return null;
+  }
 }

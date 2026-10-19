@@ -79,11 +79,6 @@ export async function handleWorkspaceAdministration(
     !validWorkspaceCsrf(request, options.session)
   )
     return deny("CSRF token required.");
-  if (
-    options.now - principal.authenticatedAt > 15 * 60_000 ||
-    options.now < principal.authenticatedAt
-  )
-    return deny("Sign in again before changing workspace access.");
   let body: unknown;
   try {
     body = await readWorkspaceJson(request);

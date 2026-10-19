@@ -1764,4 +1764,44 @@ CREATE TABLE runner_host_status (
 ) STRICT;
 `,
   },
+  {
+    id: "070_drop_runner_seat",
+    sql: `
+ALTER TABLE runner_agent_policy DROP COLUMN seat;
+ALTER TABLE runner_execution_usage DROP COLUMN seat;
+DROP TABLE workspace_runner_policy;
+`,
+  },
+  {
+    id: "071_evidence",
+    sql: `
+CREATE TABLE evidence (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  run_id TEXT NOT NULL,
+  check_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL CHECK(attempt>=1),
+  media_type TEXT NOT NULL CHECK(media_type IN ('video/webm','video/mp4','image/png','image/jpeg','image/webp')),
+  size_bytes INTEGER NOT NULL CHECK(size_bytes>0),
+  sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+  display_name TEXT NOT NULL,
+  head_commit TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX evidence_item ON evidence (item_id, created_at);
+`,
+  },
+  {
+    id: "072_runner_follow_up",
+    sql: `
+CREATE TABLE runner_follow_up (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence>0),
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation,sequence)
+) STRICT;
+`,
+  },
 ];

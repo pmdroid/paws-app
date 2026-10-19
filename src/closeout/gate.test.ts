@@ -10,6 +10,7 @@ import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run
 import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
 import { reviewRequirements } from "./index";
+import { addReview } from "../closeout-spec";
 
 const exec = promisify(execFile);
 const TASK = "ENG-123";
@@ -227,6 +228,95 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  test("a failed fix round is retried with its reason and accepts on the next attempt", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([commandUntilOk("test")]),
+    });
+    const fixes: number[] = [];
+    const summaries: string[] = [];
+    const committing = committingFixer(repo.dir, fixes, "ok.txt", "ok\n");
+    const result = await runCloseoutGate({
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          summaries.push(request.summary);
+          if (request.fixAttempt === 1) throw new Error("runner import refused");
+          return committing.applyFix(request);
+        },
+      },
+    });
+    expect(result.outcome).toBe("accepted");
+    expect(result.fixAttempts).toBe(2);
+    expect(result.evaluations).toBe(2);
+    expect(fixes).toEqual([2]);
+    expect(summaries[1]).toContain("runner import refused");
+    await repo.cleanup();
+  });
+
+  test("fix rounds that never commit exhaust the budget and report each reason", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
+    });
+    const attempts: number[] = [];
+    const result = await runCloseoutGate({
+      maxFixAttempts: 3,
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          attempts.push(request.fixAttempt);
+          return { ok: false, reason: `agent error ${request.fixAttempt}` };
+        },
+      },
+    });
+    expect(result.outcome).toBe("exhausted");
+    expect(result.fixAttempts).toBe(3);
+    expect(result.evaluations).toBe(1);
+    expect(attempts).toEqual([1, 2, 3]);
+    for (const attempt of attempts) expect(result.summary).toContain(`agent error ${attempt}`);
+    await repo.cleanup();
+  });
+
+  test("a cancelled fix stops without retrying", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
+    });
+    const attempts: number[] = [];
+    const result = await runCloseoutGate({
+      maxFixAttempts: 3,
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          attempts.push(request.fixAttempt);
+          return { ok: false, reason: "fix cancelled" };
+        },
+      },
+    });
+    expect(result.outcome).toBe("fix_failed");
+    expect(attempts).toEqual([1]);
+    await repo.cleanup();
+  });
+
   test("an explicit fix cap stops after two failed fixes", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
@@ -337,6 +427,213 @@ describe("closeout gate", () => {
     expect(result.summary).toContain("test");
     expect(result.decision?.candidate.task).toBe(TASK);
     await repo.cleanup();
+  });
+
+  test("progress-aware reviews pass the old host cap and preserve task evidence between gate calls", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("review")]).replace(
+        "  scope: task",
+        "  scope: task\n  maxFailedReviewAttempts: 12",
+      ),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    let reviews = 0;
+    const fixes: number[] = [];
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            reviews += 1;
+            return {
+              session: `review-${reviews}`,
+              model: "codex",
+              provider: "fixture",
+              findings: [
+                {
+                  severity: "P1" as const,
+                  location: `src/file-${reviews}.ts:12:4`,
+                  explanation: "New failing finding",
+                  evidence: "Reproduced",
+                },
+              ],
+            };
+          },
+        },
+        fixer: committingFixer(repo.dir, fixes),
+      };
+      const result = await runCloseoutGate(input);
+      expect(result.outcome).toBe("exhausted");
+      expect(result.fixAttempts).toBe(11);
+      expect(reviews).toBe(12);
+      expect(result.summary).toContain("12 of 12 allowed failed review attempts");
+      expect(
+        (await runCloseoutGate({ ...input, candidate: { ...candidate(), session: "resumed" } }))
+          .outcome,
+      ).toBe("exhausted");
+      expect(reviews).toBe(12);
+      const bypass = await evaluateCandidate({
+        ...input,
+        head: result.head,
+        bypasses: [
+          {
+            questionId: "human-approval",
+            taskId: TASK,
+            base: repo.head,
+            head: result.head,
+            policyDigest: result.decision!.policy.digest!,
+            checkIds: ["review"],
+            actor: "pascal",
+            reason: "Explicit approval",
+          },
+        ],
+      });
+      expect(bypass.outcome).toBe("accepted");
+      expect(bypass.decision?.decision).toBe("blocked");
+      const resumed = await runCloseoutGate({
+        ...input,
+        retryBaseline: await snapshotRetryBaseline(TASK, repo.pawsHome),
+        reviewer: {
+          async review() {
+            return {
+              session: "human-resumed-review",
+              model: "codex",
+              provider: "fixture",
+              findings: [],
+            };
+          },
+        },
+      });
+      expect(resumed.outcome).toBe("accepted");
+      expect(await snapshotRetryBaseline(TASK, repo.pawsHome)).toHaveLength(13);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("an exhausted command still collects review evidence needed for bypass recovery", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test"), reviewItem("review")], 1),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    let reviews = 0;
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            reviews += 1;
+            return {
+              session: "independent-reviewer",
+              model: "codex",
+              provider: "fixture",
+              findings: [],
+            };
+          },
+        },
+      };
+      const exhausted = await evaluateCandidate(input);
+      expect(reviews).toBe(1);
+      expect(exhausted.decision?.items.map((item) => [item.id, item.state])).toEqual([
+        ["test", "exhausted"],
+        ["review", "passed"],
+      ]);
+      const bypass = await evaluateCandidate({
+        ...input,
+        bypasses: [
+          {
+            questionId: "human-approval",
+            taskId: TASK,
+            base: repo.head,
+            head: repo.head,
+            policyDigest: exhausted.decision!.policy.digest!,
+            checkIds: ["test"],
+            actor: "pascal",
+            reason: "Approved known command failure",
+          },
+        ],
+      });
+      expect(bypass.outcome).toBe("accepted");
+      expect(reviews).toBe(1);
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
+  test("concurrent review exhaustion retains the decision for operator escalation", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("review")]).replace(
+        "  scope: task",
+        "  scope: task\n  maxFailedReviewAttempts: 12",
+      ),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    try {
+      const result = await evaluateCandidate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            for (let round = 0; round < 3; round += 1) {
+              expect(
+                (
+                  await addReview({
+                    repo: repo.dir,
+                    base: repo.head,
+                    head: repo.head,
+                    gate: "beforePR",
+                    task: TASK,
+                    itemId: "review",
+                    candidate: candidate(),
+                    home: repo.home,
+                    evidenceDir: path.join(repo.pawsHome, "closeout/evidence", TASK),
+                    reviewer: {
+                      async review() {
+                        return {
+                          producer: { session: "concurrent", model: "codex", provider: "fixture" },
+                          findings: [
+                            {
+                              severity: "P1",
+                              location: `src/a.ts:${round + 1}`,
+                              explanation: "Repeated",
+                              evidence: "Reproduced",
+                            },
+                          ],
+                          artifacts: [],
+                        };
+                      },
+                    },
+                  })
+                ).ok,
+              ).toBe(true);
+            }
+            return { session: "late-clean", model: "codex", provider: "fixture", findings: [] };
+          },
+        },
+      });
+      expect(result.outcome).toBe("exhausted");
+      expect(result.decision?.decision).toBe("blocked");
+      expect(result.decision?.items[0]).toMatchObject({ id: "review", state: "exhausted" });
+      expect(result.decision?.items[0]?.message).toContain("src/a.ts failed in 3 of 3");
+    } finally {
+      await repo.cleanup();
+    }
   });
 
   test("stops when the policy retry limit is exhausted", async () => {

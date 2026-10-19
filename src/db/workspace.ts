@@ -219,23 +219,29 @@ export function readWorkspaceSession(
   db: Database,
   tokenHash: string,
   now: number,
+  lifetime: number,
 ): WorkspaceSession | null {
   return immediate(db, () => {
     const session = db
-      .query<WorkspaceSession, [string, number, number]>(
+      .query<WorkspaceSession, [string, number]>(
         `SELECT token_hash AS tokenHash,user_id AS userId,workspace_id AS workspaceId,
         csrf_token AS csrfToken,authenticated_at AS authenticatedAt,last_seen_at AS lastSeenAt,
         expires_at AS expiresAt FROM workspace_session
-        WHERE token_hash=? AND expires_at>? AND last_seen_at>?`,
+        WHERE token_hash=? AND expires_at>?`,
       )
-      .get(tokenHash, now, now - 12 * 60 * 60_000);
+      .get(tokenHash, now);
     if (session === null) {
       deleteWorkspaceSession(db, tokenHash);
       return null;
     }
     if (now < session.authenticatedAt) return null;
-    db.run("UPDATE workspace_session SET last_seen_at=? WHERE token_hash=?", [now, tokenHash]);
-    return { ...session, lastSeenAt: now };
+    const expiresAt = now + lifetime;
+    db.run("UPDATE workspace_session SET last_seen_at=?,expires_at=? WHERE token_hash=?", [
+      now,
+      expiresAt,
+      tokenHash,
+    ]);
+    return { ...session, lastSeenAt: now, expiresAt };
   });
 }
 

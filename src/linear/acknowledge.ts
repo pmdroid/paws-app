@@ -40,7 +40,7 @@ export async function acknowledgeNewSession(
       await tracker.postProgress({
         sessionId: event.sessionId,
         kind: "error",
-        body: "Paws did not start this work. Only an active member of the Paws workspace can delegate issues to Paws.",
+        body: "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
       });
     return accepted;
   } catch (error) {
