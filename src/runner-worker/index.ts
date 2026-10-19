@@ -6,6 +6,7 @@ import {
   chmodSync,
   cpSync,
   readdirSync,
+  readFileSync,
   constants,
   fchmodSync,
   fchownSync,
@@ -29,6 +30,8 @@ import {
   git,
   runAgent,
   minimalAgentEnv,
+  reconstructAcpPrompt,
+  recoverAcpConversation,
   materializeImplementationSkills,
   type AcpEvent,
   type RunAgentOptions,
@@ -69,7 +72,11 @@ export interface RunnerWorkerOptions {
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   loginCommand?: LoginCommandRunner;
+  resume?: boolean;
 }
+
+export const RESUME_PROMPT =
+  "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
@@ -109,6 +116,50 @@ function outputFile(directory: string, name: string, resultsGid: number): number
   }
 }
 
+function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
+  const journalName = `.events-${randomUUID()}.tmp`;
+  const journalPath = join(options.outputDirectory, journalName);
+  let journal: number | undefined;
+  try {
+    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
+    fsyncSync(journal);
+    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
+    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    return journal;
+  } catch (error) {
+    if (journal !== undefined) closeSync(journal);
+    throw error;
+  } finally {
+    rmSync(journalPath, { force: true });
+  }
+}
+
+function appendJournal(directory: string): number {
+  rmSync(join(directory, "candidate.bundle"), { force: true });
+  return openSync(
+    join(directory, "events.jsonl"),
+    constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+  );
+}
+
+function resumedSession(directory: string): string | undefined {
+  let sessionId: string | undefined;
+  for (const line of readFileSync(join(directory, "events.jsonl"), "utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line) as { type?: string; event?: AcpEvent };
+      if (entry.type === "acp" && entry.event?.type === "session_started")
+        sessionId = entry.event.sessionId;
+    } catch {}
+  }
+  return sessionId;
+}
+
 export async function executeRunnerCommand(
   options: RunnerWorkerOptions,
 ): Promise<RunnerWorkerResult> {
@@ -131,9 +182,9 @@ export async function executeRunnerCommand(
   }
   options.signal?.throwIfAborted();
   for (const [name, kind] of [
-    ["events.jsonl", "journal"],
-    ["result.json", "result"],
-  ] as const) {
+    ...(options.resume ? [] : [["events.jsonl", "journal"] as const]),
+    ["result.json", "result"] as const,
+  ]) {
     try {
       lstatSync(join(options.outputDirectory, name));
       throw new Error(`Runner ${kind} already exists`);
@@ -141,33 +192,18 @@ export async function executeRunnerCommand(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
-  try {
-    fsyncSync(claim);
-  } finally {
-    closeSync(claim);
-  }
-  const journalName = `.events-${randomUUID()}.tmp`;
-  const journalPath = join(options.outputDirectory, journalName);
-  let journal: number | undefined;
-  try {
-    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
-    fsyncSync(journal);
-    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
-    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+  const resumed = options.resume === true;
+  const resumedId = resumed ? resumedSession(options.outputDirectory) : undefined;
+  if (!resumed) {
+    const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
     try {
-      fsyncSync(directory);
+      fsyncSync(claim);
     } finally {
-      closeSync(directory);
+      closeSync(claim);
     }
-  } catch (error) {
-    if (journal !== undefined) closeSync(journal);
-    throw error;
-  } finally {
-    rmSync(journalPath, { force: true });
   }
-  const eventJournal = journal;
-  let journalSize = 0;
+  const eventJournal = resumed ? appendJournal(options.outputDirectory) : createJournal(options);
+  let journalSize = fstatSync(eventJournal).size;
   const updates = createUpdateLimiter();
   function emit(event: RunnerWorkerEvent): void {
     const line = `${JSON.stringify(event)}\n`;
@@ -220,7 +256,7 @@ export async function executeRunnerCommand(
       } finally {
         closeSync(directory);
       }
-      if (options.repositorySnapshot) {
+      if (options.repositorySnapshot && !resumed) {
         const repositoryPath = join(worktree, "repository");
         cpSync(options.repositorySnapshot, repositoryPath, {
           recursive: true,
@@ -246,7 +282,9 @@ export async function executeRunnerCommand(
       GIT_TERMINAL_PROMPT: "0",
     };
     const invokeGit = (args: string[]) => git(args, { env, signal: options.signal });
-    if (repository) {
+    if (resumed) {
+      if (!lstatSync(worktree).isDirectory()) throw new Error("Runner workspace is missing");
+    } else if (repository) {
       const bundle = openSync(
         options.repositoryBundle!,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -327,7 +365,7 @@ export async function executeRunnerCommand(
         );
         inputFiles = inputFiles.filter((_, index) => index !== command.skillsInputId);
       }
-      for (const file of inputFiles) {
+      for (const file of resumed ? [] : inputFiles) {
         const parts = file.path.split("/");
         let parent = worktree;
         for (const part of parts.slice(0, -1)) {
@@ -357,6 +395,11 @@ export async function executeRunnerCommand(
           }
         : {}),
     });
+    const prompt =
+      repository || task || command.type === "helper"
+        ? (options.inputs?.prompt ?? command.prompt)
+        : "Check agent connection.";
+    if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     const run = await runAgent({
       ...options.launch,
       hostAccess: true,
@@ -377,10 +420,18 @@ export async function executeRunnerCommand(
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt:
-        repository || task || command.type === "helper"
-          ? (options.inputs?.prompt ?? command.prompt)
-          : "Check agent connection.",
+      prompt: resumed ? RESUME_PROMPT : prompt,
+      ...(resumed
+        ? {
+            resume: {
+              sessionId: resumedId ?? "",
+              replayPrompt: reconstructAcpPrompt(RESUME_PROMPT, [
+                { kind: "request", body: prompt },
+                ...(await recoverAcpConversation(join(options.outputDirectory, "events.jsonl"))),
+              ]),
+            },
+          }
+        : {}),
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
@@ -632,7 +683,7 @@ export async function executeRunnerCommand(
     return result;
   } finally {
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
-    closeSync(journal);
+    closeSync(eventJournal);
   }
 }
 
@@ -643,6 +694,7 @@ export async function runRunnerWorker(options: {
   workRoot: string;
   home: string;
   signal?: AbortSignal;
+  resume?: boolean;
 }): Promise<RunnerWorkerResult> {
   if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
     throw new Error("Runner worker identity is invalid");
@@ -661,6 +713,7 @@ export async function runRunnerWorker(options: {
     home: options.home,
     resultsGid: options.results.resultsGid,
     signal: options.signal,
+    resume: options.resume,
     async answer(requestId, signal) {
       while (true) {
         signal.throwIfAborted();

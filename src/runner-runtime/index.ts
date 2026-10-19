@@ -59,6 +59,7 @@ type Active = {
   quiesced?: Promise<void>;
   publicationBranch?: string;
   transcriptSealed?: boolean;
+  restarts?: number;
 };
 
 export async function openRunnerRuntime(options: {
@@ -544,6 +545,28 @@ export async function openRunnerRuntime(options: {
       journal.answered(entry.execution.id, answer.sequence);
     }
   }
+  async function resumeIfCrashed(entry: Active): Promise<boolean> {
+    const id = entry.execution.id;
+    if (
+      entry.execution.phase !== "running" ||
+      entry.abort.signal.aborted ||
+      !broker.alive ||
+      !broker.resume ||
+      broker.alive(id) ||
+      (entry.restarts ?? 0) >= 2
+    )
+      return false;
+    try {
+      readRunnerResultFile(options.results, id, "result.json");
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    check(entry);
+    entry.restarts = (entry.restarts ?? 0) + 1;
+    await broker.resume(id);
+    return true;
+  }
   async function complete(entry: Active) {
     let raw: Buffer;
     try {
@@ -697,7 +720,7 @@ export async function openRunnerRuntime(options: {
       if (entry.execution.phase !== "running" && entry.execution.phase !== "publishing") continue;
       try {
         await deliver(entry);
-        await complete(entry);
+        if (!(await resumeIfCrashed(entry))) await complete(entry);
       } catch (error) {
         if (error instanceof RemoteFailure) {
           report(error);
