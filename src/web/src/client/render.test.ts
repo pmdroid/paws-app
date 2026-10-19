@@ -61,7 +61,7 @@ describe("status views", () => {
       item.state = decision === "blocked" ? "needs_human" : "exhausted";
       run.state = "verifying";
       const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
-      expect(html).toContain("<h3>Closeout</h3>");
+      expect(html).toContain("<h2>Closeout</h2>");
       expect(html).toContain(detail);
       expect(html).not.toContain("Closeout is verifying this candidate.");
     }
@@ -79,7 +79,12 @@ describe("status views", () => {
       snapshot,
       engineUrl: "https://engine.example/api/status",
       route: { view: "runs", id: run.id },
-      closeout: { attempt: {}, open: { [checkKey(verdict.itemId, 1, check.id)]: true }, wrap: {} },
+      closeout: {
+        attempt: {},
+        open: { [checkKey(verdict.itemId, 1, check.id)]: true },
+        wrap: {},
+        stream: {},
+      },
     });
     expect(render(input).content).toContain('href="https://engine.example/api/closeout-artifact?');
     check.state = "running";
@@ -205,10 +210,14 @@ describe("status views", () => {
 
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
-    expect(html).toContain("<h3>Closeout</h3>");
-    expect(html).toContain("Exhausted");
+    expect(html).toContain("<h2>Closeout</h2>");
+    expect(html).toContain("Exhausted after 3 of 3 attempts");
     expect(html).toContain('data-action="toggle-check"');
-    expect(html).toContain('value="/runs/r-101"');
+    expect(html).toContain('<nav class="crumbs" aria-label="Breadcrumb"><a href="/runs">Runs</a>');
+    expect(html).toContain('<h2 class="run-title">Retention policy enforcement job</h2>');
+    expect(html).toContain('<li class="step fail" aria-current="step">');
+    expect(html).not.toContain("<h3>Report</h3>");
+    expect(html).not.toContain("data-route-picker");
     expect(html).not.toContain("/verdicts");
   });
 
@@ -220,8 +229,11 @@ describe("status views", () => {
       "Admin export UI",
     );
     expect(render(model({ route: { view: "runs", id: "r-103" } })).content).toContain(
-      "Parked on Q-41",
+      "ask_team → Q-41",
     );
+    const runs = render(model({ route: { view: "runs", id: null } })).content;
+    expect(runs).toContain('href="/runs/r-102"');
+    expect(runs).toContain("Run r-100 · Claude on runner studio-mac · started 3h 45m ago");
     expect(render(model({ route: { view: "questions", id: "Q-40" } })).content).toContain(
       "legal-hold",
     );

@@ -1,7 +1,7 @@
 import type { EvidenceKind, StatusEvidence, StatusSnapshot } from "../contract";
 import { parseEngineUrl } from "../endpoint";
 import { checkHash } from "./closeout";
-import { agentChip, esc } from "./format";
+import { esc } from "./format";
 import { routeHref } from "./route";
 
 /** What the browser learned from the loaded file. The store keeps neither. */
@@ -96,7 +96,7 @@ export function thumbnailMedia(evidence: StatusEvidence, engineUrl: string | nul
 /** The run page placeholder. A run without evidence has no Evidence section at all. */
 export function evidenceSlot(snapshot: StatusSnapshot, runId: string): string {
   return runEvidence(snapshot, runId).length
-    ? `<div id="evidence-gallery" data-run="${esc(runId)}"></div>`
+    ? `<div id="evidence-gallery" data-run="${esc(runId)}" data-repo="${esc(snapshot.project.repo)}"></div>`
     : "";
 }
 
@@ -113,6 +113,8 @@ export function renderEvidencePage(
   const measure = measureLabel(evidence.kind, info.get(evidence.id));
   const others = runEvidence(snapshot, evidence.runId).filter((entry) => entry.id !== evidence.id);
   const issue = `<a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a>`;
+  const repo = snapshot.project.repo;
+  const linear = item?.links.find((link) => link.label === "Linear");
   const more = others.length
     ? `<ul class="evidence-more">${others
         .map(
@@ -122,34 +124,39 @@ export function renderEvidencePage(
         .join("")}</ul>`
     : '<p class="muted">No other evidence from this run.</p>';
   return `<h1 class="sr-only">Evidence</h1>
+    <nav class="crumbs" aria-label="Breadcrumb"><span>Evidence</span><span aria-hidden="true">/</span>${issue}<span aria-hidden="true">/</span><span class="crumb-run" aria-current="page">${esc(evidence.id)}</span></nav>
+    <header class="run-head">
+      <div class="run-tags">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="run-where">${esc(repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div>
+      <h2 class="run-title">${esc(evidence.displayName)}</h2>
+      <p class="muted">${esc(`Opened from a link in Linear. Anyone signed in to Paws with access to ${repo} sees this page.`)}</p>
+    </header>
     <div class="split"><div>
-      <div class="row">${issue}<span class="tag">${esc(kindLabel(evidence.kind))}</span>${measure ? `<span class="mono muted">${esc(measure)}</span>` : ""}</div>
-      <h2>${esc(evidence.displayName)}</h2>
-      ${item ? `<p class="muted">${esc(item.title)}</p>` : ""}
       <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
-      <div class="row"><button type="button" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div>
-      <section class="col" aria-label="More from this run">
-        <div class="between"><h3>More from this run</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
-        ${more}
-      </section>
     </div>
-    <div class="card"><h3>Details</h3><div class="kv">
-      <span class="k">Issue</span><span>${issue}${item ? ` ${esc(item.title)}` : ""}</span>
-      <span class="k">Check</span><span class="mono">${esc(evidence.checkId)}</span>
-      <span class="k">Attempt</span><span class="mono">${evidence.attempt}</span>
-      <span class="k">Published by</span><span>${agentChip(evidence.publisher)}</span>
-      <span class="k">Published</span><span>${esc(new Date(evidence.publishedAt).toLocaleString())}</span>
-      <span class="k">File</span><span class="mono">${esc(evidence.mediaType)}</span>
-      <span class="k">Size</span><span class="mono">${esc(sizeLabel(evidence.sizeBytes))}</span>
-      <span class="k">${evidence.kind === "video" ? "Duration" : "Dimensions"}</span><span class="mono">${esc(measure || "—")}</span>
-      <span class="k">Head commit</span><span class="mono" title="${esc(evidence.headCommit)}">${esc(evidence.headCommit.slice(0, 12))}</span>
-      <span class="k">Run</span><a class="mono" href="${esc(routeHref({ view: "runs", id: evidence.runId }))}">${esc(evidence.runId)}</a>
-    </div></div></div>`;
+    <div class="col">
+      <div class="card"><div class="col">
+        <div class="row"><button type="button" class="primary sm" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn sm" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div>
+        <div class="kv">
+          <span class="k">Run</span><a class="mono" href="${esc(routeHref({ view: "runs", id: evidence.runId }))}">${esc(evidence.runId)}</a>
+          <span class="k">Check</span><span class="mono">${esc(evidence.checkId)} · attempt ${evidence.attempt}</span>
+          <span class="k">Published</span><span>${esc(`${evidence.publisher} · ${new Date(evidence.publishedAt).toLocaleString()}`)}</span>
+          <span class="k">File</span><span>${esc([evidence.mediaType.replace(/^\w+\//, ""), sizeLabel(evidence.sizeBytes), measure].filter(Boolean).join(" · "))}</span>
+          <span class="k">Head</span><span class="mono" title="${esc(evidence.headCommit)}">${esc(evidence.headCommit.slice(0, 12))}</span>
+        </div>
+        <p class="muted">Stored on this Paws host, never uploaded to Linear.</p>
+      </div></div>
+      <section class="card" aria-label="More from this run"><div class="col">
+        <h3>More from this run</h3>
+        ${more}
+        <a href="${esc(closeoutOutputHref(evidence))}">Closeout output · ${esc(evidence.checkId)}</a>
+        ${linear ? `<a href="${esc(linear.href)}" target="_blank" rel="noopener">${esc(evidence.itemId)} in Linear</a>` : ""}
+      </div></section>
+    </div></div>`;
 }
 
 /**
  * Missing and forbidden look the same, so the page names no issue, repository or file.
  */
 export function noEvidenceAccess(): string {
-  return `<h1 class="sr-only">Evidence</h1><section class="card" aria-label="No access"><h2>You don't have access to this evidence</h2><p class="muted">It belongs to a repository your Paws workspace membership does not include, or it was removed. Ask a workspace owner for access to the repository, then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "runs", id: null }))}">Go to runs</a></div></section>`;
+  return `<h1 class="sr-only">Evidence</h1><section class="card no-access" aria-label="No access"><div class="col"><span class="no-access-mark" aria-hidden="true">🔒</span><h2>You can't open this evidence</h2><p class="muted">It belongs to a repository your Paws workspace membership does not include, or it was removed. Ask a workspace owner for access to the repository, then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "overview" }))}">Back to Overview</a></div></div></section>`;
 }

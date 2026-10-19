@@ -17,18 +17,10 @@ import {
   runLabel,
   statePill,
   taskPhase,
-  verdictDetail,
-  verdictLabel,
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
-import {
-  attemptsOf,
-  emptyCloseoutView,
-  renderCloseoutChecks,
-  shownAttempt,
-  type CloseoutView,
-} from "./closeout";
+import { emptyCloseoutView, renderCloseout, type CloseoutView } from "./closeout";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
@@ -319,45 +311,51 @@ function viewRuns(
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
-  const selected = runs.find((run) => run.id === id) ?? (id === null ? runs[0] : undefined);
-  const picker = entityPicker(
-    "Run",
-    runs.map((run) => ({
-      value: routeHref({ view: "runs", id: run.id }),
-      label: `${run.id} · ${run.itemId} · ${runLabel(run.state)}`,
-    })),
-    selected ? routeHref({ view: "runs", id: selected.id }) : "",
-  );
-  if (!selected)
-    return `${pageHeading("runs")}${picker}<div class="empty">${id ? "Run not found. Choose another run." : "No runs yet. Agent activity appears here when delegated work starts."}</div>`;
+  const selected = id === null ? undefined : runs.find((run) => run.id === id);
+  if (!selected) {
+    if (id !== null)
+      return `${pageHeading("runs")}<div class="empty">Run not found. <a href="${routeHref({ view: "runs", id: null })}">Choose another run</a>.</div>`;
+    if (!runs.length)
+      return `${pageHeading("runs")}<div class="empty">No runs yet. Agent activity appears here when delegated work starts.</div>`;
+    return `${pageHeading("runs")}<ul class="issue-list" role="list">${runs
+      .map((run) => {
+        const item = findItem(snapshot, run.itemId);
+        return `<li class="issue-row"><a class="work-title" href="${routeHref({ view: "runs", id: run.id })}"><span class="lin-id">${esc(run.itemId)}</span> <b>${esc(item?.title ?? run.id)}</b></a>${phasePill(item, run, itemVerdict(snapshot, run.itemId))}<div class="issue-facts"><span class="muted">${esc(runLine(snapshot, run, item))}</span></div></li>`;
+      })
+      .join("")}</ul>`;
+  }
   const item = findItem(snapshot, selected.itemId);
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath = `/api/runs/transcript?run=${encodeURIComponent(selected.id)}`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
-  return `${pageHeading("runs")}${picker}
-    <div class="split"><div>
-      <div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}${agentChip(selected.agent)}</div>
-      <h2>${esc(title)}</h2>
-      <p class="muted">${esc(selected.summary)}</p>
-      ${phaseStrip(item, selected, verdict)}
-      <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+  const where = [snapshot.project.repo, item?.branch].filter(Boolean).join(" · ");
+  return `${pageHeading("runs")}
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "runs", id: null })}">Runs</a><span aria-hidden="true">/</span>${item ? `<a href="${routeHref({ view: "issues", id: item.id })}">${esc(item.id)}</a><span aria-hidden="true">/</span>` : ""}<span class="crumb-run" aria-current="page">${esc(selected.id)}</span></nav>
+    <header class="run-head">
+      <div class="run-tags">${itemLink(item)}${phasePill(item, selected, verdict)}${where ? `<span class="run-where">${esc(where)}</span>` : ""}</div>
+      <h2 class="run-title">${esc(title)}</h2>
+      <p class="muted">${esc(runLine(snapshot, selected, item))}</p>
+    </header>
+    ${phaseStrip(item, selected, verdict)}
+    <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${closeoutSection(snapshot, selected, closeout, engineUrl)}
+    ${evidenceSlot(snapshot, selected.id)}
+    <section class="col" aria-label="Task activity">
       <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-      ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
-      ${evidenceSlot(snapshot, selected.id)}
-    </div>
-    <div class="card"><h3>Run</h3><div class="kv">
-      <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>
-      <span class="k">Item</span><span class="mono">${esc(selected.itemId)}</span>
-      <span class="k">Agent</span><span>${agentChip(selected.agent)}</span>
-      <span class="k">Reviewer</span><span>${agentChip(selected.reviewer)}</span>
-      <span class="k">Started</span><span>${esc(ago(selected.startedAt, snapshot.generatedAt))}</span>
-      <span class="k">Attempt</span><span class="mono">${selected.attempt}</span>
-      <span class="k">Branch</span><span class="mono">${esc(item?.branch ?? "—")}</span>
-      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div></div>`;
+    </section>`;
+}
+
+/** "Run r-1 · Claude on runner build-01 · started 38m ago", or the pull request waiting to merge. */
+function runLine(snapshot: StatusSnapshot, run: StatusRun, item: StatusItem | undefined): string {
+  const agent = run.runner ? `${run.agent} on runner ${run.runner}` : run.agent;
+  const when =
+    item?.state === "merge_queue" && item.pr
+      ? `pull request #${item.pr.number} waiting to merge`
+      : `started ${ago(run.startedAt, snapshot.generatedAt)}`;
+  return `Run ${run.id} · ${agent} · ${when}`;
 }
 
 function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
@@ -406,14 +404,31 @@ function phaseStrip(
   verdict?: StatusVerdict,
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
-  const names = ["Implementation", "Closeout", "Waiting to merge", "Complete"];
-  const marks = names
+  const failed =
+    verdict?.decision === "exhausted" ||
+    verdict?.decision === "rejected" ||
+    verdict?.decision === "blocked";
+  const names = [
+    "Implementation",
+    verdict ? `Closeout · ${verdict.attempt} of ${verdict.maxAttempts}` : "Closeout",
+    "Waiting to merge",
+    "Complete",
+  ];
+  const steps = names
     .map((name, index) => {
-      const cls = index < phase.current ? "done" : index === phase.current ? "now" : "wait";
-      return `<span class="ph ${cls}">${esc(name)}</span>`;
+      const state =
+        index < phase.current || (index === 3 && phase.current === 3)
+          ? "done"
+          : index === phase.current
+            ? index === 1 && failed
+              ? "fail"
+              : "now"
+            : "wait";
+      const mark = state === "done" ? "✓ " : state === "fail" ? "✕ " : "";
+      return `<li class="step ${state}"${index === phase.current ? ' aria-current="step"' : ""}><span aria-hidden="true">${mark}</span>${esc(name)}</li>`;
     })
     .join("");
-  return `<div class="phase"><div class="phs">${marks}</div><p>${esc(phase.detail)}</p></div>`;
+  return `<ol class="stepper" aria-label="${esc(phase.detail)}">${steps}</ol>`;
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
@@ -439,73 +454,27 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
 
 function closeoutSection(
   snapshot: StatusSnapshot,
-  itemId: string,
+  run: StatusRun,
   closeout: CloseoutView,
   engineUrl: string | null,
 ): string {
-  const selected = snapshot.verdicts.find((verdict) => verdict.itemId === itemId);
-  if (!selected) return "";
-  const picker = entityPicker(
-    "Candidate",
-    snapshot.verdicts.flatMap((verdict) => {
-      const href = runHrefForItem(snapshot, verdict.itemId);
-      return href
-        ? [{ value: href, label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}` }]
-        : [];
-    }),
-    runHrefForItem(snapshot, selected.itemId) ?? "",
-  );
-  const item = findItem(snapshot, selected.itemId);
-  const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
-    const n = index + 1;
-    const cls = n < selected.attempt ? "f" : n > selected.attempt ? "" : barClass(selected);
-    return `<i class="${cls}"></i>`;
-  }).join("");
-  const fail =
-    selected.failingCheck && selected.decision !== "accepted"
-      ? `<div class="mono">${esc(selected.failingCheck)}</div>`
-      : "";
-  const attempt = shownAttempt(selected, closeout);
-  const latest = attempt.number === attemptsOf(selected).at(-1)?.number;
-  return `<section class="col" aria-label="Closeout"><h3>Closeout</h3>${picker}
-    <div class="between closeout-head"><div>
-      <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
-      <div class="muted">${esc(selected.summary)}</div>
-    </div>
-    <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
-    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card">${renderCloseoutChecks(selected, closeout, engineUrl)}</div>
-    <div class="card"><h3>Report</h3><div class="kv">
-      <span class="k">Base</span><span class="mono">${esc(attempt.baseSha ?? "—")}</span>
-      <span class="k">Head</span><span class="mono">${esc(attempt.headSha ?? "—")}</span>
-      <span class="k">Policy</span><span class="mono">${esc(latest ? policyLabel(selected) : (attempt.policyDigest ?? "—"))}</span>
-      <span class="k">Sealed</span><span>${latest ? (selected.sealed ? "yes" : "no") : attempt.decision === "running" ? "no" : "yes"}</span>
-      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div></section>`;
-}
-
-function runHrefForItem(snapshot: StatusSnapshot, itemId: string): string | null {
-  const item = findItem(snapshot, itemId);
-  if (item?.runId && snapshot.runs.some((run) => run.id === item.runId)) {
-    return routeHref({ view: "runs", id: item.runId });
-  }
-  let match: StatusRun | undefined;
-  for (const run of snapshot.runs) {
-    if (run.itemId !== itemId) continue;
-    if (!match || run.startedAt > match.startedAt) match = run;
-  }
-  return match ? routeHref({ view: "runs", id: match.id }) : null;
+  const verdict = itemVerdict(snapshot, run.itemId);
+  if (!verdict) return "";
+  const item = findItem(snapshot, run.itemId);
+  return `<section class="col closeout" aria-label="Closeout">${renderCloseout(
+    verdict,
+    closeout,
+    engineUrl,
+    {
+      pullRequest: item?.pr?.number ?? null,
+      waitingToMerge: item?.state === "merge_queue",
+      reviewer: run.reviewer,
+    },
+  )}</section>`;
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
   return snapshot.verdicts.find((entry) => entry.itemId === itemId);
-}
-
-function policyLabel(verdict: StatusVerdict): string {
-  if (verdict.policyPath && verdict.policyDigest) {
-    return `${verdict.policyPath} ${verdict.policyDigest}`;
-  }
-  return verdict.policyDigest || verdict.policyPath || "—";
 }
 
 function itemLink(item: StatusItem | undefined): string {
@@ -519,12 +488,6 @@ function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined 
 
 function rankRun(run: StatusRun): number {
   return ACTIVE_RUN.has(run.state) ? 0 : 1;
-}
-
-function barClass(verdict: StatusVerdict): string {
-  if (verdict.decision === "accepted") return "p";
-  if (verdict.decision === "running") return "r";
-  return "f";
 }
 
 function pageHeading(view: Route["view"]): string {

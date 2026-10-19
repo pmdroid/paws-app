@@ -59,7 +59,7 @@ test("invalid detail routes do not silently show a different result", () => {
   for (const view of ["issues", "runs"] as const) {
     const html = render({ ...model, route: { view, id: "missing" } }).content;
     expect(html).toContain("not found");
-    expect(html).toContain("data-route-picker");
+    expect(html).toMatch(/data-route-picker|href="\/runs"/);
   }
 });
 

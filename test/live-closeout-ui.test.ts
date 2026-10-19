@@ -158,7 +158,12 @@ function paint(snapshot: StatusSnapshot, id: string, checkId: string): string {
     via: "engine",
     error: null,
     engineUrl: "http://127.0.0.1:8787",
-    closeout: { attempt: {}, open: { [checkKey(id, latest, checkId)]: true }, wrap: {} },
+    closeout: {
+      attempt: {},
+      open: { [checkKey(id, latest, checkId)]: true },
+      wrap: {},
+      stream: {},
+    },
   };
   return render(model).content;
 }
@@ -358,7 +363,7 @@ describe("live closeout ui", () => {
     const failed = verdict.attempts?.[0]?.checks[0];
     expect([failed?.state, failed?.exitCode, failed?.truncated]).toEqual(["failed", 1, true]);
     const html = paint(snapshot, id, "unit");
-    expect(html).toContain('data-attempt="2" aria-pressed="true">Attempt 2 · passed');
+    expect(html).toContain('data-attempt="2" aria-pressed="true" aria-label="Attempt 2, passed"');
     expect(html).toContain('id="check-2-unit"');
     const earlier = render({
       route: { view: "runs", id: snapshot.runs.find((run) => run.itemId === id)!.id },
@@ -367,12 +372,12 @@ describe("live closeout ui", () => {
       via: "engine",
       error: null,
       engineUrl: null,
-      closeout: { attempt: { [id]: 1 }, open: {}, wrap: {} },
+      closeout: { attempt: { [id]: 1 }, open: {}, wrap: {}, stream: {} },
     }).content;
     expect(earlier).toContain('<span class="ansi-fg-1">FAIL</span> &lt;x&gt;');
-    expect(earlier).toContain("Output was cut at the size limit.");
+    expect(earlier).toContain("Showing the end of the output. Full log has all of it.");
     expect(earlier).toContain(`head=${firstHead}`);
-    expect(earlier).toContain(">Full log</a> has the complete output.");
+    expect(earlier).toContain(">Full log</a>");
   });
 
   test("does not attach an older accepted verdict to another candidate or policy", () => {

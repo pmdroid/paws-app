@@ -39,6 +39,7 @@ import {
   listTaskBlockers,
   listWorkItemFacts,
   listWorkItemsByStates,
+  runnerNamesByRun,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
 } from "../../../db";
@@ -243,6 +244,7 @@ function runsFor(
   pawsHome: string | undefined,
 ): StatusRun[] {
   const byItem = new Map(records.map((record) => [record.id, record]));
+  const runners = runnerNamesByRun(db);
   const runs: StatusRun[] = [];
   for (const stored of listRuns(db)) {
     const record = byItem.get(stored.itemId);
@@ -256,6 +258,7 @@ function runsFor(
       state: current ? runState(record, stored.status) : "done",
       agent: agentName(stored.agent),
       reviewer: runReviewer(pawsHome, stored.id),
+      ...(runners.has(stored.id) ? { runner: runners.get(stored.id)! } : {}),
       startedAt: iso(stored.createdAt, generatedAt),
       attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
       summary: recent?.text ?? textOr(record.title, publicId(record)),
