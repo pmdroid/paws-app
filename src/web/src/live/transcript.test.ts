@@ -1,11 +1,19 @@
 import { expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, symlinkSync, writeFileSync, mkdtempSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  mkdtempSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beginImplementRun, insertQueuedItem, openDatabase, migrate } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
 import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
+import { handleStatusRequest } from "../server/handler";
 
 function tempHome() {
   return mkdtempSync(join(tmpdir(), "paws-transcript-"));
@@ -88,7 +96,8 @@ test("full transcript reads unfinished ACP output, tools and classification whil
     error: null,
     engineUrl: null,
   }).content;
-  expect(html).toContain(`href="/api/runs/transcript?run=${run.id}"`);
+  expect(html).toContain(`href="/status/runs/${run.id}/transcript"`);
+  expect(html).toContain('target="_blank"');
   expect(html).toContain("Open full agent transcript");
   expect(html).not.toContain("Opening create VM dialog");
   expect(html).not.toContain("private reasoning");
@@ -111,4 +120,46 @@ test("transcript reader refuses outside directories, symlink files and incomplet
   symlinkSync(join(outside, "acp.jsonl"), join(home, "runs", "file-link", "acp.jsonl"));
   expect([...fullAgentTranscript(home, "file-link", new Date(0).toISOString(), {})]).toEqual([]);
   expect([...fullAgentTranscript(home, "../outside", new Date(0).toISOString(), {})]).toEqual([]);
+});
+
+test("the transcript route answers JSON entries when the page asks for them", async () => {
+  const db = tempDb();
+  const home = tempHome();
+  const item = insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
+  const { run } = beginImplementRun(db, item.id, 1000);
+  mkdirSync(join(home, "runs", run.id), { recursive: true });
+  writeFileSync(
+    join(home, "runs", run.id, "acp.jsonl"),
+    [message("First line\n\nwith a blank line"), message(" continues")]
+      .map((x) => JSON.stringify({ t: "2026-10-19T10:00:00.000Z", ...x }) + "\n")
+      .join(""),
+  );
+  const url = `http://127.0.0.1/api/runs/transcript?run=${run.id}`;
+  const options = { db, closeoutHome: home, sessionIds: ["visible"] };
+  const asked = (await handleStatusRequest(
+    new Request(url, { headers: { Accept: "application/json" } }),
+    options,
+  ))!;
+  expect(asked.headers.get("content-type")).toContain("application/json");
+  expect(await asked.json()).toEqual([
+    {
+      at: "2026-10-19T10:00:00.000Z",
+      kind: "system",
+      text: "First line\n\nwith a blank line continues",
+    },
+  ]);
+  const plain = (await handleStatusRequest(new Request(url), options))!;
+  expect(plain.headers.get("content-type")).toContain("text/plain");
+  rmSync(join(home, "runs", run.id, "acp.jsonl"));
+  const empty = (await handleStatusRequest(
+    new Request(url, { headers: { Accept: "application/json" } }),
+    options,
+  ))!;
+  expect(await empty.json()).toEqual([]);
+  const hidden = (await handleStatusRequest(
+    new Request(url, { headers: { Accept: "application/json" } }),
+    { ...options, sessionIds: ["other"] },
+  ))!;
+  expect(hidden.status).toBe(404);
+  db.close();
 });

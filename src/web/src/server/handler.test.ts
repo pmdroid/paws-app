@@ -128,6 +128,22 @@ describe("status HTTP stub", () => {
     expect(session.headers.get("location")).toBeNull();
     expect(await session.text()).toContain("status-dashboard");
 
+    await writeFile(
+      join(dir, "transcript.html"),
+      '<!doctype html><html><head><base href="/" /></head><p>transcript-page</p></html>',
+    );
+    const transcript = await fetch(`${base}/status/runs/run_01-abc/transcript`);
+    expect(transcript.status).toBe(200);
+    const transcriptHtml = await transcript.text();
+    expect(transcriptHtml).toContain("transcript-page");
+    expect(transcriptHtml).toContain('<base href="/status/" />');
+    expect(await (await fetch(`${base}/status/runs/run_01-abc/transcript/`)).text()).toContain(
+      "transcript-page",
+    );
+    expect(await (await fetch(`${base}/status/runs/run_01-abc`)).text()).toContain(
+      "status-dashboard",
+    );
+
     const escaped = await fetch(`${base}/status/assets/..%2f..%2fpackage.json`);
     expect(escaped.status).toBe(404);
 

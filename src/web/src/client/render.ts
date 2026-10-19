@@ -334,7 +334,7 @@ function viewRuns(
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
-  const transcriptPath = `/api/runs/transcript?run=${encodeURIComponent(selected.id)}`;
+  const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
   return `${pageHeading("runs")}${picker}
     <div class="split"><div>
