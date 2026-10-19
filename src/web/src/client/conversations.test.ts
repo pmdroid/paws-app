@@ -14,6 +14,7 @@ test("private conversation requests stay on the selected same-origin local live 
     return Response.json({ sessions: [] });
   };
   const origin = "http://127.0.0.1:8787";
+  const tunnel = "https://agentbox.example.ts.net:8787";
   for (const [engine, source] of [
     ["https://remote.example", "live"],
     [origin, "demo"],
@@ -31,7 +32,16 @@ test("private conversation requests stay on the selected same-origin local live 
     sessions: [],
   });
   expect(requests).toEqual([`${origin}/api/linear/conversations`]);
+  expect(await loadConversations(tunnel, "live", tunnel, request)).toEqual({
+    state: "ready",
+    sessions: [],
+  });
+  expect(requests).toEqual([
+    `${origin}/api/linear/conversations`,
+    `${tunnel}/api/linear/conversations`,
+  ]);
   expect(canReadConversations("https://remote.example", "live", origin)).toBe(false);
+  expect(canReadConversations(tunnel, "live", tunnel)).toBe(true);
   expect(
     await loadConversations(
       origin,
