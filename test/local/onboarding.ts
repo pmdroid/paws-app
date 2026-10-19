@@ -104,11 +104,19 @@ const assignments = createWorkspaceAssignments({
 const access = createWorkspaceAccess({
   db,
   assignments,
+  memberGitHub: {
+    secretsDir: join(root, "secrets"),
+    client: { clientId: "fixture-github", clientSecret: "fixture-secret" },
+  },
   publicUrl: configured,
   clientId: "client",
   installedOrganization: { id: "org", name: "Fixture" },
   memberships,
   fetch: (async (input, init) => {
+    if (String(input) === "https://github.com/login/oauth/access_token")
+      return Response.json({ access_token: "ghu_fixture", scope: "", token_type: "bearer" });
+    if (String(input) === "https://api.github.com/user")
+      return Response.json({ id: 123, login: "fixture-member", type: "User" });
     if (String(input).endsWith("/oauth/token"))
       return Response.json({
         access_token: `fixture-${new URLSearchParams(String(init?.body)).get("code")}`,
@@ -135,15 +143,25 @@ const server = Bun.serve({
     const url = new URL(request.url);
     const headers = new Headers(request.headers);
     headers.set("host", new URL(configured).host);
+    if (headers.has("origin")) headers.set("origin", configured);
     const internal = new Request(`${configured}${url.pathname}${url.search}`, {
       headers,
       method: request.method,
+      ...(request.method === "POST" || request.method === "DELETE"
+        ? { body: await request.text() }
+        : {}),
     });
-    return (
+    const response =
       (await access.handle(internal)) ??
       (await handleStatusRequest(request, {})) ??
-      new Response(null, { status: 404 })
-    );
+      new Response(null, { status: 404 });
+    const location = response.headers.get("location");
+    if (location?.startsWith(configured)) {
+      const redirected = new Headers(response.headers);
+      redirected.set("location", location.replace(configured, url.origin));
+      return new Response(response.body, { status: response.status, headers: redirected });
+    }
+    return response;
   },
 });
 console.log(

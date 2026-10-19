@@ -36,6 +36,12 @@ const assert = require("node:assert/strict");
       const context = await browser.newContext({ viewport: { width, height } });
       await context.route("**/*", async (route) => {
         const url = new URL(route.request().url());
+        if (url.origin === "https://github.com" && url.pathname === "/login/oauth/authorize") {
+          const callback = new URL("/auth/member-github/callback", manifest.origin);
+          callback.searchParams.set("state", url.searchParams.get("state"));
+          callback.searchParams.set("code", "fixture");
+          return route.fulfill({ status: 302, headers: { location: callback.href }, body: "" });
+        }
         if (url.origin !== manifest.origin) return route.abort();
         if (url.pathname === "/auth/linear") {
           const response = await route.fetch({ maxRedirects: 0 });
@@ -62,9 +68,43 @@ const assert = require("node:assert/strict");
       }
       await page.getByRole("heading", { name: "GitHub", exact: true }).waitFor();
       assert((await page.locator("body").innerText()).includes("PAS-339"));
-      assert((await page.locator("body").innerText()).includes("Not checked"));
-      assert((await page.locator("body").innerText()).includes("Not linked"));
-      assert.equal(await page.getByRole("button", { name: "Connect GitHub" }).count(), 0);
+      assert((await page.locator("body").innerText()).toLowerCase().includes("not checked"));
+      assert((await page.locator("body").innerText()).toLowerCase().includes("not linked"));
+      const connect = page.getByRole("button", { name: "Connect GitHub", exact: true });
+      await connect.waitFor();
+      await connect.focus();
+      await page.keyboard.press("Enter");
+      await page.getByText("@fixture-member connected", { exact: true }).waitFor();
+      assert((await page.locator("body").innerText()).toLowerCase().includes("not checked"));
+      await page.screenshot({ path: path.join(root, `${name}-github-linked.png`), fullPage: true });
+      await page.getByRole("button", { name: "Use another GitHub account" }).click();
+      await page.getByText("@fixture-member connected", { exact: true }).waitFor();
+      await context.route("**/api/workspaces/member-github", (route) =>
+        route.request().method() === "DELETE"
+          ? route.fulfill({ status: 403, body: "{}" })
+          : route.continue(),
+      );
+      await page.getByRole("button", { name: "Unlink GitHub" }).click();
+      await page
+        .getByText("GitHub could not be unlinked. Refresh the connection and try again.", {
+          exact: true,
+        })
+        .waitFor();
+      await context.unroute("**/api/workspaces/member-github");
+      await page.getByRole("button", { name: "Refresh GitHub connection" }).click();
+      await page.getByText("@fixture-member connected", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Unlink GitHub" }).click();
+      await connect.waitFor();
+      await context.route("**/api/workspaces/member-github", (route) =>
+        route.request().method() === "POST"
+          ? route.fulfill({ status: 503, body: "{}" })
+          : route.continue(),
+      );
+      await connect.click();
+      await page.getByText("GitHub sign-in could not start. Try again.", { exact: true }).waitFor();
+      await context.unroute("**/api/workspaces/member-github");
+      await page.getByRole("button", { name: "Refresh GitHub connection" }).click();
+      await connect.waitFor();
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(root, `${name}-light.png`), fullPage: true });
       await page.getByRole("combobox", { name: "Appearance" }).selectOption("dark");
@@ -101,6 +141,9 @@ const assert = require("node:assert/strict");
         outageClearsIssue: true,
         keyboardRetry: true,
         signedOutShellAndSafeReturn: true,
+        connectReconnectUnlink: true,
+        linkedIdentityNotRepositoryPermission: true,
+        failedStartRetry: true,
       });
       await context.close();
     }
