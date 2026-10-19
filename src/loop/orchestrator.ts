@@ -3745,7 +3745,7 @@ export class Orchestrator {
     if (!resolved) throw new Error("Run attribution authority is unavailable");
     if (prior && resolved && JSON.stringify(prior) !== JSON.stringify(resolved))
       throw new Error(
-        "Run attribution authority changed; restore the snapshotted lead and steerer or start a new task.",
+        "Run attribution authority changed; restore the snapshotted commit policy or start a new task.",
       );
     const policy = prior ?? resolved;
     if (policy) {

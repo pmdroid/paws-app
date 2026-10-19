@@ -150,7 +150,6 @@ import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
   createCommitPolicyForItem,
-  MissingCommitAttributionError,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
 } from "./workspace";
@@ -822,14 +821,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     : "write",
                 actorForItem: (item) => delegatedLinearUserId(db, item.id),
                 attributionReady: async (item, selected) => {
-                  try {
-                    if (getTaskMode(db, item.id) === "code")
-                      await commitPolicyForItem(item, selected);
-                    return true;
-                  } catch (error) {
-                    if (error instanceof MissingCommitAttributionError) return false;
-                    throw error;
-                  }
+                  if (getTaskMode(db, item.id) === "code")
+                    await commitPolicyForItem(item, selected);
+                  return true;
                 },
                 authorizeItem: async (item, signal, selectedRepository) => {
                   if (
@@ -1189,7 +1183,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 return null;
               }
             } catch {}
-            return "Restart stopped: verified GitHub attribution for the project lead and task steerer is missing. WIP is preserved. Restore the attribution links before retrying.";
+            return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
           }
         : undefined,
     restartFromMain: (item) => {
