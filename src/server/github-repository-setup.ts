@@ -88,9 +88,7 @@ export function createGitHubRepositorySetup(options: {
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         current.principal.workspaceId === access.principal.workspaceId &&
-        current.principal.role === "owner" &&
-        now() >= current.principal.authenticatedAt &&
-        now() - current.principal.authenticatedAt <= 900_000
+        current.principal.role === "owner"
       );
     };
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
@@ -191,7 +189,7 @@ export function createGitHubRepositorySetup(options: {
           return new Response(null, {
             status: 303,
             headers: {
-              location: origin + "/status#/settings/integrations",
+              location: origin + "/status/settings/integrations",
               "cache-control": "no-store",
             },
           });

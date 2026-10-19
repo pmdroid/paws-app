@@ -151,12 +151,8 @@ export function createRunnerHealth(options: {
       return immediate(db, () => {
         const at = now();
         const { member, runner } = visible(principal, runnerId);
-        if (
-          !["owner", "admin"].includes(member.role) ||
-          principal.authenticatedAt > at ||
-          at - principal.authenticatedAt > 15 * 60_000
-        )
-          throw new Error("Sign in again as a workspace administrator");
+        if (!["owner", "admin"].includes(member.role))
+          throw new Error("Workspace administrator access is required");
         if (pendingChecks(runnerId, at) >= 4)
           throw new Error("Runner health checks are already pending");
         const commandId = randomUUID();

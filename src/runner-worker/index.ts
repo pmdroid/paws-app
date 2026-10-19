@@ -6,6 +6,7 @@ import {
   chmodSync,
   cpSync,
   readdirSync,
+  readFileSync,
   constants,
   fchmodSync,
   fchownSync,
@@ -25,9 +26,13 @@ import {
   appBotCommitIdentity,
   createUpdateLimiter,
   validateCandidateAttribution,
+  ArtifactRejectedError,
+  createAcpPromptLifecycle,
   git,
   runAgent,
   minimalAgentEnv,
+  reconstructAcpPrompt,
+  recoverAcpConversation,
   materializeImplementationSkills,
   type AcpEvent,
   type RunAgentOptions,
@@ -45,7 +50,7 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
-import { readRunnerAnswer } from "../runner-answers";
+import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import {
   RunnerArtifactSchema,
@@ -67,7 +72,37 @@ export interface RunnerWorkerOptions {
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
+  followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
+  resume?: boolean;
+}
+
+export const RESUME_PROMPT =
+  "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
+
+export async function runWithFollowUps(
+  agent: RunAgentOptions,
+  next: (sequence: number, signal: AbortSignal) => Promise<string>,
+  runner: (options: RunAgentOptions) => Promise<RunAgentResult> = runAgent,
+): Promise<RunAgentResult> {
+  const lifecycle = createAcpPromptLifecycle([], runner);
+  let prompt = agent.prompt;
+  for (let sequence = 1; ; sequence++) {
+    const waiting = new AbortController();
+    const signal = agent.signal ? AbortSignal.any([waiting.signal, agent.signal]) : waiting.signal;
+    const turn = lifecycle.prompt({ ...agent, prompt });
+    const message = next(sequence, signal).then(
+      (text) => ({ text }),
+      () => null,
+    );
+    const first = await Promise.race([turn.then((result) => ({ result })), message]);
+    if (first === null || "result" in first) {
+      waiting.abort();
+      return first?.result ?? turn;
+    }
+    await lifecycle.interrupt();
+    prompt = first.text;
+  }
 }
 
 export type RunnerWorkerEvent =
@@ -108,6 +143,50 @@ function outputFile(directory: string, name: string, resultsGid: number): number
   }
 }
 
+function createJournal(options: { outputDirectory: string; resultsGid: number }): number {
+  const journalName = `.events-${randomUUID()}.tmp`;
+  const journalPath = join(options.outputDirectory, journalName);
+  let journal: number | undefined;
+  try {
+    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
+    fsyncSync(journal);
+    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
+    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
+    return journal;
+  } catch (error) {
+    if (journal !== undefined) closeSync(journal);
+    throw error;
+  } finally {
+    rmSync(journalPath, { force: true });
+  }
+}
+
+function appendJournal(directory: string): number {
+  rmSync(join(directory, "candidate.bundle"), { force: true });
+  return openSync(
+    join(directory, "events.jsonl"),
+    constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+  );
+}
+
+function resumedSession(directory: string): string | undefined {
+  let sessionId: string | undefined;
+  for (const line of readFileSync(join(directory, "events.jsonl"), "utf8").split("\n")) {
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line) as { type?: string; event?: AcpEvent };
+      if (entry.type === "acp" && entry.event?.type === "session_started")
+        sessionId = entry.event.sessionId;
+    } catch {}
+  }
+  return sessionId;
+}
+
 export async function executeRunnerCommand(
   options: RunnerWorkerOptions,
 ): Promise<RunnerWorkerResult> {
@@ -130,9 +209,9 @@ export async function executeRunnerCommand(
   }
   options.signal?.throwIfAborted();
   for (const [name, kind] of [
-    ["events.jsonl", "journal"],
-    ["result.json", "result"],
-  ] as const) {
+    ...(options.resume ? [] : [["events.jsonl", "journal"] as const]),
+    ["result.json", "result"] as const,
+  ]) {
     try {
       lstatSync(join(options.outputDirectory, name));
       throw new Error(`Runner ${kind} already exists`);
@@ -140,33 +219,18 @@ export async function executeRunnerCommand(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
-  try {
-    fsyncSync(claim);
-  } finally {
-    closeSync(claim);
-  }
-  const journalName = `.events-${randomUUID()}.tmp`;
-  const journalPath = join(options.outputDirectory, journalName);
-  let journal: number | undefined;
-  try {
-    journal = outputFile(options.outputDirectory, journalName, options.resultsGid);
-    fsyncSync(journal);
-    renameSync(journalPath, join(options.outputDirectory, "events.jsonl"));
-    const directory = openSync(options.outputDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+  const resumed = options.resume === true;
+  const resumedId = resumed ? resumedSession(options.outputDirectory) : undefined;
+  if (!resumed) {
+    const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
     try {
-      fsyncSync(directory);
+      fsyncSync(claim);
     } finally {
-      closeSync(directory);
+      closeSync(claim);
     }
-  } catch (error) {
-    if (journal !== undefined) closeSync(journal);
-    throw error;
-  } finally {
-    rmSync(journalPath, { force: true });
   }
-  const eventJournal = journal;
-  let journalSize = 0;
+  const eventJournal = resumed ? appendJournal(options.outputDirectory) : createJournal(options);
+  let journalSize = fstatSync(eventJournal).size;
   const updates = createUpdateLimiter();
   function emit(event: RunnerWorkerEvent): void {
     const line = `${JSON.stringify(event)}\n`;
@@ -219,7 +283,7 @@ export async function executeRunnerCommand(
       } finally {
         closeSync(directory);
       }
-      if (options.repositorySnapshot) {
+      if (options.repositorySnapshot && !resumed) {
         const repositoryPath = join(worktree, "repository");
         cpSync(options.repositorySnapshot, repositoryPath, {
           recursive: true,
@@ -245,7 +309,9 @@ export async function executeRunnerCommand(
       GIT_TERMINAL_PROMPT: "0",
     };
     const invokeGit = (args: string[]) => git(args, { env, signal: options.signal });
-    if (repository) {
+    if (resumed) {
+      if (!lstatSync(worktree).isDirectory()) throw new Error("Runner workspace is missing");
+    } else if (repository) {
       const bundle = openSync(
         options.repositoryBundle!,
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -326,7 +392,7 @@ export async function executeRunnerCommand(
         );
         inputFiles = inputFiles.filter((_, index) => index !== command.skillsInputId);
       }
-      for (const file of inputFiles) {
+      for (const file of resumed ? [] : inputFiles) {
         const parts = file.path.split("/");
         let parent = worktree;
         for (const part of parts.slice(0, -1)) {
@@ -356,7 +422,12 @@ export async function executeRunnerCommand(
           }
         : {}),
     });
-    const run = await runAgent({
+    const prompt =
+      repository || task || command.type === "helper"
+        ? (options.inputs?.prompt ?? command.prompt)
+        : "Check agent connection.";
+    if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
+    const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
       skillsRoot,
@@ -376,10 +447,18 @@ export async function executeRunnerCommand(
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt:
-        repository || task || command.type === "helper"
-          ? (options.inputs?.prompt ?? command.prompt)
-          : "Check agent connection.",
+      prompt: resumed ? RESUME_PROMPT : prompt,
+      ...(resumed
+        ? {
+            resume: {
+              sessionId: resumedId ?? "",
+              replayPrompt: reconstructAcpPrompt(RESUME_PROMPT, [
+                { kind: "request", body: prompt },
+                ...(await recoverAcpConversation(join(options.outputDirectory, "events.jsonl"))),
+              ]),
+            },
+          }
+        : {}),
       inputFiles: inputFiles.map((file) => ({ ...file, path: join(worktree, file.path) })),
       worktreePath: worktree,
       pawsRoot: join(task ? worktree : options.workRoot, ".paws"),
@@ -418,6 +497,7 @@ export async function executeRunnerCommand(
                 sizeBytes: snapshot.sizeBytes,
                 sha256: snapshot.sha256,
                 attachToIssue: context.request?.attachToIssue ?? false,
+                ...(context.evidence ? { evidence: context.evidence } : {}),
               });
               if (
                 bytes.length !== artifact.sizeBytes ||
@@ -438,7 +518,9 @@ export async function executeRunnerCommand(
               emit({ type: "artifact", requestId: artifact.id, artifact });
               const reply = await options.answer(artifact.id, context.signal);
               context.signal.throwIfAborted();
-              const publication = JSON.parse(reply.answer) as { url?: unknown };
+              const publication = JSON.parse(reply.answer) as { url?: unknown; error?: unknown };
+              if (typeof publication.error === "string")
+                throw new ArtifactRejectedError(publication.error);
               if (typeof publication.url !== "string")
                 throw new Error("Runner artifact publication response is invalid");
               return { url: publication.url };
@@ -499,7 +581,11 @@ export async function executeRunnerCommand(
                 return options.answer(requestId, context.signal);
               },
             },
-    });
+    };
+    const run =
+      command.type === "run" && options.followUp
+        ? await runWithFollowUps(agent, options.followUp)
+        : await runAgent(agent);
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
@@ -537,7 +623,10 @@ export async function executeRunnerCommand(
               : "grok login",
       };
     }
-    if (repository && run.stopReason === "end_turn" && !run.errorMessage && run.agentExited) {
+    const clean = run.stopReason === "end_turn" && !run.errorMessage;
+    const wip = !clean && command.type === "run" && !run.cancelled;
+    const recordCandidate = async () => {
+      if (command.type !== "run" && command.type !== "review") return;
       const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
       await invokeGit([
@@ -585,6 +674,14 @@ export async function executeRunnerCommand(
           }
         }
       } else result.reviewText = reviewText;
+    };
+    if (repository && run.agentExited && clean) await recordCandidate();
+    else if (repository && run.agentExited && wip) {
+      await recordCandidate().catch(() => {
+        delete result.candidateSha;
+      });
+      if (command.type === "run" && result.candidateSha === command.repository.baseSha)
+        delete result.candidateSha;
     }
     const serialized = JSON.stringify(
       command.type === "helper"
@@ -628,7 +725,7 @@ export async function executeRunnerCommand(
     return result;
   } finally {
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
-    closeSync(journal);
+    closeSync(eventJournal);
   }
 }
 
@@ -639,6 +736,7 @@ export async function runRunnerWorker(options: {
   workRoot: string;
   home: string;
   signal?: AbortSignal;
+  resume?: boolean;
 }): Promise<RunnerWorkerResult> {
   if (process.getuid?.() === 0 || process.getuid?.() !== options.results.agentUid)
     throw new Error("Runner worker identity is invalid");
@@ -657,11 +755,24 @@ export async function runRunnerWorker(options: {
     home: options.home,
     resultsGid: options.results.resultsGid,
     signal: options.signal,
+    resume: options.resume,
     async answer(requestId, signal) {
       while (true) {
         signal.throwIfAborted();
         const answer = readRunnerAnswer(spool, options.executionId, requestId);
         if (answer) return { answer: answer.answer };
+        await delay(250, undefined, { signal });
+      }
+    },
+    async followUp(sequence, signal) {
+      while (true) {
+        signal.throwIfAborted();
+        const message = readRunnerAnswer(
+          spool,
+          options.executionId,
+          runnerFollowUpRequestId(sequence),
+        );
+        if (message) return message.answer;
         await delay(250, undefined, { signal });
       }
     },

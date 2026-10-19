@@ -30,6 +30,7 @@ export type FakeStep =
       displayName?: string;
       mimeType?: string;
       attachToIssue?: boolean;
+      checkId?: string;
     }
   | { type: "get_closeout" }
   | { type: "run_closeout"; id: string; model?: string }
@@ -56,6 +57,7 @@ export interface FakeScript {
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
+  loadSession?: boolean;
   steps: FakeStep[];
 }
 
@@ -80,6 +82,7 @@ export interface FakeResult {
     env?: Array<{ name: string; value: string }>;
   }>;
   sessionMeta?: unknown;
+  loaded?: unknown;
   codexHome?: string;
   permissions: Array<{ toolCallId?: string; outcome: unknown }>;
   fs: Array<{ op: "read" | "write"; path: string; ok: boolean; error?: string; content?: string }>;

@@ -21,7 +21,7 @@ See [workspace access and identity links](https://github.com/pmdroid/paws-app/pu
 1. The host generates its private key and certificate signing request locally.
 2. It sends the signing request and host name to Paws over HTTPS.
 3. Paws creates a pairing request with a code, a claim secret, a request fingerprint, and a ten-minute expiry.
-4. A workspace owner or administrator inspects the request and compares the fingerprint with the host's output. Runner administration requires a sign-in within the previous fifteen minutes.
+4. A workspace owner or administrator inspects the request and compares the fingerprint with the host's output.
 5. Approval binds the runner to that workspace and owner, and the authority signs the host's certificate request.
 6. The host uses its claim secret to retrieve the certificate and authority certificate over HTTPS.
 7. Subsequent runner traffic uses mTLS and the registered certificate identity.

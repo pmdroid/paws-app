@@ -163,14 +163,15 @@ export async function probeWorkspaceAccess(
   const idleRequest = new Request(request.url, {
     headers: { cookie: `${WORKSPACE_COOKIE}=${idle.token}` },
   });
+  const day = 24 * 60 * 60_000;
   const liveBeforeIdleLimit =
-    requestWorkspaceSession(restored, idleRequest, now + 12 * 60 * 60_000 - 1) !== null;
-  const idleExpiry =
-    requestWorkspaceSession(restored, idleRequest, now + 24 * 60 * 60_000 - 1) === null;
+    requestWorkspaceSession(restored, idleRequest, now + 30 * day - 1) !== null;
+  const extendedByUse = requestWorkspaceSession(restored, idleRequest, now + 59 * day) !== null;
+  const idleExpiry = requestWorkspaceSession(restored, idleRequest, now + 90 * day) === null;
   observe(
-    "idle browser sessions remain live before the limit and expire after twelve idle hours",
-    liveBeforeIdleLimit && idleExpiry,
-    { liveBeforeIdleLimit, idleExpiry },
+    "browser sessions extend on each use and expire after thirty idle days",
+    liveBeforeIdleLimit && extendedByUse && idleExpiry,
+    { liveBeforeIdleLimit, extendedByUse, idleExpiry },
   );
   syncWorkspaceMember(restored, {
     workspaceId: workspace.id,
@@ -247,17 +248,13 @@ export async function probeWorkspaceAccess(
       oldSessionRevoked: requestWorkspaceSession(restored, request, now + 4) === null,
     },
   );
-  let liveUntilAbsoluteLimit = true;
-  for (let hour = 11; hour < 168; hour += 11)
-    liveUntilAbsoluteLimit &&=
-      requestWorkspaceSession(restored, returnedRequest, now + 4 + hour * 60 * 60_000) !== null;
-  const absoluteExpiry =
-    requestWorkspaceSession(restored, returnedRequest, now + 4 + 168 * 60 * 60_000) === null;
-  observe(
-    "regularly used browser sessions expire at seven days without extending their absolute lifetime",
-    liveUntilAbsoluteLimit && absoluteExpiry,
-    { liveUntilAbsoluteLimit, absoluteExpiry },
-  );
+  let liveWhileUsed = true;
+  for (let days = 20; days <= 120; days += 20)
+    liveWhileUsed &&=
+      requestWorkspaceSession(restored, returnedRequest, now + 4 + days * day) !== null;
+  observe("regularly used browser sessions stay signed in beyond thirty days", liveWhileUsed, {
+    liveWhileUsed,
+  });
   writeFileSync(
     join(root, "audit.json"),
     JSON.stringify(restored.query("SELECT * FROM workspace_access_audit").all(), null, 2),

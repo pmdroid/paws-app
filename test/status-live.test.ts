@@ -230,7 +230,7 @@ test("fake e2e rows show up on /api/status as live work", async () => {
   }
 });
 
-test("an empty live snapshot renders the Linear label empty state", async () => {
+test("an empty live snapshot asks the operator to delegate a Linear issue", async () => {
   const db = openDatabase(":memory:");
   try {
     migrate(db);
@@ -248,13 +248,12 @@ test("an empty live snapshot renders the Linear label empty state", async () => 
       via: "engine",
       error: null,
       engineUrl: "http://127.0.0.1:8787",
-      selectedCheck: null,
     });
     expect(parsed.snapshot.source).toBe("live");
     expect(parsed.snapshot.items).toEqual([]);
     expect(view.top).not.toContain("Live");
     expect(view.top).not.toContain("Demo data");
-    expect(view.content).toContain("No items yet. Add the `paws` label to a Linear issue.");
+    expect(view.content).toContain("No issues yet. Delegate an issue to Paws in Linear.");
   } finally {
     db.close();
   }

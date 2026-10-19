@@ -183,6 +183,10 @@ function replace(node: DOMNode): ReactElement | undefined {
     );
   }
   if (name === "a") {
+    if (has("runner-row"))
+      return styled(
+        "flex min-w-0 flex-col gap-3 rounded-base border-2 border-border bg-secondary-background px-4 py-3 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:flex-row sm:items-center sm:justify-between",
+      );
     if (has("node"))
       return styled(
         "flex flex-col gap-3 rounded-base border-2 border-border bg-secondary-background p-4 shadow-shadow transition-transform hover:translate-x-1 hover:translate-y-1 hover:shadow-none",
@@ -316,7 +320,12 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-4 font-mono text-xs",
     );
-  if (name === "table") return <Table {...props}>{children()}</Table>;
+  if (name === "table")
+    return (
+      <Table {...props} className={has("runner-history") ? "[overflow-wrap:normal]" : undefined}>
+        {children()}
+      </Table>
+    );
   if (name === "thead") return <TableHeader {...props}>{children()}</TableHeader>;
   if (name === "tbody") return <TableBody {...props}>{children()}</TableBody>;
   if (name === "tr") return <TableRow {...props}>{children()}</TableRow>;
@@ -341,14 +350,21 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled(
       "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
     );
-  if (has("issue-row"))
-    return styled("flex flex-wrap items-center justify-between gap-3 px-4 py-4");
+  if (name === "ul" && has("runner-rows"))
+    return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
+  if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
+  if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
+  if (has("issue-row", "issue-title"))
+    return styled(
+      "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
+    );
+  if (has("issue-facts")) return styled("flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1");
   if (has("page-heading")) return styled("space-y-2");
   if (has("entity-picker")) return styled("flex w-full min-w-0 max-w-lg flex-col gap-2");
-  if (has("overview-columns"))
-    return styled(
-      "grid min-w-0 grid-cols-1 items-stretch gap-6 xl:grid-cols-2 [&>*]:h-full [&>*]:min-w-0",
-    );
+  if (has("overview-row"))
+    return styled("flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-4");
+  if (has("overview-copy")) return styled("min-w-0 flex-1 basis-72 space-y-1 break-words");
+  if (has("overview-summary")) return styled("text-sm font-semibold leading-relaxed");
   if (has("split", "conversation-layout"))
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",
@@ -369,6 +385,11 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-1 items-end gap-4 sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0 [&>button]:justify-self-start",
     );
   if (has("settings-field")) return styled("flex min-w-0 flex-col gap-2");
+  if (name === "dialog")
+    return styled(
+      "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow outline-none backdrop:bg-overlay sm:max-w-lg",
+    );
+  if (has("dialog-body")) return styled("flex min-w-0 flex-col gap-4 p-6 [overflow-wrap:anywhere]");
   if (name === "details")
     return styled(
       inRow(node)

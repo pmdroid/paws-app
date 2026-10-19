@@ -17,6 +17,16 @@ const answerInput = z.strictObject({
   after: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
+function followUpsSupported(version: string | null): boolean {
+  const parts = version
+    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  if (!parts) return false;
+  const [major, minor, patch] = parts as [number, number, number];
+  return major > 0 || minor > 1 || (minor === 1 && patch >= 12);
+}
+
 export function createRunnerResults(options: {
   db: Database;
   work: RunnerWork;
@@ -49,13 +59,7 @@ export function createRunnerResults(options: {
             (result.candidateSha !== undefined || result.reviewText !== undefined)) ||
           (command.type === "run" && result.reviewText !== undefined) ||
           (command.type === "review" && result.candidateSha !== undefined) ||
-          (result.candidateSha !== undefined &&
-            (result.stopReason !== "end_turn" ||
-              result.cancelled ||
-              result.timedOut ||
-              result.authRequired ||
-              !result.agentExited ||
-              result.errorMessage))
+          (result.candidateSha !== undefined && (result.cancelled || !result.agentExited))
         )
           throw new Error("Runner result command binding is invalid.");
         const payload = JSON.stringify(result);
@@ -158,8 +162,58 @@ export function createRunnerResults(options: {
         .all(input.runId, input.generation, input.after)
         .filter((answer) => !unanswered || answer.sequence < unanswered.sequence);
     },
+    deliverFollowUp(itemId: string, body: string): boolean {
+      const text = z.string().min(1).max(65536).safeParse(body);
+      if (!text.success) return false;
+      return immediate(db, () => {
+        const row = db
+          .query<{ runId: string; generation: number; version: string | null }, [string, number]>(
+            `SELECT w.run_id AS runId,w.generation,h.runner_version AS version FROM work_item i
+             JOIN runner_work w ON w.run_id=i.current_run_id
+             JOIN runner_host_status h ON h.runner_id=w.runner_id
+             WHERE i.id=? AND w.ended_at IS NULL AND w.lease_until>?`,
+          )
+          .get(itemId, now());
+        if (!row || !followUpsSupported(row.version)) return false;
+        try {
+          if (current(row.runId, row.generation).type !== "run") return false;
+        } catch {
+          return false;
+        }
+        const next = db
+          .query<{ sequence: number }, [string, number]>(
+            "SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM runner_follow_up WHERE run_id=? AND generation=?",
+          )
+          .get(row.runId, row.generation)!.sequence;
+        db.run("INSERT INTO runner_follow_up VALUES(?,?,?,?,?)", [
+          row.runId,
+          row.generation,
+          next,
+          text.data,
+          now(),
+        ]);
+        return true;
+      });
+    },
+    followUps(input: {
+      runnerId: string;
+      runId: string;
+      generation: number;
+      token: string;
+      after: number;
+    }) {
+      work.authorize(input);
+      z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
+      return db
+        .query<{ sequence: number; body: string }, [string, number, number]>(
+          "SELECT sequence,body FROM runner_follow_up WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",
+        )
+        .all(input.runId, input.generation, input.after);
+    },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
-      const match = /^\/v1\/runs\/([^/]+)\/(result|answers)$/.exec(new URL(request.url).pathname);
+      const match = /^\/v1\/runs\/([^/]+)\/(result|answers|follow-ups)$/.exec(
+        new URL(request.url).pathname,
+      );
       if (!match || request.method !== "POST") return null;
       const json = (value: unknown, status = 200) =>
         Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -175,6 +229,8 @@ export function createRunnerResults(options: {
         const body = await readBody(request);
         if (match[2] === "result")
           return json(api.submit({ ...input, ...resultInput.parse(body) }));
+        if (match[2] === "follow-ups")
+          return json({ followUps: api.followUps({ ...input, ...answerInput.parse(body) }) });
         return json({ answers: api.answers({ ...input, ...answerInput.parse(body) }) });
       } catch (error) {
         if (error instanceof RunnerWorkFencedError)

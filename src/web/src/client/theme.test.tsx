@@ -20,7 +20,6 @@ function ready(view: "overview" | "questions" | "runs", id: string | null = null
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
   });
 }
 
@@ -61,7 +60,6 @@ test("every dashboard view renders without authored inline styles", () => {
       via: "bundled",
       error: null,
       engineUrl: null,
-      selectedCheck: null,
     });
     expect(rendered.content).not.toContain("style=");
     expect(markup(rendered.content).length).toBeGreaterThan(0);
@@ -85,14 +83,16 @@ test("question options separate the number, label, and recommendation", () => {
   expect(head).toContain("[&amp;&gt;.title]:col-span-full");
 });
 
-test("recent events keep the time beside the text with a hanging indent", () => {
+test("overview keeps action rows responsive without delivery columns", () => {
   const html = markup(ready("overview").content);
-  const rows = classNames(html, "it").filter((value) => value.split(/\s+/).includes("row"));
+  const rows = classNames(html, "overview-row");
   expect(rows.length).toBeGreaterThan(0);
   for (const value of rows) {
-    expect(value).toContain("grid-cols-[6rem_minmax(0,1fr)]");
-    expect(value).not.toContain("flex-wrap");
+    expect(value).toContain("flex-wrap");
+    expect(value).toContain("justify-between");
   }
+  expect(classNames(html, "overview-copy")[0]).toContain("break-words");
+  expect(html).not.toContain("overview-columns");
 });
 
 test("run checks, transcripts, and stop controls keep their columns aligned", () => {
@@ -212,7 +212,6 @@ test("issues list shows blockers without positioned CSS", () => {
     via: "bundled",
     error: null,
     engineUrl: null,
-    selectedCheck: null,
   });
   expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");

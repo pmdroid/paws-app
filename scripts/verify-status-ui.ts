@@ -15,12 +15,14 @@ let settings = {
   projects: [],
 };
 let saves = 0;
+let statusReads = 0;
 const actions: string[] = [];
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === "/api/status") statusReads++;
     if (path === "/api/auth/session") return new Response(null, { status: 404 });
     if (path === "/api/settings/agents") {
       if (request.method === "PUT") {
@@ -57,18 +59,18 @@ const browser = await chromium.launch({
 });
 const errors: string[] = [];
 const pages = [
-  ["Overview", "#/"],
-  ["Issues", "#/issues"],
-  ["Projects", "#/projects"],
-  ["Questions", "#/questions"],
-  ["Runs", "#/runs"],
-  ["Conversations", "#/sessions"],
-  ["Runners", "#/runners"],
-  ["Agents", "#/settings/agents"],
-  ["Integrations", "#/settings/integrations"],
-  ["Workspace access", "#/settings/workspace"],
-  ["Your account", "#/settings/account"],
-  ["Audit history", "#/settings/audit"],
+  ["Overview", ""],
+  ["Issues", "/issues"],
+  ["Projects", "/projects"],
+  ["Questions", "/questions"],
+  ["Runs", "/runs"],
+  ["Conversations", "/sessions"],
+  ["Runners", "/runners"],
+  ["Agents", "/settings/agents"],
+  ["Integrations", "/settings/integrations"],
+  ["Workspace access", "/settings/workspace"],
+  ["Your account", "/settings/account"],
+  ["Audit history", "/settings/audit"],
 ] as const;
 async function navigate(page: Page, name: string, width: number) {
   if (width < 768) await page.getByRole("button", { name: "Open navigation" }).click();
@@ -96,6 +98,27 @@ try {
     await expect(page.locator("#content h1")).toHaveText("Overview");
     await expect(page.locator("#content h1")).toHaveClass(/sr-only/);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs you", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Working now", exact: true })).toBeVisible();
+    await expect(page.locator(".overview-summary")).toHaveText(
+      "2 need you · 1 working · 1 queued · 1 waiting to merge",
+    );
+    await expect(page.locator("#content")).not.toContainText("Recent events");
+    await expect(page.locator("#content")).not.toContainText("Export job worker");
+    await page.getByRole("link", { name: "Answer question: ENG-103", exact: true }).click();
+    await expect(page).toHaveURL(/\/questions\/Q-41$/);
+    await expect(page.locator("#q-Q-41")).toBeVisible();
+    await page.goBack();
+    await page.getByRole("link", { name: "Answer question: ENG-100", exact: true }).click();
+    await expect(page).toHaveURL(/\/questions\/Q-40$/);
+    await expect(page.locator("#q-Q-40")).toBeVisible();
+    await page.goBack();
+    await page.locator('.overview-work a[href="/status/runs/r-102"]').click();
+    await expect(page).toHaveURL(/\/runs\/r-102$/);
+    await expect(
+      page.getByRole("heading", { name: "Agent transcript", exact: true }),
+    ).toBeVisible();
+    await page.goBack();
     if (width < 768) {
       await page.getByRole("button", { name: "Open navigation" }).click();
       await expect(page.getByRole("dialog", { name: "Paws navigation" })).toBeVisible();
@@ -127,9 +150,11 @@ try {
     await expect(page.locator("html")).toHaveClass(/dark/);
     await page.emulateMedia({ colorScheme: "light" });
     await expect(page.locator("html")).toHaveClass(/light/);
-    for (const [name, hash] of pages) {
+    for (const [name, path] of pages) {
       await navigate(page, name, width);
-      await expect(page).toHaveURL(new RegExp(hash.replace("/", "\\/") + "$"));
+      await expect
+        .poll(() => new URL(page.url()).pathname.replace(/\/$/, ""))
+        .toBe(`/status${path}`);
       if (width >= 768)
         await expect(
           page
@@ -156,7 +181,7 @@ try {
       fullPage: true,
     });
     await page.locator(".issue-list a").first().click();
-    await expect(page).toHaveURL(/#\/issues\//);
+    await expect(page).toHaveURL(/\/status\/issues\//);
     await expect(page.locator(".issue-head")).toBeVisible();
     await page.screenshot({
       path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `issue-detail-${width}.png`),
@@ -191,7 +216,15 @@ try {
       snapshot.verdicts.some((verdict) => verdict.itemId === run.itemId),
     )!;
     await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/${verified.id}`);
+    await expect(page).toHaveURL(new RegExp(`/status/runs/${verified.id}$`));
     await expect(page.getByRole("heading", { name: "Verification" })).toBeVisible();
+    await expect(page.getByRole("log", { name: "Agent transcript" })).toHaveCount(0);
+    await expect(
+      page.getByRole("link", { name: "Open full agent transcript", exact: true }),
+    ).toHaveAttribute(
+      "href",
+      `http://127.0.0.1:${server.port}/api/runs/transcript?run=${verified.id}`,
+    );
     await expect(page.getByRole("combobox", { name: "Candidate", exact: true })).toBeVisible();
     await page.locator('[data-action="select-check"]').last().click();
     await expect(page.locator('[data-action="select-check"][aria-current="true"]')).toHaveCount(1);
@@ -215,7 +248,7 @@ try {
     await navigate(page, "Runners", width);
     await expect(page.locator("#linear-session-start")).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
-    await expect(page.getByText("curl -fsSL https://get.paws.boo | sudo sh")).toBeVisible();
+    await expect(page.getByText("curl -fsSL https://get.paws.boo/ | sudo sh")).toBeVisible();
     await page.getByRole("button", { name: "Check setup", exact: true }).click();
     await expect(page.getByRole("button", { name: "Check setup", exact: true })).toBeEnabled();
     await navigate(page, "Agents", width);
@@ -228,7 +261,18 @@ try {
     await expect(page.locator('input[name="0-implementer-inherit"]')).not.toBeChecked();
     await inherit.click();
     await expect(page.getByRole("button", { name: "Test connection" })).toHaveCount(0);
-    await expect(page.locator('#agent-settings a[href="#/runners"]')).toBeVisible();
+    await expect(page.locator('#agent-settings a[href="/status/runners"]')).toBeVisible();
+    if (width >= 768) {
+      await page.goto(`http://127.0.0.1:${server.port}/status/runners`);
+      await expect(page.getByRole("heading", { name: "Set up remote runners" })).toBeVisible();
+      const reads = statusReads;
+      await navigate(page, "Agents", width);
+      await page.waitForTimeout(5_500);
+      expect(statusReads).toBe(reads);
+      await navigate(page, "Questions", width);
+      await expect.poll(() => statusReads).toBeGreaterThan(reads);
+      await navigate(page, "Agents", width);
+    }
     await expect(page.locator("#defaults-implementer-model")).toBeDisabled();
     await expect(page.locator("#defaults-implementer-effort")).toBeDisabled();
     await expect(
@@ -240,7 +284,7 @@ try {
     await expect(
       page.getByRole("status").filter({ hasText: "Agent settings saved" }),
     ).toBeVisible();
-    await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/missing`);
+    await page.goto(`http://127.0.0.1:${server.port}/status/runs/missing`);
     await expect(page.locator("#content")).toContainText("Run not found");
     await page.getByRole("combobox", { name: "Run", exact: true }).selectOption({ index: 1 });
     await expect(page.locator("#content")).not.toContainText("Run not found");
@@ -264,6 +308,8 @@ try {
       route.fulfill({ status: 503, json: { error: "Fixture unavailable" } }),
     );
     await page.reload();
+    await expect(page.locator("#banner")).not.toContainText("Offline");
+    await navigate(page, "Overview", width);
     await expect(page.locator("#banner")).toContainText("Offline");
     await navigate(page, "Agents", width);
     await expect(page.getByRole("heading", { name: "Global defaults" })).toBeVisible();
@@ -364,7 +410,7 @@ try {
   expect(settings.defaults.implementer).not.toHaveProperty("effort");
   expect(errors).toEqual([]);
   console.log(
-    "PASS: all eleven pages via sidebar/mobile menu, active links, Back, deep links, issue filters, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
+    "PASS: all eleven pages via sidebar/mobile menu, path routes, legacy hash redirects, status reads only on work pages, active links, Back, deep links, issue filters, entity selection, empty/offline/login states, polling-safe forms, execution controls, settings save, and persistent Light/Dark/System at desktop/mobile widths. No browser errors or horizontal overflow.",
   );
 } finally {
   await browser.close();

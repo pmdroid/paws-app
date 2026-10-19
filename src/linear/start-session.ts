@@ -19,7 +19,7 @@ export function createSessionStarter(options: {
 }) {
   return async (
     target: LinearSessionTarget,
-    externalUrl: string,
+    dashboardUrl: string,
     signal?: AbortSignal,
     acceptSession?: (event: AcceptedLinearEvent) => void,
   ): Promise<StartedLinearSession> => {
@@ -34,7 +34,7 @@ export function createSessionStarter(options: {
       {
         input: {
           [target.kind === "issue" ? "issueId" : "commentId"]: target.id,
-          externalUrls: [{ label: "Paws", url: externalUrl }],
+          externalUrls: [{ label: "Paws", url: dashboardUrl }],
         },
       },
       signal === undefined ? undefined : { signal },
@@ -56,6 +56,25 @@ export function createSessionStarter(options: {
     ) {
       throw new Error("Linear did not return an authorized issue session");
     }
+    await options.client
+      .query(
+        `mutation LinkPawsConversation($id: String!, $input: AgentSessionUpdateInput!) {
+          agentSessionUpdate(id: $id, input: $input) { success }
+        }`,
+        {
+          id,
+          input: {
+            externalUrls: [
+              {
+                label: "Paws",
+                url: new URL(`sessions/${encodeURIComponent(id)}`, dashboardUrl).href,
+              },
+            ],
+          },
+        },
+        signal === undefined ? undefined : { signal },
+      )
+      .catch(() => undefined);
     const organization = app !== null && isRecord(app["organization"]) ? app["organization"] : null;
     const sourceComment = isRecord(session?.["sourceComment"]) ? session["sourceComment"] : null;
     const comment = isRecord(session?.["comment"]) ? session["comment"] : null;

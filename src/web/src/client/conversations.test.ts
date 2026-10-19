@@ -6,7 +6,6 @@ import {
   type ConversationModel,
 } from "./conversations";
 import { parseRoute, routeHref } from "./route";
-import { dashboardHash } from "../route";
 
 test("private conversation requests stay on the selected same-origin local live engine", async () => {
   const requests: string[] = [];
@@ -110,19 +109,11 @@ test("conversation outcomes, queued prompts, publication failures and files rema
   expect(html).toContain('href="/api/linear/artifacts/file?download=1"');
   expect(html).toContain("Chart &lt;1&gt;.png");
   expect(html).not.toContain("Use <annual>");
-  expect(parseRoute("#/sessions/session%2Fthread")).toEqual({
+  expect(parseRoute("/sessions/session%2Fthread")).toEqual({
     view: "sessions",
     id: "session/thread",
   });
-  expect(routeHref({ view: "sessions", id: "session/thread" })).toBe("#/sessions/session%2Fthread");
-  expect(dashboardHash("/status/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0")).toBe(
-    "#/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0",
-  );
-  expect(dashboardHash("/status/sessions/session%2Fthread")).toBe("#/sessions/session%2Fthread");
-  expect(parseRoute(dashboardHash("/status/sessions/session%2Fthread")!)).toEqual({
-    view: "sessions",
-    id: "session/thread",
-  });
+  expect(routeHref({ view: "sessions", id: "session/thread" })).toBe("/sessions/session%2Fthread");
   model.sessions[0]!.questions.push({
     id: "question",
     itemId: "answer",

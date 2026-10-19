@@ -1,3 +1,4 @@
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { githubUrl } from "./github-url";
@@ -236,7 +237,7 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
     if (!target) return;
     if (target.hasAttribute("data-signin")) {
       try {
-        sessionStorage.setItem("paws.settingsReturn", "#/settings/integrations");
+        sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
       } catch {}
     }
     if (target.hasAttribute("data-install")) waitingForInstall = true;
@@ -333,5 +334,5 @@ export function initializeGitHubRepositorySetup(root: HTMLElement, csrfToken: st
       void load();
     }
   });
-  void load();
+  loadWhenShown("integrations", () => void load());
 }

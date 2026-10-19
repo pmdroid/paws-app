@@ -61,11 +61,11 @@ for (const runner of runners) {
   );
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runner.id]);
   db.run(
-    "INSERT INTO runner_agent_policy(runner_id,agent,seat,ready,quota_state,resets_at,cooldown_until) VALUES(?,'claude','organization',1,'exhausted',?,?)",
+    "INSERT INTO runner_agent_policy(runner_id,agent,ready,quota_state,resets_at,cooldown_until) VALUES(?,'claude',1,'exhausted',?,?)",
     [runner.id, now + 3600000, now + 3600000],
   );
   db.run(
-    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,seat,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'claude','fixture-model','fixture-model','organization','implementer','work',?,?,'quota_exhausted')",
+    "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,role,purpose,started_at,ended_at,outcome) VALUES(?,?,?,'claude','fixture-model','fixture-model','implementer','work',?,?,'quota_exhausted')",
     [workspaceId(), runner.id, runner.ownerUserId, now - 60000, now - 1000],
   );
 }

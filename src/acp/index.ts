@@ -46,9 +46,12 @@ export {
   type UpdatePlanHook,
 } from "./ask-team";
 export {
+  ArtifactRejectedError,
   DEFAULT_MAX_ARTIFACT_BYTES,
+  EVIDENCE_ARTIFACT_LIMITS,
   PUBLISH_ARTIFACT_TOOL_NAME,
   snapshotArtifactFile,
+  type ArtifactEvidence,
   type ArtifactLimits,
   type ArtifactSnapshot,
   type PublishedArtifact,
@@ -75,6 +78,7 @@ export {
   recoverAcpConversation,
   createAcpPromptLifecycle,
   reconstructAcpPrompt,
+  requestText,
   type AcpConversationEntry,
   type AcpPromptLifecycle,
 } from "./lifecycle";
@@ -120,6 +124,7 @@ export {
   ensureBareMirror,
   removeWorktree,
   resolveStartRef,
+  worktreeMergedInto,
   type Mirror,
   type Worktree,
 } from "./worktree";

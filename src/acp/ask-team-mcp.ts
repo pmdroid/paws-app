@@ -87,6 +87,11 @@ const ARTIFACT_TOOL = {
         description:
           "Add a persistent file attachment card to the current Linear issue when requested by the user.",
       },
+      checkId: {
+        type: "string",
+        description:
+          "Closeout check id from get_closeout that a WebM or MP4 video or a PNG, JPEG or WebP screenshot proves. Paws keeps the file as evidence for that check, up to 200 MB for a video and 20 MB for a screenshot, and posts a Paws link to Linear instead of uploading the file.",
+      },
     },
     required: ["path"],
     additionalProperties: false,

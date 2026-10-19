@@ -510,6 +510,38 @@ describe("closeout evaluate", () => {
     });
   }
 
+  test("review finding keys follow exact location normalization independently of evidence order", () => {
+    const policy = repo({
+      retry: { maxFailedAttemptsPerItem: 2, maxFailedReviewAttempts: 10, scope: "task" },
+      items: [review("review")],
+    });
+    for (const [first, second, exhausted] of [
+      ["src/a.rs:12", " src/a.rs:40:7 ", true],
+      ["src/a.rs:12-20", "src/a.rs", false],
+      [":12", ":40", false],
+      ["12", "12:40", true],
+      ["src/a.rs:1:2:3", "src/a.rs:1", false],
+      ["src/a.rs:１２", "src/a.rs", false],
+      ["src/a.rs:", "src/a.rs", false],
+    ] as const) {
+      const records = [first, second].map((location, index) =>
+        reviewRecord("review", [{ ...finding("P1"), location }], {
+          head: index === 0 ? OTHER_HEAD : HEAD,
+          task: "stable",
+          attempt: 1,
+        }),
+      );
+      for (const ordered of [records, [...records].reverse()]) {
+        expect(run(policy, ordered, { task: "stable" }).items[0]?.state).toBe(
+          exhausted ? "exhausted" : "failed",
+        );
+      }
+      expect(run(policy, [records[0]!, records[0]!], { task: "stable" }).items[0]?.state).toBe(
+        "invalid",
+      );
+    }
+  });
+
   test("a missing setup does not skip later requirements", () => {
     const decision = run(
       repo({
