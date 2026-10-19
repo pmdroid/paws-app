@@ -3,12 +3,18 @@ import { createRoot } from "react-dom/client";
 import { Check, GitBranch, Monitor, RefreshCw } from "lucide-react";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { Button } from "./ui/button";
+import { NativeSelect } from "./ui/native-select";
 
 export type Onboarding = {
   issue: { id: string; identifier: string; title: string };
   linear: { state: string; detail: string };
   github: { state: string; detail: string };
-  vm: { state: string; detail: string };
+  vm: {
+    state: "not_linked" | "choice_required" | "ready";
+    detail: string;
+    runners: { id: string; name: string }[];
+    selectedRunner: { id: string; name: string } | null;
+  };
 };
 
 type GitHubLink = {
@@ -22,6 +28,9 @@ function OnboardingPage() {
   const [github, setGitHub] = useState<GitHubLink | null>(null);
   const [githubError, setGitHubError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [runnerId, setRunnerId] = useState("");
+  const [vmBusy, setVmBusy] = useState(false);
+  const [vmError, setVmError] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
@@ -140,6 +149,35 @@ function OnboardingPage() {
       setBusy(false);
     }
   }
+  async function selectVm() {
+    if (!state?.vm.runners.some((runner) => runner.id === runnerId)) return;
+    setVmBusy(true);
+    setVmError("");
+    try {
+      const session = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!session.ok) throw new Error();
+      const auth: { csrfToken?: string } = await session.json();
+      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
+        window.location.pathname,
+      );
+      if (!auth.csrfToken || !match) throw new Error();
+      const response = await fetch("/api/workspaces/onboarding/vm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Paws-CSRF": auth.csrfToken },
+        body: JSON.stringify({ session: match[1], generation: Number(match[2]), runnerId }),
+      });
+      if (!response.ok) throw new Error();
+      const vm: Onboarding["vm"] = await response.json();
+      setState((current) => (current ? { ...current, vm } : null));
+      setRunnerId("");
+    } catch {
+      setVmError("This VM could not be selected. Refresh the available VMs and choose again.");
+      setRunnerId("");
+      setRevision((value) => value + 1);
+    } finally {
+      setVmBusy(false);
+    }
+  }
   return (
     <div className="min-h-dvh px-4 py-5 sm:px-8 sm:py-8">
       <header className="mx-auto flex max-w-3xl items-center justify-between gap-4">
@@ -184,18 +222,73 @@ function OnboardingPage() {
             >
               <ol className="divide-y-2 divide-border">
                 {[
-                  { name: "Linear", label: "Connected", step: state.linear, Icon: Check },
-                  { name: "GitHub", label: "Not checked", step: state.github, Icon: GitBranch },
-                  { name: "Your VM", label: "Not linked", step: state.vm, Icon: Monitor },
-                ].map(({ name, label, step, Icon }) => (
+                  { name: "Linear", step: state.linear, Icon: Check },
+                  { name: "GitHub", step: state.github, Icon: GitBranch },
+                  { name: "Your VM", step: state.vm, Icon: Monitor },
+                ].map(({ name, step, Icon }) => (
                   <li key={name} className="flex items-start gap-4 p-5 sm:p-6">
                     <Icon aria-hidden="true" size={24} className="mt-1 shrink-0" />
                     <div className="min-w-0 flex-1 space-y-2">
                       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                         <h2 className="text-xl font-bold">{name}</h2>
-                        <span className="text-sm font-semibold">{label}</span>
+                        <span className="text-sm font-semibold capitalize">
+                          {step.state.replaceAll("_", " ")}
+                        </span>
                       </div>
                       <p className="max-w-[65ch] text-sm leading-6">{step.detail}</p>
+                      {name === "Your VM" && (
+                        <div className="space-y-3 pt-2">
+                          {state.vm.selectedRunner && (
+                            <p className="text-sm font-semibold">
+                              Selected VM: {state.vm.selectedRunner.name}
+                            </p>
+                          )}
+                          {(state.vm.runners.length > 1 ||
+                            (state.vm.runners.length > 0 && !state.vm.selectedRunner)) && (
+                            <form
+                              className="space-y-3"
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                void selectVm();
+                              }}
+                            >
+                              <label className="flex max-w-md flex-col gap-2 text-sm font-semibold">
+                                Your paired VM
+                                <NativeSelect
+                                  value={
+                                    state.vm.runners.some((runner) => runner.id === runnerId)
+                                      ? runnerId
+                                      : ""
+                                  }
+                                  disabled={vmBusy}
+                                  onChange={(event) => setRunnerId(event.currentTarget.value)}
+                                >
+                                  <option value="">Choose a VM</option>
+                                  {state.vm.runners.map((runner) => (
+                                    <option key={runner.id} value={runner.id}>
+                                      {runner.name}
+                                    </option>
+                                  ))}
+                                </NativeSelect>
+                              </label>
+                              <Button
+                                disabled={
+                                  vmBusy ||
+                                  !state.vm.runners.some((runner) => runner.id === runnerId)
+                                }
+                                type="submit"
+                              >
+                                {vmBusy ? "Selecting VM…" : "Use this VM"}
+                              </Button>
+                            </form>
+                          )}
+                          {vmError && (
+                            <p role="alert" className="text-sm">
+                              {vmError}
+                            </p>
+                          )}
+                        </div>
+                      )}
                       {name === "GitHub" && (
                         <div className="space-y-3 pt-2">
                           {github ? (
