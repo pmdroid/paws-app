@@ -1,4 +1,7 @@
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createRunnerLogin } from "../../src/runner-login";
+import { createRunnerWork } from "../../src/runner-work";
 import { join, resolve } from "node:path";
 import {
   consumeWorkspaceBootstrap,
@@ -102,7 +105,29 @@ const assignments = createWorkspaceAssignments({
     throw new Error("No execution");
   },
 });
+const login = createRunnerLogin({
+  db,
+  work: createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+  }),
+});
+const health = new Set<string>();
 const access = createWorkspaceAccess({
+  onboardingAgents: () => ({
+    login,
+    health: {
+      agents: (_principal, runnerId) =>
+        (["claude", "codex"] as const).map((agent) => ({
+          agent,
+          status: health.has(`${runnerId}/${agent}`)
+            ? ("signed_in" as const)
+            : ("unknown" as const),
+          checkedAt: Date.now(),
+        })),
+    },
+  }),
   db,
   assignments,
   memberGitHub: {
@@ -161,6 +186,36 @@ const server = Bun.serve({
       if (url.searchParams.get("mode") !== "remove") {
         db.run("UPDATE runner SET status='active'");
         db.run("DELETE FROM onboarding_vm");
+        db.run("DELETE FROM runner_member_account");
+        db.run("DELETE FROM runner_login");
+        health.clear();
+      }
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/__agent-fixture" && request.method === "POST") {
+      const mode = url.searchParams.get("mode") ?? "waiting";
+      for (const row of db
+        .query<{ id: string; runnerId: string; agent: string }, []>(
+          "SELECT id,runner_id AS runnerId,agent FROM runner_login WHERE state IN ('starting','waiting')",
+        )
+        .all()) {
+        if (mode === "expired") {
+          db.run("UPDATE runner_login SET expires_at=? WHERE id=?", [Date.now() - 1, row.id]);
+          continue;
+        }
+        login.exchange(row.runnerId, row.id, {
+          state: mode === "connected" ? "connected" : mode === "failed" ? "failed" : "waiting",
+          terminal: mode === "waiting" && row.agent === "claude" ? "PRIVATE CLAUDE CHALLENGE" : "",
+          authorization:
+            mode === "waiting" && row.agent === "codex"
+              ? {
+                  url: "https://auth.openai.com/codex/device",
+                  message: "PRIVATE DEVICE CODE ABCD-1234",
+                }
+              : null,
+          inputId: mode === "waiting" ? randomUUID() : null,
+        });
+        if (mode === "connected") health.add(`${row.runnerId}/${row.agent}`);
       }
       return Response.json({ ok: true });
     }
@@ -197,11 +252,12 @@ console.log(
 const stopped = Promise.withResolvers<void>();
 process.on("SIGTERM", () => stopped.resolve());
 process.on("SIGINT", () => stopped.resolve());
-const deadline = setTimeout(() => stopped.resolve(), 60000);
+const deadline = setTimeout(() => stopped.resolve(), 180000);
 await stopped.promise;
 clearTimeout(deadline);
 await server.stop(true);
 await access.stop();
+login.stop();
 writeFileSync(
   join(root, "onboarding-audit.json"),
   JSON.stringify(
