@@ -1791,4 +1791,17 @@ CREATE TABLE evidence (
 CREATE INDEX evidence_item ON evidence (item_id, created_at);
 `,
   },
+  {
+    id: "072_runner_follow_up",
+    sql: `
+CREATE TABLE runner_follow_up (
+  run_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence>0),
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(run_id,generation,sequence)
+) STRICT;
+`,
+  },
 ];

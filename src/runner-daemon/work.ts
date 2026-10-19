@@ -32,6 +32,11 @@ export const RunnerAnswersSchema = z.strictObject({
     .array(z.strictObject({ sequence: generation, answer: z.string().min(1).max(65536) }))
     .max(64),
 });
+export const RunnerFollowUpsSchema = z.strictObject({
+  followUps: z
+    .array(z.strictObject({ sequence: generation, body: z.string().min(1).max(65536) }))
+    .max(64),
+});
 export const RunnerRepositoryAccessSchema = z.strictObject({
   generation,
   access: z.enum(["read", "write"]),

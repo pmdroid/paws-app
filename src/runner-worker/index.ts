@@ -27,6 +27,7 @@ import {
   createUpdateLimiter,
   validateCandidateAttribution,
   ArtifactRejectedError,
+  createAcpPromptLifecycle,
   git,
   runAgent,
   minimalAgentEnv,
@@ -49,7 +50,7 @@ import {
   type RunnerResults,
   type RunnerSpool,
 } from "../runner-execution";
-import { readRunnerAnswer } from "../runner-answers";
+import { readRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
 import { checkDeveloperLogin, type LoginCommandRunner } from "../install";
 import {
   RunnerArtifactSchema,
@@ -71,12 +72,38 @@ export interface RunnerWorkerOptions {
   signal?: AbortSignal;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
+  followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
   loginCommand?: LoginCommandRunner;
   resume?: boolean;
 }
 
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
+
+export async function runWithFollowUps(
+  agent: RunAgentOptions,
+  next: (sequence: number, signal: AbortSignal) => Promise<string>,
+  runner: (options: RunAgentOptions) => Promise<RunAgentResult> = runAgent,
+): Promise<RunAgentResult> {
+  const lifecycle = createAcpPromptLifecycle([], runner);
+  let prompt = agent.prompt;
+  for (let sequence = 1; ; sequence++) {
+    const waiting = new AbortController();
+    const signal = agent.signal ? AbortSignal.any([waiting.signal, agent.signal]) : waiting.signal;
+    const turn = lifecycle.prompt({ ...agent, prompt });
+    const message = next(sequence, signal).then(
+      (text) => ({ text }),
+      () => null,
+    );
+    const first = await Promise.race([turn.then((result) => ({ result })), message]);
+    if (first === null || "result" in first) {
+      waiting.abort();
+      return first?.result ?? turn;
+    }
+    await lifecycle.interrupt();
+    prompt = first.text;
+  }
+}
 
 export type RunnerWorkerEvent =
   | { type: "login"; update: RunnerLoginUpdate }
@@ -400,7 +427,7 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
-    const run = await runAgent({
+    const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
       skillsRoot,
@@ -554,7 +581,11 @@ export async function executeRunnerCommand(
                 return options.answer(requestId, context.signal);
               },
             },
-    });
+    };
+    const run =
+      command.type === "run" && options.followUp
+        ? await runWithFollowUps(agent, options.followUp)
+        : await runAgent(agent);
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
@@ -730,6 +761,18 @@ export async function runRunnerWorker(options: {
         signal.throwIfAborted();
         const answer = readRunnerAnswer(spool, options.executionId, requestId);
         if (answer) return { answer: answer.answer };
+        await delay(250, undefined, { signal });
+      }
+    },
+    async followUp(sequence, signal) {
+      while (true) {
+        signal.throwIfAborted();
+        const message = readRunnerAnswer(
+          spool,
+          options.executionId,
+          runnerFollowUpRequestId(sequence),
+        );
+        if (message) return message.answer;
         await delay(250, undefined, { signal });
       }
     },
