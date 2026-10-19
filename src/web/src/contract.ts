@@ -139,6 +139,14 @@ export interface StatusQuestion {
   askedAt: string;
   claimedBy: string | null;
   links: StatusLink[];
+  /** The agent asks in this Closeout recovery question to skip exhausted checks. */
+  skipRequest?: StatusSkipRequest | null;
+}
+
+/** People answer a skip request in Linear. Paws has no skip button. */
+export interface StatusSkipRequest {
+  checks: string[];
+  reason: string;
 }
 
 export interface StatusCheck {
@@ -476,7 +484,15 @@ function readQuestion(input: unknown, index: number): StatusQuestion {
     askedAt: dateString(body, "askedAt", path),
     claimedBy,
     links: readLinks(body.links, `${path}.links`),
+    ...(body.skipRequest === undefined || body.skipRequest === null
+      ? {}
+      : { skipRequest: readSkipRequest(body.skipRequest, `${path}.skipRequest`) }),
   };
+}
+
+function readSkipRequest(input: unknown, path: string): StatusSkipRequest {
+  const body = object(input, path);
+  return { checks: stringArray(body, "checks", path), reason: text(body, "reason", path) };
 }
 
 function readVerdict(input: unknown, index: number): StatusVerdict {

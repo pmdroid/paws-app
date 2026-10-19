@@ -245,6 +245,10 @@ const DEMO: StatusSnapshot = {
       askedAt: "2026-10-09T20:40:00.000Z",
       claimedBy: null,
       links: [{ label: "Answer in Linear", href: "https://linear.app/acme/issue/ENG-100" }],
+      skipRequest: {
+        checks: ["unit"],
+        reason: "The legal-hold fixture needs the production retention service.",
+      },
     },
   ],
   verdicts: [

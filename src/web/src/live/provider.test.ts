@@ -13,6 +13,7 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  saveCloseoutRecovery,
   saveTaskBlocks,
   upsertCloseoutStep,
   type CloseoutStepWrite,
@@ -88,6 +89,36 @@ describe("live status provider", () => {
     expect(createLiveStatusProvider(db).snapshot().questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
     ]);
+  });
+
+  test("an open Closeout question carries the agent's skip request until it is answered", async () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+    seedQuestion(db, item.id, "session");
+    saveCloseoutRecovery(db, {
+      questionId: "question",
+      taskId: "task",
+      itemId: item.id,
+      base: "a".repeat(40),
+      head: "b".repeat(40),
+      policyDigest: "digest",
+      failedChecks: ["e2e"],
+      retryBaseline: [],
+      summary: "Closeout: exhausted",
+      skipRequest: { checks: ["e2e"], reason: "The runner has no display." },
+    });
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response!.json());
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.snapshot.questions[0]?.skipRequest).toEqual({
+      checks: ["e2e"],
+      reason: "The runner has no display.",
+    });
+    db.run("UPDATE question SET status = 'answered', answer = 'retry' WHERE id = 'question'");
+    expect(createLiveStatusProvider(db).snapshot().questions).toEqual([]);
   });
 
   test("a Linear question without session metadata uses its readable issue key", () => {

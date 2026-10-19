@@ -212,6 +212,19 @@ describe("status views", () => {
     expect(html).not.toContain("/verdicts");
   });
 
+  test("a run with an open skip request links to Linear and has no skip button", () => {
+    const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
+    expect(html).toContain("Skip requested in Linear");
+    expect(html).toContain("The legal-hold fixture needs the production retention service.");
+    expect(html).toContain('href="https://linear.app/acme/issue/ENG-100"');
+    expect(html).toContain(">Open in Linear</a>");
+    expect(html).not.toMatch(/<button[^>]*>[^<]*skip/i);
+    const snapshot = demoStatus();
+    snapshot.questions = snapshot.questions.filter((question) => !question.skipRequest);
+    const answered = render(model({ snapshot, route: { view: "runs", id: "r-100" } })).content;
+    expect(answered).not.toContain("Skip requested in Linear");
+  });
+
   test("issues, runs, and questions each render", () => {
     const issues = render(model({ route: { view: "issues", id: null } })).content;
     expect(issues).toContain('data-issue-filter="active"');
