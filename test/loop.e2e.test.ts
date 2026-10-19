@@ -1024,6 +1024,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
 for (const recovery of [
   "guidance",
   "bypass",
+  "agent skip request",
   "stale bypass",
   "missing bypass reason",
   "unfailed bypass check",
@@ -1082,6 +1083,18 @@ for (const recovery of [
               path: path.join(input.worktree, guided ? "ok.txt" : `attempt-${launches.length}.txt`),
               content: "done\n",
             },
+            ...(recovery === "agent skip request" && input.purpose === "implement"
+              ? [
+                  { type: "request_closeout_skip", checkIds: ["test"], reason: "Too early" },
+                  { type: "run_closeout", id: "test" },
+                  { type: "run_closeout", id: "test" },
+                  {
+                    type: "request_closeout_skip",
+                    checkIds: ["test"],
+                    reason: "ok.txt comes from the release job.",
+                  },
+                ]
+              : []),
             { type: "end", stopReason: "end_turn" },
           ],
         }),
@@ -1116,6 +1129,15 @@ for (const recovery of [
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
       expect(question.body).toContain("same Closeout retry limit");
+      if (recovery === "agent skip request") {
+        expect(context.skipRequest).toEqual({
+          checks: ["test"],
+          reason: "ok.txt comes from the release job.",
+        });
+        expect(question.body).toContain("The agent asks to skip `test`.");
+        expect(question.body).toContain("Reason: ok.txt comes from the release job.");
+        expect(tracker.questions).toHaveLength(1);
+      } else expect(context.skipRequest).toBeNull();
       db.close();
       db = openDatabase(dbPath);
       runtime = attach();

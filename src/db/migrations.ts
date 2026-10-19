@@ -1804,4 +1804,11 @@ CREATE TABLE runner_follow_up (
 ) STRICT;
 `,
   },
+  {
+    id: "073_closeout_skip_request",
+    sql: `
+ALTER TABLE closeout_recovery ADD COLUMN skip_checks TEXT CHECK (skip_checks IS NULL OR json_valid(skip_checks));
+ALTER TABLE closeout_recovery ADD COLUMN skip_reason TEXT;
+`,
+  },
 ];

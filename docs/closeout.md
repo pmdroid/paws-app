@@ -39,6 +39,8 @@ Command checks run in the agent's workspace. On a remote runner they run on that
 
 Each check has its own retry limit, `retry.maxFailedAttemptsPerItem`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
 
+If the agent thinks an exhausted check can be skipped for this change, it calls `request_closeout_skip` with the check ids and its reason before it finishes. The tool accepts only checks that are exhausted, so their last attempt failed. Reviews are not accepted. Calling it again replaces the request. The request is not a bypass. It goes into the question Paws asks the team.
+
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
 
 ## Paws Closeout
@@ -70,6 +72,8 @@ The question lists every check with its status and attempts. There are two ways 
 
 - **Reply with guidance.** The agent gets a new fix round with your guidance, and the checks get a fresh round of attempts with the same limits. Earlier evidence is kept.
 - **Bypass.** `/paws bypass check-id -- reason`, or `/paws bypass check-a,check-b -- reason` for several checks, accepts those checks for this exact candidate. The bypass is recorded with the task, base, head, policy and your reason. It does not carry over to another commit.
+
+When the agent asked to skip checks, the question also shows the checks the team can still bypass, the agent's reason, and links to the videos and screenshots the agent published for them. Each question carries one request. Until someone answers, the run page shows "Skip requested in Linear" with the reason and an "Open in Linear" link. Paws has no skip button.
 
 Only a bypass in reply to this question counts. A bypass the agent proposes in its own question has no effect.
 
