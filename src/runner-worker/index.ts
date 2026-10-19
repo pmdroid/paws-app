@@ -62,6 +62,10 @@ import {
   type RunnerEvent,
 } from "../runner-protocol";
 
+import { compactAcpEvent } from "./compact";
+
+export { compactAcpEvent };
+
 export interface RunnerWorkerOptions {
   job: RunnerJob;
   repositoryBundle?: string;
@@ -509,7 +513,7 @@ export async function executeRunnerCommand(
             else if (Buffer.byteLength(reviewText) > 524_288)
               throw new Error("Runner response exceeds size limit");
           }
-          emit({ type: "acp", event });
+          emit({ type: "acp", event: compactAcpEvent(event) });
         } catch (error) {
           eventFailure = error instanceof Error ? error : new Error(String(error));
           throw error;

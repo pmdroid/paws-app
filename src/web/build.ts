@@ -15,7 +15,7 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(join(dist, "assets"), { recursive: true });
 
 const built = await Bun.build({
-  entrypoints: [join(root, "src/client/main.ts")],
+  entrypoints: [join(root, "src/client/main.ts"), join(root, "src/client/transcript.tsx")],
   outdir: join(dist, "assets"),
   naming: "[name]-[hash].[ext]",
   minify: true,
@@ -30,11 +30,14 @@ if (!built.success) {
   process.exit(1);
 }
 
-const js = built.outputs.find(
-  (output) => output.kind === "entry-point" && output.path.endsWith(".js"),
-);
-const jsName = js?.path.split(/[/\\]/).pop();
-if (!js || !jsName) {
+const entryName = (name: string) =>
+  built.outputs
+    .filter((output) => output.kind === "entry-point" && output.path.endsWith(".js"))
+    .map((output) => output.path.split(/[/\\]/).pop()!)
+    .find((file) => file.startsWith(`${name}-`));
+const jsName = entryName("main");
+const transcriptJsName = entryName("transcript");
+if (!jsName || !transcriptJsName) {
   console.error("Client bundle did not emit JavaScript");
   process.exit(1);
 }
@@ -66,10 +69,15 @@ await copyFile(
   join(dist, "assets/bricolage.woff2"),
 );
 
-const html = (await Bun.file(join(root, "src/client/index.html")).text())
-  .replaceAll("__CSS__", `assets/${cssName}`)
-  .replaceAll("__JS__", `assets/${jsName}`);
-await Bun.write(join(dist, "index.html"), html);
+for (const [page, script] of [
+  ["index.html", jsName],
+  ["transcript.html", transcriptJsName],
+] as const) {
+  const html = (await Bun.file(join(root, "src/client", page)).text())
+    .replaceAll("__CSS__", `assets/${cssName}`)
+    .replaceAll("__JS__", `assets/${script}`);
+  await Bun.write(join(dist, page), html);
+}
 await Bun.write(join(dist, "config.json"), `${JSON.stringify({ engineUrl }, null, 2)}\n`);
 
 console.log(`Built status dashboard → ${dist}`);
