@@ -113,12 +113,7 @@ export class GitHubIntegrationHolds {
         return;
       }
       if (findOpenQuestion(this.db, latest.sessionKey) !== null) return;
-      const body =
-        result === "attribution"
-          ? "Link your GitHub identity and consent to public attribution in Paws Settings. If this issue belongs to a Linear project, its lead must also link and consent. Paws will recheck automatically before continuing."
-          : result === "unavailable"
-            ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
-            : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
+      const body = waitingMessage(result);
       const question = openQuestion(this.db, {
         itemId: latest.id,
         sessionId: latest.sessionKey,
@@ -173,6 +168,24 @@ export class GitHubIntegrationHolds {
         continue;
       }
       if (result !== "ready") {
+        immediate(this.db, () => {
+          if (!this.current(hold)) return;
+          const question = getQuestion(this.db, hold.question_id)!;
+          const body = waitingMessage(result);
+          if (question.body === body) return;
+          this.db.run("UPDATE question SET body=? WHERE id=? AND status='open'", [
+            body,
+            question.id,
+          ]);
+          enqueueOutboxOnce(this.db, {
+            target: "linear",
+            op: "activity",
+            orderingKey: question.sessionId,
+            idempotencyKey: `github-integration:waiting:${question.id}:${result}`,
+            payload: { sessionId: question.sessionId, kind: "thought", body },
+            now: this.now(),
+          });
+        });
         if (result === "installation" && this.current(hold)) {
           const question = getQuestion(this.db, hold.question_id)!;
           this.notifyAdministrators(item, question.id, question.sessionId);
@@ -384,4 +397,12 @@ export class GitHubIntegrationHolds {
         .get(hold.question_id)?.status === "pending"
     );
   }
+}
+
+function waitingMessage(result: "attribution" | "unavailable" | "installation"): string {
+  return result === "attribution"
+    ? "Link your GitHub identity and consent to public attribution in Paws Settings. If this issue belongs to a Linear project, its lead must also link and consent. Paws will recheck automatically before continuing."
+    : result === "unavailable"
+      ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
+      : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
 }
