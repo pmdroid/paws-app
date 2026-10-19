@@ -7,6 +7,7 @@ import {
   memberGitHubRecord,
   readOnboardingVm,
   workspaceLinearMember,
+  type OnboardingAdmission,
 } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
 import { onboardingAgentsState, type OnboardingAgents } from "./onboarding-agents";
@@ -141,7 +142,42 @@ export function createOnboardingReadiness(options: {
       return null;
     }
   }
+  function admission(context: OnboardingReadinessContext): OnboardingAdmission | null {
+    context = {
+      sessionId: context.sessionId,
+      generation: context.generation,
+      workspaceId: context.workspaceId,
+      linearUserId: context.linearUserId,
+    };
+    const projected = read(context);
+    if (projected?.state !== "ready" || !projected.prepared?.mode || !projected.vm) return null;
+    const current = facts(context);
+    return {
+      sessionId: context.sessionId,
+      generation: context.generation,
+      workspaceId: context.workspaceId,
+      linearUserId: context.linearUserId,
+      userId: current.member.userId,
+      issueId: current.scope.issue.linearIssueId,
+      issueFingerprint: JSON.stringify(current.scope.issue),
+      revision: projected.revision,
+      fingerprint: stored(context)!.fingerprint,
+      mode: projected.prepared.mode,
+      repositoryContext: projected.prepared.repositoryContext,
+      repository: projected.prepared.repository,
+      permission: projected.prepared.permission,
+      runnerId: projected.vm.id,
+      runnerFence: projected.vm.fence,
+    };
+  }
+  function assertAdmission(snapshot: OnboardingAdmission) {
+    const latest = admission(snapshot);
+    if (!latest || JSON.stringify(latest) !== JSON.stringify(snapshot))
+      throw new Error("Onboarding admission changed.");
+  }
   return {
+    admission,
+    assertAdmission,
     read,
     readyToContinue(context: OnboardingReadinessContext) {
       return read(context)?.state === "ready";
