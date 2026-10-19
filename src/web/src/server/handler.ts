@@ -8,6 +8,7 @@ import {
   type StatusSnapshot,
 } from "../contract";
 import { demoStatus } from "../demo";
+import { dashboardHash } from "../route";
 import { createLiveStatusProvider, emptyLiveSnapshot } from "../live/provider";
 import { ARTIFACT_API_PATH, readCloseoutArtifact } from "./artifact";
 import { handleLinearArtifactRequest, type ReadLinearArtifact } from "./linear-artifact";
@@ -239,6 +240,12 @@ async function apiResponse(request: Request, provider: StatusProvider): Promise<
 function pageResponse(request: Request, staticDir: string | null, csrfToken?: string): Response {
   if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
   const url = new URL(request.url);
+  const redirected = hashRoute(url);
+  if (redirected)
+    return new Response(null, {
+      status: 302,
+      headers: { Location: redirected, "Cache-Control": "no-store" },
+    });
   const relative =
     url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
   if (!relative) return text("Not found", 404);
@@ -257,6 +264,13 @@ function pageResponse(request: Request, staticDir: string | null, csrfToken?: st
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+function hashRoute(url: URL): string | null {
+  if (url.hash) return null;
+  const hash = dashboardHash(url.pathname);
+  if (!hash) return null;
+  return `${STATUS_PAGE_PATH}/${url.search}${hash}`;
 }
 
 function relativePagePath(pathname: string): string | null {

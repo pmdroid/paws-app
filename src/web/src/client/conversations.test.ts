@@ -6,6 +6,7 @@ import {
   type ConversationModel,
 } from "./conversations";
 import { parseRoute, routeHref } from "./route";
+import { dashboardHash } from "../route";
 
 test("private conversation requests stay on the selected same-origin local live engine", async () => {
   const requests: string[] = [];
@@ -14,6 +15,7 @@ test("private conversation requests stay on the selected same-origin local live 
     return Response.json({ sessions: [] });
   };
   const origin = "http://127.0.0.1:8787";
+  const tunnel = "https://agentbox.example.ts.net:8787";
   for (const [engine, source] of [
     ["https://remote.example", "live"],
     [origin, "demo"],
@@ -31,7 +33,16 @@ test("private conversation requests stay on the selected same-origin local live 
     sessions: [],
   });
   expect(requests).toEqual([`${origin}/api/linear/conversations`]);
+  expect(await loadConversations(tunnel, "live", tunnel, request)).toEqual({
+    state: "ready",
+    sessions: [],
+  });
+  expect(requests).toEqual([
+    `${origin}/api/linear/conversations`,
+    `${tunnel}/api/linear/conversations`,
+  ]);
   expect(canReadConversations("https://remote.example", "live", origin)).toBe(false);
+  expect(canReadConversations(tunnel, "live", tunnel)).toBe(true);
   expect(
     await loadConversations(
       origin,
@@ -104,6 +115,14 @@ test("conversation outcomes, queued prompts, publication failures and files rema
     id: "session/thread",
   });
   expect(routeHref({ view: "sessions", id: "session/thread" })).toBe("#/sessions/session%2Fthread");
+  expect(dashboardHash("/status/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0")).toBe(
+    "#/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0",
+  );
+  expect(dashboardHash("/status/sessions/session%2Fthread")).toBe("#/sessions/session%2Fthread");
+  expect(parseRoute(dashboardHash("/status/sessions/session%2Fthread")!)).toEqual({
+    view: "sessions",
+    id: "session/thread",
+  });
   model.sessions[0]!.questions.push({
     id: "question",
     itemId: "answer",

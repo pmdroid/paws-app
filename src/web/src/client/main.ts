@@ -13,6 +13,7 @@ import {
   startGitHubDevice,
 } from "./github-auth";
 import { render, type RenderModel } from "./render";
+import { dashboardHash } from "../route";
 import { parseRoute } from "./route";
 
 import { createAgentSettings } from "./agent-settings";
@@ -70,6 +71,7 @@ document.addEventListener("change", (event) => {
 void boot();
 
 async function boot(): Promise<void> {
+  adoptPathRoute();
   workspaceReady = await initializeWorkspaceAccess();
   shell.setAuthenticated(workspaceReady);
   if (!workspaceReady) return;
@@ -167,6 +169,13 @@ function showLocalEmpty(): void {
 
 function servedLocally(): boolean {
   return location.pathname === "/status" || location.pathname.startsWith("/status/");
+}
+
+function adoptPathRoute(): void {
+  if (!servedLocally() || location.hash) return;
+  const hash = dashboardHash(location.pathname);
+  if (!hash) return;
+  history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
 }
 
 function schedule(): void {
