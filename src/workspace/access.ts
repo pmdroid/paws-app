@@ -149,8 +149,12 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const path = url.pathname;
     const identityResponse = await attribution.handle(request);
     if (identityResponse) return identityResponse;
+    const onboardingPage =
+      /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(path);
     if (
+      !onboardingPage &&
       ![
+        "/api/workspaces/onboarding",
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
@@ -257,9 +261,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamIds: identity.teamIds,
           now: syncAt,
         });
+        let destination = "/status/";
         if (result.assignmentHash !== null) {
           if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-          options.assignments.complete(result.assignmentHash, workspace.id, result.identity.userId);
+          destination = options.assignments.complete(
+            result.assignmentHash,
+            workspace.id,
+            result.identity.userId,
+          );
         }
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
@@ -270,7 +279,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           now: now(),
         });
         const headers = new Headers({
-          location: "/status/",
+          location: destination,
           "cache-control": "no-store",
           "referrer-policy": "no-referrer",
         });
@@ -297,6 +306,21 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);
+    if (onboardingPage || path === "/api/workspaces/onboarding") {
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+      const sessionId = onboardingPage?.[1] ?? url.searchParams.get("session") ?? "";
+      const generation = onboardingPage?.[2] ?? url.searchParams.get("generation") ?? "";
+      const state =
+        /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) && /^(0|[1-9][0-9]{0,9})$/.test(generation)
+          ? options.assignments?.onboarding(sessionId, Number(generation), access.principal)
+          : null;
+      if (!state)
+        return json(
+          { error: "Onboarding is unavailable. Use the current Linear assignment." },
+          404,
+        );
+      return onboardingPage ? null : json(state);
+    }
     if (path === "/api/workspaces/select") {
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
       if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))
