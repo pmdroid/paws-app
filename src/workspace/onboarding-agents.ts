@@ -44,6 +44,7 @@ export function onboardingAgentsState(
               ? "signed_out"
               : (account?.session?.state ?? "signed_out"),
       updatedAt: account?.updatedAt ?? null,
+      checkedAt: check?.checkedAt ?? null,
     };
   });
   return {
