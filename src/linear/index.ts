@@ -139,3 +139,10 @@ export type { LinearMemberIdentity, LinearMembershipReads } from "./membership";
 
 export { createLinearAttributionReads } from "./attribution";
 export type { LinearAttributionContext } from "./attribution";
+
+export {
+  repositoryAnswer,
+  rankRepositories,
+  hintedRepository,
+  chooseRepository,
+} from "./repository-selection";
