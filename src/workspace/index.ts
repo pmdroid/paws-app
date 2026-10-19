@@ -31,3 +31,8 @@ export { readWorkspaceJson } from "./administration";
 export { createMemberGitHubAccounts } from "./member-github";
 
 export { createMemberGitHubOAuth } from "./member-github-oauth";
+export type { MemberRepositoryResult } from "./member-github";
+export {
+  createMemberRepositoryAccess,
+  type TaskRepositoryAccessResult,
+} from "./member-repository-access";
