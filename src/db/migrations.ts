@@ -1875,4 +1875,20 @@ CREATE TABLE onboarding_preparation (
 ) STRICT;
 `,
   },
+  {
+    id: "078_onboarding_readiness",
+    sql: `
+CREATE TABLE onboarding_readiness (
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>0),
+ owner TEXT NOT NULL,
+ fingerprint TEXT NOT NULL,
+ projection TEXT NOT NULL CHECK(json_valid(projection)),
+ expires_at INTEGER NOT NULL,
+ PRIMARY KEY(session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
 ];
