@@ -101,7 +101,7 @@ export function openRunnerAuthority(root: string): RunnerAuthority {
         now < 0
       )
         throw new Error("Runner certificate lifetime is invalid");
-      const notBefore = Math.max(now - 60_000, Date.parse(certificate.validFrom));
+      const notBefore = Math.max(now - 30_000, Date.parse(certificate.validFrom));
       const notAfter = now + lifetimeMs;
       if (
         Date.parse(certificate.validFrom) > notBefore ||

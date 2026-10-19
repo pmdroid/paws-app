@@ -7,6 +7,7 @@ export type RunnerPeer = { fingerprint: string; serial: string; notAfter: number
 export type RunnerTls = { key: string; cert: string; ca: string };
 export type RunnerListener = {
   port: number;
+  disconnect(fingerprint: string): void;
   revoke(fingerprint: string): void;
   reload(tls: RunnerTls): Promise<void>;
   stop(): Promise<void>;
@@ -149,11 +150,15 @@ export async function startRunnerListener(options: {
     for (const socket of connections.keys()) socket.destroy();
     await Promise.all([closed, ...pending]);
   }
+  function disconnect(fingerprint: string) {
+    for (const [socket, identity] of connections) if (identity === fingerprint) socket.destroy();
+  }
   return {
     port: address.port,
+    disconnect,
     revoke(fingerprint) {
       revoked.add(fingerprint);
-      for (const [socket, identity] of connections) if (identity === fingerprint) socket.destroy();
+      disconnect(fingerprint);
     },
     async reload(tls) {
       if (stopped) throw new Error("Runner listener is stopped");
