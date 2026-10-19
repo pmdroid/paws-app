@@ -301,8 +301,41 @@ export async function probeRunnerPairing(
     } finally {
       memberAgent.destroy();
     }
+    syncWorkspaceMember(db, {
+      workspaceId: principal.workspaceId,
+      userId: memberUserId,
+      role: "member",
+      active: true,
+      teamIds: [],
+      now: demotedAt + 1,
+    });
+    assert.equal(control.authenticate(memberCertificate).id, memberApproval.runnerId);
+    const restored = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+    );
+    assert.equal(restored.status, 200);
+    const restoredRenewal = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+      undefined,
+      { csr: client.csr },
+    );
+    assert.equal(restoredRenewal.status, 200);
+    const restoredCertificate = JSON.parse(restoredRenewal.body) as { certificate: string };
+    const restoredIdentity = await registryRequest(
+      root,
+      child.port,
+      restoredCertificate.certificate,
+      client.keyPath,
+    );
+    assert.equal(restoredIdentity.status, 200);
     observe(
-      "active observer demotion denies enrolled transport and closes a real live mTLS connection",
+      "active observer demotion closes transport and membership restoration permits fresh mTLS renewal without restart",
       true,
       {
         runnerId: memberApproval.runnerId,
@@ -400,6 +433,7 @@ async function registryRequest(
   certificate: string,
   keyPath: string,
   agent?: Agent,
+  payload?: { csr: string },
 ) {
   return new Promise<{ status: number; body: string; socket: Socket }>((resolve, reject) => {
     let socket: Socket;
@@ -407,7 +441,9 @@ async function registryRequest(
       {
         hostname: "localhost",
         port,
-        path: "/identity",
+        path: payload ? "/v1/certificate" : "/identity",
+        method: payload ? "POST" : "GET",
+        headers: payload ? { "content-type": "application/json" } : {},
         ca: readFileSync(join(root, "server.pem")),
         cert: certificate,
         key: readFileSync(keyPath),
@@ -424,7 +460,7 @@ async function registryRequest(
     req.on("socket", (value) => (socket = value));
     req.on("error", reject);
     req.on("timeout", () => req.destroy(new Error("Registry TLS timeout")));
-    req.end();
+    req.end(payload ? JSON.stringify(payload) : undefined);
   });
 }
 

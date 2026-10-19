@@ -75,7 +75,8 @@ export async function openRunnerCoordinator(options: {
     db: options.db,
     authority,
     certificateRoot: options.root,
-    disconnect: (fingerprint) => listener?.revoke(fingerprint),
+    disconnect: (fingerprint, permanent) =>
+      permanent ? listener?.revoke(fingerprint) : listener?.disconnect(fingerprint),
     now: options.now,
   });
   const work = createRunnerWork({

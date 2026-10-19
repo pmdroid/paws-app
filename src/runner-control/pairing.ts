@@ -29,7 +29,7 @@ export function createRunnerControl(options: {
   db: Database;
   authority: RunnerAuthority;
   certificateRoot: string;
-  disconnect(fingerprint: string): void;
+  disconnect(fingerprint: string, permanent: boolean): void;
   now?: () => number;
   /** Installed Paws release, or null for a source checkout. Read from the release path by default. */
   serverVersion?: string | null;
@@ -161,14 +161,16 @@ export function createRunnerControl(options: {
     expireConnections() {
       expireRunnerPairings(db, now());
       const fingerprints = db
-        .query<{ fingerprint: string }, [number]>(
-          `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
+        .query<{ fingerprint: string; permanent: number }, [number, number]>(
+          `SELECT c.fingerprint, CASE WHEN c.revoked_at IS NOT NULL OR c.accepted_until<=?
+        OR r.revoked_at IS NOT NULL OR r.status='revoked' OR m.active=0 THEN 1 ELSE 0 END AS permanent FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
         JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
         WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
         OR r.status='revoked' OR m.active=0 OR m.role NOT IN ('owner','admin','member')`,
         )
-        .all(now());
-      for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);
+        .all(now(), now());
+      for (const { fingerprint, permanent } of fingerprints)
+        options.disconnect(fingerprint, permanent === 1);
     },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
@@ -193,7 +195,7 @@ export function createRunnerControl(options: {
           now: at,
         });
       });
-      for (const fingerprint of fingerprints) options.disconnect(fingerprint);
+      for (const fingerprint of fingerprints) options.disconnect(fingerprint, true);
     },
     async renew(peer: RunnerPeer, csr: string) {
       authorized(peer);
