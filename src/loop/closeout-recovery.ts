@@ -82,3 +82,28 @@ function skipRequestText(skip: CloseoutSkip): string {
       : []),
   ].join("\n");
 }
+
+/**
+ * Checks the agent may ask to skip at this gate: bypassable ones whose retry budget ended
+ * with a failed attempt. Checks blocked for another reason, such as reviewer independence,
+ * are left out.
+ */
+export function skippableChecks(
+  items: readonly { id: string; state: string }[],
+  failedChecks: readonly string[],
+): string[] {
+  return items
+    .filter((check) => check.state === "exhausted" && failedChecks.includes(check.id))
+    .map((check) => check.id);
+}
+
+/** Requested reviews that did not fail in Paws' latest finished Closeout. */
+export function unfailedReviews(
+  steps: readonly { id: string; state: string }[],
+  reviewIds: readonly string[],
+): string[] {
+  return reviewIds.filter((id) => {
+    const state = steps.find((step) => step.id === id)?.state;
+    return state !== "failed" && state !== "exhausted";
+  });
+}
