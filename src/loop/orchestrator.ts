@@ -1679,7 +1679,10 @@ export class Orchestrator {
           async runLogged(request: Parameters<typeof loggedSessionCloseout>[1]) {
             assertCurrent();
             const saved = readSessionCloseout(sessionPath);
-            const result = loggedSessionCloseout(saved?.report, request);
+            const result = loggedSessionCloseout(
+              saved?.head === request.expectedHead ? saved.report : undefined,
+              request,
+            );
             assertCurrent();
             return result;
           },
