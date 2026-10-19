@@ -23,10 +23,12 @@ import { handleWorkspaceAdministration, readWorkspaceJson } from "./administrati
 import {
   clearWorkspaceSessionCookie,
   issueWorkspaceSession,
+  issueWorkspaceBootstrap,
   requestWorkspaceSession,
   validWorkspaceCsrf,
   workspaceId,
   workspaceSessionCookie,
+  workspaceTokenHash,
 } from "./session";
 
 export type WorkspaceAccessOptions = {
@@ -247,8 +249,22 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             now: syncAt,
           });
         }
-        if (workspace === null)
-          return json({ error: "Ask the Paws operator to bootstrap this workspace." }, 403);
+        if (workspace === null) {
+          if (!identity.admin || identity.guest)
+            return json(
+              { error: "A Linear workspace admin must connect this workspace first." },
+              403,
+            );
+          const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
+          workspace = consumeWorkspaceBootstrap(options.db, {
+            id: workspaceId(now()),
+            organizationId: result.identity.organizationId,
+            name: options.installedOrganization.name,
+            tokenHash: workspaceTokenHash(grant),
+            userId,
+            now: now(),
+          });
+        }
         syncWorkspaceMember(options.db, {
           workspaceId: workspace.id,
           userId,

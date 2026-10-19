@@ -210,7 +210,7 @@ function closeoutPolicyFact(
     return {
       ok: false,
       detail: "checkout is not configured",
-      fix: "Run bun run paws setup so the checkout path is set.",
+      fix: "Configure the repository checkout path.",
     };
   }
   const loaded = validate(checkout, home, policyRoot);

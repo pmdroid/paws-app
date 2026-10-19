@@ -1839,4 +1839,15 @@ ALTER TABLE runner_login_grok RENAME TO runner_login;
 CREATE INDEX runner_login_account ON runner_login(runner_id,user_id,agent,updated_at);
 `,
   },
+  {
+    id: "074_browser_installation",
+    sql: `
+CREATE TABLE browser_installation_request (
+ state_hash TEXT PRIMARY KEY,
+ browser_hash TEXT NOT NULL,
+ identity TEXT NOT NULL,
+ expires_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

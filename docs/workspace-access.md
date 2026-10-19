@@ -1,8 +1,13 @@
 # Workspace access
 
-Connect the Paws Linear app with `bun run paws setup --linear-mode agent-session`. In the same OAuth application's settings, register the dashboard's HTTPS origin followed by `/auth/linear/callback` as an additional redirect URI. For example, `https://paws.example.com:8787/auth/linear/callback`. [Linear's OAuth documentation](https://linear.app/developers/oauth-2-0-authentication) describes redirect registration and PKCE.
+Configure a Linear OAuth app with these callback URLs for your Paws HTTPS origin:
 
-Give Paws a valid TLS certificate and its matching private key. The private key must be readable by the Paws process and have mode `0400` or `0600`.
+- `/auth/linear/callback` for personal sign-in.
+- `/auth/linear/install/callback` for the workspace app authorization.
+
+Set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` on the server. Set the GitHub App credentials described in [GitHub sign-in](github-login.md) so workspace owners can connect repositories in Integrations.
+
+Give Paws a valid TLS certificate and its matching private key. The key must be readable by the Paws process and have mode `0400` or `0600`.
 
 ```sh
 PAWS_PUBLIC_DASHBOARD=1 \
@@ -14,12 +19,10 @@ PAWS_TLS_CERT_PATH=/etc/paws/tls.crt \
 bun run paws --no-tunnel
 ```
 
-Use the same Paws home and Linear installation when issuing the initial workspace setup code:
+Open the dashboard and select **Sign in with Linear**. A Linear workspace admin completes the personal sign-in and approves installing Paws into that same workspace. Paws rechecks their admin membership through the new app authorization, stores encrypted credentials, creates the owner's workspace, and starts the connected service automatically. The owner continues to **Integrations** to connect GitHub and map repositories to Linear teams.
 
-```sh
-bun run paws workspace bootstrap
-```
+If Linear revokes the app authorization, the dashboard offers **Reconnect Linear**. A workspace admin signs in and authorizes the same installation again. Paws preserves the workspace and its roles.
 
-The command verifies the installed Linear organization and prints a single-use code that expires after ten minutes. Open the dashboard, expand **Set up your first workspace**, enter the code and sign in with Linear. The verified account becomes the workspace owner. Later members sign in with their own Linear accounts.
+Subsequent members use **Sign in with Linear** to open the workspace. A connected instance verifies each user's current membership against its installed Linear workspace.
 
 Owners can assign Paws roles and map repositories to verified Linear teams in the workspace controls. Linear guests receive observer access. Membership refresh updates team visibility and revokes sessions when a member loses access. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.
