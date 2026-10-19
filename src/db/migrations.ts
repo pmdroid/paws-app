@@ -1804,4 +1804,28 @@ CREATE TABLE runner_follow_up (
 ) STRICT;
 `,
   },
+  {
+    id: "074_member_github_accounts",
+    sql: `
+CREATE TABLE member_github_account (
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  github_id INTEGER CHECK(github_id>0),
+  login TEXT,
+  secret_id TEXT,
+  expires_at INTEGER,
+  revision INTEGER NOT NULL CHECK(revision>0),
+  revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+  pending_session_hash TEXT,
+  PRIMARY KEY(workspace_id,user_id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+CREATE TRIGGER member_github_membership_revoked AFTER UPDATE ON workspace_member
+WHEN NEW.active=0 OR NEW.role='observer'
+BEGIN
+  UPDATE member_github_account SET revoked=1,revision=revision+1,pending_session_hash=NULL
+  WHERE workspace_id=NEW.workspace_id AND user_id=NEW.user_id;
+END;
+`,
+  },
 ];

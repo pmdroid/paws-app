@@ -80,3 +80,10 @@ export { defaultGitExec } from "./git";
 export { closeStoppedPull } from "./stopped";
 export { mergedPullHeads } from "./merged-pulls";
 export { inspectPullRequestMerge } from "./blocker-merge";
+export {
+  createMemberGitHubClient,
+  createFakeMemberGitHubClient,
+  MemberGitHubUnauthorizedError,
+  type MemberGitHubClient,
+  type MemberGitHubIdentity,
+} from "./member-account";

@@ -28,3 +28,4 @@ export { createGitHubAttributionLink } from "./github-attribution";
 export { createCommitPolicyForItem, MissingCommitAttributionError } from "./commit-attribution";
 
 export { readWorkspaceJson } from "./administration";
+export { createMemberGitHubAccounts } from "./member-github";
