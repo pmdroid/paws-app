@@ -118,6 +118,8 @@ export interface StatusRun {
   state: RunState;
   agent: string;
   reviewer: string;
+  /** The paired runner the run was placed on. Missing for local runs. */
+  runner?: string | null;
   startedAt: string;
   attempt: number;
   summary: string;
@@ -433,6 +435,7 @@ function readRun(input: unknown, index: number): StatusRun {
     state: oneOf(string(body, "state", path), RUN_STATES, `${path}.state`),
     agent: text(body, "agent", path),
     reviewer: text(body, "reviewer", path),
+    ...(typeof body.runner === "string" && body.runner ? { runner: body.runner } : {}),
     startedAt: dateString(body, "startedAt", path),
     attempt: count(body, "attempt", path),
     summary: string(body, "summary", path),

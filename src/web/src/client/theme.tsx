@@ -157,7 +157,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "button") {
     if (has("chk"))
       return styled(
-        "grid w-full grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 rounded-base border-2 border-border bg-secondary-background p-4 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring sm:grid-cols-[3rem_12rem_minmax(0,1fr)_auto] [&>:nth-child(2)]:min-w-0 [&>:nth-child(2)]:break-words [&>:nth-child(3)]:col-span-full [&>:nth-child(3)]:row-start-2 [&>:nth-child(3)]:min-w-0 sm:[&>:nth-child(3)]:col-span-1 sm:[&>:nth-child(3)]:col-start-3 sm:[&>:nth-child(3)]:row-start-1 [&>:nth-child(4)]:col-start-3 [&>:nth-child(4)]:row-start-1 sm:[&>:nth-child(4)]:col-start-4",
+        "w-full text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
       );
     return createElement(
       "button",
@@ -175,7 +175,7 @@ function replace(node: DOMNode): ReactElement | undefined {
           attribs.class,
           buttonVariants({
             variant: has("primary") || attribs["aria-pressed"] === "true" ? "default" : "neutral",
-            size: "default",
+            size: has("sm") ? "sm" : "default",
           }),
         ),
       },
@@ -207,7 +207,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "h1" && has("sr-only")) return styled("sr-only");
   if (/^h[1-6]$/.test(name))
     return styled(
-      name === "h1"
+      name === "h1" || has("run-title")
         ? "text-3xl font-heading tracking-tight sm:text-4xl"
         : name === "h2"
           ? "text-xl font-heading"
@@ -297,6 +297,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       </Badge>
     );
   }
+  if (has("check-prompt")) return styled("min-w-0 truncate font-mono text-xs");
   if (name === "code" || has("lin-id"))
     return styled("rounded-base bg-background px-1.5 py-0.5 font-mono text-xs");
   if (name === "img")
@@ -316,6 +317,8 @@ function replace(node: DOMNode): ReactElement | undefined {
       },
       children(),
     );
+  if (name === "pre" && has("term-out"))
+    return styled("m-0 max-h-120 overflow-auto p-4 font-mono text-xs leading-relaxed");
   if (name === "pre")
     return styled(
       "max-h-120 overflow-auto rounded-base border-2 border-border bg-secondary-background p-4 font-mono text-xs",

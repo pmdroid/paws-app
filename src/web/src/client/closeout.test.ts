@@ -5,8 +5,10 @@ import {
   checkHash,
   checkKey,
   emptyCloseoutView,
+  checkDuration,
   parseCheckHash,
-  renderCloseoutChecks,
+  renderCloseout,
+  type CloseoutContext,
   type CloseoutView,
 } from "./closeout";
 import { render, type RenderModel } from "./render";
@@ -15,6 +17,17 @@ function verdict(id: string) {
   const found = demoStatus().verdicts.find((entry) => entry.itemId === id);
   if (!found) throw new Error(`missing ${id}`);
   return found;
+}
+
+const NO_PR: CloseoutContext = { pullRequest: null, waitingToMerge: false, reviewer: "Codex" };
+
+function renderCloseoutChecks(
+  entry: ReturnType<typeof verdict>,
+  view: CloseoutView,
+  engineUrl: string | null,
+  context: CloseoutContext = NO_PR,
+): string {
+  return renderCloseout(entry, view, engineUrl, context);
 }
 
 function runPage(patch: Partial<RenderModel>): string {
@@ -43,7 +56,11 @@ describe("closeout checks", () => {
       expect(html).toContain(
         `data-action="closeout-attempt" data-item="ENG-100" data-attempt="${number}"`,
       );
-    expect(html).toContain('data-attempt="3" aria-pressed="true">Attempt 3 · exhausted');
+    expect(html).toContain(
+      'data-attempt="3" aria-pressed="true" aria-label="Attempt 3, exhausted"',
+    );
+    expect(html).toContain("Exhausted after 3 of 3 attempts");
+    expect(html).toContain("unit failed every attempt.");
     expect(html).toContain('id="check-3-unit"');
     expect(html).not.toContain('id="check-1-unit"');
     const earlier = renderCloseoutChecks(
@@ -52,7 +69,8 @@ describe("closeout checks", () => {
       null,
     );
     expect(earlier).toContain('id="check-1-unit"');
-    expect(earlier).toContain("Attempt 1 · failed");
+    expect(earlier).toContain('aria-label="Attempt 1, failed"');
+    expect(earlier).toContain("Failed on attempt 1 of 3");
   });
 
   test("failed checks start open, passed checks closed, and expand all reflects the rows", () => {
@@ -62,7 +80,7 @@ describe("closeout checks", () => {
     expect(failed).toContain(">Expand all</button>");
     const passed = renderCloseoutChecks(verdict("ENG-101"), emptyCloseoutView(), null);
     expect(passed).not.toContain('aria-expanded="true"');
-    expect(passed).not.toContain('data-action="closeout-attempt"');
+    expect(passed).toContain('aria-label="Attempt 1, passed"');
     const view: CloseoutView = emptyCloseoutView();
     for (const id of ["typecheck", "unit"]) view.open[checkKey("ENG-100", 3, id)] = true;
     const all = renderCloseoutChecks(verdict("ENG-100"), view, null);
@@ -70,22 +88,35 @@ describe("closeout checks", () => {
     expect(all).not.toContain('aria-expanded="false"');
   });
 
-  test("an open row shows stdout and stderr apart, in color, with its tools", () => {
+  test("an open row shows stdout and stderr in tabs, in color, with its tools", () => {
     const html = renderCloseoutChecks(verdict("ENG-100"), emptyCloseoutView(), null);
-    expect(html).toContain("<span>stdout</span>");
-    expect(html).toContain("<span>stderr</span>");
-    expect(html).toContain('<span class="ansi-bold ansi-fg-1">error</span>');
-    expect(html).toContain('data-log="ENG-100:3:unit:stderr"');
+    expect(html).toContain(
+      'data-stream="stdout" data-item="ENG-100" data-attempt="3" data-check="unit" aria-pressed="true">stdout</button>',
+    );
+    expect(html).toContain(
+      'data-stream="stderr" data-item="ENG-100" data-attempt="3" data-check="unit" aria-pressed="false">stderr</button>',
+    );
+    expect(html).toContain('data-log="ENG-100:3:unit:stdout"');
+    expect(html).toContain("$ bun test");
+    expect(html).toContain("attempt 3 · 18.2s");
+    expect(html).toContain('<span class="chk-meta">18.2s · exit 1</span>');
+    const stderr = renderCloseoutChecks(
+      verdict("ENG-100"),
+      { ...emptyCloseoutView(), stream: { [checkKey("ENG-100", 3, "unit")]: "stderr" } },
+      null,
+    );
+    expect(stderr).toContain('<span class="ansi-bold ansi-fg-1">error</span>');
+    expect(stderr).toContain('data-log="ENG-100:3:unit:stderr"');
     expect(html).toContain('data-action="wrap-output"');
     expect(html).toContain('data-action="copy-check-link"');
     expect(html).toContain('data-action="download-output"');
-    expect(html).toContain('class="out whitespace-pre"');
+    expect(html).toContain('class="term-out whitespace-pre"');
     const wrapped = renderCloseoutChecks(
       verdict("ENG-100"),
       { ...emptyCloseoutView(), wrap: { [checkKey("ENG-100", 3, "unit")]: true } },
       null,
     );
-    expect(wrapped).toContain('class="out whitespace-pre-wrap break-all"');
+    expect(wrapped).toContain('class="term-out whitespace-pre-wrap break-all"');
     expect(wrapped).toContain(
       'data-action="wrap-output" data-item="ENG-100" data-attempt="3" data-check="unit" aria-pressed="true"',
     );
@@ -103,9 +134,9 @@ describe("closeout checks", () => {
       "http://127.0.0.1:8787",
     );
     expect(html).toContain(
-      'href="http://127.0.0.1:8787/api/closeout-artifact?item=ENG-100&amp;check=unit&amp;kind=log&amp;head=6ae7f93&amp;policy=" download="unit-2.log">Full log</a>',
+      'class="btn sm" href="http://127.0.0.1:8787/api/closeout-artifact?item=ENG-100&amp;check=unit&amp;kind=log&amp;head=6ae7f93&amp;policy=" download="unit-2.log">Full log</a>',
     );
-    expect(html).toContain("Output was cut at the size limit.");
+    expect(html).toContain("Showing the end of the output. Full log has all of it.");
     expect(html).not.toContain('data-action="download-output"');
     unit.state = "running";
     unit.active = true;
@@ -123,8 +154,31 @@ describe("closeout checks", () => {
     snapshot.verdicts = snapshot.verdicts.filter((entry) => entry.itemId !== "ENG-100");
     const html = runPage({ snapshot });
     expect(html).not.toContain('aria-label="Closeout"');
-    expect(html).not.toContain("<h3>Checks</h3>");
+    expect(html).not.toContain("result-banner");
     expect(runPage({})).toContain('aria-label="Closeout"');
+  });
+
+  test("an accepted attempt says how many checks passed, on which head, and the pull request", () => {
+    const html = renderCloseoutChecks(verdict("ENG-101"), emptyCloseoutView(), null, {
+      pullRequest: 479,
+      waitingToMerge: true,
+      reviewer: "Claude",
+    });
+    expect(html).toContain("Accepted on attempt 1 of 3");
+    expect(html).toContain(
+      "All 3 checks passed on head b7e21aa. Pull request #479 is waiting to merge.",
+    );
+    expect(html).toContain(
+      '<span class="chk-cmd" title="reviewer Codex, different session">independent review by Claude</span>',
+    );
+    expect(html).not.toContain("Sealed");
+  });
+
+  test("durations read like the mocks", () => {
+    expect(checkDuration(3_140)).toBe("3.1s");
+    expect(checkDuration(24_200)).toBe("24.2s");
+    expect(checkDuration(134_000)).toBe("2m 14s");
+    expect(checkDuration(123_000)).toBe("2m 03s");
   });
 
   test("copied links round-trip the attempt and check id", () => {

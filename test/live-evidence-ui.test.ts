@@ -93,7 +93,7 @@ describe("live evidence", () => {
     const { db, run, later } = seeded();
     const snapshot = snapshotFor(db);
     expect(page(snapshot, { view: "runs", id: run.id })).toContain(
-      `<div id="evidence-gallery" data-run="${run.id}"></div>`,
+      `<div id="evidence-gallery" data-run="${run.id}" data-repo="${snapshot.project.repo}"></div>`,
     );
     expect(filterEvidence(snapshot.evidence!, "video").map((entry) => entry.id)).toEqual([VIDEO]);
     const bare = insertRun(db, { itemId: "item", now: 40, agent: "claude" });
@@ -109,27 +109,27 @@ describe("live evidence", () => {
     const item = snapshot.evidence![0]!.itemId;
     for (const text of [
       item,
-      "Checkout flow",
       "checkout.webm",
-      '<span class="mono">e2e</span>',
-      '<span class="k">Attempt</span><span class="mono">2</span>',
+      '<span class="mono">e2e · attempt 2</span>',
       "Claude",
-      "3.0 MB",
-      '<span class="k">Duration</span><span class="mono">1:23</span>',
+      "webm · 3.0 MB · 1:23",
+      "Opened from a link in Linear.",
+      "Stored on this Paws host, never uploaded to Linear.",
       `title="${HEAD}"`,
       HEAD.slice(0, 12),
       'data-action="evidence-copy"',
       `href="/api/evidence/${VIDEO}" download="checkout.webm">Download</a>`,
       `<div id="evidence-player" data-evidence="${VIDEO}"></div>`,
       'aria-label="More from this run"',
-      `href="/runs/${run.id}#check=2/e2e">Closeout output</a>`,
+      `href="/runs/${run.id}#check=2/e2e">Closeout output · e2e</a>`,
       `href="/evidence/${IMAGE}"`,
       'alt="Cart &lt;total&gt;.png"',
     ])
       expect(html).toContain(text);
     expect(html).not.toContain(OTHER_RUN);
     const image = page(snapshot, { view: "evidence", id: IMAGE });
-    expect(image).toContain('<span class="k">Dimensions</span><span class="mono">1280×720</span>');
+    expect(image).toContain("png · ");
+    expect(image).toContain(" · 1280×720</span>");
   });
 
   test("evidence the reader cannot see shows the no-access state and nothing about it", () => {
@@ -137,7 +137,7 @@ describe("live evidence", () => {
     const snapshot = snapshotFor(db);
     for (const id of [HIDDEN, "01JAZZZZZZZZZZZZZZZZZZZZZZ"]) {
       const html = page(snapshot, { view: "evidence", id });
-      expect(html).toContain("You don't have access to this evidence");
+      expect(html).toContain("You can't open this evidence");
       for (const leak of ["secret", "Secret project", "secret-file.png", "evidence-player"])
         expect(html).not.toContain(leak);
     }

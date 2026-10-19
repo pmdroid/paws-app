@@ -407,3 +407,13 @@ export function expireRunnerPairings(db: Database, now: number): void {
     }
   });
 }
+
+/** Runner name per run that was placed on a runner. */
+export function runnerNamesByRun(db: Database): Map<string, string> {
+  const rows = db
+    .query<{ runId: string; name: string }, []>(
+      "SELECT w.run_id AS runId, r.name AS name FROM runner_work w JOIN runner r ON r.id = w.runner_id",
+    )
+    .all();
+  return new Map(rows.map((row) => [row.runId, row.name]));
+}

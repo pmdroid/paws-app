@@ -490,6 +490,12 @@ function onClick(event: MouseEvent): void {
     if (check) closeout.open[key] = !isOpen(closeout, itemId, attempt, check);
     paint();
   }
+  if (action === "closeout-stream") {
+    const stream = target.closest("[data-stream]")?.getAttribute("data-stream");
+    if (stream === "stdout" || stream === "stderr" || stream === "findings")
+      closeout.stream[key] = stream;
+    paint();
+  }
   if (action === "wrap-output") {
     closeout.wrap[key] = !closeout.wrap[key];
     paint();
