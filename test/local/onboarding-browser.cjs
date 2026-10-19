@@ -138,6 +138,23 @@ const assert = require("node:assert/strict");
       await page.reload();
       await page.getByText("Selected VM: Member VM 1", { exact: true }).waitFor();
       const accounts = page.getByRole("region", { name: "Your agent accounts" });
+      await context.route("**/api/workspaces/onboarding/agents?*", (route) =>
+        route.fulfill({ status: 503, body: "{}" }),
+      );
+      await page.reload();
+      await accounts.getByText("Agent readiness is unavailable", { exact: true }).waitFor();
+      await accounts.getByRole("alert").waitFor();
+      assert.equal(
+        await accounts
+          .getByText("Both Claude and Codex must be connected", { exact: true })
+          .count(),
+        0,
+      );
+      await context.unroute("**/api/workspaces/onboarding/agents?*");
+      await accounts.getByRole("button", { name: "Refresh agent accounts" }).click();
+      await accounts
+        .getByText("Both Claude and Codex must be connected", { exact: true })
+        .waitFor();
       await accounts.getByRole("button", { name: "Sign in to Claude", exact: true }).click();
       await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
       await page.request.post(`${manifest.origin}/__agent-fixture`);
@@ -253,6 +270,7 @@ const assert = require("node:assert/strict");
         outageClearsIssue: true,
         keyboardRetry: true,
         signedOutShellAndSafeReturn: true,
+        unknownAgentReadinessStaysNeutral: true,
         privateAgentCodesRedactedFromBroadState: true,
         agentCancelFailureExpiryRetry: true,
         bothAgentsReady: true,
