@@ -161,6 +161,32 @@ const RUN_CLOSEOUT_TOOL = {
   },
 };
 
+const SKIP_TOOL = {
+  name: "request_closeout_skip",
+  description:
+    "Ask the team to skip Closeout checks that are exhausted, after their last attempt failed. Paws adds your reason and the check's videos to the Closeout recovery comment in Linear when your turn ends, and the team answers there with /paws bypass or with guidance. Calling again replaces the request. This does not skip anything by itself.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      checkIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 16,
+        items: { type: "string", minLength: 1 },
+        description: "Exhausted check ids from get_closeout.",
+      },
+      reason: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Why the check can be skipped for this change, and what you tried.",
+      },
+    },
+    required: ["checkIds", "reason"],
+    additionalProperties: false,
+  },
+};
+
 const enabledTools = new Set((process.env.PAWS_HOST_TOOLS ?? "ask_team").split(","));
 
 type Rpc = {
@@ -246,6 +272,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           POST_UPDATE_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
+          SKIP_TOOL,
         ].filter((tool) => enabledTools.has(tool.name)),
       });
       return;

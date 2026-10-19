@@ -11,7 +11,11 @@ import type { ResolvedItem, ResolvedRequirement, ResolvedSetup } from "./types";
 export type CloseoutSession = {
   report(): Promise<string>;
   run(id: string, model?: string): Promise<string>;
+  /** Records the agent's request to skip exhausted checks. Asking again replaces it. */
+  requestSkip(checkIds: readonly string[], reason: string): Promise<string>;
 };
+
+export type SkipRequest = { checks: string[]; reason: string };
 
 export type CloseoutSessionOptions = {
   signal?: AbortSignal;
@@ -46,6 +50,7 @@ export function createCloseoutSession(
   options: CloseoutSessionOptions = {},
 ): CloseoutSession {
   const memory = new Map<string, ItemMemory>();
+  let skip: SkipRequest | null = null;
   let fingerprint: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
 
@@ -82,7 +87,7 @@ export function createCloseoutSession(
   };
 
   return {
-    report: () => exclusive(async () => JSON.stringify(reportOf(await prepare(), memory))),
+    report: () => exclusive(async () => JSON.stringify(reportOf(await prepare(), memory, skip))),
     run: (id) =>
       exclusive(async () => {
         const prepared = await prepare();
@@ -90,15 +95,51 @@ export function createCloseoutSession(
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
         return runId(workspace, prepared.policy, prepared.required, memory, id, options);
       }),
+    requestSkip: (checkIds, reason) =>
+      exclusive(async () => {
+        const prepared = await prepare();
+        if (prepared.kind === "blocked") throw new Error(prepared.message);
+        if (prepared.kind === "empty") throw new Error("No Closeout check is required here.");
+        const ids = [...new Set(checkIds)];
+        if (ids.length === 0) throw new Error("request_closeout_skip needs at least one check id");
+        const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? null;
+        for (const id of ids) {
+          const item = prepared.required.find((entry) => entry.id === id);
+          if (item === undefined)
+            throw new Error(
+              `Check ${id} is not required for the current changes. Call get_closeout.`,
+            );
+          if (item.kind === "review")
+            throw new Error(
+              `Review ${id} runs after this turn. Only an exhausted check can be skipped.`,
+            );
+          if (statusOf(memory.get(id), max) !== "exhausted")
+            throw new Error(
+              `Check ${id} is not exhausted. Ask to skip a check only after its last attempt failed.`,
+            );
+        }
+        skip = { checks: ids, reason };
+        return `Skip request recorded for ${ids.join(", ")}. Finish your turn. Paws adds your reason to the Closeout recovery comment in Linear, and the team answers there.`;
+      }),
   };
 }
 
-function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<string, unknown> {
+function reportOf(
+  prepared: Prepared,
+  memory: Map<string, ItemMemory>,
+  skip: SkipRequest | null,
+): Record<string, unknown> {
   if (prepared.kind === "empty") {
-    return { required: [], pending: [], blocked: null, bypassed: false };
+    return { required: [], pending: [], blocked: null, bypassed: false, skip_request: null };
   }
   if (prepared.kind === "blocked") {
-    return { required: [], pending: [], blocked: prepared.message, bypassed: false };
+    return {
+      required: [],
+      pending: [],
+      blocked: prepared.message,
+      bypassed: false,
+      skip_request: null,
+    };
   }
   const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? null;
   const scope = prepared.policy.retry?.scope ?? null;
@@ -132,7 +173,9 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
             return `Check ${item.id} is exhausted. Failed attempts ${failures} of ${max}. Hint: ${item.hint}.`;
           })
           .join(" ")}`;
-  return { required, pending, blocked, bypassed: false };
+  const skipped = skip?.checks.filter((id) => exhausted.some((item) => item.id === id)) ?? [];
+  const skip_request = skip && skipped.length > 0 ? { checks: skipped, reason: skip.reason } : null;
+  return { required, pending, blocked, bypassed: false, skip_request };
 }
 
 function statusOf(state: ItemMemory | undefined, max: number | null): string {

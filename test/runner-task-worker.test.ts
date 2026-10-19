@@ -142,6 +142,7 @@ for (const purpose of ["answer", "artifact"] as const) {
           "post_update",
           "get_closeout",
           "run_closeout",
+          "request_closeout_skip",
         ]);
         expect(readFileSync(join(worktree, "note.txt"), "utf8")).toBe("private");
         expect(readFileSync(join(worktree, "report.txt"), "utf8")).toBe("artifact");

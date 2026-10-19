@@ -290,7 +290,12 @@ test.each([
   expect(result.acpStopReason).toBe("end_turn");
   const trace = await readResult(files.resultPath);
   expect(trace.askTeam).toEqual({ ok: true, text: "yes" });
-  expect(trace.tools).toEqual(["ask_team", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "ask_team",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   expect(trace.mcpServers[0]?.name).toBe("paws");
   expect(trace.methods).not.toContain("authenticate");
 });
@@ -386,7 +391,12 @@ test("publish_artifact publishes a snapshot through MCP without an ask_team hook
   expect(context?.worktreePath).toBe(layout.worktree);
   expect(context?.role).toBe("implementer");
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["publish_artifact", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "publish_artifact",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   expect(trace.artifact).toEqual({
     ok: true,
     text: "![shot\\[1\\].png](<https://uploads.example/asset.png>)",
@@ -544,7 +554,12 @@ test("update_plan replaces the working checklist through the host tool", async (
     },
   });
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "update_plan",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   expect(trace.plan).toEqual({ ok: true, text: "Plan updated." });
   expect(plans).toEqual([
     [
@@ -617,7 +632,12 @@ test("post_update posts once and answers a second call within a minute with the 
     },
   });
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["post_update", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "post_update",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   expect(trace.updates).toEqual([
     { ok: true, text: "Posted." },
     { ok: true, text: "Too soon. The next update is allowed in 60 seconds." },
@@ -666,7 +686,13 @@ test("ask_team and publish_artifact share one MCP server", async () => {
   });
   const trace = await readResult(files.resultPath);
   expect(trace.mcpServers).toHaveLength(1);
-  expect(trace.tools).toEqual(["ask_team", "publish_artifact", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "ask_team",
+    "publish_artifact",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   expect(trace.askTeam?.text).toBe("yes");
   expect(trace.artifact?.ok).toBe(true);
 });
@@ -710,7 +736,12 @@ test("get_closeout lists the pending check and run_closeout runs it", async () =
     updatePlan: { update: async () => undefined },
   });
   const trace = await readResult(files.resultPath);
-  expect(trace.tools).toEqual(["update_plan", "get_closeout", "run_closeout"]);
+  expect(trace.tools).toEqual([
+    "update_plan",
+    "get_closeout",
+    "run_closeout",
+    "request_closeout_skip",
+  ]);
   const first = JSON.parse(trace.closeouts?.[0] ?? "{}") as { pending?: string[] };
   const second = JSON.parse(trace.closeouts?.[2] ?? "{}") as {
     pending?: string[];

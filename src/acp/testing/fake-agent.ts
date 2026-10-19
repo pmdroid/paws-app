@@ -337,7 +337,11 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
-    if (step.type === "get_closeout" || step.type === "run_closeout") {
+    if (
+      step.type === "get_closeout" ||
+      step.type === "run_closeout" ||
+      step.type === "request_closeout_skip"
+    ) {
       const server = state.mcpServers[0];
       try {
         if (!server?.command) throw new Error("no mcp server");
@@ -346,7 +350,9 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
           step.type,
           step.type === "run_closeout"
             ? { id: step.id, ...(step.model ? { model: step.model } : {}) }
-            : {},
+            : step.type === "request_closeout_skip"
+              ? { checkIds: step.checkIds, reason: step.reason }
+              : {},
         );
         state.closeouts = [...(state.closeouts ?? []), text];
       } catch (error) {
