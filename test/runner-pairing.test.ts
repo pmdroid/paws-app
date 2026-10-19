@@ -13,7 +13,7 @@ test("runner pairing binds current workspace approval and persists revocation ac
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 8);
+    assert.equal(observations.length, 9);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
