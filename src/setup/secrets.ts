@@ -1,7 +1,6 @@
 import { existsSync, statSync } from "node:fs";
+import { secretModeIsPrivate } from "../credentials";
 import { readStoredToken, writeStoredToken, type StoredLinearToken } from "../linear";
-
-const MODE = 0o600;
 
 export { writeSecretFile } from "../credentials";
 
@@ -14,7 +13,7 @@ export function writeLinearOAuth(path: string, token: StoredLinearToken): boolea
         existing !== null &&
         existing.accessToken === token.accessToken &&
         existing.refreshToken === token.refreshToken &&
-        (statSync(path).mode & 0o777) === MODE
+        secretModeIsPrivate(statSync(path).mode)
       ) {
         return false;
       }

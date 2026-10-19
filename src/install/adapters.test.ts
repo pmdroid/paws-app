@@ -28,8 +28,12 @@ test("resolves both pinned adapters from node_modules/.bin", () => {
   expect(reviewer).toEqual({ command: pins.reviewer.command, args: [] });
   expect(isAbsolute(implementer.command)).toBe(true);
   expect(isAbsolute(reviewer.command)).toBe(true);
-  expect(implementer.command.endsWith("/node_modules/.bin/claude-agent-acp")).toBe(true);
-  expect(reviewer.command.endsWith("/node_modules/.bin/codex-acp")).toBe(true);
+  const suffix = process.platform === "win32" ? ".exe" : "";
+  const posixPath = (path: string) => path.replaceAll("\\", "/");
+  expect(
+    posixPath(implementer.command).endsWith(`/node_modules/.bin/claude-agent-acp${suffix}`),
+  ).toBe(true);
+  expect(posixPath(reviewer.command).endsWith(`/node_modules/.bin/codex-acp${suffix}`)).toBe(true);
   expect(implementer.command).not.toBe("claude-agent-acp");
   expect(reviewer.command).not.toBe("codex-acp");
   expect(existsSync(implementer.command)).toBe(true);

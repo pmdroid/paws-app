@@ -72,9 +72,19 @@ export function pawsPackageRoot(start: string = packageSearchStart()): string {
   throw new Error(`paws package root was not found from ${start}`);
 }
 
+/** Absolute path of a package bin. bun install links Windows bins as `<name>.exe`. */
+function packageBinPath(root: string, bin: string, platform: NodeJS.Platform): string {
+  const suffix = platform === "win32" ? ".exe" : "";
+  return join(root, "node_modules", ".bin", `${bin}${suffix}`);
+}
+
 /** Absolute path of the package bin. This does not search PATH. */
-export function adapterBinPath(role: AgentRole, root: string = pawsPackageRoot()): string {
-  return join(root, "node_modules", ".bin", PINS[role].bin);
+export function adapterBinPath(
+  role: AgentRole,
+  root: string = pawsPackageRoot(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return packageBinPath(root, PINS[role].bin, platform);
 }
 
 /** Versions installed by `bun install`, for doctor. */
@@ -137,7 +147,7 @@ export function resolveGrokCommand(
     }
     return { command: configured, args, error: null };
   }
-  const command = join(packageRoot, "node_modules", ".bin", "grok");
+  const command = packageBinPath(packageRoot, "grok", process.platform);
   if (!existsSync(command)) {
     return {
       command,

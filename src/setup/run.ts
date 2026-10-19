@@ -15,6 +15,7 @@ import {
   type PawsSetupConfig,
 } from "../config";
 import { DEFAULT_MAX_AWAKE_MS, DEFAULT_MAX_TURNS } from "../core";
+import { secretModeIsPrivate } from "../credentials";
 import { assertLinearQueue } from "../db";
 import {
   checkGhPushPermission,
@@ -450,7 +451,7 @@ function linearToken(linear: LinearSecrets): StoredLinearToken {
 }
 
 function assertSecretMode(path: string): void {
-  if (!existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) {
+  if (!existsSync(path) || !secretModeIsPrivate(statSync(path).mode)) {
     stop(`Linear secret must be mode 0600 (${path}).`);
   }
 }

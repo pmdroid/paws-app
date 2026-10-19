@@ -125,7 +125,29 @@ function atomicWrite(path: string, value: string | Buffer, exclusive = false): v
   }
 }
 
+/** Windows cannot open a directory for fsync (EPERM), so its entries are not flushed there. */
+export function directorySyncSupported(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
+/** Windows reports 0666 for every file, so the mode check is skipped there. ACL validation is not implemented. */
+export function secretModeIsPrivate(
+  mode: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" || (mode & 0o777) === 0o600;
+}
+
+/** GitHub App key files may also be read-only (0400). Windows follows the same ACL rule as secrets. */
+export function privateKeyModeIsPrivate(
+  mode: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform === "win32" || (mode & 0o777) === 0o600 || (mode & 0o777) === 0o400;
+}
+
 function syncDirectory(path: string): void {
+  if (!directorySyncSupported()) return;
   const fd = openSync(path, "r");
   try {
     fsyncSync(fd);

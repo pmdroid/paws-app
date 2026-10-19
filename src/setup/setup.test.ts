@@ -17,7 +17,7 @@ test("setup offers only installed agents and writes grok", async () => {
   );
   mkdirSync(bin, { recursive: true });
   mkdirSync(platform, { recursive: true });
-  writeFileSync(join(bin, "grok"), "");
+  writeFileSync(join(bin, process.platform === "win32" ? "grok.exe" : "grok"), "");
   writeFileSync(join(platform, "package.json"), "{}");
   const candidates = detectCandidates({
     which: (name) =>

@@ -1,5 +1,6 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { GROK_LOGIN_MESSAGE } from "../acp";
+import { privateKeyModeIsPrivate } from "../credentials";
 import { MISSING_GITHUB_CLIENT_ID_MESSAGE, missingGitHubClientId } from "../auth";
 import { loadEnv, pawsPaths, type EnvSource } from "../config";
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
@@ -280,7 +281,7 @@ function githubAppCheck(
     appId !== null &&
     installationId !== null &&
     keyStat !== null &&
-    (mode === 0o600 || mode === 0o400);
+    privateKeyModeIsPrivate(keyStat.mode);
   return check(
     "github-app",
     ok,
@@ -350,6 +351,7 @@ function githubDetail(
   if (appId === null || installationId === null)
     return "GitHub App id and installation id are required";
   if (!keyExists) return "GitHub App private key file is missing";
-  if (mode !== 0o600 && mode !== 0o400) return "GitHub App private key must be mode 0600";
+  if (mode === null || !privateKeyModeIsPrivate(mode))
+    return "GitHub App private key must be mode 0600";
   return "app configured";
 }
