@@ -703,6 +703,12 @@ export function createRemoteAgentRunner(options: {
               baseSha!,
               complete.candidateSha,
             ]);
+            if (complete.stopReason !== "end_turn" || complete.errorMessage)
+              saveCheckpoint(db, itemId, {
+                phase: "running",
+                baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
+                wipCommit: complete.candidateSha,
+              });
           }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
