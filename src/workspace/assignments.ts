@@ -46,12 +46,14 @@ export function createWorkspaceAssignments(options: {
   tracker: TrackerAdapter;
   accept: (event: AcceptedLinearEvent, signal: AbortSignal) => Promise<boolean>;
   continue: (event: AcceptedLinearEvent) => Promise<void | boolean>;
-  readyToContinue?: (assignment: {
-    sessionId: string;
-    generation: number;
-    workspaceId: string;
-    linearUserId: string;
-  }) => boolean;
+  onboarding?: {
+    readyToContinue?: (assignment: {
+      sessionId: string;
+      generation: number;
+      workspaceId: string;
+      linearUserId: string;
+    }) => boolean;
+  };
   now?: () => number;
 }) {
   const { db } = options;
@@ -209,8 +211,9 @@ export function createWorkspaceAssignments(options: {
     );
   }
   function ready(hold: Hold) {
+    if (!options.onboarding) return true;
     return (
-      options.readyToContinue?.({
+      options.onboarding.readyToContinue?.({
         sessionId: hold.sessionId,
         generation: hold.generation,
         workspaceId: hold.workspaceId,
@@ -302,6 +305,7 @@ export function createWorkspaceAssignments(options: {
       return value && current(value) ? hash : null;
     },
     onboarding(sessionId: string, generation: number, principal: WorkspacePrincipal) {
+      if (!options.onboarding) return null;
       const hold = holds(sessionId);
       if (
         !hold ||
@@ -377,9 +381,10 @@ export function createWorkspaceAssignments(options: {
           queue: QUEUE,
           jobKey: `assignment:${hash}`,
           payload: { sessionId: hold.sessionId, tokenHash: hash },
-          recurringEveryMs: 60_000,
+          ...(options.onboarding ? { recurringEveryMs: 60_000 } : {}),
           now: now(),
         });
+        if (!options.onboarding) return "/status/";
         const path = `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
         enqueueOutboxOnce(db, {
           target: "linear",
@@ -398,10 +403,11 @@ export function createWorkspaceAssignments(options: {
       });
     },
     register(jobs: JobLoop) {
-      db.run(
-        "UPDATE job SET recurring_every_ms=60000 WHERE queue=? AND status IN ('pending','running') AND recurring_every_ms IS NULL",
-        [QUEUE],
-      );
+      if (options.onboarding)
+        db.run(
+          "UPDATE job SET recurring_every_ms=60000 WHERE queue=? AND status IN ('pending','running') AND recurring_every_ms IS NULL",
+          [QUEUE],
+        );
       enqueueJobOnce(db, {
         queue: `${QUEUE}.expire`,
         jobKey: `${QUEUE}.expire`,
@@ -435,6 +441,11 @@ export function createWorkspaceAssignments(options: {
           }
           return;
         }
+        if (!current(hold)) {
+          invalidate(hold);
+          return;
+        }
+        if (!ready(hold)) return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
         const verified = await snapshot(event, context.signal);
         if (

@@ -113,7 +113,7 @@ test("onboarded authoritative creator resumes once only with current App and con
       clientId: "client",
       memberships,
       now,
-      readyToContinue: () => ready,
+      onboarding: { readyToContinue: () => ready },
       lifecycle: {
         async inspect() {
           return {

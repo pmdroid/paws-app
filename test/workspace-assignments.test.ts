@@ -36,7 +36,7 @@ import {
   workspaceTokenHash,
 } from "../src/workspace";
 
-function fixture(ready = true, configureReadiness = true) {
+function fixture(ready = true, configureReadiness = true, onboarding = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
   let db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -97,6 +97,7 @@ function fixture(ready = true, configureReadiness = true) {
   let failContinue = false;
   let changeAtIntake: (() => void) | undefined;
   let calls = 0;
+  let snapshotReads = 0;
   const memberships = {
     async installation() {
       return { id: "org", name: "Workspace" };
@@ -139,7 +140,9 @@ function fixture(ready = true, configureReadiness = true) {
       clientId: "client",
       memberships,
       now: () => clock.now(),
-      ...(configureReadiness ? { readyToContinue: () => ready } : {}),
+      ...(onboarding
+        ? { onboarding: configureReadiness ? { readyToContinue: () => ready } : {} }
+        : {}),
       lifecycle: {
         async inspect() {
           return structuredClone(ownership);
@@ -151,6 +154,7 @@ function fixture(ready = true, configureReadiness = true) {
       tracker: {
         ...tracker,
         async getSession() {
+          snapshotReads++;
           return structuredClone(session);
         },
       },
@@ -308,6 +312,9 @@ function fixture(ready = true, configureReadiness = true) {
     },
     get calls() {
       return calls;
+    },
+    get snapshotReads() {
+      return snapshotReads;
     },
     setReady(value: boolean) {
       ready = value;
@@ -671,8 +678,10 @@ test("Linear OAuth alone keeps assignment onboarding durably held without contin
     await f.assignments.authorize(f.event);
     const signed = await f.callback(await f.begin());
     expect(signed.status).toBe(303);
+    const reads = f.snapshotReads;
     await f.jobs().tick();
     await f.jobs().tick();
+    expect(f.snapshotReads).toBe(reads);
     expect(f.calls).toBe(0);
     expect(listWorkItems(f.db)).toHaveLength(0);
     expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(0);
@@ -713,6 +722,28 @@ test("readiness loss remains held and a later fresh readiness decision resumes e
     await f.jobs().tick();
     expect(f.calls).toBe(1);
     expect(listJobs(f.db).find((job) => job.queue === "workspace.assignment")?.status).toBe("done");
+  } finally {
+    await f.close();
+  }
+});
+
+test("legacy production assignment sign-in resumes without activating onboarding", async () => {
+  const f = fixture(false, false, false);
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    expect(signed.headers.get("location")).toBe("/status/");
+    const cookie = signed.headers.getSetCookie()[0]!.split(";")[0]!;
+    expect(
+      (await f.read("/api/workspaces/onboarding?session=session&generation=0", cookie)).status,
+    ).toBe(404);
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.calls).toBe(1);
+    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(
+      listOutbox(f.db).some((row) => JSON.stringify(row.payload).includes("View onboarding")),
+    ).toBe(false);
   } finally {
     await f.close();
   }
