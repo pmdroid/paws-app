@@ -12,7 +12,7 @@ import type {
   SessionReceipt,
 } from "./types";
 import type { LinearRepositoryAdapter } from "./repositories";
-import type { LinearProjectSnapshot } from "./project-scope";
+import type { LinearProjectSnapshot, ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
 
 export type TrackerRequestOptions = {
@@ -42,6 +42,10 @@ export interface TrackerAdapter {
   ): Promise<readonly LinearActivitySnapshot[]>;
   issueRepositorySuggestions?: LinearRepositoryAdapter["issueRepositorySuggestions"];
   issueRepositoryHints?: LinearRepositoryAdapter["issueRepositoryHints"];
+  projectOverview?(
+    issueId: string,
+    options?: TrackerRequestOptions,
+  ): Promise<ProjectOverview | null>;
   addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
   supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
