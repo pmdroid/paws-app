@@ -1,6 +1,7 @@
 import type { TrackerRequestOptions } from "./adapter";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
+import type { ProjectOverview } from "./project-scope";
 import type { LinearSessionAdapter } from "./sessions";
 import { activityInput, elicitationInput, validateSessionUpdate, validateUrls } from "./sessions";
 import {
@@ -32,6 +33,11 @@ export type FakeTracker = LinearSessionAdapter &
     repositorySuggestionRequests: RepositorySuggestionsInput[];
     repositorySuggestions: Map<string, readonly RepositorySuggestion[]>;
     repositoryHints: Map<string, RepositoryHints>;
+    projectOverviews: Map<string, ProjectOverview>;
+    projectOverview(
+      issueId: string,
+      options?: TrackerRequestOptions,
+    ): Promise<ProjectOverview | null>;
     repositoryLabels: { issueId: string; repository: string }[];
     epics: Map<string, EpicSnapshot>;
     deps: Map<string, readonly DependencyEdge[]>;
@@ -58,6 +64,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const repositorySuggestionRequests: RepositorySuggestionsInput[] = [];
   const repositorySuggestions = new Map<string, readonly RepositorySuggestion[]>();
   const repositoryHints = new Map<string, RepositoryHints>();
+  const projectOverviews = new Map<string, ProjectOverview>();
   const repositoryLabels: { issueId: string; repository: string }[] = [];
   async function createActivity(update: ProgressUpdate, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
@@ -106,6 +113,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     repositorySuggestions,
     repositoryHints,
     repositoryLabels,
+    projectOverviews,
+    async projectOverview(issueId, options) {
+      options?.signal?.throwIfAborted();
+      return projectOverviews.get(issueId) ?? null;
+    },
     async addRepositoryLabel(input, options) {
       options?.signal?.throwIfAborted();
       repositoryLabels.push({ ...input });
