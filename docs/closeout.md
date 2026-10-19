@@ -2,53 +2,55 @@
 
 Closeout checks a candidate before Paws opens or merges its pull request. The checks and their retry limits come from the repository's `.agents/closeout.yaml`, or from a [local Closeout policy](local-closeout.md).
 
-Each candidate goes through Closeout twice:
+The agent checks its own work during the run. When the agent stops, Paws runs Closeout on the result:
 
-1. **Agent Closeout.** The agent runs the command checks itself while it works.
-2. **Paws Closeout.** After the agent's turn ends, Paws verifies the result, runs the independent review, and decides whether the candidate can be published.
+1. **The agent's checks.** While it develops, the agent runs the project's tests and linters itself. Before it finishes, it runs the required checks with `run_closeout`.
+2. **Closeout.** When the agent stops, Paws runs Closeout on the candidate commit, including the independent review, and decides whether the candidate can be published.
 
 ```mermaid
 flowchart TD
-  A[Agent changes code and commits] --> B[get_closeout lists the required checks]
-  B --> C[run_closeout runs a pending check]
-  C -->|passed| B
-  C -->|failed, attempts left| D[Agent fixes the cause]
-  D --> C
-  C -->|failed, no attempts left| E[Check is exhausted]
-  B -->|nothing pending| F[Agent opens the pull request and finishes]
-  E --> F
-  F --> G[Paws Closeout: command checks and independent review]
-  G -->|all passed| H[Merge queue]
-  G -->|a check failed, budget left| I[Fix round: the agent gets the findings]
-  I --> G
-  G -->|exhausted, blocked or fix budget spent| J[Paws asks the team in Linear]
-  J -->|reply with guidance| I
-  J -->|/paws bypass check -- reason| H
-  H -->|main moved| K[Rebase and run Paws Closeout again]
-  K --> G
+  subgraph Agent["During the run: the agent"]
+    A[Develop: run tests and linters freely] --> B[Commit]
+    B --> C[run_closeout the required checks]
+    C -->|a check failed, attempts left| A
+    C -->|all passed, or a check is exhausted| D[Open the pull request and stop]
+  end
+  subgraph Paws["When the agent stops: Paws"]
+    D --> G[Closeout: command checks and independent review]
+    G -->|all passed| H[Merge queue]
+    G -->|a check failed, budget left| I[Fix round: the agent gets the findings]
+    I --> G
+    G -->|exhausted, blocked or fix budget spent| J[Paws asks the team in Linear]
+    J -->|reply with guidance| I
+    J -->|/paws bypass check -- reason| H
+    H -->|main moved| K[Rebase]
+    K --> G
+  end
 ```
 
-## Agent Closeout
+## The agent's checks
 
-The agent uses two tools in its session:
+While it develops, the agent runs the project's tests, linters and other commands in its workspace as often as it needs. These runs are not part of Closeout and have no limit.
+
+Before it finishes, the agent runs the required checks with two tools:
 
 - `get_closeout` returns the required checks for the changed paths, their status, and the ids still pending. It runs nothing.
 - `run_closeout` runs one pending check, after any setup steps it needs, and records the result for the current commit.
 
-Command checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session.
+These checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session.
 
-Each check has its own retry limit, `retry.maxFailedAttemptsPerItem`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
+Each check has its own retry limit, `retry.maxFailedAttemptsPerItem`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why, and Closeout decides what happens next.
 
-The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
+When the agent tries to stop, the Stop hook checks the status of the required checks. While a check is still pending, the agent is sent back with the pending ids. An exhausted check does not hold the agent back.
 
-## Paws Closeout
+## Closeout
 
-When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:
+When the agent stops, the item moves to `verifying` and Paws runs the policy against the candidate commit:
 
-- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked.
+- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the results of the agent's `run_closeout` checks for the same commit. A check passes when those results have nothing pending and nothing blocked.
 - **Independent review.** A reviewer in a separate session runs the review skill. A finding at or above the policy's `failOn` severity fails the review.
 
-The run page shows these steps and their output while they run.
+The run page shows these Closeout steps and their output while they run.
 
 ### Fix rounds
 
@@ -75,4 +77,4 @@ Only a bypass in reply to this question counts. A bypass the agent proposes in i
 
 ### After acceptance
 
-An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Paws Closeout again on the rebased commit. Closeout must accept the commit that is actually merged.
+An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Closeout again on the rebased commit. Closeout must accept the commit that is actually merged.

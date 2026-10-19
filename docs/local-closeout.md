@@ -1,6 +1,6 @@
 # Local Closeout policy
 
-Keep the Closeout policy for a work repository on your machine. [How Closeout runs](closeout.md) explains the two Closeout passes and how retries work. Add this to `~/.paws/config.toml` before running `paws setup`:
+Keep the Closeout policy for a work repository on your machine. [How Closeout runs](closeout.md) explains how the agent's checks and Closeout work together, and how retries are counted. Add this to `~/.paws/config.toml` before running `paws setup`:
 
 ```toml
 [closeout.projects."acme/widgets"]
