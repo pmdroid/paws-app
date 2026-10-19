@@ -167,7 +167,7 @@ test("fresh onboarding checks attribution with the selected repository before bi
     remoteUrl: "https://github.com/acme/chosen.git",
   };
   const checked: string[] = [];
-  let consent = false;
+  let policyReady = false;
   let available = true;
   const host = createLinearGitHubAuth({
     runtime,
@@ -176,7 +176,7 @@ test("fresh onboarding checks attribution with the selected repository before bi
     actorForItem: () => "member",
     attributionReady: async (_item, repository) => {
       checked.push(`${repository.owner}/${repository.repo}`);
-      return consent;
+      return policyReady;
     },
   });
   host.integration!.check = async () => true;
@@ -192,7 +192,9 @@ test("fresh onboarding checks attribution with the selected repository before bi
     expect(current().state).toBe("awaiting_input");
     expect(checked).toEqual(["acme/chosen"]);
     expect(
-      listOutbox(db).some((entry) => JSON.stringify(entry.payload).includes("consent to public")),
+      listOutbox(db).some((entry) =>
+        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
+      ),
     ).toBe(true);
     expect(
       listOutbox(db).some((entry) =>
@@ -201,7 +203,7 @@ test("fresh onboarding checks attribution with the selected repository before bi
     ).toBe(false);
     await auth.recover();
     expect(listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
-    consent = true;
+    policyReady = true;
     await auth.recover();
     await auth.recover();
     expect(current().state).toBe("running");

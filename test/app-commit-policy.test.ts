@@ -46,7 +46,7 @@ test("roles remain distinct and matching verified identities deduplicate; missin
   expect(policyCoauthors(policy)).toHaveLength(2);
   expect(policyCoauthors({ ...policy, taskSteerer: policy.projectLead! })).toHaveLength(1);
   expect(() => policyCoauthors({ ...policy, taskSteerer: undefined! })).toThrow(
-    "Link consenting verified",
+    "Invalid verified GitHub coauthor",
   );
   expect(() =>
     policyCoauthors({
@@ -60,7 +60,7 @@ test("roles remain distinct and matching verified identities deduplicate; missin
 
 test("standalone attribution keeps exactly its verified task steerer and requires explicit absent lead", () => {
   const standalone = { ...policy, projectLead: null };
-  expect(policyCoauthors(standalone)).toEqual([policy.taskSteerer]);
+  expect(policyCoauthors(standalone)).toEqual([policy.taskSteerer!]);
   expect(commitPolicyMessage("change", standalone)).toBe(
     "change\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
   );
@@ -69,6 +69,15 @@ test("standalone attribution keeps exactly its verified task steerer and require
   );
   expect(() => policyCoauthors({ ...standalone, taskSteerer: undefined! })).toThrow();
   expect(() => policyCoauthors({ ...policy, projectLead: undefined! })).toThrow();
+});
+
+test("bot-only policy omits human credit and still rejects malformed identities", () => {
+  const botOnly = { ...policy, projectLead: null, taskSteerer: null };
+  expect(policyCoauthors(botOnly)).toEqual([]);
+  expect(commitPolicyMessage("change", botOnly)).toBe("change\n");
+  expect(policyPullRequestCredit(botOnly)).toBe("");
+  expect(() => policyCoauthors({ ...botOnly, taskSteerer: undefined! })).toThrow();
+  expect(() => policyCoauthors({ ...botOnly, bot: { ...policy.bot, id: 0 } })).toThrow();
 });
 
 async function fixture() {
@@ -96,7 +105,11 @@ async function fixture() {
   return { root, home, tree, env, invoke, base };
 }
 
-async function agent(f: Awaited<ReturnType<typeof fixture>>, override = false) {
+async function agent(
+  f: Awaited<ReturnType<typeof fixture>>,
+  override = false,
+  commitPolicy = policy,
+) {
   const script = join(f.root, `script-${override}.json`);
   writeFileSync(
     script,
@@ -112,7 +125,7 @@ async function agent(f: Awaited<ReturnType<typeof fixture>>, override = false) {
             "commit",
             ...(override ? ["--author=Imposter <wrong@example.invalid>"] : []),
             "-m",
-            commitPolicyMessage("agent commit", policy),
+            commitPolicyMessage("agent commit", commitPolicy),
           ],
         },
         { type: "end" },
@@ -135,7 +148,7 @@ async function agent(f: Awaited<ReturnType<typeof fixture>>, override = false) {
       script,
     ],
     prompt: "Implement",
-    commitPolicy: policy,
+    commitPolicy,
   });
 }
 
@@ -156,6 +169,35 @@ test("real ACP normal agent commit and recovery checkpoint share bot and two hum
   expect(
     (await f.invoke(["log", "--format=%B", `${f.base}..HEAD`])).match(/Co-authored-by:/g),
   ).toHaveLength(4);
+});
+
+test("bot-only ACP commits and checkpoints validate without granting unconsented credit", async () => {
+  const f = await fixture();
+  const botOnly = { ...policy, projectLead: null, taskSteerer: null };
+  const result = await agent(f, false, botOnly);
+  expect(result.errorMessage).toBeUndefined();
+  const transcript = JSON.parse(await Bun.file(join(f.root, "result-false.json")).text());
+  expect(JSON.stringify(transcript.prompts)).toContain("Do not add human Co-authored-by trailers");
+  writeFileSync(join(f.tree, "repair"), "checkpoint");
+  const checkpoint = commitCheckpointSync(f.tree, "repair", undefined, botOnly);
+  await validateCandidateAttribution(f.tree, f.base, checkpoint.sha!, botOnly, f.env);
+  expect(await f.invoke(["log", "--format=%B", `${f.base}..HEAD`])).not.toContain(
+    "Co-authored-by:",
+  );
+  await git(["-C", f.tree, "commit", "--amend", "-m", commitPolicyMessage("unconsented", policy)], {
+    env: {
+      ...f.env,
+      GIT_AUTHOR_NAME: "paws-test[bot]",
+      GIT_AUTHOR_EMAIL: "88+paws-test[bot]@users.noreply.github.com",
+      GIT_COMMITTER_NAME: "paws-test[bot]",
+      GIT_COMMITTER_EMAIL: "88+paws-test[bot]@users.noreply.github.com",
+    },
+  });
+  const head = (await f.invoke(["rev-parse", "HEAD"])).trim();
+  await expect(validateCandidateAttribution(f.tree, f.base, head, botOnly, f.env)).rejects.toThrow(
+    "attribution rejected",
+  );
+  expect((await f.invoke(["rev-parse", "HEAD"])).trim()).toBe(head);
 });
 
 test("explicit agent overrides reject without rewriting any candidate SHA", async () => {

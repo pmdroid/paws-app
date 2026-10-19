@@ -401,7 +401,7 @@ export class GitHubIntegrationHolds {
 
 function waitingMessage(result: "attribution" | "unavailable" | "installation"): string {
   return result === "attribution"
-    ? "Link your GitHub identity and consent to public attribution in Paws Settings. If this issue belongs to a Linear project, its lead must also link and consent. Paws will recheck automatically before continuing."
+    ? "The GitHub App commit policy could not be verified. Paws will recheck automatically before continuing; personal GitHub credit is optional."
     : result === "unavailable"
       ? "Workspace authorization could not be checked. Paws will retry automatically before continuing; no personal GitHub sign-in is required."
       : "Waiting for a workspace owner or administrator to restore the GitHub App installation and repository access. Your personal GitHub sign-in is not required.";
