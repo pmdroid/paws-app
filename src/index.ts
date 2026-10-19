@@ -670,6 +670,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         tracker,
         linearTaskModes: true,
         remoteExecution,
+        ...(placeOnRunner
+          ? {
+              remoteFollowUp: async (itemId: string, body: string) =>
+                (await runnerReady)?.results.deliverFollowUp(itemId, body) ?? false,
+            }
+          : {}),
         linearAccess: linearTaskAccess ?? undefined,
         canDispatchDelegation: projectExecution.canDispatch,
         publicationReady: (itemId) => {
