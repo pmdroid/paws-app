@@ -128,3 +128,42 @@ test("aborting an interactive provider kills its process and never reports conne
     rmSync(home, { recursive: true, force: true });
   }
 }, 10000);
+
+for (const outcome of ["success", "failure", "cancel"] as const) {
+  test(`Grok device login handles ${outcome} without exposing provider output`, async () => {
+    const home = mkdtempSync(join(tmpdir(), "paws-grok-device-"));
+    const updates: RunnerLoginUpdate[] = [];
+    try {
+      const path = join(home, "provider.js");
+      writeFileSync(
+        path,
+        `
+process.stderr.write(${JSON.stringify("To sign in, open this URL in your browser:\n  https://auth.x.ai/device\nThen enter this code:\nABCD-1234\nWaiting for authorization...\n")});
+process.stdout.write("synthetic-private-token");
+${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => process.exit(${outcome === "success" ? 0 : 1}), 100);`}
+`,
+      );
+      await runProviderLogin({
+        agent: "grok",
+        home,
+        command: [process.execPath, path],
+        signal: AbortSignal.timeout(outcome === "cancel" ? 500 : 5000),
+        emit: (update) => updates.push(update),
+        async answer() {
+          throw new Error("Grok polls the provider without browser input");
+        },
+      });
+      expect(
+        updates.some((update) => update.authorization?.url === "https://auth.x.ai/device"),
+      ).toBe(true);
+      expect(updates.find((update) => update.authorization)?.authorization?.message).toContain(
+        "ABCD-1234",
+      );
+      expect(JSON.stringify(updates)).not.toContain("synthetic-private-token");
+      expect(updates.at(-1)!.state).toBe(outcome === "success" ? "connected" : "failed");
+      expect(updates.at(-1)!.authorization).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
