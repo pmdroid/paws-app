@@ -358,10 +358,12 @@ const assert = require("node:assert/strict");
     );
     const member = await pageFor("member");
     await member.locator(".runner-list h2").waitFor();
-    assert.equal(
-      await member.locator("[data-runner-pair],#runner-pairing,[data-runner-status]").count(),
-      0,
-    );
+    assert.equal(await member.locator("[data-runner-pair]").count(), 1);
+    assert.equal(await member.locator("[data-runner-status]").count(), 0);
+    await member.getByRole("button", { name: "Pair a host", exact: true }).click();
+    await member.getByRole("dialog", { name: "Pair a host" }).waitFor();
+    assert.equal(await member.locator("#runner-pairing").count(), 1);
+    await member.getByRole("button", { name: "Close", exact: true }).click();
     await member.getByRole("button", { name: "View health" }).click();
     await member.getByText("Signed in via subscription", { exact: true }).waitFor();
     assert.equal(await member.locator("#runner-health").count(), 0);
@@ -371,8 +373,13 @@ const assert = require("node:assert/strict");
     assert(await stale.getByRole("button", { name: "Pair a host" }).isEnabled());
     assert.equal(await stale.getByRole("link", { name: "Sign in again" }).count(), 0);
     observe(
-      "persisted member role denies mutations, missing CSRF fails closed and an older administrator sign-in keeps its controls",
-      { member: 403, csrf: 403, olderAdministratorControls: true },
+      "members can open pairing but not administer hosts; missing CSRF fails closed and older administrators keep their controls",
+      {
+        memberPairing: true,
+        memberHostAdministration: 403,
+        csrf: 403,
+        olderAdministratorControls: true,
+      },
     );
     await owner.screenshot({ path: path.join(root, "desktop.png"), fullPage: true });
     await member.setViewportSize({ width: 390, height: 844 });

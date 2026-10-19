@@ -83,7 +83,7 @@ export async function probeRunnerPairing(
     const pending = await control.beginPairing({ name: "Fixture Linux VM", csr: client.csr });
     assert.equal(control.claimPairing(pending.id, pending.claim).status, "pending");
     assert.throws(() => control.claimPairing(pending.id, pending.code));
-    assert.throws(() => control.inspectPairing(member, pending.code), /administrator/);
+    assert.equal(control.inspectPairing(member, pending.code).name, "Fixture Linux VM");
     const inspected = control.inspectPairing(principal, pending.code);
     assert.equal(inspected.requestFingerprint, pending.requestFingerprint);
     const stored = db
@@ -93,10 +93,10 @@ export async function probeRunnerPairing(
       .get(pending.id)!;
     assert.notEqual(stored.claim_hash, pending.claim);
     assert.notEqual(stored.code_hash, pending.code);
-    observe("runner enrollment waits for a current administrator", true, {
+    observe("runner enrollment permits current members to inspect a pairing", true, {
       pending: true,
       requestFingerprint: inspected.requestFingerprint,
-      memberDenied: true,
+      memberInspectionAllowed: true,
       hashesOnly: true,
     });
     const approved = await control.approvePairing(principal, pending.code);

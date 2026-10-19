@@ -43,6 +43,11 @@ export function createRunnerControl(options: {
     if (!member?.active || !["owner", "admin"].includes(member.role))
       throw new Error("Workspace administrator access is required.");
   }
+  function pairingMember(principal: WorkspacePrincipal) {
+    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+    if (!member?.active || !["owner", "admin", "member"].includes(member.role))
+      throw new Error("Active permitted workspace membership is required to pair a runner.");
+  }
   function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
     const runner = runnerForCertificate(db, peer.fingerprint, at);
     if (!runner) throw new Error("Runner identity is revoked or expired.");
@@ -96,7 +101,7 @@ export function createRunnerControl(options: {
     },
     inspectPairing(principal: WorkspacePrincipal, code: string) {
       const at = now();
-      admin(principal);
+      pairingMember(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= at || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
@@ -107,7 +112,7 @@ export function createRunnerControl(options: {
       };
     },
     async approvePairing(principal: WorkspacePrincipal, code: string) {
-      admin(principal);
+      pairingMember(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
@@ -115,7 +120,7 @@ export function createRunnerControl(options: {
       const at = now();
       const runnerId = workspaceId(at);
       immediate(db, () => {
-        admin(principal);
+        pairingMember(principal);
         approveRunnerPairing(db, {
           pairingId: pairing.id,
           runnerId,
