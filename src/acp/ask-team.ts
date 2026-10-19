@@ -69,6 +69,8 @@ export const REQUEST_CLOSEOUT_SKIP_TOOL_NAME = "request_closeout_skip";
 export interface CloseoutSkipRequest {
   checkIds: string[];
   reason: string;
+  /** The requested ids that are independent reviews. Paws checks those against its own Closeout. */
+  reviewIds?: string[];
 }
 
 export interface CloseoutSkipHook {
@@ -359,13 +361,14 @@ async function handleConnection(
       if (!options.closeoutSkip || !options.closeout || options.allowCloseoutRun === false)
         throw new Error("request_closeout_skip is unavailable");
       const request = parseCloseoutSkip(parsed.arguments ?? {});
+      let reviewIds: string[];
       options.onHookStart?.();
       try {
-        exhaustedChecks(await options.closeout.report(), request.checkIds);
+        reviewIds = exhaustedChecks(await options.closeout.report(), request.checkIds);
       } finally {
         options.onHookEnd?.();
       }
-      await options.closeoutSkip.request(request);
+      await options.closeoutSkip.request(reviewIds.length ? { ...request, reviewIds } : request);
       socket.end(
         `${JSON.stringify({ id, answer: "Saved. Finish with a short note. Paws adds your reason and the evidence for these checks to the Closeout recovery question in Linear, where the team can reply /paws bypass or with guidance. Asking again replaces this request." })}\n`,
       );
@@ -603,10 +606,10 @@ export function parseCloseoutSkip(value: {
 /**
  * Accepts required command checks whose last attempt failed, which Closeout reports as
  * `exhausted`. Reviews run outside this session, so their status here stays `missing`.
- * A review request is accepted and Paws keeps it only if the review ends failed in its
- * own Closeout, which is when the recovery question opens.
+ * Returns the requested review ids; the host accepts those only after Paws' own Closeout
+ * failed the review, and keeps them only if the review ends exhausted.
  */
-export function exhaustedChecks(report: string, checkIds: readonly string[]): void {
+export function exhaustedChecks(report: string, checkIds: readonly string[]): string[] {
   let required: unknown;
   try {
     required = (JSON.parse(report) as { required?: unknown }).required;
@@ -614,6 +617,7 @@ export function exhaustedChecks(report: string, checkIds: readonly string[]): vo
     throw new Error("Closeout status is unavailable");
   }
   if (!Array.isArray(required)) throw new Error("Closeout status is unavailable");
+  const reviewIds: string[] = [];
   for (const id of checkIds) {
     const check = required.find((item) => item?.id === id) as
       | { status?: unknown; kind?: unknown }
@@ -626,7 +630,9 @@ export function exhaustedChecks(report: string, checkIds: readonly string[]): vo
       throw new Error(
         `Closeout check ${id} is ${String(check.status)}. You can ask to skip a check only after its last attempt failed.`,
       );
+    if (check.kind === "review") reviewIds.push(id);
   }
+  return reviewIds;
 }
 
 function authorizeCloseout(

@@ -536,6 +536,7 @@ export function createRemoteAgentRunner(options: {
                 await input.closeoutSkip?.request({
                   checkIds: event.checkIds,
                   reason: event.reason,
+                  ...(event.reviewIds ? { reviewIds: event.reviewIds } : {}),
                 });
               if (event.type === "plan")
                 await emit({

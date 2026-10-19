@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { parseRecoveryAnswer, recoveryQuestion } from "./closeout-recovery";
+import {
+  parseRecoveryAnswer,
+  recoveryQuestion,
+  skippableChecks,
+  unfailedReviews,
+} from "./closeout-recovery";
 
 const recovery = {
   taskId: "ENG-1-01",
@@ -45,5 +50,29 @@ describe("Closeout recovery question", () => {
       kind: "guidance",
       body: "Mock the browser instead",
     });
+  });
+
+  test("a skip request keeps only checks whose last attempt failed at this gate", () => {
+    const items = [
+      { id: "unit", state: "exhausted" },
+      { id: "e2e", state: "failed" },
+      { id: "independent-review", state: "independence" },
+      { id: "lint", state: "passed" },
+    ];
+    expect(skippableChecks(items, ["unit", "e2e", "independent-review"])).toEqual(["unit"]);
+    expect(skippableChecks(items, ["e2e"])).toEqual([]);
+  });
+
+  test("a review skip request needs a failed review in Paws' Closeout", () => {
+    const steps = [
+      { id: "review-a", state: "failed" },
+      { id: "review-b", state: "pending" },
+    ];
+    expect(unfailedReviews(steps, ["review-a"])).toEqual([]);
+    expect(unfailedReviews(steps, ["review-a", "review-b", "review-c"])).toEqual([
+      "review-b",
+      "review-c",
+    ]);
+    expect(unfailedReviews([], ["review-a"])).toEqual(["review-a"]);
   });
 });

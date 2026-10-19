@@ -19,7 +19,8 @@ test("request_closeout_skip accepts exhausted commands and reviews, whose result
       { id: "independent-review", kind: "review", status: "missing" },
     ],
   });
-  expect(() => exhaustedChecks(report, ["unit", "independent-review"])).not.toThrow();
+  expect(exhaustedChecks(report, ["unit", "independent-review"])).toEqual(["independent-review"]);
+  expect(exhaustedChecks(report, ["unit"])).toEqual([]);
   expect(() => exhaustedChecks(report, ["lint"])).toThrow("only after its last attempt failed");
   expect(() => exhaustedChecks(report, ["e2e"])).toThrow("not required");
 });
