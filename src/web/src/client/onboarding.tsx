@@ -11,9 +11,17 @@ export type Onboarding = {
   vm: { state: string; detail: string };
 };
 
+type GitHubLink = {
+  configured: boolean;
+  identity: { id: number; login: string; expiresAt: number | null } | null;
+};
+
 function OnboardingPage() {
   const [state, setState] = useState<Onboarding | null>(null);
   const [error, setError] = useState("");
+  const [github, setGitHub] = useState<GitHubLink | null>(null);
+  const [githubError, setGitHubError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
@@ -35,6 +43,7 @@ function OnboardingPage() {
           },
         );
         if (!response.ok) {
+          setGitHub(null);
           setState(null);
           setError(
             response.status === 401
@@ -47,6 +56,26 @@ function OnboardingPage() {
         }
         setState(await response.json());
         setError("");
+        try {
+          const link = await fetch("/api/workspaces/member-github", {
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          if (!link.ok) throw new Error();
+          const body: GitHubLink = await link.json();
+          if (
+            typeof body.configured !== "boolean" ||
+            (body.identity !== null && typeof body.identity?.login !== "string")
+          )
+            throw new Error();
+          setGitHub(body);
+          setGitHubError("");
+        } catch {
+          if (!controller.signal.aborted) {
+            setGitHub(null);
+            setGitHubError("GitHub connection could not be refreshed. Try again.");
+          }
+        }
         timer = setTimeout(refresh, 5000);
       } catch {
         if (!controller.signal.aborted) {
@@ -61,6 +90,56 @@ function OnboardingPage() {
       clearTimeout(timer);
     };
   }, [revision]);
+  async function changeGitHub(method: "POST" | "DELETE") {
+    setBusy(true);
+    setGitHubError("");
+    try {
+      const session = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!session.ok) throw new Error();
+      const auth: { csrfToken?: string } = await session.json();
+      if (!auth.csrfToken) throw new Error();
+      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
+        window.location.pathname,
+      );
+      if (!match) throw new Error();
+      const response = await fetch("/api/workspaces/member-github", {
+        method,
+        headers: { "Content-Type": "application/json", "X-Paws-CSRF": auth.csrfToken },
+        ...(method === "POST"
+          ? {
+              body: JSON.stringify({
+                onboarding: { sessionId: match[1], generation: Number(match[2]) },
+              }),
+            }
+          : {}),
+      });
+      if (!response.ok) throw new Error();
+      if (method === "POST") {
+        const result: { authorizeUrl: string } = await response.json();
+        const target = new URL(result.authorizeUrl);
+        if (
+          target.origin !== "https://github.com" ||
+          target.pathname !== "/login/oauth/authorize" ||
+          target.username ||
+          target.password
+        )
+          throw new Error();
+        window.location.assign(target.href);
+      } else {
+        setGitHub(null);
+        setRevision((value) => value + 1);
+      }
+    } catch {
+      setGitHub(null);
+      setGitHubError(
+        method === "POST"
+          ? "GitHub sign-in could not start. Try again."
+          : "GitHub could not be unlinked. Refresh the connection and try again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <div className="min-h-dvh px-4 py-5 sm:px-8 sm:py-8">
       <header className="mx-auto flex max-w-3xl items-center justify-between gap-4">
@@ -117,6 +196,63 @@ function OnboardingPage() {
                         <span className="text-sm font-semibold">{label}</span>
                       </div>
                       <p className="max-w-[65ch] text-sm leading-6">{step.detail}</p>
+                      {name === "GitHub" && (
+                        <div className="space-y-3 pt-2">
+                          {github ? (
+                            <>
+                              <p className="text-sm font-semibold">
+                                {github.identity
+                                  ? `@${github.identity.login} connected`
+                                  : "No GitHub account connected"}
+                              </p>
+                              <div className="flex flex-wrap gap-3">
+                                {github.configured && (
+                                  <Button disabled={busy} onClick={() => void changeGitHub("POST")}>
+                                    {busy
+                                      ? "Working…"
+                                      : github.identity
+                                        ? "Use another GitHub account"
+                                        : "Connect GitHub"}
+                                  </Button>
+                                )}
+                                {github.identity && (
+                                  <Button
+                                    variant="neutral"
+                                    disabled={busy}
+                                    onClick={() => void changeGitHub("DELETE")}
+                                  >
+                                    Unlink GitHub
+                                  </Button>
+                                )}
+                              </div>
+                              {!github.configured && (
+                                <p className="text-sm">GitHub sign-in is not configured.</p>
+                              )}
+                            </>
+                          ) : (
+                            !githubError && (
+                              <p className="text-sm" role="status">
+                                Loading GitHub connection…
+                              </p>
+                            )
+                          )}
+                          {githubError && (
+                            <div className="space-y-3" role="alert">
+                              <p className="text-sm">{githubError}</p>
+                              <Button
+                                variant="neutral"
+                                disabled={busy}
+                                onClick={() => {
+                                  setGitHubError("");
+                                  setRevision((value) => value + 1);
+                                }}
+                              >
+                                Refresh GitHub connection
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </li>
                 ))}
