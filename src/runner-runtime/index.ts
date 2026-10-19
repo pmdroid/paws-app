@@ -15,7 +15,7 @@ import {
   type RunnerSpool,
   type RunnerResults,
 } from "../runner-execution";
-import { publishRunnerAnswer } from "../runner-answers";
+import { publishRunnerAnswer, runnerFollowUpRequestId } from "../runner-answers";
 import { createRunnerRepositories } from "../runner-repositories";
 import { RunnerResultSchema, type RunnerResult } from "../runner-protocol";
 import { openExecutionJournal, type Execution } from "../runner-journal";
@@ -58,6 +58,7 @@ type Active = {
   stopped?: Promise<void>;
   quiesced?: Promise<void>;
   publicationBranch?: string;
+  followUps?: number;
   transcriptSealed?: boolean;
   restarts?: number;
 };
@@ -81,7 +82,7 @@ export async function openRunnerRuntime(options: {
     | "uploadTranscript"
     | "finishTranscript"
   > &
-    Partial<Pick<RunnerDaemon, "readInputs">>;
+    Partial<Pick<RunnerDaemon, "readInputs" | "followUps">>;
   spool: RunnerSpool;
   results: RunnerResults;
   repositoryRoot: string;
@@ -543,6 +544,23 @@ export async function openRunnerRuntime(options: {
       if (!requestId) throw new Error("Runner answer does not match a question");
       publishRunnerAnswer(options.spool, entry.execution.id, { requestId, answer: answer.answer });
       journal.answered(entry.execution.id, answer.sequence);
+    }
+    if (entry.execution.command.type !== "run" || !options.daemon.followUps) return;
+    const followUps = await remote(() =>
+      options.daemon.followUps!(
+        entry.execution.command.runId,
+        entry.execution.command.generation,
+        entry.followUps ?? 0,
+        token,
+      ),
+    );
+    for (const followUp of followUps.followUps) {
+      check(entry);
+      publishRunnerAnswer(options.spool, entry.execution.id, {
+        requestId: runnerFollowUpRequestId(followUp.sequence),
+        answer: followUp.body,
+      });
+      entry.followUps = followUp.sequence;
     }
   }
   async function resumeIfCrashed(entry: Active): Promise<boolean> {

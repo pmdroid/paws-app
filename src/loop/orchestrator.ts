@@ -236,6 +236,7 @@ export type OrchestratorOptions = {
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
+  remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
   linearIntakeActor?: (sessionId: string) => string | undefined;
@@ -427,6 +428,7 @@ export class Orchestrator {
     ) {
       const turn = this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
+      if (turn?.state === "pending" && (await this.forwardFollowUp(event.sessionId, turn))) return;
       if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
@@ -3438,6 +3440,38 @@ export class Orchestrator {
       });
     });
     await this.flush();
+  }
+
+  private async forwardFollowUp(
+    sessionId: string,
+    turn: { eventKey: string; body: string },
+  ): Promise<boolean> {
+    if (!this.options.remoteFollowUp) return false;
+    const live = [...this.live.values()].filter((entry) =>
+      this.itemsForSession(sessionId).some((item) => item.id === entry.itemId),
+    );
+    if (live.length !== 1) return false;
+    const item = getWorkItem(this.db, live[0]!.itemId);
+    if (item?.state !== "running" || !(await this.options.remoteFollowUp(item.id, turn.body)))
+      return false;
+    immediate(this.db, () => {
+      applyLinearTurns(this.db, sessionId, [turn.eventKey], item.id);
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: sessionId,
+        idempotencyKey: `turn:ack:${turn.eventKey}`,
+        payload: {
+          sessionId,
+          kind: "thought",
+          body: "Sent your update to the running agent.",
+          id: crypto.randomUUID(),
+        },
+        now: this.now(),
+      });
+    });
+    await this.flush();
+    return true;
   }
 
   private abortItem(itemId: string): void {
