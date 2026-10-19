@@ -194,7 +194,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           return json({ error: "Invalid bootstrap grant" }, 400);
       }
       const token = url.searchParams.get("assignment");
-      const assignmentHash = token === null ? null : options.assignments?.begin(token);
+      const returnPath = url.searchParams.get("return");
+      if (token !== null && returnPath !== null)
+        return json({ error: "Choose one sign-in context." }, 400);
+      const returnContext =
+        returnPath === null ? null : options.assignments?.beginReturn(returnPath);
+      if (returnPath !== null && !returnContext)
+        return json({ error: "Onboarding return is unavailable." }, 400);
+      const assignmentHash = token === null ? returnContext : options.assignments?.begin(token);
       if (token !== null && !assignmentHash)
         return json(
           { error: "Assignment sign-in is unavailable. Use the latest Linear sign-in action." },
@@ -264,11 +271,17 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         let destination = "/status/";
         if (result.assignmentHash !== null) {
           if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-          destination = options.assignments.complete(
-            result.assignmentHash,
-            workspace.id,
-            result.identity.userId,
-          );
+          destination = result.assignmentHash.startsWith("onboarding:")
+            ? options.assignments.completeReturn(
+                result.assignmentHash,
+                workspace.id,
+                result.identity.userId,
+              )
+            : options.assignments.complete(
+                result.assignmentHash,
+                workspace.id,
+                result.identity.userId,
+              );
         }
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
@@ -302,7 +315,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     } catch {
       return json({ error: "Linear membership could not be refreshed." }, 503);
     }
-    if (access === null) return json({ error: "Sign in to Paws." }, 401);
+    if (access === null) {
+      if (onboardingPage && request.method === "GET") return null;
+      return json({ error: "Sign in to Paws." }, 401);
+    }
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);

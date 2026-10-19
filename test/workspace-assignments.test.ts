@@ -748,3 +748,46 @@ test("legacy production assignment sign-in resumes without activating onboarding
     await f.close();
   }
 });
+
+test("signed-out onboarding serves a private-data-free shell and reauth returns only its responsible member", async () => {
+  const f = fixture(false);
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    const page = signed.headers.get("location")!;
+    const shell = await f.read(page);
+    expect(shell.status).toBe(200);
+    expect(await shell.text()).not.toContain("TEST-1");
+    expect((await f.read("/api/workspaces/onboarding?session=session&generation=0")).status).toBe(
+      401,
+    );
+    for (const target of [
+      "https://evil.invalid",
+      "//evil.invalid",
+      "/status/",
+      "/status/onboarding/session/1",
+    ])
+      expect(
+        (
+          await f.begin(
+            `https://paws.example.invalid/auth/linear?return=${encodeURIComponent(target)}`,
+          )
+        ).status,
+      ).toBe(400);
+    const reauth = () =>
+      f.begin(`https://paws.example.invalid/auth/linear?return=${encodeURIComponent(page)}`);
+    expect((await f.callback(await reauth(), "owner")).status).toBe(400);
+    const start = await reauth();
+    await f.restart();
+    const returned = await f.callback(start);
+    expect(returned.status).toBe(303);
+    expect(returned.headers.get("location")).toBe(page);
+    expect((await f.callback(start)).status).toBe(400);
+    expect(f.calls).toBe(0);
+    const stale = await reauth();
+    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+    expect((await f.callback(stale)).status).toBe(400);
+  } finally {
+    await f.close();
+  }
+});

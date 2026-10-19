@@ -304,6 +304,43 @@ export function createWorkspaceAssignments(options: {
       const value = hold ? holds(hold.sessionId) : null;
       return value && current(value) ? hash : null;
     },
+    beginReturn(path: string): string | null {
+      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})$/.exec(
+        path,
+      );
+      if (!options.onboarding || !match) return null;
+      const hold = holds(match[1]!);
+      return hold &&
+        hold.generation === Number(match[2]) &&
+        ["ready", "accepted", "continued"].includes(hold.status) &&
+        current(hold)
+        ? `onboarding:${hold.tokenHash}`
+        : null;
+    },
+    completeReturn(context: string, workspaceId: string, linearUserId: string): string {
+      const hash = context.slice("onboarding:".length);
+      const row = db
+        .query<{ sessionId: string }, [string]>(
+          "SELECT session_id AS sessionId FROM workspace_assignment WHERE token_hash=?",
+        )
+        .get(hash);
+      const hold = row ? holds(row.sessionId) : null;
+      const member = workspaceLinearMember(db, workspaceId, linearUserId);
+      if (
+        !hold ||
+        hold.tokenHash !== hash ||
+        !member ||
+        !this.onboarding(hold.sessionId, hold.generation, {
+          workspaceId,
+          userId: member.userId,
+          role: member.role,
+          teamIds: member.teamIds,
+          authenticatedAt: now(),
+        })
+      )
+        throw new Error("Onboarding return is unavailable.");
+      return `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
+    },
     onboarding(sessionId: string, generation: number, principal: WorkspacePrincipal) {
       if (!options.onboarding) return null;
       const hold = holds(sessionId);

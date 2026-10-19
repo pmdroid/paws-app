@@ -71,6 +71,14 @@ const assert = require("node:assert/strict");
       await page.screenshot({ path: path.join(root, `${name}-dark.png`), fullPage: true });
       await page.reload();
       await page.getByRole("heading", { name: "Your VM" }).waitFor();
+      await context.clearCookies();
+      await page.reload();
+      const signIn = page.getByRole("link", { name: "Sign in with Linear" });
+      await signIn.waitFor();
+      assert(!(await page.locator("body").innerText()).includes("PAS-339"));
+      await signIn.click();
+      await page.waitForURL(manifest.origin + manifest.page);
+      await page.getByRole("heading", { name: "Your VM" }).waitFor();
       if (name === "desktop")
         fs.writeFileSync(path.join(root, "session.json"), JSON.stringify(await context.cookies()));
       await context.route("**/api/workspaces/onboarding?*", (route) =>
@@ -92,6 +100,7 @@ const assert = require("node:assert/strict");
         noOverflow: true,
         outageClearsIssue: true,
         keyboardRetry: true,
+        signedOutShellAndSafeReturn: true,
       });
       await context.close();
     }
