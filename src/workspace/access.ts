@@ -1,3 +1,4 @@
+import { handleOnboardingVm } from "./onboarding-vm";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
 import { createMemberGitHubOAuth } from "./member-github-oauth";
@@ -189,6 +190,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       !onboardingPage &&
       ![
         "/api/workspaces/onboarding",
+        "/api/workspaces/onboarding/vm",
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
@@ -356,6 +358,16 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);
+    if (path === "/api/workspaces/onboarding/vm") {
+      if (!options.assignments) return json({ error: "Onboarding is unavailable." }, 404);
+      return handleOnboardingVm(request, {
+        db: options.db,
+        assignments: options.assignments,
+        ...access,
+        origin,
+        now,
+      });
+    }
     if (onboardingPage || path === "/api/workspaces/onboarding") {
       if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
       const sessionId = onboardingPage?.[1] ?? url.searchParams.get("session") ?? "";

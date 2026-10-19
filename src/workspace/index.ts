@@ -36,3 +36,5 @@ export {
   createMemberRepositoryAccess,
   type TaskRepositoryAccessResult,
 } from "./member-repository-access";
+
+export { handleOnboardingVm } from "./onboarding-vm";
