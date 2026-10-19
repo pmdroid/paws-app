@@ -710,7 +710,13 @@ export class Orchestrator {
       const scoped = sessionId
         ? (this.options.linearIntakeScope?.(sessionId, snapshot) ?? snapshot)
         : snapshot;
-      if (prepared && (scoped.linearIssueId !== prepared.issueId || scoped.subIssues.length !== 0))
+      if (
+        prepared &&
+        (scoped.linearIssueId !== prepared.issueId ||
+          scoped.subIssues.some(
+            (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
+          ))
+      )
         throw new Error("Extra issues require their own onboarding answer.");
       if (prepared && JSON.stringify(scoped) !== prepared.issueFingerprint)
         throw new Error("The prepared issue changed before intake.");
