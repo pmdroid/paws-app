@@ -52,6 +52,7 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
     pending: [],
     blocked: null,
     bypassed: false,
+    skip_request: null,
   });
 
   writeFileSync(join(root, "docs", "note.md"), "note\n");
@@ -153,6 +154,42 @@ test("exhausted retries block another run", async () => {
   expect(twice.blocked).toContain("Check failing is exhausted");
   expect(await session.run("failing")).toContain("exhausted");
   expect(readFileSync(mark, "utf8")).toBe("xx");
+});
+
+test("the agent can ask to skip only an exhausted check, and asking again replaces it", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "retry:",
+    "  maxFailedAttemptsPerItem: 1",
+    "  scope: candidate",
+    "items:",
+    command("failing", ["false"]),
+    command("other", ["false"]),
+    command("passing", ["true"]),
+    review("src/**"),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
+  const session = createCloseoutSession(root);
+  await expect(session.requestSkip(["failing"], "flaky")).rejects.toThrow("not exhausted");
+  expect(await session.run("failing")).toContain("failing failed");
+  expect(await session.run("passing")).toBe("passing passed.");
+  await expect(session.requestSkip(["passing"], "done")).rejects.toThrow("not exhausted");
+  await expect(session.requestSkip(["review"], "trust me")).rejects.toThrow("Only an exhausted");
+  await expect(session.requestSkip(["missing"], "gone")).rejects.toThrow("not required");
+  expect(await session.requestSkip(["failing"], "The sandbox has no display.")).toContain(
+    "Skip request recorded for failing",
+  );
+  expect(JSON.parse(await session.report()).skip_request).toEqual({
+    checks: ["failing"],
+    reason: "The sandbox has no display.",
+  });
+  expect(await session.run("other")).toContain("other failed");
+  await session.requestSkip(["failing", "other"], "Both need a display.");
+  expect(JSON.parse(await session.report()).skip_request).toEqual({
+    checks: ["failing", "other"],
+    reason: "Both need a display.",
+  });
 });
 
 test("a denied command does not spawn and does not count as a failure", async () => {

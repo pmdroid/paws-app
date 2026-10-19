@@ -209,6 +209,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.postUpdate ? "post_update" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
+            closeout && allowCloseoutRun ? "request_closeout_skip" : "",
           ]
             .filter(Boolean)
             .join(","),
@@ -292,6 +293,14 @@ async function handleConnection(
       } finally {
         options.onHookEnd?.();
       }
+      socket.end(`${JSON.stringify({ id, answer })}\n`);
+      return;
+    }
+    if (parsed.tool === "request_closeout_skip") {
+      if (!options.closeout || options.allowCloseoutRun === false)
+        throw new Error("request_closeout_skip is unavailable");
+      const request = parseSkipRequest(parsed.arguments ?? {});
+      const answer = await options.closeout.requestSkip(request.checkIds, request.reason);
       socket.end(`${JSON.stringify({ id, answer })}\n`);
       return;
     }
@@ -564,6 +573,24 @@ function authorizeCloseout(
     guard,
   );
   if (!decision.allow) throw new Error(decision.reason);
+}
+
+export function parseSkipRequest(value: { checkIds?: unknown; reason?: unknown }): {
+  checkIds: string[];
+  reason: string;
+} {
+  if (
+    !Array.isArray(value.checkIds) ||
+    value.checkIds.length < 1 ||
+    value.checkIds.length > 16 ||
+    value.checkIds.some((id) => typeof id !== "string" || !/^[A-Za-z0-9][\w./-]{0,127}$/.test(id))
+  )
+    throw new Error("request_closeout_skip needs 1 to 16 check ids from get_closeout");
+  if (typeof value.reason !== "string") throw new Error("request_closeout_skip requires a reason");
+  const reason = value.reason.trim();
+  if (reason.length < 1 || reason.length > 2000)
+    throw new Error("request_closeout_skip needs a reason of 1 to 2000 characters");
+  return { checkIds: value.checkIds as string[], reason };
 }
 
 function closeoutId(value: Record<string, unknown>): string {

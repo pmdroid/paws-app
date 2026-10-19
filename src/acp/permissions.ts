@@ -58,7 +58,8 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
     subject.name === "open_pull_request" ||
     subject.name === "post_update" ||
     subject.name === "get_closeout" ||
-    subject.name === "run_closeout"
+    subject.name === "run_closeout" ||
+    subject.name === "request_closeout_skip"
   ) {
     return { allow: true, reason: `${subject.name} is handled by the injected hook` };
   }
