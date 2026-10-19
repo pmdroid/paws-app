@@ -120,6 +120,23 @@ describe("status HTTP stub", () => {
     expect(slash.status).toBe(200);
     expect(await slash.text()).toContain('<base href="/status/"');
 
+    const session = await fetch(
+      `${base}/status/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0?engine=demo`,
+      { redirect: "manual" },
+    );
+    expect(session.status).toBe(302);
+    expect(session.headers.get("location")).toBe(
+      "/status/?engine=demo#/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0",
+    );
+    const followed = await fetch(
+      `${base}/status/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0?engine=demo`,
+    );
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(
+      `${base}/status/?engine=demo#/sessions/1ba8a587-1464-4f23-abec-d6f5a4ac12f0`,
+    );
+    expect(await followed.text()).toContain("status-dashboard");
+
     const escaped = await fetch(`${base}/status/assets/..%2f..%2fpackage.json`);
     expect(escaped.status).toBe(404);
 
