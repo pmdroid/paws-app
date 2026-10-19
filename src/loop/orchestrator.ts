@@ -115,6 +115,7 @@ import {
   saveCloseoutSkipRequest,
   takeCloseoutSkipRequest,
   listEvidence,
+  listCloseoutProgress,
   type CloseoutRecovery,
   type CloseoutSkip,
   markRun,
@@ -183,7 +184,13 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
+import {
+  parseRecoveryAnswer,
+  recoveryOptions,
+  recoveryQuestion,
+  skippableChecks,
+  unfailedReviews,
+} from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, worktreeBranch } from "./sources";
 import {
@@ -1833,15 +1840,22 @@ export class Orchestrator {
       summary,
       skip: null as CloseoutSkip | null,
     };
-    context.skip = this.closeoutSkip(item, context.failedChecks);
+    context.skip = this.closeoutSkip(
+      item,
+      skippableChecks(result?.decision?.items ?? [], context.failedChecks),
+    );
     this.openCloseoutQuestion(item, sessionId, context);
     await this.flush();
   }
 
-  /** The agent's pending skip request, narrowed to checks a person can bypass for this gate. */
-  private closeoutSkip(item: WorkItemRecord, failedChecks: readonly string[]): CloseoutSkip | null {
+  /**
+   * The agent's pending skip request, narrowed to the checks this gate exhausted: their last
+   * attempt failed and a person can bypass them. Checks blocked for another reason, such as
+   * reviewer independence, are dropped.
+   */
+  private closeoutSkip(item: WorkItemRecord, exhausted: readonly string[]): CloseoutSkip | null {
     const request = takeCloseoutSkipRequest(this.db, item.id);
-    const checkIds = request?.checkIds.filter((id) => failedChecks.includes(id)) ?? [];
+    const checkIds = request?.checkIds.filter((id) => exhausted.includes(id)) ?? [];
     if (request === null || checkIds.length === 0) return null;
     const publicUrl = this.options.evidence?.publicUrl.replace(/\/+$/, "");
     const since = item.currentRunId ? (getRun(this.db, item.currentRunId)?.createdAt ?? 0) : 0;
@@ -3139,7 +3153,20 @@ export class Orchestrator {
     return {
       request: async (request) => {
         if (this.stopped(item.id)) throw new Error("Skip requests are closed for this run");
-        saveCloseoutSkipRequest(this.db, { itemId: item.id, ...request, requestedAt: this.now() });
+        const latest = listCloseoutProgress(this.db)
+          .filter((row) => row.itemId === item.id && row.finishedAt !== null)
+          .sort((left, right) => right.startedAt - left.startedAt)[0];
+        const unfailed = unfailedReviews(latest?.steps ?? [], request.reviewIds ?? []);
+        if (unfailed.length)
+          throw new Error(
+            `Review ${unfailed.join(", ")} has not failed in Paws' Closeout. You can ask to skip a review only after it failed.`,
+          );
+        saveCloseoutSkipRequest(this.db, {
+          itemId: item.id,
+          checkIds: request.checkIds,
+          reason: request.reason,
+          requestedAt: this.now(),
+        });
       },
     };
   }

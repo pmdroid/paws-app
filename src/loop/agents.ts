@@ -65,7 +65,7 @@ export function closeoutPrompt(): string {
     "run_closeout runs matching setup steps first.",
     "Further edits can make passed checks stale.",
     "If blocked is non-null, stop retrying. When the blocker is an exhausted check, finish with a short note on why, and Paws asks the team how to continue. Otherwise report the blocker.",
-    "If you think an exhausted check, or an independent review whose findings you are fixing, should be skipped, call request_closeout_skip with its id and your reason before finishing. A review request counts only if that review fails again. Publish videos or screenshots that support the reason with publish_artifact and its checkId first. Paws adds them to its question in Linear.",
+    "If you think an exhausted check, or an independent review whose findings you are fixing, should be skipped, call request_closeout_skip with its id and your reason before finishing. A review request counts only if that review uses up its attempts and its last attempt fails. Publish videos or screenshots that support the reason with publish_artifact and its checkId first. Paws adds them to its question in Linear.",
     "If a required check fails, fix it and call run_closeout again.",
     "If you cannot fix it, call ask_team with the error and what you tried.",
     "Reviews stay in required and are not pending. An independent reviewer runs those.",
