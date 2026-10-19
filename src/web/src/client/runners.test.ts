@@ -202,3 +202,15 @@ describe("live polling", () => {
     expect(fake.listeners.size).toBe(0);
   });
 });
+
+test("member sign-in is available only on active online runners to signed-in contributors", () => {
+  expect(runnerCardMarkup(runner, view)).toContain("data-runner-accounts");
+  expect(runnerCardMarkup(runner, { ...view, role: "member" })).toContain("data-runner-accounts");
+  for (const role of [null, "observer"])
+    expect(runnerCardMarkup(runner, { ...view, role })).not.toContain("data-runner-accounts");
+  for (const status of ["paused", "draining", "revoked"] as const)
+    expect(runnerCardMarkup({ ...runner, status }, view)).not.toContain("data-runner-accounts");
+  expect(runnerCardMarkup({ ...runner, metrics: null }, view)).not.toContain(
+    "data-runner-accounts",
+  );
+});

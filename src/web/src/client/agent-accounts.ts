@@ -1,7 +1,7 @@
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
-type Agent = "claude" | "codex";
+type Agent = "claude" | "codex" | "grok";
 type Login = {
   id: string;
   agent: Agent;
@@ -18,21 +18,28 @@ type Account = {
 };
 type Runner = { id: string; name: string; status: string };
 
-export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): void {
+export function initializeAgentAccounts(
+  root: HTMLElement,
+  csrfToken: string,
+  fixedRunner?: Runner,
+): void {
   const section = document.createElement("section");
-  section.id = "agent-accounts";
-  section.dataset.settingsPage = "integrations";
+  if (!fixedRunner) {
+    section.id = "agent-accounts";
+    section.dataset.settingsPage = "integrations";
+  }
   section.className = "settings-section";
   renderMarkup(
     section,
-    '<div><h2>Your agent accounts</h2><p class="sub">Connect Claude and Codex on the runner that executes your work. Each member signs in separately.</p></div><div class="settings-account min-w-0"><label class="field"><span>Runner</span><select data-account-runner disabled><option>Loading runners…</option></select></label><p data-account-feedback role="alert"></p><div data-account-list class="flex flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div>',
+    '<div><h2>Your agent accounts</h2><p class="sub">Connect Claude, Codex, and Grok on the runner that executes your work. Each member signs in separately.</p></div><div class="settings-account min-w-0"><label class="field"><span>Runner</span><select data-account-runner disabled><option>Loading runners…</option></select></label><p data-account-feedback role="alert"></p><div data-account-list class="flex flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div>',
   );
   root.append(section);
   const runnerSelect = section.querySelector<HTMLSelectElement>("[data-account-runner]")!;
   const feedback = section.querySelector<HTMLElement>("[data-account-feedback]")!;
   const list = section.querySelector<HTMLElement>("[data-account-list]")!;
   const refresh = section.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
-  let selected = "";
+  if (fixedRunner) runnerSelect.closest("label")!.hidden = true;
+  let selected = fixedRunner?.id ?? "";
   let accounts: Account[] = [];
   let busy = false;
   let timer = 0;
@@ -50,10 +57,10 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
 
   function paint() {
     if (!section.isConnected) return;
-    for (const agent of ["claude", "codex"] as const) {
+    for (const agent of ["claude", "codex", "grok"] as const) {
       const account = accounts.find((entry) => entry.agent === agent);
       if (!account) continue;
-      const name = agent === "claude" ? "Claude" : "Codex";
+      const name = { claude: "Claude", codex: "Codex", grok: "Grok" }[agent];
       let row = list.querySelector<HTMLElement>(`[data-agent="${agent}"]`);
       if (!row) {
         row = document.createElement("div");
@@ -151,7 +158,7 @@ export function initializeAgentAccounts(root: HTMLElement, csrfToken: string): v
     controls();
     feedback.textContent = "";
     try {
-      if (reloadRunners) {
+      if (reloadRunners && !fixedRunner) {
         const response = await request<{ runners: Runner[] }>("/api/runners");
         const available = response.runners.filter((runner) => runner.status !== "revoked");
         if (!available.some((runner) => runner.id === selected)) {
@@ -249,7 +256,9 @@ function providerUrl(value: string, agent: Agent): string {
   const hosts =
     agent === "codex"
       ? ["auth.openai.com", "chatgpt.com"]
-      : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
+      : agent === "grok"
+        ? ["auth.x.ai"]
+        : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
   if (
     url.protocol !== "https:" ||
     url.username ||
