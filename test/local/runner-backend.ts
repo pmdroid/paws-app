@@ -434,6 +434,38 @@ export async function probeRunnerBackend(
       true,
       { candidate: head, fetched, canonicalState: "running", assignmentEnded: true },
     );
+    await git(["-C", source, "reset", "--hard", base]);
+    const fetchedBefore = fetched;
+    const stopped = item();
+    const early = backend.forItem(stopped.id)(input(stopped));
+    const earlyCommand = await next();
+    if (earlyCommand.type !== "run") throw new Error("Expected an implementation run");
+    const earlyToken = work.issueGrant({
+      runnerId,
+      runId: earlyCommand.runId,
+      commandId: earlyCommand.id,
+      generation: earlyCommand.generation,
+    });
+    results.submit({
+      runnerId,
+      runId: earlyCommand.runId,
+      generation: earlyCommand.generation,
+      token: earlyToken.token,
+      result: {
+        ...result(earlyCommand),
+        stopReason: "error",
+        errorMessage: "The agent stopped early",
+        candidateSha: head,
+      },
+    });
+    assert.equal((await early).stopReason, "error");
+    assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
+    assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
+    assert.equal(fetched, fetchedBefore + 1);
+    fetched = fetchedBefore;
+    observe("an early-stopped remote run keeps its work for the next run of the item", true, {
+      wipCommit: head,
+    });
     const reviewer = item();
     let text = "";
     const reviewed = backend.forItem(reviewer.id)(

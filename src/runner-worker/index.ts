@@ -592,7 +592,10 @@ export async function executeRunnerCommand(
               : "grok login",
       };
     }
-    if (repository && run.stopReason === "end_turn" && !run.errorMessage && run.agentExited) {
+    const clean = run.stopReason === "end_turn" && !run.errorMessage;
+    const wip = !clean && command.type === "run" && !run.cancelled;
+    const recordCandidate = async () => {
+      if (command.type !== "run" && command.type !== "review") return;
       const sha = (await invokeGit(["-C", worktree, "rev-parse", "HEAD"])).trim();
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid runner candidate commit");
       await invokeGit([
@@ -640,6 +643,14 @@ export async function executeRunnerCommand(
           }
         }
       } else result.reviewText = reviewText;
+    };
+    if (repository && run.agentExited && clean) await recordCandidate();
+    else if (repository && run.agentExited && wip) {
+      await recordCandidate().catch(() => {
+        delete result.candidateSha;
+      });
+      if (command.type === "run" && result.candidateSha === command.repository.baseSha)
+        delete result.candidateSha;
     }
     const serialized = JSON.stringify(
       command.type === "helper"
