@@ -15,7 +15,11 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(join(dist, "assets"), { recursive: true });
 
 const built = await Bun.build({
-  entrypoints: [join(root, "src/client/main.ts"), join(root, "src/client/transcript.tsx")],
+  entrypoints: [
+    join(root, "src/client/main.ts"),
+    join(root, "src/client/transcript.tsx"),
+    join(root, "src/client/onboarding.tsx"),
+  ],
   outdir: join(dist, "assets"),
   naming: "[name]-[hash].[ext]",
   minify: true,
@@ -37,7 +41,8 @@ const entryName = (name: string) =>
     .find((file) => file.startsWith(`${name}-`));
 const jsName = entryName("main");
 const transcriptJsName = entryName("transcript");
-if (!jsName || !transcriptJsName) {
+const onboardingJsName = entryName("onboarding");
+if (!jsName || !transcriptJsName || !onboardingJsName) {
   console.error("Client bundle did not emit JavaScript");
   process.exit(1);
 }
@@ -72,6 +77,7 @@ await copyFile(
 for (const [page, script] of [
   ["index.html", jsName],
   ["transcript.html", transcriptJsName],
+  ["onboarding.html", onboardingJsName],
 ] as const) {
   const html = (await Bun.file(join(root, "src/client", page)).text())
     .replaceAll("__CSS__", `assets/${cssName}`)
