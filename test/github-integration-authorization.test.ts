@@ -154,3 +154,65 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     db.close();
   }
 });
+
+test("fresh onboarding checks attribution with the selected repository before binding it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-selected-attribution-"));
+  const db = openDatabase(join(root, "paws.sqlite"));
+  migrate(db);
+  const env = { GITHUB_AUTH: "app", PAWS_HOME: root };
+  const runtime = loadRuntime(env);
+  const selected = {
+    owner: "acme",
+    repo: "chosen",
+    remoteUrl: "https://github.com/acme/chosen.git",
+  };
+  const checked: string[] = [];
+  let consent = false;
+  let available = true;
+  const host = createLinearGitHubAuth({
+    runtime,
+    env,
+    repositoryForItem: () => (available ? selected : null),
+    actorForItem: () => "member",
+    attributionReady: async (_item, repository) => {
+      checked.push(`${repository.owner}/${repository.repo}`);
+      return consent;
+    },
+  });
+  host.integration!.check = async () => true;
+  const auth = new GitHubAuthQuestions(db, host, () => 1000);
+  const item = insertQueuedItem(db, { id: "unbound", sessionKey: "session" });
+  db.run("UPDATE work_item SET state='running' WHERE id=?", [item.id]);
+  const current = () => getWorkItem(db, item.id)!;
+  try {
+    expect(runtime.repo).toBeNull();
+    expect(db.query("SELECT item_id FROM work_item_repository").all()).toHaveLength(0);
+    expect(await auth.ensure(current(), "initial", new AbortController().signal)).toBe(false);
+    expect(current().currentRunId).toBeNull();
+    expect(current().state).toBe("awaiting_input");
+    expect(checked).toEqual(["acme/chosen"]);
+    expect(
+      listOutbox(db).some((entry) => JSON.stringify(entry.payload).includes("consent to public")),
+    ).toBe(true);
+    expect(
+      listOutbox(db).some((entry) =>
+        JSON.stringify(entry.payload).includes("could not be checked"),
+      ),
+    ).toBe(false);
+    await auth.recover();
+    expect(listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    consent = true;
+    await auth.recover();
+    await auth.recover();
+    expect(current().state).toBe("running");
+    expect(listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
+    expect(checked).toEqual(["acme/chosen", "acme/chosen", "acme/chosen"]);
+    available = false;
+    expect(await host.integration!.attributionReady!(current())).toBe(false);
+    expect(checked).toHaveLength(3);
+  } finally {
+    auth.close();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -509,8 +509,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
-  const commitPolicyForItem = async (item: WorkItemRecord): Promise<GitCommitPolicy> => {
-    const selected = getWorkItemRepository(db, item.id) ?? repository;
+  const commitPolicyForItem = async (
+    item: WorkItemRecord,
+    selected = getWorkItemRepository(db, item.id) ?? repository,
+  ): Promise<GitCommitPolicy> => {
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
@@ -819,9 +821,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     ? "read"
                     : "write",
                 actorForItem: (item) => delegatedLinearUserId(db, item.id),
-                attributionReady: async (item) => {
+                attributionReady: async (item, selected) => {
                   try {
-                    if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item);
+                    if (getTaskMode(db, item.id) === "code")
+                      await commitPolicyForItem(item, selected);
                     return true;
                   } catch (error) {
                     if (error instanceof MissingCommitAttributionError) return false;
@@ -1514,7 +1517,7 @@ export function createLinearGitHubAuth(input: {
   currentIntegrationItem?: (item: WorkItemRecord) => boolean;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
-  attributionReady?: (item: WorkItemRecord) => Promise<boolean>;
+  attributionReady?: (item: WorkItemRecord, repository: RepositoryBinding) => Promise<boolean>;
 }): HostGitHubAuth {
   const loginFor = (item: WorkItemRecord) => {
     const repository = input.repositoryForItem(item);
@@ -1549,7 +1552,11 @@ export function createLinearGitHubAuth(input: {
                 (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
               );
             },
-            attributionReady: input.attributionReady,
+            attributionReady: async (item) => {
+              if (!input.attributionReady) return true;
+              const selected = input.repositoryForItem(item);
+              return selected !== null && input.attributionReady(item, selected);
+            },
             async check(item: WorkItemRecord, signal: AbortSignal) {
               const selected = input.repositoryForItem(item);
               return (

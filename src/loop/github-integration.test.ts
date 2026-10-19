@@ -341,3 +341,41 @@ test("attribution provider outage is a retryable unavailable hold, not missing c
     f.db.close();
   }
 });
+
+test("recovery replaces an unavailable message with the current consent blocker only once", async () => {
+  const f = fixture();
+  let unavailable = true;
+  let consent = false;
+  Object.assign(f.integration, {
+    attributionReady: async () => {
+      if (unavailable) throw new Error("Attribution repository is missing");
+      return consent;
+    },
+  });
+  try {
+    f.ready();
+    const item = f.item("changed-blocker");
+    await f.auth.ensure(item, "initial", f.signal);
+    const question = () => f.db.query<{ body: string }, []>("SELECT body FROM question").get()!;
+    expect(question().body).toContain("could not be checked");
+    unavailable = false;
+    await f.auth.recover();
+    await f.auth.recover();
+    expect(question().body).toContain("consent to public attribution");
+    expect(
+      listOutbox(f.db).filter((entry) =>
+        JSON.stringify(entry.payload).includes("consent to public attribution"),
+      ),
+    ).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    consent = true;
+    await f.auth.recover();
+    await f.auth.recover();
+    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
