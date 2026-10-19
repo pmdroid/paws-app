@@ -15,6 +15,7 @@ export {
   readSessionCloseout,
   sessionCloseoutAccepted,
   sessionCloseoutPath,
+  type SessionCloseout,
   writeSessionCloseout,
 } from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";

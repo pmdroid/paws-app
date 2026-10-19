@@ -724,6 +724,9 @@ test("get_closeout lists the pending check and run_closeout runs it", async () =
     pending: [],
     blocked: null,
   });
+  expect(result.closeoutRuns).toEqual([
+    expect.objectContaining({ id: "check", argv: ["true"], exitCode: 0, timedOut: false }),
+  ]);
 });
 
 test("a read-only session lists get_closeout and not run_closeout", async () => {

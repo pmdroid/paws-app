@@ -1,3 +1,4 @@
+import type { CloseoutCommandRun } from "../closeout-spec";
 import type { CloseoutItem, Finding } from "./types";
 
 /**
@@ -19,7 +20,7 @@ export type FixRequest = {
 };
 
 export type FixResult =
-  | { ok: true; head: string; closeoutReport?: string }
+  | { ok: true; head: string; closeoutReport?: string; closeoutRuns?: CloseoutCommandRun[] }
   | { ok: false; reason: string };
 
 export interface FixRunner {

@@ -325,6 +325,32 @@ type Report = {
   bypassed: boolean;
 };
 
+test("runs keeps each command's output and duration while its changes are current", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("speak", ["sh", "-c", "echo out; echo err >&2; exit 3"]),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
+  const session = createCloseoutSession(root);
+  expect(await session.runs()).toEqual([]);
+  expect(await session.run("speak")).toContain("speak failed (exit 3).");
+  const [run] = await session.runs();
+  expect(run).toMatchObject({
+    id: "speak",
+    argv: ["sh", "-c", "echo out; echo err >&2; exit 3"],
+    exitCode: 3,
+    timedOut: false,
+    stdout: "out\n",
+    stderr: "err\n",
+    truncated: false,
+  });
+  expect(run!.durationMs).toBeGreaterThanOrEqual(0);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 2;\n");
+  expect(await session.runs()).toEqual([]);
+});
+
 function initRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "paws-closeout-session-"));
   roots.push(root);

@@ -366,7 +366,8 @@ async function runOne(
     detail: execMessage(record.exec, item.kind === "setup"),
     attempt,
     startedAt,
-    finishedAt: Date.now(),
+    // A remote check ran in the agent session. Its measured duration is the real one.
+    finishedAt: startedAt + record.exec.durationMs,
     exitCode: record.exec.exitCode,
     timedOut: record.exec.timedOut,
     timeoutReason: record.exec.timedOut ? "command timed out" : null,

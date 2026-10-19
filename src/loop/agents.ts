@@ -204,6 +204,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
         ok: true,
         head,
         ...(result.closeoutReport ? { closeoutReport: result.closeoutReport } : {}),
+        ...(result.closeoutRuns ? { closeoutRuns: result.closeoutRuns } : {}),
       };
     },
   };

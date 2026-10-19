@@ -55,3 +55,33 @@ test("runner result bounds preserve health schema derivation and escaped metadat
   assert(RunnerResultSchema.safeParse({ ...result, closeoutReport: report }).success);
   assert(!RunnerResultSchema.safeParse({ ...result, closeoutReport: "x".repeat(65_537) }).success);
 });
+
+test("runner results carry the agent's Closeout command output within a byte budget", () => {
+  const base = {
+    executionId: "01J00000000000000000000000",
+    commandId: "run-1",
+    role: "implementer",
+    stopReason: "end_turn",
+    timedOut: false,
+    cancelled: false,
+    authRequired: false,
+    agentExited: true,
+  } as const;
+  const run = {
+    id: "unit",
+    argv: ["bun", "test"],
+    exitCode: 0,
+    timedOut: false,
+    durationMs: 24_200,
+    stdout: "12 pass\n",
+    stderr: "",
+    truncated: false,
+  };
+  assert.deepEqual(RunnerResultSchema.parse({ ...base, closeoutRuns: [run] }).closeoutRuns, [run]);
+  const wide = Array.from({ length: 32 }, (_, index) => ({
+    ...run,
+    id: `check-${index}`,
+    stdout: "x".repeat(8_192),
+  }));
+  assert.equal(RunnerResultSchema.safeParse({ ...base, closeoutRuns: wide }).success, false);
+});

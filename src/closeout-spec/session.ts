@@ -11,12 +11,34 @@ import type { ResolvedItem, ResolvedRequirement, ResolvedSetup } from "./types";
 export type CloseoutSession = {
   report(): Promise<string>;
   run(id: string, model?: string): Promise<string>;
+  /** The latest run of each command and setup step whose changes are still current. */
+  runs(): Promise<CloseoutCommandRun[]>;
 };
+
+/** Output of one `run_closeout` command, as the agent saw it. Streams keep their tails. */
+export type CloseoutCommandRun = {
+  id: string;
+  argv: string[];
+  exitCode: number;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+};
+
+/** Each stream keeps this many trailing characters. */
+export const CLOSEOUT_RUN_STREAM_LIMIT = 8_192;
+/** JSON bytes of every run together, so the runner result stays within its body limit. */
+export const CLOSEOUT_RUNS_BUDGET = 196_608;
+const CLOSEOUT_RUNS_MAX = 64;
 
 export type CloseoutSessionOptions = {
   signal?: AbortSignal;
   allowCommand?: (argv: readonly string[]) => void;
 };
+
+type RunOptions = CloseoutSessionOptions & { record: (run: CloseoutCommandRun) => void };
 
 type ItemMemory = {
   failures: number;
@@ -46,6 +68,7 @@ export function createCloseoutSession(
   options: CloseoutSessionOptions = {},
 ): CloseoutSession {
   const memory = new Map<string, ItemMemory>();
+  const outputs = new Map<string, { run: CloseoutCommandRun; fingerprint: string | undefined }>();
   let fingerprint: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
 
@@ -88,7 +111,21 @@ export function createCloseoutSession(
         const prepared = await prepare();
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
-        return runId(workspace, prepared.policy, prepared.required, memory, id, options);
+        return runId(workspace, prepared.policy, prepared.required, memory, id, {
+          ...options,
+          record: (run) => outputs.set(run.id, { run, fingerprint }),
+        });
+      }),
+    runs: () =>
+      exclusive(async () => {
+        const prepared = await prepare();
+        if (prepared.kind !== "ready") return [];
+        return withinBudget(
+          prepared.required.flatMap((item) => {
+            const saved = outputs.get(item.id);
+            return saved && saved.fingerprint === fingerprint ? [saved.run] : [];
+          }),
+        );
       }),
   };
 }
@@ -166,7 +203,7 @@ async function runId(
   required: readonly Listed[],
   memory: Map<string, ItemMemory>,
   id: string,
-  options: CloseoutSessionOptions,
+  options: RunOptions,
 ): Promise<string> {
   const known = [...policy.setup, ...policy.items].find((item) => item.id === id);
   if (known === undefined) return `No closeout check ${id}. Call get_closeout.`;
@@ -198,7 +235,7 @@ async function execute(
   workspace: string,
   item: Listed,
   memory: Map<string, ItemMemory>,
-  options: CloseoutSessionOptions,
+  options: RunOptions,
 ): Promise<{ ok: boolean; text: string }> {
   const argv = item.exec ?? [];
   try {
@@ -209,6 +246,16 @@ async function execute(
   }
   const result = await runCommand(workspace, argv, item.timeoutSeconds ?? 30, options.signal);
   if (result.cancelled) return { ok: false, text: `${item.id} was cancelled.` };
+  options.record({
+    id: item.id,
+    argv: [...argv],
+    exitCode: result.code,
+    timedOut: result.timedOut,
+    durationMs: result.durationMs,
+    stdout: result.stdout.text,
+    stderr: result.stderr.text,
+    truncated: result.stdout.cut || result.stderr.cut,
+  });
   const state = memory.get(item.id) ?? {
     failures: 0,
     passed: false,
@@ -384,14 +431,22 @@ function runCommand(
   argv: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
-): Promise<{ code: number; timedOut: boolean; cancelled: boolean; output: string }> {
-  if (signal?.aborted) {
-    return Promise.resolve({ code: 1, timedOut: false, cancelled: true, output: "" });
-  }
+): Promise<CommandOutcome> {
+  const empty = (code: number, cancelled: boolean): CommandOutcome => ({
+    code,
+    timedOut: false,
+    cancelled,
+    output: "",
+    stdout: { text: "", cut: false },
+    stderr: { text: "", cut: false },
+    durationMs: 0,
+  });
+  if (signal?.aborted) return Promise.resolve(empty(1, true));
   const command = argv[0];
   if (command === undefined || argv.some((part) => part.length === 0)) {
-    return Promise.resolve({ code: 127, timedOut: false, cancelled: false, output: "" });
+    return Promise.resolve(empty(127, false));
   }
+  const started = performance.now();
   return new Promise((resolve) => {
     const child = spawn(command, argv.slice(1), {
       cwd: workspace,
@@ -400,12 +455,20 @@ function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
-    const take = (chunk: Buffer) => {
-      output += chunk.toString("utf8");
+    const stdout = { text: "", cut: false };
+    const stderr = { text: "", cut: false };
+    const take = (stream: { text: string; cut: boolean }) => (chunk: Buffer) => {
+      const text = chunk.toString("utf8");
+      output += text;
       if (output.length > 12_000) output = output.slice(-6_000);
+      stream.text += text;
+      if (stream.text.length > CLOSEOUT_RUN_STREAM_LIMIT * 2) {
+        stream.text = stream.text.slice(-CLOSEOUT_RUN_STREAM_LIMIT);
+        stream.cut = true;
+      }
     };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
+    child.stdout.on("data", take(stdout));
+    child.stderr.on("data", take(stderr));
     let settled = false;
     let timedOut = false;
     let cancelled = false;
@@ -414,29 +477,60 @@ function runCommand(
       cancelled = true;
       killCommand(child.pid);
     };
-    const finish = (result: {
-      code: number;
-      timedOut: boolean;
-      cancelled: boolean;
-      output: string;
-    }) => {
+    const finish = (code: number) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve(result);
+      resolve({
+        code,
+        timedOut,
+        cancelled,
+        output: output.slice(-6_000),
+        stdout: streamTail(stdout),
+        stderr: streamTail(stderr),
+        durationMs: Math.round(performance.now() - started),
+      });
     };
     signal?.addEventListener("abort", onAbort);
     timer = setTimeout(() => {
       timedOut = true;
       killCommand(child.pid);
     }, timeoutSeconds * 1000);
-    child.on("error", () =>
-      finish({ code: 127, timedOut, cancelled, output: output.slice(-6_000) }),
-    );
-    child.on("close", (code) =>
-      finish({ code: code ?? 1, timedOut, cancelled, output: output.slice(-6_000) }),
-    );
+    child.on("error", () => finish(127));
+    child.on("close", (code) => finish(code ?? 1));
     if (signal?.aborted) onAbort();
   });
+}
+
+type CommandOutcome = {
+  code: number;
+  timedOut: boolean;
+  cancelled: boolean;
+  output: string;
+  stdout: { text: string; cut: boolean };
+  stderr: { text: string; cut: boolean };
+  durationMs: number;
+};
+
+function streamTail(stream: { text: string; cut: boolean }): { text: string; cut: boolean } {
+  return stream.text.length > CLOSEOUT_RUN_STREAM_LIMIT
+    ? { text: stream.text.slice(-CLOSEOUT_RUN_STREAM_LIMIT), cut: true }
+    : stream;
+}
+
+/** Shortens every stream's tail until the runs fit {@link CLOSEOUT_RUNS_BUDGET}. */
+function withinBudget(runs: CloseoutCommandRun[]): CloseoutCommandRun[] {
+  let fitted = runs.slice(-CLOSEOUT_RUNS_MAX);
+  let limit = CLOSEOUT_RUN_STREAM_LIMIT;
+  while (Buffer.byteLength(JSON.stringify(fitted)) > CLOSEOUT_RUNS_BUDGET && limit > 0) {
+    limit = Math.floor(limit / 2);
+    fitted = fitted.map((run) => ({
+      ...run,
+      stdout: run.stdout.slice(run.stdout.length - limit),
+      stderr: run.stderr.slice(run.stderr.length - limit),
+      truncated: run.truncated || run.stdout.length > limit || run.stderr.length > limit,
+    }));
+  }
+  return Buffer.byteLength(JSON.stringify(fitted)) <= CLOSEOUT_RUNS_BUDGET ? fitted : [];
 }

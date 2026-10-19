@@ -15,7 +15,11 @@ import {
   type PublishArtifactHook,
   type PublishArtifactRequest,
 } from "./artifacts";
-import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
+import {
+  createCloseoutSession,
+  type CloseoutCommandRun,
+  type CloseoutSession,
+} from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
 import { git } from "./git";
 import { decidePermission, type GuardContext } from "./permissions";
@@ -110,6 +114,7 @@ export interface AskTeamHook {
 export interface AskTeamBridge {
   mcpServer: McpServerStdio;
   closeoutReport(): Promise<string | undefined>;
+  closeoutRuns(): Promise<CloseoutCommandRun[]>;
   close(): Promise<void>;
 }
 
@@ -218,6 +223,10 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     async closeoutReport() {
       if (!closeout) return undefined;
       return closeout.report();
+    },
+    async closeoutRuns() {
+      if (!closeout) return [];
+      return closeout.runs();
     },
     async close() {
       options.signal.removeEventListener("abort", onAbort);

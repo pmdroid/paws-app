@@ -5,6 +5,7 @@ export const RunnerHealthResultSchema = RunnerResultSchema.omit({
   candidateSha: true,
   reviewText: true,
   closeoutReport: true,
+  closeoutRuns: true,
 }).extend({
   models: z
     .array(z.strictObject({ id: z.string().max(256), name: z.string().max(256) }))
