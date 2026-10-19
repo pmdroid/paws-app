@@ -1,3 +1,4 @@
+import { initializeAgentAccounts } from "./agent-accounts";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
@@ -262,7 +263,7 @@ export function runnerCardMarkup(
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? (view.recent ? "" : '<p><a href="/auth/linear">Sign in again</a> to change these settings.</p>') : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<li data-runner-card="${id}"><section class="runner-section" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${sharing}${runnerActionsMarkup(
+  return `<li data-runner-card="${id}"><section class="runner-section" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${sharing}${runner.status === "active" && online && view.role !== null && view.role !== "observer" ? `<div data-runner-accounts="${id}"></div>` : ""}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
@@ -491,8 +492,26 @@ export function createRunners() {
         ? { start: active.selectionStart, end: active.selectionEnd }
         : null;
     const key = focused ?? pendingFocus;
+    const accounts = new Map(
+      [...root.querySelectorAll<HTMLElement>("[data-runner-accounts]")]
+        .filter((element) => element.childElementCount > 0)
+        .map((element) => {
+          const content = document.createDocumentFragment();
+          content.append(...element.childNodes);
+          return [element.dataset.runnerAccounts!, content] as const;
+        }),
+    );
     painted = html;
     renderMarkup(root, html);
+    for (const slot of root.querySelectorAll<HTMLElement>("[data-runner-accounts]")) {
+      const runnerId = slot.dataset.runnerAccounts!;
+      const existing = accounts.get(runnerId);
+      if (existing) slot.append(existing);
+      else {
+        const runner = runners.find((entry) => entry.id === runnerId)!;
+        initializeAgentAccounts(slot, readCsrfToken(document), runner);
+      }
+    }
     bind();
     const target = key
       ? [...root.querySelectorAll<HTMLElement>("[data-focus]")].find(

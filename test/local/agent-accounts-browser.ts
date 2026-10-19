@@ -30,7 +30,13 @@ const server = Bun.serve({
     if (url.pathname.startsWith("/status/assets/") && !url.pathname.slice(15).includes("/"))
       return new Response(Bun.file(`${root}/src/web/dist/assets/${url.pathname.slice(15)}`));
     if (url.pathname === "/status/")
-      return new Response(Bun.file(`${root}/src/web/dist/index.html`));
+      return new Response(
+        (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
+          "<head>",
+          '<head><meta name="paws-csrf" content="synthetic-csrf">',
+        ),
+        { headers: { "content-type": "text/html" } },
+      );
     if (url.pathname.endsWith("/config.json")) return Response.json({ engineUrl: null });
     if (url.pathname === "/api/auth/session")
       return Response.json({
@@ -44,15 +50,41 @@ const server = Bun.serve({
       });
     if (url.pathname === "/api/status") return Response.json({ ...demoStatus(), source: "live" });
     const match = url.pathname.match(
-      /^\/api\/runners\/runner-a\/accounts\/(claude|codex)\/login(?:\/([^/]+))?(\/input)?$/,
+      /^\/api\/runners\/runner-a\/accounts\/(claude|codex|grok)\/login(?:\/([^/]+))?(\/input)?$/,
     );
     if (url.pathname === "/api/runners")
       return Response.json({
-        runners: [{ id: "runner-a", name: "Team Linux runner", status: "active" }],
+        runners: [
+          {
+            id: "runner-a",
+            name: "Team Linux runner",
+            status: "active",
+            ownerUserId: "person",
+            metrics: {
+              reportedAt: Date.now(),
+              cpuPercent: 0,
+              memoryTotalBytes: null,
+              memoryAvailableBytes: null,
+              diskTotalBytes: null,
+              diskFreeBytes: null,
+              load1: null,
+              load5: null,
+              load15: null,
+            },
+            os: null,
+            version: "1.0.0",
+            idle: true,
+          },
+        ],
       });
+    if (url.pathname === "/api/runners/policy")
+      return Response.json({ personalOrganizationHost: false });
+    if (url.pathname === "/api/runners/usage") return Response.json({ usage: [] });
+    if (url.pathname === "/api/runners/runner-a/policy")
+      return Response.json({ ownerUserId: "person", sharing: 0, agents: [] });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
-        accounts: ["claude", "codex"].map((agent) => ({
+        accounts: ["claude", "codex", "grok"].map((agent) => ({
           agent,
           connected: sessions[agent]?.state === "connected",
           updatedAt: null,
@@ -81,7 +113,12 @@ const server = Bun.serve({
         authorization:
           agent === "codex"
             ? { url: "https://auth.openai.com/codex/device", message: "Enter code TEST-1234" }
-            : null,
+            : agent === "grok"
+              ? {
+                  url: "https://auth.x.ai/device",
+                  message: "Enter code GROK-1234. Only continue with a code you requested.",
+                }
+              : null,
       };
     else if (req.method === "DELETE") sessions[agent] = { ...sessions[agent], state: "cancelled" };
     else if (match[3])
@@ -145,6 +182,49 @@ try {
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
   await page.screenshot({ path: `${output}/cancelled.png`, fullPage: true });
+  await page.goto(`http://127.0.0.1:${server.port}/status/#/runners`);
+  await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
+  await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
+  await page.getByText("Enter code GROK-1234. Only continue with a code you requested.").waitFor();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => {
+      (
+        globalThis as unknown as { document: { documentElement: { className: string } } }
+      ).document.documentElement.className = value;
+    }, theme);
+    for (const [name, width, height] of [
+      ["desktop", 1440, 1000],
+      ["mobile", 390, 844],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await page.screenshot({ path: `${output}/grok-${theme}-${name}.png`, fullPage: true });
+      if (
+        await page.evaluate(() => {
+          const window = globalThis as unknown as {
+            document: { documentElement: { scrollWidth: number } };
+            innerWidth: number;
+          };
+          return window.document.documentElement.scrollWidth > window.innerWidth;
+        })
+      )
+        throw new Error(`Grok ${theme} ${name} overflow`);
+    }
+  }
+  await page.waitForTimeout(10500);
+  await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
+  if (calls.some((call) => call.path.includes("/grok/") && call.path.endsWith("/input")))
+    throw new Error("Grok must poll without manual confirmation");
+  sessions.grok = { ...sessions.grok, state: "connected", authorization: null };
+  await page
+    .locator('[data-agent="grok"] [data-agent-status]')
+    .filter({ hasText: "Connected to your account" })
+    .waitFor();
+  await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+  await page
+    .locator('[data-agent="grok"] [data-agent-status]')
+    .filter({ hasText: "Sign-in cancelled" })
+    .waitFor();
   if (errors.length) throw new Error(errors.join("\n"));
   if (
     !calls.some((c) => c.body?.accept === true) ||
