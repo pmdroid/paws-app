@@ -6,7 +6,7 @@ import {
   type WorkBrief,
   type WorkItemState,
 } from "../core";
-import { saveTaskBlocks } from "../db";
+import { applyWorkItemEvent, saveTaskBlocks } from "../db";
 import type { DependencyEdge } from "../linear";
 import type { OrderNode } from "./order";
 import { ulid } from "./ulid";
@@ -239,4 +239,32 @@ function delegationFromApproval(row: ApprovalRow): StoredDelegation {
     state: "done",
     version: 0,
   };
+}
+
+export function retireEmptyFailedAttempt(db: Database, issueId: string, sessionId: string): void {
+  const items = db
+    .query<{ id: string }, [string, string]>(
+      `SELECT item.id FROM work_item item
+       JOIN linear_session previous ON previous.session_id = item.session_key
+       JOIN linear_session incoming ON incoming.session_id = ?
+         AND incoming.organization_id = previous.organization_id
+         AND incoming.oauth_client_id = previous.oauth_client_id
+         AND incoming.app_user_id = previous.app_user_id
+         AND incoming.team_id = previous.team_id
+       WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
+         AND item.state = 'failed' AND item.cancel_requested = 1
+         AND item.current_run_id IS NULL AND item.checkpoint IS NULL
+         AND item.project_approval_id IS NULL
+         AND json_type(item.brief, '$.epic') = 'null'
+         AND NOT EXISTS (SELECT 1 FROM work_item sibling
+           WHERE sibling.delegation_id = item.delegation_id AND sibling.id != item.id)
+         AND NOT EXISTS (SELECT 1 FROM run WHERE item_id = item.id)
+         AND NOT EXISTS (SELECT 1 FROM job
+           WHERE json_extract(payload, '$.itemId') = item.id AND status IN ('pending', 'running'))
+         AND NOT EXISTS (SELECT 1 FROM linear_conversation WHERE item_id = item.id AND blocked = 1)
+         AND NOT EXISTS (SELECT 1 FROM linear_session_cleanup_block
+           WHERE session_id = item.session_key)`,
+    )
+    .all(sessionId, issueId);
+  for (const item of items) applyWorkItemEvent(db, item.id, "cancel");
 }
