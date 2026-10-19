@@ -13,7 +13,7 @@ test("the supervisor reports a dead worker and relaunches it in resume mode", as
   try {
     const supervisor = createDirectWorkerSupervisor({
       stateRoot: join(root, "workers"),
-      launch(_executionId, _home, resume) {
+      launch(_executionId, _home, _log, resume) {
         launches.push(resume === true);
         const child = spawn("sleep", ["30"], { stdio: "ignore" });
         children.push(child);

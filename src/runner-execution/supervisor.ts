@@ -25,9 +25,7 @@ function startTime(pid: number): string | undefined {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const command = stat.lastIndexOf(")");
     if (command < 0) return;
-    const fields = stat.slice(command + 2).split(" ");
-    if (fields[0] === "Z" || fields[0] === "X") return;
-    return fields[19];
+    return stat.slice(command + 2).split(" ")[19];
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
@@ -103,12 +101,16 @@ function killRecorded(pid: number): void {
   }
 }
 
-function workerLaunch(executionId: string, home: string, log: number) {
+function workerLaunch(executionId: string, home: string, log: number, resume?: boolean) {
   const script = process.argv[1];
-  const args =
-    script && /\.(ts|js|mjs|cjs)$/.test(script)
-      ? [script, "runner", "worker", "--execution-id", executionId]
-      : ["runner", "worker", "--execution-id", executionId];
+  const worker = [
+    "runner",
+    "worker",
+    "--execution-id",
+    executionId,
+    ...(resume ? ["--resume"] : []),
+  ];
+  const args = script && /\.(ts|js|mjs|cjs)$/.test(script) ? [script, ...worker] : worker;
   const env: NodeJS.ProcessEnv = {
     HOME: home,
     PATH: "/opt/paws-runner/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -136,6 +138,7 @@ export function createDirectWorkerSupervisor(options: {
     executionId: string,
     home: string,
     log: number,
+    resume?: boolean,
   ) => {
     pid?: number;
     unref(): void;
@@ -173,76 +176,39 @@ export function createDirectWorkerSupervisor(options: {
     ExecutionIdSchema.parse(executionId);
     return join(options.stateRoot, `${executionId}.pid`);
   }
+  function recorded(executionId: string): { pid: number; born: string } | undefined {
+    let text: string;
+    try {
+      text = readFileSync(receipt(executionId), "utf8").trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const [pidText, born] = text.split(" ");
+    const pid = Number(pidText);
+    if (!born || !Number.isSafeInteger(pid) || pid <= 1) return;
+    return { pid, born };
+  }
   function logPath(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
     return join(options.stateRoot, `${executionId}.log`);
   }
+  function alive(executionId: string): boolean {
+    const worker = recorded(executionId);
+    return worker !== undefined && startTime(worker.pid) === worker.born;
+  }
   return {
-    async start(executionId) {
-      const path = receipt(executionId);
-      const home = homeFor(executionId);
-      let fd: number;
+    alive,
+    async resume(executionId) {
+      if (alive(executionId)) throw new Error("Runner worker is still running");
       try {
-        fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+        unlinkSync(receipt(executionId));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
-        throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      let child: ReturnType<typeof launch> | undefined;
-      const log = openSync(
-        logPath(executionId),
-        constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
-        0o600,
-      );
-      try {
-        child = launch(executionId, home, log);
-        child.on?.("exit", (code, signal) => {
-          try {
-            const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);
-            try {
-              writeSync(
-                exit,
-                `Runner worker exited with ${signal ? `signal ${signal}` : `code ${code}`}\n`,
-              );
-            } finally {
-              closeSync(exit);
-            }
-          } catch {}
-        });
-        if (child.pid === undefined) throw new Error("Runner worker did not start");
-        const born = startTime(child.pid);
-        if (born === undefined) throw new Error("Runner worker did not start");
-        writeSync(fd, `${child.pid} ${born}\n`);
-        fsyncSync(fd);
-        syncDirectory(options.stateRoot);
-        child.unref();
-        return { alreadyAdmitted: false };
-      } catch (error) {
-        try {
-          unlinkSync(path);
-        } catch (unlinkError) {
-          if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
-        }
-        syncDirectory(options.stateRoot);
-        if (child?.pid !== undefined) killRecorded(child.pid);
-        throw error;
-      } finally {
-        closeSync(fd);
-        closeSync(log);
-      }
+      await admit(executionId, true);
     },
-    alive(executionId) {
-      let recorded: string;
-      try {
-        recorded = readFileSync(receipt(executionId), "utf8").trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-        throw error;
-      }
-      const [pidText, born] = recorded.split(" ");
-      const pid = Number(pidText);
-      return Number.isSafeInteger(pid) && pid > 1 && !!born && startTime(pid) === born;
-    },
+    start: (executionId) => admit(executionId, false),
     log(executionId) {
       try {
         const text = readFileSync(logPath(executionId), "utf8").slice(-4000);
@@ -252,16 +218,9 @@ export function createDirectWorkerSupervisor(options: {
       }
     },
     async stop(executionId) {
-      let recorded: string;
-      try {
-        recorded = readFileSync(receipt(executionId), "utf8").trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-        throw error;
-      }
-      const [pidText, born] = recorded.split(" ");
-      const pid = Number(pidText);
-      if (!born || !Number.isSafeInteger(pid) || pid <= 1 || startTime(pid) !== born) return;
+      const worker = recorded(executionId);
+      if (!worker || startTime(worker.pid) !== worker.born) return;
+      const { pid, born } = worker;
       killRecorded(pid);
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
@@ -271,4 +230,57 @@ export function createDirectWorkerSupervisor(options: {
       throw new Error("Runner worker did not exit");
     },
   };
+  async function admit(executionId: string, resume: boolean) {
+    const path = receipt(executionId);
+    const home = homeFor(executionId);
+    let fd: number;
+    try {
+      fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
+      throw error;
+    }
+    let child: ReturnType<typeof launch> | undefined;
+    const log = openSync(
+      logPath(executionId),
+      constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      child = launch(executionId, home, log, resume);
+      child.on?.("exit", (code, signal) => {
+        try {
+          const exit = openSync(logPath(executionId), constants.O_WRONLY | constants.O_APPEND);
+          try {
+            writeSync(
+              exit,
+              `Runner worker exited with ${signal ? `signal ${signal}` : `code ${code}`}\n`,
+            );
+          } finally {
+            closeSync(exit);
+          }
+        } catch {}
+      });
+      if (child.pid === undefined) throw new Error("Runner worker did not start");
+      const born = startTime(child.pid);
+      if (born === undefined) throw new Error("Runner worker did not start");
+      writeSync(fd, `${child.pid} ${born}\n`);
+      fsyncSync(fd);
+      syncDirectory(options.stateRoot);
+      child.unref();
+      return { alreadyAdmitted: false };
+    } catch (error) {
+      try {
+        unlinkSync(path);
+      } catch (unlinkError) {
+        if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
+      }
+      syncDirectory(options.stateRoot);
+      if (child?.pid !== undefined) killRecorded(child.pid);
+      throw error;
+    } finally {
+      closeSync(fd);
+      closeSync(log);
+    }
+  }
 }

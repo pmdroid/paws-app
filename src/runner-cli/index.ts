@@ -95,7 +95,10 @@ export async function runRunnerCli(
     const ids = accounts();
     abort.signal.throwIfAborted();
     if (operation === "worker") {
-      if (args.length !== 2 || args[0] !== "--execution-id")
+      if (
+        args[0] !== "--execution-id" ||
+        !(args.length === 2 || (args.length === 3 && args[2] === "--resume"))
+      )
         throw new Error("Invalid worker command");
       const executionId = ExecutionIdSchema.parse(args[1]);
       if (process.getuid?.() !== ids.agentUid) throw new Error("Worker identity is invalid");
@@ -114,6 +117,7 @@ export async function runRunnerCli(
         workRoot: "/var/lib/paws-agent/work",
         home: process.env.HOME ?? "/var/lib/paws-agent",
         signal: abort.signal,
+        resume: args[2] === "--resume",
       });
       abort.signal.throwIfAborted();
       return 0;

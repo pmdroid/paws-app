@@ -96,10 +96,10 @@ test("a worker that dies without a result is resumed at most twice", async () =>
         return { ok: true };
       },
       async uploadTranscript() {
-        return { ok: true };
+        throw new Error("unused");
       },
       async finishTranscript() {
-        return { ok: true };
+        throw new Error("unused");
       },
     },
   });
