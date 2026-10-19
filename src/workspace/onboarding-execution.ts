@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   getLinearSession,
+  getRun,
   getTaskMode,
   getTaskModeGeneration,
   getWorkItem,
@@ -42,6 +43,7 @@ export function createOnboardingExecution(options: {
     const binding = readOnboardingItemBinding(db, itemId);
     if (!binding) throw new Error("Onboarding binding is unavailable.");
     const item = getWorkItem(db, itemId);
+    const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
     const session = getLinearSession(db, binding.sessionId);
     const member = workspaceMember(db, binding.workspaceId, binding.userId);
     const owner = db
@@ -54,6 +56,9 @@ export function createOnboardingExecution(options: {
       !options.agents ||
       !item ||
       !item.currentRunId ||
+      !run ||
+      run.itemId !== itemId ||
+      !["active", "provisioning"].includes(run.status) ||
       item.cancelRequested ||
       ["cancelled", "completed", "merged"].includes(item.state) ||
       item.sessionKey !== binding.sessionId ||
@@ -114,6 +119,7 @@ export function createOnboardingExecution(options: {
       fingerprint: JSON.stringify({
         binding,
         item: { version: item.version, run: item.currentRunId, state: item.state },
+        run: { id: run.id, status: run.status },
         scope: {
           sessionId: scope.sessionId,
           generation: scope.generation,
