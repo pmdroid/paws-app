@@ -16,12 +16,6 @@ import type {
   TrackerRequestOptions,
 } from "../linear";
 
-export class MissingCommitAttributionError extends Error {
-  constructor(readonly missing: "projectLead" | "taskSteerer" | "verifiedConsent") {
-    super(`Commit attribution requires ${missing}.`);
-  }
-}
-
 export function createCommitPolicyForItem<Bot>(options: {
   db: Database;
   bot: Bot;
@@ -41,7 +35,7 @@ export function createCommitPolicyForItem<Bot>(options: {
   ): Promise<{
     bot: Bot;
     projectLead: VerifiedGitHubAttribution | null;
-    taskSteerer: VerifiedGitHubAttribution;
+    taskSteerer: VerifiedGitHubAttribution | null;
   }> => {
     const scope = attributionItemScope(options.db, item.id);
     const canonical = getWorkItem(options.db, item.id);
@@ -62,13 +56,16 @@ export function createCommitPolicyForItem<Bot>(options: {
     )
       throw new Error("Linear returned another attribution workspace.");
     const leadId = context.projectId === null ? null : context.leadId;
-    if (context.projectId !== null && leadId === null)
-      throw new MissingCommitAttributionError("projectLead");
     const actorId = delegatedLinearUserId(options.db, item.id);
-    if (!actorId) throw new MissingCommitAttributionError("taskSteerer");
+    if (!actorId) throw new Error("The delegated Linear task actor is required.");
     const members = new Map<string, string>();
     for (const linearId of new Set(leadId === null ? [actorId] : [leadId, actorId])) {
       const member = workspaceLinearMember(options.db, scope.workspaceId, linearId);
+      if (
+        linearId !== actorId &&
+        (!member || !githubAttribution(options.db, scope.workspaceId, member.userId))
+      )
+        continue;
       if (!member?.active || member.role === "observer")
         throw new Error("Active permitted workspace members are required for attribution.");
       const observedAt = now();
@@ -111,13 +108,12 @@ export function createCommitPolicyForItem<Bot>(options: {
       )
         throw new Error("Workspace task access is required for attribution.");
       const identity = githubAttribution(options.db, scope.workspaceId, userId);
-      if (!identity) throw new MissingCommitAttributionError("verifiedConsent");
-      identities.set(linearId, identity);
+      if (identity) identities.set(linearId, identity);
     }
     return {
       bot: options.bot,
-      projectLead: leadId === null ? null : identities.get(leadId)!,
-      taskSteerer: identities.get(actorId)!,
+      projectLead: leadId === null ? null : (identities.get(leadId) ?? null),
+      taskSteerer: identities.get(actorId) ?? null,
     };
   };
 }

@@ -100,7 +100,7 @@ for (const state of [
       expect(getRun(paws.db, run.id)?.status).toBe("lost");
       expect(
         listOutbox(paws.db).some((row) =>
-          JSON.stringify(row.payload).includes("verified GitHub attribution"),
+          JSON.stringify(row.payload).includes("valid GitHub App commit policy"),
         ),
       ).toBe(true);
       expect(

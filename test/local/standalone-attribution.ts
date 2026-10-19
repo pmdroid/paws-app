@@ -13,7 +13,6 @@ import {
   getWorkItem,
   insertQueuedItem,
   listJobs,
-  listOutbox,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -26,11 +25,7 @@ import {
 import { createLinearAttributionReads, createLinearClient } from "../../src/linear";
 import { FakeHostGitHubAuth, GitHubAuthQuestions } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
-import {
-  createCommitPolicyForItem,
-  issueWorkspaceSession,
-  MissingCommitAttributionError,
-} from "../../src/workspace";
+import { createCommitPolicyForItem, issueWorkspaceSession } from "../../src/workspace";
 
 export async function probeStandaloneAttribution(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -142,6 +137,7 @@ export async function probeStandaloneAttribution(root: string) {
       },
     },
   });
+  let legacyConsentHold = true;
   const auth = new GitHubAuthQuestions(
     db,
     Object.assign(new FakeHostGitHubAuth(), {
@@ -151,52 +147,47 @@ export async function probeStandaloneAttribution(root: string) {
         administrators: () => [],
         recoveryUrl: "https://paws.example/status/#/settings/account",
         attributionReady: async (current: typeof item) => {
-          try {
-            await policyForItem(current);
-            return true;
-          } catch (error) {
-            if (error instanceof MissingCommitAttributionError) return false;
-            throw error;
-          }
+          if (legacyConsentHold) return false;
+          await policyForItem(current);
+          return true;
         },
       },
     }),
     () => now,
   );
   try {
-    consent();
     const policy = await policyForItem(getWorkItem(db, item.id)!);
     assert.equal(policy.projectLead, null);
     assert.deepEqual(memberships, ["steerer"]);
-    assert.equal(policyCoauthors(policy).length, 1);
-    assert.equal(
-      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
-      true,
-    );
-    observations.push(
-      "standalone issue passes the production App gate with only its consenting task steerer",
-    );
-    project = { id: "project", lead: null };
-    await assert.rejects(policyForItem(getWorkItem(db, item.id)!), /projectLead/);
-    project = null;
-    revokeGitHubAttribution(db, binding, now);
+    assert.equal(policyCoauthors(policy).length, 0);
     assert.equal(
       await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
       false,
     );
     assert.equal(getWorkItem(db, item.id)!.state, "awaiting_input");
-    assert(
-      listOutbox(db).some((entry) =>
-        JSON.stringify(entry.payload).includes("If this issue belongs"),
-      ),
-    );
-    consent();
+    legacyConsentHold = false;
     await auth.recover();
     await auth.recover();
     assert.equal(getWorkItem(db, item.id)!.state, "running");
-    assert.equal(listJobs(db).length, 1);
+    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 1);
     observations.push(
-      "project lead remains required for project issues and standalone consent recovery resumes once",
+      "legacy consent hold resumes once through the production App gate without personal GitHub consent",
+    );
+    project = { id: "project", lead: null };
+    assert.equal((await policyForItem(getWorkItem(db, item.id)!)).projectLead, null);
+    project = null;
+    consent();
+    assert.equal(policyCoauthors(await policyForItem(getWorkItem(db, item.id)!)).length, 1);
+    revokeGitHubAttribution(db, binding, now);
+    assert.equal(
+      await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
+      true,
+    );
+    await auth.recover();
+    assert.equal(getWorkItem(db, item.id)!.state, "running");
+    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 1);
+    observations.push(
+      "project leads are optional and revoking personal credit does not create an authorization hold",
     );
     saveRunCommitPolicy(db, run.id, policy);
     const reopened = openDatabase(dbPath);
@@ -301,13 +292,10 @@ export async function probeStandaloneAttribution(root: string) {
     const head = (await git(["-C", tree, "rev-parse", "HEAD"], { env })).trim();
     await validateCandidateAttribution(tree, base, head, policy, env);
     const message = await git(["-C", tree, "show", "-s", "--format=%B", head], { env });
-    assert.equal(message.match(/Co-authored-by:/g)?.length, 1);
-    assert.equal(
-      policyPullRequestCredit(policy),
-      "Task steerer: [@steerer](https://github.com/steerer)",
-    );
+    assert.equal(message.match(/Co-authored-by:/g)?.length ?? 0, 0);
+    assert.equal(policyPullRequestCredit(policy), "");
     observations.push(
-      "actual ACP commit validates bot attribution with one human trailer and no fabricated project-lead PR credit",
+      "actual ACP commit validates App bot attribution without unconsented human commit or PR credit",
     );
     writeFileSync(
       join(root, "observations.json"),
