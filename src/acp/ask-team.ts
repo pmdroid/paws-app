@@ -15,7 +15,14 @@ import {
   type PublishArtifactHook,
   type PublishArtifactRequest,
 } from "./artifacts";
-import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
+export { decodePolicyFiles, encodePolicyFiles } from "../closeout-spec";
+export type { PolicyFilesLoad } from "../closeout-spec";
+import {
+  createCloseoutSession,
+  workspacePolicyFiles,
+  type CloseoutSession,
+  type PolicyFilesLoad,
+} from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
 import { git } from "./git";
 import { decidePermission, type GuardContext } from "./permissions";
@@ -140,6 +147,7 @@ interface HostToolBridgeOptions {
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
   closeout?: CloseoutSession;
+  closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   signal: AbortSignal;
@@ -166,6 +174,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
   const worktreePath = options.context.worktreePath;
   const closeout = worktreePath
     ? createCloseoutSession(worktreePath, {
+        policy: options.closeoutPolicy ?? (async () => workspacePolicyFiles(worktreePath)),
         signal: options.signal,
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);

@@ -79,8 +79,12 @@ export {
   retryBaseline,
   reviewRequirements,
   run,
+  trustedPolicyFiles,
   validate,
+  workspacePolicyFiles,
 } from "./facade";
+export { decodePolicyFiles, encodePolicyFiles } from "./policy/transfer";
+export type { PolicyFilesLoad } from "./policy/load";
 export type {
   AddReviewInput,
   AddReviewResult,
