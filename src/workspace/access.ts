@@ -1,5 +1,6 @@
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
+import { createMemberGitHubOAuth } from "./member-github-oauth";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import {
@@ -40,6 +41,7 @@ export type WorkspaceAccessOptions = {
   now?: () => number;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  memberGitHub?: { secretsDir: string; client?: { clientId: string; clientSecret: string } };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 };
@@ -130,6 +132,36 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     fetch: options.fetch,
     now,
   });
+  const memberGitHub = options.memberGitHub
+    ? createMemberGitHubOAuth({
+        db: options.db,
+        origin,
+        secretsDir: options.memberGitHub.secretsDir,
+        client: options.memberGitHub.client,
+        onboarding: (sessionId, generation, binding) => {
+          const access = workspaceMember(options.db, binding.workspaceId, binding.userId);
+          const session = options.db
+            .query<{ authenticatedAt: number }, [string]>(
+              "SELECT authenticated_at AS authenticatedAt FROM workspace_session WHERE token_hash=?",
+            )
+            .get(binding.sessionHash);
+          return (
+            access !== null &&
+            session !== null &&
+            options.assignments?.onboarding(sessionId, generation, {
+              workspaceId: binding.workspaceId,
+              userId: binding.userId,
+              role: access.role,
+              teamIds: access.teamIds,
+              authenticatedAt: session.authenticatedAt,
+            }) != null
+          );
+        },
+        refresh: (workspaceKey, userId) => refresh(workspaceKey, userId, true, true),
+        fetch: options.fetch,
+        now,
+      })
+    : undefined;
   async function refreshMemberships() {
     const workspace = workspaceForOrganization(options.db, options.installedOrganization.id);
     if (workspace === null) return;
@@ -147,6 +179,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   async function handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const memberGitHubResponse = await memberGitHub?.handle(request);
+    if (memberGitHubResponse) return memberGitHubResponse;
     const identityResponse = await attribution.handle(request);
     if (identityResponse) return identityResponse;
     const onboardingPage =

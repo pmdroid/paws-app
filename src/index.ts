@@ -445,16 +445,18 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           continue: followUp,
         });
       }
+      const githubClient = (() => {
+        try {
+          const { clientId, clientSecret } = appActivation.template();
+          return { clientId, clientSecret };
+        } catch {
+          return undefined;
+        }
+      })();
       workspace = startWorkspaceAccess({
         assignments,
-        githubAttributionClient: (() => {
-          try {
-            const { clientId, clientSecret } = appActivation.template();
-            return { clientId, clientSecret };
-          } catch {
-            return undefined;
-          }
-        })(),
+        githubAttributionClient: githubClient,
+        memberGitHub: { secretsDir: paths.secretsDir, client: githubClient },
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
         db,
         publicUrl: runtime.publicUrl!,
