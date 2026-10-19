@@ -6,6 +6,7 @@ import {
   filterEvidence,
   kindLabel,
   mediaSummary,
+  sizeLabel,
   runEvidence,
   thumbnailMedia,
   type EvidenceFilter,
@@ -118,10 +119,10 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
       .map(
         (entry) =>
           `<li class="flex min-w-0 flex-col gap-2 rounded-base border-2 border-border bg-secondary-background p-2 shadow-shadow" data-evidence-tile="${esc(entry.id)}" data-evidence-kind="${entry.kind}">
-            <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border-2 border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-full border-2 border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
+            <button type="button" class="evidence-thumb relative block aspect-video w-full overflow-hidden rounded-base border-2 border-border bg-background focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring" data-evidence-open="${esc(entry.id)}" aria-label="${esc(`Open ${kindLabel(entry.kind).toLowerCase()} ${entry.displayName}`)}">${thumbnailMedia(entry, engineUrl)}${entry.kind === "video" ? '<span class="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-base border-2 border-border bg-main text-main-foreground" aria-hidden="true">▶</span>' : ""}</button>
             <div class="flex min-w-0 items-start justify-between gap-2">
               <div class="flex min-w-0 flex-col text-sm">
-                <span class="truncate font-semibold" title="${esc(entry.displayName)}">${esc(entry.displayName)}</span>
+                <span class="font-semibold leading-snug" title="${esc(entry.displayName)}">${esc(entry.displayName)}</span>
                 <span data-evidence-measure="${esc(entry.id)}" data-evidence-kind="${entry.kind}">${esc(mediaSummary(entry.kind, info.get(entry.id)))}</span>
                 <span class="truncate font-mono text-xs">${esc(entry.checkId)} · attempt ${entry.attempt}</span>
               </div>
@@ -130,7 +131,7 @@ export function createEvidenceMedia(changed: () => void): EvidenceMedia {
           </li>`,
       )
       .join("");
-    root.innerHTML = `<div class="flex min-w-0 flex-wrap items-center justify-between gap-3"><h3>Evidence</h3><div class="flex flex-wrap gap-2" role="group" aria-label="Filter evidence">${filters}</div></div><ul class="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2 2xl:grid-cols-3">${tiles}</ul>`;
+    root.innerHTML = `<div class="flex min-w-0 flex-wrap items-center justify-between gap-3"><h2 class="text-xl font-bold">Evidence</h2><div class="flex flex-wrap gap-2" role="group" aria-label="Filter evidence">${filters}</div></div><p class="text-sm">Videos and screenshots the agent published with Closeout. Visible to signed-in members with repository access.</p><ul class="m-0 grid list-none grid-cols-1 gap-4 p-0 sm:grid-cols-2 xl:grid-cols-4">${tiles}</ul>`;
     root.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const filter = target
@@ -251,6 +252,7 @@ function createLightbox(info: ReadonlyMap<string, MediaInfo>): Lightbox {
         </div>
       </div>
       <div data-lightbox-stage></div>
+      <div class="flex flex-col gap-3 border-t-2 border-border pt-3"><p class="text-sm">${esc(evidence.checkId)} · attempt ${evidence.attempt} · ${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))} · ${esc(mediaSummary(evidence.kind, info.get(evidence.id)))} · published by ${esc(evidence.publisher)}</p><div class="flex flex-wrap gap-2"><input aria-label="Evidence link" class="min-w-0 flex-1 rounded-base border-2 border-border bg-secondary-background px-3 font-mono text-xs" readonly value="${esc(new URL(evidencePageHref(evidence.id), location.href).href)}"><button type="button" class="${PRESSED}" data-lightbox-copy>Copy link</button><a class="${BUTTON}" href="${esc(evidenceFileUrl(evidence.id, engine))}" download="${esc(evidence.displayName)}">Download</a></div></div>
       <div class="flex justify-between gap-2">
         <button type="button" class="${BUTTON}" data-lightbox-step="-1"${index === 0 ? " disabled" : ""}>← Previous</button>
         <button type="button" class="${BUTTON}" data-lightbox-step="1"${index === list.length - 1 ? " disabled" : ""}>Next →</button>
@@ -281,6 +283,14 @@ function createLightbox(info: ReadonlyMap<string, MediaInfo>): Lightbox {
     if (event.target === dialog) return close();
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("[data-lightbox-close], [data-lightbox-page]")) return close();
+    const copy = target?.closest<HTMLButtonElement>("[data-lightbox-copy]");
+    if (copy && list[index])
+      void navigator.clipboard
+        ?.writeText(new URL(evidencePageHref(list[index]!.id), location.href).href)
+        .then(
+          () => flash(copy, "Copied"),
+          () => flash(copy, "Copy failed"),
+        );
     const delta = Number(
       target?.closest("[data-lightbox-step]")?.getAttribute("data-lightbox-step"),
     );

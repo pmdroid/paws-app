@@ -120,6 +120,7 @@ export {
   expireRunnerPairings,
   findRunnerPairing,
   getRunner,
+  runRunnerName,
   listRunners,
   listRunnerOverview,
   recordRunnerHostStatus,
