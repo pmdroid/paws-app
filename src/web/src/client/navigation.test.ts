@@ -15,8 +15,10 @@ const model = {
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
-  expect(new Set(views).size).toBe(Object.keys(PAGES).length - 1);
-  expect(views.length).toBe(Object.keys(PAGES).length - 1);
+  // Settings has its own menu, and an evidence page is opened from a run or a copied link.
+  const linked = Object.keys(PAGES).filter((view) => !["settings", "evidence"].includes(view));
+  expect(new Set(views).size).toBe(linked.length);
+  expect(views.length).toBe(linked.length);
   for (const view of views) {
     const route = { view, id: null } as Route;
     expect(parseRoute(routeHref(route)).view).toBe(view);
@@ -90,5 +92,5 @@ test("path routes keep the engine base and only claim dashboard pages", () => {
 
 test("only work pages read the status snapshot", () => {
   const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
-  expect(pages).toEqual(["overview", "issues", "runs", "questions"]);
+  expect(pages).toEqual(["overview", "issues", "runs", "evidence", "questions"]);
 });

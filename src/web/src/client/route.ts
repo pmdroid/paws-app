@@ -7,6 +7,7 @@ export type Route =
   | { view: "projects" }
   | { view: "issues"; id: string | null }
   | { view: "runs"; id: string | null }
+  | { view: "evidence"; id: string | null }
   | { view: "sessions"; id: string | null }
   | { view: "questions"; id: string | null }
   | { view: "settings"; page?: SettingsPage };
@@ -44,6 +45,8 @@ export function matchRoute(path: string, snapshot?: StatusSnapshot | null): Rout
       return { view: "issues", id: null };
     case "runs":
       return { view: "runs", id };
+    case "evidence":
+      return { view: "evidence", id };
     case "sessions":
       return { view: "sessions", id };
     case "questions":
@@ -72,7 +75,7 @@ export function routeHref(route: Route): string {
 }
 
 export function needsSnapshot(route: Route): boolean {
-  return ["overview", "issues", "runs", "questions"].includes(route.view);
+  return ["overview", "issues", "runs", "questions", "evidence"].includes(route.view);
 }
 
 function runForVerdict(
