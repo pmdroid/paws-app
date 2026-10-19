@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 const SRC = new URL("../src/", import.meta.url).pathname;
 
 const MODULES = [
+  "onboarding",
   "runner-accounts",
   "runner-login",
   "runner-login-worker",
@@ -35,7 +36,6 @@ const MODULES = [
   "comments",
   "install",
   "deployment",
-  "setup",
   "auth",
   "runner-protocol",
   "runner-execution",
@@ -71,6 +71,7 @@ type ModuleName = (typeof MODULES)[number];
 /** Who may import whose public index. Enforced so parallel issues stay in their directory. */
 const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   root: MODULES,
+  onboarding: ["config", "credentials", "db", "linear", "workspace", "web"],
   "worktree-checkout": [],
   config: ["core", "credentials", "worktree-checkout"],
   credentials: ["db"],
@@ -133,19 +134,6 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   install: ["acp", "config"],
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
-  setup: [
-    "closeout-spec",
-    "db",
-    "credentials",
-    "config",
-    "core",
-    "linear",
-    "comments",
-    "github",
-    "acp",
-    "install",
-    "auth",
-  ],
   auth: ["config", "github", "credentials", "core"],
   workspace: ["db", "linear", "slack", "decisions"],
   "runner-identity": ["credentials"],

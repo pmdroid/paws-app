@@ -34,7 +34,10 @@ export async function handleSessionStartRequest(
   if (received.length !== expected.length || !timingSafeEqual(received, expected))
     return json({ error: "Reload the local dashboard and try again." }, 403);
   if (options.startLinearSession === undefined)
-    return json({ error: "Connect Linear agent sessions in Paws setup, then try again." }, 503);
+    return json(
+      { error: "Connect your Linear workspace through the Paws website, then try again." },
+      503,
+    );
   let target: LinearSessionTarget;
   try {
     if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")

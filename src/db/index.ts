@@ -322,3 +322,5 @@ export {
   attributionItemScope,
 } from "./github-attribution";
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
+
+export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
