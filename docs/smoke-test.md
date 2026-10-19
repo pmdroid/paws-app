@@ -4,16 +4,13 @@ Run Paws against a Linear epic with three sub-issues, GitHub pull requests in bl
 
 ```sh
 bun install
-bun run paws setup --checkout /path/to/paws-demo --repo owner/paws-demo
-bun run paws doctor
-bun run paws
+bun run build:status
+bun run paws --no-tunnel
 ```
 
-Setup connects Linear and your GitHub repository. See [GitHub sign-in](github-login.md) for OAuth, App, and gh authentication. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`, before running doctor. Every required doctor check must be `ok`; a `missing` line includes a fix. The process listens on `127.0.0.1:8787`, with the dashboard at `/status` and health at `/health`.
+Configure [HTTPS workspace access](workspace-access.md), then open the dashboard. Sign in as a Linear workspace admin and authorize Paws. Connect GitHub in Integrations, select the demo repository, and map it to the sandbox Linear team. Configure a [local Closeout policy](local-closeout.md), or commit `.agents/closeout.yaml` on the repository's `origin/main`. The configured HTTPS origin serves the dashboard at `/status` and health at `/health`.
 
-## Linear comments
-
-[Comment mode](linear-modes.md) is the default. Run `bun run paws setup` from this repository. Setup asks for a Linear personal API key and the team, writes `[tracker] kind = "linear"` and `[linear] mode = "comments"`, and keeps GitHub for pull requests. Comment mode uses no webhook URL and no public URL.
+## Linear work
 
 Reset the demo epic from a checkout of this repository:
 
@@ -30,7 +27,7 @@ The parent is **Export rows**. The three sub-issues merge in `blocks` order:
 2. **ENG-3** — add `exportWithHeader`. Stays queued until ENG-2 merges.
 3. **ENG-4** — calls `ask_team` with "Include archived rows?" and options `yes` and `no`.
 
-Label the parent `paws` (setup creates the label) or delegate it to the Linear user in `config.toml`.
+Delegate the parent issue to the Paws app.
 
 Watch the issue comments (each one starts with `Paws:`):
 
@@ -40,27 +37,8 @@ Watch the issue comments (each one starts with `Paws:`):
 4. ENG-4 parks on a question comment. Reply in that thread with `yes` or `no`, or with your own words. The run continues with that answer.
 5. ENG-4 merges.
 
-With gh authentication and the Claude implementer, doctor includes `git`, `bun`, `home`, `linear`, `linear-mode`, `linear-team`, `linear-label`, `gh-login`, `gh-push`, `claude-acp`, `codex-acp`, `claude`, `codex`, `closeout`, and `repository`. `linear-webhook`, `public-url`, `ngrok`, and `github-app` appear only when webhooks or GitHub App auth are turned on.
-
 ### Linear agent sessions
 
-Create a Linear OAuth application named Paws. Register `http://localhost:3000/oauth/callback` as its redirect URI. Enable webhooks, select **Agent session events**, and set the webhook URL to `https://YOUR-NGROK-DOMAIN/webhooks/linear`.
+Configure the Linear app callbacks described in [Workspace access](workspace-access.md). Enable **Agent session events** and set the webhook URL to the Paws HTTPS origin followed by `/webhooks/linear`. Set `LINEAR_WEBHOOKS=true` and the matching signing secret on the server.
 
-Run:
-
-```sh
-bun run paws setup --tracker linear --linear-mode agent-session
-```
-
-Enter the application's client ID and client secret. Open the authorization link printed by setup and approve the installation as a workspace admin. Setup listens on loopback port 3000, verifies the returned state, exchanges the code, and stores the access token, refresh token, and expiry under `~/.paws/secrets/`. The callback listener closes when authorization completes.
-
-Configure ngrok authentication, set `LINEAR_WEBHOOK_SECRET` to the application's webhook signing secret, and run these commands in the same shell:
-
-```sh
-export LINEAR_WEBHOOKS=true
-export PAWS_PUBLIC_URL=https://YOUR-NGROK-DOMAIN
-bun run paws doctor
-bun run paws
-```
-
-Paws starts the ngrok tunnel for that domain. Delegate the parent issue to Paws in Linear to start an agent session.
+Sign in on the website and authorize the app as a workspace admin. Delegate the sandbox issue and verify its first activity, questions, Closeout result and GitHub pull request.

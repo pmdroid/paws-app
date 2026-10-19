@@ -43,6 +43,14 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
   let response: Response;
   try {
     response = await fetch("/api/auth/session", { cache: "no-store" });
+    for (
+      let attempt = 0;
+      response.status === 503 && location.search.includes("connecting=1") && attempt < 40;
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      response = await fetch("/api/auth/session", { cache: "no-store" });
+    }
   } catch {
     if (root !== null) {
       root.hidden = false;
@@ -61,19 +69,47 @@ export async function initializeWorkspaceAccess(page: () => SettingsPage | null)
     return true;
   }
   if (response.status === 401) {
+    const state = (await response.json().catch(() => null)) as {
+      onboarding?: boolean;
+      configured?: boolean;
+      reconnect?: boolean;
+    } | null;
+    const onboarding = state?.onboarding === true;
+    const reconnect = state?.reconnect === true;
+    const configured = state?.configured !== false;
+    const reason = new URLSearchParams(location.search).get("onboarding");
+    const messages: Record<string, string> = {
+      "admin-required":
+        "A Linear workspace admin needs to authorize Paws. Sign in with an admin account to continue.",
+      "workspace-mismatch":
+        "Choose the same Linear workspace for sign-in and app authorization. Try again.",
+      "already-connected": "This server is already connected. Sign in to open your workspace.",
+      failed: "Linear authorization was not completed. Try again.",
+    };
+    const error = reason ? messages[reason] : undefined;
     document.body.classList.add("paws-login");
     setLoginLayout(true);
     const content = document.querySelector("#page-content");
     rememberSignInReturn();
     const evidence = /^(?:\/status)?\/evidence\/[^/]+\/?$/.test(location.pathname);
-    const heading = evidence ? "Sign in to view this evidence" : "Sign in to Paws";
-    const lead = evidence
-      ? "Use your Linear account to see this Closeout video or screenshot. Paws opens this link again after you sign in."
-      : "Use your Linear account to open your workspace.";
+    const heading = reconnect
+      ? "Reconnect Linear"
+      : onboarding
+        ? "Connect your workspace"
+        : evidence
+          ? "Sign in to view this evidence"
+          : "Sign in to Paws";
+    const lead = reconnect
+      ? "Linear access was revoked. Sign in as a workspace admin and authorize Paws again to reconnect."
+      : onboarding
+        ? "Sign in with Linear, authorize Paws for your workspace, then connect GitHub and a runner. A Linear workspace admin needs to complete this first step."
+        : evidence
+          ? "Use your Linear account to see this Closeout video or screenshot. Paws opens this link again after you sign in."
+          : "Use your Linear account to open your workspace.";
     if (content !== null)
       renderMarkup(
         content,
-        `<section class="login-panel"><h1>${heading}</h1><p class="muted">${lead}</p><a class="btn primary" href="/auth/linear">Sign in with Linear</a><details><summary>Set up your first workspace</summary><form action="/auth/linear" method="post"><label class="field"><span>Setup code from the Paws operator</span><input name="bootstrap" required autocomplete="off" pattern="[A-Za-z0-9_-]{43}" /></label><button class="btn" type="submit">Connect workspace</button></form></details></section>`,
+        `<section class="login-panel"><h1>${heading}</h1><p class="muted">${lead}</p>${error ? `<p role="alert">${escapeHtml(error)}</p>` : ""}${configured ? '<a class="btn primary" href="/auth/linear">Sign in with Linear</a>' : '<p role="status">The Paws server needs its Linear app credentials. Ask the server operator to configure them, then reload this page.</p>'}</section>`,
       );
     if (root !== null) root.hidden = true;
     return false;

@@ -1,42 +1,56 @@
 import { createHash } from "node:crypto";
-import { pawsPaths } from "./config";
+import { pawsPaths } from "../config";
 import {
   immediate,
   listLinearInstallationRevocations,
   migrate,
   openDatabase,
   restoreLinearInstallation,
-} from "./db";
+  type LinearInstallationRevocation,
+} from "../db";
 import {
   linearTokenPath,
   readStoredToken,
   writeStoredToken,
   type FetchLike,
   type StoredLinearToken,
-} from "./linear";
-import type { LinearReconnect } from "./setup";
+} from "../linear";
+export type LinearReconnectSnapshot = {
+  previous: string | null;
+  grantStartedAtMs: number;
+  revocations: LinearInstallationRevocation[];
+};
+type LinearReconnect = (home: string) => {
+  snapshot: LinearReconnectSnapshot;
+  complete(input: { clientId: string; token: StoredLinearToken }): Promise<boolean>;
+};
 
 export function createLinearReconnect(options?: {
   fetch?: FetchLike;
   now?: () => number;
+  snapshot?: LinearReconnectSnapshot;
 }): LinearReconnect {
   return (home) => {
     const paths = pawsPaths(home);
     const path = linearTokenPath(paths.secretsDir);
     const read = () => fingerprint(readStoredToken(path));
-    const previous = read();
-    const grantStartedAtMs = (options?.now ?? Date.now)();
     const db = openDatabase(paths.db);
-    let snapshots;
+    let snapshot;
     try {
       migrate(db);
-      snapshots = listLinearInstallationRevocations(db);
+      snapshot = options?.snapshot ?? {
+        previous: read(),
+        grantStartedAtMs: (options?.now ?? Date.now)(),
+        revocations: listLinearInstallationRevocations(db),
+      };
     } finally {
       db.close();
     }
+    const { previous, grantStartedAtMs, revocations } = snapshot;
     return {
+      snapshot,
       async complete(input) {
-        const candidates = snapshots.filter((row) => row.oauthClientId === input.clientId);
+        const candidates = revocations.filter((row) => row.oauthClientId === input.clientId);
         if (candidates.length === 0) return false;
         const next = fingerprint(input.token)!;
         if (next === previous) throw new Error("Reconnect Linear with a new authorization grant.");
@@ -66,9 +80,9 @@ export function createLinearReconnect(options?: {
           viewer.organization.id.trim() === ""
         )
           throw new Error("The new Linear app installation could not be verified.");
-        const snapshot = candidates.find((row) => row.organizationId === viewer.organization!.id);
-        if (snapshot === undefined) return false;
-        if (!snapshot.appUserIds.includes(viewer.id))
+        const revoked = candidates.find((row) => row.organizationId === viewer.organization!.id);
+        if (revoked === undefined) return false;
+        if (!revoked.appUserIds.includes(viewer.id))
           throw new Error(
             "The Linear app user must match a verified installation before reconnection.",
           );
@@ -80,10 +94,10 @@ export function createLinearReconnect(options?: {
               throw new Error("The stored Linear authorization changed during reconnection.");
             if (
               !restoreLinearInstallation(current, {
-                organizationId: snapshot.organizationId,
+                organizationId: revoked.organizationId,
                 oauthClientId: input.clientId,
                 appUserId: viewer.id as string,
-                generation: snapshot.generation,
+                generation: revoked.generation,
                 grantStartedAtMs,
                 credentialFingerprint: next,
               })

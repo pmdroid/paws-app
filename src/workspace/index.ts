@@ -28,3 +28,6 @@ export { createGitHubAttributionLink } from "./github-attribution";
 export { createCommitPolicyForItem, MissingCommitAttributionError } from "./commit-attribution";
 
 export { readWorkspaceJson } from "./administration";
+
+export { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
+export type { LinearBrowserIdentity } from "./oauth";

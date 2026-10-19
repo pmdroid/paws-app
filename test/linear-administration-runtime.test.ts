@@ -18,7 +18,7 @@ import {
   recordLinearInstallation,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
-import { createLinearReconnect } from "../src/linear-reconnect";
+import { createLinearReconnect } from "../src/onboarding";
 import {
   createFakeTracker,
   createInboxStore,

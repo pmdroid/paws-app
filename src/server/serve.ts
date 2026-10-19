@@ -29,6 +29,8 @@ import {
 } from "../workspace";
 
 export type ServerOptions = {
+  server?: Bun.Server<undefined>;
+  onboarding?: (request: Request) => Promise<Response | null>;
   tls?: PublicTls;
   workspaceAccess?: WorkspaceAccess | Promise<WorkspaceAccess>;
   runnerEnrollment?: (request: Request) => Promise<Response>;
@@ -88,41 +90,45 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     );
   const requests = new Set<Promise<Response>>();
   let stopping = false;
-  const server = Bun.serve({
+  const serveOptions = {
     hostname,
     port,
     ...(options.tls ? { tls: options.tls, development: false } : {}),
-    fetch(request) {
+    fetch(request: Request) {
       if (stopping) return new Response("Paws is stopping.", { status: 503 });
-      const operation = route(request, {
-        slackSigningSecret,
-        linearWebhookSecret,
-        githubWebhook,
-        githubWebhookSecret,
-        linearWebhook,
-        webhooks,
-        githubAuth,
-        csrfToken,
-        ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
-        ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
-        ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
-        ...(options.projects ? { projects: options.projects } : {}),
-        ...(options.executionControls ? { executionControls: options.executionControls } : {}),
-        ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
-        ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
-        ...(options.agentSettings
-          ? { agentSettings: { ...options.agentSettings, csrfToken } }
-          : {}),
-        ...(db ? { db } : {}),
-        ...(statusEnv ? { statusEnv } : {}),
-        ...(closeoutHome ? { closeoutHome } : {}),
-        ...(evidenceRoot ? { evidenceRoot } : {}),
-        ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
-      });
+      const operation = (async () =>
+        (await options.onboarding?.(request)) ??
+        route(request, {
+          slackSigningSecret,
+          linearWebhookSecret,
+          githubWebhook,
+          githubWebhookSecret,
+          linearWebhook,
+          webhooks,
+          githubAuth,
+          csrfToken,
+          ...(workspaceAccess === undefined ? {} : { workspaceAccess }),
+          ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
+          ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
+          ...(options.projects ? { projects: options.projects } : {}),
+          ...(options.executionControls ? { executionControls: options.executionControls } : {}),
+          ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
+          ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
+          ...(options.agentSettings
+            ? { agentSettings: { ...options.agentSettings, csrfToken } }
+            : {}),
+          ...(db ? { db } : {}),
+          ...(statusEnv ? { statusEnv } : {}),
+          ...(closeoutHome ? { closeoutHome } : {}),
+          ...(evidenceRoot ? { evidenceRoot } : {}),
+          ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
+        }))();
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
     },
-  });
+  };
+  const server = options.server ?? Bun.serve(serveOptions);
+  if (options.server) server.reload(serveOptions);
   const stop = server.stop.bind(server);
   server.stop = async (closeActiveConnections) => {
     stopping = true;
@@ -163,11 +169,16 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === "/api/runner-pairings" && secrets.runnerEnrollment !== undefined)
     return secrets.runnerEnrollment(request);
-  if (secrets.workspaceAccess === null && !path.startsWith("/webhooks"))
+  if (secrets.workspaceAccess === null && !path.startsWith("/webhooks")) {
+    if (path === "/" || path === "/status" || path.startsWith("/status/")) {
+      const page = await handleStatusRequest(request, {});
+      if (page !== null) return page;
+    }
     return Response.json(
       { error: "Paws workspace access is not ready. Check the Linear app installation." },
       { status: 503 },
     );
+  }
   const workspace = secrets.workspaceAccess ?? undefined;
   let csrfToken = secrets.csrfToken;
   let sessionIds: readonly string[] | undefined;

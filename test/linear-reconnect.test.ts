@@ -9,7 +9,7 @@ import {
   recordLinearInstallation,
   revokeLinearInstallation,
 } from "../src/db";
-import { createLinearReconnect } from "../src/linear-reconnect";
+import { createLinearReconnect } from "../src/onboarding";
 import {
   createLinearAuth,
   linearTokenPath,

@@ -11,6 +11,9 @@ export type LinearBrowserIdentity = {
   organizationName: string;
   name: string;
   email: string;
+  admin: boolean;
+  active: boolean;
+  guest: boolean;
 };
 
 export function beginWorkspaceOAuth(
@@ -116,7 +119,8 @@ export async function completeWorkspaceOAuth(
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      query: "query PawsBrowserIdentity { viewer { id name email app organization { id name } } }",
+      query:
+        "query PawsBrowserIdentity { viewer { id name email app admin active guest organization { id name } } }",
     }),
   });
   const body: unknown = await response.json();
@@ -137,6 +141,9 @@ export async function completeWorkspaceOAuth(
       userId: text(viewer, "id"),
       name: text(viewer, "name"),
       email: text(viewer, "email"),
+      admin: viewer["admin"] === true,
+      active: viewer["active"] === true,
+      guest: viewer["guest"] !== false,
       organizationId: text(organization, "id"),
       organizationName: text(organization, "name"),
     },
