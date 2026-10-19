@@ -35,6 +35,8 @@ const question = z.strictObject({
     .max(16),
 });
 
+const policyRequest = z.strictObject({ type: z.literal("closeout_policy"), requestId: z.uuid() });
+
 function executionId(now: number): string {
   const bytes = randomBytes(16);
   bytes.writeUIntBE(now, 0, 6);
@@ -161,7 +163,11 @@ export function openExecutionJournal(root: string) {
           let requestId: string | null = null;
           const q = question.safeParse(raw);
           const publication = artifact.safeParse(raw);
-          if (publication.success) {
+          const policy = policyRequest.safeParse(raw);
+          if (policy.success) {
+            event = { type: "closeout_policy" };
+            requestId = policy.data.requestId;
+          } else if (publication.success) {
             if (publication.data.requestId !== publication.data.artifact.id)
               throw new Error("Artifact request binding changed");
             event = { type: "artifact", artifact: publication.data.artifact };
@@ -194,7 +200,7 @@ export function openExecutionJournal(root: string) {
               raw &&
               typeof raw === "object" &&
               "type" in raw &&
-              ["question", "artifact"].includes(String(raw.type))
+              ["question", "artifact", "closeout_policy"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
             const acp = z
@@ -303,14 +309,14 @@ export function openExecutionJournal(root: string) {
       if (
         !delivery ||
         delivery.sent !== 1 ||
-        !["question", "artifact"].includes(
+        !["question", "artifact", "closeout_policy"].includes(
           RunnerEventSchema.parse(JSON.parse(delivery.payload)).type,
         )
       )
         throw new Error("Answer does not match a delivered question or artifact");
       const earlier = db
         .query<{ sequence: number }, [string, number]>(
-          "SELECT d.sequence FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE d.execution_id=? AND d.sequence>e.answer_cursor AND d.sequence<? AND json_extract(d.payload,'$.type') IN ('question','artifact') LIMIT 1",
+          "SELECT d.sequence FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE d.execution_id=? AND d.sequence>e.answer_cursor AND d.sequence<? AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy') LIMIT 1",
         )
         .get(id, sequence);
       if (earlier) throw new Error("Answer would skip an earlier question or artifact");

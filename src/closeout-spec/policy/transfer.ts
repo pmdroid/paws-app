@@ -1,0 +1,50 @@
+import { z } from "zod";
+import type { PolicyFilesLoad } from "./load";
+
+const MAX_FILES = 128;
+const MAX_BYTES = 45_000;
+
+const Transfer = z.union([
+  z.strictObject({ absent: z.literal(true) }),
+  z.strictObject({ error: z.string().min(1).max(4096) }),
+  z.strictObject({
+    digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+    files: z
+      .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(65536) }))
+      .min(1)
+      .max(MAX_FILES),
+  }),
+]);
+
+export function encodePolicyFiles(load: PolicyFilesLoad): string {
+  if (!load.ok)
+    return JSON.stringify({ error: load.message.slice(0, 4096) || "policy unavailable" });
+  if (load.absent) return JSON.stringify({ absent: true });
+  const size = [...load.files.values()].reduce((total, bytes) => total + bytes.byteLength, 0);
+  if (load.files.size > MAX_FILES || size > MAX_BYTES)
+    return JSON.stringify({ error: "The Closeout policy is too large to send to the runner" });
+  return JSON.stringify({
+    digest: load.digest,
+    files: [...load.files].map(([path, bytes]) => ({
+      path,
+      data: Buffer.from(bytes).toString("base64"),
+    })),
+  });
+}
+
+export function decodePolicyFiles(text: string): PolicyFilesLoad {
+  let parsed: z.infer<typeof Transfer>;
+  try {
+    parsed = Transfer.parse(JSON.parse(text));
+  } catch {
+    return { ok: false, message: "Paws sent an invalid Closeout policy" };
+  }
+  if ("absent" in parsed) return { ok: true, absent: true };
+  if ("error" in parsed) return { ok: false, message: parsed.error };
+  const files = new Map(
+    parsed.files.map((file) => [file.path, new Uint8Array(Buffer.from(file.data, "base64"))]),
+  );
+  if (files.size !== parsed.files.length)
+    return { ok: false, message: "Paws sent an invalid Closeout policy" };
+  return { ok: true, absent: false, digest: parsed.digest, files };
+}

@@ -34,6 +34,7 @@ import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../conf
 import {
   createCloseoutGate,
   reviewRequirements,
+  trustedPolicyFiles,
   bypassable,
   snapshotRetryBaseline,
   loggedSessionCloseout,
@@ -3712,7 +3713,7 @@ export class Orchestrator {
         !input.prepareOnly
           ? await this.commitPolicy(item)
           : undefined;
-      return backend({ ...input, commitPolicy: policy });
+      return backend({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
     });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
@@ -3775,7 +3776,7 @@ export class Orchestrator {
           input.role === "implementer" && !input.prepareOnly
             ? await this.commitPolicy(item)
             : undefined;
-        return runner({ ...input, commitPolicy: policy });
+        return runner({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
       },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
@@ -3948,6 +3949,18 @@ export class Orchestrator {
       JSON.stringify({ profiles }),
       { mode: 0o600 },
     );
+  }
+
+  private closeoutPolicy(
+    item: WorkItemRecord,
+    input: RunAgentOptions,
+  ): Pick<RunAgentOptions, "closeoutPolicy"> {
+    if (input.role !== "implementer" || input.prepareOnly || !this.repositoryForItem(item))
+      return {};
+    const { home, policyRoot } = this.closeoutHome(item);
+    return {
+      closeoutPolicy: async () => trustedPolicyFiles(input.worktreePath, home, policyRoot),
+    };
   }
 
   private closeoutHome(item: WorkItemRecord): {

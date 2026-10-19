@@ -116,7 +116,10 @@ export function createRunnerResults(options: {
             "SELECT payload FROM runner_event WHERE run_id=? AND generation=? AND sequence=?",
           )
           .get(input.runId, input.generation, input.sequence);
-        if (!question || !["question", "artifact"].includes(JSON.parse(question.payload).type))
+        if (
+          !question ||
+          !["question", "artifact", "closeout_policy"].includes(JSON.parse(question.payload).type)
+        )
           throw new Error("Runner question is unavailable.");
         const existing = db
           .query<{ answer: string }, [string, number, number]>(
@@ -151,7 +154,7 @@ export function createRunnerResults(options: {
            LEFT JOIN runner_question_answer a
              ON a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence
            WHERE e.run_id=? AND e.generation=? AND a.sequence IS NULL
-             AND json_extract(e.payload, '$.type') IN ('question','artifact')
+             AND json_extract(e.payload, '$.type') IN ('question','artifact','closeout_policy')
            ORDER BY e.sequence LIMIT 1`,
         )
         .get(input.runId, input.generation);
