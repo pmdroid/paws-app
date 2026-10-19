@@ -1857,4 +1857,22 @@ CREATE TABLE onboarding_vm (
 ) STRICT;
 `,
   },
+  {
+    id: "077_onboarding_preparation",
+    sql: `
+CREATE TABLE onboarding_preparation (
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>0),
+ scope TEXT NOT NULL,
+ mode TEXT CHECK(mode IN ('code','answer','artifact')),
+ repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1)),
+ repository TEXT CHECK(repository IS NULL OR json_valid(repository)),
+ offered TEXT NOT NULL CHECK(json_valid(offered)),
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
 ];
