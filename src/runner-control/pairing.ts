@@ -165,7 +165,7 @@ export function createRunnerControl(options: {
           `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
         JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
         WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
-        OR r.status='revoked' OR m.active=0`,
+        OR r.status='revoked' OR m.active=0 OR m.role NOT IN ('owner','admin','member')`,
         )
         .all(now());
       for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);

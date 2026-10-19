@@ -245,6 +245,74 @@ export async function probeRunnerPairing(
       disconnectedIdentities: disconnected.length,
       actualLiveConnectionClosed: true,
     });
+    const memberPending = await control.beginPairing({ name: "Member transport", csr: client.csr });
+    const memberApproval = await control.approvePairing(member, memberPending.code);
+    const memberClaim = control.claimPairing(memberPending.id, memberPending.claim);
+    assert.equal(memberClaim.status, "approved");
+    if (memberClaim.status !== "approved") throw new Error("Member certificate missing");
+    const memberCertificate = describeRunnerCertificate(memberClaim.certificate);
+    const memberAgent = new Agent({ keepAlive: true });
+    const memberLive = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+      memberAgent,
+    );
+    assert.equal(memberLive.status, 200);
+    assert.equal(memberLive.socket.destroyed, false);
+    const demotedAt = Date.now();
+    syncWorkspaceMember(db, {
+      workspaceId: principal.workspaceId,
+      userId: memberUserId,
+      role: "observer",
+      active: true,
+      teamIds: [],
+      now: demotedAt,
+    });
+    try {
+      assert.throws(() => control.authenticate(memberCertificate), /revoked or expired/);
+      await assert.rejects(
+        () => control.renew(memberCertificate, client.csr),
+        /revoked or expired/,
+      );
+      assert.throws(
+        () => control.claimPairing(memberPending.id, memberPending.claim),
+        /revoked or expired/,
+      );
+      control.expireConnections();
+      assert(disconnected.includes(memberCertificate.fingerprint));
+      while (!memberLive.socket.destroyed && Date.now() - demotedAt < 4500)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert(memberLive.socket.destroyed);
+      let deniedStatus: number | string;
+      try {
+        const denied = await registryRequest(
+          root,
+          child.port,
+          memberClaim.certificate,
+          client.keyPath,
+        );
+        deniedStatus = denied.status;
+      } catch (error) {
+        deniedStatus = (error as NodeJS.ErrnoException).code ?? "unknown";
+      }
+      assert([403, "ECONNRESET"].includes(deniedStatus));
+    } finally {
+      memberAgent.destroy();
+    }
+    observe(
+      "active observer demotion denies enrolled transport and closes a real live mTLS connection",
+      true,
+      {
+        runnerId: memberApproval.runnerId,
+        activeMembership: true,
+        renewedIdentityDenied: true,
+        claimDenied: true,
+        liveConnectionClosed: true,
+        newConnectionDenied: true,
+      },
+    );
     const another = await control.beginPairing({ name: "Member-owned VM", csr: client.csr });
     const anotherApproval = await control.approvePairing(principal, another.code);
     const anotherClaim = control.claimPairing(another.id, another.claim);
