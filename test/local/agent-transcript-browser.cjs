@@ -62,6 +62,15 @@ const assert = require("node:assert/strict");
       assert(fullText.includes("Launch Chromium"));
       assert(!(await fullTranscript.locator("body").innerText()).includes("private reasoning"));
       assert.equal(await fullTranscript.getByRole("navigation").count(), 0);
+      assert.equal(
+        await fullTranscript.getByRole("heading", { name: "Agent transcript" }).count(),
+        1,
+      );
+      assert.equal(
+        await fullTranscript.getByRole("banner").getByText("Agent transcript").count(),
+        1,
+      );
+      assert.equal(await fullTranscript.getByRole("status").innerText(), "Auto-updating");
       const atBottom = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 2;
       await fullTranscript.waitForFunction(atBottom);
       assert(await fullTranscript.evaluate(() => scrollY > 0));

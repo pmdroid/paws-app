@@ -4,7 +4,6 @@ import { ArrowDown } from "lucide-react";
 import { ACTIVITY_KINDS, type StatusActivity } from "../contract";
 import { initializeAppearance } from "./appearance";
 import { ansiToHtml } from "./ansi";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { cn } from "./ui/utils";
 
@@ -20,13 +19,6 @@ const KIND_LABEL: Partial<Record<StatusActivity["kind"], string>> = {
   system: "agent",
   err: "error",
   elicitation: "question",
-};
-
-const KIND_STYLE: Partial<Record<StatusActivity["kind"], string>> = {
-  system: "bg-main text-main-foreground",
-  err: "bg-red-200 text-black",
-  elicitation: "bg-yellow-200 text-black",
-  ok: "bg-green-200 text-black",
 };
 
 const time = new Intl.DateTimeFormat(undefined, {
@@ -89,19 +81,24 @@ function Entry({ entry }: { entry: StatusActivity }) {
   const title = code && split > 0 ? entry.text.slice(0, split) : code ? entry.text : null;
   const body = title === null ? entry.text : entry.text.slice(title.length + 1);
   return (
-    <li className="grid min-w-0 grid-cols-1 gap-2 px-4 py-4 sm:grid-cols-[7.5rem_minmax(0,1fr)] sm:gap-4 sm:px-5">
-      <div className="flex items-center gap-2 sm:flex-col sm:items-start">
-        <Badge className={KIND_STYLE[entry.kind] ?? "bg-background"}>
+    <li className="min-w-0 space-y-3 px-4 py-5 sm:px-7 sm:py-6">
+      <div className="flex items-baseline justify-between gap-4 text-xs">
+        <span
+          className={cn(
+            "font-semibold capitalize",
+            entry.kind === "err" && "text-red-700 dark:text-red-300",
+          )}
+        >
           {KIND_LABEL[entry.kind] ?? entry.kind}
-        </Badge>
-        <time dateTime={entry.at} className="text-xs tabular-nums opacity-80">
+        </span>
+        <time dateTime={entry.at} className="shrink-0 tabular-nums opacity-70">
           {Number.isNaN(Date.parse(entry.at)) ? "" : time.format(new Date(entry.at))}
         </time>
       </div>
       <div className="flex min-w-0 flex-col gap-2">
         {title !== null && (
           <div
-            className="min-w-0 font-mono text-xs font-bold leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+            className="min-w-0 font-mono text-[13px] font-semibold leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
             dangerouslySetInnerHTML={{ __html: ansiToHtml(title) }}
           />
         )}
@@ -109,7 +106,9 @@ function Entry({ entry }: { entry: StatusActivity }) {
           <div
             className={cn(
               "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]",
-              code ? "font-mono text-xs leading-relaxed" : "max-w-[72ch] text-sm leading-relaxed",
+              code
+                ? "rounded-base bg-background/25 p-3 font-mono text-[13px] leading-relaxed sm:p-4"
+                : "max-w-[72ch] text-[15px] leading-7",
             )}
             dangerouslySetInnerHTML={{ __html: ansiToHtml(body) }}
           />
@@ -221,46 +220,28 @@ function TranscriptPage({ runId }: { runId: string | null }) {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <header className="sticky top-0 z-20 flex min-h-20 flex-wrap items-center justify-between gap-3 border-b-2 border-border bg-secondary-background px-4 py-4 sm:px-6">
-        <div className="flex min-w-0 items-baseline gap-3">
-          <span className="text-xl font-bold tracking-tight">Paws</span>
-          <span className="text-sm font-semibold">Agent transcript</span>
-        </div>
-        {runId && load.state !== "loading" && (
-          <Badge
-            className={cn(
-              "gap-2 px-3 py-1 text-sm",
-              live ? "bg-green-200 text-black" : "bg-yellow-200 text-black",
-            )}
-          >
-            <span
-              aria-hidden="true"
-              className={cn(
-                "size-2 rounded-full border border-black bg-black",
-                live && "motion-safe:animate-pulse",
-              )}
-            />
-            {live ? "Live" : "Reconnecting"}
-          </Badge>
-        )}
-      </header>
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 pb-28 pt-6 sm:px-6 lg:px-8">
-        <div className="space-y-2">
-          <h1 className="text-3xl font-heading tracking-tight sm:text-4xl">Agent transcript</h1>
-          {runId && (
-            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm leading-relaxed">
-              <span>Run</span>
-              <code className="rounded-base bg-secondary-background px-1.5 py-0.5 font-mono text-xs">
+      <header className="sticky top-0 z-20 border-b-2 border-border bg-secondary-background">
+        <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="min-w-0 space-y-1">
+            <h1 className="text-lg font-heading tracking-tight">Agent transcript</h1>
+            {runId && (
+              <p className="truncate font-mono text-[11px] opacity-70" title={runId}>
                 {runId}
-              </code>
-              {entries && (
-                <span className="tabular-nums">
-                  {entries.length} {entries.length === 1 ? "entry" : "entries"}
-                </span>
-              )}
-            </p>
+              </p>
+            )}
+          </div>
+          {runId && load.state !== "loading" && (
+            <span role="status" className="flex shrink-0 items-center gap-2 text-xs">
+              <span
+                aria-hidden="true"
+                className={cn("size-2 rounded-full", live ? "bg-foreground" : "bg-main")}
+              />
+              {live ? "Auto-updating" : "Reconnecting"}
+            </span>
           )}
         </div>
+      </header>
+      <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-5 sm:px-6 sm:pt-6">
         {!runId && (
           <Notice>This link does not name a run. Open the transcript from a run in Paws.</Notice>
         )}
@@ -283,7 +264,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
           <ol
             role="log"
             aria-label="Agent transcript"
-            className="m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
+            className="m-0 list-none divide-y divide-foreground/15 rounded-base border-2 border-border bg-secondary-background p-0 shadow-shadow"
           >
             {entries.map((entry, index) => (
               <Entry key={index} entry={entry} />
@@ -299,10 +280,17 @@ function TranscriptPage({ runId }: { runId: string | null }) {
             aria-label={
               fresh > 0 ? `Jump to latest message, ${fresh} new` : "Jump to latest message"
             }
-            className="pointer-events-auto px-5 animate-in fade-in slide-in-from-bottom-2 duration-200"
+            className="pointer-events-auto px-4"
           >
             <ArrowDown aria-hidden="true" />
-            <span>{fresh > 0 ? `${fresh} new` : "Latest"}</span>
+            <span>
+              Latest
+              {fresh > 0 && (
+                <span className="ml-2 border-l border-current/30 pl-2 tabular-nums">
+                  {fresh} new
+                </span>
+              )}
+            </span>
           </Button>
         </div>
       )}
