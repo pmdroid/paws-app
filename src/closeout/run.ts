@@ -179,7 +179,10 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   const reviewFindings: Array<{ itemId: string; findings: Finding[] }> = [];
   const reviewAttempts = new Map<string, number>();
   const gaps = reviewGaps(first);
-  if (gaps.length === 0) {
+  if (
+    gaps.length === 0 ||
+    gaps.some((item) => first.items.find((entry) => entry.id === item.id)?.state === "exhausted")
+  ) {
     publishReviews(input, first, reviewFindings, reviewAttempts);
     return finish(first, input.base, input.head, reviewFindings);
   }
@@ -477,10 +480,26 @@ async function addReviewEvidence(
     }
     if (!added.ok) {
       const detail = scrub(`${item.id}: ${added.message}`);
-      const state: CloseoutStepState = added.message.includes("allowed failed attempts")
-        ? "exhausted"
-        : "blocked";
-      noteReview(input, identity, item.id, state, detail, null, item.attempt ?? null);
+      const refreshed = toGateDecision(
+        await decide({
+          checkoutExclusions: input.checkoutExclusions,
+          repo: input.worktree,
+          base: input.base,
+          head: input.head,
+          gate: CLOSEOUT_GATE,
+          task: input.taskId,
+          candidate: input.candidate,
+          evidenceDir,
+          ...(input.home !== undefined ? { home: input.home } : {}),
+          ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
+          ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+        }),
+      );
+      if (refreshed.items.some((entry) => entry.state === "exhausted")) {
+        publishReviews(input, refreshed, reviewFindings, reviewAttempts);
+        return finish(refreshed, input.base, input.head, reviewFindings);
+      }
+      noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null);
       return failure("blocked", null, detail, input.head);
     }
     reviewFindings.push({ itemId: item.id, findings: added.record.findings });

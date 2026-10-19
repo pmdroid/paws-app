@@ -105,6 +105,8 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
+    const reviewCap =
+      item.kind === "review" ? prepared.policy.retry?.maxFailedReviewAttempts : undefined;
     return {
       id: item.id,
       kind: item.kind,
@@ -112,7 +114,16 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       matched_paths: item.matched,
       status: statusOf(state, max),
       failed_attempts: failures,
-      remaining_attempts: max === null ? null : Math.max(0, max - failures),
+      remaining_attempts:
+        reviewCap !== undefined || max === null ? null : Math.max(0, max - failures),
+      ...(reviewCap !== undefined
+        ? {
+            retry_limits: {
+              max_failed_review_attempts: reviewCap,
+              max_failed_attempts_per_key: max,
+            },
+          }
+        : {}),
       retry_scope: scope,
       different_model: item.differentModel,
     };

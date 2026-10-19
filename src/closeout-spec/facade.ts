@@ -206,11 +206,18 @@ export function policyFixBudget(repo: string, home?: string, policyRoot?: string
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none" || policy.retry === undefined) return null;
-  return Math.max(
-    0,
-    policy.retry.maxFailedAttemptsPerItem * Math.max(1, policy.items.length + policy.setup.length) -
-      1,
-  );
+  const retry = policy.retry;
+  const failedBudget =
+    policy.setup.length * retry.maxFailedAttemptsPerItem +
+    policy.items.reduce(
+      (total, item) =>
+        total +
+        (item.kind === "review"
+          ? (retry.maxFailedReviewAttempts ?? retry.maxFailedAttemptsPerItem)
+          : retry.maxFailedAttemptsPerItem),
+      0,
+    );
+  return Math.max(retry.maxFailedAttemptsPerItem, failedBudget) - 1;
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {
@@ -323,6 +330,18 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
   const resolved = await resolvePair(input.repo, input.base, input.head, env);
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
+  const preflight = await finish(
+    input,
+    policy,
+    candidate,
+    resolved.base,
+    resolved.head,
+    evidenceDir,
+  );
+  const blocked = preflight.items.find((entry) => entry.id === input.itemId);
+  if (blocked?.state === "exhausted" || blocked?.state === "invalid" || preflight.message) {
+    return { ok: false, message: blocked?.message ?? preflight.message ?? "review is blocked" };
+  }
   const reviewed = await input.reviewer.review({
     checkoutExclusions: input.checkoutExclusions,
     item,
@@ -345,7 +364,9 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
       evidenceDir,
     );
     const row = current.items.find((entry) => entry.id === input.itemId);
-    if (row?.state === "exhausted") return { ok: false, message: row.message };
+    if (row?.state === "exhausted" || row?.state === "invalid" || current.message) {
+      return { ok: false, message: row?.message ?? current.message ?? "review is blocked" };
+    }
     const evidence = createEvidenceStore({ root: evidenceDir });
     const attempt = await evidence.nextAttempt({
       policyDigest: policy.digest,
