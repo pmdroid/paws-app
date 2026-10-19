@@ -1,3 +1,4 @@
+import { captureOnboardingExecution, type OnboardingExecution } from "../workspace";
 import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -99,6 +100,7 @@ export function createRemoteAgentRunner(options: {
   now?: () => number;
   pollIntervalMs?: number;
   placement?: RunnerPlacement;
+  onboarding?: Pick<OnboardingExecution, "capture">;
 }) {
   const { db, work, results, health } = options;
   const now = options.now ?? Date.now;
@@ -109,6 +111,8 @@ export function createRemoteAgentRunner(options: {
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     runnerId?: string,
   ) {
+    const onboarding = captureOnboardingExecution(db, itemId, options.onboarding);
+    if (onboarding && !options.placement) throw new Error("Onboarding requires guarded placement.");
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
     const candidates = options.placement
@@ -122,8 +126,16 @@ export function createRemoteAgentRunner(options: {
        ORDER BY r.last_seen_at DESC,r.id`,
           )
           .all();
+    onboarding?.assertCurrent();
     placement.signal?.throwIfAborted();
     for (const runner of candidates) {
+      if (
+        onboarding &&
+        (runner.id !== onboarding.binding.runnerId ||
+          runner.workspaceId !== onboarding.binding.workspaceId ||
+          runner.memberId !== onboarding.binding.userId)
+      )
+        continue;
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
       if (runnerId && runner.id !== runnerId) continue;
       const reserved = [...reservations].filter(
@@ -150,7 +162,7 @@ export function createRemoteAgentRunner(options: {
           );
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.set(item.currentRunId, runner.id);
-        return { ...runner, runId: item.currentRunId };
+        return { ...runner, runId: item.currentRunId, onboarding };
       } catch {}
     }
     throw new RunnerUnavailableError(
@@ -225,6 +237,12 @@ export function createRemoteAgentRunner(options: {
             const id = randomUUID();
             const issuedAt = now();
             immediate(db, () => {
+              selected.onboarding?.assertCurrent();
+              captureOnboardingExecution(db, itemId, options.onboarding, {
+                runnerId: selected.id,
+                workspaceId: selected.workspaceId,
+                memberId: selected.memberId,
+              })?.assertCurrent();
               work.enqueue({
                 id,
                 runnerId: selected.id,
@@ -291,6 +309,7 @@ export function createRemoteAgentRunner(options: {
                 signal,
               })
             : { prompt: input.prompt, inputFiles: [] };
+          selected.onboarding?.assertCurrent();
           const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           const files = snapshotAgentInputs(input.worktreePath, [
             ...suppliedInputs,
@@ -305,6 +324,7 @@ export function createRemoteAgentRunner(options: {
                   signal,
                 })
               : undefined;
+          selected.onboarding?.assertCurrent();
           const skillsInputId = skillBundle ? files.length : undefined;
           if (skillBundle)
             files.push({
@@ -335,6 +355,7 @@ export function createRemoteAgentRunner(options: {
               ? snapshotCommit(input.worktreePath, taskScope.repository)
               : undefined
             : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
+          selected.onboarding?.assertCurrent();
           if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
             saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
           const generation =
@@ -359,6 +380,7 @@ export function createRemoteAgentRunner(options: {
               input.commitPolicy.bot.login !== checkpointBot.login)
           )
             throw new Error("Run attribution App bot authority changed");
+          selected.onboarding?.assertCurrent();
           if (options.placement) {
             const admitted = (await options.placement.candidates(placementRequest)).some(
               (runner) =>
@@ -424,6 +446,12 @@ export function createRemoteAgentRunner(options: {
                 }),
           };
           immediate(db, () => {
+            selected.onboarding?.assertCurrent();
+            captureOnboardingExecution(db, itemId, options.onboarding, {
+              runnerId: selected.id,
+              workspaceId: selected.workspaceId,
+              memberId: selected.memberId,
+            })?.assertCurrent();
             if (!runnerHasCapacity(db, selected.id, now()))
               throw new Error("Runner became busy before assignment");
             work.assign(assigned);
