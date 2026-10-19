@@ -55,3 +55,9 @@ export {
   type OnboardingReadiness,
   type OnboardingReadinessContext,
 } from "./onboarding-readiness";
+
+export {
+  createOnboardingExecution,
+  captureOnboardingExecution,
+  type OnboardingExecution,
+} from "./onboarding-execution";
