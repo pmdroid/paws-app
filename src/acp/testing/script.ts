@@ -57,6 +57,7 @@ export interface FakeScript {
   authMethods?: Array<Record<string, unknown>>;
   ignoreCancel?: boolean;
   hangInitialize?: boolean;
+  loadSession?: boolean;
   steps: FakeStep[];
 }
 
@@ -81,6 +82,7 @@ export interface FakeResult {
     env?: Array<{ name: string; value: string }>;
   }>;
   sessionMeta?: unknown;
+  loaded?: unknown;
   codexHome?: string;
   permissions: Array<{ toolCallId?: string; outcome: unknown }>;
   fs: Array<{ op: "read" | "write"; path: string; ok: boolean; error?: string; content?: string }>;
