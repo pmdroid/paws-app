@@ -18,7 +18,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeTracker } from "../src/linear";
+import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { createFakeMemberGitHubClient } from "../src/github";
 import {
   createMemberGitHubAccounts,
@@ -625,3 +625,45 @@ test("approved project child gets only its exact scoped onboarding binding", asy
     await runtime.shutdown();
   }
 });
+
+for (const childState of ["completed", "canceled", "started"] as const)
+  test(`exact target intake handles ${childState} children conservatively`, async () => {
+    const f = await fixture();
+    const child = {
+      linearIssueId: "child",
+      identifier: "CHILD",
+      title: "Child",
+      description: "",
+      stateType: childState,
+      blockedBy: [],
+    };
+    const spec: EpicSnapshot = { ...f.spec, subIssues: [child] };
+    const hold = f.db
+      .query<{ fingerprint: string }, []>("SELECT fingerprint FROM workspace_assignment")
+      .get()!;
+    f.db.run("UPDATE workspace_assignment SET fingerprint=?", [
+      JSON.stringify({ ...JSON.parse(hold.fingerprint), spec }),
+    ]);
+    f.tracker.loadEpic = async () => spec;
+    const preparation = await f.preparation.refresh(context, signal());
+    f.preparation.answer(context, f.binding, { revision: preparation.revision, mode: "code" });
+    await f.readiness.refresh(context, signal());
+    const runtime = intakeRuntime(f);
+    try {
+      if (childState === "started") {
+        await expect(
+          runtime.intakeLinearTask("issue", "session", "session:session"),
+        ).rejects.toThrow();
+        expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
+      } else {
+        const result = await runtime.intakeLinearTask("issue", "session", "session:session");
+        if (!result.ok) throw new Error();
+        expect(result.items.map((item) => item.linearIssueId)).toEqual(["issue"]);
+        expect(readOnboardingItemBinding(f.db, result.items[0]!.id)?.issueFingerprint).toBe(
+          JSON.stringify(spec),
+        );
+      }
+    } finally {
+      await runtime.shutdown();
+    }
+  });
