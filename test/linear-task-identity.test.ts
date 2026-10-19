@@ -237,7 +237,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
-      "ENG-1 is already being worked on in another session.",
+      "ENG-1 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.",
     );
     expect(getLinearSession(db, "second")?.delegationId ?? null).toBeNull();
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);

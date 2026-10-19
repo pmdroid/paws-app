@@ -1,9 +1,14 @@
 import type { Database } from "bun:sqlite";
-import type { IssueBrief } from "../core";
+import { UserFacingError, type IssueBrief } from "../core";
 import type { TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
-import { findAcceptedIntake, insertRunningQueue, readAdoptedParent } from "./store";
+import {
+  findAcceptedIntake,
+  insertRunningQueue,
+  readAdoptedParent,
+  retireEmptyFailedAttempt,
+} from "./store";
 import type { StoredDelegation, StoredWorkItem } from "./store";
 import { ulid } from "./ulid";
 
@@ -135,6 +140,8 @@ export async function intakeDelegatedIssue(
           input.onAccepted?.(admitted);
           return admitted;
         }
+        if (delegatedAlone && sessionId.length > 0)
+          retireEmptyFailedAttempt(db, snapshot.linearIssueId, sessionId);
         const conflict = activeElsewhere(db, ordered.ordered);
         if (conflict) throw new ActiveIssueError(conflict.identifier);
         const saved = insertRunningQueue(db, {
@@ -164,8 +171,10 @@ export async function intakeDelegatedIssue(
       })
       .immediate();
   } catch (error) {
-    if (error instanceof ActiveIssueError)
+    if (error instanceof ActiveIssueError) {
       await announce(tracker, input.sessionId, "error", error.message);
+      error.reported = sessionId.length > 0;
+    }
     throw error;
   }
   await announce(
@@ -182,10 +191,11 @@ export async function intakeDelegatedIssue(
   return result;
 }
 
-export class ActiveIssueError extends Error {
+export class ActiveIssueError extends UserFacingError {
   constructor(identifier: string) {
-    super(`${identifier} is already being worked on in another session.`);
-    this.name = "ActiveIssueError";
+    super(
+      `${identifier} has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.`,
+    );
   }
 }
 
