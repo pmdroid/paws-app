@@ -1,3 +1,4 @@
+import { SIGN_IN_INTERVAL_MS } from "../runner-health";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -105,6 +106,9 @@ export function createOnboardingReadiness(options: {
       .get(context.sessionId, context.generation);
     const deadline = Math.min(
       certificate?.accepted_until ?? now(),
+      ...(agents?.agents.map((agent) =>
+        agent.checkedAt === null ? now() : agent.checkedAt + 2 * SIGN_IN_INTERVAL_MS,
+      ) ?? [now()]),
       prepared?.repositoryContext
         ? (link?.expiresAt ?? Number.MAX_SAFE_INTEGER)
         : Number.MAX_SAFE_INTEGER,
