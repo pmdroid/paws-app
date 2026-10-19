@@ -81,7 +81,7 @@ function Entry({ entry }: { entry: StatusActivity }) {
   const title = code && split > 0 ? entry.text.slice(0, split) : code ? entry.text : null;
   const body = title === null ? entry.text : entry.text.slice(title.length + 1);
   return (
-    <li className="min-w-0 space-y-3 px-4 py-5 sm:px-7 sm:py-6">
+    <li className="min-w-0 space-y-2 px-3 py-3 sm:px-5 sm:py-4">
       <div className="flex items-baseline justify-between gap-4 text-xs">
         <span
           className={cn(
@@ -107,8 +107,8 @@ function Entry({ entry }: { entry: StatusActivity }) {
             className={cn(
               "min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]",
               code
-                ? "rounded-base bg-background/25 p-3 font-mono text-[13px] leading-relaxed sm:p-4"
-                : "max-w-[72ch] text-[15px] leading-7",
+                ? "rounded-base bg-background/25 p-2.5 font-mono text-[13px] leading-relaxed sm:p-3"
+                : "max-w-[72ch] text-sm leading-6",
             )}
             dangerouslySetInnerHTML={{ __html: ansiToHtml(body) }}
           />
@@ -221,9 +221,9 @@ function TranscriptPage({ runId }: { runId: string | null }) {
   return (
     <div className="min-h-dvh bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b-2 border-border bg-secondary-background">
-        <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4 px-3 py-2 sm:px-4">
           <div className="min-w-0 space-y-1">
-            <h1 className="text-lg font-heading tracking-tight">Agent transcript</h1>
+            <h1 className="text-base font-heading tracking-tight">Agent transcript</h1>
             {runId && (
               <p className="truncate font-mono text-[11px] opacity-70" title={runId}>
                 {runId}
@@ -241,7 +241,7 @@ function TranscriptPage({ runId }: { runId: string | null }) {
           )}
         </div>
       </header>
-      <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 pb-24 pt-5 sm:px-6 sm:pt-6">
+      <main className="mx-auto flex w-full max-w-4xl flex-col gap-3 px-3 pb-20 pt-3 sm:px-4 sm:pt-4">
         {!runId && (
           <Notice>This link does not name a run. Open the transcript from a run in Paws.</Notice>
         )}
