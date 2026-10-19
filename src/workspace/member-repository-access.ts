@@ -130,7 +130,75 @@ export function createMemberRepositoryAccess(options: {
       account: link?.githubId && link.login ? { id: link.githubId, login: link.login } : null,
     };
   }
+  async function checkScoped(
+    target: {
+      workspaceId: string;
+      organizationId: string;
+      userId: string;
+      linearUserId: string;
+      repository: string | null;
+      permission: "read" | "push" | null;
+      account: MemberRepositoryResult["account"];
+      current: (revoked?: boolean) => boolean;
+    },
+    signal: AbortSignal,
+  ): Promise<TaskRepositoryAccessResult> {
+    signal.throwIfAborted();
+    const result = (
+      state: TaskRepositoryAccessResult["state"],
+      reason: TaskRepositoryAccessResult["reason"],
+    ): TaskRepositoryAccessResult => ({
+      state,
+      reason,
+      account: target.account,
+      repository: target.repository,
+      permission: target.permission,
+    });
+    const unchanged = () => target.current();
+    try {
+      const observedAt = now();
+      const verified = await options.memberships.member(
+        target.organizationId,
+        target.linearUserId,
+        AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      );
+      signal.throwIfAborted();
+      if (!unchanged()) return result("unavailable", "authority_changed");
+      if (
+        verified.organizationId !== target.organizationId ||
+        verified.userId !== target.linearUserId
+      )
+        return result("unavailable", "provider");
+      const applied = syncWorkspaceMember(db, {
+        workspaceId: target.workspaceId,
+        userId: target.userId,
+        active: verified.active,
+        role: verified.guest ? "observer" : "member",
+        teamIds: verified.teamIds,
+        now: observedAt,
+      });
+      if (!applied) return result("unavailable", "authority_changed");
+      if (!verified.active || verified.guest) return result("denied", "membership");
+      if (!unchanged()) return result("unavailable", "authority_changed");
+      if (!target.repository || !target.permission) return result("ready", "permission");
+      const checked = await options.accounts.inspectRepository(
+        target.workspaceId,
+        target.userId,
+        target.repository!,
+        target.permission!,
+        signal,
+      );
+      signal.throwIfAborted();
+      if (!target.current(checked.state === "missing_link"))
+        return result("unavailable", "authority_changed");
+      return checked;
+    } catch {
+      signal.throwIfAborted();
+      return result("unavailable", unchanged() ? "provider" : "authority_changed");
+    }
+  }
   return {
+    checkScoped,
     async check(itemId: string, signal: AbortSignal): Promise<TaskRepositoryAccessResult> {
       signal.throwIfAborted();
       const before = snapshot(itemId);
@@ -151,60 +219,27 @@ export function createMemberRepositoryAccess(options: {
             : "unavailable",
           before.reason,
         );
-      const unchanged = () => {
-        const latest = snapshot(itemId);
-        return (
-          latest.reason === null &&
-          latest.authority === before.authority &&
-          latest.linkRevision === before.linkRevision
-        );
-      };
-      try {
-        const observedAt = now();
-        const verified = await options.memberships.member(
-          before.workspace!.organizationId,
-          before.actorId!,
-          AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-        );
-        signal.throwIfAborted();
-        if (!unchanged()) return result("unavailable", "authority_changed");
-        if (
-          verified.organizationId !== before.workspace!.organizationId ||
-          verified.userId !== before.actorId
-        )
-          return result("unavailable", "provider");
-        const applied = syncWorkspaceMember(db, {
+      return checkScoped(
+        {
           workspaceId: before.workspace!.id,
+          organizationId: before.workspace!.organizationId,
           userId: before.member!.userId,
-          active: verified.active,
-          role: verified.guest ? "observer" : "member",
-          teamIds: verified.teamIds,
-          now: observedAt,
-        });
-        if (!applied) return result("unavailable", "authority_changed");
-        if (!verified.active || verified.guest) return result("denied", "membership");
-        if (!unchanged()) return result("unavailable", "authority_changed");
-        const checked = await options.accounts.inspectRepository(
-          before.workspace!.id,
-          before.member!.userId,
-          before.name!,
-          before.permission!,
-          signal,
-        );
-        signal.throwIfAborted();
-        const latest = snapshot(itemId);
-        if (
-          latest.reason !== null ||
-          latest.authority !== before.authority ||
-          (latest.linkRevision !== before.linkRevision &&
-            !(checked.state === "missing_link" && latest.linkSecret === before.linkSecret))
-        )
-          return result("unavailable", "authority_changed");
-        return checked;
-      } catch {
-        signal.throwIfAborted();
-        return result("unavailable", unchanged() ? "provider" : "authority_changed");
-      }
+          linearUserId: before.actorId!,
+          repository: before.name!,
+          permission: before.permission!,
+          account: before.account,
+          current: (revoked = false) => {
+            const latest = snapshot(itemId);
+            return (
+              latest.reason === null &&
+              latest.authority === before.authority &&
+              (latest.linkRevision === before.linkRevision ||
+                (revoked && latest.linkSecret === before.linkSecret))
+            );
+          },
+        },
+        signal,
+      );
     },
   };
 }

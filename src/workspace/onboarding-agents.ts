@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { immediate, type WorkspaceSession } from "../db";
 import type { RunnerLogin } from "../runner-login";
-import type { RunnerHealth } from "../runner-health";
+import { SIGN_IN_INTERVAL_MS, type RunnerHealth } from "../runner-health";
 import { RunnerLoginInputSchema } from "../runner-protocol";
 import type { WorkspaceAssignments } from "./assignments";
 import { onboardingVmState } from "./onboarding-vm";
@@ -31,19 +31,26 @@ export function onboardingAgentsState(
   const agents = (["claude", "codex"] as const).map((agent) => {
     const account = accounts.find((entry) => entry.agent === agent);
     const check = health.find((entry) => entry.agent === agent);
-    const connected = account?.connected === true && check?.status === "signed_in";
+    const fresh =
+      check?.checkedAt !== null &&
+      check?.checkedAt !== undefined &&
+      check.checkedAt > now - 2 * SIGN_IN_INTERVAL_MS;
+    const connected = account?.connected === true && check?.status === "signed_in" && fresh;
     return {
       agent,
       state: connected
         ? "connected"
-        : check?.status === "signed_out"
-          ? "signed_out"
-          : account?.connected
-            ? (check?.status ?? "unknown")
-            : account?.session?.state === "connected"
-              ? "signed_out"
-              : (account?.session?.state ?? "signed_out"),
+        : check?.status === "signed_in" && !fresh
+          ? "unknown"
+          : check?.status === "signed_out"
+            ? "signed_out"
+            : account?.connected
+              ? (check?.status ?? "unknown")
+              : account?.session?.state === "connected"
+                ? "signed_out"
+                : (account?.session?.state ?? "signed_out"),
       updatedAt: account?.updatedAt ?? null,
+      checkedAt: check?.checkedAt ?? null,
     };
   });
   return {
