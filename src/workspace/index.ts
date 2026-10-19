@@ -43,3 +43,9 @@ export {
   PREPARATION_MODES,
   type OnboardingPreparation,
 } from "./onboarding-preparation";
+
+export {
+  onboardingAgentsState,
+  handleOnboardingAgents,
+  type OnboardingAgents,
+} from "./onboarding-agents";
