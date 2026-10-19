@@ -239,6 +239,20 @@ function paint(): void {
       : { state: "unavailable", sessions: [] },
   };
   const view = render(model);
+  const route = model.route;
+  const detail =
+    route.view === "runs"
+      ? snapshot?.runs.find((entry) => entry.id === route.id)
+      : route.view === "evidence"
+        ? snapshot?.evidence?.find((entry) => entry.id === route.id)
+        : null;
+  shell.setBreadcrumb(
+    detail
+      ? { issueId: detail.itemId, entityId: detail.id }
+      : model.route.view === "evidence" && model.route.id
+        ? { issueId: null, entityId: model.route.id }
+        : null,
+  );
   const showSettings = model.route.view === "settings";
   const access = document.querySelector<HTMLElement>("#workspace-access");
   const auth = document.querySelector<HTMLElement>("#github-auth");
@@ -351,7 +365,14 @@ function setHtml(selector: (typeof regions)[number], html: string): void {
 }
 
 type HeldFocus =
-  | { kind: "action"; action: string; item: string; check: string }
+  | {
+      kind: "action";
+      action: string;
+      item: string;
+      check: string;
+      stream: string | null;
+      attempt: string | null;
+    }
   | { kind: "log"; key: string }
   | { kind: "href"; href: string }
   | { kind: "tab"; text: string }
@@ -377,7 +398,14 @@ function captureFocus(root: Element): HeldFocus | null {
   const item = holder.getAttribute("data-item");
   const check = holder.getAttribute("data-check");
   if (!action || !item || !check) return null;
-  return { kind: "action", action, item, check };
+  return {
+    kind: "action",
+    action,
+    item,
+    check,
+    stream: holder.getAttribute("data-stream"),
+    attempt: holder.getAttribute("data-attempt"),
+  };
 }
 
 function restoreFocus(root: Element, held: HeldFocus | null): void {
@@ -414,7 +442,9 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
     if (
       node.getAttribute("data-action") === held.action &&
       node.getAttribute("data-item") === held.item &&
-      node.getAttribute("data-check") === held.check
+      node.getAttribute("data-check") === held.check &&
+      node.getAttribute("data-stream") === held.stream &&
+      node.getAttribute("data-attempt") === held.attempt
     ) {
       return node;
     }
@@ -489,6 +519,14 @@ function onClick(event: MouseEvent): void {
     const check = closeoutChecks(itemId, attempt).find((entry) => entry.id === checkId);
     if (check) closeout.open[key] = !isOpen(closeout, itemId, attempt, check);
     paint();
+  }
+  if (action === "check-stream") {
+    const stream = holder?.getAttribute("data-stream");
+    if (stream === "stdout" || stream === "stderr") {
+      closeout.stream ??= {};
+      closeout.stream[key] = stream;
+      paint();
+    }
   }
   if (action === "wrap-output") {
     closeout.wrap[key] = !closeout.wrap[key];

@@ -43,7 +43,7 @@ describe("closeout checks", () => {
       expect(html).toContain(
         `data-action="closeout-attempt" data-item="ENG-100" data-attempt="${number}"`,
       );
-    expect(html).toContain('data-attempt="3" aria-pressed="true">Attempt 3 · exhausted');
+    expect(html).toContain('data-attempt="3" aria-pressed="true"');
     expect(html).toContain('id="check-3-unit"');
     expect(html).not.toContain('id="check-1-unit"');
     const earlier = renderCloseoutChecks(
@@ -52,7 +52,7 @@ describe("closeout checks", () => {
       null,
     );
     expect(earlier).toContain('id="check-1-unit"');
-    expect(earlier).toContain("Attempt 1 · failed");
+    expect(earlier).toContain("Attempt 1<span");
   });
 
   test("failed checks start open, passed checks closed, and expand all reflects the rows", () => {
@@ -62,7 +62,7 @@ describe("closeout checks", () => {
     expect(failed).toContain(">Expand all</button>");
     const passed = renderCloseoutChecks(verdict("ENG-101"), emptyCloseoutView(), null);
     expect(passed).not.toContain('aria-expanded="true"');
-    expect(passed).not.toContain('data-action="closeout-attempt"');
+    expect(passed).toContain('data-action="closeout-attempt"');
     const view: CloseoutView = emptyCloseoutView();
     for (const id of ["typecheck", "unit"]) view.open[checkKey("ENG-100", 3, id)] = true;
     const all = renderCloseoutChecks(verdict("ENG-100"), view, null);
@@ -72,8 +72,8 @@ describe("closeout checks", () => {
 
   test("an open row shows stdout and stderr apart, in color, with its tools", () => {
     const html = renderCloseoutChecks(verdict("ENG-100"), emptyCloseoutView(), null);
-    expect(html).toContain("<span>stdout</span>");
-    expect(html).toContain("<span>stderr</span>");
+    expect(html).toContain('data-stream="stdout"');
+    expect(html).toContain('data-stream="stderr"');
     expect(html).toContain('<span class="ansi-bold ansi-fg-1">error</span>');
     expect(html).toContain('data-log="ENG-100:3:unit:stderr"');
     expect(html).toContain('data-action="wrap-output"');
@@ -136,4 +136,17 @@ describe("closeout checks", () => {
     expect(parseCheckHash("#/runs/x")).toBeNull();
     expect(parseCheckHash("#check=1/%E0%A4%A")).toBeNull();
   });
+});
+
+test("accepted output describes the actual delivery state instead of assuming a merge queue", () => {
+  const entry = verdict("ENG-101");
+  const pr = { number: 479, url: "https://github.com/acme/platform/pull/479" };
+  const queued = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "merge_queue");
+  expect(queued).toContain("is waiting to merge");
+  const merged = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "merged");
+  expect(merged).toContain("This change has merged");
+  expect(merged).not.toContain("is waiting to merge");
+  const signoff = renderCloseoutChecks(entry, emptyCloseoutView(), null, pr, "signoff");
+  expect(signoff).toContain("Waiting for human sign-off");
+  expect(signoff).not.toContain("is waiting to merge");
 });

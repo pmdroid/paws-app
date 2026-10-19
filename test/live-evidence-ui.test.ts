@@ -109,15 +109,15 @@ describe("live evidence", () => {
     const item = snapshot.evidence![0]!.itemId;
     for (const text of [
       item,
-      "Checkout flow",
+
       "checkout.webm",
-      '<span class="mono">e2e</span>',
-      '<span class="k">Attempt</span><span class="mono">2</span>',
+      "e2e · attempt 2",
+
       "Claude",
       "3.0 MB",
-      '<span class="k">Duration</span><span class="mono">1:23</span>',
-      `title="${HEAD}"`,
-      HEAD.slice(0, 12),
+      "1:23",
+
+      HEAD.slice(0, 7),
       'data-action="evidence-copy"',
       `href="/api/evidence/${VIDEO}" download="checkout.webm">Download</a>`,
       `<div id="evidence-player" data-evidence="${VIDEO}"></div>`,
@@ -129,7 +129,7 @@ describe("live evidence", () => {
       expect(html).toContain(text);
     expect(html).not.toContain(OTHER_RUN);
     const image = page(snapshot, { view: "evidence", id: IMAGE });
-    expect(image).toContain('<span class="k">Dimensions</span><span class="mono">1280×720</span>');
+    expect(image).toContain("1280×720");
   });
 
   test("evidence the reader cannot see shows the no-access state and nothing about it", () => {

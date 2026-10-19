@@ -1,4 +1,10 @@
-import type { StatusCheck, StatusCloseoutAttempt, StatusVerdict } from "../contract";
+import type {
+  StatusCheck,
+  StatusCloseoutAttempt,
+  StatusVerdict,
+  StatusPullRequest,
+  ItemState,
+} from "../contract";
 import { parseEngineUrl } from "../endpoint";
 import { ansiToHtml } from "./ansi";
 import { durationLabel, esc } from "./format";
@@ -14,6 +20,7 @@ export interface CloseoutView {
   open: Record<string, boolean>;
   /** Rows whose output wraps long lines, by `checkKey`. */
   wrap: Record<string, boolean>;
+  stream?: Record<string, "stdout" | "stderr">;
 }
 
 export function emptyCloseoutView(): CloseoutView {
@@ -88,19 +95,18 @@ export function renderCloseoutChecks(
   verdict: StatusVerdict,
   view: CloseoutView,
   engineUrl: string | null,
+  pr: StatusPullRequest | null = null,
+  itemState?: ItemState,
 ): string {
   const attempts = attemptsOf(verdict);
   const attempt = shownAttempt(verdict, view);
   const item = esc(verdict.itemId);
-  const switcher =
-    attempts.length > 1
-      ? `<div class="row" role="group" aria-label="Closeout attempt">${attempts
-          .map((entry) => {
-            const on = entry.number === attempt.number;
-            return `<button type="button" class="btn sm${on ? " on" : ""}" data-action="closeout-attempt" data-item="${item}" data-attempt="${entry.number}" aria-pressed="${on}">Attempt ${entry.number} · ${esc(attemptLabel(entry))}</button>`;
-          })
-          .join("")}</div>`
-      : "";
+  const switcher = `<div class="attempt-tabs" role="group" aria-label="Closeout attempt">${attempts
+    .map((entry) => {
+      const on = entry.number === attempt.number;
+      return `<button type="button" class="btn sm${on ? " on" : ""}" data-action="closeout-attempt" data-item="${item}" data-attempt="${entry.number}" aria-pressed="${on}"><span class="attempt-dot ${esc(entry.decision)}" aria-hidden="true"></span>Attempt ${entry.number}<span class="sr-only"> · ${esc(attemptLabel(entry))}</span></button>`;
+    })
+    .join("")}</div>`;
   const allOpen =
     attempt.checks.length > 0 &&
     attempt.checks.every((check) => isOpen(view, verdict.itemId, attempt.number, check));
@@ -110,7 +116,23 @@ export function renderCloseoutChecks(
   const rows = attempt.checks.length
     ? attempt.checks.map((check) => checkRow(verdict, attempt, check, view, engineUrl)).join("")
     : '<div class="dim">No checks recorded for this attempt yet.</div>';
-  return `<div class="between"><h3>Checks</h3>${toggleAll}</div>${switcher}${rows}`;
+  const decision = attempt.decision;
+  const accepted = decision === "accepted";
+  const title = accepted
+    ? `Accepted on attempt ${attempt.number} of ${verdict.maxAttempts}`
+    : decision === "exhausted"
+      ? `Exhausted after ${attempt.number} of ${verdict.maxAttempts} attempts`
+      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${attempt.number} of ${verdict.maxAttempts}`;
+  const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
+  const description = accepted
+    ? `All ${attempt.checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : itemState === "signoff" ? " Waiting for human sign-off." : ""}`
+    : `${esc(
+        attempt.checks
+          .filter((check) => ["failed", "blocked", "exhausted"].includes(check.state))
+          .map((check) => check.id)
+          .join(", ") || "Checks",
+      )} ${decision === "running" ? "are running" : "did not pass"}${head}.`;
+  return `<div class="between closeout-toolbar"><h2>Closeout</h2><div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${accepted ? "✓" : decision === "running" ? "…" : "✕"}</span><div><h3>${esc(title)}</h3><p>${description}</p></div></div><div class="check-list">${rows}</div>`;
 }
 
 function attemptLabel(attempt: StatusCloseoutAttempt): string {
@@ -130,13 +152,13 @@ function checkRow(
 ): string {
   const open = isOpen(view, verdict.itemId, attempt.number, check);
   const anchor = checkAnchor(attempt.number, check.id);
-  const detail = check.detail ? `<div class="dim">${esc(check.detail)}</div>` : "";
   const meta = checkMeta(check);
-  const head = `<button class="chk${open ? " on" : ""}" type="button" data-action="toggle-check" data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}" aria-expanded="${open}" aria-controls="${anchor}-out"><span class="ico ${esc(check.state)}" aria-label="${esc(check.state)}">${checkMark(check.state)}</span><span class="mono">${esc(check.id)}</span><span><span class="mono muted">${esc(check.command)}</span>${detail}${meta ? `<div class="dim">${meta}</div>` : ""}</span><span class="tag">${esc(check.kind)}</span></button>`;
+  const command = check.kind === "review" ? "closeout review --independent" : check.command;
+  const head = `<button class="chk${open ? " on" : ""}" type="button" data-action="toggle-check" data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}" aria-expanded="${open}" aria-controls="${anchor}-out"><span class="ico ${esc(check.state)}" aria-label="${esc(check.state)}">${checkMark(check.state)}</span><span class="mono check-name">${esc(check.id)}</span><span class="mono muted check-command">${esc(command)}</span><span class="tag">${esc(check.kind)}</span><span class="check-meta">${meta}</span><span class="check-chevron" aria-hidden="true">${open ? "⌄" : "›"}</span></button>`;
   const body = open
     ? `<div class="check-detail" id="${anchor}-out">${checkBody(verdict, attempt, check, view, engineUrl)}</div>`
     : "";
-  return `<div class="col" id="${anchor}">${head}${body}</div>`;
+  return `<div class="check-row" id="${anchor}">${head}${body}</div>`;
 }
 
 function checkBody(
@@ -170,26 +192,30 @@ function checkBody(
   const findings = check.findings
     ? `<div class="stream"><span>Findings</span><pre class="out ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}" tabindex="0" data-log="${logKey(verdict.itemId, attempt.number, check.id, "findings")}">${esc(check.findings)}</pre></div>`
     : "";
-  return `${tools}${truncated}${output(verdict.itemId, attempt.number, check, wrap)}${findings}`;
+  const selectedStream = view.stream?.[key] ?? (check.stdout ? "stdout" : "stderr");
+  const tabs = (["stdout", "stderr"] as const)
+    .map(
+      (stream) =>
+        `<button type="button" class="btn sm" data-action="check-stream" ${data} data-stream="${stream}" aria-pressed="${selectedStream === stream}">${stream}</button>`,
+    )
+    .join("");
+  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${attempt.number} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, wrap, selectedStream)}${truncated}</div>${findings}`;
 }
 
-function output(itemId: string, attempt: number, check: StatusCheck, wrap: boolean): string {
-  const stdout = check.stdout ?? "";
-  const stderr = check.stderr ?? "";
-  if (!stdout && !stderr) {
-    return check.state === "running"
-      ? '<p class="muted">Waiting for output.</p>'
-      : '<p class="muted">No output.</p>';
-  }
+function output(
+  itemId: string,
+  attempt: number,
+  check: StatusCheck,
+  wrap: boolean,
+  selected: "stdout" | "stderr",
+): string {
   const lines = wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre";
-  return [
-    stdout
-      ? `<div class="stream"><span>stdout</span><pre class="out ${lines}" tabindex="0" data-log="${logKey(itemId, attempt, check.id, "stdout")}">${ansiToHtml(stdout)}</pre></div>`
-      : "",
-    stderr
-      ? `<div class="stream"><span>stderr</span><pre class="out ${lines}" tabindex="0" data-log="${logKey(itemId, attempt, check.id, "stderr")}">${ansiToHtml(stderr)}</pre></div>`
-      : "",
-  ].join("");
+  return (["stdout", "stderr"] as const)
+    .map(
+      (stream) =>
+        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
+    )
+    .join("");
 }
 
 function artifactLink(
@@ -220,11 +246,9 @@ function logKey(itemId: string, attempt: number, checkId: string, stream: string
 
 function checkMeta(check: StatusCheck): string {
   const parts: string[] = [];
-  if (check.attempt) parts.push(`attempt ${check.attempt}`);
+
   if (typeof check.elapsedMs === "number") parts.push(durationLabel(check.elapsedMs));
-  if (typeof check.timeoutSeconds === "number") {
-    parts.push(`timeout ${durationLabel(check.timeoutSeconds * 1000)}`);
-  }
+
   if (typeof check.exitCode === "number") parts.push(`exit ${check.exitCode}`);
   if (check.timedOut) parts.push(esc(check.timeoutReason || "timed out"));
   return parts.join(" · ");

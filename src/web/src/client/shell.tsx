@@ -121,15 +121,19 @@ function Navigation({ route, onNavigate }: { route: Route; onNavigate?: () => vo
 export function mountShell(): {
   router: DataRouter;
   setAuthenticated(value: boolean): void;
+  setBreadcrumb(value: { issueId: string | null; entityId: string } | null): void;
 } {
   initializeAppearance();
   const root = document.querySelector<HTMLElement>("#app");
   if (!root) throw new Error("Dashboard root is missing");
   let authenticate = (_value: boolean) => {};
+  let breadcrumb = (_value: { issueId: string | null; entityId: string } | null) => {};
   function Shell() {
     const { pathname } = useLocation();
     const route = parseRoute(pathname);
     const [authenticated, setAuthenticated] = useState(false);
+    const [detail, setDetail] = useState<{ issueId: string | null; entityId: string } | null>(null);
+    breadcrumb = (value) => setDetail(value);
     const [open, setOpen] = useState(false);
     const menu = useRef<HTMLButtonElement>(null);
     const navigating = useRef(false);
@@ -229,11 +233,39 @@ export function mountShell(): {
                 </Sheet>
               )}
               <span className="text-sm font-semibold">
-                {authenticated
-                  ? route.view === "settings"
-                    ? SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
-                    : PAGES[route.view].title
-                  : "Paws"}
+                {authenticated && detail && route.view === "runs" ? (
+                  <Link
+                    to={routePath({ view: "runs", id: null })}
+                    className="underline underline-offset-4"
+                  >
+                    Runs
+                  </Link>
+                ) : authenticated ? (
+                  route.view === "settings" ? (
+                    SETTINGS_PAGES.find((page) => page.id === (route.page ?? "agents"))!.name
+                  ) : (
+                    PAGES[route.view].title
+                  )
+                ) : (
+                  "Paws"
+                )}
+                {authenticated && detail && (
+                  <>
+                    <span className="mx-2">/</span>
+                    {detail.issueId && (
+                      <>
+                        <Link
+                          to={routePath({ view: "issues", id: detail.issueId })}
+                          className="underline underline-offset-4"
+                        >
+                          {detail.issueId}
+                        </Link>
+                        <span className="mx-2">/</span>
+                      </>
+                    )}
+                    <span className="font-mono text-xs">{detail.entityId}</span>
+                  </>
+                )}
               </span>
             </div>
             <AppearanceControl />
@@ -257,6 +289,9 @@ export function mountShell(): {
   flushSync(() => createRoot(root).render(<RouterProvider router={router} />));
   return {
     router,
+    setBreadcrumb(value) {
+      flushSync(() => breadcrumb(value));
+    },
     setAuthenticated(value) {
       flushSync(() => authenticate(value));
     },

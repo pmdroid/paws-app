@@ -136,6 +136,7 @@ export function taskPhase(
 }
 
 export function durationLabel(ms: number): string {
+  if (ms > 0 && ms < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
