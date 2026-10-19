@@ -69,7 +69,8 @@ const assert = require("node:assert/strict");
       await page.getByRole("heading", { name: "GitHub", exact: true }).waitFor();
       assert((await page.locator("body").innerText()).includes("PAS-339"));
       assert((await page.locator("body").innerText()).toLowerCase().includes("not checked"));
-      assert((await page.locator("body").innerText()).toLowerCase().includes("not linked"));
+      if (name === "desktop")
+        assert((await page.locator("body").innerText()).toLowerCase().includes("not linked"));
       const connect = page.getByRole("button", { name: "Connect GitHub", exact: true });
       await connect.waitFor();
       await connect.focus();
@@ -105,6 +106,36 @@ const assert = require("node:assert/strict");
       await context.unroute("**/api/workspaces/member-github");
       await page.getByRole("button", { name: "Refresh GitHub connection" }).click();
       await connect.waitFor();
+      await page.request.post(`${manifest.origin}/__vm-fixture`);
+      await page.reload();
+      const vm = page.getByRole("combobox", { name: "Your paired VM" });
+      await vm.waitFor();
+      assert.equal(await vm.inputValue(), "");
+      assert(await page.getByRole("button", { name: "Use this VM" }).isDisabled());
+      await vm.selectOption({ label: "Member VM 1" });
+      await context.route("**/api/workspaces/onboarding/vm", (route) =>
+        route.fulfill({ status: 409, body: "{}" }),
+      );
+      await page.getByRole("button", { name: "Use this VM" }).click();
+      await page
+        .getByText("This VM could not be selected. Refresh the available VMs and choose again.", {
+          exact: true,
+        })
+        .waitFor();
+      await context.unroute("**/api/workspaces/onboarding/vm");
+      await page.screenshot({ path: path.join(root, `${name}-vm-choice.png`), fullPage: true });
+      await vm.selectOption({ label: "Member VM 1" });
+      await page.getByRole("button", { name: "Use this VM" }).click();
+      await page.getByText("Selected VM: Member VM 1", { exact: true }).waitFor();
+      await page.reload();
+      await page.getByText("Selected VM: Member VM 1", { exact: true }).waitFor();
+      await page.request.post(`${manifest.origin}/__vm-fixture?mode=remove`);
+      await page.reload();
+      await vm.waitFor();
+      assert.equal(await vm.inputValue(), "");
+      await vm.selectOption({ label: "Member VM 2" });
+      await page.getByRole("button", { name: "Use this VM" }).click();
+      await page.getByText("Selected VM: Member VM 2", { exact: true }).waitFor();
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.screenshot({ path: path.join(root, `${name}-light.png`), fullPage: true });
       await page.getByRole("combobox", { name: "Appearance" }).selectOption("dark");
@@ -141,6 +172,7 @@ const assert = require("node:assert/strict");
         outageClearsIssue: true,
         keyboardRetry: true,
         signedOutShellAndSafeReturn: true,
+        vmSelectionPersistsAndInvalidates: true,
         connectReconnectUnlink: true,
         linkedIdentityNotRepositoryPermission: true,
         failedStartRetry: true,

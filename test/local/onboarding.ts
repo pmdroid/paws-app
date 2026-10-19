@@ -7,6 +7,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  workspaceLinearMember,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import {
@@ -141,6 +142,28 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname === "/__vm-fixture" && request.method === "POST") {
+      const member = workspaceLinearMember(db, "workspace", "member")!;
+      const ids = ["01AAAAAAAAAAAAAAAAAAAAAAAA", "01BBBBBBBBBBBBBBBBBBBBBBBB"];
+      if (url.searchParams.get("mode") === "remove")
+        db.run("UPDATE runner SET status='paused' WHERE id=?", [ids[0]!]);
+      else
+        for (const [index, id] of ids.entries()) {
+          db.run(
+            "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
+            [id, "workspace", member.userId, `Member VM ${index + 1}`, now],
+          );
+          db.run(
+            "INSERT OR IGNORE INTO runner_certificate(fingerprint,serial,runner_id,pem,not_before,not_after,accepted_until) VALUES(?,?,?,?,?,?,?)",
+            [id, id, id, "synthetic", now - 1, now + 600000, now + 600000],
+          );
+        }
+      if (url.searchParams.get("mode") !== "remove") {
+        db.run("UPDATE runner SET status='active'");
+        db.run("DELETE FROM onboarding_vm");
+      }
+      return Response.json({ ok: true });
+    }
     const headers = new Headers(request.headers);
     headers.set("host", new URL(configured).host);
     if (headers.has("origin")) headers.set("origin", configured);

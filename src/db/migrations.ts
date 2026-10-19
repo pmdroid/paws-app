@@ -1843,4 +1843,18 @@ CREATE TABLE member_github_oauth_request (
 ) STRICT;
 `,
   },
+  {
+    id: "076_onboarding_vm",
+    sql: `
+CREATE TABLE onboarding_vm (
+  session_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  runner_fence INTEGER NOT NULL,
+  selected_at INTEGER NOT NULL,
+  PRIMARY KEY(session_id,generation),
+  FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
 ];
