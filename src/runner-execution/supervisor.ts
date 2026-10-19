@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   closeSync,
   constants,
   fchmodSync,
@@ -25,7 +26,9 @@ function startTime(pid: number): string | undefined {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const command = stat.lastIndexOf(")");
     if (command < 0) return;
-    return stat.slice(command + 2).split(" ")[19];
+    const fields = stat.slice(command + 2).split(" ");
+    if (fields[0] === "Z" || fields[0] === "X") return;
+    return fields[19];
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
@@ -101,7 +104,7 @@ function killRecorded(pid: number): void {
   }
 }
 
-function workerLaunch(executionId: string, home: string) {
+function workerLaunch(executionId: string, home: string, log: number) {
   const script = process.argv[1];
   const args =
     script && /\.(ts|js|mjs|cjs)$/.test(script)
@@ -119,7 +122,7 @@ function workerLaunch(executionId: string, home: string) {
   return spawn(process.execPath, args, {
     cwd: home,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", log, log],
     env,
   });
 }
@@ -130,7 +133,15 @@ export function createDirectWorkerSupervisor(options: {
   results?: RunnerResults;
   taskRoot?: string;
   memberHomes?: string;
-  launch?: (executionId: string, home: string) => { pid?: number; unref(): void };
+  launch?: (
+    executionId: string,
+    home: string,
+    log: number,
+  ) => {
+    pid?: number;
+    unref(): void;
+    on?(event: "exit", listener: (code: number | null, signal: string | null) => void): unknown;
+  };
 }): RunnerBrokerClient {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
   const memberHomes = options.memberHomes ?? "/var/lib/paws-runner-members";
@@ -163,6 +174,10 @@ export function createDirectWorkerSupervisor(options: {
     ExecutionIdSchema.parse(executionId);
     return join(options.stateRoot, `${executionId}.pid`);
   }
+  function logPath(executionId: string): string {
+    ExecutionIdSchema.parse(executionId);
+    return join(options.stateRoot, `${executionId}.log`);
+  }
   return {
     async start(executionId) {
       const path = receipt(executionId);
@@ -174,9 +189,22 @@ export function createDirectWorkerSupervisor(options: {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") return { alreadyAdmitted: true };
         throw error;
       }
-      let child: { pid?: number; unref(): void } | undefined;
+      let child: ReturnType<typeof launch> | undefined;
+      const log = openSync(
+        logPath(executionId),
+        constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+        0o600,
+      );
       try {
-        child = launch(executionId, home);
+        child = launch(executionId, home, log);
+        child.on?.("exit", (code, signal) => {
+          try {
+            appendFileSync(
+              logPath(executionId),
+              `Runner worker exited with ${signal ? `signal ${signal}` : `code ${code}`}\n`,
+            );
+          } catch {}
+        });
         if (child.pid === undefined) throw new Error("Runner worker did not start");
         const born = startTime(child.pid);
         if (born === undefined) throw new Error("Runner worker did not start");
@@ -196,6 +224,27 @@ export function createDirectWorkerSupervisor(options: {
         throw error;
       } finally {
         closeSync(fd);
+        closeSync(log);
+      }
+    },
+    alive(executionId) {
+      let recorded: string;
+      try {
+        recorded = readFileSync(receipt(executionId), "utf8").trim();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        throw error;
+      }
+      const [pidText, born] = recorded.split(" ");
+      const pid = Number(pidText);
+      return Number.isSafeInteger(pid) && pid > 1 && !!born && startTime(pid) === born;
+    },
+    log(executionId) {
+      try {
+        const text = readFileSync(logPath(executionId), "utf8").slice(-4000);
+        return text.split("\n").slice(-20).join("\n");
+      } catch {
+        return "";
       }
     },
     async stop(executionId) {
