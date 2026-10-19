@@ -300,3 +300,63 @@ test("assigned work keeps its account on a paused or draining runner while new w
   f.db.run("UPDATE runner SET status='revoked',revoked_at=1 WHERE id=?", [f.runnerId]);
   expect(() => authorizeRunnerAccount(f.db, run, true)).toThrow("Runner is revoked");
 });
+
+test("Grok device login is member-scoped, persists connected accounts and rejects foreign authorization hosts", async () => {
+  const f = fixture();
+  const endpoint = `https://paws.example.invalid/api/runners/${f.runnerId}/accounts/grok/login`;
+  const response = await f.login.browser(new Request(endpoint, { method: "POST" }), f.member);
+  expect(response?.status).toBe(200);
+  const session = (await response!.json()) as { id: string };
+  const waiting = {
+    ...f.waiting,
+    inputId: null,
+    authorization: { url: "https://auth.x.ai/device", message: "Enter ABCD-1234" },
+  };
+  expect(() => f.login.exchange(f.runnerId, session.id, f.waiting)).toThrow("authorization URL");
+  for (const url of [
+    "https://auth.x.ai.evil.invalid/device",
+    "http://auth.x.ai/device",
+    "https://user@auth.x.ai/device",
+    "https://auth.x.ai:444/device",
+  ])
+    expect(() =>
+      f.login.exchange(f.runnerId, session.id, {
+        ...waiting,
+        authorization: { url, message: "Enter ABCD-1234" },
+      }),
+    ).toThrow();
+  f.login.exchange(f.runnerId, session.id, waiting);
+  expect((await f.login.browser(new Request(`${endpoint}/${session.id}`), f.owner))?.status).toBe(
+    403,
+  );
+  expect(
+    f.login.list(f.member, f.runnerId).accounts.find((entry) => entry.agent === "grok")?.session
+      ?.authorization,
+  ).toEqual(waiting.authorization);
+  f.login.exchange(f.runnerId, session.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  expect(
+    f.login.list(f.member, f.runnerId).accounts.find((entry) => entry.agent === "grok")?.connected,
+  ).toBe(true);
+  expect(
+    f.login.list(f.owner, f.runnerId).accounts.find((entry) => entry.agent === "grok")?.connected,
+  ).toBe(false);
+});
+
+test("Grok account migration preserves existing member accounts and pending sessions", () => {
+  const f = fixture();
+  const session = f.login.start(f.member, f.runnerId, "codex");
+  f.login.exchange(f.runnerId, session.id, f.waiting);
+  f.db.run("DELETE FROM schema_migration WHERE id='073_grok_runner_login'");
+  migrate(f.db);
+  expect(f.login.list(f.member, f.runnerId).accounts[1]?.session?.id).toBe(session.id);
+  expect(f.login.list(f.member, f.runnerId).accounts[1]?.session?.authorization).toEqual(
+    f.waiting.authorization,
+  );
+  expect(f.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  expect(f.login.start(f.member, f.runnerId, "grok").agent).toBe("grok");
+});

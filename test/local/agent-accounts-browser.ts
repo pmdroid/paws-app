@@ -30,7 +30,7 @@ const server = Bun.serve({
     const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
     if (asset !== url.pathname && !asset.includes("/"))
       return new Response(Bun.file(`${root}/src/web/dist/assets/${asset}`));
-    if (url.pathname === "/status/" || url.pathname === "/")
+    if (["/status/", "/", "/runners/runner-a"].includes(url.pathname))
       return new Response(
         (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
           "</head>",
@@ -51,7 +51,7 @@ const server = Bun.serve({
       });
     if (url.pathname === "/api/status") return Response.json({ ...demoStatus(), source: "live" });
     const match = url.pathname.match(
-      /^\/api\/runners\/runner-a\/accounts\/(claude|codex)\/login(?:\/([^/]+))?(\/input)?$/,
+      /^\/api\/runners\/runner-a\/accounts\/(claude|codex|grok)\/login(?:\/([^/]+))?(\/input)?$/,
     );
     if (url.pathname === "/api/runners")
       return Response.json({
@@ -63,7 +63,7 @@ const server = Bun.serve({
       return Response.json({ ownerUserId: "person", sharing: 0 });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
-        accounts: ["claude", "codex"].map((agent) => ({
+        accounts: ["claude", "codex", "grok"].map((agent) => ({
           agent,
           connected: sessions[agent]?.state === "connected",
           updatedAt: null,
@@ -92,7 +92,12 @@ const server = Bun.serve({
         authorization:
           agent === "codex"
             ? { url: "https://auth.openai.com/codex/device", message: "Enter code TEST-1234" }
-            : null,
+            : agent === "grok"
+              ? {
+                  url: "https://auth.x.ai/device",
+                  message: "Enter code GROK-1234. Only continue with a code you requested.",
+                }
+              : null,
       };
     else if (req.method === "DELETE") sessions[agent] = { ...sessions[agent], state: "cancelled" };
     else if (match[3])
@@ -116,7 +121,7 @@ try {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(`http://127.0.0.1:${server.port}/status/#/runners`);
+  await page.goto(`http://127.0.0.1:${server.port}/runners/runner-a`);
   await page.getByRole("button", { name: "Sign in to agents", exact: true }).click();
   await page.getByRole("button", { name: "Sign in to Codex", exact: true }).click();
   await page.getByRole("link", { name: "Open Codex sign-in", exact: true }).waitFor();
@@ -157,6 +162,48 @@ try {
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
   await page.screenshot({ path: `${output}/cancelled.png`, fullPage: true });
+  await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
+  await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
+  await page.getByText("Enter code GROK-1234. Only continue with a code you requested.").waitFor();
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((value) => {
+      (
+        globalThis as unknown as { document: { documentElement: { className: string } } }
+      ).document.documentElement.className = value;
+    }, theme);
+    for (const [name, width, height] of [
+      ["desktop", 1440, 1000],
+      ["mobile", 390, 844],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await page.screenshot({ path: `${output}/grok-${theme}-${name}.png`, fullPage: true });
+      if (
+        await page.evaluate(() => {
+          const window = globalThis as unknown as {
+            document: { documentElement: { scrollWidth: number } };
+            innerWidth: number;
+          };
+          return window.document.documentElement.scrollWidth > window.innerWidth;
+        })
+      )
+        throw new Error(`Grok ${theme} ${name} overflow`);
+    }
+  }
+  await page.waitForTimeout(10500);
+  await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
+  if (calls.some((call) => call.path.includes("/grok/") && call.path.endsWith("/input")))
+    throw new Error("Grok must poll without manual confirmation");
+  sessions.grok = { ...sessions.grok, state: "connected", authorization: null };
+  await page
+    .locator('[data-agent="grok"] [data-agent-status]')
+    .filter({ hasText: "Connected to your account" })
+    .waitFor();
+  await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+  await page
+    .locator('[data-agent="grok"] [data-agent-status]')
+    .filter({ hasText: "Sign-in cancelled" })
+    .waitFor();
   if (errors.length) throw new Error(errors.join("\n"));
   if (
     !calls.some((c) => c.body?.accept === true) ||
