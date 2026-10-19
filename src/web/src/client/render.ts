@@ -345,6 +345,7 @@ function viewRuns(
       <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
       <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
+      ${skipRequestCard(snapshot, selected.itemId)}
       ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
       ${evidenceSlot(snapshot, selected.id)}
     </div>
@@ -435,6 +436,20 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (item?.state === "verifying" || run.state === "verifying")
     return statePill("verifying", "Closeout");
   return statePill(run.state, runLabel(run.state));
+}
+
+/** The agent's open request to skip exhausted checks. People answer it in Linear. */
+function skipRequestCard(snapshot: StatusSnapshot, itemId: string): string {
+  const question = snapshot.questions.find((entry) => entry.itemId === itemId && entry.skipRequest);
+  const request = question?.skipRequest;
+  if (!question || !request) return "";
+  const link = question.links[0];
+  const open = link ? linkList([{ label: "Open in Linear", href: link.href }]) : "";
+  return `<section class="card skip-request" aria-label="Skip request">
+    <div class="between"><h3>Skip requested in Linear</h3>${open}</div>
+    <div class="row wrap">${request.checks.map((id) => `<span class="tag bad mono">${esc(id)}</span>`).join("")}</div>
+    <div class="ctx">${esc(request.reason)}</div>
+  </section>`;
 }
 
 function closeoutSection(

@@ -29,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Job, OpenQuestionRecord, OutboxRow, WorkItemFact, WorkItemRecord } from "../../../db";
 import {
+  getCloseoutRecovery,
   getLinearConversationSource,
   listCloseoutProgress,
   listEvidence,
@@ -373,6 +374,7 @@ function questionsFor(
       askedAt: iso(question.createdAt),
       claimedBy: null,
       links: questionLinks(db, question.sessionId, record.linearIdentifier),
+      skipRequest: getCloseoutRecovery(db, question.id)?.skipRequest ?? null,
     });
   }
   const waiting = records.filter((record) => record.state === "awaiting_input");
