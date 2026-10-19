@@ -254,6 +254,8 @@ function pageResponse(request: Request, staticDir: string | null, csrfToken?: st
   const relative =
     url.pathname === STATUS_PAGE_PATH ? "index.html" : relativePagePath(url.pathname);
   if (!relative) return text("Not found", 404);
+  if (/^runs\/[A-Za-z0-9_-]{1,128}\/transcript\/?$/.test(relative))
+    return pageHtml(staticDir, "transcript.html", csrfToken);
   if (relative === "index.html" || !isPublicFile(relative)) return indexHtml(staticDir, csrfToken);
   if (!staticDir) return text("Not found", 404);
   const file = safeFile(staticDir, relative);
@@ -306,7 +308,11 @@ function safeFile(staticDir: string, relative: string): string | null {
 }
 
 function indexHtml(staticDir: string | null, csrfToken?: string): Response {
-  const file = staticDir ? safeFile(staticDir, "index.html") : null;
+  return pageHtml(staticDir, "index.html", csrfToken);
+}
+
+function pageHtml(staticDir: string | null, name: string, csrfToken?: string): Response {
+  const file = staticDir ? safeFile(staticDir, name) : null;
   const body = file && existsSync(file) ? readFileSync(file, "utf8") : MISSING_PAGE;
   return html(injectCsrf(withBase(body), csrfToken));
 }
