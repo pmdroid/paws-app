@@ -411,3 +411,55 @@ function git(cwd: string, args: string[]): void {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 }
+
+test("session report transports real command streams and duration for the checked commit", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("output", [
+      process.execPath,
+      "-e",
+      'console.log("real stdout"); console.error("real stderr"); await Bun.sleep(25)',
+    ]),
+  ]);
+  const session = createCloseoutSession(root, local(root));
+  await session.run("output");
+  const report = JSON.parse(await session.report());
+  expect(report.required[0].result).toMatchObject({
+    argv: [
+      process.execPath,
+      "-e",
+      'console.log("real stdout"); console.error("real stderr"); await Bun.sleep(25)',
+    ],
+    head: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(),
+    exitCode: 0,
+    stdout: "real stdout\n",
+    stderr: "real stderr\n",
+    timedOut: false,
+    truncated: false,
+  });
+  expect(report.required[0].result.durationMs).toBeGreaterThanOrEqual(25);
+  writeFileSync(join(root, "README.md"), "changed");
+  expect(JSON.parse(await session.report()).required[0].result).toBeUndefined();
+});
+
+test("large session output stays within the remote report budget and marks truncation", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("output", [
+      process.execPath,
+      "-e",
+      'console.log("多".repeat(100000)); console.error("末尾")',
+    ]),
+  ]);
+  const session = createCloseoutSession(root, local(root));
+  await session.run("output");
+  const text = await session.report();
+  expect(Buffer.byteLength(text)).toBeLessThanOrEqual(60000);
+  const result = JSON.parse(text).required[0].result;
+  expect(result.truncated).toBe(true);
+  expect(result.stderr).toContain("末尾");
+});

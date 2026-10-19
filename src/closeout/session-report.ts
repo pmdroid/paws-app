@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { CommandRunResult, LoggedCommandRequest } from "../closeout-spec";
+import type {
+  CommandRunResult,
+  LoggedCommandRequest,
+  SessionCommandResult,
+} from "../closeout-spec";
 
 const REPORT_LIMIT = 65_536;
 
@@ -57,23 +61,42 @@ export function loggedSessionCloseout(
   report: string | undefined,
   request: LoggedCommandRequest,
 ): CommandRunResult {
-  const accepted = sessionCloseoutAccepted(report);
-  const text = accepted
-    ? "STDOUT\nCloseout session report is clear.\nSTDERR\n"
-    : "STDOUT\nSTDERR\nCloseout session report is missing or unfinished.\n";
-  const bytes = Buffer.from(text, "utf8");
+  let result: SessionCommandResult | undefined;
+  try {
+    const parsed = JSON.parse(report ?? "null");
+    const entries = Array.isArray(parsed?.required) ? parsed.required : [];
+    result = entries.find(
+      (entry: { id?: string; status?: string; result?: SessionCommandResult }) =>
+        (!request.itemId || entry.id === request.itemId) &&
+        entry.status !== "stale" &&
+        entry.result?.head === request.expectedHead &&
+        JSON.stringify(entry.result.argv) === JSON.stringify(request.argv) &&
+        Number.isSafeInteger(entry.result.exitCode) &&
+        Number.isFinite(entry.result.durationMs) &&
+        entry.result.durationMs >= 0 &&
+        typeof entry.result.stdout === "string" &&
+        typeof entry.result.stderr === "string" &&
+        typeof entry.result.timedOut === "boolean" &&
+        typeof entry.result.truncated === "boolean",
+    )?.result;
+  } catch {}
+  const stdout = result?.stdout ?? "";
+  const stderr =
+    result?.stderr ??
+    "Closeout command output is missing for this commit. Rerun the check on the candidate commit.\n";
+  const bytes = Buffer.from(`STDOUT\n${stdout}\nSTDERR\n${stderr}`, "utf8");
   mkdirSync(dirname(request.logFile), { recursive: true, mode: 0o700 });
   writeFileSync(request.logFile, bytes, { mode: 0o600 });
-  if (accepted) request.onOutput?.("stdout", "Closeout session report is clear.\n", false);
-  else request.onOutput?.("stderr", "Closeout session report is missing or unfinished.\n", false);
+  if (stdout) request.onOutput?.("stdout", stdout, result?.truncated ?? false);
+  if (stderr) request.onOutput?.("stderr", stderr, result?.truncated ?? false);
   return {
     argv: [...request.argv],
-    exitCode: accepted ? 0 : 1,
-    timedOut: false,
+    exitCode: result?.exitCode ?? 1,
+    timedOut: result?.timedOut ?? false,
     dirty: false,
     headMoved: false,
-    durationMs: 0,
-    truncated: false,
+    durationMs: result?.durationMs ?? 0,
+    truncated: result?.truncated ?? false,
     artifacts: [
       { path: request.artifactPath, sha256: createHash("sha256").update(bytes).digest("hex") },
     ],
