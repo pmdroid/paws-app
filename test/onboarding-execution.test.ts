@@ -13,6 +13,8 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  getWorkItem,
+  releaseRunCapacity,
   syncWorkspaceMember,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
@@ -571,3 +573,94 @@ for (const prepareOnly of [true, false])
       expect(f.db.query("SELECT count(*) AS count FROM runner_work").get()).toEqual({ count: 0 });
     });
   }
+
+test("ended current run invalidates capture and started admission without usage", async () => {
+  const f = fixture();
+  const captured = f.guard.capture(f.item.id)!;
+  await f.placement.candidates(f.request());
+  const runId = getWorkItem(f.db, f.item.id)!.currentRunId!;
+  releaseRunCapacity(f.db, runId, f.now());
+  expect(getWorkItem(f.db, f.item.id)!.currentRunId).toBe(runId);
+  expect(() => f.guard.capture(f.item.id)).toThrow();
+  expect(() => captured.assertCurrent()).toThrow();
+  expect(() =>
+    f.placement.started({
+      ...f.request(),
+      runnerId: "own",
+      commandId: "ended-command",
+      startedAt: f.now(),
+    }),
+  ).toThrow();
+  expect(f.db.query("SELECT count(*) AS count FROM runner_execution_usage").get()).toEqual({
+    count: 0,
+  });
+});
+
+test("ending current run before prepare-only transaction cannot enqueue its probe", async () => {
+  const f = fixture();
+  const work = createRunnerWork({
+    db: f.db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    now: f.now,
+  });
+  let ended = false;
+  let scopes = 0;
+  const backend = createRemoteAgentRunner({
+    db: f.db,
+    onboarding: f.guard,
+    now: f.now,
+    placement: f.placement,
+    work: {
+      ...work,
+      scopeTask(...args) {
+        const scope = work.scopeTask(...args);
+        if (++scopes === 2) {
+          releaseRunCapacity(f.db, getWorkItem(f.db, f.item.id)!.currentRunId!, f.now());
+          ended = true;
+        }
+        return scope;
+      },
+    },
+    health: createRunnerHealth({ db: f.db, work, now: f.now }),
+    results: createRunnerResults({ db: f.db, work, now: f.now }),
+    transcripts: {
+      async download() {
+        throw new Error("No transcript");
+      },
+    },
+    async fetchCandidate() {
+      throw new Error("No credentials");
+    },
+  });
+  await expect(
+    backend.forItem(f.item.id)({
+      profile: { agent: "codex", model: "model" },
+      role: "implementer",
+      itemId: f.item.id,
+      runId: "display",
+      prompt: "Fixture",
+      worktreePath: f.root,
+      pawsRoot: f.root,
+      prepareOnly: true,
+      readOnly: true,
+    }),
+  ).rejects.toThrow();
+  expect(ended).toBe(true);
+  expect(f.db.query("SELECT count(*) AS count FROM runner_command").get()).toEqual({ count: 0 });
+  expect(f.db.query("SELECT count(*) AS count FROM runner_execution_usage").get()).toEqual({
+    count: 0,
+  });
+});
+
+test("current run ownership and live status are part of execution authority", () => {
+  const f = fixture();
+  const runId = getWorkItem(f.db, f.item.id)!.currentRunId!;
+  const captured = f.guard.capture(f.item.id)!;
+  f.db.run("UPDATE run SET status='provisioning' WHERE id=?", [runId]);
+  expect(() => captured.assertCurrent()).toThrow();
+  expect(f.guard.capture(f.item.id)).not.toBeNull();
+  const other = insertQueuedItem(f.db, { id: "foreign-item", now: f.now() });
+  f.db.run("UPDATE run SET item_id=? WHERE id=?", [other.id, runId]);
+  expect(() => f.guard.capture(f.item.id)).toThrow();
+});
