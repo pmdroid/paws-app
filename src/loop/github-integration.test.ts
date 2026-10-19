@@ -32,7 +32,7 @@ function fixture(path = ":memory:") {
       return ready && allowed;
     },
     administrators: () => ["owner", "admin", "admin"],
-    recoveryUrl: "https://paws.example/status#/settings",
+    recoveryUrl: "https://paws.example/status/settings/integrations",
     identity: () => authority,
   };
   const auth = new GitHubAuthQuestions(

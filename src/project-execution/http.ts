@@ -90,7 +90,8 @@ export function createProjectHttp(input: {
     if (request.method === "GET") {
       const id = url.searchParams.get("projectId");
       if (id !== null) {
-        if (!text.safeParse(id).success) return json({ error: "Enter a Linear project ID." }, 400);
+        if (!text.safeParse(id).success)
+          return json({ error: "Enter a Linear project URL or ID." }, 400);
         if (!input.tracker.loadProject)
           return json({ error: "Linear project reads are not ready." }, 503);
         try {
@@ -106,7 +107,9 @@ export function createProjectHttp(input: {
           return json({ project: { ...project, issues } });
         } catch {
           return json(
-            { error: "This Linear project could not be loaded. Check its ID and try again." },
+            {
+              error: "This Linear project could not be loaded. Check its URL or ID and try again.",
+            },
             503,
           );
         }

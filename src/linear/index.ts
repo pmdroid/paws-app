@@ -31,6 +31,7 @@ export type {
   CandidateRepository,
   LinearRepositoryAdapter,
   RepositorySuggestion,
+  RepositoryHints,
   RepositorySuggestionsInput,
 } from "./repositories";
 export { createInboxStore } from "./inbox";
@@ -102,7 +103,7 @@ export {
 export type { LinearWebhookDeps, SignatureCheck, SignatureInput } from "./webhook";
 export { createSessionStarter } from "./start-session";
 export { createLinearProjectScopeReads } from "./project-scope";
-export type { LinearProjectIssue, LinearProjectSnapshot } from "./project-scope";
+export type { LinearProjectIssue, LinearProjectSnapshot, ProjectOverview } from "./project-scope";
 export type { LinearSessionTarget, StartedLinearSession } from "./start-session";
 
 export { parseLinearSessionContext, renderLinearSessionContext } from "./context";

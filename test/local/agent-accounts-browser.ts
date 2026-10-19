@@ -27,17 +27,18 @@ const server = Bun.serve({
   port: 0,
   async fetch(req) {
     const url = new URL(req.url);
-    if (url.pathname.startsWith("/status/assets/") && !url.pathname.slice(15).includes("/"))
-      return new Response(Bun.file(`${root}/src/web/dist/assets/${url.pathname.slice(15)}`));
-    if (url.pathname === "/status/")
+    const asset = url.pathname.replace(/^\/(status\/)?assets\//, "");
+    if (asset !== url.pathname && !asset.includes("/"))
+      return new Response(Bun.file(`${root}/src/web/dist/assets/${asset}`));
+    if (["/status/", "/", "/runners/runner-a"].includes(url.pathname))
       return new Response(
         (await Bun.file(`${root}/src/web/dist/index.html`).text()).replace(
-          "<head>",
-          '<head><meta name="paws-csrf" content="synthetic-csrf">',
+          "</head>",
+          '<meta name="paws-csrf" content="synthetic-csrf"></head>',
         ),
         { headers: { "content-type": "text/html" } },
       );
-    if (url.pathname.endsWith("/config.json")) return Response.json({ engineUrl: null });
+    if (url.pathname.endsWith("/config.json")) return Response.json({ engineUrl: url.origin });
     if (url.pathname === "/api/auth/session")
       return Response.json({
         userId: "person",
@@ -54,34 +55,12 @@ const server = Bun.serve({
     );
     if (url.pathname === "/api/runners")
       return Response.json({
-        runners: [
-          {
-            id: "runner-a",
-            name: "Team Linux runner",
-            status: "active",
-            ownerUserId: "person",
-            metrics: {
-              reportedAt: Date.now(),
-              cpuPercent: 0,
-              memoryTotalBytes: null,
-              memoryAvailableBytes: null,
-              diskTotalBytes: null,
-              diskFreeBytes: null,
-              load1: null,
-              load5: null,
-              load15: null,
-            },
-            os: null,
-            version: "1.0.0",
-            idle: true,
-          },
-        ],
+        runners: [{ id: "runner-a", name: "Team Linux runner", status: "active" }],
+        workspaceReady: true,
       });
-    if (url.pathname === "/api/runners/policy")
-      return Response.json({ personalOrganizationHost: false });
     if (url.pathname === "/api/runners/usage") return Response.json({ usage: [] });
     if (url.pathname === "/api/runners/runner-a/policy")
-      return Response.json({ ownerUserId: "person", sharing: 0, agents: [] });
+      return Response.json({ ownerUserId: "person", sharing: 0 });
     if (url.pathname === "/api/runners/runner-a/accounts")
       return Response.json({
         accounts: ["claude", "codex", "grok"].map((agent) => ({
@@ -142,7 +121,8 @@ try {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(`http://127.0.0.1:${server.port}/status/#/settings/integrations`);
+  await page.goto(`http://127.0.0.1:${server.port}/runners/runner-a`);
+  await page.getByRole("button", { name: "Sign in to agents", exact: true }).click();
   await page.getByRole("button", { name: "Sign in to Codex", exact: true }).click();
   await page.getByRole("link", { name: "Open Codex sign-in", exact: true }).waitFor();
   if (providerRequests !== 0) throw new Error("Provider fetched before acceptance");
@@ -182,7 +162,6 @@ try {
     .filter({ hasText: "Sign-in cancelled" })
     .waitFor();
   await page.screenshot({ path: `${output}/cancelled.png`, fullPage: true });
-  await page.goto(`http://127.0.0.1:${server.port}/status/#/runners`);
   await page.getByRole("button", { name: "Sign in to Grok", exact: true }).click();
   await page.getByRole("link", { name: "Open Grok sign-in", exact: true }).waitFor();
   await page.getByText("Enter code GROK-1234. Only continue with a code you requested.").waitFor();

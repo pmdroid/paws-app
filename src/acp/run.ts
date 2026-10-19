@@ -10,6 +10,7 @@ import {
   ndJsonStream,
   type ClientContext,
   type InitializeResponse,
+  type NewSessionResponse,
   type ContentBlock,
   type PermissionOption,
   type RequestPermissionRequest,
@@ -270,6 +271,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
   let observedModel: string | null = null;
   let changedModel = false;
+  let loading = false;
   const app = client({ name: "paws" })
     .onRequest(methods.client.session.requestPermission, (ctx) =>
       answerPermission(
@@ -280,6 +282,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       ),
     )
     .onNotification(methods.client.session.update, (ctx) => {
+      if (loading) return;
       const update = ctx.params.update;
       if (update.sessionUpdate === "config_option_update") {
         const model = sessionModel({ configOptions: update.configOptions }).model;
@@ -353,6 +356,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           worktreePath: options.worktreePath,
         },
         commandGuard: guard,
+        ...(options.closeoutPolicy ? { closeoutPolicy: options.closeoutPolicy } : {}),
         allowCloseoutRun: options.readOnly !== true,
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
@@ -424,22 +428,50 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
 
         let sessionId: string;
         let model: Awaited<ReturnType<typeof selectSessionProfile>>;
+        let prompt = preparedInput.prompt;
         try {
           assertRunning();
-          const created = await withTimeout(
-            ctx.request(methods.agent.session.new, {
-              cwd: options.worktreePath,
-              mcpServers: bridge ? [bridge.mcpServer] : [],
-              ...(stopHook?.sessionMeta ? { _meta: stopHook.sessionMeta } : {}),
-            }),
-            30_000,
-            phaseSignal,
-          );
-          sessionId = created.sessionId;
+          const session = {
+            cwd: options.worktreePath,
+            mcpServers: bridge ? [bridge.mcpServer] : [],
+            ...(stopHook?.sessionMeta ? { _meta: stopHook.sessionMeta } : {}),
+          };
+          let created: NewSessionResponse | undefined;
+          if (
+            options.resume?.sessionId &&
+            (initialized as InitializeResponse).agentCapabilities?.loadSession
+          ) {
+            loading = true;
+            try {
+              const loaded = await withTimeout(
+                ctx.request(methods.agent.session.load, {
+                  ...session,
+                  sessionId: options.resume.sessionId,
+                }),
+                60_000,
+                phaseSignal,
+              );
+              created = { ...loaded, sessionId: options.resume.sessionId };
+            } catch (error) {
+              phaseSignal.throwIfAborted();
+              if (isAuthRequired(error)) throw error;
+            } finally {
+              loading = false;
+            }
+          }
+          if (!created && options.resume) prompt = options.resume.replayPrompt;
+          const opened: NewSessionResponse =
+            created ??
+            (await withTimeout(
+              ctx.request(methods.agent.session.new, session),
+              30_000,
+              phaseSignal,
+            ));
+          sessionId = opened.sessionId;
           activeSessionId = sessionId;
           assertRunning();
           model = await withTimeout(
-            selectSessionProfile(ctx, created, profile),
+            selectSessionProfile(ctx, opened, profile),
             30_000,
             phaseSignal,
           );
@@ -483,7 +515,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           child,
           sessionId,
           prompt: buildAgentPrompt(
-            preparedInput.prompt,
+            prompt,
             options.worktreePath,
             inputFiles,
             (initialized as InitializeResponse).agentCapabilities?.promptCapabilities,

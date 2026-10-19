@@ -1,3 +1,4 @@
+import { readCsrfToken } from "./github-auth";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
@@ -16,47 +17,50 @@ type Account = {
   updatedAt: number | null;
   session: Login | null;
 };
-type Runner = { id: string; name: string; status: string };
+type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
 
-export function initializeAgentAccounts(
-  root: HTMLElement,
-  csrfToken: string,
-  fixedRunner?: Runner,
-): void {
-  const section = document.createElement("section");
-  if (!fixedRunner) {
-    section.id = "agent-accounts";
-    section.dataset.settingsPage = "integrations";
-  }
-  section.className = "settings-section";
+function pending(login: Login | null): boolean {
+  return login?.state === "starting" || login?.state === "waiting";
+}
+
+export function accountStatus(account: Account, runnerStatus: string | undefined): string {
+  const login = account.session;
+  if (pending(login))
+    return login?.state === "starting"
+      ? "Starting sign-in…"
+      : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`;
+  if (account.connected) return "Connected to your account";
+  if (runnerStatus === "signed_in") return "Signed in on this runner";
+  if (login?.state === "expired") return "Sign-in expired. Start again to connect.";
+  if (login?.state === "failed") return "Sign-in failed. Start again to try another sign-in.";
+  if (login?.state === "cancelled") return "Sign-in cancelled";
+  return "Not connected";
+}
+
+export function openAgentAccounts(runner: { id: string; name: string }, onClose: () => void): void {
+  const host = document.createElement("div");
+  document.body.append(host);
   renderMarkup(
-    section,
-    '<div><h2>Your agent accounts</h2><p class="sub">Connect Claude, Codex, and Grok on the runner that executes your work. Each member signs in separately.</p></div><div class="settings-account min-w-0"><label class="field"><span>Runner</span><select data-account-runner disabled><option>Loading runners…</option></select></label><p data-account-feedback role="alert"></p><div data-account-list class="flex flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div>',
+    host,
+    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude, Codex, and Grok on this runner. Each member signs in separately.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
   );
-  root.append(section);
-  const runnerSelect = section.querySelector<HTMLSelectElement>("[data-account-runner]")!;
-  const feedback = section.querySelector<HTMLElement>("[data-account-feedback]")!;
-  const list = section.querySelector<HTMLElement>("[data-account-list]")!;
-  const refresh = section.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
-  if (fixedRunner) runnerSelect.closest("label")!.hidden = true;
-  let selected = fixedRunner?.id ?? "";
+  const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
+  const feedback = dialog.querySelector<HTMLElement>("[data-account-feedback]")!;
+  const list = dialog.querySelector<HTMLElement>("[data-account-list]")!;
+  const refresh = dialog.querySelector<HTMLButtonElement>("[data-account-refresh]")!;
   let accounts: Account[] = [];
+  let runnerStatus = new Map<string, string>();
   let busy = false;
   let timer = 0;
   let generation = 0;
 
-  function pending(login: Login | null): boolean {
-    return login?.state === "starting" || login?.state === "waiting";
-  }
-
   function controls() {
-    runnerSelect.disabled = busy || accounts.some((account) => pending(account.session));
     refresh.disabled = busy;
     for (const button of list.querySelectorAll<HTMLButtonElement>("button")) button.disabled = busy;
   }
 
   function paint() {
-    if (!section.isConnected) return;
+    if (!dialog.isConnected) return;
     for (const agent of ["claude", "codex", "grok"] as const) {
       const account = accounts.find((entry) => entry.agent === agent);
       if (!account) continue;
@@ -74,19 +78,10 @@ export function initializeAgentAccounts(
       }
       const login = account.session;
       const active = pending(login);
-      row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = active
-        ? login?.state === "starting"
-          ? "Starting sign-in…"
-          : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`
-        : account.connected
-          ? "Connected to your account"
-          : login?.state === "expired"
-            ? "Sign-in expired. Start again to connect."
-            : login?.state === "failed"
-              ? "Sign-in failed. Start again to try another sign-in."
-              : login?.state === "cancelled"
-                ? "Sign-in cancelled"
-                : "Not connected";
+      row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = accountStatus(
+        account,
+        runnerStatus.get(agent),
+      );
       const actions = row.querySelector<HTMLElement>("[data-agent-actions]")!;
       const action = active ? "cancel" : "start";
       if (actions.dataset.action !== action) {
@@ -123,7 +118,7 @@ export function initializeAgentAccounts(
       method,
       cache: "no-store",
       headers: {
-        ...(method === "GET" ? {} : { "x-paws-csrf": csrfToken }),
+        ...(method === "GET" ? {} : { "x-paws-csrf": readCsrfToken(document) }),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -137,52 +132,38 @@ export function initializeAgentAccounts(
   }
 
   function accountPath(agent?: Agent, login?: Login): string {
-    return `/api/runners/${encodeURIComponent(selected)}/accounts${agent ? `/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}` : ""}`;
+    return `/api/runners/${encodeURIComponent(runner.id)}/accounts${agent ? `/${agent}/login${login ? `/${encodeURIComponent(login.id)}` : ""}` : ""}`;
   }
 
   function schedule() {
     window.clearTimeout(timer);
-    if (!section.isConnected) return;
+    if (!dialog.isConnected) return;
     if (accounts.some((account) => pending(account.session)))
       timer = window.setTimeout(() => {
-        if (!section.hidden && !root.hidden && document.visibilityState === "visible")
-          void load(false);
+        if (document.visibilityState === "visible") void load();
         else schedule();
       }, 2000);
   }
 
-  async function load(reloadRunners: boolean) {
-    if (busy || !section.isConnected) return;
+  async function load() {
+    if (busy || !dialog.isConnected) return;
     const current = ++generation;
     busy = true;
     controls();
     feedback.textContent = "";
     try {
-      if (reloadRunners && !fixedRunner) {
-        const response = await request<{ runners: Runner[] }>("/api/runners");
-        const available = response.runners.filter((runner) => runner.status !== "revoked");
-        if (!available.some((runner) => runner.id === selected)) {
-          selected = available[0]?.id ?? "";
-          accounts = [];
-          renderMarkup(list, "");
-        }
-        runnerSelect.replaceChildren(
-          ...available.map((runner) => new Option(runner.name, runner.id)),
-        );
-        runnerSelect.value = selected;
-        if (!selected) {
-          accounts = [];
-          runnerSelect.replaceChildren(new Option("No paired runners", ""));
-          renderMarkup(
-            list,
-            '<p>Pair a runner in <a href="#/runners">Runners</a> to connect your agent accounts.</p>',
-          );
-          return;
-        }
-      }
-      const result = await request<{ accounts: Account[] }>(accountPath());
-      if (!section.isConnected || current !== generation) return;
+      const [result, listed] = await Promise.all([
+        request<{ accounts: Account[] }>(accountPath()),
+        request<{ runners: RunnerSignIns[] }>("/api/runners"),
+      ]);
+      if (!dialog.isConnected || current !== generation) return;
       accounts = result.accounts;
+      runnerStatus = new Map(
+        (listed.runners.find((entry) => entry.id === runner.id)?.agents ?? []).map((entry) => [
+          entry.agent,
+          entry.status,
+        ]),
+      );
       paint();
     } catch (error) {
       feedback.textContent = error instanceof Error ? error.message : "Refresh to try again.";
@@ -194,7 +175,7 @@ export function initializeAgentAccounts(
   }
 
   async function act(agent: Agent, action: "start" | "cancel" | "input", input?: unknown) {
-    if (busy || !selected || !section.isConnected) return;
+    if (busy || !dialog.isConnected) return;
     const account = accounts.find((entry) => entry.agent === agent);
     if (!account || (action !== "start" && !pending(account.session))) return;
     busy = true;
@@ -219,14 +200,19 @@ export function initializeAgentAccounts(
     }
   }
 
-  runnerSelect.addEventListener("change", () => {
-    selected = runnerSelect.value;
-    accounts = [];
-    renderMarkup(list, "");
-    void load(false);
+  refresh.addEventListener("click", () => void load());
+  dialog.querySelector("[data-account-close]")!.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    window.clearTimeout(timer);
+    renderMarkup(host, "");
+    host.remove();
+    onClose();
   });
-  refresh.addEventListener("click", () => void load(true));
-  section.addEventListener("click", (event) => {
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      dialog.close();
+      return;
+    }
     const target = (event.target as Element).closest<HTMLElement>(
       "[data-agent-action], [data-agent-open]",
     );
@@ -237,7 +223,7 @@ export function initializeAgentAccounts(
       else if (agent === "codex") void act(agent, "input", { accept: true });
     } else void act(agent, target.dataset.agentAction as "start" | "cancel");
   });
-  section.addEventListener("submit", (event) => {
+  dialog.addEventListener("submit", (event) => {
     const form = event.target as HTMLFormElement;
     if (!form.matches("[data-agent-input]")) return;
     event.preventDefault();
@@ -248,7 +234,8 @@ export function initializeAgentAccounts(
     input.value = "";
     void act(agent, "input", { text: `${text}\r` });
   });
-  void load(true);
+  dialog.showModal();
+  void load();
 }
 
 function providerUrl(value: string, agent: Agent): string {

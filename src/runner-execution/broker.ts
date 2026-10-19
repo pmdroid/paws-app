@@ -4,6 +4,9 @@ import { ExecutionIdSchema } from "./jobs";
 export interface RunnerBrokerClient {
   start(executionId: string): Promise<{ alreadyAdmitted: boolean }>;
   stop(executionId: string): Promise<void>;
+  alive?(executionId: string): boolean;
+  log?(executionId: string): string;
+  resume?(executionId: string): Promise<void>;
 }
 
 function createBrokerRequest(options: { socketPath?: string } = {}) {

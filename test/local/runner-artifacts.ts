@@ -23,7 +23,11 @@ import {
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
-import type { RunnerCommand, RunnerArtifact } from "../../src/runner-protocol";
+import {
+  RunnerArtifactSchema,
+  type RunnerCommand,
+  type RunnerArtifact,
+} from "../../src/runner-protocol";
 import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../../src/runner-artifacts";
 import { createRunnerWork } from "../../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
@@ -227,7 +231,60 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
         fileMode: 0o600,
       },
     );
-    for (let count = 1; count < 20; count++)
+    const video = Buffer.alloc(11 * 1024 * 1024, 66);
+    const evidence: RunnerArtifact = {
+      id: randomUUID(),
+      path: "evidence/proof.webm",
+      displayName: "proof.webm",
+      mimeType: "video/webm",
+      sizeBytes: video.length,
+      sha256: createHash("sha256").update(video).digest("hex"),
+      attachToIssue: false,
+      evidence: { checkId: "browser-proof", attempt: 1, headCommit: "b".repeat(40) },
+    };
+    const videoChunks = Math.ceil(video.length / RUNNER_ARTIFACT_CHUNK_BYTES);
+    for (let index = 0; index < videoChunks; index++)
+      artifacts.upload({
+        ...access,
+        chunk: {
+          generation: 1,
+          artifact: evidence,
+          index,
+          data: video
+            .subarray(
+              index * RUNNER_ARTIFACT_CHUNK_BYTES,
+              (index + 1) * RUNNER_ARTIFACT_CHUNK_BYTES,
+            )
+            .toString("base64"),
+        },
+      });
+    const videoSnapshot = artifacts.snapshot(run.id, 1, evidence);
+    assert.deepEqual(Buffer.from(await videoSnapshot.bytes.arrayBuffer()), video);
+    const { evidence: _evidence, ...plain } = evidence;
+    assert.equal(
+      RunnerArtifactSchema.safeParse({ ...plain, mimeType: "text/plain" }).success,
+      false,
+    );
+    assert.equal(
+      RunnerArtifactSchema.safeParse({
+        ...evidence,
+        mimeType: "image/png",
+        sizeBytes: 20 * 1024 * 1024 + 1,
+      }).success,
+      false,
+    );
+    assert.equal(
+      RunnerArtifactSchema.safeParse({ ...evidence, sizeBytes: 200 * 1024 * 1024 + 1 }).success,
+      false,
+    );
+    observe("evidence videos larger than the file cap upload in chunks with their check", true, {
+      bytes: video.length,
+      chunks: videoChunks,
+      fileCapWithoutCheck: false,
+      screenshotCap: false,
+      videoCap: false,
+    });
+    for (let count = 2; count < 20; count++)
       artifacts.upload({
         ...access,
         chunk: {

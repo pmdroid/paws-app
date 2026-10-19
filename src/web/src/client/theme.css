@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "video.js/dist/video-js.css";
 @source "./**/*.{ts,tsx}";
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -140,4 +141,203 @@ html.dark
 }
 .workspace-identities > h3:not(:first-child) {
   margin-top: 2rem;
+}
+
+/* ANSI SGR output in Closeout check logs (src/web/src/client/ansi.ts). */
+.ansi-bold {
+  font-weight: 700;
+}
+.ansi-dim {
+  opacity: 0.7;
+}
+.ansi-italic {
+  font-style: italic;
+}
+.ansi-underline {
+  text-decoration: underline;
+}
+.ansi-fg-0 {
+  color: #101317;
+}
+.ansi-fg-1 {
+  color: #b42318;
+}
+.ansi-fg-2 {
+  color: #1b7f3b;
+}
+.ansi-fg-3 {
+  color: #8a6100;
+}
+.ansi-fg-4 {
+  color: #1f4fd1;
+}
+.ansi-fg-5 {
+  color: #8e2bb5;
+}
+.ansi-fg-6 {
+  color: #0b7285;
+}
+.ansi-fg-7 {
+  color: #57534e;
+}
+.ansi-fg-8 {
+  color: #57534e;
+}
+.ansi-fg-9 {
+  color: #d92d20;
+}
+.ansi-fg-10 {
+  color: #15803d;
+}
+.ansi-fg-11 {
+  color: #a16207;
+}
+.ansi-fg-12 {
+  color: #2563eb;
+}
+.ansi-fg-13 {
+  color: #a21caf;
+}
+.ansi-fg-14 {
+  color: #0e7490;
+}
+.ansi-fg-15 {
+  color: #101317;
+}
+.dark .ansi-fg-0 {
+  color: #9ca3af;
+}
+.dark .ansi-fg-1 {
+  color: #ff7b72;
+}
+.dark .ansi-fg-2 {
+  color: #7ee787;
+}
+.dark .ansi-fg-3 {
+  color: #e3b341;
+}
+.dark .ansi-fg-4 {
+  color: #79c0ff;
+}
+.dark .ansi-fg-5 {
+  color: #d2a8ff;
+}
+.dark .ansi-fg-6 {
+  color: #76e3ea;
+}
+.dark .ansi-fg-7 {
+  color: #e6edf3;
+}
+.dark .ansi-fg-8 {
+  color: #8b949e;
+}
+.dark .ansi-fg-9 {
+  color: #ffa198;
+}
+.dark .ansi-fg-10 {
+  color: #56d364;
+}
+.dark .ansi-fg-11 {
+  color: #f2cc60;
+}
+.dark .ansi-fg-12 {
+  color: #a5d6ff;
+}
+.dark .ansi-fg-13 {
+  color: #e2b8ff;
+}
+.dark .ansi-fg-14 {
+  color: #b3f0ff;
+}
+.dark .ansi-fg-15 {
+  color: #ffffff;
+}
+.ansi-bg-0 {
+  background: #101317;
+  color: #fdfdfb;
+}
+.ansi-bg-1 {
+  background: #b42318;
+  color: #fdfdfb;
+}
+.ansi-bg-2 {
+  background: #1b7f3b;
+  color: #fdfdfb;
+}
+.ansi-bg-3 {
+  background: #8a6100;
+  color: #fdfdfb;
+}
+.ansi-bg-4 {
+  background: #1f4fd1;
+  color: #fdfdfb;
+}
+.ansi-bg-5 {
+  background: #8e2bb5;
+  color: #fdfdfb;
+}
+.ansi-bg-6 {
+  background: #0b7285;
+  color: #fdfdfb;
+}
+.ansi-bg-7 {
+  background: #57534e;
+  color: #fdfdfb;
+}
+.ansi-bg-8 {
+  background: #57534e;
+  color: #fdfdfb;
+}
+.ansi-bg-9 {
+  background: #d92d20;
+  color: #fdfdfb;
+}
+.ansi-bg-10 {
+  background: #15803d;
+  color: #fdfdfb;
+}
+.ansi-bg-11 {
+  background: #a16207;
+  color: #fdfdfb;
+}
+.ansi-bg-12 {
+  background: #2563eb;
+  color: #fdfdfb;
+}
+.ansi-bg-13 {
+  background: #a21caf;
+  color: #fdfdfb;
+}
+.ansi-bg-14 {
+  background: #0e7490;
+  color: #fdfdfb;
+}
+.ansi-bg-15 {
+  background: #101317;
+  color: #fdfdfb;
+}
+
+/* Closeout evidence thumbnails on the evidence page (src/web/src/client/evidence.ts). */
+.evidence-more {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.evidence-more > li {
+  padding: 0;
+}
+a.evidence-thumb {
+  display: block;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-base, 5px);
+  background: var(--background);
+}
+a.evidence-thumb:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
 }

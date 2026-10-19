@@ -142,10 +142,17 @@ function decodeDocument(value: unknown): PolicyDocument {
 
 function decodeRetry(value: unknown): RetryPolicy {
   if (!isRecord(value)) throw new Error("document does not match the schema");
-  return {
+  const retry: RetryPolicy = {
     maxFailedAttemptsPerItem: expectInt(value.maxFailedAttemptsPerItem),
     scope: expectScope(value.scope),
   };
+  if (value.maxFailedReviewAttempts !== undefined) {
+    retry.maxFailedReviewAttempts = expectInt(value.maxFailedReviewAttempts);
+    if (retry.maxFailedReviewAttempts < retry.maxFailedAttemptsPerItem) {
+      throw new Error("maxFailedReviewAttempts must be at least maxFailedAttemptsPerItem");
+    }
+  }
+  return retry;
 }
 
 function decodeImports(value: unknown): PolicyImport[] {

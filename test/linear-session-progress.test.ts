@@ -27,7 +27,8 @@ async function flush(dispatcher: OutboxDispatcher) {
 
 test("ACP plans preserve status and append host verification and publication steps", async () => {
   const db = tempDb();
-  const progress = createLinearSessionProgress(db, "session", "ENG-1");
+  const clock = new FakeClock(1);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
   const reporter = createAcpActivityReporter(() => {}, progress.plan);
   reporter.onEvent({
     type: "session_update",
@@ -42,7 +43,7 @@ test("ACP plans preserve status and append host verification and publication ste
     },
   });
   const tracker = createFakeTracker();
-  const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
+  const dispatcher = new OutboxDispatcher(db, clock);
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
@@ -55,8 +56,9 @@ test("ACP plans preserve status and append host verification and publication ste
     { content: "Open pull request", status: "pending" },
     { content: "Merge verified changes", status: "pending" },
   ]);
-  const recovered = createLinearSessionProgress(db, "session", "ENG-1");
+  const recovered = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
   recovered.phase("verifying");
+  clock.advance(30_000);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.findLast((update) => update.plan)?.plan?.[3]).toEqual({
     content: "Verify changes",
@@ -78,8 +80,8 @@ test("plan replacements retain only the newest durable version across delivery r
   progress.plan([{ content: "Old", status: "pending" }]);
   progress.plan([{ content: "Current", status: "inProgress" }]);
   const rows = listOutbox(db, "session");
-  expect(rows[0]?.status).toBe("dropped");
-  expect(rows[1]?.status).toBe("pending");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.status).toBe("pending");
   const tracker = createFakeTracker();
   const dispatcher = new OutboxDispatcher(db, new FakeClock(1));
   dispatcher.setHandler((row, context) =>
@@ -88,6 +90,93 @@ test("plan replacements retain only the newest durable version across delivery r
   await flush(dispatcher);
   expect(tracker.sessionUpdates).toHaveLength(1);
   expect(tracker.sessionUpdates[0]?.plan?.[0]?.content).toBe("Current");
+  db.close();
+});
+
+test("ten plan updates in ten seconds send one request carrying the last plan", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  progress.phase("implementing");
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
+  for (let step = 1; step <= 10; step++) {
+    clock.advance(1_000);
+    progress.plan([{ content: `Step ${step}`, status: "inProgress" }]);
+    await flush(dispatcher);
+  }
+  expect(listOutbox(db, "session").filter((row) => row.status === "pending")).toHaveLength(1);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
+  clock.advance(19_999);
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
+  clock.advance(1);
+  await flush(dispatcher);
+  const plans = tracker.sessionUpdates.filter((update) => update.plan);
+  expect(plans).toHaveLength(2);
+  expect(plans[1]?.plan?.[0]).toEqual({ content: "Step 10", status: "inProgress" });
+  db.close();
+});
+
+test("a summary waiting on the interval takes the newest text in place", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  progress.phase("implementing");
+  await flush(dispatcher);
+  progress.phase("verifying");
+  progress.phase("fixing");
+  progress.phase("verifying");
+  progress.phase("publishing");
+  const summaries = () =>
+    listOutbox(db, "session").filter((row) => row.op === "linear.session.summary");
+  expect(summaries()).toHaveLength(2);
+  expect(summaries()[1]?.payload).toMatchObject({ summary: "ENG-1: publishing" });
+  clock.advance(30_000);
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.summary).map((u) => u.summary)).toEqual([
+    "ENG-1: implementing",
+    "ENG-1: publishing",
+  ]);
+  db.close();
+});
+
+test("the final plan and summary go out right away and links are not held behind them", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  progress.phase("implementing");
+  await flush(dispatcher);
+  clock.advance(1_000);
+  progress.phase("merging");
+  progress.link("Pull request", "https://github.com/pmdroid/paws-app/pull/1");
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.at(-1)?.addedExternalUrls).toHaveLength(1);
+  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(1);
+  clock.advance(1_000);
+  progress.phase("completed");
+  await flush(dispatcher);
+  const plan = tracker.sessionUpdates.findLast((update) => update.plan)?.plan;
+  expect(plan?.every((step) => step.status === "completed")).toBe(true);
+  expect(tracker.sessionUpdates.findLast((update) => update.summary)?.summary).toBe(
+    "ENG-1: completed",
+  );
+  expect(listOutbox(db, "session").every((row) => row.status === "sent")).toBe(true);
   db.close();
 });
 

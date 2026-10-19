@@ -1,12 +1,12 @@
 {
   "specVersion": "0.1",
-  "commit": "baac33e",
-  "commitFull": "baac33e8715aac9d646796035ecc9ba7aaee02ef",
+  "commit": "4d0b6d8",
+  "commitFull": "4d0b6d871ca29b5f3d39868b2db80498e21e6e74",
   "repository": "https://github.com/pmdroid/closeout",
   "license": "Apache-2.0",
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
     "evidence.schema.json": "9677e4a039862b836e502638c0fbbfa5f8375bb4fa628fdcdcb076e5fc653c6f",
-    "policy.schema.json": "53839ec28372e3ae184c0c5eafc0c4e747cd9462a12d38ea0b52b6104a2cc125"
+    "policy.schema.json": "6457378fd52d783cfc381c8222fc4c13671222f59a53e1088edb8ddb95a89891"
   }
 }

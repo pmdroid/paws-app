@@ -38,12 +38,10 @@ export function createRunnerControl(options: {
   const now = options.now ?? Date.now;
   const serverVersion =
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;
-  function admin(principal: WorkspacePrincipal, at: number) {
+  function admin(principal: WorkspacePrincipal) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!member?.active || !["owner", "admin"].includes(member.role))
       throw new Error("Workspace administrator access is required.");
-    if (principal.authenticatedAt > at || at - principal.authenticatedAt > 15 * 60_000)
-      throw new Error("Sign in again to manage runners.");
   }
   function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
     const runner = runnerForCertificate(db, peer.fingerprint, at);
@@ -98,7 +96,7 @@ export function createRunnerControl(options: {
     },
     inspectPairing(principal: WorkspacePrincipal, code: string) {
       const at = now();
-      admin(principal, at);
+      admin(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= at || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
@@ -109,7 +107,7 @@ export function createRunnerControl(options: {
       };
     },
     async approvePairing(principal: WorkspacePrincipal, code: string) {
-      admin(principal, now());
+      admin(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
@@ -117,7 +115,7 @@ export function createRunnerControl(options: {
       const at = now();
       const runnerId = workspaceId(at);
       immediate(db, () => {
-        admin(principal, at);
+        admin(principal);
         approveRunnerPairing(db, {
           pairingId: pairing.id,
           runnerId,
@@ -181,7 +179,7 @@ export function createRunnerControl(options: {
     setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
       const fingerprints = immediate(db, () => {
         const at = now();
-        admin(principal, at);
+        admin(principal);
         return updateRunnerStatus(db, {
           runnerId,
           workspaceId: principal.workspaceId,

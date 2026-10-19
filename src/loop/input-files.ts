@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { git, type AgentInputFile } from "../acp";
+import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
 import { recordLinearInput } from "../db";
 
@@ -49,7 +49,18 @@ export function createLinearInputLoader(options: {
         cached = load(id, url, request.signal).finally(() => inflight.delete(id));
         inflight.set(id, cached);
       }
-      const file = await cached;
+      let file: CachedInput;
+      try {
+        file = await cached;
+      } catch (error) {
+        request.signal.throwIfAborted();
+        if (
+          error instanceof Error &&
+          /^Linear file download HTTP (401|403|404)$/.test(error.message)
+        )
+          continue;
+        throw error;
+      }
       request.signal.throwIfAborted();
       const bytes = Buffer.from(file.data, "base64");
       total += bytes.byteLength;
@@ -116,7 +127,9 @@ export function createLinearInputLoader(options: {
 
 export function inputSources(prompt: string): Map<string, string[]> {
   const sources = new Map<string, string[]>();
-  for (const match of prompt.matchAll(/https:\/\/uploads\.linear\.app\/[^\s<>"'\\)\]]+/g)) {
+  for (const match of requestText(prompt).matchAll(
+    /https:\/\/uploads\.linear\.app\/[^\s<>"'\\)\]]+/g,
+  )) {
     const original = match[0];
     const url = new URL(original);
     if (

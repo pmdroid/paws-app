@@ -13,7 +13,7 @@ import type {
   ResolvedReview,
   ResolvedSetup,
 } from "../types";
-import { evidenceAttemptKey } from "../retry";
+import { evaluate, retryBlock } from "../evaluate/evaluate";
 import { SPEC_VERSION } from "../types";
 import {
   changedPaths,
@@ -110,6 +110,18 @@ export async function runCloseoutCommands(raw: CloseoutRunInput): Promise<Closeo
       const diff = await changedPaths(input.repo, base, head, env);
       if (!diff.ok) return { blocked: diff.message, dispositions: [] };
       changed = diff.paths;
+    }
+
+    const evaluated = evaluate(input.policy, records, {
+      base,
+      head,
+      gate,
+      candidate: input.candidate,
+      changedPaths: changed,
+      ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+    });
+    if (evaluated.items.some((item) => item.kind === "review" && item.state === "exhausted")) {
+      return { dispositions: [] };
     }
 
     const steps = input.policy.setup.filter((step) => step.gate === gate);
@@ -260,23 +272,28 @@ function classify(
     };
   }
   const blocked = retryBlock(
-    input.policy,
     item,
-    base,
-    head,
-    input.candidate,
+    input.policy.source === "none" ? undefined : input.policy.retry,
+    input.policy.digest ?? "",
     records,
-    input.retryBaseline,
+    {
+      base,
+      head,
+      gate: input.gate ?? "beforePR",
+      candidate: input.candidate,
+      ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+    },
+    undefined,
   );
-  if (blocked !== null) {
+  if (blocked !== undefined) {
     return {
       kind: "skip",
       stop: item.kind === "setup",
       disposition: {
         id: item.id,
         kind: item.kind,
-        state: blocked.startsWith("duplicate") ? "skipped" : "exhausted",
-        message: blocked,
+        state: blocked.state === "exhausted" ? "exhausted" : "skipped",
+        message: blocked.message,
       },
     };
   }
@@ -542,57 +559,6 @@ function taskRetryError(policy: ResolvedPolicy, candidate: CandidateIdentity): s
   return null;
 }
 
-function retryBlock(
-  policy: ResolvedPolicy,
-  item: Runnable,
-  base: string,
-  head: string,
-  candidate: CandidateIdentity,
-  records: readonly EvidenceRecord[],
-  baseline?: readonly string[],
-): string | null {
-  if (policy.source === "none") return null;
-  const retry = policy.retry;
-  if (retry === undefined) return null;
-  const seen = new Set<string>();
-  let failed = 0;
-  for (const record of records) {
-    if (!inRetryScope(record, retry.scope, item.id, policy.digest, base, head, candidate)) continue;
-    const key = `${record.base}\0${record.head}\0${record.attempt}`;
-    if (seen.has(key)) return "duplicate evidence attempt";
-    seen.add(key);
-    if (!baseline?.includes(evidenceAttemptKey(record)) && countsAsFailed(item, record))
-      failed += 1;
-  }
-  if (failed < retry.maxFailedAttemptsPerItem) return null;
-  return `${failed} of ${retry.maxFailedAttemptsPerItem} allowed failed attempts used. Stop retrying and ask for help.`;
-}
-
-function inRetryScope(
-  record: EvidenceRecord,
-  scope: "task" | "candidate",
-  itemId: string,
-  digest: string,
-  base: string,
-  head: string,
-  candidate: CandidateIdentity,
-): boolean {
-  if (record.itemId !== itemId || record.policyDigest !== digest) return false;
-  if (scope === "task") {
-    const task = candidate.task ?? "";
-    return task.length > 0 && record.task === task;
-  }
-  return record.base === base && record.head === head;
-}
-
-function countsAsFailed(item: Runnable, record: EvidenceRecord): boolean {
-  if (record.recordType !== "command") return false;
-  if (record.producer.name !== PAWS_CLOSEOUT_PRODUCER.name) return false;
-  if (record.producer.version !== PAWS_CLOSEOUT_PRODUCER.version) return false;
-  if (!sameArgv(record.exec.argv, item.exec)) return false;
-  return executionFailed(record.exec, item.kind === "setup");
-}
-
 function executionFailed(exec: CommandExec, setup: boolean): boolean {
   if (exec.timedOut) return true;
   if (exec.exitCode === null || exec.exitCode !== 0) return true;
@@ -608,11 +574,6 @@ function execMessage(exec: CommandExec, setup: boolean): string {
   if (exec.headMoved) return "command moved HEAD";
   if (exec.dirty && !setup) return "command left the worktree dirty";
   return "exited 0";
-}
-
-function sameArgv(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((arg, index) => arg === right[index]);
 }
 
 function nextAttempt(

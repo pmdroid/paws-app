@@ -29,6 +29,7 @@ import {
   listCloseoutRecoveries,
   listRuns,
   listArtifacts,
+  listOutbox,
   migrate,
   openDatabase,
 } from "../src/db";
@@ -47,6 +48,7 @@ import {
   parseAgentEvent,
   createLinearFileTransfer,
   type AcceptedLinearEvent,
+  type SessionUpdate,
 } from "../src/linear";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { handleStatusRequest, parseStatusSnapshot } from "../src/web";
@@ -185,14 +187,18 @@ test.each([false, true, "cap"] as const)(
       running = jobs.tick();
       for (let i = 0; i < 1_000 && !existsSync(entered); i++) await Bun.sleep(10);
       expect(existsSync(entered), debug(layout, db)).toBe(true);
+      // Plan and summary are throttled to one request per 30 seconds, so check the newest
+      // version queued for Linear rather than waiting for it to be sent.
+      const metadata = (op: string) =>
+        listOutbox(db).findLast((row) => row.op === op && row.status !== "dropped")?.payload as
+          | SessionUpdate
+          | undefined;
       const progressDeadline = performance.now() + 10_000;
       while (
         performance.now() < progressDeadline &&
         (!tracker.progress.some((update) => update.body === "Fixing the missing output.") ||
-          !tracker.sessionUpdates.some(
-            (update) => update.summary === "ENG-302: fixing Closeout findings",
-          ) ||
-          !tracker.sessionUpdates.some((update) => update.plan?.[0]?.status === "inProgress"))
+          metadata("linear.session.summary")?.summary !== "ENG-302: fixing Closeout findings" ||
+          metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress")
       ) {
         while (outbox.tick().length > 0) await outbox.idle();
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -200,10 +206,8 @@ test.each([false, true, "cap"] as const)(
       expect(tracker.progress.map((update) => update.body)).toContain("Fixing the missing output.");
       expect(tracker.progress.map((update) => update.body)).not.toContain("Write repaired output");
       expect(tracker.progress.some((update) => /fix attempt 1 of 5/i.test(update.body))).toBe(true);
-      expect(tracker.sessionUpdates.findLast((update) => update.summary)?.summary).toBe(
-        "ENG-302: fixing Closeout findings",
-      );
-      expect(tracker.sessionUpdates.findLast((update) => update.plan)?.plan?.[0]).toEqual({
+      expect(metadata("linear.session.summary")?.summary).toBe("ENG-302: fixing Closeout findings");
+      expect(metadata("linear.session.plan")?.plan?.[0]).toEqual({
         content: "Repair missing output",
         status: "inProgress",
       });

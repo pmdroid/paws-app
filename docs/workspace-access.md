@@ -22,4 +22,4 @@ bun run paws workspace bootstrap
 
 The command verifies the installed Linear organization and prints a single-use code that expires after ten minutes. Open the dashboard, expand **Set up your first workspace**, enter the code and sign in with Linear. The verified account becomes the workspace owner. Later members sign in with their own Linear accounts.
 
-Owners can assign Paws roles and map repositories to verified Linear teams in the workspace controls. Linear guests receive observer access. Membership refresh updates team visibility and revokes sessions when a member loses access. Sign out ends the current browser session. Sessions expire after twelve idle hours or seven days from sign-in.
+Owners can assign Paws roles and map repositories to verified Linear teams in the workspace controls. Linear guests receive observer access. Membership refresh updates team visibility and revokes sessions when a member loses access. Sign out ends the current browser session. Each visit extends the session; it expires after thirty days without use. The dashboard shows only the sign-in page until you sign in.

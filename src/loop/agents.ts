@@ -62,7 +62,7 @@ export function closeoutPrompt(): string {
     "Run each pending id in order with run_closeout, then call get_closeout again.",
     "run_closeout runs matching setup steps first.",
     "Further edits can make passed checks stale.",
-    "If blocked is non-null, stop retrying and report the blocker.",
+    "If blocked is non-null, stop retrying. When the blocker is an exhausted check, finish with a short note on why, and Paws asks the team how to continue. Otherwise report the blocker.",
     "If a required check fails, fix it and call run_closeout again.",
     "If you cannot fix it, call ask_team with the error and what you tried.",
     "Reviews stay in required and are not pending. An independent reviewer runs those.",

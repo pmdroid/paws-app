@@ -259,8 +259,17 @@ const DEMO: StatusSnapshot = {
       headSha: "b7e21aa",
       sealed: true,
       checks: [
-        check("typecheck", "command", "passed", "bun run typecheck", null),
-        check("unit", "command", "passed", "bun test", null),
+        ran(check("typecheck", "command", "passed", "bun run typecheck", null), {
+          elapsedMs: 8_400,
+          exitCode: 0,
+          stdout: "$ tsc --noEmit\n\u001b[32m✓\u001b[0m no type errors\n",
+        }),
+        ran(check("unit", "command", "passed", "bun test", null), {
+          elapsedMs: 21_300,
+          exitCode: 0,
+          stdout:
+            "bun test v1.4.2\n\n\u001b[32m✓\u001b[0m export worker > writes a manifest \u001b[2m[12ms]\u001b[0m\n\u001b[32m✓\u001b[0m export worker > retries a failed upload \u001b[2m[30ms]\u001b[0m\n\n \u001b[1m\u001b[32m48 pass\u001b[0m\n 0 fail\n",
+        }),
         check(
           "adversarial-review",
           "review",
@@ -284,23 +293,16 @@ const DEMO: StatusSnapshot = {
       baseSha: "a1c9e07",
       headSha: "91fd0c4",
       sealed: false,
-      checks: [
-        check("typecheck", "command", "passed", "bun run typecheck", null),
-        check(
-          "unit",
-          "command",
-          "failed",
-          "bun test",
-          "retention.test.ts keeps rows under legal hold: expected 0 deletions, received 14",
-        ),
-        check(
-          "adversarial-review",
-          "review",
-          "skipped",
-          "reviewer Codex",
-          "not run after the failing command",
-        ),
-      ],
+      checks: retentionChecks(3),
+      attempts: [1, 2, 3].map((number) => ({
+        number,
+        decision: number === 3 ? ("exhausted" as const) : ("rejected" as const),
+        startedAt: `2026-10-09T${18 + number}:${number === 3 ? "38" : "10"}:00.000Z`,
+        baseSha: "a1c9e07",
+        headSha: ["4d02b1e", "6ae7f93", "91fd0c4"][number - 1]!,
+        policyDigest: null,
+        checks: retentionChecks(number),
+      })),
       links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
     },
   ],
@@ -373,6 +375,41 @@ function item(input: {
       ...(pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }]),
     ],
   };
+}
+
+type DemoCheck = StatusSnapshot["verdicts"][number]["checks"][number];
+
+function ran(base: DemoCheck, result: Partial<DemoCheck>): DemoCheck {
+  return { ...base, attempt: 1, ...result };
+}
+
+function retentionChecks(attempt: number): DemoCheck[] {
+  return [
+    ran(check("typecheck", "command", "passed", "bun run typecheck", null), {
+      attempt,
+      elapsedMs: 7_900,
+      exitCode: 0,
+      stdout: "$ tsc --noEmit\n\u001b[32m✓\u001b[0m no type errors\n",
+    }),
+    ran(
+      check(
+        "unit",
+        "command",
+        "failed",
+        "bun test",
+        "retention.test.ts keeps rows under legal hold: expected 0 deletions, received 14",
+      ),
+      {
+        attempt,
+        elapsedMs: 18_200,
+        exitCode: 1,
+        stdout:
+          "bun test v1.4.2\n\nretention.test.ts:\n\u001b[32m✓\u001b[0m retention > deletes expired rows \u001b[2m[9ms]\u001b[0m\n\u001b[31m✗\u001b[0m retention > keeps rows under legal hold \u001b[2m[14ms]\u001b[0m\n\n \u001b[1m\u001b[32m31 pass\u001b[0m\n \u001b[1m\u001b[31m1 fail\u001b[0m\n",
+        stderr:
+          "\u001b[1m\u001b[31merror\u001b[0m: expect(received).toBe(expected)\n\n  Expected: \u001b[32m0\u001b[0m\n  Received: \u001b[31m14\u001b[0m\n\n      at apps/api/retention.test.ts:58:31\n",
+      },
+    ),
+  ];
 }
 
 function check(

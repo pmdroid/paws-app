@@ -34,6 +34,7 @@ import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../conf
 import {
   createCloseoutGate,
   reviewRequirements,
+  trustedPolicyFiles,
   bypassable,
   snapshotRetryBaseline,
   loggedSessionCloseout,
@@ -142,6 +143,7 @@ import {
 import {
   publishAccepted,
   closeStoppedPull,
+  mergedPullHeads,
   branchForIssue,
   serialMerge,
   UPSTREAM_MAIN_REF,
@@ -193,17 +195,23 @@ import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
 import { renderWorkBrief } from "./brief";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
-import { createLinearArtifactPublisher } from "./artifacts";
+import {
+  createEvidenceArtifactPublisher,
+  createLinearArtifactPublisher,
+  type EvidenceSink,
+} from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
 import { createTaskPlanner } from "./task-planner";
 import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
+import { sweepWorktrees } from "./worktree-sweep";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
   interpretRepositoryAnswer,
   chooseRepository,
+  hintedRepository,
   repositoryAnswer,
 } from "./repository-selection";
 
@@ -229,6 +237,7 @@ export type OrchestratorOptions = {
   linearTaskModes?: boolean;
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
+  remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
   linearIntakeActor?: (sessionId: string) => string | undefined;
@@ -241,6 +250,8 @@ export type OrchestratorOptions = {
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
+  /** Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. */
+  evidence?: { store: EvidenceSink; publicUrl: string } | null;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
@@ -328,6 +339,7 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
+  private readonly projectOverviews = new Map<string, string>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -418,6 +430,7 @@ export class Orchestrator {
     ) {
       const turn = this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
+      if (turn?.state === "pending" && (await this.forwardFollowUp(event.sessionId, turn))) return;
       if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
@@ -1642,12 +1655,20 @@ export class Orchestrator {
         ]?.exclude ?? [])
       : [];
     const deps = this.agentDeps(item);
+    const networkGit =
+      repository && deps.signal
+        ? this.repositoryGit(item, repository, deps.signal, "write")
+        : undefined;
     for (const key of ["agentRunner", "promptRunner"] as const) {
       const runner = deps[key];
       if (runner)
         deps[key] = async (options) => {
           assertCurrent();
-          const result = await runner({ ...options, checkoutExclusions });
+          const result = await runner({
+            ...options,
+            checkoutExclusions,
+            ...(networkGit && options.role === "implementer" ? { networkGit } : {}),
+          });
           assertCurrent();
           return result;
         };
@@ -2805,6 +2826,47 @@ export class Orchestrator {
     this.pump();
   }
 
+  sweepWorktrees(signal: AbortSignal): Promise<void> {
+    const busy = (itemId: string) =>
+      this.jobContexts.has(itemId) ||
+      [...this.live.values()].some((live) => live.itemId === itemId);
+    return sweepWorktrees({
+      db: this.db,
+      pawsRoot: this.options.pawsRoot,
+      now: this.now(),
+      signal,
+      repositoryForItem: (item) => this.repositoryForItem(item),
+      busy,
+      hold: async (itemIds, operation) => {
+        if (itemIds.some(busy)) return;
+        const held: JobContext = {
+          signal,
+          isCurrent: () => !signal.aborted,
+          extendLease: () => true,
+        };
+        for (const itemId of itemIds) this.jobContexts.set(itemId, held);
+        try {
+          await operation();
+        } finally {
+          for (const itemId of itemIds)
+            if (this.jobContexts.get(itemId) === held) this.jobContexts.delete(itemId);
+        }
+      },
+      mergedHeads: async (item, repository) => {
+        const github = this.githubForRepository(repository);
+        if (!github) return [];
+        return mergedPullHeads({
+          client: github.client,
+          owner: repository.owner,
+          repo: repository.repo,
+          branch: branchForIssue(itemPathId(item)),
+          ...this.gitHubCredentials(github),
+          signal,
+        });
+      },
+    });
+  }
+
   dependencyHandoff(itemId: string): string | undefined {
     const item = getWorkItem(this.db, itemId);
     if (!item) return undefined;
@@ -3168,6 +3230,7 @@ export class Orchestrator {
     if (!context.isCurrent()) throw context.signal.reason;
     this.jobContexts.set(itemId, context);
     try {
+      await this.loadProjectOverview(itemId, context.signal);
       await operation();
       if (!context.isCurrent()) throw context.signal.reason;
     } finally {
@@ -3382,6 +3445,38 @@ export class Orchestrator {
     await this.flush();
   }
 
+  private async forwardFollowUp(
+    sessionId: string,
+    turn: { eventKey: string; body: string },
+  ): Promise<boolean> {
+    if (!this.options.remoteFollowUp) return false;
+    const live = [...this.live.values()].filter((entry) =>
+      this.itemsForSession(sessionId).some((item) => item.id === entry.itemId),
+    );
+    if (live.length !== 1) return false;
+    const item = getWorkItem(this.db, live[0]!.itemId);
+    if (item?.state !== "running" || !(await this.options.remoteFollowUp(item.id, turn.body)))
+      return false;
+    immediate(this.db, () => {
+      applyLinearTurns(this.db, sessionId, [turn.eventKey], item.id);
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: sessionId,
+        idempotencyKey: `turn:ack:${turn.eventKey}`,
+        payload: {
+          sessionId,
+          kind: "thought",
+          body: "Sent your update to the running agent.",
+          id: crypto.randomUUID(),
+        },
+        now: this.now(),
+      });
+    });
+    await this.flush();
+    return true;
+  }
+
   private abortItem(itemId: string): void {
     for (const live of this.live.values()) {
       if (live.itemId !== itemId) continue;
@@ -3516,6 +3611,21 @@ export class Orchestrator {
     });
   }
 
+  private async loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void> {
+    const item = getWorkItem(this.db, itemId);
+    const tracker = this.options.tracker;
+    if (!item || this.projectOverviews.has(itemId) || !tracker?.projectOverview) return;
+    try {
+      const overview = await tracker.projectOverview(item.linearIssueId, { signal });
+      this.projectOverviews.set(
+        itemId,
+        overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+      );
+    } catch {
+      signal.throwIfAborted();
+    }
+  }
+
   private workContext(item: WorkItemRecord): string {
     const taskKey = this.parentTaskKey(item);
     const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
@@ -3526,6 +3636,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
+      this.projectOverviews.get(item.id) ?? "",
       ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
       classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
@@ -3539,14 +3650,28 @@ export class Orchestrator {
 
   private artifactPublisher(item: WorkItemRecord) {
     const sessionId = this.activitySession(item);
-    if (!sessionId || !this.options.files || !this.options.secretsDir) return undefined;
-    return createLinearArtifactPublisher({
+    if (!sessionId) return undefined;
+    const linear =
+      this.options.files && this.options.secretsDir
+        ? createLinearArtifactPublisher({
+            db: this.db,
+            files: this.options.files,
+            secretsDir: this.options.secretsDir,
+            itemId: item.id,
+            issueId: item.linearIssueId,
+            sessionId,
+            now: () => this.now(),
+          })
+        : undefined;
+    const evidence = this.options.evidence;
+    if (!evidence) return linear;
+    return createEvidenceArtifactPublisher({
       db: this.db,
-      files: this.options.files,
-      secretsDir: this.options.secretsDir,
+      evidence: evidence.store,
+      publicUrl: evidence.publicUrl,
       itemId: item.id,
-      issueId: item.linearIssueId,
       sessionId,
+      ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
   }
@@ -3588,7 +3713,7 @@ export class Orchestrator {
         !input.prepareOnly
           ? await this.commitPolicy(item)
           : undefined;
-      return backend({ ...input, commitPolicy: policy });
+      return backend({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
     });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
@@ -3651,7 +3776,7 @@ export class Orchestrator {
           input.role === "implementer" && !input.prepareOnly
             ? await this.commitPolicy(item)
             : undefined;
-        return runner({ ...input, commitPolicy: policy });
+        return runner({ ...input, commitPolicy: policy, ...this.closeoutPolicy(item, input) });
       },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
@@ -3826,6 +3951,18 @@ export class Orchestrator {
     );
   }
 
+  private closeoutPolicy(
+    item: WorkItemRecord,
+    input: RunAgentOptions,
+  ): Pick<RunAgentOptions, "closeoutPolicy"> {
+    if (input.role !== "implementer" || input.prepareOnly || !this.repositoryForItem(item))
+      return {};
+    const { home, policyRoot } = this.closeoutHome(item);
+    return {
+      closeoutPolicy: async () => trustedPolicyFiles(input.worktreePath, home, policyRoot),
+    };
+  }
+
   private closeoutHome(item: WorkItemRecord): {
     home?: string;
     pawsHome: string;
@@ -3975,6 +4112,18 @@ export class Orchestrator {
         if (this.stopped(item.id)) return false;
         if (accessible) {
           bindWorkItemRepository(this.db, item.id, selected);
+          if (savedAnswer)
+            enqueueOutboxOnce(this.db, {
+              target: "linear",
+              op: "linear.repository_label",
+              orderingKey: this.activitySession(item) ?? item.id,
+              idempotencyKey: `repository-label:${item.id}`,
+              payload: {
+                issueId: item.linearIssueId,
+                repository: `${selected.owner}/${selected.repo}`,
+              },
+              now: this.now(),
+            });
           return true;
         }
         candidates.splice(selectedIndex, 1);
@@ -4013,13 +4162,34 @@ export class Orchestrator {
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;
       };
       candidates.sort((left, right) => recency(left) - recency(right));
-      const best = new Map<string, RepositorySuggestion>();
-      for (let attempt = 1; this.tracker?.issueRepositorySuggestions && attempt <= 3; attempt++) {
+      let hinted: ReturnType<typeof hintedRepository> = null;
+      if (this.tracker?.issueRepositoryHints) {
         try {
-          const read = await this.tracker.issueRepositorySuggestions(
+          hinted = hintedRepository(
+            candidates,
+            await this.tracker.issueRepositoryHints(item.linearIssueId, {
+              signal: controller.signal,
+            }),
+          );
+        } catch (error) {
+          controller.signal.throwIfAborted();
+          console.error(
+            `repository hints for ${item.linearIdentifier} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      const best = new Map<string, RepositorySuggestion>();
+      const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const attempts =
+        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          const read = await this.tracker!.issueRepositorySuggestions!(
             {
               issueId: item.linearIssueId,
-              candidateRepositories: candidates.map((candidate) => ({
+              candidateRepositories: pool.map((candidate) => ({
                 hostname: "github.com",
                 repositoryFullName: `${candidate.owner}/${candidate.repo}`,
               })),
@@ -4042,7 +4212,8 @@ export class Orchestrator {
         }
       }
       if (this.stopped(item.id)) return false;
-      const choice = chooseRepository(candidates, [...best.values()]);
+      const choice =
+        hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
       let ranked = "ask" in choice ? choice.ask : [];
       if ("bind" in choice) {
         const accessible =
