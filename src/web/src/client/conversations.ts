@@ -1,3 +1,4 @@
+import { routeHref } from "./route";
 import type { readLinearConversations } from "../live/conversations";
 import { esc } from "./format";
 
@@ -14,8 +15,7 @@ export function canReadConversations(
 ): boolean {
   if (engineUrl === null || source !== "live") return false;
   try {
-    const url = new URL(engineUrl);
-    return url.origin === origin && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+    return new URL(engineUrl).origin === origin;
   } catch {
     return false;
   }
@@ -53,14 +53,14 @@ export function renderConversations(
   if (!model || model.state === "loading")
     return `${heading}<div class="empty" role="status">Loading Linear conversations…</div>`;
   if (model.state === "unavailable")
-    return `${heading}<div class="empty">Open the local Paws dashboard to read private Linear conversations.</div>`;
+    return `${heading}<div class="empty">Open this Paws dashboard to read its Linear conversations.</div>`;
   if (model.state === "error")
     return `${heading}<div class="empty" role="alert">Could not load Linear conversations. <button class="btn" type="button" data-action="refresh">Retry</button></div>`;
   const selected =
     model.sessions.find((session) => session.id === id) ??
     (id === null ? model.sessions[0] : undefined);
   if (!selected)
-    return `${heading}<div class="empty">${id ? 'Conversation not found. <a href="#/sessions">View conversations</a>.' : "Delegate an issue to Paws or start a Linear session to see its conversation here."}</div>`;
+    return `${heading}<div class="empty">${id ? `Conversation not found. <a href="${routeHref({ view: "sessions", id: null })}">View conversations</a>.` : "Delegate an issue to Paws or start a Linear session to see its conversation here."}</div>`;
   const current =
     selected.items.find((item) => item.id === selected.activeItemId) ?? selected.items.at(-1);
   const questions = selected.questions.filter((question) => question.state === "open");
@@ -71,7 +71,7 @@ export function renderConversations(
       : current
         ? taskState(current.state)
         : "Starting";
-  const picker = `<label class="entity-picker"><span>Conversation</span><select data-route-picker aria-label="Conversation">${model.sessions.map((session) => `<option value="#/sessions/${encodeURIComponent(session.id)}"${session.id === selected.id ? " selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label>`;
+  const picker = `<label class="entity-picker"><span>Conversation</span><select data-route-picker aria-label="Conversation">${model.sessions.map((session) => `<option value="${routeHref({ view: "sessions", id: session.id })}"${session.id === selected.id ? " selected" : ""}>${esc(session.title)}</option>`).join("")}</select></label>`;
   const links = selected.links
     .map(
       (link) =>

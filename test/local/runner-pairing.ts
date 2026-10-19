@@ -84,11 +84,6 @@ export async function probeRunnerPairing(
     assert.equal(control.claimPairing(pending.id, pending.claim).status, "pending");
     assert.throws(() => control.claimPairing(pending.id, pending.code));
     assert.throws(() => control.inspectPairing(member, pending.code), /administrator/);
-    await assert.rejects(
-      () =>
-        control.approvePairing({ ...principal, authenticatedAt: now - 16 * 60_000 }, pending.code),
-      /Sign in again/,
-    );
     const inspected = control.inspectPairing(principal, pending.code);
     assert.equal(inspected.requestFingerprint, pending.requestFingerprint);
     const stored = db
@@ -98,17 +93,12 @@ export async function probeRunnerPairing(
       .get(pending.id)!;
     assert.notEqual(stored.claim_hash, pending.claim);
     assert.notEqual(stored.code_hash, pending.code);
-    observe(
-      "runner enrollment waits for a current administrator with recent authentication",
-      true,
-      {
-        pending: true,
-        requestFingerprint: inspected.requestFingerprint,
-        memberDenied: true,
-        staleLoginDenied: true,
-        hashesOnly: true,
-      },
-    );
+    observe("runner enrollment waits for a current administrator", true, {
+      pending: true,
+      requestFingerprint: inspected.requestFingerprint,
+      memberDenied: true,
+      hashesOnly: true,
+    });
     const approved = await control.approvePairing(principal, pending.code);
     const received = control.claimPairing(pending.id, pending.claim);
     assert.equal(received.status, "approved");

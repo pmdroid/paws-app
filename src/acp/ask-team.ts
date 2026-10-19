@@ -5,13 +5,26 @@ import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
 import {
+  artifactMimeType,
+  ArtifactRejectedError,
+  DEFAULT_MAX_ARTIFACT_BYTES,
+  evidenceByteLimit,
   snapshotArtifactFile,
+  type ArtifactEvidence,
   type ArtifactLimits,
   type PublishArtifactHook,
   type PublishArtifactRequest,
 } from "./artifacts";
-import { createCloseoutSession, type CloseoutSession } from "../closeout-spec";
+export { decodePolicyFiles, encodePolicyFiles } from "../closeout-spec";
+export type { PolicyFilesLoad } from "../closeout-spec";
+import {
+  createCloseoutSession,
+  workspacePolicyFiles,
+  type CloseoutSession,
+  type PolicyFilesLoad,
+} from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
+import { git } from "./git";
 import { decidePermission, type GuardContext } from "./permissions";
 
 export type AskTeamOption = string | { label?: string; value: string };
@@ -134,6 +147,7 @@ interface HostToolBridgeOptions {
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
   closeout?: CloseoutSession;
+  closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   signal: AbortSignal;
@@ -160,6 +174,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
   const worktreePath = options.context.worktreePath;
   const closeout = worktreePath
     ? createCloseoutSession(worktreePath, {
+        policy: options.closeoutPolicy ?? (async () => workspacePolicyFiles(worktreePath)),
         signal: options.signal,
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
@@ -339,11 +354,23 @@ async function handleConnection(
         throw new Error("publish_artifact is unavailable");
       }
       const request = (parsed.arguments ?? {}) as unknown as PublishArtifactRequest;
+      const evidenceLimit =
+        request.checkId === undefined ? null : evidenceByteLimit(artifactMimeType(request));
+      const evidence =
+        evidenceLimit === null
+          ? undefined
+          : await artifactEvidence(
+              options.closeout,
+              options.context.worktreePath,
+              request.checkId,
+              options.signal,
+            );
       const context = {
         ...options.context,
         request,
         worktreePath: options.context.worktreePath,
         signal: options.signal,
+        ...(evidence ? { evidence } : {}),
       };
       const attempt = options.publishArtifact.begin?.(request, context);
       if (request.attachToIssue !== undefined && typeof request.attachToIssue !== "boolean") {
@@ -352,9 +379,17 @@ async function handleConnection(
       const artifact = await snapshotArtifactFile(
         options.context.worktreePath,
         request,
-        options.artifactLimits,
+        evidenceLimit === null ? options.artifactLimits : { maxBytes: evidenceLimit },
         options.signal,
       );
+      if (
+        evidence &&
+        evidenceByteLimit(artifact.mimeType) === null &&
+        artifact.sizeBytes > (options.artifactLimits?.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES)
+      )
+        throw new Error(
+          `artifact exceeds ${options.artifactLimits?.maxBytes ?? DEFAULT_MAX_ARTIFACT_BYTES} bytes`,
+        );
       options.signal.throwIfAborted();
       let published;
       try {
@@ -362,8 +397,9 @@ async function handleConnection(
           options.publishArtifact.publish(artifact, context),
           options.signal,
         );
-      } catch {
-        throw new Error("artifact upload failed");
+      } catch (error) {
+        if (error instanceof ArtifactRejectedError) throw error;
+        throw new Error("artifact upload failed", { cause: error });
       }
       options.signal.throwIfAborted();
       let url: URL;
@@ -372,7 +408,13 @@ async function handleConnection(
       } catch {
         throw new Error("artifact upload returned an invalid asset URL");
       }
-      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+      if (
+        !(url.protocol === "https:" || (evidence && url.protocol === "http:")) ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      ) {
         throw new Error("artifact upload returned an invalid asset URL");
       }
       const name = published.displayName ?? artifact.displayName;
@@ -389,8 +431,9 @@ async function handleConnection(
       options.signal.throwIfAborted();
       attempt?.complete();
       const label = name.replace(/[\\[\]]/g, "\\$&");
+      const image = artifact.mimeType.startsWith("image/") && !evidence;
       socket.end(
-        `${JSON.stringify({ id, answer: `${artifact.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
+        `${JSON.stringify({ id, answer: `${image ? "!" : ""}[${label}](<${url.href}>)` })}\n`,
       );
       return;
     }
@@ -415,6 +458,45 @@ async function handleConnection(
     const message = error instanceof Error ? error.message : String(error);
     if (!socket.destroyed) socket.end(`${JSON.stringify({ id, error: message })}\n`);
   }
+}
+
+/** Ties a video or screenshot to the current attempt of a required Closeout check. */
+async function artifactEvidence(
+  closeout: CloseoutSession | undefined,
+  worktreePath: string,
+  checkId: unknown,
+  signal: AbortSignal,
+): Promise<ArtifactEvidence> {
+  if (typeof checkId !== "string" || !/^[A-Za-z0-9][\w.-]{0,127}$/.test(checkId))
+    throw new Error("checkId must be a Closeout check id from get_closeout");
+  if (!closeout) throw new Error("checkId needs Closeout, and get_closeout is unavailable here");
+  let report: { required?: { id?: unknown; failed_attempts?: unknown }[] };
+  try {
+    report = JSON.parse(await closeout.report());
+  } catch {
+    throw new Error("Closeout status is unavailable");
+  }
+  const check = Array.isArray(report.required)
+    ? report.required.find((item) => item?.id === checkId)
+    : undefined;
+  if (!check)
+    throw new Error(
+      `Closeout check ${checkId} is not required for the current changes. Call get_closeout.`,
+    );
+  const failures = Number.isSafeInteger(check.failed_attempts)
+    ? (check.failed_attempts as number)
+    : 0;
+  let headCommit: string;
+  try {
+    headCommit = (
+      await git(["rev-parse", "--verify", "HEAD^{commit}"], { cwd: worktreePath, signal })
+    ).trim();
+  } catch {
+    throw new Error("The workspace has no commit to attach evidence to");
+  }
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(headCommit))
+    throw new Error("The workspace has no commit to attach evidence to");
+  return { checkId, attempt: failures + 1, headCommit };
 }
 
 function oneLine(content: string): boolean {

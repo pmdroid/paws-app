@@ -60,7 +60,9 @@ const provider = Bun.serve({
       if (body.permissionsReady !== undefined) permissionsReady = body.permissionsReady;
       if (body.disconnect) db.run("DELETE FROM workspace_github_connection");
       if (body.expire)
-        db.run("UPDATE workspace_session SET authenticated_at=?", [Date.now() - 16 * 60_000]);
+        db.run("UPDATE workspace_session SET authenticated_at=?", [
+          Date.now() - 2 * 24 * 60 * 60_000,
+        ]);
       return Response.json({ ok: true });
     }
     if (unavailable) return Response.json({ error: "Synthetic GitHub outage" }, { status: 503 });

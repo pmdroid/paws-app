@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, expect, test } from "bun:test";
-import { createCloseoutSession } from "../src/closeout-spec";
+import { createCloseoutSession, workspacePolicyFiles } from "../src/closeout-spec";
 import { closeoutPrompt, fixPrompt, implementPrompt } from "../src/loop/agents";
 
 const roots: string[] = [];
+
+const local = (root: string) => ({ policy: async () => workspacePolicyFiles(root) });
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -46,7 +48,7 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
     command("docs", ["true"], "docs/**"),
     review("src/**"),
   ]);
-  const session = createCloseoutSession(root);
+  const session = createCloseoutSession(root, local(root));
   expect(JSON.parse(await session.report())).toEqual({
     required: [],
     pending: [],
@@ -100,6 +102,25 @@ test("get_closeout reports path matches and run_closeout runs the pending id", a
   expect(stale.pending).toEqual(["engine", "docs"]);
 });
 
+test("review reports expose both configured limits rather than an ordinary remaining scalar", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "retry:",
+    "  maxFailedAttemptsPerItem: 3",
+    "  scope: task",
+    "  maxFailedReviewAttempts: 12",
+    "items:",
+    review("src/**"),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "changed\n");
+  const report = JSON.parse(await createCloseoutSession(root, local(root)).report());
+  expect(report.required[0]).toMatchObject({
+    remaining_attempts: null,
+    retry_limits: { max_failed_attempts_per_key: 3, max_failed_review_attempts: 12 },
+  });
+});
+
 test("a path miss is not required and is not run", async () => {
   const root = initRepo();
   const mark = join(root, "ran.txt");
@@ -113,7 +134,7 @@ test("a path miss is not required and is not run", async () => {
     ),
   ]);
   writeFileSync(join(root, "docs", "note.md"), "note\n");
-  const session = createCloseoutSession(root);
+  const session = createCloseoutSession(root, local(root));
   const report = JSON.parse(await session.report()) as Report;
   expect(report.required).toEqual([]);
   expect(await session.run("engine")).toBe("Check engine is not required for the current changes.");
@@ -136,7 +157,7 @@ test("exhausted retries block another run", async () => {
     ]),
   ]);
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
-  const session = createCloseoutSession(root);
+  const session = createCloseoutSession(root, local(root));
   expect(await session.run("failing")).toContain("failing failed");
   const once = JSON.parse(await session.report()) as Report;
   expect(once.required[0]).toMatchObject({
@@ -170,6 +191,7 @@ test("a denied command does not spawn and does not count as a failure", async ()
   ]);
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
   const session = createCloseoutSession(root, {
+    ...local(root),
     allowCommand() {
       if (!allow) throw new Error("path is under ~/.ssh");
     },
@@ -202,7 +224,7 @@ test("abort kills the closeout process group without counting a failure", async 
   ]);
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
   const controller = new AbortController();
-  const session = createCloseoutSession(root, { signal: controller.signal });
+  const session = createCloseoutSession(root, { ...local(root), signal: controller.signal });
   try {
     const pending = session.run("hang");
     const recorded = await waitForText(mark);
@@ -230,7 +252,7 @@ test("committed changes since origin/main stay required", async () => {
   git(root, ["add", "src/main.ts"]);
   git(root, ["commit", "-m", "engine"]);
   writePolicy(root, ['specVersion: "0.1"', "items:", command("engine", ["true"], "src/**")]);
-  const report = JSON.parse(await createCloseoutSession(root).report()) as Report;
+  const report = JSON.parse(await createCloseoutSession(root, local(root)).report()) as Report;
   expect(report.pending).toEqual(["engine"]);
   expect(report.required[0]?.matched_paths).toEqual(["src/main.ts"]);
   expect(report.blocked).toBeNull();
@@ -241,7 +263,7 @@ test("a missing merge base blocks the report", async () => {
   git(root, ["update-ref", "-d", "refs/remotes/origin/main"]);
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
   writePolicy(root, ['specVersion: "0.1"', "items:", command("engine", ["true"])]);
-  const session = createCloseoutSession(root);
+  const session = createCloseoutSession(root, local(root));
   const report = JSON.parse(await session.report()) as Report;
   expect(report.required).toEqual([]);
   expect(report.pending).toEqual([]);
@@ -269,7 +291,7 @@ test("an exhausted setup step is not spawned for a later command", async () => {
     command("engine", ["true"]),
   ]);
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
-  const session = createCloseoutSession(root);
+  const session = createCloseoutSession(root, local(root));
   expect(await session.run("engine")).toContain("prepare failed");
   expect(readFileSync(mark, "utf8")).toBe("s");
   const blocked = JSON.parse(await session.report()) as Report;
@@ -283,7 +305,7 @@ test("a broken policy blocks the report", async () => {
   const root = initRepo();
   mkdirSync(join(root, ".agents"), { recursive: true });
   writeFileSync(join(root, ".agents", "closeout.yaml"), 'specVersion: "0.1"\nitems: {}\n');
-  const report = JSON.parse(await createCloseoutSession(root).report()) as Report;
+  const report = JSON.parse(await createCloseoutSession(root, local(root)).report()) as Report;
   expect(report.required).toEqual([]);
   expect(report.pending).toEqual([]);
   expect(report.blocked).toEqual(expect.any(String));

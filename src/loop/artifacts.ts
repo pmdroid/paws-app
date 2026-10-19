@@ -17,6 +17,7 @@ import {
   enqueueOutboxOnce,
   getArtifact,
   immediate,
+  listEvidence,
   markArtifact,
   saveArtifact,
 } from "../db";
@@ -45,6 +46,112 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
   };
 }
 
+/** Where Closeout videos and screenshots go. `src/index.ts` passes the evidence store. */
+export type EvidenceSink = {
+  save(input: {
+    itemId: string;
+    runId: string;
+    checkId: string;
+    attempt: number;
+    displayName: string;
+    headCommit: string;
+    source: Blob;
+  }): Promise<{ id: string }>;
+};
+
+/**
+ * Keeps a video or screenshot published with a Closeout check id in the evidence store and
+ * posts its Paws link to Linear. Every other artifact goes to `linear`, unchanged.
+ */
+export function createEvidenceArtifactPublisher(options: {
+  db: Database;
+  evidence: EvidenceSink;
+  publicUrl: string;
+  itemId: string;
+  sessionId: string;
+  linear?: PublishArtifactHook;
+  now?: () => number;
+}): PublishArtifactHook {
+  const now = options.now ?? Date.now;
+  const generation = sessionGeneration(options.db, options.sessionId);
+  const inflight = new Map<string, Promise<PublishedArtifact>>();
+  return {
+    begin(request, context) {
+      if (context.evidence) return { complete() {} };
+      if (!options.linear) throw new Error("Linear file uploads are unavailable");
+      return options.linear.begin?.(request, context) ?? { complete() {} };
+    },
+    publish(artifact, context) {
+      const evidence = context.evidence;
+      if (!evidence)
+        return options.linear
+          ? options.linear.publish(artifact, context)
+          : Promise.reject(new Error("Linear file uploads are unavailable"));
+      const key = JSON.stringify([
+        context.runId,
+        evidence.checkId,
+        evidence.attempt,
+        artifact.displayName,
+        artifact.sha256,
+      ]);
+      const existing = inflight.get(key);
+      if (existing) return existing;
+      const pending = (async (): Promise<PublishedArtifact> => {
+        context.signal.throwIfAborted();
+        const stored =
+          listEvidence(options.db, options.itemId).find(
+            (row) =>
+              row.runId === context.runId &&
+              row.checkId === evidence.checkId &&
+              row.attempt === evidence.attempt &&
+              row.displayName === artifact.displayName &&
+              row.sha256 === artifact.sha256,
+          ) ??
+          (await options.evidence.save({
+            itemId: options.itemId,
+            runId: context.runId,
+            checkId: evidence.checkId,
+            attempt: evidence.attempt,
+            displayName: artifact.displayName,
+            headCommit: evidence.headCommit,
+            source: artifact.bytes,
+          }));
+        const url = `${options.publicUrl.replace(/\/+$/, "")}/evidence/${encodeURIComponent(stored.id)}`;
+        const label = artifact.displayName.replace(/[\\[\]]/g, "\\$&");
+        enqueueOutboxOnce(options.db, {
+          target: "linear",
+          op: "activity",
+          delivery: "ordered",
+          priority: 0,
+          orderingKey: options.sessionId,
+          idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
+          generation,
+          now: now(),
+          payload: {
+            id: stored.id,
+            sessionId: options.sessionId,
+            kind: "thought",
+            body: `Closeout evidence for check \`${evidence.checkId}\`: [${label}](<${url}>)`,
+          },
+        });
+        return { url, displayName: artifact.displayName };
+      })().finally(() => inflight.delete(key));
+      inflight.set(key, pending);
+      return pending;
+    },
+  };
+}
+
+function sessionGeneration(db: Database, sessionId: string): number {
+  return (
+    db
+      .query<{ generation: number }, [string]>(
+        "SELECT generation FROM outbox_session_fence WHERE target = 'linear' AND ordering_key = ?",
+      )
+      .get(sessionId)?.generation ?? 0
+  );
+}
+
 export function createLinearArtifactPublisher(options: {
   db: Database;
   files: LinearFileTransfer;
@@ -55,12 +162,7 @@ export function createLinearArtifactPublisher(options: {
   now?: () => number;
 }): PublishArtifactHook {
   const now = options.now ?? Date.now;
-  const generation =
-    options.db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM outbox_session_fence WHERE target = 'linear' AND ordering_key = ?",
-      )
-      .get(options.sessionId)?.generation ?? 0;
+  const generation = sessionGeneration(options.db, options.sessionId);
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
     begin(request, context) {

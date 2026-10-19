@@ -525,3 +525,68 @@ function prompted(body: string): AcceptedLinearEvent {
     payload: "{}",
   };
 }
+
+test("the implementer's prompt includes the project overview with its mock links", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "issue",
+      identifier: "ENG-9",
+      title: "Export rows",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  tracker.projectOverviews.set("issue", {
+    name: "Exports",
+    content: "## Mocks\n\n![Export page](https://uploads.linear.app/workspace/export-mock.png)",
+  });
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const prompts: { purpose: string; prompt: string }[] = [];
+  const launch: AgentLaunch = (input) => {
+    prompts.push({ purpose: input.purpose, prompt: input.prompt });
+    const scriptPath = path.join(layout.root, `overview-${prompts.length}.json`);
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps: [{ type: "end", stopReason: "end_turn" }],
+      }),
+    );
+    return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: "unused",
+      client: {
+        async request() {
+          return { status: 404, body: {} };
+        },
+      },
+    },
+    launch,
+  });
+  try {
+    await orchestrator.onLinearEvent(created());
+    for (let tick = 0; tick < 20 && !prompts.some((entry) => entry.purpose === "implement"); tick++)
+      await jobs.tick();
+    const implement = prompts.find((entry) => entry.purpose === "implement");
+    expect(implement?.prompt).toContain("Project overview: Exports");
+    expect(implement?.prompt).toContain("https://uploads.linear.app/workspace/export-mock.png");
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+});

@@ -12,11 +12,30 @@ export type RepositorySuggestionsInput = {
   candidateRepositories: readonly CandidateRepository[];
 };
 
+export type RepositoryHints = {
+  mentions: string[];
+  issueLabels: string[];
+  parentLabels: string[];
+  projectLabels: string[];
+};
+
+export const NO_REPOSITORY_HINTS: RepositoryHints = {
+  mentions: [],
+  issueLabels: [],
+  parentLabels: [],
+  projectLabels: [],
+};
+
 export interface LinearRepositoryAdapter {
   issueRepositorySuggestions(
     input: RepositorySuggestionsInput,
     options?: TrackerRequestOptions,
   ): Promise<readonly RepositorySuggestion[]>;
+  issueRepositoryHints?(issueId: string, options?: TrackerRequestOptions): Promise<RepositoryHints>;
+  addRepositoryLabel?(
+    input: { issueId: string; repository: string },
+    options?: TrackerRequestOptions,
+  ): Promise<void>;
 }
 
 const SUGGESTIONS_QUERY = `query IssueRepositorySuggestions(
@@ -28,6 +47,66 @@ const SUGGESTIONS_QUERY = `query IssueRepositorySuggestions(
     suggestions { repositoryFullName hostname confidence }
   }
 }`;
+
+const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
+
+const HINTS_QUERY = `query IssueRepositoryHints($id: String!) {
+  issue(id: $id) {
+    description
+    ${LABELS}
+    parent { ${LABELS} }
+    project { ${LABELS} }
+    comments(first: 100) { nodes { body createdAt } }
+  }
+}`;
+
+const LABEL_ISSUE = `query RepositoryLabelIssue($id: String!) {
+  issue(id: $id) { ${LABELS} }
+}`;
+
+const LABEL_GROUPS = `query RepositoryLabelGroups {
+  issueLabels(first: 1, filter: { isGroup: { eq: true }, name: { eqIgnoreCase: "repo" }, team: { null: true } }) {
+    nodes { id }
+  }
+}`;
+
+const LABELS_IN_GROUP = `query RepositoryLabels($group: ID!, $name: String!) {
+  issueLabels(first: 1, filter: { parent: { id: { eq: $group } }, name: { eqIgnoreCase: $name } }) {
+    nodes { id }
+  }
+}`;
+
+const CREATE_LABEL = `mutation RepositoryLabelCreate($input: IssueLabelCreateInput!) {
+  issueLabelCreate(input: $input) { success issueLabel { id } }
+}`;
+
+const ADD_LABEL = `mutation RepositoryLabelAdd($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) { success }
+}`;
+
+function dig(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : null;
+}
+
+const REPO_NAME = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
+const REPO_MENTION = /\[repo=([a-z0-9_.-]+\/[a-z0-9_.-]+)\]/gi;
+
+function nodes(connection: unknown): unknown[] {
+  return isRecord(connection) && Array.isArray(connection["nodes"]) ? connection["nodes"] : [];
+}
+
+function repoLabels(connection: unknown): string[] {
+  return nodes(connection).flatMap((label) =>
+    isRecord(label) &&
+    typeof label["name"] === "string" &&
+    REPO_NAME.test(label["name"]) &&
+    isRecord(label["parent"]) &&
+    typeof label["parent"]["name"] === "string" &&
+    label["parent"]["name"].toLowerCase() === "repo"
+      ? [label["name"]]
+      : [],
+  );
+}
 
 export function createLinearRepositoryMethods(client: LinearClient): LinearRepositoryAdapter {
   return {
@@ -46,6 +125,72 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         throw new Error("Linear repository suggestions returned no suggestions array");
       }
       return authorizedRepositorySuggestions(candidates, result["suggestions"]);
+    },
+    async issueRepositoryHints(issueId, options) {
+      options?.signal?.throwIfAborted();
+      const data = await client.query(HINTS_QUERY, { id: issueId }, options);
+      options?.signal?.throwIfAborted();
+      const issue = isRecord(data) ? data["issue"] : null;
+      if (!isRecord(issue)) throw new Error("Linear returned no issue for repository hints");
+      const comments = nodes(issue["comments"])
+        .filter(isRecord)
+        .map((comment) => ({
+          body: typeof comment["body"] === "string" ? comment["body"] : "",
+          at: typeof comment["createdAt"] === "string" ? comment["createdAt"] : "",
+        }))
+        .sort((left, right) => left.at.localeCompare(right.at));
+      const description = typeof issue["description"] === "string" ? issue["description"] : "";
+      return {
+        mentions: [description, ...comments.map((comment) => comment.body)].flatMap((text) =>
+          [...text.matchAll(REPO_MENTION)].map((match) => match[1]!),
+        ),
+        issueLabels: repoLabels(issue["labels"]),
+        parentLabels: repoLabels(isRecord(issue["parent"]) ? issue["parent"]["labels"] : null),
+        projectLabels: repoLabels(isRecord(issue["project"]) ? issue["project"]["labels"] : null),
+      };
+    },
+    async addRepositoryLabel(input, options) {
+      const issue = dig(await client.query(LABEL_ISSUE, { id: input.issueId }, options), "issue");
+      if (!isRecord(issue)) throw new Error("Linear returned no issue for the repository label");
+      if (repoLabels(issue["labels"]).length > 0) return;
+      const groups = nodes(dig(await client.query(LABEL_GROUPS, {}, options), "issueLabels"));
+      const existing = isRecord(groups[0]) ? groups[0]["id"] : null;
+      const group =
+        typeof existing === "string"
+          ? existing
+          : await createLabel({ name: "repo", isGroup: true });
+      const found =
+        typeof existing === "string"
+          ? nodes(
+              dig(
+                await client.query(LABELS_IN_GROUP, { group, name: input.repository }, options),
+                "issueLabels",
+              ),
+            )
+          : [];
+      const label =
+        isRecord(found[0]) && typeof found[0]["id"] === "string"
+          ? found[0]["id"]
+          : await createLabel({ name: input.repository, parentId: group });
+      const added = dig(
+        await client.query(ADD_LABEL, { id: input.issueId, labelId: label }, options),
+        "issueAddLabel",
+      );
+      if (!isRecord(added) || added["success"] !== true)
+        throw new Error("Linear did not add the repository label");
+      async function createLabel(labelInput: Record<string, unknown>): Promise<string> {
+        const created = dig(
+          await client.query(CREATE_LABEL, { input: labelInput }, options),
+          "issueLabelCreate",
+        );
+        const id = isRecord(created) ? dig(created, "issueLabel") : null;
+        if (!isRecord(created) || created["success"] !== true || !isRecord(id))
+          throw new Error("Linear did not create the repository label");
+        const value = id["id"];
+        if (typeof value !== "string")
+          throw new Error("Linear did not create the repository label");
+        return value;
+      }
     },
   };
 }

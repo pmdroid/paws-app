@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
-import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
+import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
+import type { PolicyFilesLoad } from "./policy/load";
 import { scrubCommandEnv } from "./run/env";
 import { git } from "./run/exec";
 import type { ResolvedItem, ResolvedRequirement, ResolvedSetup } from "./types";
@@ -14,6 +15,7 @@ export type CloseoutSession = {
 };
 
 export type CloseoutSessionOptions = {
+  policy: () => Promise<PolicyFilesLoad>;
   signal?: AbortSignal;
   allowCommand?: (argv: readonly string[]) => void;
 };
@@ -43,7 +45,7 @@ type Prepared =
 
 export function createCloseoutSession(
   workspace: string,
-  options: CloseoutSessionOptions = {},
+  options: CloseoutSessionOptions,
 ): CloseoutSession {
   const memory = new Map<string, ItemMemory>();
   let fingerprint: string | undefined;
@@ -59,9 +61,13 @@ export function createCloseoutSession(
   };
 
   const prepare = async (): Promise<Prepared> => {
-    const loaded = loadHomePolicy(workspace);
+    const source = await options.policy();
+    if (!source.ok) return { kind: "blocked", message: source.message };
+    if (source.absent) return { kind: "empty" };
+    const loaded = loadMemoryPolicy(source.files);
     if (!loaded.ok) return { kind: "blocked", message: loaded.message };
-    if (loaded.absent) return { kind: "empty" };
+    if (loaded.absent || loaded.policy.digest !== source.digest)
+      return { kind: "blocked", message: "The Closeout policy does not match its digest" };
     const policy = loaded.policy;
     const needsPaths = [...policy.setup, ...policy.items].some(
       (item) => item.paths !== undefined && item.paths.length > 0,
@@ -105,6 +111,8 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
+    const reviewCap =
+      item.kind === "review" ? prepared.policy.retry?.maxFailedReviewAttempts : undefined;
     return {
       id: item.id,
       kind: item.kind,
@@ -112,7 +120,16 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       matched_paths: item.matched,
       status: statusOf(state, max),
       failed_attempts: failures,
-      remaining_attempts: max === null ? null : Math.max(0, max - failures),
+      remaining_attempts:
+        reviewCap !== undefined || max === null ? null : Math.max(0, max - failures),
+      ...(reviewCap !== undefined
+        ? {
+            retry_limits: {
+              max_failed_review_attempts: reviewCap,
+              max_failed_attempts_per_key: max,
+            },
+          }
+        : {}),
       retry_scope: scope,
       different_model: item.differentModel,
     };

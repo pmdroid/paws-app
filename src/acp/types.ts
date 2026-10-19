@@ -1,6 +1,7 @@
 import type { GitCommitIdentity, GitCommitPolicy } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
+import type { PolicyFilesLoad } from "../closeout-spec";
 import { DEFAULT_MAX_AWAKE_MS } from "../core";
 import type { SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { CheckpointResult } from "./checkpoint";
@@ -101,6 +102,7 @@ export interface RunAgentOptions {
   checkpointEnv?: NodeJS.ProcessEnv;
   checkpointIdentity?: GitCommitIdentity;
   commitPolicy?: GitCommitPolicy;
+  closeoutPolicy?: () => Promise<PolicyFilesLoad>;
   checkpointExcludePaths?: readonly string[];
   timeoutMs?: number;
   cancelGraceMs?: number;
@@ -114,6 +116,7 @@ export interface RunAgentOptions {
   artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */
   checkpoint?: boolean;
+  resume?: { sessionId: string; replayPrompt: string };
 }
 
 export interface RunAgentResult {

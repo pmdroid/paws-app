@@ -154,6 +154,37 @@ class ReleaseVerification(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             packager.pack(arguments)
 
+    def test_dependency_files_with_unsafe_names_are_left_out(self):
+        specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
+        packager = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(packager)
+        source = self.root / "source-unsafe"
+        for name in release.REQUIRED:
+            path = source / name.removeprefix("app/")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic package file")
+            if name.removeprefix("app/") in release.PROVIDER_EXECUTABLES.values():
+                path.chmod(0o755)
+        fixture = source / "node_modules/media/test/fixtures/av01,aac.avi"
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(b"fixture")
+        (source / "node_modules/media/odd dir").mkdir()
+        (source / "node_modules/media/odd dir/file.js").write_bytes(b"fixture")
+        (source / "node_modules/media/index.js").write_bytes(b"module")
+        runtime = self.root / "bun-unsafe"
+        runtime.write_bytes(b"synthetic Bun runtime")
+        output = self.root / "package-unsafe"
+        arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output)
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+            packager.pack(arguments)
+        members = release.inspect_archive(output / "artifact.tar")
+        self.assertIn("app/node_modules/media/index.js", members)
+        self.assertFalse(any("av01" in name or "odd" in name for name in members))
+        (source / "src/bad,name.ts").write_bytes(b"source")
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "compile_runner", return_value=b"\x7fELFsynthetic-runner"):
+            with self.assertRaises(ValueError):
+                packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-unsafe-src"}))
+
     def test_missing_bundled_provider_targets_reject_packaging(self):
         specification = importlib.util.spec_from_file_location("packager", pathlib.Path(sys.argv[1]).with_name("package.py"))
         packager = importlib.util.module_from_spec(specification)

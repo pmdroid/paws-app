@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { SETTINGS_PAGES } from "./settings-pages";
 import { NAVIGATION, PAGES } from "./navigation";
-import { parseRoute, routeHref, type Route } from "./route";
+import { matchRoute, needsSnapshot, parseRoute, routeHref, routerBase, type Route } from "./route";
 import { render } from "./render";
 import { demoStatus } from "../demo";
 
@@ -11,13 +11,14 @@ const model = {
   via: "bundled" as const,
   error: null,
   engineUrl: null,
-  selectedCheck: null,
 };
 
 test("sidebar exposes every page exactly once and all page links round-trip", () => {
   const views = NAVIGATION.flatMap((group) => [...group.views]);
-  expect(new Set(views).size).toBe(Object.keys(PAGES).length - 1);
-  expect(views.length).toBe(Object.keys(PAGES).length - 1);
+  // Settings has its own menu, and an evidence page is opened from a run or a copied link.
+  const linked = Object.keys(PAGES).filter((view) => !["settings", "evidence"].includes(view));
+  expect(new Set(views).size).toBe(linked.length);
+  expect(views.length).toBe(linked.length);
   for (const view of views) {
     const route = { view, id: null } as Route;
     expect(parseRoute(routeHref(route)).view).toBe(view);
@@ -73,4 +74,23 @@ test("issues list offers state filters and a simple item list", () => {
   const detail = render({ ...model, route: { view: "issues", id: "ENG-104" } }).content;
   expect(detail).toContain("All issues");
   expect(detail).not.toContain("Linear agent session");
+});
+
+test("path routes keep the engine base and only claim dashboard pages", () => {
+  expect(routerBase("/status")).toBe("/status");
+  expect(routerBase("/status/runs/r-1")).toBe("/status");
+  expect(routerBase("/statuses")).toBe("");
+  expect(routerBase("/runs/r-1")).toBe("");
+  expect(routeHref({ view: "runs", id: "r/1" })).toBe("/runs/r%2F1");
+  expect(parseRoute("/runs/r%2F1")).toEqual({ view: "runs", id: "r/1" });
+  expect(parseRoute("#/settings/account")).toEqual({ view: "settings", page: "account" });
+  expect(matchRoute("/auth/linear")).toBeNull();
+  expect(matchRoute("/api/status")).toBeNull();
+  expect(matchRoute("/assets/app.js")).toBeNull();
+  expect(parseRoute("/unknown")).toEqual({ view: "overview" });
+});
+
+test("only work pages read the status snapshot", () => {
+  const pages = Object.keys(PAGES).filter((view) => needsSnapshot({ view, id: null } as Route));
+  expect(pages).toEqual(["overview", "issues", "runs", "evidence", "questions"]);
 });

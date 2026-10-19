@@ -68,9 +68,7 @@ export function createHostedGitHubConnect(options: {
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         member?.active &&
-        ["owner", "admin"].includes(member.role) &&
-        now() >= access.principal.authenticatedAt &&
-        now() - access.principal.authenticatedAt <= 900000
+        ["owner", "admin"].includes(member.role)
       );
     };
     const audit = (action: string) =>
@@ -462,7 +460,7 @@ export function createHostedGitHubConnect(options: {
         return new Response(null, {
           status: 303,
           headers: {
-            location: origin + "/status#/settings/integrations",
+            location: origin + "/status/settings/integrations",
             "cache-control": "no-store",
           },
         });

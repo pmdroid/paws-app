@@ -1,3 +1,5 @@
+import { routeHref } from "./route";
+import { loadWhenShown } from "./settings-loads";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 import { initializeGitHubRepositorySetup } from "./github-repository-setup";
@@ -75,7 +77,7 @@ export function initializeWorkspaceGitHub(
                   : "Install the App on your workspace repositories, then return here to finish connecting.";
     let primary =
       data.status === "needs_repositories" && canEditRepositories
-        ? '<a class="btn primary" href="#/settings/workspace">Add repositories</a>'
+        ? `<a class="btn primary" href="${routeHref({ view: "settings", page: "workspace" })}">Add repositories</a>`
         : "";
     if (
       data.canManage &&
@@ -187,7 +189,7 @@ export function initializeWorkspaceGitHub(
     if (!target) return;
     if (target.hasAttribute("data-github-signin")) {
       try {
-        sessionStorage.setItem("paws.settingsReturn", "#/settings/integrations");
+        sessionStorage.setItem("paws.settingsReturn", "/settings/integrations");
       } catch {}
     }
     if (target.hasAttribute("data-github-install")) waitingForInstall = true;
@@ -211,5 +213,5 @@ export function initializeWorkspaceGitHub(
   document.addEventListener("paws:github-access-changed", () => {
     if (section.isConnected) void load();
   });
-  void load();
+  loadWhenShown("integrations", () => void load());
 }

@@ -7,11 +7,8 @@ export type AttributionBinding = { workspaceId: string; userId: string; sessionH
 
 export function requireAttributionSession(db: Database, binding: AttributionBinding, now: number) {
   const session = db
-    .query<
-      { authenticated_at: number; last_seen_at: number; expires_at: number },
-      [string, string, string]
-    >(
-      "SELECT authenticated_at,last_seen_at,expires_at FROM workspace_session WHERE token_hash=? AND workspace_id=? AND user_id=?",
+    .query<{ authenticated_at: number; expires_at: number }, [string, string, string]>(
+      "SELECT authenticated_at,expires_at FROM workspace_session WHERE token_hash=? AND workspace_id=? AND user_id=?",
     )
     .get(binding.sessionHash, binding.workspaceId, binding.userId);
   const member = workspaceMember(db, binding.workspaceId, binding.userId);
@@ -20,11 +17,9 @@ export function requireAttributionSession(db: Database, binding: AttributionBind
     !member?.active ||
     member.role === "observer" ||
     now < session.authenticated_at ||
-    now - session.authenticated_at > 900_000 ||
-    now >= session.expires_at ||
-    now - session.last_seen_at > 43_200_000
+    now >= session.expires_at
   )
-    throw new Error("Recent sign-in and permitted workspace membership are required.");
+    throw new Error("A current sign-in and permitted workspace membership are required.");
 }
 
 export function beginGitHubAttribution(

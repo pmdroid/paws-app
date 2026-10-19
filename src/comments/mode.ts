@@ -415,6 +415,12 @@ export function withCommentActivities(
     ...(tracker.issueRepositorySuggestions
       ? { issueRepositorySuggestions: tracker.issueRepositorySuggestions.bind(tracker) }
       : {}),
+    ...(tracker.issueRepositoryHints
+      ? { issueRepositoryHints: tracker.issueRepositoryHints.bind(tracker) }
+      : {}),
+    ...(tracker.addRepositoryLabel
+      ? { addRepositoryLabel: tracker.addRepositoryLabel.bind(tracker) }
+      : {}),
     loadEpic: (linearIssueId) => tracker.loadEpic(linearIssueId),
     listDeps: (linearIssueId) => tracker.listDeps(linearIssueId),
     setStatus: (update) => tracker.setStatus(update),

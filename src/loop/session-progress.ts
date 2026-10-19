@@ -13,6 +13,9 @@ type Phase =
   | "merging"
   | "completed";
 
+/** At most one plan and one summary per session go to Linear in this window. */
+const METADATA_INTERVAL_MS = 30_000;
+
 const HOST_STEPS = ["Verify changes", "Open pull request", "Merge verified changes"];
 
 export function createLinearSessionProgress(
@@ -45,8 +48,34 @@ export function createLinearSessionProgress(
     : [];
   let phase: Phase = mode === "code" ? "implementing" : "working";
 
-  function enqueue(op: string, update: SessionUpdate, replace = false) {
+  // Plan and summary are latest-wins: a pending row takes the new payload, and a new row
+  // waits until METADATA_INTERVAL_MS after the last one went out. A final update is due now.
+  function publish(op: string, update: SessionUpdate, final = false) {
     immediate(db, () => {
+      const at = now();
+      const payload = JSON.stringify({ ...update, identifier, mode });
+      const pending = db
+        .query<{ id: number }, [string, number, string, number]>(
+          `SELECT id FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+            AND op = ? AND status = 'pending' AND (locked_until IS NULL OR locked_until <= ?)
+          ORDER BY id DESC LIMIT 1`,
+        )
+        .get(sessionId, generation, op, at);
+      if (pending) {
+        db.run(
+          `UPDATE outbox SET payload = ?, not_before = CASE WHEN ? THEN 0 ELSE not_before END
+          WHERE id = ?`,
+          [payload, final ? 1 : 0, pending.id],
+        );
+        return;
+      }
+      const last = db
+        .query<{ at: number | null }, [number, string, number, string, number]>(
+          `SELECT MAX(CASE WHEN status = 'sent' THEN sent_at ELSE ? END) AS at FROM outbox
+          WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ? AND op = ?
+            AND (status = 'sent' OR (status = 'pending' AND locked_until > ?))`,
+        )
+        .get(at, sessionId, generation, op, at)?.at;
       const id = enqueueOutboxOnce(db, {
         target: "linear",
         op,
@@ -55,13 +84,13 @@ export function createLinearSessionProgress(
         generation,
         idempotencyKey: `${op}:${sessionId}:${randomUUID()}`,
         payload: { ...update, identifier, mode },
-        now: now(),
+        notBefore: final || last == null ? 0 : last + METADATA_INTERVAL_MS,
+        now: at,
       });
-      if (!replace) return;
       db.run(
         `UPDATE outbox SET status = 'dropped', error = 'Superseded by a newer session metadata version.'
         WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ? AND op = ? AND id < ?
-          AND status IN ('pending', 'dead')`,
+          AND status = 'dead'`,
         [sessionId, generation, op, id],
       );
     });
@@ -84,7 +113,11 @@ export function createLinearSessionProgress(
       status:
         phaseIndex > index + 1 ? "completed" : phaseIndex === index + 1 ? "inProgress" : "pending",
     }));
-    enqueue("linear.session.plan", { sessionId, plan: [...agentSteps, ...milestones] }, true);
+    publish(
+      "linear.session.plan",
+      { sessionId, plan: [...agentSteps, ...milestones] },
+      phase === "completed",
+    );
   }
 
   return {
@@ -104,10 +137,20 @@ export function createLinearSessionProgress(
             ? "fixing Closeout findings"
             : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
-      enqueue("linear.session.summary", { sessionId, summary }, true);
+      publish("linear.session.summary", { sessionId, summary }, next === "completed");
     },
     link(label: string, url: string) {
-      enqueue("linear.session.links", { sessionId, addedExternalUrls: [{ label, url }] });
+      // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "linear.session.links",
+        orderingKey: sessionId,
+        priority: 5,
+        generation,
+        idempotencyKey: `linear.session.links:${sessionId}:${randomUUID()}`,
+        payload: { sessionId, addedExternalUrls: [{ label, url }], identifier, mode },
+        now: now(),
+      });
     },
   };
 }

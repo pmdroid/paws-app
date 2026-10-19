@@ -247,7 +247,7 @@ function judgeItem(
   return judgeRecord(item, latest, request, trust);
 }
 
-function retryBlock(
+export function retryBlock(
   item: ResolvedItem,
   retry: RetryPolicy | undefined,
   digest: string,
@@ -259,6 +259,7 @@ function retryBlock(
   const task = taskOf(request);
   const seen = new Set<string>();
   let failed = 0;
+  const repeats = new Map<string, number>();
   for (const record of records) {
     if (record.itemId !== item.id || record.policyDigest !== digest) continue;
     if (retry.scope === "task") {
@@ -266,14 +267,36 @@ function retryBlock(
     } else if (record.base !== request.base || record.head !== request.head) {
       continue;
     }
-    const key = `${record.base}\0${record.head}\0${record.attempt}`;
-    if (seen.has(key)) return row(item, "invalid", "duplicate evidence attempt");
-    seen.add(key);
+    const attemptKey = `${record.base}\0${record.head}\0${record.attempt}`;
+    if (seen.has(attemptKey)) return row(item, "invalid", "duplicate evidence attempt");
+    seen.add(attemptKey);
     if (
       !request.retryBaseline?.includes(evidenceAttemptKey(record)) &&
       recordFailed(item, record, request, trust)
-    )
+    ) {
       failed += 1;
+      if (isReview(item) && record.recordType === "review") {
+        const keys = new Set(
+          record.findings
+            .filter((finding) => severityRank(finding.severity) <= severityRank(item.failOn))
+            .map((finding) => findingKey(finding.location)),
+        );
+        for (const key of keys) repeats.set(key, (repeats.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  if (isReview(item) && retry.maxFailedReviewAttempts !== undefined) {
+    let message: string;
+    if (failed >= retry.maxFailedReviewAttempts) {
+      message = `${failed} of ${retry.maxFailedReviewAttempts} allowed failed review attempts used.`;
+    } else {
+      const repeated = [...repeats.keys()]
+        .sort()
+        .find((key) => repeats.get(key)! >= retry.maxFailedAttemptsPerItem);
+      if (repeated === undefined) return undefined;
+      message = `${repeated} failed in ${repeats.get(repeated)} of ${retry.maxFailedAttemptsPerItem} allowed review attempts.`;
+    }
+    return row(item, "exhausted", `${message} Stop retrying and ask for help.`);
   }
   if (failed < retry.maxFailedAttemptsPerItem) return undefined;
   return row(
@@ -281,6 +304,16 @@ function retryBlock(
     "exhausted",
     `${failed} of ${retry.maxFailedAttemptsPerItem} allowed failed attempts used. Stop retrying and ask for help.`,
   );
+}
+
+function findingKey(location: string): string {
+  let key = location.trim();
+  for (let index = 0; index < 2; index += 1) {
+    const colon = key.lastIndexOf(":");
+    if (colon <= 0 || !/^[0-9]+$/.test(key.slice(colon + 1))) break;
+    key = key.slice(0, colon);
+  }
+  return key;
 }
 
 function recordFailed(

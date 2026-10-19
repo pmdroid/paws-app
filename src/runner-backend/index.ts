@@ -18,6 +18,8 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
 import {
+  ArtifactRejectedError,
+  DEFAULT_RUN_TIMEOUT_MS,
   git,
   recoverAcpConversation,
   snapshotAgentInputs,
@@ -26,6 +28,7 @@ import {
   type AcpEvent,
   type RunAgentOptions,
   type RunAgentResult,
+  encodePolicyFiles,
 } from "../acp";
 import type { RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
@@ -341,7 +344,7 @@ export function createRemoteAgentRunner(options: {
               )
               .get(selected.runId)?.generation ?? 0) + 1;
           const issuedAt = now();
-          const deadline = issuedAt + (input.timeoutMs ?? 2_700_000);
+          const deadline = issuedAt + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
           const checkpointBot =
             !taskScope && input.role === "implementer"
               ? await options.checkpointBot?.(
@@ -490,6 +493,24 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "progress")
                 await input.postUpdate?.post(event.text).catch(() => undefined);
+              if (event.type === "closeout_policy") {
+                const policy = input.closeoutPolicy
+                  ? await input.closeoutPolicy().catch((error: unknown) => ({
+                      ok: false as const,
+                      message: error instanceof Error ? error.message : String(error),
+                    }))
+                  : {
+                      ok: false as const,
+                      message: "Paws has no trusted Closeout policy for this run",
+                    };
+                signal.throwIfAborted();
+                results.answer({
+                  runId: assigned.runId,
+                  generation: assigned.generation,
+                  sequence: row.sequence,
+                  answer: encodePolicyFiles(policy),
+                });
+              }
               if (event.type === "artifact") {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
@@ -498,19 +519,27 @@ export function createRemoteAgentRunner(options: {
                   assigned.generation,
                   event.artifact,
                 );
-                const publication = await input.publishArtifact.publish(snapshot, {
-                  request: {
-                    path: snapshot.path,
-                    displayName: snapshot.displayName,
-                    mimeType: snapshot.mimeType,
-                    attachToIssue: event.artifact.attachToIssue,
-                  },
-                  itemId: input.itemId,
-                  runId: selected.runId,
-                  worktreePath: input.worktreePath,
-                  role: input.role,
-                  signal,
-                });
+                const evidence = event.artifact.evidence;
+                const publication = await input.publishArtifact
+                  .publish(snapshot, {
+                    request: {
+                      path: snapshot.path,
+                      displayName: snapshot.displayName,
+                      mimeType: snapshot.mimeType,
+                      attachToIssue: event.artifact.attachToIssue,
+                      ...(evidence ? { checkId: evidence.checkId } : {}),
+                    },
+                    itemId: input.itemId,
+                    runId: selected.runId,
+                    worktreePath: input.worktreePath,
+                    role: input.role,
+                    signal,
+                    ...(evidence ? { evidence } : {}),
+                  })
+                  .catch((error: unknown) => {
+                    if (error instanceof ArtifactRejectedError) return { error: error.message };
+                    throw error;
+                  });
                 publishedEffects = true;
                 signal.throwIfAborted();
                 results.answer({
@@ -693,6 +722,12 @@ export function createRemoteAgentRunner(options: {
               baseSha!,
               complete.candidateSha,
             ]);
+            if (complete.stopReason !== "end_turn" || complete.errorMessage)
+              saveCheckpoint(db, itemId, {
+                phase: "running",
+                baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
+                wipCommit: complete.candidateSha,
+              });
           }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);

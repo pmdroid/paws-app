@@ -133,6 +133,7 @@ async function handle(message: {
         agentCapabilities: {
           mcpCapabilities: { http: false, sse: false },
           promptCapabilities: script.promptCapabilities,
+          loadSession: script.loadSession === true,
         },
         authMethods: script.authMethods ?? [],
       },
@@ -168,6 +169,24 @@ async function handle(message: {
     if (process.env.CODEX_HOME) state.codexHome = process.env.CODEX_HOME;
     persist();
     send({ jsonrpc: "2.0", id: message.id, result: { sessionId, configOptions: configOptions() } });
+    return;
+  }
+
+  if (message.method === "session/load") {
+    state.loaded = message.params ?? {};
+    persist();
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: message.params?.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "REPLAYED HISTORY" },
+        },
+      },
+    });
+    send({ jsonrpc: "2.0", id: message.id, result: { configOptions: configOptions() } });
     return;
   }
 
@@ -423,6 +442,7 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
           ...(step.displayName ? { displayName: step.displayName } : {}),
           ...(step.mimeType ? { mimeType: step.mimeType } : {}),
           ...(step.attachToIssue === undefined ? {} : { attachToIssue: step.attachToIssue }),
+          ...(step.checkId === undefined ? {} : { checkId: step.checkId }),
         });
         state.artifact = { ok: true, text };
       } catch (error) {

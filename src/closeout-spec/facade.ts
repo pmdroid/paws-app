@@ -16,7 +16,7 @@ import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
-import { loadPolicy } from "./policy/load";
+import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
@@ -177,6 +177,23 @@ const gitReader: GitReader = {
   },
 };
 
+export function trustedPolicyFiles(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): PolicyFilesLoad {
+  return loadPolicyFiles({
+    repo,
+    git: gitReader,
+    ...(home !== undefined ? { home } : {}),
+    ...(policyRoot !== undefined ? { policyRoot } : {}),
+  });
+}
+
+export function workspacePolicyFiles(root: string): PolicyFilesLoad {
+  return treeFiles(root);
+}
+
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
 export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {
   const loaded = loadOrigin(repo, home, policyRoot);
@@ -206,11 +223,18 @@ export function policyFixBudget(repo: string, home?: string, policyRoot?: string
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none" || policy.retry === undefined) return null;
-  return Math.max(
-    0,
-    policy.retry.maxFailedAttemptsPerItem * Math.max(1, policy.items.length + policy.setup.length) -
-      1,
-  );
+  const retry = policy.retry;
+  const failedBudget =
+    policy.setup.length * retry.maxFailedAttemptsPerItem +
+    policy.items.reduce(
+      (total, item) =>
+        total +
+        (item.kind === "review"
+          ? (retry.maxFailedReviewAttempts ?? retry.maxFailedAttemptsPerItem)
+          : retry.maxFailedAttemptsPerItem),
+      0,
+    );
+  return Math.max(retry.maxFailedAttemptsPerItem, failedBudget) - 1;
 }
 
 export async function retryBaseline(evidenceDir: string): Promise<string[]> {
@@ -323,6 +347,18 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
   const resolved = await resolvePair(input.repo, input.base, input.head, env);
   if (!resolved.ok) return { ok: false, message: resolved.message };
   const evidenceDir = input.evidenceDir ?? join(input.repo, ".closeout");
+  const preflight = await finish(
+    input,
+    policy,
+    candidate,
+    resolved.base,
+    resolved.head,
+    evidenceDir,
+  );
+  const blocked = preflight.items.find((entry) => entry.id === input.itemId);
+  if (blocked?.state === "exhausted" || blocked?.state === "invalid" || preflight.message) {
+    return { ok: false, message: blocked?.message ?? preflight.message ?? "review is blocked" };
+  }
   const reviewed = await input.reviewer.review({
     checkoutExclusions: input.checkoutExclusions,
     item,
@@ -345,7 +381,9 @@ export async function addReview(input: AddReviewInput): Promise<AddReviewResult>
       evidenceDir,
     );
     const row = current.items.find((entry) => entry.id === input.itemId);
-    if (row?.state === "exhausted") return { ok: false, message: row.message };
+    if (row?.state === "exhausted" || row?.state === "invalid" || current.message) {
+      return { ok: false, message: row?.message ?? current.message ?? "review is blocked" };
+    }
     const evidence = createEvidenceStore({ root: evidenceDir });
     const attempt = await evidence.nextAttempt({
       policyDigest: policy.digest,

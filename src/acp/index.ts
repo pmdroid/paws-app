@@ -30,6 +30,8 @@ export {
   parsePostUpdate,
   parsePullRequest,
   startAskTeamBridge,
+  decodePolicyFiles,
+  encodePolicyFiles,
   startHostToolBridge,
   type AskTeamBridge,
   type AskTeamContext,
@@ -46,9 +48,12 @@ export {
   type UpdatePlanHook,
 } from "./ask-team";
 export {
+  ArtifactRejectedError,
   DEFAULT_MAX_ARTIFACT_BYTES,
+  EVIDENCE_ARTIFACT_LIMITS,
   PUBLISH_ARTIFACT_TOOL_NAME,
   snapshotArtifactFile,
+  type ArtifactEvidence,
   type ArtifactLimits,
   type ArtifactSnapshot,
   type PublishedArtifact,
@@ -75,6 +80,7 @@ export {
   recoverAcpConversation,
   createAcpPromptLifecycle,
   reconstructAcpPrompt,
+  requestText,
   type AcpConversationEntry,
   type AcpPromptLifecycle,
 } from "./lifecycle";
@@ -82,6 +88,7 @@ export { isBlockedEnv, minimalAgentEnv } from "./env";
 export { executeItem } from "./executor";
 export { createFakeAcpRunner } from "./fake";
 export type { FakeAcpRunner } from "./fake";
+export type { PolicyFilesLoad } from "./ask-team";
 export { GitError, git } from "./git";
 export { prepareRepositorySnapshot } from "./repository-snapshot";
 export {
@@ -120,6 +127,7 @@ export {
   ensureBareMirror,
   removeWorktree,
   resolveStartRef,
+  worktreeMergedInto,
   type Mirror,
   type Worktree,
 } from "./worktree";

@@ -235,6 +235,34 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         { sequence: 4, answer: "B" },
       ]);
       assert.deepEqual(results.answers({ ...access, after: 4 }), []);
+      if (type === "run") {
+        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), false);
+        db.run(
+          "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)",
+          [runnerId, "0.1.11", Date.now()],
+        );
+        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), false);
+        db.run("UPDATE runner_host_status SET runner_version='0.1.12' WHERE runner_id=?", [
+          runnerId,
+        ]);
+        assert.equal(results.deliverFollowUp(item.id, "Also cover the empty state"), true);
+        const followUps = await results.fetch(
+          new Request(`https://runner.invalid/v1/runs/${run.id}/follow-ups`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${access.token}`,
+            },
+            body: JSON.stringify({ generation, after: 0 }),
+          }),
+          runnerId,
+        );
+        assert.equal(followUps!.status, 200);
+        assert.deepEqual(await followUps!.json(), {
+          followUps: [{ sequence: 1, body: "Also cover the empty state" }],
+        });
+        assert.deepEqual(results.followUps({ ...access, after: 1 }), []);
+      }
       let pulls = 0;
       let cancelled = false;
       const oversized = new Request(`https://runner.invalid/v1/runs/${run.id}/result`, {
