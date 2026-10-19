@@ -1,7 +1,6 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusItem,
-  StatusMergeEntry,
   StatusQuestion,
   StatusRun,
   StatusSnapshot,
@@ -98,8 +97,6 @@ function renderPending(model: RenderModel): string {
   return `${pageHeading(model.route.view)}<div class="empty" role="status">Loading status…</div>`;
 }
 
-const EMPTY_ITEMS = "No items yet. Add the `paws` label to a Linear issue.";
-
 function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
   switch (model.route.view) {
     case "overview":
@@ -127,44 +124,99 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
 }
 
 function viewOverview(snapshot: StatusSnapshot): string {
-  if (!snapshot.items.length)
-    return `${pageHeading("overview")}<div class="empty">${esc(EMPTY_ITEMS)}</div>`;
-  const active = snapshot.runs.filter((run) => ACTIVE_RUN.has(run.state)).length;
-  const attention = snapshot.items.filter((item) =>
-    ["needs_human", "exhausted"].includes(item.state),
-  );
-  const work = snapshot.items.filter(
-    (item) => !["merged", "completed", "stopped"].includes(item.state),
-  );
-  const visible = (work.length ? work : snapshot.items).slice(0, 12);
+  if (!snapshot.items.length && !snapshot.questions.length)
+    return `${pageHeading("overview")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
+  const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
+  const attention = snapshot.items.flatMap((item) => {
+    const run = item.runId ? runs.get(item.runId) : undefined;
+    const question = snapshot.questions.find((entry) => entry.itemId === item.id);
+    if (question)
+      return [
+        {
+          itemId: item.id,
+          title: item.title,
+          reason: question.title,
+          action: "Answer question",
+          href: routeHref({ view: "questions", id: question.id }),
+        },
+      ];
+    if (["merged", "completed", "stopped"].includes(item.state)) return [];
+    const verdict = itemVerdict(snapshot, item.id);
+    const reason =
+      item.state === "signoff"
+        ? "Your sign-off is needed before this can continue."
+        : item.state === "exhausted" || verdict?.decision === "exhausted"
+          ? "Automatic retries are used up."
+          : item.state === "needs_human" || verdict?.decision === "blocked"
+            ? "Work is blocked and needs a person."
+            : item.state === "awaiting_input" || run?.state === "awaiting_input"
+              ? "Waiting for your input."
+              : run?.state === "paused"
+                ? "This run is paused."
+                : null;
+    return reason
+      ? [
+          {
+            itemId: item.id,
+            title: item.title,
+            reason,
+            action: item.state === "signoff" ? "Review sign-off" : "Review issue",
+            href: routeHref({ view: "issues", id: item.id }),
+          },
+        ]
+      : [];
+  });
+  for (const question of snapshot.questions) {
+    if (snapshot.items.some((item) => item.id === question.itemId)) continue;
+    attention.push({
+      itemId: question.itemId,
+      title: question.title,
+      reason: "Waiting for your answer.",
+      action: "Answer question",
+      href: routeHref({ view: "questions", id: question.id }),
+    });
+  }
+  const needsYou = new Set(attention.map((entry) => entry.itemId));
+  const work = snapshot.items.filter((item) => {
+    const run = item.runId ? runs.get(item.runId) : undefined;
+    return (
+      !needsYou.has(item.id) &&
+      ["planning", "running", "verifying"].includes(item.state) &&
+      (!run || ["running", "verifying"].includes(run.state)) &&
+      !unmergedBlockers(snapshot, item).length
+    );
+  });
+  const queued = snapshot.items.filter((item) => item.state === "queued").length;
+  const merging = snapshot.items.filter((item) => item.state === "merge_queue").length;
+  const summary = [
+    `${attention.length} need${attention.length === 1 ? "s" : ""} you`,
+    `${work.length} working`,
+    ...(queued ? [`${queued} queued`] : []),
+    ...(merging ? [`${merging} waiting to merge`] : []),
+  ].join(" · ");
   return `${pageHeading("overview")}
-    <section class="overview-section" aria-labelledby="attention-heading"><div class="between"><h2 id="attention-heading">Needs attention</h2><a href="${routeHref({ view: "questions", id: null })}">Open questions</a></div>
-      ${snapshot.questions.map((question) => questionRow(snapshot, question)).join("")}
-      ${attention.map((item) => `<div class="it"><a href="${routeHref({ view: "issues", id: item.id })}"><b>${esc(item.id)}</b> ${esc(item.title)}</a> ${statePill(item.state, itemLabel(item.state))}<div>${linkList(item.links)}</div></div>`).join("")}
-      ${!snapshot.questions.length && !attention.length ? '<p class="muted">No work needs your attention.</p>' : ""}
+    <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
+    <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
+      ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}
     </section>
-    <div class="overview-columns"><section class="overview-section" aria-labelledby="work-heading"><div class="between"><h2 id="work-heading">${work.length ? "Work in progress" : "Recent work"}</h2><a href="${routeHref({ view: "runs", id: null })}">${active} active runs</a></div>
-      <ul class="overview-work" role="list">${visible
-        .map((item) => {
-          const run = item.runId
-            ? snapshot.runs.find((entry) => entry.id === item.runId)
-            : undefined;
-          const blockers = unmergedBlockers(snapshot, item);
-          return `<li><div class="between"><a class="work-title" href="${routeHref(run ? { view: "runs", id: run.id } : { view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${run ? phasePill(item, run, itemVerdict(snapshot, item.id)) : statePill(item.state, itemLabel(item.state))}</div><div class="row wrap muted">${agentChip(item.agent)}${blockers.length ? `<span>Waiting on ${esc(blockers.join(", "))}</span>` : ""}${linkList(item.links)}</div></li>`;
-        })
-        .join("")}</ul>
-      <a href="${routeHref({ view: "issues", id: null })}">All issues</a>
-    </section><section class="overview-section" aria-labelledby="delivery-heading"><div class="between"><h2 id="delivery-heading">Delivery</h2></div>
+    <section class="overview-section" aria-labelledby="work-heading"><h2 id="work-heading">Working now</h2>
       ${
-        snapshot.mergeQueue.length
-          ? [...snapshot.mergeQueue]
-              .sort((a, b) => a.position - b.position)
-              .map((entry) => queueRow(snapshot, entry))
-              .join("")
-          : '<p class="muted">No pull requests are waiting to merge.</p>'
+        work.length
+          ? `<ul class="overview-work" role="list">${work
+              .slice(0, 6)
+              .map((item) => {
+                const run = item.runId ? runs.get(item.runId) : undefined;
+                const href = routeHref(
+                  run ? { view: "runs", id: run.id } : { view: "issues", id: item.id },
+                );
+                return `<li class="overview-row"><a class="work-title" href="${href}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}</li>`;
+              })
+              .join(
+                "",
+              )}</ul>${work.length > 6 ? `<a href="${routeHref({ view: "issues", id: null })}">View all ${work.length} working issues</a>` : ""}`
+          : '<p class="muted">No work is running right now.</p>'
       }
-      <h3>Recent events</h3><div class="list overview-events">${events(snapshot)}</div>
-    </section></div>`;
+    </section>`;
 }
 
 const EMPTY_ISSUES = "No issues yet. Delegate an issue to Paws in Linear.";
@@ -336,25 +388,6 @@ function questionCard(
       ${options ? `<div class="opts">${options}</div>` : ""}
       <div class="row">${question.links.length ? linkList(question.links) : '<span class="dim">Answer in the source conversation to continue.</span>'}</div>
     </div></article>`;
-}
-
-function questionRow(snapshot: StatusSnapshot, question: StatusQuestion): string {
-  return `<div class="it"><a href="${routeHref({ view: "questions", id: question.id })}"><b>${esc(question.title)}</b></a><div class="muted">${esc(question.itemId)} · ${esc(ago(question.askedAt, snapshot.generatedAt))}</div>${question.links.length ? `<div>${linkList(question.links)}</div>` : ""}</div>`;
-}
-
-function queueRow(snapshot: StatusSnapshot, entry: StatusMergeEntry): string {
-  const item = findItem(snapshot, entry.itemId);
-  return `<div class="it"><a href="${routeHref({ view: "issues", id: entry.itemId })}"><b>#${entry.position}</b> ${esc(item?.title ?? entry.itemId)}</a><div class="dim">${esc(entry.itemId)} · ${esc(ago(entry.enqueuedAt, snapshot.generatedAt))}</div></div>`;
-}
-
-function events(snapshot: StatusSnapshot): string {
-  const rows = [...snapshot.events].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
-  if (!rows.length) return '<div class="dim">No events.</div>';
-  return rows
-    .map((event) => {
-      return `<div class="it row"><span class="mono dim">${esc(clock(event.at))}</span><span>${esc(event.text)}</span></div>`;
-    })
-    .join("");
 }
 
 function phaseStrip(
