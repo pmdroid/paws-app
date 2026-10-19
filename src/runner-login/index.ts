@@ -258,13 +258,18 @@ export function createRunnerLogin(options: {
       }
       return reply;
     },
-    async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
+    async browser(
+      request: Request,
+      principal: WorkspacePrincipal,
+      authorize?: () => void,
+    ): Promise<Response | null> {
       const match =
         /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/accounts(?:\/(claude|codex)\/login(?:\/([a-f0-9-]{36})(\/input)?)?)?$/.exec(
           new URL(request.url).pathname,
         );
       if (!match) return null;
       try {
+        authorize?.();
         const runnerId = match[1]!;
         const agent = match[2] as Agent | undefined;
         const id = match[3];
@@ -285,6 +290,7 @@ export function createRunnerLogin(options: {
         }
         if (match[4] && request.method === "POST") {
           const value = RunnerLoginInputSchema.parse(await body(request));
+          authorize?.();
           const current = own(principal, runnerId, agent, id);
           if (
             !pending(current) ||
