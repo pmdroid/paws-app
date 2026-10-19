@@ -38,3 +38,8 @@ export {
 } from "./member-repository-access";
 
 export { handleOnboardingVm } from "./onboarding-vm";
+export {
+  createOnboardingPreparation,
+  PREPARATION_MODES,
+  type OnboardingPreparation,
+} from "./onboarding-preparation";

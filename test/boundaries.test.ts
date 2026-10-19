@@ -147,7 +147,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "auth",
   ],
   auth: ["config", "github", "credentials", "core"],
-  workspace: ["db", "linear", "slack", "decisions", "credentials", "github"],
+  workspace: ["db", "linear", "slack", "decisions", "credentials", "github", "core"],
   "runner-identity": ["credentials"],
   "runner-repository-access": ["github", "runner-work"],
   "runner-transcript-config": ["credentials", "runner-transcripts"],
