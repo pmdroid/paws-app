@@ -31,7 +31,11 @@ export function handleAgentTranscriptRequest(
     (options.sessionIds !== undefined && (!session || !options.sessionIds.includes(session)))
   )
     return new Response("Not found", { status: 404, headers });
-  if (request.method === "HEAD") return new Response(null, { headers });
+  const asJson = (request.headers.get("accept") ?? "").includes("application/json");
+  const bodyHeaders = asJson
+    ? { ...headers, "Content-Type": "application/json; charset=utf-8" }
+    : headers;
+  if (request.method === "HEAD") return new Response(null, { headers: bodyHeaders });
   const entries = fullAgentTranscript(
     options.closeoutHome ?? options.env?.PAWS_HOME,
     runId,
@@ -40,15 +44,24 @@ export function handleAgentTranscriptRequest(
   );
   const iterator = entries[Symbol.iterator]();
   const encoder = new TextEncoder();
+  let first = true;
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
       try {
         const entry = iterator.next();
-        if (entry.done) controller.close();
-        else
+        if (entry.done) {
+          if (asJson) controller.enqueue(encoder.encode(first ? "[]" : "]"));
+          controller.close();
+        } else if (asJson) {
+          const { at, kind, text } = entry.value;
+          controller.enqueue(
+            encoder.encode(`${first ? "[" : ","}${JSON.stringify({ at, kind, text })}`),
+          );
+        } else
           controller.enqueue(
             encoder.encode(`${entry.value.at} ${entry.value.kind}\n${entry.value.text}\n\n`),
           );
+        first = false;
       } catch (error) {
         iterator.return(undefined);
         controller.error(error);
@@ -58,5 +71,5 @@ export function handleAgentTranscriptRequest(
       iterator.return(undefined);
     },
   });
-  return new Response(stream, { headers });
+  return new Response(stream, { headers: bodyHeaders });
 }
