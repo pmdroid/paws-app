@@ -163,9 +163,13 @@ export function OnboardingAgents({ runnerId }: { runnerId: string }) {
         <h2 className="text-xl font-bold">Claude and Codex on your VM</h2>
         <p className="text-sm">{summary?.runner ? summary.runner.name : "Checking selected VM…"}</p>
         <p role="status" className="text-sm font-semibold">
-          {summary?.ready
-            ? "Both agent accounts are ready"
-            : "Both Claude and Codex must be connected"}
+          {!summary
+            ? error
+              ? "Agent readiness is unavailable"
+              : "Checking agent readiness…"
+            : summary.ready
+              ? "Both agent accounts are ready"
+              : "Both Claude and Codex must be connected"}
         </p>
       </div>
       {error && (
