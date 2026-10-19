@@ -25,6 +25,59 @@ export function sessionCloseoutAccepted(report: string | undefined): boolean {
   return pending.length === 0 && record.blocked === null;
 }
 
+/** The agent's `request_closeout_skip` from its Closeout session report, if it made one. */
+export function sessionSkipRequest(
+  report: string | undefined,
+): { checks: string[]; reason: string } | null {
+  if (report === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(report);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const request = (parsed as Record<string, unknown>).skip_request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return null;
+  const { checks, reason } = request as Record<string, unknown>;
+  if (
+    !Array.isArray(checks) ||
+    checks.length === 0 ||
+    checks.some((id) => typeof id !== "string" || id.length === 0) ||
+    typeof reason !== "string" ||
+    reason.trim().length === 0
+  )
+    return null;
+  return { checks: checks as string[], reason: reason.trim().slice(0, 2000) };
+}
+
+export function skipRequestPath(root: string, taskId: string): string {
+  return join(root, "runs", taskId, "closeout-skip.json");
+}
+
+/**
+ * Keeps the agent's latest skip request for the task. A later session without one, such as a
+ * fix round, leaves it in place until the Closeout recovery question takes it.
+ */
+export function saveSkipRequest(path: string, report: string | undefined): void {
+  const request = sessionSkipRequest(report);
+  if (request === null) return;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify({ skip_request: request }), { mode: 0o600 });
+}
+
+/** Reads and removes the saved skip request, so each recovery question gets its own. */
+export function takeSkipRequest(path: string): { checks: string[]; reason: string } | null {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  rmSync(path, { force: true });
+  return sessionSkipRequest(text);
+}
+
 export function writeSessionCloseout(path: string, head: string, report: string | undefined): void {
   if (
     report === undefined ||

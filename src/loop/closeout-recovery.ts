@@ -48,14 +48,19 @@ export function recoveryOptions(
   return { retryBaseline, bypasses };
 }
 
+/** A video or screenshot the agent published for a check it asks to skip. */
+export type RecoveryEvidence = { checkId: string; label: string; video: boolean; url: string };
+
 export function recoveryQuestion(
   recovery: Omit<CloseoutRecovery, "questionId" | "answer" | "answeredBy">,
   error?: string,
+  evidence: readonly RecoveryEvidence[] = [],
 ): string {
   return [
     "Closeout needs your help.",
     ...(error ? [error] : []),
     recovery.summary,
+    ...(recovery.skipRequest ? [skipRequestText(recovery.skipRequest, evidence)] : []),
     `Base: ${recovery.base}. Head: ${recovery.head}. Policy: ${recovery.policyDigest || "unavailable"}.`,
     "Reply with guidance to send the task back to its configured agent and authorize a new round with the same Closeout retry limit.",
     ...(recovery.failedChecks.length
@@ -65,4 +70,21 @@ export function recoveryQuestion(
         ]
       : []),
   ].join("\n\n");
+}
+
+function skipRequestText(
+  request: NonNullable<CloseoutRecovery["skipRequest"]>,
+  evidence: readonly RecoveryEvidence[],
+): string {
+  const links = evidence
+    .filter((entry) => request.checks.includes(entry.checkId))
+    .map(
+      (entry) =>
+        `- ${entry.video ? "Video" : "Screenshot"} for \`${entry.checkId}\`: [${entry.label.replace(/[\\[\]]/g, "\\$&")}](<${entry.url}>)`,
+    );
+  return [
+    `The agent asks to skip ${request.checks.map((id) => `\`${id}\``).join(", ")}.`,
+    `Reason: ${request.reason}`,
+    ...(links.length ? ["Evidence:", ...links] : []),
+  ].join("\n");
 }

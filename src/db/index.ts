@@ -148,9 +148,11 @@ export {
 } from "./closeout-progress";
 
 export {
+  getCloseoutRecovery,
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   type CloseoutRecovery,
+  type SkipRequest as CloseoutSkipRequest,
 } from "./closeout-recovery";
 export {
   recordGitHubDelivery,

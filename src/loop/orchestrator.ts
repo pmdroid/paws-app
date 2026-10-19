@@ -39,6 +39,9 @@ import {
   loggedSessionCloseout,
   readSessionCloseout,
   sessionCloseoutPath,
+  saveSkipRequest,
+  skipRequestPath,
+  takeSkipRequest,
   writeSessionCloseout,
   type GateResult,
   type CloseoutVerdict,
@@ -110,6 +113,7 @@ import {
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
+  listEvidence,
   saveCloseoutRecovery,
   type CloseoutRecovery,
   markRun,
@@ -178,7 +182,12 @@ import {
   KEEPALIVE_MS,
   publicToolText,
 } from "./activity";
-import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
+import {
+  parseRecoveryAnswer,
+  recoveryOptions,
+  recoveryQuestion,
+  type RecoveryEvidence,
+} from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
 import { itemPathId, worktreeBranch } from "./sources";
 import {
@@ -1454,6 +1463,7 @@ export class Orchestrator {
         await git(["-C", executed.worktreePath, "merge-base", "HEAD", "origin/main"])
       ).trim();
       saveCheckpoint(this.db, item.id, { phase: "running", baseSha: base, wipCommit: head });
+      saveSkipRequest(skipRequestPath(this.options.pawsRoot, pathId), executed.run.closeoutReport);
       if (this.options.remoteExecution)
         writeSessionCloseout(
           sessionCloseoutPath(this.options.pawsRoot, pathId),
@@ -1752,6 +1762,11 @@ export class Orchestrator {
               undefined,
               deps.signal,
             );
+          if (result.ok)
+            saveSkipRequest(
+              skipRequestPath(this.options.pawsRoot, itemPathId(item)),
+              result.closeoutReport,
+            );
           if (result.ok && this.options.remoteExecution)
             writeSessionCloseout(sessionPath, result.head, result.closeoutReport);
           if (result.ok && !this.stopped(item.id)) {
@@ -1808,25 +1823,51 @@ export class Orchestrator {
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
     } catch {}
+    const failedChecks =
+      result?.decision?.items
+        .filter(
+          (check) =>
+            bypassable(check.state) &&
+            !result.bypasses?.some((approval) => approval.checkIds.includes(check.id)),
+        )
+        .map((check) => check.id) ?? [];
     const context = {
       itemId: item.id,
       taskId: itemPathId(item),
       base: result?.base ?? item.checkpoint?.baseSha ?? "",
       head: result?.head ?? item.checkpoint?.wipCommit ?? "",
       policyDigest: result?.decision?.policy.digest ?? "",
-      failedChecks:
-        result?.decision?.items
-          .filter(
-            (check) =>
-              bypassable(check.state) &&
-              !result.bypasses?.some((approval) => approval.checkIds.includes(check.id)),
-          )
-          .map((check) => check.id) ?? [],
+      failedChecks,
       retryBaseline,
       summary,
+      skipRequest: this.agentSkipRequest(item, failedChecks),
     };
     this.openCloseoutQuestion(item, sessionId, context);
     await this.flush();
+  }
+
+  /** The agent's skip request for this gate, kept to checks a person can still bypass. */
+  private agentSkipRequest(
+    item: WorkItemRecord,
+    failedChecks: readonly string[],
+  ): CloseoutRecovery["skipRequest"] {
+    const request = takeSkipRequest(skipRequestPath(this.options.pawsRoot, itemPathId(item)));
+    const checks = request?.checks.filter((id) => failedChecks.includes(id)) ?? [];
+    return request && checks.length > 0 ? { checks, reason: request.reason } : null;
+  }
+
+  private skipEvidence(item: WorkItemRecord, checks: readonly string[]): RecoveryEvidence[] {
+    const publicUrl = this.options.evidence?.publicUrl;
+    if (!publicUrl) return [];
+    return listEvidence(this.db, item.id)
+      .filter((row) => checks.includes(row.checkId))
+      .slice(-10)
+      .map((row) => ({
+        checkId: row.checkId,
+        label: row.displayName,
+        video: row.mediaType.startsWith("video/"),
+        url: `${publicUrl.replace(/\/+$/, "")}/evidence/${encodeURIComponent(row.id)}`,
+      }));
   }
 
   private openCloseoutQuestion(
@@ -1839,7 +1880,11 @@ export class Orchestrator {
       const current = getWorkItem(this.db, item.id);
       if (!current || current.state === "cancelled") return;
       if (findOpenQuestion(this.db, sessionId) !== null) return;
-      const body = recoveryQuestion(context, error);
+      const body = recoveryQuestion(
+        context,
+        error,
+        this.skipEvidence(item, context.skipRequest?.checks ?? []),
+      );
       const question = openQuestion(this.db, {
         itemId: item.id,
         runId: item.currentRunId,
