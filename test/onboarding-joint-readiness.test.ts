@@ -1,3 +1,4 @@
+import { SIGN_IN_INTERVAL_MS } from "../src/runner-health";
 import { systemClock } from "../src/core";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -163,6 +164,10 @@ async function fixture() {
     ["claude", true],
     ["codex", true],
   ]);
+  const checkedAt = new Map([
+    ["claude", now],
+    ["codex", now],
+  ]);
   const agents = {
     login: {
       list: () => ({
@@ -179,7 +184,7 @@ async function fixture() {
         (["claude", "codex"] as const).map((agent) => ({
           agent,
           status: "signed_in" as const,
-          checkedAt: 1,
+          checkedAt: checkedAt.get(agent)!,
         })),
     },
   } as unknown as Parameters<typeof createOnboardingReadiness>[0]["agents"];
@@ -205,6 +210,7 @@ async function fixture() {
     binding,
     github,
     connected,
+    checkedAt,
     preparation,
     onMember(action: () => Promise<void>) {
       onMember = action;
@@ -379,3 +385,19 @@ for (const known of [true, false])
     expect(continued).toBe(0);
     expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
   });
+
+test("agent health freshness is strict and bounds joint readiness expiry", async () => {
+  const f = await fixture();
+  f.checkedAt.set("claude", f.now() - SIGN_IN_INTERVAL_MS);
+  expect((await f.readiness.refresh(context, signal())).expiresAt).toBe(
+    f.now() + SIGN_IN_INTERVAL_MS,
+  );
+  f.checkedAt.set("claude", f.now() - 2 * SIGN_IN_INTERVAL_MS);
+  expect(await f.readiness.refresh(context, signal())).toMatchObject({
+    state: "waiting",
+    reason: "agents",
+  });
+  expect(f.readiness.readyToContinue(context)).toBe(false);
+  f.checkedAt.set("claude", f.now() - 2 * SIGN_IN_INTERVAL_MS + 1);
+  expect((await f.readiness.refresh(context, signal())).state).toBe("ready");
+});
