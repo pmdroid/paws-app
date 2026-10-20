@@ -91,6 +91,9 @@ export async function intakeDelegatedIssue(
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
   if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  if (ordered.ok && (delegatedAlone || !input.adoptParent))
+    await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
+  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
   const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
@@ -117,9 +120,6 @@ export async function intakeDelegatedIssue(
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
-  if (delegatedAlone || !input.adoptParent)
-    await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
-  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
   const sessionId = input.sessionId ?? "";
   let adopted = false;
   let result: IntakeResult;
