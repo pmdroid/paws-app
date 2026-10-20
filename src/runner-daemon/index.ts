@@ -12,3 +12,9 @@ export type {
 } from "./work";
 
 export type { RunnerDownloadedInputs } from "./inputs";
+
+export {
+  REPOSITORY_POLICY_PATH,
+  readRepositoryPolicy,
+  createRepositoryPolicyReader,
+} from "./repository-policy";
