@@ -5,7 +5,7 @@ export function validName(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
 }
 
-function quote(value: string): string {
+export function quote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
