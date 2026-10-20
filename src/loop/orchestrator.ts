@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type {
   AskTeamHook,
   AgentIdentity,
+  CloseoutProgressHook,
   PostUpdateHook,
   PullRequestHook,
   UpdatePlanHook,
@@ -108,6 +109,7 @@ import {
   getWorkItem,
   getPullRequestDraft,
   savePullRequestDraft,
+  recordAgentCloseout,
   immediate,
   insertRun,
   listInFlightItems,
@@ -1510,6 +1512,7 @@ export class Orchestrator {
         pullRequest: this.pullRequestHook(item),
         postUpdate: this.updateHook(item),
         publishArtifact: this.artifactPublisher(item),
+        closeoutProgress: this.agentCloseoutHook(item, run.id),
         prepareInputFiles: this.prepareInputFiles(item, run.id),
         onEvent: activity.onEvent,
         ...(launched.command ? { command: launched.command, args: launched.args ?? [] } : {}),
@@ -3195,6 +3198,16 @@ export class Orchestrator {
           throw new Error("Plan updates are closed for this run");
         progress.plan(steps);
         await this.flush();
+      },
+    };
+  }
+
+  /** Records the agent's own Closeout so the run page shows it while the agent works. */
+  private agentCloseoutHook(item: WorkItemRecord, runId: string): CloseoutProgressHook {
+    return {
+      record: (progress) => {
+        if (this.stopped(item.id)) return;
+        recordAgentCloseout(this.db, runId, item.id, progress, this.now());
       },
     };
   }
