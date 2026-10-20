@@ -52,14 +52,20 @@ export async function runGrokLogin(options: {
       }
       output += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
       const clean = stripVTControlCharacters(output);
-      const link = /https:\/\/auth\.x\.ai[^\s<>"']*/.exec(clean)?.[0];
+      const link = /https:\/\/(?:accounts|auth)\.x\.ai[^\s<>"']*/.exec(clean)?.[0];
       const code =
         /(?:Then enter this code|Confirm this code in your browser):\s*([A-Z0-9-]+)\s/.exec(
           clean,
         )?.[1];
       if (!link || !code) continue;
       const url = new URL(link);
-      if (url.hostname !== "auth.x.ai" || url.username || url.password || url.port) continue;
+      if (
+        (url.hostname !== "accounts.x.ai" && url.hostname !== "auth.x.ai") ||
+        url.username ||
+        url.password ||
+        url.port
+      )
+        continue;
       const key = `${url.href}:${code}`;
       if (challenge === key) continue;
       challenge = key;

@@ -211,13 +211,11 @@ export function createRunnerLogin(options: {
           throw new Error("Claude login requires its terminal");
         if (row.agent !== "claude" && update.authorization) {
           const url = new URL(update.authorization.url);
-          if (
-            url.protocol !== "https:" ||
-            url.hostname !== (row.agent === "grok" ? "auth.x.ai" : "auth.openai.com") ||
-            url.username ||
-            url.password ||
-            url.port
-          )
+          const allowedHost =
+            row.agent === "grok"
+              ? url.hostname === "accounts.x.ai" || url.hostname === "auth.x.ai"
+              : url.hostname === "auth.openai.com";
+          if (url.protocol !== "https:" || !allowedHost || url.username || url.password || url.port)
             throw new Error("Unexpected provider authorization URL");
         }
         const answer = inputs.get(id);

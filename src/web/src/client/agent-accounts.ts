@@ -244,7 +244,7 @@ function providerUrl(value: string, agent: Agent): string {
     agent === "codex"
       ? ["auth.openai.com", "chatgpt.com"]
       : agent === "grok"
-        ? ["auth.x.ai"]
+        ? ["accounts.x.ai", "auth.x.ai"]
         : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
   if (
     url.protocol !== "https:" ||

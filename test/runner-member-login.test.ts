@@ -332,6 +332,10 @@ test("Grok device login is member-scoped, persists connected accounts and reject
         authorization: { url, message: "Enter ABCD-1234" },
       }),
     ).toThrow();
+  f.login.exchange(f.runnerId, session.id, {
+    ...waiting,
+    authorization: { url: "https://auth.x.ai/device", message: "Enter ABCD-1234" },
+  });
   f.login.exchange(f.runnerId, session.id, waiting);
   expect((await f.login.browser(new Request(`${endpoint}/${session.id}`), f.owner))?.status).toBe(
     403,
