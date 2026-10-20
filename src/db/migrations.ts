@@ -4,6 +4,15 @@ export type Migration = {
   foreignKeys?: false;
 };
 
+const HEX = "[0-9a-f]";
+const UUID_V4_GLOB = [
+  HEX.repeat(8),
+  HEX.repeat(4),
+  `4${HEX.repeat(3)}`,
+  `[89ab]${HEX.repeat(3)}`,
+  HEX.repeat(12),
+].join("-");
+
 /**
  * Append-only. Shipped ids are never edited; add the next numbered migration.
  * Epic and work item landed in 002. Recovery columns, runs, and wake rows are 003.
@@ -1855,6 +1864,23 @@ CREATE TABLE browser_installation_request (
     sql: `
 ALTER TABLE runner_capacity ADD COLUMN ceiling INTEGER CHECK(ceiling IS NULL OR ceiling BETWEEN 1 AND 16);
 ALTER TABLE runner_capacity ADD COLUMN desired INTEGER CHECK(desired IS NULL OR desired BETWEEN 1 AND 16);
+`,
+  },
+  {
+    // Closeout evidence posts used the evidence ULID as the Linear activity id, which Linear
+    // refuses. The dead row blocked its session, so it gets a UUID v4 id and goes back to pending.
+    id: "076_evidence_activity_uuid",
+    sql: `
+UPDATE outbox SET
+  payload = json_set(payload, '$.id',
+    lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+    substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) ||
+    substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+  status = 'pending', attempts = 0, not_before = 0, error = NULL,
+  locked_by = NULL, locked_until = NULL
+WHERE target = 'linear' AND op = 'activity' AND status = 'dead'
+  AND idempotency_key LIKE 'evidence:%'
+  AND NOT lower(COALESCE(json_extract(payload, '$.id'), '')) GLOB '${UUID_V4_GLOB}';
 `,
   },
 ];
