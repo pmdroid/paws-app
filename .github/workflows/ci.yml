@@ -21,5 +21,13 @@ jobs:
       - run: bun run lint
       - run: bun run fmt:check
       - run: bun run typecheck
+      - name: Enable required namespace fixture on this runner
+        run: |
+          uname -a
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone user.max_user_namespaces
+          sudo aa-status
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile paws-ci-unshare /usr/bin/unshare flags=(unconfined) {' '  userns,' '}' > "$RUNNER_TEMP/paws-ci-unshare"
+          sudo apparmor_parser --replace "$RUNNER_TEMP/paws-ci-unshare"
+          unshare -Ur -m sh -c 'test "$(id -u)" = 0; mount --make-rprivate /'
       - run: bun test
       - run: bun run build:status
