@@ -12,7 +12,9 @@ import {
   taskRequiresRepository,
   workspaceMember,
 } from "../db";
+import type { RepositoryBinding } from "../core";
 import type { WorkspaceAssignments } from "./assignments";
+import type { createMemberRepositoryAccess } from "./member-repository-access";
 import { onboardingAgentsState, type OnboardingAgents } from "./onboarding-agents";
 
 type Target = { runnerId?: string; workspaceId?: string; memberId?: string };
@@ -35,11 +37,12 @@ export function createOnboardingExecution(options: {
   db: Database;
   assignments?: Pick<WorkspaceAssignments, "onboardingContext">;
   agents?: OnboardingAgents;
+  access?: Pick<ReturnType<typeof createMemberRepositoryAccess>, "check">;
   now?: () => number;
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
-  function facts(itemId: string, target?: Target) {
+  function facts(itemId: string, target?: Target, publication = false) {
     const binding = readOnboardingItemBinding(db, itemId);
     if (!binding) throw new Error("Onboarding binding is unavailable.");
     const item = getWorkItem(db, itemId);
@@ -58,7 +61,10 @@ export function createOnboardingExecution(options: {
       !item.currentRunId ||
       !run ||
       run.itemId !== itemId ||
-      !["active", "provisioning"].includes(run.status) ||
+      !(publication
+        ? ["active", "provisioning", "ended"].includes(run.status) &&
+          ["verifying", "merge_queue"].includes(item.state)
+        : ["active", "provisioning"].includes(run.status)) ||
       item.cancelRequested ||
       ["cancelled", "completed", "merged"].includes(item.state) ||
       item.sessionKey !== binding.sessionId ||
@@ -134,17 +140,83 @@ export function createOnboardingExecution(options: {
       }),
     };
   }
+  function capture(itemId: string, target?: Target) {
+    if (!readOnboardingItemBinding(db, itemId)) return null;
+    const before = facts(itemId, target);
+    return {
+      binding: before.binding,
+      assertCurrent() {
+        if (facts(itemId, target).fingerprint !== before.fingerprint)
+          throw new Error("Onboarding execution authority changed.");
+      },
+    };
+  }
+  async function authorizeRepository<T>(
+    itemId: string,
+    repository: RepositoryBinding,
+    access: "read" | "write",
+    signal: AbortSignal,
+    mint: (signal: AbortSignal) => Promise<T>,
+    operation?: { signal: AbortSignal; assertCurrent(): void },
+  ): Promise<T> {
+    signal = operation ? AbortSignal.any([signal, operation.signal]) : signal;
+    signal.throwIfAborted();
+    operation?.assertCurrent();
+    const before =
+      operation && readOnboardingItemBinding(db, itemId) ? facts(itemId, undefined, true) : null;
+    const guard = before
+      ? {
+          binding: before.binding,
+          assertCurrent() {
+            operation!.assertCurrent();
+            if (facts(itemId, undefined, true).fingerprint !== before.fingerprint)
+              throw new Error("Onboarding publication authority changed.");
+          },
+        }
+      : capture(itemId);
+    if (!guard) return mint(signal);
+    const bound = guard.binding.repository;
+    if (
+      !bound ||
+      bound.owner !== repository.owner ||
+      bound.repo !== repository.repo ||
+      bound.remoteUrl !== repository.remoteUrl ||
+      (access === "write" ? guard.binding.permission !== "push" : !guard.binding.permission)
+    )
+      throw new Error("Onboarding repository authority changed.");
+    const checkMember = async () => {
+      if (!options.access) throw new Error("Member repository access is unavailable.");
+      const result = await options.access.check(itemId, signal);
+      signal.throwIfAborted();
+      if (result.state !== "ready")
+        throw new Error("Member GitHub repository access is not ready.");
+      guard.assertCurrent();
+    };
+    await checkMember();
+    guard.assertCurrent();
+    const value = await mint(signal);
+    signal.throwIfAborted();
+    guard.assertCurrent();
+    await checkMember();
+    guard.assertCurrent();
+    return value;
+  }
   return {
-    capture(itemId: string, target?: Target) {
-      if (!readOnboardingItemBinding(db, itemId)) return null;
-      const before = facts(itemId, target);
-      return {
-        binding: before.binding,
-        assertCurrent() {
-          if (facts(itemId, target).fingerprint !== before.fingerprint)
-            throw new Error("Onboarding execution authority changed.");
-        },
-      };
-    },
+    capture,
+    authorizeRepository: <T>(
+      itemId: string,
+      repository: RepositoryBinding,
+      access: "read" | "write",
+      signal: AbortSignal,
+      mint: (signal: AbortSignal) => Promise<T>,
+    ) => authorizeRepository(itemId, repository, access, signal, mint),
+    authorizePublicationRepository: <T>(
+      itemId: string,
+      repository: RepositoryBinding,
+      access: "read" | "write",
+      signal: AbortSignal,
+      mint: (signal: AbortSignal) => Promise<T>,
+      operation: { signal: AbortSignal; assertCurrent(): void },
+    ) => authorizeRepository(itemId, repository, access, signal, mint, operation),
   };
 }

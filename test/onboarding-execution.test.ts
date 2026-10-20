@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   beginImplementRun,
+  applyWorkItemEvent,
+  markRun,
   bindLinearSessionTask,
   bindOnboardingIntake,
   ensureLinearSession,
@@ -34,7 +36,17 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
-function fixture() {
+const repository = {
+  owner: "acme",
+  repo: "repo",
+  remoteUrl: "https://github.com/acme/repo.git",
+};
+function fixture(
+  options: {
+    code?: boolean;
+    access?: Parameters<typeof createOnboardingExecution>[0]["access"];
+  } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-admission-"));
   const db = openDatabase(join(root, "state.sqlite"));
   migrate(db);
@@ -115,10 +127,10 @@ function fixture() {
     issueFingerprint: JSON.stringify(spec),
     revision: 1,
     fingerprint: "admission",
-    mode: "answer",
-    repositoryContext: false,
-    repository: null,
-    permission: null,
+    mode: options.code ? "code" : "answer",
+    repositoryContext: options.code === true,
+    repository: options.code ? repository : null,
+    permission: options.code ? "push" : null,
     runnerId: "own",
     runnerFence: 0,
   };
@@ -188,7 +200,13 @@ function fixture() {
         })),
     },
   };
-  const guard = createOnboardingExecution({ db, assignments, agents, now: () => now });
+  const guard = createOnboardingExecution({
+    db,
+    assignments,
+    agents,
+    now: () => now,
+    ...(options.access ? { access: options.access } : {}),
+  });
   let boundary = 0;
   let mutate: (() => void) | undefined;
   let atBoundary = 0;
@@ -664,3 +682,214 @@ test("current run ownership and live status are part of execution authority", ()
   f.db.run("UPDATE run SET item_id=? WHERE id=?", [other.id, runId]);
   expect(() => f.guard.capture(f.item.id)).toThrow();
 });
+
+function memberAccess(states: ("ready" | "denied" | "missing_link" | "unavailable")[]) {
+  const checks: string[] = [];
+  return {
+    checks,
+    access: {
+      async check(itemId: string) {
+        checks.push(itemId);
+        return {
+          state: states[Math.min(checks.length, states.length) - 1]!,
+          reason: "permission" as const,
+          account: { id: 1, login: "member" },
+          repository: "acme/repo",
+          permission: "push" as const,
+        };
+      },
+    },
+  };
+}
+const signal = () => new AbortController().signal;
+
+test("unbound repository credentials keep their path without member checks", async () => {
+  const member = memberAccess(["denied"]);
+  const f = fixture({ code: true, access: member.access });
+  expect(
+    await f.guard.authorizeRepository("unbound", repository, "write", signal(), async () => "app"),
+  ).toBe("app");
+  expect(
+    await createOnboardingExecution({ db: f.db }).authorizeRepository(
+      "unbound",
+      repository,
+      "read",
+      signal(),
+      async () => "app",
+    ),
+  ).toBe("app");
+  expect(member.checks).toEqual([]);
+});
+
+test("bound repository credentials need fresh member access before and after the mint", async () => {
+  const member = memberAccess(["ready", "ready"]);
+  const f = fixture({ code: true, access: member.access });
+  let mints = 0;
+  expect(
+    await f.guard.authorizeRepository(f.item.id, repository, "write", signal(), async () => {
+      mints++;
+      expect(member.checks).toEqual([f.item.id]);
+      return "app";
+    }),
+  ).toBe("app");
+  expect(mints).toBe(1);
+  expect(member.checks).toEqual([f.item.id, f.item.id]);
+});
+
+for (const state of ["denied", "missing_link", "unavailable"] as const)
+  test(`bound repository credentials refuse ${state} member access without minting`, async () => {
+    const member = memberAccess([state]);
+    const f = fixture({ code: true, access: member.access });
+    let mints = 0;
+    await expect(
+      f.guard.authorizeRepository(f.item.id, repository, "read", signal(), async () => {
+        mints++;
+        return "app";
+      }),
+    ).rejects.toThrow("Member GitHub repository access is not ready.");
+    expect(mints).toBe(0);
+  });
+
+test("bound repository credentials are discarded when member access changes during the mint", async () => {
+  const member = memberAccess(["ready", "denied"]);
+  const f = fixture({ code: true, access: member.access });
+  await expect(
+    f.guard.authorizeRepository(f.item.id, repository, "write", signal(), async () => "app"),
+  ).rejects.toThrow("Member GitHub repository access is not ready.");
+  expect(member.checks).toHaveLength(2);
+});
+
+test("bound repository credentials refuse authority changes during the mint", async () => {
+  const member = memberAccess(["ready", "ready"]);
+  const f = fixture({ code: true, access: member.access });
+  await expect(
+    f.guard.authorizeRepository(f.item.id, repository, "write", signal(), async () => {
+      f.flip("vm");
+      return "app";
+    }),
+  ).rejects.toThrow();
+  expect(member.checks).toHaveLength(1);
+});
+
+test("bound repository credentials refuse other repositories, missing access and repository-free modes", async () => {
+  const member = memberAccess(["ready"]);
+  const mint = async () => {
+    throw new Error("minted");
+  };
+  const f = fixture({ code: true, access: member.access });
+  await expect(
+    f.guard.authorizeRepository(
+      f.item.id,
+      { ...repository, repo: "other" },
+      "read",
+      signal(),
+      mint,
+    ),
+  ).rejects.toThrow("Onboarding repository authority changed.");
+  await expect(
+    createOnboardingExecution({
+      db: f.db,
+      assignments: f.assignments,
+      agents: f.agents,
+      now: f.now,
+    }).authorizeRepository(f.item.id, repository, "read", signal(), mint),
+  ).rejects.toThrow("Member repository access is unavailable.");
+  await expect(
+    createOnboardingExecution({ db: f.db }).authorizeRepository(
+      f.item.id,
+      repository,
+      "read",
+      signal(),
+      mint,
+    ),
+  ).rejects.toThrow("Onboarding execution context changed.");
+  const answer = fixture({ access: member.access });
+  await expect(
+    answer.guard.authorizeRepository(answer.item.id, repository, "read", signal(), mint),
+  ).rejects.toThrow("Onboarding repository authority changed.");
+  expect(member.checks).toEqual([]);
+});
+
+for (const change of [
+  "none",
+  "stop",
+  "generation",
+  "member",
+  "run",
+  "operation",
+  "during_mint",
+] as const)
+  test(`ended-run publication is guarded by its owned operation: ${change}`, async () => {
+    const f = fixture({
+      code: true,
+      access: memberAccess(["ready", "ready"]).access,
+    });
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    markRun(f.db, getWorkItem(f.db, f.item.id)!.currentRunId!, "ended", f.now());
+    expect(() => f.guard.capture(f.item.id)).toThrow();
+    let current = true;
+    const operation = {
+      signal: new AbortController().signal,
+      assertCurrent() {
+        if (!current) throw new Error("Operation changed");
+      },
+    };
+    let mints = 0;
+    const task = f.guard.authorizePublicationRepository(
+      f.item.id,
+      repository,
+      "write",
+      new AbortController().signal,
+      async () => {
+        mints++;
+        if (change === "during_mint") f.flip("stop");
+        return "credential";
+      },
+      {
+        ...operation,
+        assertCurrent() {
+          operation.assertCurrent();
+          if (change === "stop" || change === "generation" || change === "member") f.flip(change);
+          if (change === "run")
+            f.db.run("UPDATE work_item SET current_run_id=NULL WHERE id=?", [f.item.id]);
+          if (change === "operation") {
+            current = false;
+            operation.assertCurrent();
+          }
+        },
+      },
+    );
+    if (change === "none") {
+      expect(await task).toBe("credential");
+      expect(mints).toBe(1);
+    } else {
+      await expect(task).rejects.toThrow();
+      expect(mints).toBe(change === "during_mint" ? 1 : 0);
+    }
+  });
+
+for (const states of [["denied"], ["ready", "denied"]] as const)
+  test(`publication checks member access on both sides of mint: ${states.join("-")}`, async () => {
+    const member = memberAccess([...states]);
+    const f = fixture({ code: true, access: member.access });
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    markRun(f.db, getWorkItem(f.db, f.item.id)!.currentRunId!, "ended", f.now());
+    let mints = 0;
+    await expect(
+      f.guard.authorizePublicationRepository(
+        f.item.id,
+        repository,
+        "write",
+        signal(),
+        async () => {
+          mints++;
+          return "credential";
+        },
+        { signal: signal(), assertCurrent() {} },
+      ),
+    ).rejects.toThrow();
+    expect(mints).toBe(states.length - 1);
+    expect(() => f.guard.capture(f.item.id)).toThrow();
+  });
