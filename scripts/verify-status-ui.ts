@@ -201,6 +201,40 @@ try {
       await page.setViewportSize({ width, height: 1000 });
     }
     await navigate(page, "Runs", width);
+    const runRows = page.locator("tr[data-run-id]");
+    await expect(runRows).toHaveCount(snapshot.runs.length);
+    await page.locator("summary", { hasText: /^Lead/ }).click();
+    await page.getByRole("checkbox", { name: "Jonas Berg", exact: true }).check();
+    await expect(page).toHaveURL(/\/status\/runs\?lead=Jonas\+Berg$/);
+    await page.locator("summary", { hasText: /^Phase/ }).click();
+    await page.getByRole("checkbox", { name: "Implementation", exact: true }).check();
+    await page.getByRole("checkbox", { name: "Waiting to merge", exact: true }).check();
+    await expect(page.getByRole("checkbox", { name: "Waiting to merge" })).toBeFocused();
+    await expect(page).toHaveURL(/lead=Jonas\+Berg&phase=implementation&phase=merge$/);
+    await expect(runRows).toHaveCount(2);
+    await expect(page.getByRole("link", { name: "Pull request 479", exact: true })).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await page.screenshot({
+      path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `runs-filters-open-${width}.png`),
+      fullPage: true,
+    });
+    await page.reload();
+    await expect(runRows).toHaveCount(2);
+    await expect(page.locator("summary", { hasText: "Phase · 2" })).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await page.screenshot({
+      path: join(process.env.PAWS_UI_EVIDENCE_DIR ?? directory, `runs-filtered-${width}.png`),
+      fullPage: true,
+    });
+    await page.goto(`http://127.0.0.1:${server.port}/status/runs?lead=Aisha+Khan&phase=complete`);
+    await expect(page.getByText("No runs match these filters.")).toBeVisible();
+    await page.getByRole("link", { name: "Clear filters" }).click();
+    await expect(page).toHaveURL(/\/status\/runs$/);
+    await expect(runRows).toHaveCount(snapshot.runs.length);
     await page.locator(`a[href="/status/runs/${snapshot.runs[0]!.id}"]`).click();
     await page.getByRole("button", { name: "Pause item", exact: true }).click();
     await expect.poll(() => actions.includes("pause")).toBe(true);
