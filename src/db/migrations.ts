@@ -1878,7 +1878,7 @@ UPDATE outbox SET
     substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
   status = 'pending', attempts = 0, not_before = 0, error = NULL,
   locked_by = NULL, locked_until = NULL
-WHERE target = 'linear' AND op = 'activity' AND status = 'dead'
+WHERE target = 'linear' AND op = 'activity' AND status IN ('pending', 'dead')
   AND idempotency_key LIKE 'evidence:%'
   AND NOT lower(COALESCE(json_extract(payload, '$.id'), '')) GLOB '${UUID_V4_GLOB}';
 `,
