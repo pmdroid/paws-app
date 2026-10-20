@@ -48,6 +48,8 @@ export type SerialMergeInput = {
     head: string;
     summary: string;
   };
+  /** Leftover task branches deleted after a successful merge. Failures are ignored. */
+  staleBranches?: readonly string[];
 };
 
 /**
@@ -160,6 +162,7 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       };
     }
     const sha = typeof merged.body.sha === "string" ? merged.body.sha : undefined;
+    await deleteStaleBranches(input, mergeToken, branch);
     return {
       merged: true,
       outcome: "merged",
@@ -291,6 +294,23 @@ async function rebaseOnto(
       return "conflict";
     }
     return "failed";
+  }
+}
+
+async function deleteStaleBranches(
+  input: SerialMergeInput,
+  token: string,
+  branch: string,
+): Promise<void> {
+  for (const stale of input.staleBranches ?? []) {
+    if (stale === branch || !/^paws\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(stale)) continue;
+    await input.client
+      .request({
+        method: "DELETE",
+        path: repoApiPath(input.owner, input.repo, `/git/refs/heads/${stale}`),
+        token,
+      })
+      .catch(() => undefined);
   }
 }
 
