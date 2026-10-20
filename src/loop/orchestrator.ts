@@ -431,12 +431,18 @@ export class Orchestrator {
       event.action === "prompted" &&
       event.sessionId &&
       event.body !== null &&
-      !findOpenQuestion(this.db, event.sessionId) &&
+      (!findOpenQuestion(this.db, event.sessionId) ||
+        this.hasPublishedPullRequest(event.sessionId)) &&
       this.options.channel !== "comments"
     ) {
       const turn = this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
-      if (turn?.state === "pending" && (await this.forwardFollowUp(event.sessionId, turn))) return;
+      if (
+        turn?.state === "pending" &&
+        !this.hasPublishedPullRequest(event.sessionId) &&
+        (await this.forwardFollowUp(event.sessionId, turn))
+      )
+        return;
       if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
@@ -2144,13 +2150,16 @@ export class Orchestrator {
     }
     this.post(
       item,
-      "thought",
-      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}.`,
-      `${item.id}:pr:${published.pull.number}`,
+      this.options.channel === "comments" ? "thought" : "response",
+      `Opened ${published.pull.url ?? `pull request #${published.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.`,
+      `pull-request-ready:${item.id}:${item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0}`,
+      {},
+      "ordered",
     );
     const sessionProgress = this.sessionProgress(item);
     if (published.pull.url) sessionProgress?.link("Pull request", published.pull.url);
     sessionProgress?.phase("merging");
+    await this.flush(live.controller.signal);
     let closeoutFailure: CloseoutVerdict | null = null;
     const merged = await serialMerge({
       worktree,
@@ -3233,7 +3242,7 @@ export class Orchestrator {
     body: string,
     key: string,
     details: Pick<ProgressUpdate, "id" | "ephemeral" | "action"> = {},
-    delivery?: "critical",
+    delivery?: "critical" | "ordered",
   ): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id);
@@ -3258,7 +3267,23 @@ export class Orchestrator {
     if (item === null || item.cancelRequested) return false;
     if (!["running", "verifying", "merge_queue"].includes(item.state)) return false;
     const sessionId = this.activitySession(item);
-    return sessionId === null || findOpenQuestion(this.db, sessionId) === null;
+    return (
+      sessionId === null ||
+      (findOpenQuestion(this.db, sessionId) === null &&
+        (this.options.channel === "comments" || !this.hasPublishedPullRequest(sessionId)))
+    );
+  }
+
+  private hasPublishedPullRequest(sessionId: string): boolean {
+    return Boolean(
+      this.db
+        .query(
+          `SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
+           AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%'
+           AND status!='dropped' LIMIT 1`,
+        )
+        .get(sessionId, getLinearSessionGeneration(this.db, sessionId)),
+    );
   }
 
   private postStatus(

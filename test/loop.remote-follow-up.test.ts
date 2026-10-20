@@ -9,6 +9,8 @@ import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
   OutboxDispatcher,
+  enqueueOutboxOnce,
+  getLinearSessionGeneration,
   getRun,
   listJobs,
   listWorkItems,
@@ -21,8 +23,8 @@ import { attachOrchestrator, type AgentLaunch } from "../src/loop";
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
 
-for (const delivered of [true, false])
-  test(`a Linear reply during a run ${delivered ? "reaches the running agent" : "falls back to a new turn"}`, async () => {
+for (const delivered of [true, false, "completed"] as const)
+  test(`a Linear reply during a run handles forwarding with prior completion: ${delivered}`, async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paws-remote-follow-up-"));
     const bare = path.join(root, "origin.git");
     const seed = path.join(root, "seed");
@@ -41,6 +43,7 @@ for (const delivered of [true, false])
     const db = openDatabase(path.join(pawsRoot, "paws.db"));
     migrate(db);
     const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -67,7 +70,7 @@ for (const delivered of [true, false])
     const orchestrator = attachOrchestrator({
       db,
       jobs,
-      outbox: new OutboxDispatcher(db, systemClock),
+      outbox,
       pawsRoot,
       home,
       tracker,
@@ -85,7 +88,7 @@ for (const delivered of [true, false])
       launch,
       remoteFollowUp(itemId, body) {
         forwarded.push({ itemId, body });
-        return delivered;
+        return delivered !== false;
       },
     });
     try {
@@ -98,15 +101,35 @@ for (const delivered of [true, false])
         await Bun.sleep(10);
       }
       const runId = listWorkItems(db)[0]!.currentRunId!;
+      if (delivered === "completed") {
+        enqueueOutboxOnce(db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: "ses_1",
+          delivery: "ordered",
+          idempotencyKey: `pull-request-ready:${item.id}:${getLinearSessionGeneration(db, "ses_1")}`,
+          payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
+        });
+        while (outbox.tick().length > 0) await outbox.idle();
+        expect(tracker.progress.at(-1)?.kind).toBe("response");
+      }
       await orchestrator.onLinearEvent(event("prompted", "Also cover the empty state"));
-      expect(forwarded).toEqual([{ itemId: item.id, body: "Also cover the empty state" }]);
+      expect(forwarded).toEqual(
+        delivered === "completed" ? [] : [{ itemId: item.id, body: "Also cover the empty state" }],
+      );
       const resumes = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-      if (delivered) {
+      if (delivered === true) {
         expect(getRun(db, runId)?.status).toBe("active");
         expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);
         expect(resumes).toHaveLength(0);
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });
-      } else expect(resumes).toHaveLength(1);
+      } else {
+        expect(resumes).toHaveLength(1);
+        expect(tracker.progress.at(-1)).toMatchObject({
+          kind: "thought",
+          body: "Received your update.",
+        });
+      }
       await running;
     } finally {
       db.close();
