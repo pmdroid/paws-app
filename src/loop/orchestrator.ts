@@ -1785,7 +1785,9 @@ export class Orchestrator {
               if (!checks) {
                 checks = this.runRunnerCloseout(item, deps, {
                   worktree,
+                  base,
                   head: commit,
+                  request,
                   sessionPath,
                   policy,
                   assertCurrent,
@@ -1926,7 +1928,9 @@ export class Orchestrator {
     deps: AcpAgentDeps,
     input: {
       worktree: string;
+      base: string;
       head: string;
+      request: Parameters<typeof loggedSessionCloseout>[1];
       sessionPath: string;
       policy: GitCommitPolicy | undefined;
       assertCurrent: () => void;
@@ -1964,6 +1968,7 @@ export class Orchestrator {
           worktreePath: worktree,
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          closeoutBase: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
@@ -1977,6 +1982,8 @@ export class Orchestrator {
         else if (result.stopReason !== "end_turn" || result.errorMessage)
           reason = result.errorMessage ?? `the run stopped (${result.stopReason})`;
         else if (!result.closeoutReport) reason = "the runner returned no Closeout report";
+        else if (!sessionCloseoutResult(result.closeoutReport, input.request))
+          reason = `the runner report has no result for ${input.request.itemId ?? "a command check"}`;
         else {
           writeSessionCloseout(input.sessionPath, head, result.closeoutReport);
           return;

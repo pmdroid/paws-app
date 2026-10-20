@@ -155,6 +155,7 @@ export async function probeRunnerOrchestration(
     const appChecks: { currentRunId: string | null; checkpoint: unknown }[] = [];
     let implementationCount = 0;
     let reverifying = false;
+    let movedMain = "";
     let originalRunId = "";
     let originalProfile = Buffer.alloc(0);
     let reviewRunId = "";
@@ -361,6 +362,20 @@ export async function probeRunnerOrchestration(
                 throw new Error("fixture runner is offline");
               const head = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
               checkedHeads.push(head);
+              // The runner compares against this base; the head itself would select no checks.
+              assert(options.closeoutBase && options.closeoutBase !== head);
+              if (reverifying && rebase) assert.equal(options.closeoutBase, movedMain);
+              assert.notEqual(
+                await git([
+                  "-C",
+                  options.worktreePath,
+                  "diff",
+                  "--name-only",
+                  options.closeoutBase,
+                  head,
+                ]),
+                "",
+              );
               const script = join(home, `agent-${calls.length}.json`);
               writeFileSync(
                 script,
@@ -728,7 +743,6 @@ export async function probeRunnerOrchestration(
         }
         reverifying = true;
         const accepted = item.checkpoint?.wipCommit;
-        let movedMain = "";
         if (rebase) {
           writeFileSync(join(source, "other.txt"), `Another task merged before ${scenario}\n`);
           await git(["-C", source, "add", "other.txt"]);
