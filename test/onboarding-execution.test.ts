@@ -7,6 +7,8 @@ import {
   beginImplementRun,
   applyWorkItemEvent,
   markRun,
+  JobLoop,
+  OutboxDispatcher,
   bindLinearSessionTask,
   bindOnboardingIntake,
   ensureLinearSession,
@@ -19,6 +21,8 @@ import {
   releaseRunCapacity,
   syncWorkspaceMember,
 } from "../src/db";
+import { attachOrchestrator, type GitHubBinding } from "../src/loop";
+import { systemClock } from "../src/core";
 import { createFakeTracker } from "../src/linear";
 import { createRunnerPlacement } from "../src/runner-placement";
 import { createRemoteAgentRunner } from "../src/runner-backend";
@@ -810,6 +814,46 @@ test("bound repository credentials refuse other repositories, missing access and
   expect(member.checks).toEqual([]);
 });
 
+test("readonly production startup owns a run before selecting its repository", async () => {
+  const f = fixture({
+    code: true,
+    access: memberAccess(["ready", "ready"]).access,
+  });
+  const binding = { ...f.admission, mode: "answer", permission: "read" };
+  f.db.run("UPDATE onboarding_item_binding SET snapshot=?", [JSON.stringify(binding)]);
+  f.db.run("UPDATE work_item_task SET mode='answer' WHERE item_id=?", [f.item.id]);
+  f.db.run("UPDATE work_item SET state='running',current_run_id=NULL WHERE id=?", [f.item.id]);
+  let mints = 0;
+  const runtime = attachOrchestrator({
+    db: f.db,
+    jobs: new JobLoop(f.db, systemClock),
+    outbox: new OutboxDispatcher(f.db, systemClock),
+    pawsRoot: f.root,
+    linearTaskModes: true,
+    repositoryAccess: (repo, ownedSignal, access, item) =>
+      f.guard.authorizeRepository(item!.id, repo, access!, ownedSignal, async () => {
+        mints++;
+        return true;
+      }),
+  });
+  const entry = runtime as unknown as {
+    executeQueued(payload: unknown): Promise<void>;
+    runResponse(item: unknown): Promise<void>;
+  };
+  let responses = 0;
+  entry.runResponse = async () => {
+    responses++;
+    expect(getWorkItem(f.db, f.item.id)!.currentRunId).not.toBeNull();
+  };
+  try {
+    await entry.executeQueued({ itemId: f.item.id });
+    expect(mints).toBe(1);
+    expect(responses).toBe(1);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
 for (const change of [
   "none",
   "stop",
@@ -869,6 +913,60 @@ for (const change of [
     }
   });
 
+test("publication transport receives current owned operation and fences supersession", async () => {
+  const f = fixture({ code: true, access: memberAccess(["ready", "ready"]).access });
+  applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+  applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+  markRun(f.db, getWorkItem(f.db, f.item.id)!.currentRunId!, "ended", f.now());
+  let mints = 0;
+  const runtime = attachOrchestrator({
+    db: f.db,
+    jobs: new JobLoop(f.db, systemClock),
+    outbox: new OutboxDispatcher(f.db, systemClock),
+    pawsRoot: f.root,
+    githubForRepository: (_repository, item, operation) => ({
+      appId: "fixture",
+      installationId: "fixture",
+      privateKeyPem: "fixture",
+      client: {
+        request: async () => {
+          throw new Error("No external API");
+        },
+      },
+      tokenProvider: {
+        mode: "app",
+        tokenFor: () =>
+          f.guard.authorizePublicationRepository(
+            item!.id,
+            repository,
+            "write",
+            signal(),
+            async () => {
+              mints++;
+              return "credential";
+            },
+            operation!,
+          ),
+      },
+    }),
+  });
+  const entry = runtime as unknown as {
+    runOwnedJob(payload: unknown, operation: () => Promise<void>): Promise<void>;
+    githubForRepository(repo: typeof repository, item: { id: string }): GitHubBinding;
+  };
+  try {
+    await entry.runOwnedJob({ itemId: f.item.id }, async () => {
+      const token = entry.githubForRepository(repository, f.item).tokenProvider!;
+      expect(await token.tokenFor("merge")).toBe("credential");
+      f.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [f.item.id]);
+      await expect(token.tokenFor("merge")).rejects.toThrow();
+      expect(mints).toBe(1);
+    });
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
 for (const states of [["denied"], ["ready", "denied"]] as const)
   test(`publication checks member access on both sides of mint: ${states.join("-")}`, async () => {
     const member = memberAccess([...states]);
@@ -892,4 +990,133 @@ for (const states of [["denied"], ["ready", "denied"]] as const)
     ).rejects.toThrow();
     expect(mints).toBe(states.length - 1);
     expect(() => f.guard.capture(f.item.id)).toThrow();
+  });
+
+for (const change of [
+  "none",
+  "version",
+  "run",
+  "session",
+  "stop",
+  "lease",
+  "operation",
+  "post_version",
+] as const)
+  test(`owned accepted reverify advances publication authority without accepting external ${change}`, async () => {
+    const f = fixture({ code: true, access: memberAccess(["ready"]).access });
+    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
+    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    markRun(f.db, getWorkItem(f.db, f.item.id)!.currentRunId!, "ended", f.now());
+    const lease = new AbortController();
+    let mints = 0;
+    const runtime = attachOrchestrator({
+      db: f.db,
+      jobs: new JobLoop(f.db, systemClock),
+      outbox: new OutboxDispatcher(f.db, systemClock),
+      pawsRoot: f.root,
+      remoteExecution: { agentForItem: () => undefined } as unknown as NonNullable<
+        Parameters<typeof attachOrchestrator>[0]["remoteExecution"]
+      >,
+      githubForRepository: (_repo, item, operation) => ({
+        appId: "fixture",
+        installationId: "fixture",
+        privateKeyPem: "fixture",
+        client: {
+          request: async () => {
+            throw new Error("No API");
+          },
+        },
+        tokenProvider: {
+          mode: "app",
+          tokenFor: () =>
+            f.guard.authorizePublicationRepository(
+              item!.id,
+              repository,
+              "write",
+              signal(),
+              async () => {
+                mints++;
+                return "credential";
+              },
+              operation!,
+            ),
+        },
+      }),
+    });
+    const entry = runtime as unknown as {
+      runOwnedJob(payload: unknown, task: () => Promise<void>): Promise<void>;
+      runLeasedJob(
+        payload: unknown,
+        context: { signal: AbortSignal; isCurrent(): boolean },
+        task: () => Promise<void>,
+      ): Promise<void>;
+      githubForRepository(repo: typeof repository, item: { id: string }): GitHubBinding;
+      runVerification(
+        item: NonNullable<ReturnType<typeof getWorkItem>>,
+        worktree: string,
+        base: string,
+        head: string,
+        candidate: typeof identity,
+      ): Promise<{ decision: string }>;
+      verifyCandidate(): Promise<{ decision: string; summary: string }>;
+      saveCandidate(runId: string, candidate: typeof identity): void;
+      live: Map<string, unknown>;
+    };
+    const identity = { agent: "codex", model: "model", session: "fixture" };
+    entry.saveCandidate(getWorkItem(f.db, f.item.id)!.currentRunId!, identity);
+    entry.verifyCandidate = async () => {
+      if (change === "version")
+        f.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [f.item.id]);
+      if (change === "run")
+        f.db.run("UPDATE work_item SET current_run_id=NULL WHERE id=?", [f.item.id]);
+      if (change === "session") f.flip("generation");
+      if (change === "stop") f.flip("stop");
+      if (change === "lease") lease.abort(new Error("Lease revoked"));
+      if (change === "operation") entry.live.delete(`operation:${f.item.id}`);
+      return { decision: "accepted", summary: "fixture" };
+    };
+    let tested = false;
+    const task = entry.runLeasedJob(
+      { itemId: f.item.id },
+      { signal: lease.signal, isCurrent: () => !lease.signal.aborted },
+      () =>
+        entry.runOwnedJob({ itemId: f.item.id }, async () => {
+          const before = getWorkItem(f.db, f.item.id)!;
+          const token = entry.githubForRepository(repository, before).tokenProvider!;
+          expect(await token.tokenFor("push")).toBe("credential");
+          if (change === "none" || change === "post_version") {
+            expect(
+              (await entry.runVerification(before, f.root, "base", "head", identity)).decision,
+            ).toBe("accepted");
+            const after = getWorkItem(f.db, f.item.id)!;
+            expect(after.version).toBe(before.version + 2);
+            expect(after.currentRunId).not.toBe(before.currentRunId);
+            expect(after.state).toBe("merge_queue");
+            expect(() => f.guard.capture(f.item.id)).toThrow();
+            if (change === "post_version")
+              f.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [f.item.id]);
+            if (change === "none") {
+              expect(await token.tokenFor("merge")).toBe("credential");
+              expect(
+                (await entry.runVerification(before, f.root, "base2", "head2", identity)).decision,
+              ).toBe("accepted");
+              expect(await token.tokenFor("merge")).toBe("credential");
+            } else await expect(token.tokenFor("merge")).rejects.toThrow();
+          } else {
+            await expect(
+              entry.runVerification(before, f.root, "base", "head", identity),
+            ).rejects.toThrow();
+            await expect(token.tokenFor("merge")).rejects.toThrow();
+          }
+          expect(mints).toBe(change === "none" ? 3 : 1);
+          tested = true;
+        }),
+    );
+    try {
+      if (change === "lease") await expect(task).rejects.toThrow("Lease revoked");
+      else await task;
+      expect(tested).toBe(true);
+    } finally {
+      await runtime.shutdown();
+    }
   });
