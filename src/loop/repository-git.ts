@@ -16,9 +16,16 @@ export function createRepositoryGit(input: {
       throw new Error("Repository reads require an HTTPS URL without credentials.");
   }
   return async (args: string[]): Promise<string> => {
+    const policyRead =
+      args.length === 6 &&
+      args[0] === "-C" &&
+      (args[2] === "fetch" || args[2] === "ls-remote") &&
+      args[3] === (args[2] === "fetch" ? "--no-tags" : "--exit-code") &&
+      args[4] === input.remoteUrl &&
+      args[5] === "refs/heads/main";
     const operation = args.findIndex((arg) => arg === "clone" || arg === "fetch");
-    if (operation < 0 || !args.slice(operation + 1).includes(input.remoteUrl))
-      throw new Error("Repository reads require the bound clone or fetch destination.");
+    if (!policyRead && (operation < 0 || !args.slice(operation + 1).includes(input.remoteUrl)))
+      throw new Error("Repository reads require the bound clone, fetch or policy destination.");
     input.signal.throwIfAborted();
     await input.assert();
     input.signal.throwIfAborted();
@@ -52,11 +59,15 @@ export function createRepositoryGit(input: {
       env.GIT_CONFIG_VALUE_4 = `Authorization: Basic ${credential}`;
     }
     try {
-      return await git(args, {
+      const result = await git(args, {
         env,
         signal: input.signal,
         onCleanupFailure: input.onCleanupFailure,
       });
+      input.signal.throwIfAborted();
+      await input.assert();
+      input.signal.throwIfAborted();
+      return result;
     } catch (error) {
       if (input.signal.aborted) throw input.signal.reason;
       throw repositoryGitError(error, token, credential);

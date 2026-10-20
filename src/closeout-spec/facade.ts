@@ -9,15 +9,21 @@
  */
 
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
-import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
-import type { GitBlob, GitReader } from "./policy/git";
+import {
+  loadPolicy,
+  loadPolicyAsync,
+  loadPolicyFilesAsync,
+  treeFiles,
+  type PolicyFilesLoad,
+} from "./policy/load";
+import type { GitBlob, GitReader, AsyncGitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
 import type { RecordedReview, ReviewRunResult } from "./review/reviewer";
 import { scrubCommandEnv } from "./run/env";
@@ -54,6 +60,8 @@ const ABSENT: ResolvedPolicyAbsent = {
   files: [],
 };
 
+export type PolicyGit = (repo: string, operation: "fetch" | "ls-remote") => Promise<string>;
+
 export type ValidateResult =
   | {
       ok: true;
@@ -81,6 +89,7 @@ export type DecisionInput = {
   /** Home directory for `~/.agents/closeout.yaml` when origin has no entry. */
   home?: string;
   policyRoot?: string;
+  policyGit?: PolicyGit;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
@@ -97,6 +106,7 @@ export type RunRequest = {
   evidenceDir?: string;
   home?: string;
   policyRoot?: string;
+  policyGit?: PolicyGit;
   /** `~/.paws` override for the detached worktree. */
   pawsHome?: string;
   retryBaseline?: readonly string[];
@@ -126,6 +136,7 @@ export type AddReviewInput = {
   evidenceDir?: string;
   home?: string;
   policyRoot?: string;
+  policyGit?: PolicyGit;
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
@@ -134,30 +145,11 @@ export type AddReviewInput = {
 export type AddReviewResult = { ok: true; record: ReviewRecord } | { ok: false; message: string };
 
 const gitReader: GitReader = {
-  fetchOriginMain(repo) {
-    const fetched = gitSync(
-      repo,
-      ["fetch", "--no-tags", "origin", "refs/heads/main"],
-      FETCH_TIMEOUT_MS,
-    );
-    if (!fetched.ok) return { ok: false, stderr: fetched.stderr };
-    const head = gitSync(
-      repo,
-      ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"],
-      GIT_TIMEOUT_MS,
-    );
-    if (!head.ok) return { ok: false, stderr: head.stderr };
-    const commit = head.stdout.toString("utf8").trim().toLowerCase();
-    return { ok: true, commit };
+  fetchOriginMain() {
+    throw new Error("Policy network reads require the asynchronous reader");
   },
-  lsRemoteOriginMain(repo) {
-    const listed = gitSync(
-      repo,
-      ["ls-remote", "--exit-code", "origin", "refs/heads/main"],
-      REMOTE_TIMEOUT_MS,
-    );
-    if (!listed.ok) return { ok: false, stderr: listed.stderr };
-    return { ok: true, stdout: listed.stdout.toString("utf8") };
+  lsRemoteOriginMain() {
+    throw new Error("Policy network reads require the asynchronous reader");
   },
   listBlobs(repo, commit, prefix) {
     const listed = gitSync(
@@ -177,14 +169,69 @@ const gitReader: GitReader = {
   },
 };
 
-export function trustedPolicyFiles(
+function policyReader(network: PolicyGit = policyNetworkGit): AsyncGitReader {
+  return {
+    local: gitReader,
+    async fetchOriginMain(repo) {
+      try {
+        await network(repo, "fetch");
+        const head = gitSync(
+          repo,
+          ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"],
+          GIT_TIMEOUT_MS,
+        );
+        if (!head.ok) return head;
+        return { ok: true, commit: head.stdout.toString("utf8").trim().toLowerCase() };
+      } catch (error) {
+        return { ok: false, stderr: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    async lsRemoteOriginMain(repo) {
+      try {
+        return { ok: true, stdout: await network(repo, "ls-remote") };
+      } catch (error) {
+        return { ok: false, stderr: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
+function policyNetworkGit(repo: string, operation: "fetch" | "ls-remote"): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "git",
+      [operation, operation === "fetch" ? "--no-tags" : "--exit-code", "origin", "refs/heads/main"],
+      {
+        cwd: repo,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: operation === "fetch" ? FETCH_TIMEOUT_MS : REMOTE_TIMEOUT_MS,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve(stdout) : reject(new Error(stderr || "origin/main is unavailable")),
+    );
+  });
+}
+
+export async function trustedPolicyFiles(
   repo: string,
   home?: string,
   policyRoot?: string,
-): PolicyFilesLoad {
-  return loadPolicyFiles({
+  policyGit?: PolicyGit,
+): Promise<PolicyFilesLoad> {
+  return loadPolicyFilesAsync({
     repo,
-    git: gitReader,
+    git: policyReader(policyGit),
     ...(home !== undefined ? { home } : {}),
     ...(policyRoot !== undefined ? { policyRoot } : {}),
   });
@@ -195,20 +242,27 @@ export function workspacePolicyFiles(root: string): PolicyFilesLoad {
 }
 
 /** Load `.agents/closeout.yaml` from `origin/main`, or the home file when that commit has none. */
-export function validate(repo: string, home?: string, policyRoot?: string): ValidateResult {
-  const loaded = loadOrigin(repo, home, policyRoot);
+export async function validate(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+  policyGit?: PolicyGit,
+): Promise<ValidateResult> {
+  const loaded = await loadOrigin(repo, home, policyRoot, [], policyGit);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return presentValidate(loaded.policy, loaded.warnings);
 }
 
-export function reviewRequirements(
+export async function reviewRequirements(
   repo: string,
   home?: string,
   policyRoot?: string,
-):
+  policyGit?: PolicyGit,
+): Promise<
   | { ok: true; items: Array<{ id: string; gate: Gate; independence: Independence }> }
-  | { ok: false; message: string } {
-  const loaded = loadOrigin(repo, home, policyRoot);
+  | { ok: false; message: string }
+> {
+  const loaded = await loadOrigin(repo, home, policyRoot, [], policyGit);
   if (!loaded.ok) return { ok: false, message: loaded.message };
   return {
     ok: true,
@@ -218,8 +272,13 @@ export function reviewRequirements(
   };
 }
 
-export function policyFixBudget(repo: string, home?: string, policyRoot?: string): number | null {
-  const loaded = loadOrigin(repo, home, policyRoot);
+export async function policyFixBudget(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+  policyGit?: PolicyGit,
+): Promise<number | null> {
+  const loaded = await loadOrigin(repo, home, policyRoot, [], policyGit);
   if (!loaded.ok) return null;
   const policy = loaded.policy;
   if (policy.source === "none" || policy.retry === undefined) return null;
@@ -255,7 +314,13 @@ export function digest(repo: string): DigestResult {
 
 /** Judge the evidence already stored for this candidate. Does not run commands. */
 export async function decision(input: DecisionInput): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+    input.policyGit,
+  );
   const candidate = input.candidate ?? blankCandidate();
   if (!loaded.ok) {
     return evaluate(
@@ -273,7 +338,13 @@ export async function decision(input: DecisionInput): Promise<DecisionDocument> 
  * Review requirements stay missing until {@link addReview}.
  */
 export async function run(input: RunRequest): Promise<DecisionDocument> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+    input.policyGit,
+  );
   const candidate = withTask(input.candidate, input.task);
   if (!loaded.ok) {
     return evaluate(
@@ -332,7 +403,13 @@ export async function run(input: RunRequest): Promise<DecisionDocument> {
 
 /** Run the reviewer and store the next review record. Does not decide acceptance. */
 export async function addReview(input: AddReviewInput): Promise<AddReviewResult> {
-  const loaded = loadOrigin(input.repo, input.home, input.policyRoot, input.checkoutExclusions);
+  const loaded = await loadOrigin(
+    input.repo,
+    input.home,
+    input.policyRoot,
+    input.checkoutExclusions,
+    input.policyGit,
+  );
   if (!loaded.ok) return { ok: false, message: loaded.message };
   if (loaded.policy.source === "none" || loaded.policy.digest === null) {
     return { ok: false, message: "no closeout policy" };
@@ -572,15 +649,16 @@ async function resolvePair(
   return { ok: true, base, head };
 }
 
-function loadOrigin(
+async function loadOrigin(
   repo: string,
   home: string | undefined,
   policyRoot?: string,
   checkoutExclusions: readonly string[] = [],
-): ReturnType<typeof loadPolicy> {
-  const loaded = loadPolicy({
+  policyGit?: PolicyGit,
+): Promise<Awaited<ReturnType<typeof loadPolicy>>> {
+  const loaded = await loadPolicyAsync({
     repo,
-    git: gitReader,
+    git: policyReader(policyGit),
     ...(home !== undefined ? { home } : {}),
     ...(policyRoot !== undefined ? { policyRoot } : {}),
   });

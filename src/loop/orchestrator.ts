@@ -1850,6 +1850,7 @@ export class Orchestrator {
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
+      policyGit: this.policyGit(item, deps.signal),
       ...recoveryOptions(this.db, item.id),
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
@@ -3375,13 +3376,17 @@ export class Orchestrator {
     repository: RepositoryBinding,
     signal: AbortSignal,
     access: "read" | "write",
+    required = false,
   ) {
-    if (!this.options.repositoryToken) return undefined;
+    if (!required && !this.options.repositoryToken) return undefined;
     const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
-      token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
+      token: (ownedSignal) => {
+        if (!this.options.repositoryToken) throw new Error("GitHub sign-in is required.");
+        return this.options.repositoryToken(item, repository, ownedSignal, access);
+      },
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
         signal.throwIfAborted();
@@ -3971,10 +3976,11 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     });
-    const required = reviewRequirements(
+    const required = await reviewRequirements(
       worktree.path,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
+      this.policyGit(item, signal),
     );
     if (!required.ok) throw new Error(required.message);
     const requirements = required.items.filter((check) => check.gate === "beforePR");
@@ -4036,7 +4042,35 @@ export class Orchestrator {
       return {};
     const { home, policyRoot } = this.closeoutHome(item);
     return {
-      closeoutPolicy: async () => trustedPolicyFiles(input.worktreePath, home, policyRoot),
+      closeoutPolicy: async () =>
+        trustedPolicyFiles(
+          input.worktreePath,
+          home,
+          policyRoot,
+          this.policyGit(item, input.signal),
+        ),
+    };
+  }
+
+  private policyGit(item: WorkItemRecord, signal = this.signalForItem(item.id)) {
+    const repository = this.repositoryForItem(item);
+    if (!repository) return undefined;
+    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+    return async (repo: string, operation: "fetch" | "ls-remote") => {
+      signal?.throwIfAborted();
+      if (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+        throw new Error("The policy read belongs to an obsolete task.");
+      const bounded = AbortSignal.timeout(operation === "fetch" ? 120_000 : 60_000);
+      const owned = signal ? AbortSignal.any([signal, bounded]) : bounded;
+      const network = this.repositoryGit(item, repository, owned, "write", true)!;
+      return network([
+        "-C",
+        repo,
+        operation,
+        operation === "fetch" ? "--no-tags" : "--exit-code",
+        repository.remoteUrl,
+        "refs/heads/main",
+      ]);
     };
   }
 
