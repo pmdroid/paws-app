@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { git } from "../acp";
 
-export async function fetchRunnerCandidate(input: {
+type CandidateImport = {
   worktree: string;
   baseSha: string;
   candidateSha: string;
@@ -10,7 +10,23 @@ export async function fetchRunnerCandidate(input: {
   remoteUrl: string;
   networkGit: (args: string[]) => Promise<string>;
   signal: AbortSignal;
-}): Promise<void> {
+};
+
+/** Check out the runner's candidate. A failure names the commit and branch for Linear. */
+export async function fetchRunnerCandidate(input: CandidateImport): Promise<void> {
+  try {
+    await importCandidate(input);
+  } catch (error) {
+    if (input.signal.aborted) throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Paws could not import the runner's commit ${input.candidateSha.slice(0, 7)} from ${input.branch}: ${reason}`,
+      { cause: error },
+    );
+  }
+}
+
+async function importCandidate(input: CandidateImport): Promise<void> {
   input.signal.throwIfAborted();
   if (
     !isAbsolute(input.worktree) ||

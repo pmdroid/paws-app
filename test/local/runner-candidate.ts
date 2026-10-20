@@ -108,6 +108,17 @@ export async function probeRunnerCandidate(
   observe("invalid candidate and absent authorized network port fail before fetching", true, {
     networkCalls: calls.length,
   });
+  await assert.rejects(
+    fetchRunnerCandidate({ ...input, branch: "missing" }),
+    /could not import the runner's commit [a-f0-9]{7} from missing: /,
+  );
+  const fetches = calls.length;
+  await fetchRunnerCandidate({ ...input, candidateSha: baseSha, branch: "missing" });
+  assert.equal(calls.length, fetches);
+  await retained();
+  observe("a candidate equal to the base is already checked out and is not fetched", true, {
+    networkCalls: calls.length,
+  });
   const controller = new AbortController();
   const cancelled = fetchRunnerCandidate({
     ...input,
