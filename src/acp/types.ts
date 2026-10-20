@@ -116,6 +116,8 @@ export interface RunAgentOptions {
   artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */
   checkpoint?: boolean;
+  /** Runs Closeout checks only: the comparison base for the commit in the worktree. Nothing is committed. */
+  closeoutBase?: string;
   resume?: { sessionId: string; replayPrompt: string };
 }
 

@@ -103,6 +103,11 @@ export const RunnerCommandSchema = z
       skillsInputId: z.number().int().min(0).max(20).optional(),
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
+      /** Checks only: Closeout compares the repository commit against this base, and nothing is committed. */
+      checksBaseSha: z
+        .string()
+        .regex(/^[a-f0-9]{40}$/)
+        .optional(),
     }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({
