@@ -65,6 +65,7 @@ import {
 } from "../core";
 import {
   getTaskMode,
+  assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
   recordConfirmedRemoteMerge,
@@ -163,7 +164,12 @@ import type {
   LinearFileTransfer,
   RepositorySuggestion,
 } from "../linear";
-import { parseLinearSessionContext, renderLinearSessionContext } from "../linear";
+import {
+  FIRST_ACTIVITY_BODY,
+  LinearIntakePendingError,
+  parseLinearSessionContext,
+  renderLinearSessionContext,
+} from "../linear";
 import {
   answerQuestion,
   elicitationBody,
@@ -619,12 +625,14 @@ export class Orchestrator {
     return (update, request) =>
       this.enqueueSessionProgress(
         update,
-        `ack:${event.dedupeKey}:${update.kind}`,
+        `ack:${event.dedupeKey}:${update.kind}${update.kind === "thought" && update.body !== FIRST_ACTIVITY_BODY ? ":pending" : ""}`,
         (event.sessionId
           ? getLinearTurnGeneration(this.db, event.sessionId, event.dedupeKey, event.activityId)
           : null) ?? generation,
         request,
-        event.action === "created" && update.kind === "thought",
+        event.action === "created" &&
+          update.kind === "thought" &&
+          update.body === FIRST_ACTIVITY_BODY,
       );
   }
 
@@ -747,14 +755,19 @@ export class Orchestrator {
           item.id,
         ]);
     };
+    const intakeCurrent = () =>
+      isCurrent() &&
+      (!sessionId ||
+        authorizedSnapshot === null ||
+        this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false);
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
-      isCurrent: () =>
-        isCurrent() &&
-        (!sessionId ||
-          authorizedSnapshot === null ||
-          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false),
+      isCurrent: intakeCurrent,
+      reconcileSessions:
+        sessionId && this.options.channel !== "comments"
+          ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+          : undefined,
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -802,6 +815,78 @@ export class Orchestrator {
       }
     }
     return result;
+  }
+
+  private async reconcilePreviousSessions(
+    issueIds: readonly string[],
+    incomingSessionId: string,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    if (!this.tracker?.getSession) return;
+    const candidates = (issueId: string) =>
+      this.db
+        .query<{ session_id: string }, [string, string]>(
+          `SELECT DISTINCT previous.session_id FROM work_item item
+       JOIN linear_session previous ON previous.session_id = item.session_key
+       JOIN linear_session incoming ON incoming.session_id = ?
+         AND incoming.organization_id = previous.organization_id
+         AND incoming.oauth_client_id = previous.oauth_client_id
+         AND incoming.app_user_id = previous.app_user_id
+         AND incoming.team_id = previous.team_id
+       WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
+         AND item.state NOT IN ('completed', 'merged')`,
+        )
+        .all(incomingSessionId, issueId);
+    try {
+      for (const issueId of issueIds) {
+        for (const { session_id: sessionId } of candidates(issueId)) {
+          const previous = getLinearSession(this.db, sessionId)!;
+          const unfinished = this.itemsForSession(sessionId).some(
+            (item) => !["completed", "merged", "cancelled"].includes(item.state),
+          );
+          if (previous.stoppedAt === null && unfinished) {
+            const snapshot = await this.tracker.getSession(sessionId, {
+              signal: AbortSignal.any([
+                this.authRecoveryController.signal,
+                AbortSignal.timeout(10_000),
+              ]),
+            });
+            if (
+              !isCurrent() ||
+              getLinearSession(this.db, sessionId)?.generation !== previous.generation ||
+              !candidates(issueId).some((candidate) => candidate.session_id === sessionId)
+            )
+              throw new Error("Linear session ownership changed");
+            if (
+              snapshot.id !== sessionId ||
+              snapshot.appUserId !== previous.appUserId ||
+              snapshot.issue?.id !== previous.issueId
+            )
+              throw new Error("Linear session identity changed");
+            if (
+              !snapshot.endedAt &&
+              !snapshot.dismissedAt &&
+              !["complete", "error", "stopping"].includes(snapshot.status)
+            )
+              continue;
+            await this.stopSession(
+              sessionId,
+              `reconcile:${sessionId}:${previous.generation}`,
+              this.now(),
+            );
+          } else {
+            await this.interruptLinearSession(sessionId);
+          }
+          if (!isCurrent()) throw new Error("Linear intake changed during cleanup");
+          assertLinearSessionCleanup(this.db, sessionId);
+        }
+      }
+    } catch (cause) {
+      throw new LinearIntakePendingError(
+        "Paws is checking the previous session and waiting for its work to stop safely. This request will retry automatically.",
+        { cause },
+      );
+    }
   }
 
   stopTaskPlanning = (sessionId?: string): Promise<void> => this.taskPlanner.stop(sessionId);

@@ -61,6 +61,7 @@ export async function intakeDelegatedIssue(
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
     beforeAdmit?: () => void;
+    reconcileSessions?: (issueIds: readonly string[]) => Promise<void>;
     adoptParent?: (
       sessionId: string,
       snapshot: EpicSnapshot,
@@ -116,6 +117,9 @@ export async function intakeDelegatedIssue(
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
+  if (delegatedAlone || !input.adoptParent)
+    await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
+  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
   const sessionId = input.sessionId ?? "";
   let adopted = false;
   let result: IntakeResult;
