@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoStatus } from "../demo";
-import { render, type RenderModel } from "./render";
+import { activityKey, render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
 
@@ -213,6 +213,44 @@ describe("status views", () => {
     expect(html).not.toContain("/verdicts");
   });
 
+  test("task activity is open while the agent implements and collapsed from Closeout on", () => {
+    const snapshot = demoStatus();
+    snapshot.source = "live";
+    const run = snapshot.runs.find((entry) => entry.state === "running");
+    if (!run) throw new Error("missing running run");
+    const section = () =>
+      activitySection(render(model({ snapshot, route: { view: "runs", id: run.id } })).content);
+    expect(section()).toContain(' open=""');
+    expect(section()).toContain("Open full agent transcript");
+    expect(section()).toContain("data-follow");
+    for (const state of ["verifying", "done"] as const) {
+      run.state = state;
+      expect(section()).not.toContain(' open=""');
+    }
+  });
+
+  test("a refresh keeps the reader's choice for the task activity section in each phase", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.state === "running");
+    if (!run) throw new Error("missing running run");
+    const activity: Record<string, boolean> = {};
+    const section = () =>
+      activitySection(
+        render(model({ snapshot, activity, route: { view: "runs", id: run.id } })).content,
+      );
+    run.activity.push({ at: "2026-10-09T20:20:00.000Z", kind: "tool", text: "bun test" });
+    expect(section()).toContain(' open=""');
+    expect(section()).toContain("bun test");
+    activity[activityKey(run)] = false;
+    expect(section()).not.toContain(' open=""');
+    run.state = "verifying";
+    expect(section()).not.toContain(' open=""');
+    activity[activityKey(run)] = true;
+    run.activity.push({ at: "2026-10-09T20:21:00.000Z", kind: "ok", text: "Closeout started" });
+    expect(section()).toContain(' open=""');
+    expect(section()).toContain("Closeout started");
+  });
+
   test("issues, runs, and questions each render", () => {
     const issues = render(model({ route: { view: "issues", id: null } })).content;
     expect(issues).toContain('data-issue-filter="active"');
@@ -298,4 +336,10 @@ function issueRow(html: string, id: string): string {
   const start = html.lastIndexOf("<li", at);
   const end = html.indexOf("</li>", at);
   return html.slice(start, end);
+}
+
+function activitySection(html: string): string {
+  const start = html.indexOf('<details class="run-activity"');
+  if (start < 0) throw new Error("missing task activity");
+  return html.slice(start, html.indexOf("</details>", start));
 }
