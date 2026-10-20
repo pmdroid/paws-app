@@ -310,7 +310,10 @@ test("Grok device login is member-scoped, persists connected accounts and reject
   const waiting = {
     ...f.waiting,
     inputId: null,
-    authorization: { url: "https://auth.x.ai/device", message: "Enter ABCD-1234" },
+    authorization: {
+      url: "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+      message: "Enter ABCD-1234",
+    },
   };
   expect(() => f.login.exchange(f.runnerId, session.id, f.waiting)).toThrow("authorization URL");
   for (const url of [
@@ -318,6 +321,10 @@ test("Grok device login is member-scoped, persists connected accounts and reject
     "http://auth.x.ai/device",
     "https://user@auth.x.ai/device",
     "https://auth.x.ai:444/device",
+    "https://accounts.x.ai.evil.invalid/oauth2/device",
+    "http://accounts.x.ai/oauth2/device",
+    "https://user@accounts.x.ai/oauth2/device",
+    "https://accounts.x.ai:444/oauth2/device",
   ])
     expect(() =>
       f.login.exchange(f.runnerId, session.id, {
