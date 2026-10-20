@@ -75,7 +75,9 @@ export function createRunnerPlacement(options: {
         )
         .get(id),
       host: db.query("SELECT runner_id,sharing FROM runner_policy WHERE runner_id=?").get(id),
-      capacity: db.query("SELECT capacity FROM runner_capacity WHERE runner_id=?").get(id),
+      capacity: db
+        .query("SELECT capacity,ceiling,desired FROM runner_capacity WHERE runner_id=?")
+        .get(id),
       agent: agent
         ? db.query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent=?").get(id, agent)
         : null,
