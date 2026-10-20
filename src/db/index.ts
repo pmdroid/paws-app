@@ -138,6 +138,8 @@ export {
   updateRunnerStatus,
   type RunnerRecord,
   type RunnerOverview,
+  type RunnerSession,
+  type RunnerSessionPhase,
   type RunnerHostSample,
   type RunnerPairing,
   type StoredRunnerCertificate,

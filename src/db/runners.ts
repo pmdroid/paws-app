@@ -109,7 +109,46 @@ export type RunnerOverview = RunnerRecord & {
   slots: { used: number; total: number };
   /** Desired is set in Paws; applied and ceiling are what the runner last reported. */
   concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
+  /** Sessions holding a live work lease on this runner, oldest first. */
+  running: RunnerSession[];
 };
+
+export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
+export type RunnerSession = {
+  runId: string;
+  identifier: string;
+  title: string;
+  phase: RunnerSessionPhase;
+  startedAt: number;
+};
+
+/** Live sessions per runner, counted like `slots.used` counts work leases. */
+function listRunnerSessions(
+  db: Database,
+  workspaceId: string,
+  now: number,
+): Map<string, RunnerSession[]> {
+  const rows = db
+    .query<RunnerSession & { runnerId: string }, [number, string]>(
+      `SELECT w.runner_id AS runnerId,w.run_id AS runId,i.linear_identifier AS identifier,i.title,
+    CASE
+      WHEN i.state='verifying' OR json_extract(i.checkpoint,'$.phase')='verifying' THEN 'closeout'
+      WHEN i.state='merge_queue' OR json_extract(i.checkpoint,'$.phase')='merge_queue' THEN 'merging'
+      WHEN (SELECT p.decision FROM closeout_progress p WHERE p.item_id=i.id
+        ORDER BY p.updated_at DESC,p.rowid DESC LIMIT 1)='rejected' THEN 'fixing'
+      ELSE 'working'
+    END AS phase,
+    r.created_at AS startedAt
+    FROM runner_work w JOIN run r ON r.id=w.run_id JOIN work_item i ON i.id=r.item_id
+    WHERE w.ended_at IS NULL AND w.lease_until>? AND w.workspace_id=?
+    ORDER BY r.created_at,w.run_id`,
+    )
+    .all(now, workspaceId);
+  const sessions = new Map<string, RunnerSession[]>();
+  for (const { runnerId, ...session } of rows)
+    sessions.set(runnerId, [...(sessions.get(runnerId) ?? []), session]);
+  return sessions;
+}
 
 /** Keeps only the latest host sample per runner. */
 export function recordRunnerHostStatus(
@@ -172,6 +211,7 @@ export function listRunnerOverview(
     ceiling: number | null;
     desired: number | null;
   };
+  const sessions = listRunnerSessions(db, workspaceId, now);
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
@@ -224,6 +264,7 @@ export function listRunnerOverview(
         row.applied === null
           ? null
           : { desired: row.desired, applied: row.applied, ceiling: row.ceiling },
+      running: sessions.get(row.id) ?? [],
     }));
 }
 
