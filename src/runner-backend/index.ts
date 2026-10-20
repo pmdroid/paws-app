@@ -551,6 +551,7 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "pull_request")
                 await input.pullRequest?.update({ title: event.title, body: event.body });
+              if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
               if (event.type === "plan")
                 await emit({
                   type: "session_update",

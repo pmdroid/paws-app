@@ -39,6 +39,7 @@ export {
   type AskTeamOption,
   type AskTeamRequest,
   type AskTeamResponse,
+  type CloseoutProgressHook,
   type PlanStep,
   type PlanStepStatus,
   type PullRequestDescription,
