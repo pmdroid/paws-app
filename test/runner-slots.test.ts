@@ -2,9 +2,8 @@ import { expect, test } from "bun:test";
 import { insertRun, listRunnerOverview, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
 import { tempDb } from "./helpers";
 
-test("the runner overview reports used and total slots like placement counts them", () => {
+function fixture(now: number) {
   const db = tempDb();
-  const now = Date.now();
   const userId = putWorkspaceUser(db, {
     id: "user-1",
     linearUserId: "user-linear",
@@ -24,26 +23,87 @@ test("the runner overview reports used and total slots like placement counts the
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     ["runner-1", "ws-1", userId, "Runner", now, now],
   );
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 0, total: 1 });
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
-  for (const [index, lease] of [now + 60_000, now - 1].entries()) {
+  function work(
+    index: number,
+    lease: number,
+    options: { state?: string; startedAt?: number; title?: string } = {},
+  ) {
     db.run(
-      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,'running',?,0,?)",
+      "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES(?,?,?,?,?,?,?,0,?)",
       [
         `item-${index}`,
         `epic-${index}`,
         `issue-${index}`,
         `ENG-${index}`,
-        "Task",
+        options.title ?? "Task",
+        options.state ?? "running",
         `paws/eng-${index}`,
         now,
       ],
     );
-    const run = insertRun(db, { itemId: `item-${index}`, now, status: "active" });
+    const run = insertRun(db, {
+      itemId: `item-${index}`,
+      now: options.startedAt ?? now,
+      status: "active",
+    });
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
       [run.id, "runner-1", "ws-1", `cmd-${index}`, lease],
     );
+    return run.id;
   }
+  return { db, work };
+}
+
+test("the runner overview reports used and total slots like placement counts them", () => {
+  const now = Date.now();
+  const { db, work } = fixture(now);
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 0, total: 1 });
+  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
+  work(0, now + 60_000);
+  work(1, now - 1);
   expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 1, total: 3 });
+});
+
+test("the runner overview lists each live session with its issue and phase", () => {
+  const now = Date.now();
+  const { db, work } = fixture(now);
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([]);
+  const lease = now + 60_000;
+  const working = work(0, lease, { startedAt: now - 50_000, title: "Write the parser" });
+  const closeout = work(1, lease, { state: "verifying", startedAt: now - 40_000 });
+  const fixing = work(2, lease, { startedAt: now - 30_000 });
+  db.run(
+    "INSERT INTO closeout_progress(id,item_id,task_id,base,head,policy_digest,decision,started_at,updated_at,finished_at) VALUES('p-2','item-2','task','a','b','d','rejected',?,?,?)",
+    [now - 20_000, now - 20_000, now - 20_000],
+  );
+  const merging = work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
+  work(4, now - 1, { startedAt: now - 10_000 });
+  const ended = work(5, lease, { startedAt: now - 5_000 });
+  db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, ended]);
+
+  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([
+    {
+      runId: working,
+      identifier: "ENG-0",
+      title: "Write the parser",
+      phase: "working",
+      startedAt: now - 50_000,
+    },
+    {
+      runId: closeout,
+      identifier: "ENG-1",
+      title: "Task",
+      phase: "closeout",
+      startedAt: now - 40_000,
+    },
+    { runId: fixing, identifier: "ENG-2", title: "Task", phase: "fixing", startedAt: now - 30_000 },
+    {
+      runId: merging,
+      identifier: "ENG-3",
+      title: "Task",
+      phase: "merging",
+      startedAt: now - 20_000,
+    },
+  ]);
 });
