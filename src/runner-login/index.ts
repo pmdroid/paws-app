@@ -11,7 +11,7 @@ import {
   type RunnerLoginUpdate,
 } from "../runner-protocol";
 
-type Agent = "claude" | "codex";
+type Agent = "claude" | "codex" | "grok";
 type Row = {
   id: string;
   runnerId: string;
@@ -105,7 +105,7 @@ export function createRunnerLogin(options: {
     list(principal: WorkspacePrincipal, runnerId: string) {
       access(principal.workspaceId, principal.userId, runnerId);
       return {
-        accounts: (["claude", "codex"] as const).map((agent) => {
+        accounts: (["claude", "codex", "grok"] as const).map((agent) => {
           const account = db
             .query<{ connected: number; updatedAt: number }, [string, string, string]>(
               "SELECT connected,updated_at AS updatedAt FROM runner_member_account WHERE runner_id=? AND user_id=? AND agent=?",
@@ -209,11 +209,11 @@ export function createRunnerLogin(options: {
         if (!pending(row)) return { cancelled: row.state !== "connected", input: null };
         if (row.agent === "claude" && update.authorization)
           throw new Error("Claude login requires its terminal");
-        if (row.agent === "codex" && update.authorization) {
+        if (row.agent !== "claude" && update.authorization) {
           const url = new URL(update.authorization.url);
           if (
             url.protocol !== "https:" ||
-            url.hostname !== "auth.openai.com" ||
+            url.hostname !== (row.agent === "grok" ? "auth.x.ai" : "auth.openai.com") ||
             url.username ||
             url.password ||
             url.port
@@ -264,7 +264,7 @@ export function createRunnerLogin(options: {
       authorize?: () => void,
     ): Promise<Response | null> {
       const match =
-        /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/accounts(?:\/(claude|codex)\/login(?:\/([a-f0-9-]{36})(\/input)?)?)?$/.exec(
+        /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/accounts(?:\/(claude|codex|grok)\/login(?:\/([a-f0-9-]{36})(\/input)?)?)?$/.exec(
           new URL(request.url).pathname,
         );
       if (!match) return null;

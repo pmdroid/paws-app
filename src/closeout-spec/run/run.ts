@@ -325,6 +325,7 @@ async function runOne(
   });
   const exec = await runner.runLogged({
     cwd,
+    itemId: item.id,
     argv: item.exec,
     timeoutSeconds: item.timeoutSeconds,
     logFile: join(input.evidenceDir, ...relative.split("/")),
@@ -366,7 +367,7 @@ async function runOne(
     detail: execMessage(record.exec, item.kind === "setup"),
     attempt,
     startedAt,
-    finishedAt: Date.now(),
+    finishedAt: startedAt + exec.durationMs,
     exitCode: record.exec.exitCode,
     timedOut: record.exec.timedOut,
     timeoutReason: record.exec.timedOut ? "command timed out" : null,

@@ -1,14 +1,14 @@
 # Install the workspace integrations
 
-Allow 15 minutes with a sandbox Linear workspace, a GitHub organization and a repository already created. Use a workspace admin account and a GitHub account that can install Apps on that repository. Have Bun 1.4.2+, Git, ngrok for the HTTPS tunnel, and your coding agent installed and signed in. Keep a local checkout of the sandbox repository available for setup.
+Allow 15 minutes with a sandbox Linear workspace, a GitHub organization and a repository already created. Use a workspace admin account and a GitHub account that can install Apps on that repository. Have Bun 1.4.2+, Git, an HTTPS origin and certificate for Paws, and a Linux runner available.
 
 ## 1. Register the apps, about five minutes
 
-In [Linear's application settings](https://linear.app/settings/api/applications), create an OAuth application. Register `http://localhost:3000/oauth/callback`. Enable agent delegation and mentions. Select **Agent session events**, **Issues**, **Inbox notifications**, and **Permission changes** for its webhooks. Set the webhook URL to `https://YOUR-TUNNEL/webhooks/linear` and retain its signing secret. Paws requests `actor=app`, `read,write,app:assignable,app:mentionable`, state and PKCE S256.
+In [Linear's application settings](https://linear.app/settings/api/applications), create an OAuth application. Register `https://YOUR-PAWS-HOST/auth/linear/callback` and `https://YOUR-PAWS-HOST/auth/linear/install/callback`. Enable agent delegation and mentions. Select **Agent session events**, **Issues**, **Inbox notifications**, and **Permission changes** for its webhooks. Set the webhook URL to `https://YOUR-PAWS-HOST/webhooks/linear` and retain its signing secret. Paws requests `actor=app`, `read,write,app:assignable,app:mentionable`, state and PKCE S256.
 
-Create a [GitHub App](https://github.com/settings/apps/new) with callback `http://127.0.0.1:3000/oauth/github/callback`. Grant **Contents**, **Pull requests**, **Checks**, and **Issues** read and write. Metadata read access is automatic. Enable its webhook at `https://YOUR-TUNNEL/webhooks/github`, with content type `application/json`. Subscribe to **Pull requests**, **Check runs**, **Check suites**, **Pushes**, **Installations** and **Installation repositories**. Generate a private key and client secret. Install the App on **Only select repositories**, choosing the sandbox repository. Details are in [GitHub sign-in](github-login.md).
+Create a [GitHub App](https://github.com/settings/apps/new) with callback `https://YOUR-PAWS-HOST/auth/github-app/callback`. Grant **Contents**, **Pull requests**, **Checks**, and **Issues** read and write. Metadata read access is automatic. Enable its webhook at `https://YOUR-PAWS-HOST/webhooks/github`, with content type `application/json`. Subscribe to **Pull requests**, **Check runs**, **Check suites**, **Pushes**, **Installations** and **Installation repositories**. Generate a private key and client secret. Install the App on **Only select repositories**, choosing the sandbox repository. Details are in [GitHub sign-in](github-login.md).
 
-Set these environment variables in your terminal using the app settings. Keep the private key outside the checkout.
+Set these environment variables on the Paws server using the app settings. Keep the private key outside the checkout.
 
 | Variable                      | Value                                      |
 | ----------------------------- | ------------------------------------------ |
@@ -22,23 +22,21 @@ Set these environment variables in your terminal using the app settings. Keep th
 | `LINEAR_CLIENT_SECRET`        | Linear OAuth client secret                 |
 | `LINEAR_WEBHOOK_SECRET`       | Linear webhook signing secret              |
 
-## 2. Connect GitHub and Linear, about five minutes
+## 2. Connect GitHub and Linear
+
+Configure the [HTTPS workspace access](workspace-access.md) environment and callbacks, then start Paws:
 
 ```sh
 bun install
-bun run paws login github --app --repo "$PAWS_GITHUB_REPOSITORY"
-bun run paws setup --tracker linear --linear-mode agent --repo "$PAWS_GITHUB_REPOSITORY" --checkout /path/to/sandbox-checkout
+bun run build:status
+bun run paws --no-tunnel
 ```
 
-Approve GitHub in the browser. During setup, approve Linear as a workspace admin, choose the sandbox team and select your implementer. Confirm the repository's Closeout policy when prompted. Commit a generated policy in the sandbox checkout before running work.
-
-Both authorization callbacks listen temporarily on port `3000`, one flow at a time. The running Paws server uses port `8787`.
-
-Start ngrok in another terminal with `ngrok http 8787`, forwarding to `http://127.0.0.1:8787`. Set `PAWS_PUBLIC_URL` to its HTTPS address and `LINEAR_WEBHOOKS=true`. Keep the tunnel running in another terminal.
+Open the HTTPS dashboard. Sign in as a Linear workspace admin and authorize Paws in the same workspace. In Integrations, connect GitHub, choose the sandbox repository and map it to the sandbox Linear team. Commit the repository's Closeout policy before delegating work. Pair a runner and connect its coding-agent accounts through Runners.
 
 ## 3. Connect Slack, about three minutes
 
-Create a [Slack app](https://api.slack.com/apps). Add the redirect URL `https://YOUR-TUNNEL/oauth/slack/callback` under **OAuth & Permissions**. Configure these bot scopes: `chat:write`, `im:write`, `users:read`, `users:read.email`, and `channels:read`.
+Create a [Slack app](https://api.slack.com/apps). Add the redirect URL `https://YOUR-PAWS-HOST/oauth/slack/callback` under **OAuth & Permissions**. Configure these bot scopes: `chat:write`, `im:write`, `users:read`, `users:read.email`, and `channels:read`.
 
 Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` and `SLACK_SIGNING_SECRET` from the app settings, then run:
 
@@ -51,13 +49,12 @@ Open the printed authorization URL and approve the sandbox workspace. The tempor
 ## 4. Start and check, about two minutes
 
 ```sh
-bun run paws doctor
-bun run paws
+bun run paws --no-tunnel
 ```
 
-Open `http://127.0.0.1:8787/status`. Confirm the configured repository and connected GitHub account. In Linear, mention or delegate a sandbox issue to Paws and confirm its first activity appears. Check the Linear application's webhook delivery status. In the GitHub App settings, use **Advanced > Redeliver** on its ping and confirm HTTP 200.
+Open your configured HTTPS dashboard. Confirm the configured repository and connected GitHub account. In Linear, mention or delegate a sandbox issue to Paws and confirm its first activity appears. Check the Linear application's webhook delivery status. In the GitHub App settings, use **Advanced > Redeliver** on its ping and confirm HTTP 200.
 
-In Slack's **Event Subscriptions**, set the Request URL to `https://YOUR-TUNNEL/webhooks/slack`. Confirm Slack reports **Verified**, which checks the signed challenge through the running server.
+In Slack's **Event Subscriptions**, set the Request URL to `https://YOUR-PAWS-HOST/webhooks/slack`. Confirm Slack reports **Verified**, which checks the signed challenge through the running server.
 
 Stop and restart Paws. The saved integrations should still load, and the next Linear poll should succeed. Repository operations use fresh GitHub installation tokens restricted to the selected repository and branches named `paws/*`.
 
@@ -67,7 +64,7 @@ File-backed credentials use AES-256-GCM envelope encryption, with a separate dat
 
 Linear refresh jobs contain hashes and job metadata. Tokens remain in encrypted credential files. A restart reclaims the refresh lease and replays a lost token response within [Linear's 30-minute grace period](https://linear.app/developers/oauth-2-0-authentication). A successful refresh saves the rotated token before completing the job. Slack installations with token rotation use the same job mechanism when an access token is needed.
 
-To reconnect a revoked installation, repeat its sign-in or setup command. Restore encrypted credentials together with their envelope key when restoring from backup.
+To reconnect an integration, complete its authorization again. Restore encrypted credentials together with their envelope key when restoring from backup.
 
 ## Repeat the automated checks
 

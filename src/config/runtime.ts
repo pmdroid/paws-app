@@ -74,7 +74,7 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
 
   if (file.retiredTrackerConfigured || (file.trackerSpecified && file.trackerKind !== "linear")) {
     configError =
-      'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and run paws setup with Linear credentials. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
+      'Paws uses Linear for issue tracking. Set [tracker] kind = "linear", remove [tracker.github], and connect Linear through the Paws website. Keep your existing database as an archive and use a new --home if it contains GitHub issue work.';
   }
   const linearMode = resolveMode(file, source, configured, configError);
   const secrets = readLinearSecrets(env.home, file, linearMode);
@@ -127,6 +127,7 @@ function resolveMode(
   if (flagged === "comments") return "comments";
   if (flagged === "agent" || flagged === "agent-session") return "agent-session";
   if (file.linearMode !== null) return file.linearMode;
+  if (source.PAWS_PUBLIC_DASHBOARD === "1") return "agent-session";
   if (
     !configured &&
     optional(source, "LINEAR_CLIENT_ID") &&
@@ -192,7 +193,7 @@ function readLinearSecrets(
   mode: LinearConfigMode,
 ): LinearSecrets {
   const secret = readText(home, file.linearSecret);
-  const client = readJson(home, file.linearClientFile);
+  const client = readJson(home, file.linearClientFile ?? "secrets/linear-client.json");
   if (mode === "comments") {
     return {
       apiKey: secret,
@@ -202,7 +203,7 @@ function readLinearSecrets(
       clientSecret: null,
     };
   }
-  const oauth = readJson(home, file.linearSecret);
+  const oauth = readJson(home, file.linearSecret ?? "secrets/linear-oauth.json");
   return {
     apiKey: null,
     accessToken: jsonString(oauth, "accessToken"),

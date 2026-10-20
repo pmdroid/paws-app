@@ -17,18 +17,10 @@ import {
   runLabel,
   statePill,
   taskPhase,
-  verdictDetail,
-  verdictLabel,
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
-import {
-  attemptsOf,
-  emptyCloseoutView,
-  renderCloseoutChecks,
-  shownAttempt,
-  type CloseoutView,
-} from "./closeout";
+import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
@@ -319,7 +311,9 @@ function viewRuns(
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
-  const selected = runs.find((run) => run.id === id) ?? (id === null ? runs[0] : undefined);
+  if (id === null && runs.length)
+    return `${pageHeading("runs")}<ul class="issue-list">${runs.map((run) => `<li class="between"><a href="${routeHref({ view: "runs", id: run.id })}"><span class="mono">${esc(run.id)}</span> · ${esc(findItem(snapshot, run.itemId)?.title ?? run.itemId)}</a>${statePill(run.state, runLabel(run.state))}</li>`).join("")}</ul>`;
+  const selected = runs.find((run) => run.id === id);
   const picker = entityPicker(
     "Run",
     runs.map((run) => ({
@@ -336,28 +330,29 @@ function viewRuns(
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
-  return `${pageHeading("runs")}${picker}
-    <div class="split"><div>
-      <div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}${agentChip(selected.agent)}</div>
-      <h2>${esc(title)}</h2>
+  return `<article class="run-page">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "runs", id: null })}">Runs</a><span>/</span>${itemLink(item)}<span>/</span><span class="mono">${esc(selected.id)}</span></nav>
+    <header class="run-heading"><div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}<span class="mono muted">${esc(snapshot.project.repo)}${item?.branch ? ` · ${esc(item.branch)}` : ""}</span></div>
+      <h1>${esc(title)}</h1>
+      <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
+    </header>
+    ${phaseStrip(item, selected, verdict)}
+    <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${snapshot.questions
+      .filter((question) => question.itemId === selected.itemId)
+      .map(
+        (question) =>
+          `<section class="closeout-result blocked"><div><h2>${esc(question.title)}</h2><p>${esc(question.body)}</p><div class="row">${linkList(question.links)}</div></div></section>`,
+      )
+      .join("")}
+    ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
+    ${evidenceSlot(snapshot, selected.id)}
+    <details class="run-activity"><summary>Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</summary>
       <p class="muted">${esc(selected.summary)}</p>
-      ${phaseStrip(item, selected, verdict)}
-      <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
-      <div class="between"><h3>Task activity</h3>${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}</div>
+      ${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}
       <div class="log" data-log="activity-${esc(selected.id)}">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-      ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
-      ${evidenceSlot(snapshot, selected.id)}
-    </div>
-    <div class="card"><h3>Run</h3><div class="kv">
-      <span class="k">Run</span><span class="mono">${esc(selected.id)}</span>
-      <span class="k">Item</span><span class="mono">${esc(selected.itemId)}</span>
-      <span class="k">Agent</span><span>${agentChip(selected.agent)}</span>
-      <span class="k">Reviewer</span><span>${agentChip(selected.reviewer)}</span>
-      <span class="k">Started</span><span>${esc(ago(selected.startedAt, snapshot.generatedAt))}</span>
-      <span class="k">Attempt</span><span class="mono">${selected.attempt}</span>
-      <span class="k">Branch</span><span class="mono">${esc(item?.branch ?? "—")}</span>
-      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div></div>`;
+      <div class="row">${linkList(selected.links)}</div>
+    </details></article>`;
 }
 
 function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {
@@ -406,14 +401,27 @@ function phaseStrip(
   verdict?: StatusVerdict,
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
-  const names = ["Implementation", "Closeout", "Waiting to merge", "Complete"];
+  const names = [
+    "Implementation",
+    `Closeout${verdict ? ` · ${verdict.attempt} of ${verdict.maxAttempts}` : ""}`,
+    "Waiting to merge",
+    "Complete",
+  ];
   const marks = names
     .map((name, index) => {
-      const cls = index < phase.current ? "done" : index === phase.current ? "now" : "wait";
-      return `<span class="ph ${cls}">${esc(name)}</span>`;
+      const failed =
+        index === 1 && verdict && ["exhausted", "rejected", "blocked"].includes(verdict.decision);
+      const cls = failed
+        ? "failed"
+        : index < phase.current || (index === 1 && verdict?.decision === "accepted")
+          ? "done"
+          : index === phase.current
+            ? "now"
+            : "wait";
+      return `<li class="run-step ${cls}"${index === phase.current ? ' aria-current="step"' : ""}>${cls === "done" ? "✓ " : failed ? "✕ " : ""}${esc(name)}</li>`;
     })
     .join("");
-  return `<div class="phase"><div class="phs">${marks}</div><p>${esc(phase.detail)}</p></div>`;
+  return `<ol class="run-stepper" aria-label="Run progress" title="${esc(phase.detail)}">${marks}</ol>`;
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
@@ -428,9 +436,10 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
   if (verdict?.decision === "exhausted" || item?.state === "exhausted")
-    return statePill("exhausted", "Exhausted");
+    return statePill("exhausted", "Closeout exhausted");
   if (verdict?.decision === "rejected") return statePill("stopped", "Closeout failed");
   if (item?.state === "needs_human") return statePill("needs_human", "Needs a person");
+  if (verdict?.decision === "accepted") return statePill("accepted", "Closeout accepted");
   if (item?.state === "merge_queue") return statePill("merge_queue", "Waiting to merge");
   if (item?.state === "verifying" || run.state === "verifying")
     return statePill("verifying", "Closeout");
@@ -445,67 +454,11 @@ function closeoutSection(
 ): string {
   const selected = snapshot.verdicts.find((verdict) => verdict.itemId === itemId);
   if (!selected) return "";
-  const picker = entityPicker(
-    "Candidate",
-    snapshot.verdicts.flatMap((verdict) => {
-      const href = runHrefForItem(snapshot, verdict.itemId);
-      return href
-        ? [{ value: href, label: `${verdict.itemId} · ${verdictLabel(verdict.decision)}` }]
-        : [];
-    }),
-    runHrefForItem(snapshot, selected.itemId) ?? "",
-  );
-  const item = findItem(snapshot, selected.itemId);
-  const bars = Array.from({ length: selected.maxAttempts }, (_, index) => {
-    const n = index + 1;
-    const cls = n < selected.attempt ? "f" : n > selected.attempt ? "" : barClass(selected);
-    return `<i class="${cls}"></i>`;
-  }).join("");
-  const fail =
-    selected.failingCheck && selected.decision !== "accepted"
-      ? `<div class="mono">${esc(selected.failingCheck)}</div>`
-      : "";
-  const attempt = shownAttempt(selected, closeout);
-  const latest = attempt.number === attemptsOf(selected).at(-1)?.number;
-  return `<section class="col" aria-label="Closeout"><h3>Closeout</h3>${picker}
-    <div class="between closeout-head"><div>
-      <div class="row">${itemLink(item)}${item ? statePill(item.state, itemLabel(item.state)) : ""}</div>
-      <div class="muted">${esc(selected.summary)}</div>
-    </div>
-    <div><div class="muted">Attempt ${selected.attempt}/${selected.maxAttempts}</div><div class="attempts">${bars}</div></div></div>
-    <div class="decision ${esc(selected.decision)}"><div class="big">${esc(verdictLabel(selected.decision))}</div><div class="muted">${esc(verdictDetail(selected.decision))}${fail}</div></div>
-    <div class="card">${renderCloseoutChecks(selected, closeout, engineUrl)}</div>
-    <div class="card"><h3>Report</h3><div class="kv">
-      <span class="k">Base</span><span class="mono">${esc(attempt.baseSha ?? "—")}</span>
-      <span class="k">Head</span><span class="mono">${esc(attempt.headSha ?? "—")}</span>
-      <span class="k">Policy</span><span class="mono">${esc(latest ? policyLabel(selected) : (attempt.policyDigest ?? "—"))}</span>
-      <span class="k">Sealed</span><span>${latest ? (selected.sealed ? "yes" : "no") : attempt.decision === "running" ? "no" : "yes"}</span>
-      <span class="k">Links</span><span>${linkList(selected.links) || "—"}</span>
-    </div></div></section>`;
-}
-
-function runHrefForItem(snapshot: StatusSnapshot, itemId: string): string | null {
-  const item = findItem(snapshot, itemId);
-  if (item?.runId && snapshot.runs.some((run) => run.id === item.runId)) {
-    return routeHref({ view: "runs", id: item.runId });
-  }
-  let match: StatusRun | undefined;
-  for (const run of snapshot.runs) {
-    if (run.itemId !== itemId) continue;
-    if (!match || run.startedAt > match.startedAt) match = run;
-  }
-  return match ? routeHref({ view: "runs", id: match.id }) : null;
+  return `<section class="closeout-section" aria-label="Closeout">${renderCloseoutChecks(selected, closeout, engineUrl, findItem(snapshot, itemId)?.pr ?? null, findItem(snapshot, itemId)?.state)}</section>`;
 }
 
 function itemVerdict(snapshot: StatusSnapshot, itemId: string): StatusVerdict | undefined {
   return snapshot.verdicts.find((entry) => entry.itemId === itemId);
-}
-
-function policyLabel(verdict: StatusVerdict): string {
-  if (verdict.policyPath && verdict.policyDigest) {
-    return `${verdict.policyPath} ${verdict.policyDigest}`;
-  }
-  return verdict.policyDigest || verdict.policyPath || "—";
 }
 
 function itemLink(item: StatusItem | undefined): string {
@@ -519,12 +472,6 @@ function findItem(snapshot: StatusSnapshot, id: string): StatusItem | undefined 
 
 function rankRun(run: StatusRun): number {
   return ACTIVE_RUN.has(run.state) ? 0 : 1;
-}
-
-function barClass(verdict: StatusVerdict): string {
-  if (verdict.decision === "accepted") return "p";
-  if (verdict.decision === "running") return "r";
-  return "f";
 }
 
 function pageHeading(view: Route["view"]): string {

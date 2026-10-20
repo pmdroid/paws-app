@@ -85,7 +85,6 @@ export type PawsConfigFile = {
 };
 
 /**
- * What `paws setup` writes. Secret values stay out of this file.
  * `linearSecret` and `linearClientFile` are paths relative to `~/.paws`.
  */
 export type PawsSetupConfig = {
@@ -131,7 +130,6 @@ export function emptyConfigFile(): PawsConfigFile {
   };
 }
 
-/** Parse `config.toml` written by `paws setup`. A missing file is empty. */
 export function loadConfigFile(path: string): PawsConfigFile {
   if (!existsSync(path)) return emptyConfigFile();
   return parseConfigToml(readFileSync(path, "utf8"));
@@ -171,8 +169,6 @@ export function parseConfigToml(text: string): PawsConfigFile {
 /** Canonical `config.toml` text. The same input always renders the same bytes. */
 export function renderConfigToml(config: PawsSetupConfig): string {
   const lines = [
-    "# Written by paws setup. Secret values stay in secrets/ at mode 0600.",
-    "",
     "[linear]",
     `mode = ${tomlString(config.linearMode)}`,
     `team = ${tomlString(config.linearTeam)}`,

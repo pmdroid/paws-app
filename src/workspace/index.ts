@@ -61,3 +61,6 @@ export {
   captureOnboardingExecution,
   type OnboardingExecution,
 } from "./onboarding-execution";
+
+export { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
+export type { LinearBrowserIdentity } from "./oauth";

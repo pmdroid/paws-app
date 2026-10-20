@@ -49,8 +49,8 @@ describe("status views", () => {
 
   test("terminal closeout outcomes override a stale verifying run in both views", () => {
     for (const [decision, detail] of [
-      ["blocked", "Closeout is blocked and needs a person."],
-      ["exhausted", "Closeout stopped after its retry budget."],
+      ["blocked", "Closeout blocked"],
+      ["exhausted", "Closeout exhausted"],
     ] as const) {
       const snapshot = demoStatus();
       const verdict = snapshot.verdicts[0];
@@ -61,7 +61,7 @@ describe("status views", () => {
       item.state = decision === "blocked" ? "needs_human" : "exhausted";
       run.state = "verifying";
       const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
-      expect(html).toContain("<h3>Closeout</h3>");
+      expect(html).toContain("<h2>Closeout</h2>");
       expect(html).toContain(detail);
       expect(html).not.toContain("Closeout is verifying this candidate.");
     }
@@ -205,10 +205,11 @@ describe("status views", () => {
 
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
-    expect(html).toContain("<h3>Closeout</h3>");
+    expect(html).toContain("<h2>Closeout</h2>");
     expect(html).toContain("Exhausted");
     expect(html).toContain('data-action="toggle-check"');
-    expect(html).toContain('value="/runs/r-101"');
+    expect(html).not.toContain('aria-label="Candidate"');
+    expect(html).toContain('aria-label="Breadcrumb"');
     expect(html).not.toContain("/verdicts");
   });
 

@@ -6,26 +6,17 @@ Linear is the issue tracker. GitHub hosts the repositories and pull requests. Th
 
 ## Setup
 
-Install [Bun](https://bun.sh) 1.4 or newer, then:
+Configure the server's HTTPS origin, certificate, Linear OAuth app credentials, and GitHub App credentials as described in [Workspace access](docs/workspace-access.md). Install Bun 1.4 or newer, then start Paws:
 
 ```sh
 bun install
-bun run paws setup    # connect Linear, sign in with GitHub, and pick a repo
-bun run paws doctor
-bun run paws
+bun run build:status
+bun run paws --no-tunnel
 ```
 
-Add the `paws` label to a Linear issue or delegate it to the configured Linear user. Paws polls Linear and places the work on a [paired Linux runner](docs/runner-pairing.md). Linear credentials, triggers, and questions are in [docs/linear-modes.md](docs/linear-modes.md). GitHub sign-in, token storage, and the `gh` and App options are in [docs/github-login.md](docs/github-login.md). The real-machine steps are in [docs/smoke-test.md](docs/smoke-test.md).
+Open the configured HTTPS address. A Linear workspace admin signs in and authorizes Paws in the same workspace. Paws saves the app authorization, creates the owner's workspace, and opens Integrations. Connect GitHub, choose repositories and their Linear teams, then [pair a runner](docs/runner-pairing.md) and sign in to its agents through Runners.
 
-`setup` writes `~/.paws/config.toml`. It connects your Linear personal API key and team, signs in to GitHub, asks which repository to use, and asks for `agents.implementer` (`claude`, `grok`, or `codex`). Existing GitHub authentication settings are preserved. The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. Comment mode polls without a public URL; Linear agent-session mode is also available.
-
-Without `--yes`, setup lists only installed, loginable implementers. On a machine without Claude Code, choose grok and run the printed `grok login`. `doctor` is all `ok` before `bun run paws` (a missing Claude install is a `note` when the implementer is grok). A `missing` line includes one fix. Closeout runs in process: `doctor` checks that the [configured local policy](docs/local-closeout.md) or `.agents/closeout.yaml` on `origin/main` loads, and a malformed policy prints one fix line. If Grok advertises no auth method, doctor prints:
-
-```text
-missing grok: Run `grok login`
-```
-
-The process listens on `127.0.0.1:8787`, creates `~/.paws/` (SQLite database, secrets directory, worktrees, logs), and prints `paws ready` plus the dashboard URL. Tests use fakes and do not need external accounts.
+Linear holds delegated work and questions. GitHub hosts repositories and pull requests. Paws checks the repository's Closeout policy before publication.
 
 | Path                          | What it is                                                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |

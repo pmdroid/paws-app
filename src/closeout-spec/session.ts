@@ -5,9 +5,21 @@ import { join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
 import type { PolicyFilesLoad } from "./policy/load";
-import { scrubCommandEnv } from "./run/env";
+import { credentialSecrets, scrubCommandEnv } from "./run/env";
+import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
 import type { ResolvedItem, ResolvedRequirement, ResolvedSetup } from "./types";
+
+export type SessionCommandResult = {
+  argv: string[];
+  head: string;
+  exitCode: number;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+};
 
 export type CloseoutSession = {
   report(): Promise<string>;
@@ -25,6 +37,7 @@ type ItemMemory = {
   passed: boolean;
   stale: boolean;
   kind: string;
+  result?: SessionCommandResult;
 };
 
 type Listed = {
@@ -49,6 +62,7 @@ export function createCloseoutSession(
 ): CloseoutSession {
   const memory = new Map<string, ItemMemory>();
   let fingerprint: string | undefined;
+  let checkedHead: string | undefined;
   let chain: Promise<unknown> = Promise.resolve();
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
@@ -74,21 +88,25 @@ export function createCloseoutSession(
     );
     const changes = await changedPaths(workspace, needsPaths);
     if (!changes.ok) return { kind: "blocked", message: "changed paths are unavailable" };
-    const next = fingerprintOf(workspace, changes.paths);
+    const current = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+    if (!current.ok) return { kind: "blocked", message: "candidate commit is unavailable" };
+    const head = current.stdout.toString("utf8").trim();
+    const next = `${head}:${policy.digest}:${fingerprintOf(workspace, changes.paths)}`;
     if (fingerprint !== undefined && fingerprint !== next) {
       for (const state of memory.values()) {
-        if (state.passed && state.kind !== "setup") {
+        if (state.passed && (state.kind !== "setup" || checkedHead !== head)) {
           state.passed = false;
           state.stale = true;
         }
       }
     }
     fingerprint = next;
+    checkedHead = head;
     return { kind: "ready", policy, required: select(policy, changes.paths) };
   };
 
   return {
-    report: () => exclusive(async () => JSON.stringify(reportOf(await prepare(), memory))),
+    report: () => exclusive(async () => boundedReport(reportOf(await prepare(), memory))),
     run: (id) =>
       exclusive(async () => {
         const prepared = await prepare();
@@ -132,6 +150,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
         : {}),
       retry_scope: scope,
       different_model: item.differentModel,
+      ...(state?.result && !state.stale ? { result: state.result } : {}),
     };
   });
   const pending = prepared.required
@@ -150,6 +169,25 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
           })
           .join(" ")}`;
   return { required, pending, blocked, bypassed: false };
+}
+
+function boundedReport(report: Record<string, unknown>): string {
+  let text = JSON.stringify(report);
+  const entries = (report.required ?? []) as { result?: SessionCommandResult }[];
+  while (Buffer.byteLength(text) > 60_000) {
+    const streams = entries.flatMap(({ result }) =>
+      result ? (["stdout", "stderr"] as const).map((key) => ({ result, key })) : [],
+    );
+    streams.sort((a, b) => b.result[b.key].length - a.result[a.key].length);
+    const largest = streams[0];
+    if (!largest || largest.result[largest.key].length === 0) break;
+    largest.result[largest.key] = largest.result[largest.key].slice(
+      Math.ceil(largest.result[largest.key].length / 2),
+    );
+    largest.result.truncated = true;
+    text = JSON.stringify(report);
+  }
+  return text;
 }
 
 function statusOf(state: ItemMemory | undefined, max: number | null): string {
@@ -213,13 +251,29 @@ async function execute(
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, text: message };
   }
+  const before = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  const started = Date.now();
   const result = await runCommand(workspace, argv, item.timeoutSeconds ?? 30, options.signal);
+  const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   if (result.cancelled) return { ok: false, text: `${item.id} was cancelled.` };
   const state = memory.get(item.id) ?? {
     failures: 0,
     passed: false,
     stale: false,
     kind: item.kind,
+  };
+  state.result = {
+    argv: [...argv],
+    head:
+      before.ok && after.ok && before.stdout.equals(after.stdout)
+        ? after.stdout.toString("utf8").trim()
+        : "",
+    exitCode: result.code,
+    timedOut: result.timedOut,
+    durationMs: Math.max(1, Date.now() - started),
+    stdout: scrubText(result.stdout, credentialSecrets()),
+    stderr: scrubText(result.stderr, credentialSecrets()),
+    truncated: result.truncated,
   };
   state.kind = item.kind;
   if (result.code === 0 && !result.timedOut) {
@@ -390,13 +444,37 @@ function runCommand(
   argv: readonly string[],
   timeoutSeconds: number,
   signal?: AbortSignal,
-): Promise<{ code: number; timedOut: boolean; cancelled: boolean; output: string }> {
+): Promise<{
+  code: number;
+  timedOut: boolean;
+  cancelled: boolean;
+  output: string;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}> {
   if (signal?.aborted) {
-    return Promise.resolve({ code: 1, timedOut: false, cancelled: true, output: "" });
+    return Promise.resolve({
+      code: 1,
+      timedOut: false,
+      cancelled: true,
+      output: "",
+      stdout: "",
+      stderr: "",
+      truncated: false,
+    });
   }
   const command = argv[0];
   if (command === undefined || argv.some((part) => part.length === 0)) {
-    return Promise.resolve({ code: 127, timedOut: false, cancelled: false, output: "" });
+    return Promise.resolve({
+      code: 127,
+      timedOut: false,
+      cancelled: false,
+      output: "",
+      stdout: "",
+      stderr: "",
+      truncated: false,
+    });
   }
   return new Promise((resolve) => {
     const child = spawn(command, argv.slice(1), {
@@ -406,12 +484,19 @@ function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
-    const take = (chunk: Buffer) => {
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    const take = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      const text = (stream === "stdout" ? stdout : stderr) + chunk.toString("utf8");
+      if (text.length > 24_000) truncated = true;
+      if (stream === "stdout") stdout = text.slice(-24_000);
+      else stderr = text.slice(-24_000);
       output += chunk.toString("utf8");
       if (output.length > 12_000) output = output.slice(-6_000);
     };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
+    child.stdout.on("data", (chunk: Buffer) => take("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => take("stderr", chunk));
     let settled = false;
     let timedOut = false;
     let cancelled = false;
@@ -430,7 +515,7 @@ function runCommand(
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve(result);
+      resolve({ ...result, stdout, stderr, truncated });
     };
     signal?.addEventListener("abort", onAbort);
     timer = setTimeout(() => {
