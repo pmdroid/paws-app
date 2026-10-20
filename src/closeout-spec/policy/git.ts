@@ -29,6 +29,12 @@ export type GitReader = {
   readBlob(repo: string, object: string): { ok: true; bytes: Uint8Array } | GitFailure;
 };
 
+export type AsyncGitReader = {
+  local: GitReader;
+  fetchOriginMain(repo: string): Promise<ReturnType<GitReader["fetchOriginMain"]>>;
+  lsRemoteOriginMain(repo: string): Promise<ReturnType<GitReader["lsRemoteOriginMain"]>>;
+};
+
 export type FakeGitReader = GitReader & {
   calls: string[];
   /** Commit id returned by the fetch. Lowercase hex, 40 or 64 characters. */

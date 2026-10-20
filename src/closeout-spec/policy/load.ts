@@ -7,7 +7,7 @@ import type {
   ResolvedPolicyPresent,
 } from "../types";
 import { decodeUtf8, tryParseYamlValue } from "./document";
-import type { GitBlob, GitReader } from "./git";
+import type { GitBlob, GitReader, AsyncGitReader } from "./git";
 import { repoPath } from "./paths";
 import {
   enqueuePolicyPaths,
@@ -77,6 +77,49 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
   if (!loaded.ok) return blocked("repo", loaded.message);
   if (loaded.absent) return loadGlobal(input);
   return { ok: true, policy: present("repo", loaded.policy), warnings: [] };
+}
+
+export async function loadPolicyAsync(
+  input: Omit<LoadPolicyInput, "git"> & { git: AsyncGitReader },
+): Promise<PolicyLoadOutcome> {
+  if (input.policyRoot !== undefined) return loadPolicy({ ...input, git: input.git.local });
+  const staged = await originMainFilesAsync(input);
+  if (!staged.ok) return blocked("repo", staged.message);
+  const loaded = loadMemoryPolicy(staged.files);
+  if (!loaded.ok) return blocked("repo", loaded.message);
+  if (loaded.absent) return loadGlobal({ ...input, git: input.git.local });
+  return { ok: true, policy: present("repo", loaded.policy), warnings: [] };
+}
+
+export async function loadPolicyFilesAsync(
+  input: Omit<LoadPolicyInput, "git"> & { git: AsyncGitReader },
+): Promise<PolicyFilesLoad> {
+  if (input.policyRoot !== undefined) return loadPolicyFiles({ ...input, git: input.git.local });
+  const staged = await originMainFilesAsync(input);
+  if (!staged.ok) return staged;
+  const loaded = loadMemoryPolicy(staged.files);
+  if (!loaded.ok) return loaded;
+  if (!loaded.absent)
+    return { ok: true, absent: false, digest: loaded.policy.digest, files: staged.files };
+  const home = resolveHome(input);
+  if (home === undefined) return { ok: false, message: "HOME is unset" };
+  if (!isDirectory(home)) return { ok: false, message: "policy root is not a directory" };
+  return treeFiles(home);
+}
+
+async function originMainFilesAsync(
+  input: Omit<LoadPolicyInput, "git"> & { git: AsyncGitReader },
+): Promise<{ ok: true; files: Map<string, Uint8Array> } | { ok: false; message: string }> {
+  const fetched = await input.git.fetchOriginMain(input.repo);
+  if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
+  const commit = fetched.commit.trim().toLowerCase();
+  if (!isSha(commit)) return { ok: false, message: "origin/main is unavailable" };
+  const listed = await input.git.lsRemoteOriginMain(input.repo);
+  if (!listed.ok) return { ok: false, message: unavailable(listed.stderr) };
+  const remote = remoteSha(listed.stdout);
+  if (remote === undefined || remote !== commit)
+    return { ok: false, message: "origin/main is unavailable" };
+  return materialize(input.git.local, input.repo, commit);
 }
 
 export type PolicyFilesLoad =
@@ -188,7 +231,7 @@ function present(
   return resolved;
 }
 
-function resolveHome(input: LoadPolicyInput): string | undefined {
+function resolveHome(input: Pick<LoadPolicyInput, "home" | "env">): string | undefined {
   if (input.home !== undefined) return input.home.length > 0 ? input.home : undefined;
   const home = (input.env ?? process.env).HOME;
   if (home === undefined || home.length === 0) return undefined;

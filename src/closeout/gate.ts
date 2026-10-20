@@ -38,6 +38,7 @@ export type CloseoutGateOptions = {
   /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
   home?: string;
   policyRoot?: string;
+  policyGit?: GateInput["policyGit"];
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   reportDir?: string;
@@ -65,6 +66,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
       }
       const result = await runCloseoutGate({
         checkoutExclusions: options.checkoutExclusions,
+        policyGit: options.policyGit,
         worktree: input.worktree,
         taskId: input.taskId,
         base: input.baseSha,

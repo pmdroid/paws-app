@@ -119,7 +119,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     codexAdapter: agents.has("codex") ? adapterFact("reviewer") : unused,
     claudeLogin,
     codexLogin,
-    closeout: closeoutPolicyFact(
+    closeout: await closeoutPolicyFact(
       runtime.checkout,
       runtime.env.home,
       closeoutPolicyRoot(runtime.file, runtime.env.home, runtime.repo),
@@ -201,11 +201,11 @@ function adapterFact(role: "implementer" | "reviewer"): { ok: boolean; detail: s
   }
 }
 
-function closeoutPolicyFact(
+async function closeoutPolicyFact(
   checkout: string | null,
   home: string,
   policyRoot?: string,
-): ProbeFacts["closeout"] {
+): Promise<ProbeFacts["closeout"]> {
   if (checkout === null || checkout.trim().length === 0) {
     return {
       ok: false,
@@ -213,7 +213,7 @@ function closeoutPolicyFact(
       fix: "Configure the repository checkout path.",
     };
   }
-  const loaded = validate(checkout, home, policyRoot);
+  const loaded = await validate(checkout, home, policyRoot);
   if (!loaded.ok) {
     return {
       ok: false,
