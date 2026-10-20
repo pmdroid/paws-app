@@ -358,6 +358,24 @@ test("Grok device login is member-scoped, persists connected accounts and reject
   ).toBe(false);
 });
 
+test("starting another sign-in keeps an account that is already connected", () => {
+  const f = fixture();
+  const session = f.login.start(f.member, f.runnerId, "grok");
+  f.login.exchange(f.runnerId, session.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  f.advance(1_000);
+  const again = f.login.start(f.member, f.runnerId, "grok");
+  expect(again.id).not.toBe(session.id);
+  expect(again.state).toBe("starting");
+  expect(
+    f.login.list(f.member, f.runnerId).accounts.find((entry) => entry.agent === "grok")?.connected,
+  ).toBe(true);
+});
+
 test("Grok account migration preserves existing member accounts and pending sessions", () => {
   const f = fixture();
   const session = f.login.start(f.member, f.runnerId, "codex");
