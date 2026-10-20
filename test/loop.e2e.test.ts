@@ -1974,96 +1974,157 @@ test("the active task merges while a later task in its session also waits to mer
   }
 }, 120_000);
 
-test("the agent's open_pull_request title and description open the pull request", async () => {
-  const layout = await repoLayout();
-  const tracker = createFakeTracker([
-    {
-      linearIssueId: "pr-tool",
-      identifier: "ENG-90",
-      title: "Write ok.txt",
-      description: null,
-      subIssues: [],
-    },
-  ]);
-  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-  migrate(db);
-  const jobs = new JobLoop(db, systemClock);
-  const outbox = new OutboxDispatcher(db, systemClock);
-  const github = createFakeGitHub();
-  const client = githubClient(layout.bare, github);
-  const titles: string[] = [];
-  let sequence = 0;
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: PRIVATE_KEY,
-      client: {
-        async request(req) {
-          if (req.method === "PUT" && req.path.endsWith("/merge"))
-            titles.push((req.body as { commit_title?: string }).commit_title ?? "");
-          return client.request(req);
+test.each(["pending", "merged"] as const)(
+  "PR publication completes Linear and a follow-up resumes while merge is %s",
+  async (followupAt) => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "pr-tool",
+        identifier: "ENG-90",
+        title: "Write ok.txt",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock);
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const github = createFakeGitHub();
+    const client = githubClient(layout.bare, github);
+    const titles: string[] = [];
+    let sequence = 0;
+    let ciReady = false;
+    const prompts: string[] = [];
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: PRIVATE_KEY,
+        client: {
+          async request(req) {
+            if (req.method === "PUT" && req.path.endsWith("/merge"))
+              titles.push((req.body as { commit_title?: string }).commit_title ?? "");
+            if (req.path === "/graphql" && github.opened.length > 0 && !ciReady) {
+              const body = fakeMergeReadiness(
+                (req.body as { variables: { head: string } }).variables.head,
+              );
+              body.data.repository.object.statusCheckRollup.state = "PENDING";
+              return { status: 200, body };
+            }
+            return client.request(req);
+          },
         },
       },
-    },
-    launch(input) {
-      sequence += 1;
-      const scriptPath = path.join(layout.root, `pr-tool-${sequence}.json`);
-      const resultPath =
-        input.purpose === "implement"
-          ? path.join(layout.root, `pr-tool-result-${sequence}.json`)
-          : "";
-      const steps: FakeScript["steps"] =
-        input.purpose === "implement"
-          ? [
-              writeOk(input.worktree),
-              {
-                type: "open_pull_request",
-                title: "Add ok.txt for the seeded check",
-                body: "Writes ok.txt.\n\nVerified with test -f ok.txt.",
-              },
-              { type: "end" },
-            ]
-          : emptyReview().steps;
-      writeFileSync(
-        scriptPath,
-        JSON.stringify({
-          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
-          steps,
-        }),
-      );
-      return {
-        command: process.execPath,
-        args: [fakeAgent, resultPath, scriptPath],
-        env: process.env,
+      launch(input) {
+        sequence += 1;
+        if (input.purpose === "implement") prompts.push(input.prompt);
+        const scriptPath = path.join(layout.root, `pr-tool-${sequence}.json`);
+        const resultPath =
+          input.purpose === "implement"
+            ? path.join(layout.root, `pr-tool-result-${sequence}.json`)
+            : "";
+        const steps: FakeScript["steps"] =
+          input.purpose === "implement"
+            ? [
+                writeOk(input.worktree, `revision-${prompts.length}\n`),
+                {
+                  type: "open_pull_request",
+                  title: "Add ok.txt for the seeded check",
+                  body: "Writes ok.txt.\n\nVerified with test -f ok.txt.",
+                },
+                { type: "end" },
+              ]
+            : emptyReview().steps;
+        writeFileSync(
+          scriptPath,
+          JSON.stringify({
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+            steps,
+          }),
+        );
+        return {
+          command: process.execPath,
+          args: [fakeAgent, resultPath, scriptPath],
+          env: process.env,
+        };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "pr-tool"));
+      const deadline = Date.now() + 90_000;
+      const responses = () => tracker.progress.filter((update) => update.kind === "response");
+      while (Date.now() < deadline && github.opened.length === 0) {
+        if ((await jobs.tick()) === null) await Bun.sleep(25);
+      }
+      expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merge_queue");
+      expect(github.merged).toHaveLength(0);
+      expect(responses()).toHaveLength(1);
+      expect(responses()[0]).toMatchObject({
+        sessionId: "ses_1",
+        body: expect.stringContaining("https://github.com/"),
+      });
+      const firstResponse = responses()[0]!;
+      db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
+      await jobs.tick();
+      expect(responses()).toHaveLength(1);
+      expect(tracker.progress.at(-1)).toEqual(firstResponse);
+      ciReady = true;
+      if (followupAt === "merged") {
+        db.run("UPDATE job SET run_at=0 WHERE queue=? AND status='pending'", [JOB_KIND.merge]);
+        while (Date.now() < deadline && stateOf(db, "ENG-90") !== "merged") {
+          if ((await jobs.tick()) === null) await Bun.sleep(25);
+        }
+        expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
+        expect(tracker.progress.at(-1)).toEqual(firstResponse);
+      }
+      const followup = {
+        ...linearEvent("prompted", "Add the requested follow-up change", null, "pr-tool"),
+        activityId: "after-pr",
       };
-    },
-  });
-  try {
-    await orchestrator.onLinearEvent(linearEvent("created", null, null, "pr-tool"));
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-90") ?? "")) {
-      if ((await jobs.tick()) === null) await Bun.sleep(25);
+      await orchestrator.onLinearEvent(followup);
+      expect(tracker.progress.at(-1)).toMatchObject({
+        kind: "thought",
+        body: "Received your update.",
+      });
+      const active = listWorkItems(db).findLast((item) => item.state !== "merged")!;
+      while (Date.now() < deadline && getWorkItem(db, active.id)?.state !== "merged") {
+        if ((await jobs.tick()) === null) await Bun.sleep(25);
+      }
+      expect(getWorkItem(db, active.id)?.state, debug(layout, db)).toBe("merged");
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toContain("Add the requested follow-up change");
+      expect(responses()).toHaveLength(2);
+      expect(responses()[1]?.sessionId).toBe("ses_1");
+      expect(responses()[1]?.id).not.toBe(firstResponse.id);
+      expect(tracker.progress.at(-1)).toEqual(responses()[1]);
+      await orchestrator.onLinearEvent(followup);
+      await jobs.tick();
+      expect(prompts).toHaveLength(2);
+      expect(responses()).toHaveLength(2);
+      expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
+      expect(titles).toEqual(
+        github.merged.map((pull) => `Add ok.txt for the seeded check (#${pull.number})`),
+      );
+      expect(github.opened[0]?.body).toStartWith(
+        "Fixes ENG-90\n\nWrites ok.txt.\n\nVerified with test -f ok.txt.\n\nCloseout: accepted",
+      );
+    } finally {
+      await orchestrator.shutdown().catch(() => undefined);
+      db.close();
+      await layout.cleanup();
     }
-    expect(stateOf(db, "ENG-90"), debug(layout, db)).toBe("merged");
-    expect(github.opened[0]?.title).toBe("Add ok.txt for the seeded check");
-    expect(titles).toEqual([`Add ok.txt for the seeded check (#${github.merged[0]?.number})`]);
-    expect(github.opened[0]?.body).toStartWith(
-      "Fixes ENG-90\n\nWrites ok.txt.\n\nVerified with test -f ok.txt.\n\nCloseout: accepted",
-    );
-  } finally {
-    await orchestrator.shutdown().catch(() => undefined);
-    db.close();
-    await layout.cleanup();
-  }
-}, 120_000);
+  },
+  120_000,
+);
 
 test("post_update posts one Linear thought and refuses a second update within a minute", async () => {
   const layout = await repoLayout();
