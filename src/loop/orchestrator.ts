@@ -41,6 +41,7 @@ import {
   loggedSessionCloseout,
   readSessionCloseout,
   sessionCloseoutPath,
+  sessionCloseoutResult,
   writeSessionCloseout,
   type GateResult,
   type CloseoutVerdict,
@@ -192,6 +193,7 @@ import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   createAcpFixRunner,
+  closeoutChecksPrompt,
   implementPrompt,
   POST_UPDATE_PROMPT,
   type AgentLaunch,
@@ -282,6 +284,8 @@ export type OrchestratorOptions = {
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
   };
+  /** Runner Closeout checks for a head without an agent report. Defaults to 3 attempts, 30 s apart. */
+  remoteCloseoutRetry?: { attempts: number; delayMs: number };
   publicationReady?: (
     itemId: string,
     phase: "publish" | "merge",
@@ -1760,15 +1764,33 @@ export class Orchestrator {
         };
     }
     const sessionPath = sessionCloseoutPath(this.options.pawsRoot, itemPathId(item));
+    const savedReport = (commit: string) => {
+      const saved = readSessionCloseout(sessionPath);
+      return saved?.head === commit ? saved.report : undefined;
+    };
+    const runnerChecks = new Map<string, Promise<void>>();
     const commands = this.options.remoteExecution
       ? {
-          async runLogged(request: Parameters<typeof loggedSessionCloseout>[1]) {
+          runLogged: async (request: Parameters<typeof loggedSessionCloseout>[1]) => {
             assertCurrent();
-            const saved = readSessionCloseout(sessionPath);
-            const result = loggedSessionCloseout(
-              saved?.head === request.expectedHead ? saved.report : undefined,
-              request,
-            );
+            const commit = request.expectedHead;
+            if (!sessionCloseoutResult(savedReport(commit), request)) {
+              let checks = runnerChecks.get(commit);
+              if (!checks) {
+                checks = this.runRunnerCloseout(item, deps, {
+                  worktree,
+                  head: commit,
+                  sessionPath,
+                  policy,
+                  assertCurrent,
+                  report: (body) => report(body),
+                });
+                runnerChecks.set(commit, checks);
+              }
+              await checks;
+            }
+            assertCurrent();
+            const result = loggedSessionCloseout(savedReport(commit), request);
             assertCurrent();
             return result;
           },
@@ -1885,6 +1907,83 @@ export class Orchestrator {
       activity.flush();
       if (live) live.progress = null;
     }
+  }
+
+  /**
+   * Runs the command checks on the item's runner for a head without an agent Closeout report,
+   * such as a candidate rebased before merging, and saves that report for the head.
+   * Retries when the runner cannot run them. Throws when it still cannot, so Closeout blocks
+   * on "checks could not run" and no check is recorded as failed.
+   */
+  private async runRunnerCloseout(
+    item: WorkItemRecord,
+    deps: AcpAgentDeps,
+    input: {
+      worktree: string;
+      head: string;
+      sessionPath: string;
+      policy: GitCommitPolicy | undefined;
+      assertCurrent: () => void;
+      report: (body: string) => void;
+    },
+  ): Promise<void> {
+    const { worktree, head, assertCurrent } = input;
+    const short = head.slice(0, 7);
+    const { attempts, delayMs } = this.options.remoteCloseoutRetry ?? {
+      attempts: 3,
+      delayMs: 30_000,
+    };
+    const runner = deps.agentRunner;
+    let reason = "remote execution is unavailable";
+    for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
+      assertCurrent();
+      if (attempt > 1) {
+        input.report(
+          `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
+        );
+        await delay(delayMs, undefined, deps.signal ? { signal: deps.signal } : {});
+        assertCurrent();
+      } else
+        input.report(
+          `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
+        );
+      try {
+        const options: RunAgentOptions = {
+          repository: deps.repository,
+          role: "implementer",
+          profile: deps.profiles?.implementer,
+          itemId: itemPathId(item),
+          runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
+          prompt: closeoutChecksPrompt(head),
+          worktreePath: worktree,
+          pawsRoot: this.options.pawsRoot,
+          checkpoint: false,
+          ...(input.policy ? { commitPolicy: input.policy } : {}),
+          ...(deps.home ? { home: deps.home } : {}),
+          ...(deps.signal ? { signal: deps.signal } : {}),
+        };
+        const result = await runner!({ ...options, ...this.closeoutPolicy(item, options) });
+        assertCurrent();
+        if ((await git(["-C", worktree, "rev-parse", "HEAD"])).trim() !== head) {
+          await git(["-C", worktree, "reset", "--hard", head]);
+          reason = "the checks run changed the commit";
+        } else if (result.cancelled) reason = "the run was cancelled";
+        else if (result.stopReason !== "end_turn" || result.errorMessage)
+          reason = result.errorMessage ?? `the run stopped (${result.stopReason})`;
+        else if (!result.closeoutReport) reason = "the runner returned no Closeout report";
+        else {
+          writeSessionCloseout(input.sessionPath, head, result.closeoutReport);
+          return;
+        }
+      } catch (error) {
+        assertCurrent();
+        if (deps.signal?.aborted) throw error;
+        reason = error instanceof Error ? error.message : String(error);
+      }
+    }
+    throw new Error(
+      `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed; they have no result for this commit. Reply once the runner is back to try again.`,
+    );
   }
 
   private async askCloseoutHelp(
@@ -2156,6 +2255,7 @@ export class Orchestrator {
     sessionProgress?.phase("merging");
     await this.flush(live.controller.signal);
     let closeoutFailure: CloseoutVerdict | null = null;
+    let verifying = item;
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2182,12 +2282,14 @@ export class Orchestrator {
       },
       reverify: async (input) => {
         const verdict = await this.runVerification(
-          item,
+          verifying,
           input.worktree,
           input.base,
           input.head,
           candidate,
         );
+        // A fix during this verification moves the head, and the next cycle verifies again under the run it ended.
+        verifying = getWorkItem(this.db, item.id) ?? verifying;
         if (verdict.decision === "accepted")
           publicationCandidate = { sha: input.head, baseSha: input.base };
         if (verdict.decision !== "accepted") closeoutFailure = verdict;

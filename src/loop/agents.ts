@@ -69,6 +69,18 @@ export function closeoutPrompt(): string {
   ].join(" ");
 }
 
+/** Runs the command checks on a commit nobody checked yet, such as a rebased candidate. */
+export function closeoutChecksPrompt(head: string): string {
+  return [
+    `Run Paws Closeout on commit ${head}. Main moved or the commit is new, so its checks have not run yet.`,
+    "Do not edit, create, or delete files, and do not commit. Do not try to fix anything.",
+    "Call get_closeout, run each pending id in order with run_closeout, then call get_closeout again.",
+    "Keep going when a check fails, so every pending check has a result.",
+    "Reviews stay in required and are not pending. Leave them.",
+    "Finish with one line per check: its id and status.",
+  ].join("\n");
+}
+
 export const POST_UPDATE_PROMPT =
   "Call post_update when something meaningful happens, such as finding the cause, a plan change, tests passing, or being blocked. Don't narrate each step.";
 
