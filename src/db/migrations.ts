@@ -1951,4 +1951,58 @@ CREATE TABLE browser_installation_request (
 ) STRICT;
 `,
   },
+  {
+    id: "080_member_vm",
+    sql: `
+CREATE TABLE member_vm (
+ id TEXT PRIMARY KEY,
+ workspace_id TEXT NOT NULL,
+ user_id TEXT NOT NULL,
+ provider_name TEXT NOT NULL UNIQUE,
+ run INTEGER NOT NULL DEFAULT 1 CHECK(run>0),
+ revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),
+ step TEXT NOT NULL CHECK(step IN ('create','install','pair','health','ready')),
+ state TEXT NOT NULL CHECK(state IN ('pending','running','failed','ready')),
+ failure TEXT,
+ create_outcome TEXT NOT NULL DEFAULT 'none' CHECK(create_outcome IN ('none','unknown','created')),
+ create_run INTEGER,
+ vm TEXT CHECK(vm IS NULL OR json_valid(vm)),
+ request_fingerprint TEXT,
+ runner_id TEXT REFERENCES runner(id),
+ step_started_at INTEGER,
+ runner_started INTEGER NOT NULL DEFAULT 0 CHECK(runner_started IN (0,1)),
+ repositories TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(repositories) AND json_type(repositories)='array'),
+ session_id TEXT,
+ generation INTEGER,
+ origin_session_id TEXT NOT NULL,
+ origin_generation INTEGER NOT NULL,
+ created_at INTEGER NOT NULL,
+ updated_at INTEGER NOT NULL,
+ UNIQUE(workspace_id,user_id),
+ FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+`,
+  },
+  {
+    id: "081_member_vm_repository_policy",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN policy_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE member_vm ADD COLUMN policy_applied_revision INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE member_vm ADD COLUMN policy_fence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE member_vm ADD COLUMN policy_applied_fence INTEGER NOT NULL DEFAULT -1;
+CREATE TABLE member_vm_repository_grant (
+ vm_id TEXT NOT NULL REFERENCES member_vm(id),
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ repository TEXT NOT NULL,
+ authority TEXT NOT NULL,
+ PRIMARY KEY(vm_id,session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "082_member_vm_grant_revision",
+    sql: `ALTER TABLE member_vm_repository_grant ADD COLUMN revision TEXT NOT NULL DEFAULT '';`,
+  },
 ];
