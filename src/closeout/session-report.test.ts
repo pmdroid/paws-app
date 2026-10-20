@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test } from "bun:test";
 import {
+  CloseoutResultMissingError,
   loggedSessionCloseout,
   readSessionCloseout,
   sessionCloseoutAccepted,
+  sessionCloseoutResult,
   writeSessionCloseout,
 } from "./session-report";
 
@@ -68,26 +70,36 @@ test("a clear closeout session report accepts command checks for that commit", (
   expect(passed.headMoved).toBe(false);
   writeSessionCloseout(path, head, undefined);
   expect(readSessionCloseout(path)).toBeUndefined();
-  const failed = loggedSessionCloseout(undefined, {
-    cwd: root,
-    argv: ["bun", "test"],
-    timeoutSeconds: 30,
-    logFile: join(root, "missing.log"),
-    artifactPath: "missing.log",
-    expectedHead: head,
-  });
-  expect(failed.exitCode).toBe(1);
+  const missing = join(root, "missing.log");
+  expect(() =>
+    loggedSessionCloseout(undefined, {
+      cwd: root,
+      argv: ["bun", "test"],
+      timeoutSeconds: 30,
+      logFile: missing,
+      artifactPath: "missing.log",
+      expectedHead: head,
+    }),
+  ).toThrow(CloseoutResultMissingError);
+  expect(existsSync(missing)).toBe(false);
 });
 
-test("remote command results reject wrong heads, commands, check ids and stale results", () => {
+test("remote command results without a match for the head, command or check never become failures", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-session-reject-"));
   roots.push(root);
-  for (const patch of [{ head: "b".repeat(40) }, { argv: ["true"] }, { durationMs: -1 }]) {
+  for (const patch of [
+    { head: "b".repeat(40) },
+    { argv: ["true"] },
+    { durationMs: -1 },
+    { id: "lint" },
+    { status: "stale" },
+  ]) {
+    const { id = "test", status = "passed", ...result } = patch as Record<string, unknown>;
     const report = JSON.stringify({
       required: [
         {
-          id: "test",
-          status: "passed",
+          id,
+          status,
           result: {
             argv: ["bun", "test"],
             head,
@@ -97,21 +109,23 @@ test("remote command results reject wrong heads, commands, check ids and stale r
             stdout: "real",
             stderr: "",
             truncated: false,
-            ...patch,
+            ...result,
           },
         },
       ],
     });
-    expect(
-      loggedSessionCloseout(report, {
-        cwd: root,
-        argv: ["bun", "test"],
-        itemId: "test",
-        expectedHead: head,
-        timeoutSeconds: 30,
-        artifactPath: "log",
-        logFile: join(root, "log"),
-      }).exitCode,
-    ).toBe(1);
+    const request = {
+      cwd: root,
+      argv: ["bun", "test"],
+      itemId: "test",
+      expectedHead: head,
+      timeoutSeconds: 30,
+      artifactPath: "log",
+      logFile: join(root, "log"),
+    };
+    expect(sessionCloseoutResult(report, request)).toBeUndefined();
+    expect(() => loggedSessionCloseout(report, request)).toThrow(
+      "Closeout checks could not run on this commit: no result for test.",
+    );
   }
 });

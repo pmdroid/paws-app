@@ -11,10 +11,12 @@ export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
 export { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
 export {
+  CloseoutResultMissingError,
   loggedSessionCloseout,
   readSessionCloseout,
   sessionCloseoutAccepted,
   sessionCloseoutPath,
+  sessionCloseoutResult,
   writeSessionCloseout,
 } from "./session-report";
 export type { EvaluateInput, Evaluation, GateInput } from "./run";
