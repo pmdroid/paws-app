@@ -93,6 +93,7 @@ export type {
   ReviewIntake,
   RunRequest,
   ValidateResult,
+  PolicyGit,
 } from "./facade";
 
 export { loadReviewMaterial, renderReviewPrompt } from "./review/index";

@@ -1,3 +1,4 @@
+export type { PolicyGit } from "../closeout-spec";
 export { FINDING_FORMAT, parseFindings, scrubText } from "../closeout-spec";
 export { reviewRequirements, trustedPolicyFiles } from "../closeout-spec";
 export { createFakeCloseoutGate } from "./fake";

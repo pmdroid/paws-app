@@ -61,7 +61,7 @@ describe("closeout gate", () => {
         new Uint8Array([137, 80, 78, 71, 255]),
       );
       await exec("git", ["-C", repo.dir, "remote", "remove", "origin"]);
-      expect(reviewRequirements(repo.dir, repo.home, root)).toMatchObject({
+      expect(await reviewRequirements(repo.dir, repo.home, root)).toMatchObject({
         ok: true,
         items: [{ id: "review" }],
       });
@@ -159,7 +159,7 @@ describe("closeout gate", () => {
     });
     try {
       await writeFile(path.join(repo.dir, ".agents/closeout.yaml"), policy([]));
-      expect(reviewRequirements(repo.dir, repo.home)).toEqual({
+      expect(await reviewRequirements(repo.dir, repo.home)).toEqual({
         ok: true,
         items: [
           {
@@ -177,7 +177,7 @@ describe("closeout gate", () => {
   test("preflight fails closed when the trusted policy cannot load", async () => {
     const repo = await originRepo({ ".agents/closeout.yaml": "specVersion: invalid\n" });
     try {
-      expect(reviewRequirements(repo.dir, repo.home).ok).toBe(false);
+      expect((await reviewRequirements(repo.dir, repo.home)).ok).toBe(false);
     } finally {
       await repo.cleanup();
     }
