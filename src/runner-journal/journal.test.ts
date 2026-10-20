@@ -256,6 +256,40 @@ test("pull request records carry the agent's title and description", () => {
   }
 });
 
+test("Closeout records carry the agent's check attempt and output", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-closeout-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const progress = {
+      type: "started" as const,
+      head: "a".repeat(40),
+      id: "test",
+      kind: "command",
+      command: "bun test",
+      attempt: 2,
+      maxAttempts: 3,
+    };
+    const valid = `${JSON.stringify({ type: "closeout", progress })}\n`;
+    journal.ingest(execution.id, Buffer.from(valid));
+    expect(journal.pending(execution.id)).toEqual([
+      { sequence: 1, event: { type: "closeout", progress } },
+    ]);
+    expect(() =>
+      journal.ingest(
+        execution.id,
+        Buffer.from(
+          valid +
+            `${JSON.stringify({ type: "closeout", progress: { ...progress, type: "finished" } })}\n`,
+        ),
+      ),
+    ).toThrow("Invalid runner Closeout progress");
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("progress records carry the agent's update text", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-progress-"));
   const journal = openExecutionJournal(root);

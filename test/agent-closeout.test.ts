@@ -1,0 +1,224 @@
+import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { runAgent } from "../src/acp";
+import type { FakeScript } from "../src/acp/testing/script";
+import {
+  beginImplementRun,
+  insertQueuedItem,
+  listAgentCloseout,
+  recordAgentCloseout,
+} from "../src/db";
+import { createLiveStatusProvider } from "../src/web/src/live/provider";
+import { parseStatusSnapshot } from "../src/web/src/contract";
+import { tempDb, tempHome } from "./helpers";
+
+const homes: string[] = [];
+
+afterEach(() => {
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+const TOKEN = `ghp_${"x".repeat(36)}`;
+
+test("the agent's get_closeout, failed run_closeout, fix and passing run_closeout reach the status API in order", async () => {
+  const home = tempHome();
+  homes.push(home);
+  const workspace = join(home, "workspace");
+  mkdirSync(join(workspace, ".agents"), { recursive: true });
+  mkdirSync(join(workspace, "src"));
+  git(workspace, ["init", "-b", "main"]);
+  git(workspace, ["config", "user.email", "test@example.com"]);
+  git(workspace, ["config", "user.name", "Test"]);
+  mkdirSync(join(workspace, "scripts"));
+  writeFileSync(
+    join(workspace, "scripts", "verify.js"),
+    `const text = require("node:fs").readFileSync("src/main.ts", "utf8");
+console.log("checking main.ts ${TOKEN}");
+if (!text.includes("fixed")) {
+  console.error("expected fixed, received broken");
+  process.exit(1);
+}
+`,
+  );
+  writeFileSync(
+    join(workspace, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "retry:",
+      "  maxFailedAttemptsPerItem: 3",
+      "  scope: task",
+      "setup:",
+      "  - id: install",
+      `    exec: ["bun", "--version"]`,
+      "    timeoutSeconds: 30",
+      "items:",
+      "  - id: test",
+      "    kind: command",
+      "    gate: beforePR",
+      `    exec: ["bun", "scripts/verify.js"]`,
+      "    timeoutSeconds: 30",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(workspace, "README.md"), "hello\n");
+  git(workspace, ["add", "."]);
+  git(workspace, ["commit", "-m", "init"]);
+  git(workspace, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  const head = git(workspace, ["rev-parse", "HEAD"]);
+
+  const db = tempDb();
+  insertQueuedItem(db, { id: "ENG-7", title: "Escape quotes", now: 1 });
+  const { run } = beginImplementRun(db, "ENG-7", 2);
+  const main = join(workspace, "src", "main.ts");
+  const steps: FakeScript["steps"] = [
+    { type: "fs_write", path: main, content: "export const state = 'broken';\n" },
+    { type: "get_closeout" },
+    { type: "run_closeout", id: "test" },
+    { type: "fs_write", path: main, content: "export const state = 'fixed';\n" },
+    { type: "run_closeout", id: "test" },
+    { type: "get_closeout" },
+    { type: "end" },
+  ];
+  const script = join(home, "script.json");
+  const trace = join(home, "trace.json");
+  writeFileSync(script, JSON.stringify({ steps }));
+  let clock = 1_000;
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-7",
+    runId: run.id,
+    prompt: "Fix the quotes.",
+    worktreePath: workspace,
+    pawsRoot: home,
+    home,
+    checkpoint: false,
+    command: process.execPath,
+    args: [resolve(import.meta.dir, "../src/acp/testing/fake-agent.ts"), trace, script],
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+    postUpdate: { post: async () => ({ posted: true }) },
+    closeoutProgress: {
+      record(progress) {
+        clock += 1_000;
+        recordAgentCloseout(db, run.id, "ENG-7", progress, clock);
+      },
+    },
+  });
+  const recorded = JSON.parse(readFileSync(trace, "utf8")) as { closeouts: string[] };
+  expect(recorded.closeouts).toHaveLength(4);
+  expect(recorded.closeouts[1]).toStartWith("test failed (exit 1).");
+  expect(recorded.closeouts[2]).toBe("test passed.");
+  expect(listAgentCloseout(db, [run.id]).map((event) => event.sequence)).toEqual([
+    1, 2, 3, 4, 5, 6, 7, 8,
+  ]);
+
+  const snapshot = parseStatusSnapshot(
+    JSON.parse(
+      JSON.stringify(createLiveStatusProvider(db, { now: () => new Date(clock) }).snapshot()),
+    ),
+  );
+  if (!snapshot.ok) throw new Error(snapshot.error);
+  const agent = snapshot.snapshot.agentCloseout?.find((entry) => entry.runId === run.id);
+  expect(agent).toBeDefined();
+  expect(agent!.itemId).toBe("ENG-7");
+  expect(agent!.maxAttempts).toBe(3);
+  expect(agent!.steps.map((step) => [step.tool, step.checkId, step.state, step.attempt])).toEqual([
+    ["get_closeout", null, "reported", null],
+    ["run_closeout", "install", "running", 1],
+    ["run_closeout", "install", "passed", 1],
+    ["run_closeout", "test", "running", 1],
+    ["run_closeout", "test", "failed", 1],
+    ["run_closeout", "test", "running", 2],
+    ["run_closeout", "test", "passed", 2],
+    ["get_closeout", null, "reported", null],
+  ]);
+  expect(agent!.steps.every((step) => step.headSha === head)).toBe(true);
+
+  expect(agent!.attempts.map((attempt) => attempt.decision)).toEqual(["rejected", "accepted"]);
+  const [first, second] = agent!.attempts;
+  const failed = first!.checks.find((check) => check.id === "test")!;
+  expect(failed).toMatchObject({ state: "failed", attempt: 1, exitCode: 1 });
+  expect(failed.stderr).toContain("expected fixed, received broken");
+  expect(failed.stdout).toContain("checking main.ts");
+  expect(failed.stdout).not.toContain(TOKEN);
+  expect(second!.checks.map((check) => [check.id, check.state, check.attempt])).toEqual([
+    ["install", "passed", 1],
+    ["test", "passed", 2],
+  ]);
+}, 30_000);
+
+test("a running check reports how long it has run and a later stale report sends it back to pending", () => {
+  const db = tempDb();
+  insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
+  const { run } = beginImplementRun(db, "ENG-8", 2);
+  const head = "a".repeat(40);
+  const attempt = {
+    head,
+    id: "lint",
+    kind: "command",
+    command: "bun run lint",
+    attempt: 1,
+    maxAttempts: null,
+  };
+  recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
+  const running = createLiveStatusProvider(db, { now: () => new Date(25_000) })
+    .snapshot()
+    .agentCloseout!.find((entry) => entry.runId === run.id)!;
+  expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
+    state: "running",
+    elapsedMs: 15_000,
+    active: true,
+  });
+  recordAgentCloseout(
+    db,
+    run.id,
+    "ENG-8",
+    {
+      type: "finished",
+      ...attempt,
+      state: "passed",
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 900,
+      stdout: "x".repeat(70_000),
+      stderr: "",
+      truncated: false,
+    },
+    26_000,
+  );
+  recordAgentCloseout(
+    db,
+    run.id,
+    "ENG-8",
+    {
+      type: "report",
+      head: "b".repeat(40),
+      maxAttempts: null,
+      checks: [
+        {
+          id: "lint",
+          kind: "command",
+          command: "bun run lint",
+          status: "stale",
+          failedAttempts: 0,
+        },
+      ],
+      blocked: null,
+    },
+    27_000,
+  );
+  const stale = createLiveStatusProvider(db)
+    .snapshot()
+    .agentCloseout!.find((entry) => entry.runId === run.id)!;
+  expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
+  const stored = listAgentCloseout(db, [run.id])[1]!.progress;
+  expect(stored.type === "finished" && stored.truncated).toBe(true);
+  expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
+});
+
+function git(cwd: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}

@@ -27,9 +27,17 @@
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Job, OpenQuestionRecord, OutboxRow, WorkItemFact, WorkItemRecord } from "../../../db";
+import type {
+  AgentCloseoutEvent,
+  Job,
+  OpenQuestionRecord,
+  OutboxRow,
+  WorkItemFact,
+  WorkItemRecord,
+} from "../../../db";
 import {
   getLinearConversationSource,
+  listAgentCloseout,
   listCloseoutProgress,
   listEvidence,
   listJobs,
@@ -44,6 +52,7 @@ import {
   type CloseoutStepRecord,
 } from "../../../db";
 import { redactCloseoutText } from "../server/artifact";
+import { agentCloseoutOf } from "./agent-closeout";
 import {
   STATUS_API_VERSION,
   type ActivityKind,
@@ -53,6 +62,7 @@ import {
   type ItemState,
   type RunState,
   type StatusActivity,
+  type StatusAgentCloseout,
   type StatusCheck,
   type StatusCloseoutAttempt,
   type StatusEvent,
@@ -174,7 +184,31 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
     evidence: evidenceFor(db, records, runs),
+    agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
   };
+}
+
+/** The agent's Closeout on each visible item's latest run. */
+function agentCloseoutFor(
+  db: Database,
+  items: readonly StatusItem[],
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): StatusAgentCloseout[] {
+  const shown = items.flatMap((item) => (item.runId ? [[item.runId, item.id] as const] : []));
+  const byRun = new Map<string, AgentCloseoutEvent[]>();
+  for (const event of listAgentCloseout(
+    db,
+    shown.map(([runId]) => runId),
+  )) {
+    const events = byRun.get(event.runId) ?? [];
+    events.push(event);
+    byRun.set(event.runId, events);
+  }
+  return shown.flatMap(([runId, itemId]) => {
+    const folded = agentCloseoutOf(itemId, runId, byRun.get(runId) ?? [], nowMs, env);
+    return folded ? [folded] : [];
+  });
 }
 
 /** Evidence of the visible items only, so a reader without the item's session sees none of it. */
