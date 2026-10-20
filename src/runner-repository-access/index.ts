@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { MAX_TOKEN_TTL_MS, TOKEN_TTL_SKEW_MS, type GitHubApp } from "../github";
+import {
+  MAX_TOKEN_TTL_MS,
+  TOKEN_TTL_SKEW_MS,
+  type GitHubApp,
+  type InstallationToken,
+} from "../github";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 
 const inputSchema = z.strictObject({
@@ -13,6 +18,12 @@ export function createRunnerRepositoryAccess(options: {
   github: GitHubApp;
   installationForRepository(repository: string): string | null;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
+  authorizeMint?: (
+    itemId: string,
+    repository: string,
+    access: "read" | "write",
+    mint: () => Promise<InstallationToken>,
+  ) => Promise<InstallationToken>;
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
@@ -61,15 +72,25 @@ export function createRunnerRepositoryAccess(options: {
           bot?.id === expectedBot.id
         );
       };
-      if (!(await matchesBot())) return denied();
-      options.work.authorize(access);
-      if (options.installationForRepository(repository) !== installationId) return denied();
-      const credential = await options.github.mintInstallationToken({
-        access: input.access,
-        repository,
-        installationId,
-      });
-      if (!(await matchesBot())) return denied();
+      const mint = async () => {
+        options.work.authorize(access);
+        if (options.installationForRepository(repository) !== installationId)
+          throw new Error("Runner repository installation changed.");
+        if (!(await matchesBot())) throw new Error("Runner repository bot changed.");
+        options.work.authorize(access);
+        if (options.installationForRepository(repository) !== installationId)
+          throw new Error("Runner repository installation changed.");
+        const credential = await options.github.mintInstallationToken({
+          access: input.access,
+          repository,
+          installationId,
+        });
+        if (!(await matchesBot())) throw new Error("Runner repository bot changed.");
+        return credential;
+      };
+      const credential = options.authorizeMint
+        ? await options.authorizeMint(initial.command.itemId, repository, input.access, mint)
+        : await mint();
       const current = options.work.authorize(access);
       const checkedAt = now();
       if (options.installationForRepository(repository) !== installationId) return denied();

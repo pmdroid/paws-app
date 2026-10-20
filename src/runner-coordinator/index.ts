@@ -13,6 +13,7 @@ import {
   type RunnerListener,
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
+import type { InstallationToken } from "../github";
 import { createRunnerHelpers } from "../runner-helpers";
 import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
@@ -31,6 +32,12 @@ export type RunnerRepositoryAccessOptions = {
   github: GitHubApp;
   installationForRepository(repository: string): string | null;
   checkpointBot?: (repository: string) => Promise<{ appId: string; login: string; id: number }>;
+  authorizeMint?: (
+    itemId: string,
+    repository: string,
+    access: "read" | "write",
+    mint: () => Promise<InstallationToken>,
+  ) => Promise<InstallationToken>;
 };
 
 const SIGNING_FILE = "runner-command-key.pem";
