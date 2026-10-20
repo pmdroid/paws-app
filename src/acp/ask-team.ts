@@ -303,7 +303,7 @@ async function handleConnection(
       try {
         answer =
           parsed.tool === "get_closeout"
-            ? await options.closeout.report()
+            ? await options.closeout.report({ progress: true })
             : await options.closeout.run(
                 closeoutId(parsed.arguments ?? {}),
                 closeoutModel(parsed.arguments),
