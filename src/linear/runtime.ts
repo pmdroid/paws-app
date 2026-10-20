@@ -191,10 +191,7 @@ function shareEvents(
     const reportProgress = progressReporter?.(event);
     const work = (async () => {
       signal.throwIfAborted();
-      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) {
-        signal.throwIfAborted();
-        return false;
-      }
+      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return false;
       signal.throwIfAborted();
       request?.signal?.throwIfAborted();
       if (tracker === null) {
