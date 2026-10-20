@@ -156,3 +156,35 @@ test("a dead evidence row is repaired on start and the rows behind it deliver in
     f.db.close();
   }
 });
+
+test("a pending evidence row with a ULID id is repaired before it is sent", async () => {
+  const f = setup();
+  try {
+    const queued = enqueueOutbox(f.db, {
+      target: "linear",
+      op: "activity",
+      delivery: "ordered",
+      priority: 0,
+      orderingKey: "session",
+      idempotencyKey: "evidence:session:0:01K7YYYYYYYYYYYYYYYYYYYYYY",
+      payload: {
+        id: "01K7YYYYYYYYYYYYYYYYYYYYYY",
+        sessionId: "session",
+        kind: "thought",
+        body: "queued evidence",
+      },
+    });
+
+    f.db.run("DELETE FROM schema_migration WHERE id = '076_evidence_activity_uuid'");
+    migrate(f.db);
+
+    const repaired = listOutbox(f.db, "session").find((row) => row.id === queued)!;
+    expect(repaired.status).toBe("pending");
+    expect((repaired.payload as { id: string }).id).toMatch(UUID_V4);
+    const tracker = createFakeTracker();
+    await deliverAll(f.db, tracker);
+    expect(tracker.progress.map((update) => update.body)).toEqual(["queued evidence"]);
+  } finally {
+    f.db.close();
+  }
+});
