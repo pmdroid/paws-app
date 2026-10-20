@@ -156,8 +156,7 @@ ${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => proc
       expect(
         updates.some(
           (update) =>
-            update.authorization?.url ===
-            "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+            update.authorization?.url === "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
         ),
       ).toBe(true);
       expect(updates.find((update) => update.authorization)?.authorization?.message).toContain(
