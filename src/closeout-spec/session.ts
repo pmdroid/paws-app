@@ -22,7 +22,8 @@ export type SessionCommandResult = {
 };
 
 export type CloseoutSession = {
-  report(): Promise<string>;
+  /** `progress` tells `onProgress` about the report. Only the agent's own `get_closeout` sets it. */
+  report(options?: { progress?: boolean }): Promise<string>;
   run(id: string, model?: string): Promise<string>;
 };
 
@@ -154,11 +155,12 @@ export function createCloseoutSession(
   };
 
   return {
-    report: () =>
+    report: (request) =>
       exclusive(async () => {
         const prepared = await prepare();
         const report = reportOf(prepared, memory);
-        if (checkedHead !== undefined) notifyReport(options, checkedHead, prepared, report);
+        if (request?.progress && checkedHead !== undefined)
+          notifyReport(options, checkedHead, prepared, report);
         return boundedReport(report);
       }),
     run: (id) =>

@@ -16,7 +16,9 @@ import {
   bindWorkItemRepository,
   getWorkItem,
   saveTaskMode,
+  recordAgentCloseout,
 } from "../../src/db";
+import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
 import { createRunnerControl } from "../../src/runner-control";
 import { initializeRunnerAuthority, createRunnerKey } from "../../src/runner-identity";
@@ -299,6 +301,11 @@ export async function probeRunnerBackend(
             return { posted: true };
           },
         },
+        closeoutProgress: {
+          record(progress) {
+            recordAgentCloseout(db, first.run.id, first.id, progress, Date.now());
+          },
+        },
         publishArtifact: {
           async publish(snapshot, context) {
             if (context.evidence) {
@@ -402,6 +409,32 @@ export async function probeRunnerBackend(
       sequence: 3,
       event: { type: "artifact", artifact: video },
     });
+    work.event({
+      runnerId,
+      runId: assigned.runId,
+      generation: assigned.generation,
+      token: grant.token,
+      sequence: 4,
+      event: {
+        type: "closeout",
+        progress: {
+          type: "finished",
+          head,
+          id: "test",
+          kind: "command",
+          command: "bun test",
+          attempt: 1,
+          maxAttempts: 3,
+          state: "failed",
+          exitCode: 1,
+          timedOut: false,
+          durationMs: 1_200,
+          stdout: "1 fail on the runner",
+          stderr: "expected 2, received 3",
+          truncated: false,
+        },
+      },
+    });
     results.submit({
       runnerId,
       runId: assigned.runId,
@@ -429,6 +462,13 @@ export async function probeRunnerBackend(
     assert.equal(getWorkItem(db, first.id)?.state, "running");
     assert.throws(() => work.current(first.run.id, 1), /fenced/);
     assert.deepEqual(updates, ["Implementation progress"]);
+    const remoteCloseout = createLiveStatusProvider(db)
+      .snapshot()
+      .agentCloseout?.find((entry) => entry.runId === first.run.id);
+    assert.deepEqual(
+      remoteCloseout?.attempts.at(-1)?.checks.map((check) => [check.id, check.state, check.stdout]),
+      [["test", "failed", "1 fail on the runner"]],
+    );
     observe(
       "signed remote implementation imports the exact candidate while canonical verification remains pending",
       true,
