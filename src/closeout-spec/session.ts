@@ -30,7 +30,55 @@ export type CloseoutSessionOptions = {
   policy: () => Promise<PolicyFilesLoad>;
   signal?: AbortSignal;
   allowCommand?: (argv: readonly string[]) => void;
+  /** Sees each report and check run, so Paws can show the agent's Closeout as it happens. */
+  onProgress?: (event: CloseoutSessionEvent) => void;
 };
+
+/** One required check as the last `get_closeout` reported it. */
+export type CloseoutSessionCheck = {
+  id: string;
+  kind: string;
+  command: string;
+  status: string;
+  failedAttempts: number;
+};
+
+/** What the agent's Closeout did. Output is scrubbed and keeps the last 16,000 characters per stream. */
+export type CloseoutSessionEvent =
+  | {
+      type: "report";
+      head: string;
+      maxAttempts: number | null;
+      checks: CloseoutSessionCheck[];
+      blocked: string | null;
+    }
+  | {
+      type: "started";
+      head: string;
+      id: string;
+      kind: string;
+      command: string;
+      attempt: number;
+      maxAttempts: number | null;
+    }
+  | {
+      type: "finished";
+      head: string;
+      id: string;
+      kind: string;
+      command: string;
+      attempt: number;
+      maxAttempts: number | null;
+      state: "passed" | "failed" | "exhausted" | "cancelled";
+      exitCode: number | null;
+      timedOut: boolean;
+      durationMs: number;
+      stdout: string;
+      stderr: string;
+      truncated: boolean;
+    };
+
+const PROGRESS_OUTPUT_CHARS = 16_000;
 
 type ItemMemory = {
   failures: number;
@@ -106,7 +154,13 @@ export function createCloseoutSession(
   };
 
   return {
-    report: () => exclusive(async () => boundedReport(reportOf(await prepare(), memory))),
+    report: () =>
+      exclusive(async () => {
+        const prepared = await prepare();
+        const report = reportOf(prepared, memory);
+        if (checkedHead !== undefined) notifyReport(options, checkedHead, prepared, report);
+        return boundedReport(report);
+      }),
     run: (id) =>
       exclusive(async () => {
         const prepared = await prepare();
@@ -115,6 +169,58 @@ export function createCloseoutSession(
         return runId(workspace, prepared.policy, prepared.required, memory, id, options);
       }),
   };
+}
+
+function notifyReport(
+  options: CloseoutSessionOptions,
+  head: string,
+  prepared: Prepared,
+  report: Record<string, unknown>,
+): void {
+  if (!options.onProgress) return;
+  const commands = new Map(
+    prepared.kind === "ready"
+      ? prepared.required.map((item) => [item.id, item.exec?.join(" ") ?? item.hint])
+      : [],
+  );
+  const required = report.required as {
+    id: string;
+    kind: string;
+    status: string;
+    failed_attempts: number;
+  }[];
+  notify(options, {
+    type: "report",
+    head,
+    maxAttempts: prepared.kind === "ready" ? maxAttempts(prepared.policy) : null,
+    checks: required.map((entry) => ({
+      id: entry.id,
+      kind: entry.kind,
+      command: commands.get(entry.id) ?? entry.id,
+      status: entry.status,
+      failedAttempts: entry.failed_attempts,
+    })),
+    blocked: typeof report.blocked === "string" ? report.blocked : null,
+  });
+}
+
+/** Progress is a side channel. A failing listener never changes what the agent sees. */
+function notify(options: CloseoutSessionOptions, event: CloseoutSessionEvent): void {
+  try {
+    options.onProgress?.(event);
+  } catch {
+    // ignored
+  }
+}
+
+function maxAttempts(policy: TreePolicy): number | null {
+  return policy.retry?.maxFailedAttemptsPerItem ?? null;
+}
+
+function lastChars(text: string): { text: string; cut: boolean } {
+  return text.length > PROGRESS_OUTPUT_CHARS
+    ? { text: text.slice(-PROGRESS_OUTPUT_CHARS), cut: true }
+    : { text, cut: false };
 }
 
 function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<string, unknown> {
@@ -230,11 +336,11 @@ async function runId(
       if (statusOf(memory.get(step.id), max) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await execute(workspace, step, memory, options);
+      const setup = await execute(workspace, step, memory, options, max);
       if (!setup.ok) return setup.text;
     }
   }
-  const result = await execute(workspace, item, memory, options);
+  const result = await execute(workspace, item, memory, options, max);
   return result.text;
 }
 
@@ -243,6 +349,7 @@ async function execute(
   item: Listed,
   memory: Map<string, ItemMemory>,
   options: CloseoutSessionOptions,
+  max: number | null,
 ): Promise<{ ok: boolean; text: string }> {
   const argv = item.exec ?? [];
   try {
@@ -252,10 +359,32 @@ async function execute(
     return { ok: false, text: message };
   }
   const before = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
+  const progress = {
+    head: before.ok ? before.stdout.toString("utf8").trim() : "",
+    id: item.id,
+    kind: item.kind,
+    command: argv.join(" "),
+    attempt: (memory.get(item.id)?.failures ?? 0) + 1,
+    maxAttempts: max,
+  };
+  notify(options, { type: "started", ...progress });
   const started = Date.now();
   const result = await runCommand(workspace, argv, item.timeoutSeconds ?? 30, options.signal);
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
-  if (result.cancelled) return { ok: false, text: `${item.id} was cancelled.` };
+  if (result.cancelled) {
+    notify(options, {
+      type: "finished",
+      ...progress,
+      state: "cancelled",
+      exitCode: null,
+      timedOut: false,
+      durationMs: Math.max(1, Date.now() - started),
+      stdout: "",
+      stderr: "",
+      truncated: false,
+    });
+    return { ok: false, text: `${item.id} was cancelled.` };
+  }
   const state = memory.get(item.id) ?? {
     failures: 0,
     passed: false,
@@ -276,16 +405,33 @@ async function execute(
     truncated: result.truncated,
   };
   state.kind = item.kind;
+  const finished = (outcome: "passed" | "failed" | "exhausted") => {
+    const stdout = lastChars(state.result!.stdout);
+    const stderr = lastChars(state.result!.stderr);
+    notify(options, {
+      type: "finished",
+      ...progress,
+      state: outcome,
+      exitCode: result.code,
+      timedOut: result.timedOut,
+      durationMs: state.result!.durationMs,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      truncated: result.truncated || stdout.cut || stderr.cut,
+    });
+  };
   if (result.code === 0 && !result.timedOut) {
     state.passed = true;
     state.stale = false;
     memory.set(item.id, state);
+    finished("passed");
     return { ok: true, text: `${item.id} passed.` };
   }
   state.failures += 1;
   state.passed = false;
   state.stale = false;
   memory.set(item.id, state);
+  finished(max !== null && state.failures >= max ? "exhausted" : "failed");
   const why = result.timedOut ? "timed out" : `exit ${result.code}`;
   const tail = result.output.trim();
   return {

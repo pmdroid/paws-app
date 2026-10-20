@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 
-const OUTPUT_CAP_BYTES = 64 * 1024;
+/** Stored output per stream, for Paws Closeout and the agent's Closeout alike. */
+export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
 
 export type CloseoutProgressIdentity = {
   taskId: string;
@@ -320,7 +321,7 @@ function progressKey(itemId: string, identity: CloseoutProgressIdentity): string
 
 function bound(current: string, chunk: string): { text: string; truncated: boolean } {
   if (chunk.length === 0) return { text: current, truncated: false };
-  const room = OUTPUT_CAP_BYTES - Buffer.byteLength(current);
+  const room = CLOSEOUT_OUTPUT_CAP_BYTES - Buffer.byteLength(current);
   if (room <= 0) return { text: current, truncated: true };
   if (Buffer.byteLength(chunk) <= room) return { text: current + chunk, truncated: false };
   return { text: current + clipUtf8(chunk, room), truncated: true };

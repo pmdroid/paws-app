@@ -114,4 +114,6 @@ export {
   type SessionCommandResult,
   type CloseoutSession,
   type CloseoutSessionOptions,
+  type CloseoutSessionEvent,
+  type CloseoutSessionCheck,
 } from "./session";

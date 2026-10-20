@@ -155,6 +155,13 @@ export {
   type CloseoutStepRecord,
   type CloseoutStepWrite,
 } from "./closeout-progress";
+export {
+  listAgentCloseout,
+  recordAgentCloseout,
+  type AgentCloseoutCheck,
+  type AgentCloseoutEvent,
+  type AgentCloseoutProgress,
+} from "./agent-closeout";
 
 export {
   listCloseoutRecoveries,
