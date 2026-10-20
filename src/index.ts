@@ -93,6 +93,7 @@ import {
   listUserRepositories,
   readGhUserToken,
   createGitHubApp,
+  createMemberGitHubClient,
   inspectPullRequestMerge,
   githubHttpsUrl,
   type GitHubTokenProvider,
@@ -151,6 +152,12 @@ import {
   createCommitPolicyForItem,
   MissingCommitAttributionError,
   createWorkspaceAssignments,
+  createMemberGitHubAccounts,
+  createMemberRepositoryAccess,
+  createOnboardingExecution,
+  createOnboardingPreparation,
+  createOnboardingReadiness,
+  type OnboardingAgents,
   type WorkspacePrincipal,
 } from "./workspace";
 import {
@@ -364,6 +371,26 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let linearTaskAccess: LinearTaskAccess | null = null;
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
+  let runner: RunnerCoordinator | undefined;
+  const runnerAgents = (): OnboardingAgents => {
+    if (!runner) throw new Error("Runner control is starting.");
+    return { login: runner.login, health: runner.health };
+  };
+  const onboardingAgents: OnboardingAgents = {
+    login: {
+      list: (...args) => runnerAgents().login.list(...args),
+      start: (...args) => runnerAgents().login.start(...args),
+      browser: (...args) => runnerAgents().login.browser(...args),
+    },
+    health: { agents: (...args) => runnerAgents().health.agents(...args) },
+  };
+  let onboarding:
+    | {
+        preparation: ReturnType<typeof createOnboardingPreparation>;
+        readiness: ReturnType<typeof createOnboardingReadiness>;
+        access: ReturnType<typeof createMemberRepositoryAccess>;
+      }
+    | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if (item.sessionKey !== sessionId) continue;
@@ -481,7 +508,58 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           accept: (event, signal) => linearTaskAccess!.accept(event, { signal }),
           continue: followUp,
+          ...(runnerConfig === null
+            ? {}
+            : {
+                onboarding: {
+                  refresh: async (context, signal) => {
+                    if (!onboarding) throw new Error("Onboarding is unavailable.");
+                    await onboarding.preparation.refresh(context, signal);
+                    return onboarding.readiness.refresh(context, signal);
+                  },
+                  readyToContinue: (context) =>
+                    onboarding?.readiness.readyToContinue(context) === true,
+                },
+              }),
         });
+        if (runnerConfig !== null) {
+          const tracker = linear.tracker;
+          const preparation = createOnboardingPreparation({
+            db,
+            clientId: runtime.linearClientId!,
+            repositories: {
+              ...(tracker.issueRepositoryHints
+                ? { issueRepositoryHints: tracker.issueRepositoryHints.bind(tracker) }
+                : {}),
+              issueRepositorySuggestions: (input, request) => {
+                if (!tracker.issueRepositorySuggestions)
+                  throw new Error("Linear repository suggestions are unavailable.");
+                return tracker.issueRepositorySuggestions(input, request);
+              },
+            },
+          });
+          const access = createMemberRepositoryAccess({
+            db,
+            clientId: runtime.linearClientId!,
+            memberships: linear.memberships,
+            accounts: createMemberGitHubAccounts({
+              db,
+              secretsDir: paths.secretsDir,
+              client: createMemberGitHubClient(),
+            }),
+          });
+          onboarding = {
+            preparation,
+            access,
+            readiness: createOnboardingReadiness({
+              db,
+              assignments,
+              preparation,
+              access,
+              agents: onboardingAgents,
+            }),
+          };
+        }
       }
       const githubClient = (() => {
         try {
@@ -493,6 +571,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       })();
       workspace = startWorkspaceAccess({
         assignments,
+        ...(onboarding
+          ? {
+              onboardingAgents: () => (runner ? onboardingAgents : undefined),
+              onboardingPreparation: onboarding.preparation,
+            }
+          : {}),
         githubAttributionClient: githubClient,
         memberGitHub: { secretsDir: paths.secretsDir, client: githubClient },
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
@@ -537,7 +621,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Attribution App bot authority changed");
     return policy;
   };
-  let runner: RunnerCoordinator | undefined;
+  const onboardingHold = (sessionId: string) =>
+    db
+      .query<
+        { sessionId: string; generation: number; workspaceId: string; linearUserId: string },
+        [string]
+      >(
+        "SELECT session_id AS sessionId,generation,workspace_id AS workspaceId,actor_id AS linearUserId FROM workspace_assignment WHERE session_id=? ORDER BY generation DESC LIMIT 1",
+      )
+      .get(sessionId);
+  const onboardingIntake: OrchestratorOptions["onboardingIntake"] = onboarding && {
+    applies: (sessionId) => onboardingHold(sessionId) !== null,
+    admission: (sessionId) => {
+      const hold = onboardingHold(sessionId);
+      return hold ? onboarding!.readiness.admission(hold) : null;
+    },
+    assertAdmission: onboarding.readiness.assertAdmission,
+  };
+  const onboardingExecution = createOnboardingExecution({
+    db,
+    ...(onboarding ? { assignments, agents: onboardingAgents, access: onboarding.access } : {}),
+  });
   let runnerStopping = false;
   const runnerReady =
     runnerConfig === null
@@ -550,7 +654,23 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
           tls: tls!,
-          repositoryAccess,
+          repositoryAccess: repositoryAccess
+            ? {
+                ...repositoryAccess,
+                authorizeMint: (itemId, requested, access, mint) => {
+                  const bound = repositoryBinding(requested);
+                  if (!bound)
+                    return Promise.reject(new Error("Onboarding repository authority changed."));
+                  return onboardingExecution.authorizeRepository(
+                    itemId,
+                    bound,
+                    access,
+                    AbortSignal.timeout(30_000),
+                    mint,
+                  );
+                },
+              }
+            : undefined,
           transcriptObjects,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
@@ -570,6 +690,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           sessionActor: projectExecution.actor,
+          onboarding: onboardingExecution,
         })
       : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
@@ -584,6 +705,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
             placement,
+            onboarding: onboardingExecution,
           }),
           sessions: createRemoteSessionAgentRunner({
             db,
@@ -716,6 +838,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
+        ...(onboardingIntake ? { onboardingIntake } : {}),
         remoteExecution,
         ...(placeOnRunner
           ? {
@@ -957,7 +1080,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repository,
         repositories,
-        repositoryAccess: async (candidate, signal, access) => {
+        repositoryAccess: async (candidate, signal, access, item) => {
           if (runtime.githubAuth === "gh")
             return checkGitHubCliRepositoryAccess(
               { repo: `${candidate.owner}/${candidate.repo}`, access },
@@ -965,25 +1088,81 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             );
           const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider) return false;
+          const token = item
+            ? await onboardingExecution.authorizeRepository(
+                item.id,
+                candidate,
+                access ?? "read",
+                signal,
+                () => provider.token(),
+              )
+            : await provider.token();
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
             ...candidate,
-            token: await provider.token(),
+            token,
             app: provider.source === "app",
             signal,
           });
         },
-        repositoryToken: async (_item, candidate, signal, access) => {
+        repositoryToken: async (item, candidate, signal, access) => {
           signal.throwIfAborted();
-          const provider = authProvider(runtime, candidate, access, resolveApp);
-          if (!provider)
-            throw new Error("GitHub sign-in is required before reading the repository.");
-          const token = await provider.token();
-          signal.throwIfAborted();
-          return token;
+          return onboardingExecution.authorizeRepository(
+            item.id,
+            candidate,
+            access,
+            signal,
+            async (owned) => {
+              const provider = authProvider(runtime, candidate, access, resolveApp);
+              if (!provider)
+                throw new Error("GitHub sign-in is required before reading the repository.");
+              const token = await provider.token();
+              owned.throwIfAborted();
+              return token;
+            },
+          );
+        },
+        assertRepository: async (item, candidate, signal, access) => {
+          await onboardingExecution.authorizeRepository(
+            item.id,
+            candidate,
+            access,
+            signal,
+            async () => undefined,
+          );
         },
         github,
-        githubForRepository: (selected) =>
-          githubBinding(authProvider(runtime, selected, "write", resolveApp)),
+        githubForRepository: (selected, item, operation) => {
+          const selectedAuth = authProvider(runtime, selected, "write", resolveApp);
+          const binding = githubBinding(selectedAuth);
+          if (!binding || !selectedAuth || !item) return binding;
+          return {
+            ...binding,
+            tokenProvider: {
+              mode: selectedAuth.source,
+              tokenFor: async (purpose) => {
+                const itemRepository = getWorkItemRepository(db, item.id) ?? selected;
+                const access = purpose === "merge" || purpose === "push" ? "write" : "read";
+                const signal = AbortSignal.timeout(30_000);
+                return operation
+                  ? onboardingExecution.authorizePublicationRepository(
+                      item.id,
+                      itemRepository,
+                      access,
+                      signal,
+                      () => selectedAuth.token(),
+                      operation,
+                    )
+                  : onboardingExecution.authorizeRepository(
+                      item.id,
+                      itemRepository,
+                      access,
+                      signal,
+                      () => selectedAuth.token(),
+                    );
+              },
+            },
+          };
+        },
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
       });

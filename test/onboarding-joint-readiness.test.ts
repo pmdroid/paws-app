@@ -465,6 +465,33 @@ test("accepted readiness binds canonical mode repository owner and immutable fin
   }
 });
 
+test("sessions outside onboarding keep canonical intake without consulting admission", async () => {
+  const f = await fixture();
+  const consulted: string[] = [];
+  const runtime = intakeRuntime(f, {
+    onboardingIntake: {
+      applies(sessionId) {
+        consulted.push(sessionId);
+        return false;
+      },
+      admission() {
+        throw new Error("Admission was consulted.");
+      },
+      assertAdmission() {
+        throw new Error("Admission was asserted.");
+      },
+    },
+  });
+  try {
+    const result = await runtime.intakeLinearTask("issue", "session");
+    expect(result.ok).toBe(true);
+    expect(consulted).toEqual(["session"]);
+    expect(f.db.query("SELECT * FROM onboarding_item_binding").all()).toEqual([]);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
 for (const fault of [
   "missing",
   "delayed",
