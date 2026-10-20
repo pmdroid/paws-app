@@ -1850,4 +1850,11 @@ CREATE TABLE browser_installation_request (
 ) STRICT;
 `,
   },
+  {
+    id: "075_runner_concurrency",
+    sql: `
+ALTER TABLE runner_capacity ADD COLUMN ceiling INTEGER CHECK(ceiling IS NULL OR ceiling BETWEEN 1 AND 16);
+ALTER TABLE runner_capacity ADD COLUMN desired INTEGER CHECK(desired IS NULL OR desired BETWEEN 1 AND 16);
+`,
+  },
 ];

@@ -7,6 +7,7 @@ const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const empty = z.strictObject({});
 const heartbeat = RunnerHostStatusSchema.extend({
   capacity: z.number().int().min(1).max(16).optional(),
+  ceiling: z.number().int().min(1).max(16).optional(),
 });
 const grant = z.strictObject({ commandId: id, generation });
 const event = z.strictObject({
@@ -23,8 +24,8 @@ export function createRunnerWorkHttp(work: RunnerWork) {
       if (path === "/v1/commands" && request.method === "GET")
         return json({ commands: work.commands(runnerId) });
       if (path === "/v1/heartbeat" && request.method === "POST") {
-        const { capacity, ...host } = heartbeat.parse(await body(request));
-        return json(work.heartbeat(runnerId, capacity ?? 1, host));
+        const { capacity, ceiling, ...host } = heartbeat.parse(await body(request));
+        return json(work.heartbeat(runnerId, capacity ?? 1, host, ceiling));
       }
       const acknowledgment = /^\/v1\/commands\/([^/]+)\/ack$/.exec(path);
       if (acknowledgment && request.method === "POST") {

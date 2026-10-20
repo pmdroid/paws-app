@@ -459,8 +459,17 @@ export async function probeRunnerDaemon(
         osId: "debian",
         runnerVersion: "1.4.0",
         capacity: 4,
+        ceiling: 4,
       });
+      heartbeatResponse = { leases: [], fenced: [], concurrency: 2 };
+      await configured.heartbeat();
+      assert.equal(configured.capacity(), 2);
+      heartbeatResponse = { leases: [], fenced: [], concurrency: 9 };
+      await configured.heartbeat();
+      assert.equal((heartbeatBodies.at(-1) as { capacity: number }).capacity, 2);
+      assert.equal(configured.capacity(), 4);
     } finally {
+      heartbeatResponse = { leases: [], fenced: [] };
       configured.close();
     }
     assert.throws(() => openRunnerDaemon({ ...config, allowedRepositories: [], concurrency: 0 }));
