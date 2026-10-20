@@ -94,7 +94,7 @@ const server = Bun.serve({
             ? { url: "https://auth.openai.com/codex/device", message: "Enter code TEST-1234" }
             : agent === "grok"
               ? {
-                  url: "https://auth.x.ai/device",
+                  url: "https://accounts.x.ai/oauth2/device?user_code=GROK-1234",
                   message: "Enter code GROK-1234. Only continue with a code you requested.",
                 }
               : null,
