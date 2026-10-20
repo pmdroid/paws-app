@@ -13,7 +13,7 @@ test("remote repository credentials require current mTLS identity and a scoped l
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 6);
+    assert.equal(observations.length, 8);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
