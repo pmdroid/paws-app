@@ -335,6 +335,25 @@ export {
 
 export { listOnboardingRunners, readOnboardingVm, saveOnboardingVm } from "./onboarding-vm";
 export type { OnboardingVmScope } from "./onboarding-vm";
+export {
+  armMemberVmJob,
+  observeMemberVmRepositoryGrant,
+  memberVmRepositoryGrantRevision,
+  claimedMemberRunner,
+  disarmMemberVmJob,
+  healthyOnboardingRunners,
+  MEMBER_VM_QUEUE,
+  memberRunnerHeartbeat,
+  readMemberVm,
+  readMemberVmById,
+  reserveMemberVm,
+  runnerPairingByFingerprint,
+  updateMemberVm,
+  type MemberVmChanges,
+  type MemberVmRecord,
+  type MemberVmState,
+  type MemberVmStep,
+} from "./member-vm";
 
 export {
   bindOnboardingIntake,
