@@ -64,6 +64,7 @@ export function createWorkspaceAssignments(options: {
       workspaceId: string;
       linearUserId: string;
     }) => boolean;
+    provisioningAvailable?: () => boolean;
   };
   now?: () => number;
 }) {
@@ -200,7 +201,7 @@ export function createWorkspaceAssignments(options: {
       payload: {
         sessionId: hold.sessionId,
         kind: "thought",
-        body: `Linear connected. Member GitHub repository access has not been checked. No VM is linked to this assignment. Your assignment waits for setup. [View onboarding](${origin.origin}${path}). You can close the page or Stop this assignment in Linear.`,
+        body: `Linear connected. Member GitHub repository access has not been checked. ${options.onboarding?.provisioningAvailable?.() === true ? "Paws sets up your VM automatically, or reuses the one it set up for you before." : "Automatic VM setup is not configured for this workspace."} Your assignment waits for setup. [View onboarding](${origin.origin}${path}). You can close the page or Stop this assignment in Linear.`,
       },
       now: now(),
     });
@@ -430,7 +431,12 @@ export function createWorkspaceAssignments(options: {
         },
         linear: { state: "connected", detail: "Linear connected" },
         github: { state: "not_checked", detail: "Member repository access has not been checked." },
-        vm: onboardingVmState(db, context, now()),
+        vm: onboardingVmState(
+          db,
+          context,
+          now(),
+          options.onboarding?.provisioningAvailable?.() === true,
+        ),
       };
     },
     complete(hash: string, workspaceId: string, linearUserId: string): string {

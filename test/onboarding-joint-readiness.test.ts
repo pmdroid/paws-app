@@ -13,11 +13,14 @@ import {
   readOnboardingItemBinding,
   ensureLinearSession,
   migrate,
+  readMemberVm,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
+import { createMemberVmProvisioner } from "../src/member-vm";
+import { createFakeExeDev, type MemberVmBootstrap } from "../src/provisioning";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { createFakeMemberGitHubClient } from "../src/github";
 import {
@@ -138,8 +141,12 @@ async function fixture() {
   const first = await preparation.refresh(context, signal());
   preparation.answer(context, binding, { revision: first.revision, mode: "code" });
   db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('runner','w','member','Runner','active',?)",
-    [now],
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','w','member','Runner','active',?,?)",
+    [now, now],
+  );
+  db.run(
+    "INSERT INTO member_vm(id,workspace_id,user_id,provider_name,step,state,create_outcome,runner_id,origin_session_id,origin_generation,created_at,updated_at) VALUES('vm','w','member','paws-fixture','ready','ready','created','runner','session',0,?,?)",
+    [now, now],
   );
   db.run(
     "INSERT INTO runner_certificate(fingerprint,serial,runner_id,pem,not_before,not_after,accepted_until) VALUES('cert','cert','runner','fixture',?,?,?)",
@@ -193,8 +200,20 @@ async function fixture() {
         })),
     },
   } as unknown as Parameters<typeof createOnboardingReadiness>[0]["agents"];
+  const policy = { allow: true, calls: [] as { runnerId: string; repository: string }[] };
   const build = () =>
-    createOnboardingReadiness({ db, assignments, preparation, access, agents, now: () => now });
+    createOnboardingReadiness({
+      db,
+      assignments,
+      preparation,
+      access,
+      agents,
+      repositoryPolicy: async (input) => {
+        policy.calls.push({ runnerId: input.runnerId, repository: input.repository });
+        return policy.allow && input.current();
+      },
+      now: () => now,
+    });
   const readiness = build();
   cleanups.push(() => {
     db.close();
@@ -210,9 +229,12 @@ async function fixture() {
     now: () => now,
     advance(ms: number) {
       now += ms;
+      db.run("UPDATE runner SET last_seen_at=? WHERE id='runner'", [now]);
     },
     readiness,
     build,
+    policy,
+    agents,
     accounts,
     binding,
     github,
@@ -232,19 +254,21 @@ test("joint readiness binds existing expiry, survives no restart reuse and creat
     expiresAt: f.now() + 300000,
   });
   expect(f.readiness.readyToContinue(context)).toBe(true);
+  expect(f.policy.calls).toEqual([{ runnerId: "runner", repository: "acme/repo" }]);
   expect(f.build().read(context)).toBeNull();
   expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
   expect(f.db.query("SELECT * FROM job").all()).toEqual([]);
   f.advance(300001);
   expect(f.readiness.readyToContinue(context)).toBe(false);
 });
-for (const dependency of ["metadata", "vm", "claude", "codex", "github"] as const)
+for (const dependency of ["metadata", "vm", "claude", "codex", "github", "policy"] as const)
   test(`missing ${dependency} never authorizes continuation`, async () => {
     const f = await fixture();
     if (dependency === "metadata") f.db.run("DELETE FROM onboarding_preparation");
     if (dependency === "vm") f.db.run("UPDATE runner SET status='paused'");
     if (dependency === "claude" || dependency === "codex") f.connected.set(dependency, false);
     if (dependency === "github") f.accounts.unlink(f.binding);
+    if (dependency === "policy") f.policy.allow = false;
     expect((await f.readiness.refresh(context, signal())).state).not.toBe("ready");
     expect(f.readiness.readyToContinue(context)).toBe(false);
     expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
@@ -703,4 +727,105 @@ for (const childState of ["completed", "canceled", "started"] as const)
     } finally {
       await runtime.shutdown();
     }
+  });
+
+for (const observation of ["linear_outage", "github_outage", "denied", "missing_link"] as const)
+  test(`readiness durable repository observation distinguishes ${observation}`, async () => {
+    const f = await fixture();
+    const policies: string[][] = [];
+    const bootstrap: MemberVmBootstrap = {
+      async startInstall() {
+        throw new Error("Unexpected install");
+      },
+      async installStatus() {
+        throw new Error("Unexpected install");
+      },
+      async requestPairing() {
+        throw new Error("Unexpected pairing");
+      },
+      async completePairing() {
+        throw new Error("Unexpected pairing");
+      },
+      async startRunner() {
+        throw new Error("Unexpected startup");
+      },
+      async allowRepositories(_vm, repositories) {
+        policies.push([...repositories]);
+      },
+    };
+    const provisioner = createMemberVmProvisioner({
+      db: f.db,
+      assignments: f.assignments,
+      exeDev: createFakeExeDev(),
+      bootstrap,
+      resources: { cpu: 2, memoryGB: 4 },
+      approve: async () => {},
+      now: f.now,
+      pollMs: 1,
+    });
+    const input = {
+      ...context,
+      userId: "member",
+      runnerId: "runner",
+      repository: "acme/repo",
+      current: () => true,
+    };
+    await provisioner.allowRepository(input, signal());
+    const jobs = new JobLoop(f.db, systemClock);
+    provisioner.register(jobs);
+    f.db.run("UPDATE job SET run_at=0 WHERE queue='member.vm.provision'");
+    await jobs.tick();
+    expect(policies.at(-1)).toEqual(["acme/repo"]);
+    const grant = f.db.query("SELECT * FROM member_vm_repository_grant").all();
+    const revision = readMemberVm(f.db, "w", "member")!.policyRevision;
+    if (observation === "linear_outage")
+      f.onMember(async () => {
+        throw new Error("Transient Linear outage");
+      });
+    if (observation === "github_outage")
+      f.github.repository = async () => {
+        throw new Error("Transient GitHub outage");
+      };
+    if (observation === "denied") f.github.allowed = false;
+    if (observation === "missing_link") f.accounts.unlink(f.binding);
+    const readiness = createOnboardingReadiness({
+      db: f.db,
+      assignments: f.assignments,
+      preparation: f.preparation,
+      access: createMemberRepositoryAccess({
+        db: f.db,
+        clientId: "client",
+        memberships: f.memberships,
+        accounts: f.accounts,
+        now: f.now,
+      }),
+      agents: f.agents,
+      repositoryPolicy: provisioner.allowRepository,
+      now: f.now,
+    });
+    const state = await readiness.refresh(context, signal());
+    if (observation.endsWith("outage")) expect(state.state).toBe("unavailable");
+    else expect(state.state).not.toBe("ready");
+    expect(readiness.readyToContinue(context)).toBe(false);
+    expect(f.db.query("SELECT * FROM member_vm_repository_grant").all()).toEqual(
+      observation.endsWith("outage") ? grant : [],
+    );
+    expect(readMemberVm(f.db, "w", "member")!.policyRevision).toBe(
+      observation.endsWith("outage") ? revision : revision + 1,
+    );
+    f.db.run("UPDATE job SET run_at=0 WHERE queue='member.vm.provision'");
+    await jobs.tick();
+    expect(policies.at(-1)).toEqual(observation.endsWith("outage") ? ["acme/repo"] : []);
+    const reopened = openDatabase(join(f.root, "db.sqlite"));
+    try {
+      expect(reopened.query("SELECT * FROM member_vm_repository_grant").all()).toEqual(
+        observation.endsWith("outage") ? grant : [],
+      );
+      expect(readMemberVm(reopened, "w", "member")!.repositories).toEqual(
+        observation.endsWith("outage") ? ["acme/repo"] : [],
+      );
+    } finally {
+      reopened.close();
+    }
+    expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
   });

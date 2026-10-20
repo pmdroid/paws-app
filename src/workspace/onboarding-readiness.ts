@@ -3,14 +3,14 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   immediate,
-  listOnboardingRunners,
   memberGitHubRecord,
-  readOnboardingVm,
+  readMemberVm,
   workspaceLinearMember,
   type OnboardingAdmission,
 } from "../db";
 import type { WorkspaceAssignments } from "./assignments";
 import { onboardingAgentsState, type OnboardingAgents } from "./onboarding-agents";
+import { selectedOnboardingRunner } from "./onboarding-vm";
 import type { createOnboardingPreparation, OnboardingPreparation } from "./onboarding-preparation";
 import type {
   createMemberRepositoryAccess,
@@ -33,6 +33,19 @@ export type OnboardingReadiness = {
   memberGitHub: TaskRepositoryAccessResult | null;
   expiresAt: number;
 };
+export type OnboardingRepositoryPolicy = (
+  input: {
+    sessionId: string;
+    generation: number;
+    workspaceId: string;
+    userId: string;
+    runnerId: string;
+    repository: string;
+    authorized?: boolean;
+    current: () => boolean;
+  },
+  signal: AbortSignal,
+) => Promise<boolean>;
 type Stored = {
   revision: number;
   owner: string;
@@ -47,6 +60,7 @@ export function createOnboardingReadiness(options: {
   preparation: Pick<ReturnType<typeof createOnboardingPreparation>, "read">;
   access: Pick<ReturnType<typeof createMemberRepositoryAccess>, "checkScoped">;
   agents: OnboardingAgents;
+  repositoryPolicy: OnboardingRepositoryPolicy;
   now?: () => number;
 }) {
   const { db } = options;
@@ -77,13 +91,7 @@ export function createOnboardingReadiness(options: {
     );
     if (!scope) throw new Error("Assignment unavailable.");
     const prepared = options.preparation.read(context);
-    const runners = listOnboardingRunners(db, scope, now());
-    const saved = readOnboardingVm(db, scope);
-    const runner = saved
-      ? runners.find((entry) => entry.id === saved.runnerId && entry.fence === saved.fence)
-      : runners.length === 1
-        ? runners[0]
-        : undefined;
+    const runner = selectedOnboardingRunner(db, scope, now()).runner;
     const agents = onboardingAgentsState(
       db,
       options.assignments,
@@ -116,6 +124,17 @@ export function createOnboardingReadiness(options: {
     );
     const fingerprint = JSON.stringify({
       context,
+      policy: (() => {
+        const vm = readMemberVm(db, context.workspaceId, member.userId);
+        return vm
+          ? {
+              desired: vm.policyRevision,
+              applied: vm.policyAppliedRevision,
+              fence: vm.policyFence,
+              appliedFence: vm.policyAppliedFence,
+            }
+          : null;
+      })(),
       scope,
       hold,
       prepared,
@@ -254,6 +273,30 @@ export function createOnboardingReadiness(options: {
                 ? "unavailable"
                 : "waiting";
           result.reason = result.state === "ready" ? null : "github";
+          const repository = initial.prepared.repository;
+          if (
+            repository &&
+            result.memberGitHub.state !== "unavailable" &&
+            !(await options.repositoryPolicy(
+              {
+                sessionId: context.sessionId,
+                generation: context.generation,
+                workspaceId: context.workspaceId,
+                userId: initial.member.userId,
+                runnerId: initial.runner.id,
+                repository: `${repository.owner}/${repository.repo}`,
+                authorized: result.state === "ready",
+                current,
+              },
+              signal,
+            ))
+          ) {
+            signal.throwIfAborted();
+            if (result.state === "ready") {
+              result.state = "waiting";
+              result.reason = "vm";
+            }
+          }
         }
         immediate(db, () => {
           if (!current()) throw new Error("Readiness changed.");

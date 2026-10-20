@@ -4,7 +4,7 @@ import type { RunnerLogin } from "../runner-login";
 import { SIGN_IN_INTERVAL_MS, type RunnerHealth } from "../runner-health";
 import { RunnerLoginInputSchema } from "../runner-protocol";
 import type { WorkspaceAssignments } from "./assignments";
-import { onboardingVmState } from "./onboarding-vm";
+import { selectedOnboardingRunner } from "./onboarding-vm";
 import { readWorkspaceJson } from "./administration";
 import { validWorkspaceCsrf, type WorkspacePrincipal } from "./session";
 
@@ -25,7 +25,8 @@ export function onboardingAgentsState(
 ) {
   const scope = assignments.onboardingContext(context.session, context.generation, principal);
   if (!scope) return null;
-  const runner = onboardingVmState(db, scope, now).selectedRunner;
+  const selected = selectedOnboardingRunner(db, scope, now).runner;
+  const runner = selected ? { id: selected.id, name: selected.name } : null;
   const accounts = runner ? dependencies.login.list(principal, runner.id).accounts : [];
   const health = runner ? dependencies.health.agents(principal, runner.id) : [];
   const agents = (["claude", "codex"] as const).map((agent) => {
@@ -55,6 +56,7 @@ export function onboardingAgentsState(
   });
   return {
     runner,
+    provision: selected?.provision ?? null,
     agents,
     ready: runner !== null && agents.every((agent) => agent.state === "connected"),
   };
@@ -150,8 +152,13 @@ export async function handleOnboardingAgents(
   const selected = () => {
     const current = state();
     if (!current) throw new Error("Assignment unavailable");
-    if (!current.runner || current.runner.id !== value.runnerId) throw new Error("VM changed");
-    return current.runner;
+    if (
+      !current.runner ||
+      current.runner.id !== value.runnerId ||
+      JSON.stringify(current.provision) !== JSON.stringify(initial?.provision)
+    )
+      throw new Error("VM changed");
+    return current;
   };
   const initial = state();
   if (!initial) return json({ error: "Onboarding is unavailable." }, 404);
@@ -162,13 +169,15 @@ export async function handleOnboardingAgents(
     return json({ error: "Invalid sign-in input." }, 400);
   try {
     return await immediate(options.db, () => {
-      const runner = selected();
+      const current = selected();
+      const runner = current.runner!;
       const binding = JSON.stringify([
         options.principal.workspaceId,
         options.principal.userId,
         context.session,
         context.generation,
         runner.id,
+        current.provision,
         agent,
       ]);
       for (const [key, challenge] of options.challenges)

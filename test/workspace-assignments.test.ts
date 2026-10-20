@@ -616,7 +616,7 @@ test("assignment OAuth continues to private durable issue onboarding while ordin
     expect(state.issue).toEqual({ id: "issue", identifier: "TEST-1", title: "Work" });
     expect(state.linear.state).toBe("connected");
     expect(state.github.state).toBe("not_checked");
-    expect(state.vm.state).toBe("not_linked");
+    expect(state.vm.state).toBe("unavailable");
     expect(JSON.stringify(state)).not.toContain("token");
     expect((await f.read(page, cookie)).status).toBe(200);
     await f.restart();

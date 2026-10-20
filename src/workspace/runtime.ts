@@ -3,6 +3,7 @@ import type { WorkspaceAssignments } from "./assignments";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
 import type { OnboardingAgents } from "./onboarding-agents";
+import type { OnboardingVmProvisioning } from "./onboarding-vm";
 import type { createOnboardingPreparation } from "./onboarding-preparation";
 import { createWorkspaceAccess } from "./access";
 import { issueWorkspaceBootstrap } from "./session";
@@ -12,6 +13,7 @@ export async function createWorkspaceAccessFromLinear(options: {
   assignments?: WorkspaceAssignments;
   onboardingAgents?: () => OnboardingAgents | undefined;
   onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
+  onboardingVmProvisioning?: OnboardingVmProvisioning;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;

@@ -216,8 +216,8 @@ test("assignment agent sign-in stays private and requires both personal agents o
   const runnerId = workspaceId();
   const addRunner = (id: string, owner = "member") => {
     db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,'active',?)",
-      [id, "workspace", owner, id, now],
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+      [id, "workspace", owner, id, now, now],
     );
     db.run(
       "INSERT INTO runner_certificate(fingerprint,serial,runner_id,pem,not_before,not_after,accepted_until) VALUES(?,?,?,?,?,?,?)",
@@ -235,6 +235,10 @@ test("assignment agent sign-in stays private and requires both personal agents o
   try {
     expect((await json(await get())).ready).toBe(false);
     addRunner(runnerId);
+    db.run(
+      "INSERT INTO member_vm(id,workspace_id,user_id,provider_name,step,state,create_outcome,runner_id,origin_session_id,origin_generation,created_at,updated_at) VALUES('vm','workspace','member','paws-fixture','ready','ready','created',?,'session',0,?,?)",
+      [runnerId, now, now],
+    );
     expect((await get("", "other")).status).toBe(404);
     expect((await get("", "owner")).status).toBe(404);
     expect(
@@ -339,6 +343,7 @@ test("assignment agent sign-in stays private and requires both personal agents o
       now + 600000,
       now + 600000,
     ]);
+    db.run("UPDATE runner SET last_seen_at=?", [now]);
     expect(await (await get()).text()).toContain("expired");
     const retry = await json(await send("/codex/login"));
     expect(retry.id).not.toBe(expired.id);
@@ -377,13 +382,11 @@ test("assignment agent sign-in stays private and requires both personal agents o
     });
     const second = workspaceId();
     addRunner(second);
+    expect(((await (await get()).json()) as { runner: { id: string } }).runner.id).toBe(runnerId);
+    db.run("UPDATE member_vm SET runner_id=?,run=run+1 WHERE user_id='member'", [second]);
+    expect(((await (await get()).json()) as { runner: { id: string } }).runner.id).toBe(second);
     expect((await get(`/claude/login/${claude.id}`)).status).toBe(409);
-    await fetch(`${origin}/api/workspaces/onboarding/vm`, {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ session: "session", generation: 0, runnerId: second }),
-    });
-    expect((await get(`/claude/login/${claude.id}`)).status).toBe(409);
+    expect((await send("/claude/login")).status).toBe(409);
     expect((await json(await get())).ready).toBe(false);
     advanceLinearSessionGeneration(db, "session", { now });
     expect((await get()).status).toBe(404);

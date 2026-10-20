@@ -41,6 +41,8 @@ export {
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
 export { loadRunnerControl } from "./runner-control";
+export { loadMemberVmConfig } from "./member-vm";
+export type { MemberVmConfig } from "./member-vm";
 
 export { projectSkillsRoot } from "./skills";
 export type { ProjectSkills } from "./skills";
