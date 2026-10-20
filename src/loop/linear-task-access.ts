@@ -17,6 +17,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import {
+  LinearIssueClosedError,
   parseLinearSessionInstallation,
   type AcceptedLinearEvent,
   type LinearAccessReads,
@@ -41,6 +42,21 @@ export class LinearTaskAccess {
       now?: () => number;
     },
   ) {}
+
+  async assertOpenIssue(event: AcceptedLinearEvent): Promise<void> {
+    if (
+      this.options.lifecycle === null ||
+      event.issueId === null ||
+      event.signal === "stop" ||
+      !["created", "prompted"].includes(event.action)
+    )
+      return;
+    const issue = await this.options.lifecycle.inspect(event.issueId, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (["completed", "canceled", "duplicate"].includes(issue.stateType))
+      throw new LinearIssueClosedError(issue.identifier ?? "This issue");
+  }
 
   async accept(event: AcceptedLinearEvent, options?: TrackerRequestOptions): Promise<boolean> {
     if (event.sessionId === null || !["created", "prompted"].includes(event.action)) return false;
