@@ -70,6 +70,7 @@ export async function probeRunnerPairing(
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const client = await createRunnerKey(join(root, "client"));
+  now = Date.now();
   const disconnected: string[] = [];
   const control = createRunnerControl({
     db,
@@ -83,7 +84,7 @@ export async function probeRunnerPairing(
     const pending = await control.beginPairing({ name: "Fixture Linux VM", csr: client.csr });
     assert.equal(control.claimPairing(pending.id, pending.claim).status, "pending");
     assert.throws(() => control.claimPairing(pending.id, pending.code));
-    assert.throws(() => control.inspectPairing(member, pending.code), /administrator/);
+    assert.equal(control.inspectPairing(member, pending.code).name, "Fixture Linux VM");
     const inspected = control.inspectPairing(principal, pending.code);
     assert.equal(inspected.requestFingerprint, pending.requestFingerprint);
     const stored = db
@@ -93,10 +94,10 @@ export async function probeRunnerPairing(
       .get(pending.id)!;
     assert.notEqual(stored.claim_hash, pending.claim);
     assert.notEqual(stored.code_hash, pending.code);
-    observe("runner enrollment waits for a current administrator", true, {
+    observe("runner enrollment permits current members to inspect a pairing", true, {
       pending: true,
       requestFingerprint: inspected.requestFingerprint,
-      memberDenied: true,
+      memberInspectionAllowed: true,
       hashesOnly: true,
     });
     const approved = await control.approvePairing(principal, pending.code);
@@ -245,6 +246,107 @@ export async function probeRunnerPairing(
       disconnectedIdentities: disconnected.length,
       actualLiveConnectionClosed: true,
     });
+    const memberPending = await control.beginPairing({ name: "Member transport", csr: client.csr });
+    const memberApproval = await control.approvePairing(member, memberPending.code);
+    const memberClaim = control.claimPairing(memberPending.id, memberPending.claim);
+    assert.equal(memberClaim.status, "approved");
+    if (memberClaim.status !== "approved") throw new Error("Member certificate missing");
+    const memberCertificate = describeRunnerCertificate(memberClaim.certificate);
+    const memberAgent = new Agent({ keepAlive: true });
+    const memberLive = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+      memberAgent,
+    );
+    assert.equal(memberLive.status, 200);
+    assert.equal(memberLive.socket.destroyed, false);
+    const demotedAt = Date.now();
+    syncWorkspaceMember(db, {
+      workspaceId: principal.workspaceId,
+      userId: memberUserId,
+      role: "observer",
+      active: true,
+      teamIds: [],
+      now: demotedAt,
+    });
+    try {
+      assert.throws(() => control.authenticate(memberCertificate), /revoked or expired/);
+      await assert.rejects(
+        () => control.renew(memberCertificate, client.csr),
+        /revoked or expired/,
+      );
+      assert.throws(
+        () => control.claimPairing(memberPending.id, memberPending.claim),
+        /revoked or expired/,
+      );
+      control.expireConnections();
+      assert(disconnected.includes(memberCertificate.fingerprint));
+      while (!memberLive.socket.destroyed && Date.now() - demotedAt < 4500)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert(memberLive.socket.destroyed);
+      let deniedStatus: number | string;
+      try {
+        const denied = await registryRequest(
+          root,
+          child.port,
+          memberClaim.certificate,
+          client.keyPath,
+        );
+        deniedStatus = denied.status;
+      } catch (error) {
+        deniedStatus = (error as NodeJS.ErrnoException).code ?? "unknown";
+      }
+      assert([403, "ECONNRESET"].includes(deniedStatus));
+    } finally {
+      memberAgent.destroy();
+    }
+    syncWorkspaceMember(db, {
+      workspaceId: principal.workspaceId,
+      userId: memberUserId,
+      role: "member",
+      active: true,
+      teamIds: [],
+      now: demotedAt + 1,
+    });
+    assert.equal(control.authenticate(memberCertificate).id, memberApproval.runnerId);
+    const restored = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+    );
+    assert.equal(restored.status, 200);
+    const restoredRenewal = await registryRequest(
+      root,
+      child.port,
+      memberClaim.certificate,
+      client.keyPath,
+      undefined,
+      { csr: client.csr },
+    );
+    assert.equal(restoredRenewal.status, 200);
+    const restoredCertificate = JSON.parse(restoredRenewal.body) as { certificate: string };
+    const restoredIdentity = await registryRequest(
+      root,
+      child.port,
+      restoredCertificate.certificate,
+      client.keyPath,
+    );
+    assert.equal(restoredIdentity.status, 200);
+    observe(
+      "active observer demotion closes transport and membership restoration permits fresh mTLS renewal without restart",
+      true,
+      {
+        runnerId: memberApproval.runnerId,
+        activeMembership: true,
+        renewedIdentityDenied: true,
+        claimDenied: true,
+        liveConnectionClosed: true,
+        newConnectionDenied: true,
+      },
+    );
     const another = await control.beginPairing({ name: "Member-owned VM", csr: client.csr });
     const anotherApproval = await control.approvePairing(principal, another.code);
     const anotherClaim = control.claimPairing(another.id, another.claim);
@@ -332,6 +434,7 @@ async function registryRequest(
   certificate: string,
   keyPath: string,
   agent?: Agent,
+  payload?: { csr: string },
 ) {
   return new Promise<{ status: number; body: string; socket: Socket }>((resolve, reject) => {
     let socket: Socket;
@@ -339,7 +442,9 @@ async function registryRequest(
       {
         hostname: "localhost",
         port,
-        path: "/identity",
+        path: payload ? "/v1/certificate" : "/identity",
+        method: payload ? "POST" : "GET",
+        headers: payload ? { "content-type": "application/json" } : {},
         ca: readFileSync(join(root, "server.pem")),
         cert: certificate,
         key: readFileSync(keyPath),
@@ -356,7 +461,7 @@ async function registryRequest(
     req.on("socket", (value) => (socket = value));
     req.on("error", reject);
     req.on("timeout", () => req.destroy(new Error("Registry TLS timeout")));
-    req.end();
+    req.end(payload ? JSON.stringify(payload) : undefined);
   });
 }
 

@@ -105,6 +105,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     },
   };
   let continuations = 0;
+  let ready = false;
   const build = () => {
     const assignments = workspace.createWorkspaceAssignments({
       db,
@@ -112,6 +113,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       clientId: "client",
       memberships,
       now,
+      onboarding: { readyToContinue: () => ready },
       lifecycle: {
         async inspect() {
           return {
@@ -215,6 +217,13 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect((await callback())!.status).toBe(400);
     const jobs = new dbApi.JobLoop(db, clock);
     runtime.assignments.register(jobs);
+    await jobs.tick();
+    await jobs.tick();
+    expect(continuations).toBe(0);
+    expect(dbApi.listWorkItems(db)).toHaveLength(0);
+    expect(dbApi.listJobs(db).filter((job) => job.queue === "item.start")).toHaveLength(0);
+    ready = true;
+    clock.advance(60_001);
     await jobs.tick();
     await jobs.tick();
     expect(

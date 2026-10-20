@@ -22,6 +22,7 @@ export async function refreshRepositoryCatalog(
   db: Database,
   list: () => Promise<readonly CatalogEntry[]>,
   now = Date.now(),
+  current: () => boolean = () => true,
 ): Promise<boolean> {
   let entries: readonly CatalogEntry[];
   try {
@@ -32,7 +33,8 @@ export async function refreshRepositoryCatalog(
     );
     return false;
   }
-  immediate(db, () => {
+  return immediate(db, () => {
+    if (!current()) return false;
     db.run("DELETE FROM repository_catalog");
     for (const entry of entries)
       db.run(
@@ -47,8 +49,8 @@ export async function refreshRepositoryCatalog(
           now,
         ],
       );
+    return true;
   });
-  return true;
 }
 
 export function teamRepositoryAllowedSql(

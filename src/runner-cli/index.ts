@@ -3,7 +3,12 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { createRunnerHostSampler, openRunnerDaemon } from "../runner-daemon";
+import {
+  createRunnerHostSampler,
+  createRepositoryPolicyReader,
+  REPOSITORY_POLICY_PATH,
+  openRunnerDaemon,
+} from "../runner-daemon";
 import { ExecutionIdSchema } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { runPairedDaemon } from "./daemon";
@@ -12,6 +17,7 @@ const configuration = z.strictObject({
   controlPlaneUrl: z.string().max(2048),
   runnerApiUrl: z.string().max(2048),
   allowedRepositories: z.array(z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/)).max(256),
+  repositoryPolicy: z.literal("/etc/paws-runner/repository-policy.json").optional(),
   serverCa: z.string().max(32768).optional(),
   concurrency: z.number().int().min(1).max(16).default(2),
 });
@@ -44,6 +50,7 @@ function accounts() {
     agentUid: runnerUid,
     agentGid: account("group", "paws-agent"),
     resultsGid: account("group", "paws-results"),
+    runnerGid: account("group", "paws-runner"),
   };
 }
 
@@ -135,9 +142,13 @@ export async function runRunnerCli(
     )
       throw new Error("Invalid pairing command");
     if (process.getuid?.() !== ids.runnerUid) throw new Error("Pairing identity is invalid");
+    const config = loadConfig(args[1]!, ids.runnerUid);
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
-      ...loadConfig(args[1]!, ids.runnerUid),
+      ...config,
+      repositoryPolicy: config.repositoryPolicy
+        ? createRepositoryPolicyReader(REPOSITORY_POLICY_PATH, ids.runnerGid)
+        : undefined,
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
     });
     try {
@@ -146,6 +157,17 @@ export async function runRunnerCli(
           error(`Runner operation failed: ${failure.message.slice(0, 300)}`),
         );
         abort.signal.throwIfAborted();
+        return 0;
+      }
+      const current = daemon.status();
+      if (current.phase === "paired") {
+        write(
+          JSON.stringify({
+            paired: true,
+            runnerId: current.runnerId,
+            workspaceId: current.workspaceId,
+          }),
+        );
         return 0;
       }
       const pending = await daemon.beginPairing(args[3]!);

@@ -29,6 +29,7 @@ import {
   scrubText,
   type CloseoutProgress,
   type PawsCommandRunner,
+  type PolicyGit,
   type CloseoutProgressIdentity,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
@@ -45,6 +46,7 @@ export type EvaluateInput = {
   /** Home for `~/.agents/closeout.yaml` when origin/main has no entry. */
   home?: string;
   policyRoot?: string;
+  policyGit?: PolicyGit;
   /** `~/.paws` for the detached command worktree. */
   pawsHome?: string;
   progress?: CloseoutProgress;
@@ -77,6 +79,7 @@ export type GateInput = {
   reportDir?: string;
   home?: string;
   policyRoot?: string;
+  policyGit?: PolicyGit;
   pawsHome?: string;
   maxFixAttempts?: number;
   progress?: CloseoutProgress;
@@ -151,6 +154,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   try {
     ran = await run({
       checkoutExclusions: input.checkoutExclusions,
+      policyGit: input.policyGit,
       repo: input.worktree,
       base: input.base,
       head: input.head,
@@ -201,6 +205,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   try {
     judged = await decide({
       checkoutExclusions: input.checkoutExclusions,
+      policyGit: input.policyGit,
       repo: input.worktree,
       base: input.base,
       head: input.head,
@@ -295,7 +300,8 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
     }
 
     maxFixAttempts ??=
-      policyFixBudget(input.worktree, input.home, input.policyRoot) ?? MAX_FIX_ATTEMPTS;
+      (await policyFixBudget(input.worktree, input.home, input.policyRoot, input.policyGit)) ??
+      MAX_FIX_ATTEMPTS;
     if (fixAttempts >= maxFixAttempts) {
       return finalResult(input, "exhausted", fixAttempts, evaluations, head, evaluation);
     }
@@ -424,6 +430,7 @@ async function addReviewEvidence(
     try {
       added = await addReview({
         checkoutExclusions: input.checkoutExclusions,
+        policyGit: input.policyGit,
         repo: input.worktree,
         base: input.base,
         head: input.head,
@@ -483,6 +490,7 @@ async function addReviewEvidence(
       const refreshed = toGateDecision(
         await decide({
           checkoutExclusions: input.checkoutExclusions,
+          policyGit: input.policyGit,
           repo: input.worktree,
           base: input.base,
           head: input.head,

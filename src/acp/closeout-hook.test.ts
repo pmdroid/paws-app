@@ -226,7 +226,9 @@ async function hookAgainst(
 ): Promise<{ status: number | null; stdout: string; tools: string }> {
   mkdirSync(worktree, { recursive: true });
   const runDirectory = join(root, "run");
-  const socketPath = join(runDirectory, "ask-team.sock");
+  const socketRoot = mkdtempSync("/var/tmp/paws-hook-socket-");
+  roots.push(socketRoot);
+  const socketPath = join(socketRoot, "ask-team.sock");
   const controller = new AbortController();
   const bridge = await startHostToolBridge({
     socketPath,
@@ -283,7 +285,9 @@ async function finishTwice(root: string, openFirst: boolean): Promise<string[]> 
   const worktree = join(root, "work");
   mkdirSync(worktree, { recursive: true });
   const runDirectory = join(root, "run");
-  const socketPath = join(runDirectory, "ask-team.sock");
+  const socketRoot = mkdtempSync("/var/tmp/paws-hook-socket-");
+  roots.push(socketRoot);
+  const socketPath = join(socketRoot, "ask-team.sock");
   const controller = new AbortController();
   const bridge = await startHostToolBridge({
     socketPath,

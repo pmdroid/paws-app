@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDatabase, runnerForCertificate } from "../../src/db";
-import { createRunnerControl } from "../../src/runner-control";
+import { createRunnerControl, createRunnerHttp } from "../../src/runner-control";
 import { openRunnerAuthority, startRunnerListener } from "../../src/runner-identity";
 
 const root = process.argv[2]!;
@@ -11,8 +11,10 @@ const control = createRunnerControl({
   db,
   authority: await openRunnerAuthority(join(root, "issuer")),
   certificateRoot: join(root, "issuer"),
-  disconnect: (fingerprint) => listener.revoke(fingerprint),
+  disconnect: (fingerprint, permanent) =>
+    permanent ? listener.revoke(fingerprint) : listener.disconnect(fingerprint),
 });
+const routes = createRunnerHttp(control);
 listener = await startRunnerListener({
   tls: {
     key: readFileSync(join(root, "server.key"), "utf8"),
@@ -22,7 +24,9 @@ listener = await startRunnerListener({
   authorize(peer) {
     return runnerForCertificate(db, peer.fingerprint, Date.now()) !== null;
   },
-  async fetch(_request, peer) {
+  async fetch(request, peer) {
+    const response = await routes.runner(request, peer);
+    if (response) return response;
     const runner = runnerForCertificate(db, peer.fingerprint, Date.now());
     return runner ? Response.json(runner) : new Response(null, { status: 403 });
   },

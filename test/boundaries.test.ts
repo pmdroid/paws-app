@@ -64,6 +64,8 @@ const MODULES = [
   "runner-artifacts",
   "runner-inputs",
   "evidence",
+  "provisioning",
+  "member-vm",
 ] as const;
 
 type ModuleName = (typeof MODULES)[number];
@@ -91,6 +93,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   decisions: ["db", "scheduler"],
   web: ["db"],
   evidence: ["db"],
+  provisioning: [],
+  "member-vm": ["db", "provisioning", "workspace"],
   server: [
     "evidence",
     "slack",
@@ -135,7 +139,18 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   auth: ["config", "github", "credentials", "core"],
-  workspace: ["db", "linear", "slack", "decisions"],
+  workspace: [
+    "db",
+    "linear",
+    "slack",
+    "decisions",
+    "credentials",
+    "github",
+    "runner-login",
+    "runner-health",
+    "runner-protocol",
+    "core",
+  ],
   "runner-identity": ["credentials"],
   "runner-repository-access": ["github", "runner-work"],
   "runner-transcript-config": ["credentials", "runner-transcripts"],

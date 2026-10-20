@@ -48,6 +48,7 @@ export function createGitHubRepositorySetup(options: {
   ) => Promise<{ id: string; name: string; key: string }[]>;
   fetch?: typeof fetch;
   now?: () => number;
+  refreshCatalog?: () => Promise<boolean>;
 }) {
   const { db } = options;
   const now = options.now ?? Date.now;
@@ -382,10 +383,14 @@ export function createGitHubRepositorySetup(options: {
           return reply({ ok: true });
         });
         committed = result.status === 200;
-        return result;
+        if (!committed) return result;
       } finally {
         if (!committed) activation.remove(activeId);
       }
+      return reply({
+        ok: true,
+        catalogRefreshed: await catalogRefreshed(options.refreshCatalog, signal),
+      });
     } catch {
       return reply(
         { error: "GitHub setup could not be completed. Refresh or sign in with GitHub again." },
@@ -393,6 +398,25 @@ export function createGitHubRepositorySetup(options: {
       );
     }
   };
+}
+
+async function catalogRefreshed(
+  refresh: (() => Promise<boolean>) | undefined,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (!refresh) return false;
+  const refreshed = Promise.resolve()
+    .then(refresh)
+    .catch(() => false);
+  const abandoned = Promise.withResolvers<boolean>();
+  const abandon = () => abandoned.resolve(false);
+  signal.addEventListener("abort", abandon, { once: true });
+  if (signal.aborted) abandon();
+  try {
+    return await Promise.race([refreshed, abandoned.promise]);
+  } finally {
+    signal.removeEventListener("abort", abandon);
+  }
 }
 
 function record(value: unknown): value is Record<string, unknown> {

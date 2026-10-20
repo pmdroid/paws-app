@@ -6,6 +6,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
+  ensureLinearSession,
   putWorkspaceUser,
   syncWorkspaceMember,
   insertQueuedItem,
@@ -80,6 +81,18 @@ if (mode !== "disabled") {
   source.PAWS_RUNNER_HOST = "127.0.0.1";
   source.PAWS_RUNNER_PORT = String(runnerPort);
 }
+if (mode === "enabled")
+  Object.assign(source, {
+    PAWS_MEMBER_VM_PROVIDER: "exe.dev",
+    PAWS_MEMBER_VM_CPU: "2",
+    PAWS_MEMBER_VM_MEMORY_GB: "4",
+    PAWS_MEMBER_VM_RUNNER_VERSION: "1.2.3",
+    PAWS_MEMBER_VM_RUNNER_API_URL: `https://127.0.0.1:${runnerPort}`,
+    PAWS_MEMBER_VM_MISE_VERSION: "2026.10.15",
+    PAWS_MEMBER_VM_MISE_SHA256_AMD64:
+      "e3b186d4c70627f27037be615becaf4acfb30e41fb6a1819486717dc94e4e2a9",
+    PAWS_MEMBER_VM_TOKEN_FILE: join(root, "absent-exe-dev-token"),
+  });
 if (mode === "transcripts-later") {
   source.GITHUB_AUTH = "app";
   source.GITHUB_APP_ID = "99";
@@ -287,6 +300,69 @@ try {
       origin: source.PAWS_PUBLIC_URL!,
       "x-paws-csrf": issued.session.csrfToken,
     };
+    if (enabled) {
+      ensureLinearSession(paws.db, {
+        sessionId: "vm-session",
+        issueId: "vm-issue",
+        creatorId: "owner",
+      });
+      const installation = {
+        sessionId: "vm-session",
+        organizationId: "org",
+        oauthClientId: source.LINEAR_CLIENT_ID!,
+        appUserId: source.LINEAR_APP_USER_ID!,
+        teamId: "vm-team",
+        observedAtMs: now,
+      };
+      recordLinearInstallation(paws.db, installation);
+      syncWorkspaceMember(paws.db, {
+        workspaceId: workspace.id,
+        userId,
+        role: "owner",
+        active: true,
+        teamIds: ["vm-team"],
+        now,
+      });
+      paws.db.run("INSERT INTO workspace_assignment VALUES(?,?,?,?,?,?,?,?,?)", [
+        "vm-session",
+        0,
+        workspace.id,
+        "owner",
+        workspaceTokenHash("vm-session"),
+        JSON.stringify({
+          installation,
+          spec: {
+            linearIssueId: "vm-issue",
+            identifier: "VM-1",
+            title: "Member VM",
+            description: "",
+            subIssues: [],
+          },
+        }),
+        "{}",
+        now + 600_000,
+        "ready",
+      ]);
+      const onboarding = await call<{ vm?: { state: string; retry: unknown; steps: unknown[] } }>(
+        browserPort,
+        "/api/workspaces/onboarding?session=vm-session&generation=0",
+        undefined,
+        headers,
+      );
+      assert.equal(onboarding.status, 200, JSON.stringify(onboarding.body));
+      assert.equal(onboarding.body.vm?.state, mode === "enabled" ? "provisioning" : "unavailable");
+      assert.equal(
+        paws.db.query<{ count: number }, []>("SELECT count(*) AS count FROM member_vm").get()!
+          .count,
+        0,
+      );
+      observe(
+        mode === "enabled"
+          ? "explicit PAWS_MEMBER_VM_* settings reach the automatic VM provisioner through normal startup"
+          : "normal startup without PAWS_MEMBER_VM_* settings reports automatic VM setup unavailable",
+        { vm: onboarding.body.vm },
+      );
+    }
     if (mode === "disabled") {
       assert(await closed(runnerPort));
       assert(!existsSync(join(root, "secrets", "runner-identity")));

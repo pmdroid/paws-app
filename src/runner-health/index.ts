@@ -31,7 +31,7 @@ type History = {
   issuedAt: number;
   result: { authenticated: boolean; receivedAt: number } | null;
 };
-const SIGN_IN_INTERVAL_MS = 5 * 60_000;
+export const SIGN_IN_INTERVAL_MS = 5 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
 const runnerAgents = ["claude", "codex", "grok"] as const;
 const memberAgents = ["claude", "codex"] as const;

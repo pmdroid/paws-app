@@ -79,7 +79,8 @@ export async function probeRunnerHealth(
     db,
     authority,
     certificateRoot: authorityRoot,
-    disconnect: (fingerprint) => listener?.revoke(fingerprint),
+    disconnect: (fingerprint, permanent) =>
+      permanent ? listener?.revoke(fingerprint) : listener?.disconnect(fingerprint),
     now: () => now,
   });
   const client = await createRunnerKey(join(root, "client"));

@@ -3,11 +3,16 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createGitHubRepositorySetup, createHostedGitHubConnect } from "../src/server";
+import {
+  createGitHubRepositorySetup,
+  createHostedGitHubConnect,
+  createRepositoryCatalogRefresh,
+} from "../src/server";
 import { createWorkspaceGitHubActivation } from "../src/auth";
 import {
   consumeWorkspaceBootstrap,
   deleteWorkspaceSession,
+  listRepositoryCatalog,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -210,7 +215,7 @@ function fixture() {
     sessions,
     begin,
     handler,
-    setup: () =>
+    setup: (refreshCatalog?: () => Promise<boolean>) =>
       createGitHubRepositorySetup({
         db,
         home,
@@ -219,6 +224,7 @@ function fixture() {
         now: () => now,
         fetch: scriptedFetch,
         teams: async () => [{ id: "team", name: "Engineering", key: "ENG" }],
+        ...(refreshCatalog ? { refreshCatalog } : {}),
       }),
     request,
     get db() {
@@ -559,12 +565,13 @@ async function saveSetup(
   f: ReturnType<typeof fixture>,
   mappings: unknown = [{ repository: "acme/widgets", teamId: "team" }],
   installationId = "22",
+  refreshCatalog?: () => Promise<boolean>,
 ) {
   const catalog = await f.setup()(
     f.request("owner", "https://paws.example/api/workspaces/github-setup"),
   );
   const setupId = ((await catalog!.json()) as { setupId?: string }).setupId;
-  return f.setup()(
+  return f.setup(refreshCatalog)(
     f.request("owner", "https://paws.example/api/workspaces/github-setup", {
       method: "PUT",
       headers: {
@@ -680,6 +687,7 @@ for (const scenario of [
           "CREATE TRIGGER refuse_activation BEFORE UPDATE ON workspace_github_connection BEGIN SELECT RAISE(ABORT,'synthetic rollback'); END",
         );
       let response: Response | null;
+      let refreshes = 0;
       if (scenario === "member")
         response = await f.setup()(
           f.request("member", "https://paws.example/api/workspaces/github-setup"),
@@ -701,8 +709,13 @@ for (const scenario of [
             },
           ],
           scenario === "wrong-installation" ? "999" : "22",
+          async () => {
+            refreshes++;
+            return true;
+          },
         );
       expect([400, 403, 409]).toContain(response!.status);
+      expect(refreshes).toBe(0);
       expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
       expect(f.db.query("SELECT count(*) AS n FROM workspace_repository").get()).toEqual({
         n: scenario === "scope" ? 0 : 1,
@@ -722,6 +735,117 @@ test("repository setup rechecks owner authority while GitHub verification is hel
     expect((await saveSetup(f))?.status).toBe(403);
     expect(f.db.query("SELECT * FROM workspace_github_connection").all()).toEqual([]);
   } finally {
+    await f.close();
+  }
+});
+
+for (const outcome of ["refreshed", "failed", "thrown"] as const)
+  test(`a committed repository setup reports a ${outcome} catalog refresh without undoing activation`, async () => {
+    const f = fixture();
+    try {
+      await signInForRepositorySetup(f);
+      const observed: unknown[] = [];
+      const response = await saveSetup(f, undefined, "22", async () => {
+        observed.push({
+          inTransaction: f.db.inTransaction,
+          ...f.db
+            .query<{ generation: number; installationId: string }, []>(
+              "SELECT generation,installation_id AS installationId FROM workspace_github_connection",
+            )
+            .get(),
+        });
+        if (outcome === "thrown") throw new Error("GitHub is down");
+        return outcome === "refreshed";
+      });
+      expect(response?.status).toBe(200);
+      expect(await response!.json()).toEqual({
+        ok: true,
+        catalogRefreshed: outcome === "refreshed",
+      });
+      expect(observed).toEqual([{ inTransaction: false, generation: 1, installationId: "22" }]);
+      expect(
+        createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").generation,
+      ).toBe(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+test("a catalog write failure after setup commit preserves activation and reports the refresh failure", async () => {
+  const f = fixture();
+  const abort = new AbortController();
+  const catalog = createRepositoryCatalogRefresh(
+    f.db,
+    async () => [
+      {
+        owner: "acme",
+        repo: "widgets",
+        remoteUrl: "https://github.com/acme/widgets.git",
+        defaultBranch: "main",
+      },
+    ],
+    abort.signal,
+  );
+  try {
+    await signInForRepositorySetup(f);
+    f.db.run(
+      "CREATE TRIGGER refuse_catalog BEFORE INSERT ON repository_catalog BEGIN SELECT RAISE(ABORT,'synthetic catalog failure'); END",
+    );
+    const response = await saveSetup(f, undefined, "22", catalog.refresh);
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toEqual({ ok: true, catalogRefreshed: false });
+    expect(
+      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").generation,
+    ).toBe(1);
+    expect(listRepositoryCatalog(f.db)).toEqual([]);
+    f.db.run("DROP TRIGGER refuse_catalog");
+    expect(await catalog.refresh()).toBe(true);
+    expect(listRepositoryCatalog(f.db).map((entry) => entry.repo)).toEqual(["widgets"]);
+  } finally {
+    abort.abort();
+    await catalog.stopped();
+    await f.close();
+  }
+});
+
+test("a held catalog refresh does not hold a committed setup past its request", async () => {
+  const f = fixture();
+  const held = Promise.withResolvers<boolean>();
+  try {
+    await signInForRepositorySetup(f);
+    const choices = await f.setup()(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup"),
+    );
+    const setupId = ((await choices!.json()) as { setupId: string }).setupId;
+    const abort = new AbortController();
+    const response = await f.setup(() => {
+      abort.abort();
+      return held.promise;
+    })(
+      f.request("owner", "https://paws.example/api/workspaces/github-setup", {
+        method: "PUT",
+        signal: abort.signal,
+        headers: {
+          origin: "https://paws.example",
+          "content-type": "application/json",
+          "x-paws-csrf": f.sessions.owner!.session.csrfToken,
+        },
+        body: JSON.stringify({
+          installationId: "22",
+          mappings: [{ repository: "acme/widgets", teamId: "team" }],
+          setupId,
+        }),
+      }),
+    );
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toEqual({ ok: true, catalogRefreshed: false });
+    expect(
+      f.db
+        .query<{ generation: number }, []>("SELECT generation FROM workspace_github_connection")
+        .get()?.generation,
+    ).toBe(1);
+  } finally {
+    held.resolve(true);
     await f.close();
   }
 });

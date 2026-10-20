@@ -189,7 +189,7 @@ describe("linear tracker", () => {
     expect(tracker.progress.map((update) => [update.kind, update.body])).toEqual([
       ["thought", FIRST_ACTIVITY_BODY],
       [
-        "error",
+        "thought",
         "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
       ],
     ]);

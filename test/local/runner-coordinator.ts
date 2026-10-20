@@ -190,6 +190,86 @@ export async function probeRunnerCoordinator(
         renewalHasSamePublicKey: true,
       },
     );
+    const memberPairing = await coordinator.control.beginPairing({
+      name: "Member transport",
+      csr: client.csr,
+    });
+    await coordinator.control.approvePairing(member, memberPairing.code);
+    const memberClaim = coordinator.control.claimPairing(memberPairing.id, memberPairing.claim);
+    assert.equal(memberClaim.status, "approved");
+    if (memberClaim.status !== "approved") throw new Error("Member identity missing");
+    const memberPeer = { cert: memberClaim.certificate, key: peer.key };
+    const memberAgent = new Agent({ keepAlive: true, maxSockets: 1, ca: tls.cert, ...memberPeer });
+    let memberSocket: Socket | undefined;
+    memberAgent.on("free", (socket: Socket) => {
+      memberSocket = socket;
+    });
+    try {
+      await exchange(
+        coordinator.port,
+        "/v1/commands",
+        tls.cert,
+        undefined,
+        memberPeer,
+        undefined,
+        memberAgent,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert(memberSocket && !memberSocket.destroyed);
+      const demotedAt = Date.now();
+      syncWorkspaceMember(db, {
+        workspaceId: workspace.id,
+        userId: memberId,
+        role: "observer",
+        active: true,
+        teamIds: [],
+        now: demotedAt,
+      });
+      await assert.rejects(
+        exchange(coordinator.port, "/v1/commands", tls.cert, undefined, memberPeer),
+      );
+      await assert.rejects(
+        exchange(coordinator.port, "/v1/certificate", tls.cert, { csr: client.csr }, memberPeer),
+      );
+      while (!memberSocket.destroyed && Date.now() - demotedAt < 4500) await Bun.sleep(25);
+      assert(memberSocket.destroyed);
+      await assert.rejects(
+        exchange(coordinator.port, "/v1/commands", tls.cert, undefined, memberPeer),
+      );
+      syncWorkspaceMember(db, {
+        workspaceId: workspace.id,
+        userId: memberId,
+        role: "member",
+        active: true,
+        teamIds: [],
+        now: Date.now() + 1,
+      });
+      await exchange(coordinator.port, "/v1/commands", tls.cert, undefined, memberPeer);
+      const memberRenewed = await exchange<{ certificate: string }>(
+        coordinator.port,
+        "/v1/certificate",
+        tls.cert,
+        { csr: client.csr },
+        memberPeer,
+      );
+      await exchange(coordinator.port, "/v1/commands", tls.cert, undefined, {
+        ...memberPeer,
+        cert: memberRenewed.certificate,
+      });
+    } finally {
+      memberAgent.destroy();
+    }
+    observe(
+      "production coordinator refuses observer reconnect and renewal before restoration without restart",
+      true,
+      {
+        observerReconnectDenied: true,
+        observerRenewalDenied: true,
+        liveSocketClosed: true,
+        restoredReconnect: true,
+        restoredRenewal: true,
+      },
+    );
     const item = insertQueuedItem(db, {
       id: "coordinator-item",
       now,

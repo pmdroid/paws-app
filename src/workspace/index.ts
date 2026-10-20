@@ -28,6 +28,51 @@ export { createGitHubAttributionLink } from "./github-attribution";
 export { createCommitPolicyForItem } from "./commit-attribution";
 
 export { readWorkspaceJson } from "./administration";
+export { createMemberGitHubAccounts } from "./member-github";
+
+export { createMemberGitHubOAuth } from "./member-github-oauth";
+export type { MemberRepositoryResult } from "./member-github";
+export {
+  createMemberRepositoryAccess,
+  type TaskRepositoryAccessResult,
+} from "./member-repository-access";
+
+export {
+  handleOnboardingVm,
+  onboardingVmState,
+  PERMANENT_VM_FAILURES,
+  selectedOnboardingRunner,
+  RUNNER_HEALTH_MS,
+  VM_STEPS,
+  type OnboardingVmProjection,
+  type OnboardingVmProvisioning,
+  type VmStepName,
+} from "./onboarding-vm";
+export { handleOnboardingPreparation } from "./onboarding-preparation-route";
+export {
+  createOnboardingPreparation,
+  PREPARATION_MODES,
+  type OnboardingPreparation,
+} from "./onboarding-preparation";
+
+export {
+  onboardingAgentsState,
+  handleOnboardingAgents,
+  type OnboardingAgents,
+} from "./onboarding-agents";
+
+export {
+  createOnboardingReadiness,
+  type OnboardingReadiness,
+  type OnboardingReadinessContext,
+  type OnboardingRepositoryPolicy,
+} from "./onboarding-readiness";
+
+export {
+  createOnboardingExecution,
+  captureOnboardingExecution,
+  type OnboardingExecution,
+} from "./onboarding-execution";
 
 export { beginWorkspaceOAuth, completeWorkspaceOAuth } from "./oauth";
 export type { LinearBrowserIdentity } from "./oauth";

@@ -1,7 +1,17 @@
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createMemberVmProvisioner, type MemberVmProvisioner } from "./member-vm";
+import {
+  createExeDev,
+  createExeDevBootstrap,
+  type CreateVm,
+  type ExeDev,
+  type MemberVmBootstrap,
+  type MiseRelease,
+} from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -24,6 +34,7 @@ import {
   ensureLayout,
   loadRuntime,
   loadEnv,
+  loadMemberVmConfig,
   loadRunnerControl,
   pawsPaths,
   type EnvSource,
@@ -69,7 +80,6 @@ import {
   prepareShutdown,
   recoverOnStartup,
   recordGitHubDelivery,
-  refreshRepositoryCatalog,
   startLoops,
   submitCommand,
   type WorkItemRecord,
@@ -94,6 +104,7 @@ import {
   listUserRepositories,
   readGhUserToken,
   createGitHubApp,
+  createMemberGitHubClient,
   inspectPullRequestMerge,
   githubHttpsUrl,
   type GitHubTokenProvider,
@@ -143,7 +154,7 @@ import {
 import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
-import { startServer } from "./server";
+import { createRepositoryCatalogRefresh, startServer } from "./server";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
@@ -151,6 +162,12 @@ import {
   startWorkspaceAccess,
   createCommitPolicyForItem,
   createWorkspaceAssignments,
+  createMemberGitHubAccounts,
+  createMemberRepositoryAccess,
+  createOnboardingExecution,
+  createOnboardingPreparation,
+  createOnboardingReadiness,
+  type OnboardingAgents,
   type WorkspacePrincipal,
 } from "./workspace";
 import {
@@ -191,6 +208,17 @@ export type StartOptions = {
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
   refreshRepositories?: boolean;
+  memberVm?: {
+    exeDev: ExeDev;
+    resources: Omit<CreateVm, "name">;
+    runnerVersion: string;
+    runnerApiUrl: string;
+    serverCa?: string;
+    installer?: string;
+    mise?: MiseRelease;
+    bootstrap?: MemberVmBootstrap;
+    pollMs?: number;
+  };
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -207,6 +235,32 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
+  const memberVmConfig = loadMemberVmConfig(envSource, runtime.env);
+  if ((memberVmConfig !== null || options?.memberVm) && runnerConfig === null)
+    throw new Error("Automatic member VM setup requires runner control (PAWS_RUNNER_HOST).");
+  if ((memberVmConfig !== null || options?.memberVm) && !runtime.publicUrl?.startsWith("https://"))
+    throw new Error("Automatic member VM setup requires an HTTPS PAWS_PUBLIC_URL.");
+  const memberVmSettings =
+    options?.memberVm ??
+    (memberVmConfig === null
+      ? undefined
+      : {
+          exeDev: createExeDev({
+            fetch: (url, init) => fetch(url, init),
+            readToken: async () => {
+              const token = readSecretFile(memberVmConfig.tokenFile)?.trim();
+              if (!token) throw new Error("The exe.dev token file is missing or empty.");
+              return token;
+            },
+          }),
+          resources: memberVmConfig.resources,
+          runnerVersion: memberVmConfig.runnerVersion,
+          runnerApiUrl: memberVmConfig.runnerApiUrl,
+          mise: memberVmConfig.mise,
+          ...(memberVmConfig.serverCaFile === undefined
+            ? {}
+            : { serverCa: readFileSync(memberVmConfig.serverCaFile, "utf8") }),
+        });
   let repositoryAccess = options?.runnerRepositoryAccess;
   const remotePlacementReady =
     runnerConfig !== null && (repositoryAccess !== undefined || runtime.githubAuth === "app");
@@ -319,9 +373,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     );
     return lists.flat();
   };
+  const catalog = createRepositoryCatalogRefresh(db, listCatalog, abort.signal);
   if (options?.refreshRepositories) {
-    void refreshRepositoryCatalog(db, listCatalog);
-    const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
+    void catalog.refresh();
+    const catalogTimer = setInterval(() => void catalog.refresh(), 600_000);
     catalogTimer.unref?.();
     abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
   }
@@ -364,6 +419,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   let linearTaskAccess: LinearTaskAccess | null = null;
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
+  let runner: RunnerCoordinator | undefined;
+  const runnerAgents = (): OnboardingAgents => {
+    if (!runner) throw new Error("Runner control is starting.");
+    return { login: runner.login, health: runner.health };
+  };
+  const onboardingAgents: OnboardingAgents = {
+    login: {
+      list: (...args) => runnerAgents().login.list(...args),
+      start: (...args) => runnerAgents().login.start(...args),
+      browser: (...args) => runnerAgents().login.browser(...args),
+    },
+    health: { agents: (...args) => runnerAgents().health.agents(...args) },
+  };
+  let onboarding:
+    | {
+        preparation: ReturnType<typeof createOnboardingPreparation>;
+        readiness: ReturnType<typeof createOnboardingReadiness>;
+        access: ReturnType<typeof createMemberRepositoryAccess>;
+      }
+    | undefined;
+  let memberVm: MemberVmProvisioner | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if (item.sessionKey !== sessionId) continue;
@@ -466,7 +542,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
-      db.close();
+      abort.abort();
+      void catalog.stopped().then(() => db.close());
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
     try {
@@ -482,18 +559,113 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           accept: (event, signal) => linearTaskAccess!.accept(event, { signal }),
           continue: followUp,
+          ...(runnerConfig === null
+            ? {}
+            : {
+                onboarding: {
+                  refresh: async (context, signal) => {
+                    if (!onboarding) throw new Error("Onboarding is unavailable.");
+                    memberVm?.ensure(context);
+                    await onboarding.preparation.refresh(context, signal);
+                    return onboarding.readiness.refresh(context, signal);
+                  },
+                  readyToContinue: (context) =>
+                    onboarding?.readiness.readyToContinue(context) === true,
+                  provisioningAvailable: () => memberVm !== undefined,
+                },
+              }),
         });
+        if (runnerConfig !== null) {
+          const tracker = linear.tracker;
+          const preparation = createOnboardingPreparation({
+            db,
+            clientId: runtime.linearClientId!,
+            repositories: {
+              ...(tracker.issueRepositoryHints
+                ? { issueRepositoryHints: tracker.issueRepositoryHints.bind(tracker) }
+                : {}),
+              issueRepositorySuggestions: (input, request) => {
+                if (!tracker.issueRepositorySuggestions)
+                  throw new Error("Linear repository suggestions are unavailable.");
+                return tracker.issueRepositorySuggestions(input, request);
+              },
+            },
+          });
+          const access = createMemberRepositoryAccess({
+            db,
+            clientId: runtime.linearClientId!,
+            memberships: linear.memberships,
+            accounts: createMemberGitHubAccounts({
+              db,
+              secretsDir: paths.secretsDir,
+              client: createMemberGitHubClient(),
+            }),
+          });
+          onboarding = {
+            preparation,
+            access,
+            readiness: createOnboardingReadiness({
+              db,
+              assignments,
+              preparation,
+              access,
+              agents: onboardingAgents,
+              repositoryPolicy: (input, signal) =>
+                memberVm ? memberVm.allowRepository(input, signal) : Promise.resolve(false),
+            }),
+          };
+          const configured = memberVmSettings;
+          if (configured && !configured.bootstrap && !configured.mise)
+            throw new Error("Automatic member VM setup requires a pinned mise release.");
+          if (configured)
+            memberVm = createMemberVmProvisioner({
+              db,
+              exeDev: configured.exeDev,
+              resources: configured.resources,
+              assignments,
+              ...(configured.pollMs === undefined ? {} : { pollMs: configured.pollMs }),
+              bootstrap:
+                configured.bootstrap ??
+                createExeDevBootstrap({
+                  exeDev: configured.exeDev,
+                  runnerVersion: configured.runnerVersion,
+                  installer:
+                    configured.installer ??
+                    readFileSync(
+                      join(import.meta.dir, "..", "deploy", "linux", "install-runner.sh"),
+                      "utf8",
+                    ),
+                  controlPlaneUrl: runtime.publicUrl!,
+                  runnerApiUrl: configured.runnerApiUrl,
+                  mise: configured.mise!,
+                  ...(configured.serverCa === undefined ? {} : { serverCa: configured.serverCa }),
+                }),
+              approve: (principal, code, expected) => {
+                if (!runner) return Promise.reject(new Error("Runner control is starting."));
+                return runner.control.approvePairing(principal, code, expected);
+              },
+            });
+        }
       }
+      const githubClient = (() => {
+        try {
+          const { clientId, clientSecret } = appActivation.template();
+          return { clientId, clientSecret };
+        } catch {
+          return undefined;
+        }
+      })();
       workspace = startWorkspaceAccess({
         assignments,
-        githubAttributionClient: (() => {
-          try {
-            const { clientId, clientSecret } = appActivation.template();
-            return { clientId, clientSecret };
-          } catch {
-            return undefined;
-          }
-        })(),
+        ...(onboarding
+          ? {
+              onboardingAgents: () => (runner ? onboardingAgents : undefined),
+              onboardingPreparation: onboarding.preparation,
+              ...(memberVm ? { onboardingVmProvisioning: memberVm.provisioning } : {}),
+            }
+          : {}),
+        githubAttributionClient: githubClient,
+        memberGitHub: { secretsDir: paths.secretsDir, client: githubClient },
         slackIdentities: createSlackIdentityReads({ home: paths.home, db }),
         db,
         publicUrl: runtime.publicUrl!,
@@ -505,7 +677,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     } catch (error) {
       abort.abort();
-      db.close();
+      void catalog.stopped().then(() => db.close());
       throw error;
     }
   }
@@ -538,7 +710,27 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw new Error("Attribution App bot authority changed");
     return policy;
   };
-  let runner: RunnerCoordinator | undefined;
+  const onboardingHold = (sessionId: string) =>
+    db
+      .query<
+        { sessionId: string; generation: number; workspaceId: string; linearUserId: string },
+        [string]
+      >(
+        "SELECT session_id AS sessionId,generation,workspace_id AS workspaceId,actor_id AS linearUserId FROM workspace_assignment WHERE session_id=? ORDER BY generation DESC LIMIT 1",
+      )
+      .get(sessionId);
+  const onboardingIntake: OrchestratorOptions["onboardingIntake"] = onboarding && {
+    applies: (sessionId) => onboardingHold(sessionId) !== null,
+    admission: (sessionId) => {
+      const hold = onboardingHold(sessionId);
+      return hold ? onboarding!.readiness.admission(hold) : null;
+    },
+    assertAdmission: onboarding.readiness.assertAdmission,
+  };
+  const onboardingExecution = createOnboardingExecution({
+    db,
+    ...(onboarding ? { assignments, agents: onboardingAgents, access: onboarding.access } : {}),
+  });
   let runnerStopping = false;
   const runnerReady =
     runnerConfig === null
@@ -551,7 +743,23 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
           tls: tls!,
-          repositoryAccess,
+          repositoryAccess: repositoryAccess
+            ? {
+                ...repositoryAccess,
+                authorizeMint: (itemId, requested, access, mint) => {
+                  const bound = repositoryBinding(requested);
+                  if (!bound)
+                    return Promise.reject(new Error("Onboarding repository authority changed."));
+                  return onboardingExecution.authorizeRepository(
+                    itemId,
+                    bound,
+                    access,
+                    AbortSignal.timeout(30_000),
+                    mint,
+                  );
+                },
+              }
+            : undefined,
           transcriptObjects,
           onError: () => console.error("Paws runner connection failed."),
         }).then(async (value) => {
@@ -571,6 +779,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           sessionActor: projectExecution.actor,
+          onboarding: onboardingExecution,
         })
       : undefined;
   const placementBrowser = createRunnerPlacementBrowser({ db });
@@ -585,6 +794,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
             placement,
+            onboarding: onboardingExecution,
           }),
           sessions: createRemoteSessionAgentRunner({
             db,
@@ -685,13 +895,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
       },
+      refreshRepositoryCatalog: catalog.refresh,
     });
   } catch (error) {
     abort.abort();
-    if (runnerConfig !== null)
-      void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
-    else if (workspace === undefined) db.close();
-    else void workspace.stop().then(() => db.close());
+    void Promise.all([workspace?.stop(), stopRunner(), catalog.stopped()]).then(() => db.close());
     throw error;
   }
 
@@ -708,6 +916,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     concurrency: workspace && linear?.tracker && linear.issueLifecycle ? 4 : 1,
     prepare(created) {
       assignments?.register(created.jobs);
+      memberVm?.register(created.jobs);
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,
@@ -717,6 +926,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           closeoutPolicyRoot(runtime.file, paths.home, `${owner}/${repo}`),
         tracker,
         linearTaskModes: true,
+        ...(onboardingIntake ? { onboardingIntake } : {}),
         remoteExecution,
         ...(placeOnRunner
           ? {
@@ -949,7 +1159,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         repository,
         repositories,
-        repositoryAccess: async (candidate, signal, access) => {
+        repositoryAccess: async (candidate, signal, access, item) => {
           if (runtime.githubAuth === "gh")
             return checkGitHubCliRepositoryAccess(
               { repo: `${candidate.owner}/${candidate.repo}`, access },
@@ -957,25 +1167,81 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             );
           const provider = authProvider(runtime, candidate, access, resolveApp);
           if (!provider) return false;
+          const token = item
+            ? await onboardingExecution.authorizeRepository(
+                item.id,
+                candidate,
+                access ?? "read",
+                signal,
+                () => provider.token(),
+              )
+            : await provider.token();
           return (access === "read" ? checkRepositoryReadAccess : checkRepositoryWriteAccess)({
             ...candidate,
-            token: await provider.token(),
+            token,
             app: provider.source === "app",
             signal,
           });
         },
-        repositoryToken: async (_item, candidate, signal, access) => {
+        repositoryToken: async (item, candidate, signal, access) => {
           signal.throwIfAborted();
-          const provider = authProvider(runtime, candidate, access, resolveApp);
-          if (!provider)
-            throw new Error("GitHub sign-in is required before reading the repository.");
-          const token = await provider.token();
-          signal.throwIfAborted();
-          return token;
+          return onboardingExecution.authorizeRepository(
+            item.id,
+            candidate,
+            access,
+            signal,
+            async (owned) => {
+              const provider = authProvider(runtime, candidate, access, resolveApp);
+              if (!provider)
+                throw new Error("GitHub sign-in is required before reading the repository.");
+              const token = await provider.token();
+              owned.throwIfAborted();
+              return token;
+            },
+          );
+        },
+        assertRepository: async (item, candidate, signal, access) => {
+          await onboardingExecution.authorizeRepository(
+            item.id,
+            candidate,
+            access,
+            signal,
+            async () => undefined,
+          );
         },
         github,
-        githubForRepository: (selected) =>
-          githubBinding(authProvider(runtime, selected, "write", resolveApp)),
+        githubForRepository: (selected, item, operation) => {
+          const selectedAuth = authProvider(runtime, selected, "write", resolveApp);
+          const binding = githubBinding(selectedAuth);
+          if (!binding || !selectedAuth || !item) return binding;
+          return {
+            ...binding,
+            tokenProvider: {
+              mode: selectedAuth.source,
+              tokenFor: async (purpose) => {
+                const itemRepository = getWorkItemRepository(db, item.id) ?? selected;
+                const access = purpose === "merge" || purpose === "push" ? "write" : "read";
+                const signal = AbortSignal.timeout(30_000);
+                return operation
+                  ? onboardingExecution.authorizePublicationRepository(
+                      item.id,
+                      itemRepository,
+                      access,
+                      signal,
+                      () => selectedAuth.token(),
+                      operation,
+                    )
+                  : onboardingExecution.authorizeRepository(
+                      item.id,
+                      itemRepository,
+                      access,
+                      signal,
+                      () => selectedAuth.token(),
+                    );
+              },
+            },
+          };
+        },
         channel,
         caps: { maxTurns: runtime.maxTurns, maxAwakeMs: runtime.maxAwakeMs },
       });
@@ -1233,6 +1499,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await Promise.all([loops.stop(), linearStopped, serverStopped]);
         await workspace?.stop();
         await stopRunner();
+        await catalog.stopped();
         prepareShutdown(db, Date.now(), (item) => {
           const policy = getItemRunCommitPolicy(db, item.id);
           if (runtime.githubAuth !== "app" || policy)

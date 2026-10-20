@@ -114,16 +114,43 @@ export async function probeRunnerRepositoryAccess(
   let installation: string | null = "fixture-installation";
   const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
   let currentBot = bot;
-  const endpoint = createRunnerRepositoryAccess({
-    checkpointBot: async () => currentBot,
+  let botChecks = 0;
+  let beforeBot: (() => void) | undefined;
+  const repositoryAccess = {
+    checkpointBot: async () => {
+      botChecks++;
+      beforeBot?.();
+      return currentBot;
+    },
     work,
     github,
     now: () => now,
-    installationForRepository(repository) {
+    installationForRepository(repository: string) {
       assert.equal(repository, "fixture/repository");
       return installation;
     },
+  };
+  const unguardedEndpoint = createRunnerRepositoryAccess(repositoryAccess);
+  let membershipAllowed = true;
+  let beforeAuthorizedMint: (() => void) | undefined;
+  let afterAuthorizedMint: (() => void) | undefined;
+  let authorizations = 0;
+  const guardedEndpoint = createRunnerRepositoryAccess({
+    ...repositoryAccess,
+    async authorizeMint(itemId, repository, access, mint) {
+      assert(itemId);
+      assert.equal(repository, "fixture/repository");
+      assert(["read", "write"].includes(access));
+      authorizations++;
+      if (!membershipAllowed) throw new Error("Membership denied.");
+      beforeAuthorizedMint?.();
+      const credential = await mint();
+      if (!membershipAllowed) throw new Error("Membership revoked.");
+      afterAuthorizedMint?.();
+      return credential;
+    },
   });
+  let endpoint = unguardedEndpoint;
   function assigned(type: "run" | "review" = "run", targetRunner = runnerId, bindBot = true) {
     const sessionId = workspaceId();
     const item = insertQueuedItem(db, {
@@ -215,6 +242,49 @@ export async function probeRunnerRepositoryAccess(
       );
     }
     const first = assigned();
+    endpoint = guardedEndpoint;
+    membershipAllowed = false;
+    const deniedBefore = { botChecks, minted: github.minted.length, authorizations };
+    const deniedMembership = await exchange(first, "read");
+    assert.equal(deniedMembership.status, 403);
+    assert(!deniedMembership.body.includes("fake-installation-token"));
+    assert.equal(authorizations, deniedBefore.authorizations + 1);
+    assert.equal(botChecks, deniedBefore.botChecks);
+    assert.equal(github.minted.length, deniedBefore.minted);
+    membershipAllowed = true;
+    const restoredBefore = { botChecks, minted: github.minted.length };
+    assert.equal((await exchange(first, "read")).status, 200);
+    assert.equal(botChecks, restoredBefore.botChecks + 2);
+    assert.equal(github.minted.length, restoredBefore.minted + 1);
+    observe(
+      "denied membership runs neither bot credential checks nor minting; restoration keeps both bot checks",
+      true,
+      { deniedStatus: deniedMembership.status, deniedBotChecks: 0, deniedMints: 0 },
+    );
+    for (const stage of ["before bot", "during mint", "after bot"] as const) {
+      const before = github.minted.length;
+      const checksBefore = botChecks;
+      beforeBot = () => {
+        if (stage === "before bot" || (stage === "after bot" && botChecks === checksBefore + 2))
+          membershipAllowed = false;
+      };
+      beforeMint = () => {
+        if (stage === "during mint") membershipAllowed = false;
+      };
+      const response = await exchange(first, "write");
+      assert.equal(response.status, 403, stage);
+      assert(!response.body.includes("fake-installation-token"));
+      assert.equal(github.minted.length, before + 1);
+      beforeBot = undefined;
+      beforeMint = undefined;
+      membershipAllowed = true;
+    }
+    observe(
+      "membership revocation during either bot check or requested minting denies credential delivery",
+      true,
+      { deniedStages: ["before bot", "during mint", "after bot"] },
+    );
+    const readWriteStart = github.minted.length;
     const read = await exchange(first, "read");
     assert.equal(read.status, 200);
     assert.deepEqual(JSON.parse(read.body), {
@@ -228,7 +298,7 @@ export async function probeRunnerRepositoryAccess(
     assert.equal(write.status, 200);
     assert.equal(JSON.parse(write.body).branch, first.item.branchName);
     assert.deepEqual(
-      github.minted.map(({ access, ...binding }) => ({ access, ...binding })),
+      github.minted.slice(readWriteStart).map(({ access, ...binding }) => ({ access, ...binding })),
       [
         {
           access: "read",
@@ -363,8 +433,10 @@ export async function probeRunnerRepositoryAccess(
     );
     work.finish(first.command.runId, first.command.generation);
     const unbound = assigned("run", runnerId, false);
-    assert.equal((await exchange(unbound, "read")).status, 200);
-    assert.equal((await exchange(unbound, "write")).status, 403);
+    for (endpoint of [unguardedEndpoint, guardedEndpoint]) {
+      assert.equal((await exchange(unbound, "read")).status, 200);
+      assert.equal((await exchange(unbound, "write")).status, 403);
+    }
     work.finish(unbound.command.runId, unbound.command.generation);
     const changedInstallation = assigned();
     beforeMint = () => {
@@ -375,6 +447,12 @@ export async function probeRunnerRepositoryAccess(
     installation = "fixture-installation";
     work.finish(changedInstallation.command.runId, changedInstallation.command.generation);
     const scenarios: [string, (entry: ReturnType<typeof assigned>) => void][] = [
+      [
+        "changed installation",
+        () => {
+          installation = "different-installation";
+        },
+      ],
       [
         "cancelled",
         ({ item }) => {
@@ -390,7 +468,7 @@ export async function probeRunnerRepositoryAccess(
       [
         "changed repository",
         ({ item }) => {
-          db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
+          db.run("INSERT OR IGNORE INTO workspace_repository VALUES(?,?,?)", [
             workspace.id,
             "other/other",
             "fixture-team",
@@ -417,24 +495,38 @@ export async function probeRunnerRepositoryAccess(
     ];
     const fenced: string[] = [];
     for (const [name, change] of scenarios) {
-      const entry = assigned();
-      let changed = false;
-      beforeMint = () => {
-        change(entry);
-        changed = true;
-      };
-      const response = await exchange(entry, "read");
-      beforeMint = undefined;
-      assert(changed, `Mutation did not complete: ${name}`);
-      assert([403, 409].includes(response.status), `${name}: ${response.status}`);
-      assert(!response.body.includes("fake-installation-token"));
-      fenced.push(name);
-      const current = db
-        .query<{ generation: number }, [string]>(
-          "SELECT generation FROM runner_work WHERE run_id=?",
-        )
-        .get(entry.command.runId)!;
-      work.finish(entry.command.runId, current.generation);
+      for (const stage of ["authorization", "bot", "mint", "return"] as const) {
+        const entry = assigned();
+        let changed = false;
+        const mutate = () => {
+          if (changed) return;
+          change(entry);
+          changed = true;
+        };
+        beforeAuthorizedMint = stage === "authorization" ? mutate : undefined;
+        beforeBot = stage === "bot" ? mutate : undefined;
+        beforeMint = stage === "mint" ? mutate : undefined;
+        afterAuthorizedMint = stage === "return" ? mutate : undefined;
+        const mintedAtStage = github.minted.length;
+        const response = await exchange(entry, "read");
+        beforeAuthorizedMint = undefined;
+        beforeBot = undefined;
+        beforeMint = undefined;
+        afterAuthorizedMint = undefined;
+        assert(changed, `Mutation did not complete: ${name} during ${stage}`);
+        assert([403, 409].includes(response.status), `${name}: ${response.status}`);
+        assert(!response.body.includes("fake-installation-token"));
+        if (name !== "changed branch" && (stage === "authorization" || stage === "bot"))
+          assert.equal(github.minted.length, mintedAtStage, `${name} during ${stage}`);
+        fenced.push(`${name} during ${stage}`);
+        const current = db
+          .query<{ generation: number }, [string]>(
+            "SELECT generation FROM runner_work WHERE run_id=?",
+          )
+          .get(entry.command.runId)!;
+        work.finish(entry.command.runId, current.generation);
+        installation = "fixture-installation";
+      }
     }
     observe(
       "authorization is rechecked after asynchronous token minting without releasing stale credentials",

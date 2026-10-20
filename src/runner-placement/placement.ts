@@ -1,3 +1,4 @@
+import { captureOnboardingExecution, type OnboardingExecution } from "../workspace";
 import { teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
@@ -34,6 +35,7 @@ export function createRunnerPlacement(options: {
   db: Database;
   lifecycle: LinearIssueLifecycle;
   tracker: Pick<TrackerAdapter, "listProjectMembers">;
+  onboarding?: Pick<OnboardingExecution, "capture">;
   sessionActor?: (sessionId: string) => string | undefined;
   now?: () => number;
 }): RunnerPlacement {
@@ -47,6 +49,7 @@ export function createRunnerPlacement(options: {
       policy: string;
       expiresAt: number;
       memberId?: string;
+      onboarding: ReturnType<typeof captureOnboardingExecution>;
     }
   >();
   function admissionKey(
@@ -157,9 +160,11 @@ export function createRunnerPlacement(options: {
     async candidates(input) {
       input.signal?.throwIfAborted();
       if (!input.profile) throw new Error("Runner agent profile is required");
+      const onboarding = captureOnboardingExecution(db, input.itemId, options.onboarding);
       const before = scope(input);
       const binding = authority(before);
       const issue = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
+      onboarding?.assertCurrent();
       const projectMembers =
         issue.projectId && options.tracker.listProjectMembers
           ? await options.tracker
@@ -169,7 +174,9 @@ export function createRunnerPlacement(options: {
                 return [];
               })
           : [];
+      onboarding?.assertCurrent();
       const verified = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
+      onboarding?.assertCurrent();
       input.signal?.throwIfAborted();
       if (JSON.stringify(verified) !== JSON.stringify(issue))
         throw new Error("Runner issue ownership changed during selection");
@@ -246,12 +253,23 @@ export function createRunnerPlacement(options: {
           : current.placement?.ownerUserId
             ? itemOwnerLinear
             : issue.assigneeId;
-      const accountUser = accountActor
-        ? db
-            .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-            .get(accountActor)?.id
-        : undefined;
+      const accountUser =
+        onboarding?.binding.userId ??
+        (accountActor
+          ? db
+              .query<{ id: string }, [string]>(
+                "SELECT id FROM workspace_user WHERE linear_user_id=?",
+              )
+              .get(accountActor)?.id
+          : undefined);
       const ranked = rows.flatMap((candidate) => {
+        if (
+          onboarding &&
+          (candidate.id !== onboarding.binding.runnerId ||
+            candidate.workspaceId !== onboarding.binding.workspaceId ||
+            candidate.ownerId !== onboarding.binding.userId)
+        )
+          return [];
         let runner = candidate;
         const hostOwnerId = runner.ownerId;
         if (!runnerHasCapacity(db, runner.id, at)) return [];
@@ -288,7 +306,7 @@ export function createRunnerPlacement(options: {
             ...runner,
             memberId: accountUser,
             ownerId: accountUser,
-            linearUserId: accountActor!,
+            linearUserId: onboarding?.binding.linearUserId ?? accountActor!,
             ready: 1,
             authExpired: 0,
             cooldownUntil: account.cooldownUntil,
@@ -339,6 +357,7 @@ export function createRunnerPlacement(options: {
       );
       for (const [key, admission] of admissions)
         if (admission.expiresAt <= at) admissions.delete(key);
+      onboarding?.assertCurrent();
       for (const { runner } of ranked)
         admissions.set(admissionKey(runner.id, input), {
           request: input,
@@ -346,6 +365,7 @@ export function createRunnerPlacement(options: {
           policy: policy(runner.id, input.profile?.agent),
           expiresAt: at + 15_000,
           memberId: runner.memberId,
+          onboarding,
         });
       return ranked.map(({ runner }) => ({
         id: runner.id,
@@ -356,6 +376,11 @@ export function createRunnerPlacement(options: {
     started(input) {
       immediate(db, () => {
         const admission = admissions.get(admissionKey(input.runnerId, input));
+        captureOnboardingExecution(db, input.itemId, options.onboarding, {
+          runnerId: input.runnerId,
+          memberId: admission?.memberId,
+        })?.assertCurrent();
+        admission?.onboarding?.assertCurrent();
         if (
           !admission ||
           admission.expiresAt <= now() ||

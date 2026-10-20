@@ -108,11 +108,11 @@ function fixture(cap: unknown = 12, scope = "task", extra: Record<string, unknow
   };
 }
 
-test("review caps validate through the origin loader and participate in the draft digest", () => {
+test("review caps validate through the origin loader and participate in the draft digest", async () => {
   for (const cap of [0, 100001, 2, 3.5, null, "12"]) {
     const fx = fixture(cap);
     try {
-      expect(validate(fx.repo, fx.home).ok).toBe(false);
+      expect((await validate(fx.repo, fx.home)).ok).toBe(false);
     } finally {
       fx.close();
     }
@@ -120,21 +120,21 @@ test("review caps validate through the origin loader and participate in the draf
   for (const cap of [3, 100000]) {
     const fx = fixture(cap);
     try {
-      expect(validate(fx.repo, fx.home).ok).toBe(true);
+      expect((await validate(fx.repo, fx.home)).ok).toBe(true);
     } finally {
       fx.close();
     }
   }
   const fx = fixture();
   try {
-    const active = validate(fx.repo, fx.home);
+    const active = await validate(fx.repo, fx.home);
     expect(active.ok).toBe(true);
     const before = digest(fx.repo);
     fx.policy.retry.maxFailedReviewAttempts = 13;
     writeFileSync(join(fx.repo, ".agents/closeout.yaml"), JSON.stringify(fx.policy));
     expect(digest(fx.repo)).not.toEqual(before);
-    expect(validate(fx.repo, fx.home)).toEqual(active);
-    expect(policyFixBudget(fx.repo, fx.home)).toBe(11);
+    expect(await validate(fx.repo, fx.home)).toEqual(active);
+    expect(await policyFixBudget(fx.repo, fx.home)).toBe(11);
   } finally {
     fx.close();
   }
@@ -303,7 +303,7 @@ test("commands and setup retain the ordinary limit with progress-aware reviews",
 test("policies without retry leave failed review attempts unlimited", async () => {
   const fx = fixture(12, "task", { retry: undefined });
   try {
-    expect(policyFixBudget(fx.repo, fx.home)).toBeNull();
+    expect(await policyFixBudget(fx.repo, fx.home)).toBeNull();
     for (let round = 0; round < 5; round += 1) {
       expect((await fx.review([finding("src/same.ts")])).ok).toBe(true);
       expect((await decision(fx.input())).items[0]?.state).toBe("failed");

@@ -20,6 +20,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
+import { handleStatusRequest } from "../src/web";
 import { readyItems, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator } from "../src/loop";
 import { FakeClock } from "../src/core";
@@ -35,7 +36,7 @@ import {
   workspaceTokenHash,
 } from "../src/workspace";
 
-function fixture() {
+function fixture(ready = true, configureReadiness = true, onboarding = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-assignment-"));
   let db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -96,6 +97,7 @@ function fixture() {
   let failContinue = false;
   let changeAtIntake: (() => void) | undefined;
   let calls = 0;
+  let snapshotReads = 0;
   const memberships = {
     async installation() {
       return { id: "org", name: "Workspace" };
@@ -138,6 +140,9 @@ function fixture() {
       clientId: "client",
       memberships,
       now: () => clock.now(),
+      ...(onboarding
+        ? { onboarding: configureReadiness ? { readyToContinue: () => ready } : {} }
+        : {}),
       lifecycle: {
         async inspect() {
           return structuredClone(ownership);
@@ -149,6 +154,7 @@ function fixture() {
       tracker: {
         ...tracker,
         async getSession() {
+          snapshotReads++;
           return structuredClone(session);
         },
       },
@@ -254,7 +260,9 @@ function fixture() {
       return (
         (await currentAccess.handle(
           new Request(`${origin}${url.pathname}${url.search}`, { headers, method: request.method }),
-        )) ?? new Response(null, { status: 404 })
+        )) ??
+        (await handleStatusRequest(request, {})) ??
+        new Response(null, { status: 404 })
       );
     },
   });
@@ -293,6 +301,9 @@ function fixture() {
     callback,
     link,
     jobs,
+    async read(path: string, cookie = "") {
+      return fetch(`${local}${path}`, { headers: { cookie }, redirect: "manual" });
+    },
     get db() {
       return db;
     },
@@ -301,6 +312,12 @@ function fixture() {
     },
     get calls() {
       return calls;
+    },
+    get snapshotReads() {
+      return snapshotReads;
+    },
+    setReady(value: boolean) {
+      ready = value;
     },
     setActive(value: boolean) {
       active = value;
@@ -525,13 +542,14 @@ test("two workers cannot claim the same durable continuation", async () => {
   }
 });
 
-for (const change of ["spec", "repository", "membership"])
+for (const change of ["spec", "repository", "membership", "readiness"])
   test(`intake refuses ${change} changing after continuation checks`, async () => {
     const f = fixture();
     try {
       await f.assignments.authorize(f.event);
       await f.callback(await f.begin());
       f.changeAtIntake(() => {
+        if (change === "readiness") f.setReady(false);
         if (change === "spec") f.tracker.epics.get("issue")!.description = "Replaced during intake";
         if (change === "repository")
           f.db.run(
@@ -576,3 +594,255 @@ test("browser callback cannot accept a hold after losing the issue team", async 
     await f.close();
   }
 });
+
+test("assignment OAuth continues to private durable issue onboarding while ordinary login stays on status", async () => {
+  const f = fixture();
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    const page = signed.headers.get("location")!;
+    expect(page).toBe("/status/onboarding/session/0");
+    const cookie = signed.headers.getSetCookie()[0]!.split(";")[0]!;
+    const api = "/api/workspaces/onboarding?session=session&generation=0";
+    expect((await f.read(api)).status).toBe(401);
+    const read = await f.read(api, cookie);
+    expect(read.status).toBe(200);
+    const state = (await read.json()) as {
+      issue: { id: string; identifier: string; title: string };
+      linear: { state: string };
+      github: { state: string };
+      vm: { state: string };
+    };
+    expect(state.issue).toEqual({ id: "issue", identifier: "TEST-1", title: "Work" });
+    expect(state.linear.state).toBe("connected");
+    expect(state.github.state).toBe("not_checked");
+    expect(state.vm.state).toBe("unavailable");
+    expect(JSON.stringify(state)).not.toContain("token");
+    expect((await f.read(page, cookie)).status).toBe(200);
+    await f.restart();
+    expect(await (await f.read(api, cookie)).json()).toEqual(state);
+    await f.jobs().tick();
+    expect(await (await f.read(api, cookie)).json()).toEqual(state);
+    f.clock.advance(600_001);
+    expect((await f.read(api, cookie)).status).toBe(200);
+    const other = await f.callback(
+      await f.begin("https://paws.example.invalid/auth/linear"),
+      "owner",
+    );
+    expect(other.headers.get("location")).toBe("/status/");
+    const otherCookie = other.headers.getSetCookie()[0]!.split(";")[0]!;
+    expect((await f.read(api, otherCookie)).status).toBe(404);
+    expect((await f.read(page, otherCookie)).status).toBe(404);
+    expect(
+      listOutbox(f.db).some((row) => JSON.stringify(row.payload).includes("Linear connected")),
+    ).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const change of ["stop", "generation", "membership", "observer", "team", "access"])
+  test(`onboarding refuses stale or revoked ${change} without issue disclosure`, async () => {
+    const f = fixture();
+    try {
+      await f.assignments.authorize(f.event);
+      const signed = await f.callback(await f.begin());
+      const cookie = signed.headers.getSetCookie()[0]!.split(";")[0]!;
+      if (change === "stop")
+        advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+      if (change === "generation")
+        advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+      if (change === "membership")
+        f.db.run("UPDATE workspace_member SET active=0 WHERE user_id<>'owner'");
+      if (change === "observer")
+        f.db.run("UPDATE workspace_member SET role='observer' WHERE user_id<>'owner'");
+      if (change === "team") f.db.run("DELETE FROM workspace_user_team WHERE user_id<>'owner'");
+      if (change === "access")
+        f.db.run(
+          "INSERT INTO linear_app_revocation(organization_id,oauth_client_id,revoked_at) VALUES('org','client',1)",
+        );
+      const response = await f.read(
+        "/api/workspaces/onboarding?session=session&generation=0",
+        cookie,
+      );
+      expect([401, 404]).toContain(response.status);
+      expect(await response.text()).not.toContain("TEST-1");
+    } finally {
+      await f.close();
+    }
+  });
+
+test("Linear OAuth alone keeps assignment onboarding durably held without continuation", async () => {
+  const f = fixture(false, false);
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    expect(signed.status).toBe(303);
+    const reads = f.snapshotReads;
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.snapshotReads).toBe(reads);
+    expect(f.calls).toBe(0);
+    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(0);
+    await f.restart();
+    f.clock.advance(24 * 60 * 60_000);
+    await f.jobs().tick();
+    expect(f.calls).toBe(0);
+    expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+      status: "ready",
+    });
+    expect(listJobs(f.db).find((job) => job.queue === "workspace.assignment")?.status).toBe(
+      "pending",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("readiness loss remains held and a later fresh readiness decision resumes exactly once", async () => {
+  const f = fixture(false);
+  try {
+    await f.assignments.authorize(f.event);
+    await f.callback(await f.begin());
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.calls).toBe(0);
+    const held = listJobs(f.db).find((job) => job.queue === "workspace.assignment")!;
+    expect(held.attempts).toBe(0);
+    expect(held.status).toBe("pending");
+    await f.restart();
+    f.setReady(true);
+    f.clock.advance(60_001);
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.calls).toBe(1);
+    f.clock.advance(60_001);
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.calls).toBe(1);
+    expect(listJobs(f.db).find((job) => job.queue === "workspace.assignment")?.status).toBe("done");
+  } finally {
+    await f.close();
+  }
+});
+
+test("legacy production assignment sign-in resumes without activating onboarding", async () => {
+  const f = fixture(false, false, false);
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    expect(signed.headers.get("location")).toBe("/status/");
+    const cookie = signed.headers.getSetCookie()[0]!.split(";")[0]!;
+    expect(
+      (await f.read("/api/workspaces/onboarding?session=session&generation=0", cookie)).status,
+    ).toBe(404);
+    await f.jobs().tick();
+    await f.jobs().tick();
+    expect(f.calls).toBe(1);
+    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(
+      listOutbox(f.db).some((row) => JSON.stringify(row.payload).includes("View onboarding")),
+    ).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+test("signed-out onboarding serves a private-data-free shell and reauth returns only its responsible member", async () => {
+  const f = fixture(false);
+  try {
+    await f.assignments.authorize(f.event);
+    const signed = await f.callback(await f.begin());
+    const page = signed.headers.get("location")!;
+    const shell = await f.read(page);
+    expect(shell.status).toBe(200);
+    expect(await shell.text()).not.toContain("TEST-1");
+    expect((await f.read("/api/workspaces/onboarding?session=session&generation=0")).status).toBe(
+      401,
+    );
+    for (const target of [
+      "https://evil.invalid",
+      "//evil.invalid",
+      "/status/",
+      "/status/onboarding/session/1",
+    ])
+      expect(
+        (
+          await f.begin(
+            `https://paws.example.invalid/auth/linear?return=${encodeURIComponent(target)}`,
+          )
+        ).status,
+      ).toBe(400);
+    const reauth = () =>
+      f.begin(`https://paws.example.invalid/auth/linear?return=${encodeURIComponent(page)}`);
+    expect((await f.callback(await reauth(), "owner")).status).toBe(400);
+    const start = await reauth();
+    await f.restart();
+    const returned = await f.callback(start);
+    expect(returned.status).toBe(303);
+    expect(returned.headers.get("location")).toBe(page);
+    expect((await f.callback(start)).status).toBe(400);
+    expect(f.calls).toBe(0);
+    const stale = await reauth();
+    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+    expect((await f.callback(stale)).status).toBe(400);
+  } finally {
+    await f.close();
+  }
+});
+
+test("pending onboarding return completes the exact hold through OAuth and survives restart", async () => {
+  const f = fixture(false);
+  try {
+    await f.assignments.authorize(f.event);
+    const start = await f.begin(
+      "https://paws.example.invalid/auth/linear?return=" +
+        encodeURIComponent("/status/onboarding/session/0"),
+    );
+    expect((await f.callback(start, "owner")).status).toBe(400);
+    const current = await f.begin(
+      "https://paws.example.invalid/auth/linear?return=" +
+        encodeURIComponent("/status/onboarding/session/0"),
+    );
+    const response = await f.callback(current);
+    expect(response.status).toBe(303);
+    expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+      status: "ready",
+    });
+    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(1);
+    const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+    await f.restart();
+    expect(
+      (await f.read("/api/workspaces/onboarding?session=session&generation=0", cookie)).status,
+    ).toBe(200);
+    expect((await f.callback(current)).status).toBe(400);
+    expect(f.calls).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const change of ["expiry", "stop", "generation", "actor", "team"] as const)
+  test(`pending return completion rejects ${change} changes`, async () => {
+    const f = fixture(false);
+    try {
+      await f.assignments.authorize(f.event);
+      const start = await f.begin(
+        "https://paws.example.invalid/auth/linear?return=" +
+          encodeURIComponent("/status/onboarding/session/0"),
+      );
+      if (change === "expiry") f.clock.advance(31 * 60_000);
+      if (change === "stop")
+        advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+      if (change === "generation")
+        advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+      if (change === "actor")
+        f.db.run("UPDATE linear_session SET creator_id='owner' WHERE session_id='session'");
+      if (change === "team") f.setTeams([]);
+      expect((await f.callback(start)).status).toBe(400);
+      expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(0);
+    } finally {
+      await f.close();
+    }
+  });

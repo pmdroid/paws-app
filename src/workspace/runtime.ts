@@ -2,17 +2,24 @@ import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
+import type { OnboardingAgents } from "./onboarding-agents";
+import type { OnboardingVmProvisioning } from "./onboarding-vm";
+import type { createOnboardingPreparation } from "./onboarding-preparation";
 import { createWorkspaceAccess } from "./access";
 import { issueWorkspaceBootstrap } from "./session";
 
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
   assignments?: WorkspaceAssignments;
+  onboardingAgents?: () => OnboardingAgents | undefined;
+  onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
+  onboardingVmProvisioning?: OnboardingVmProvisioning;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  memberGitHub?: { secretsDir: string; client?: { clientId: string; clientSecret: string } };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 }) {

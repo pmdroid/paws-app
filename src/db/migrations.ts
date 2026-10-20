@@ -1805,6 +1805,107 @@ CREATE TABLE runner_follow_up (
 `,
   },
   {
+    id: "074_member_github_accounts",
+    sql: `
+CREATE TABLE member_github_account (
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  github_id INTEGER CHECK(github_id>0),
+  login TEXT,
+  secret_id TEXT,
+  expires_at INTEGER,
+  revision INTEGER NOT NULL CHECK(revision>0),
+  revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+  pending_session_hash TEXT,
+  PRIMARY KEY(workspace_id,user_id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+CREATE TRIGGER member_github_membership_revoked AFTER UPDATE ON workspace_member
+WHEN NEW.active=0 OR NEW.role='observer'
+BEGIN
+  UPDATE member_github_account SET revoked=1,revision=revision+1,pending_session_hash=NULL
+  WHERE workspace_id=NEW.workspace_id AND user_id=NEW.user_id;
+END;
+`,
+  },
+  {
+    id: "075_member_github_oauth",
+    sql: `
+CREATE TABLE member_github_oauth_request (
+  state_hash TEXT PRIMARY KEY,
+  browser_hash TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  session_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY(workspace_id,user_id) REFERENCES member_github_account(workspace_id,user_id)
+) STRICT;
+`,
+  },
+  {
+    id: "076_onboarding_vm",
+    sql: `
+CREATE TABLE onboarding_vm (
+  session_id TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  runner_id TEXT NOT NULL REFERENCES runner(id),
+  runner_fence INTEGER NOT NULL,
+  selected_at INTEGER NOT NULL,
+  PRIMARY KEY(session_id,generation),
+  FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "077_onboarding_preparation",
+    sql: `
+CREATE TABLE onboarding_preparation (
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>0),
+ scope TEXT NOT NULL,
+ mode TEXT CHECK(mode IN ('code','answer','artifact')),
+ repository_context INTEGER NOT NULL DEFAULT 0 CHECK(repository_context IN (0,1)),
+ repository TEXT CHECK(repository IS NULL OR json_valid(repository)),
+ offered TEXT NOT NULL CHECK(json_valid(offered)),
+ updated_at INTEGER NOT NULL,
+ PRIMARY KEY(session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "078_onboarding_readiness",
+    sql: `
+CREATE TABLE onboarding_readiness (
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ revision INTEGER NOT NULL CHECK(revision>0),
+ owner TEXT NOT NULL,
+ fingerprint TEXT NOT NULL,
+ projection TEXT NOT NULL CHECK(json_valid(projection)),
+ expires_at INTEGER NOT NULL,
+ PRIMARY KEY(session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "079_onboarding_item_binding",
+    sql: `
+CREATE TABLE onboarding_item_binding (
+ item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ readiness_revision INTEGER NOT NULL,
+ fingerprint TEXT NOT NULL,
+ snapshot TEXT NOT NULL CHECK(json_valid(snapshot)),
+ FOREIGN KEY(session_id,generation) REFERENCES onboarding_readiness(session_id,generation)
+) STRICT;
+`,
+  },
+  {
     id: "073_grok_runner_login",
     sql: `
 CREATE TABLE runner_member_account_grok (
@@ -1849,6 +1950,60 @@ CREATE TABLE browser_installation_request (
  expires_at INTEGER NOT NULL
 ) STRICT;
 `,
+  },
+  {
+    id: "080_member_vm",
+    sql: `
+CREATE TABLE member_vm (
+ id TEXT PRIMARY KEY,
+ workspace_id TEXT NOT NULL,
+ user_id TEXT NOT NULL,
+ provider_name TEXT NOT NULL UNIQUE,
+ run INTEGER NOT NULL DEFAULT 1 CHECK(run>0),
+ revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),
+ step TEXT NOT NULL CHECK(step IN ('create','install','pair','health','ready')),
+ state TEXT NOT NULL CHECK(state IN ('pending','running','failed','ready')),
+ failure TEXT,
+ create_outcome TEXT NOT NULL DEFAULT 'none' CHECK(create_outcome IN ('none','unknown','created')),
+ create_run INTEGER,
+ vm TEXT CHECK(vm IS NULL OR json_valid(vm)),
+ request_fingerprint TEXT,
+ runner_id TEXT REFERENCES runner(id),
+ step_started_at INTEGER,
+ runner_started INTEGER NOT NULL DEFAULT 0 CHECK(runner_started IN (0,1)),
+ repositories TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(repositories) AND json_type(repositories)='array'),
+ session_id TEXT,
+ generation INTEGER,
+ origin_session_id TEXT NOT NULL,
+ origin_generation INTEGER NOT NULL,
+ created_at INTEGER NOT NULL,
+ updated_at INTEGER NOT NULL,
+ UNIQUE(workspace_id,user_id),
+ FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_member(workspace_id,user_id)
+) STRICT;
+`,
+  },
+  {
+    id: "081_member_vm_repository_policy",
+    sql: `
+ALTER TABLE member_vm ADD COLUMN policy_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE member_vm ADD COLUMN policy_applied_revision INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE member_vm ADD COLUMN policy_fence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE member_vm ADD COLUMN policy_applied_fence INTEGER NOT NULL DEFAULT -1;
+CREATE TABLE member_vm_repository_grant (
+ vm_id TEXT NOT NULL REFERENCES member_vm(id),
+ session_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ repository TEXT NOT NULL,
+ authority TEXT NOT NULL,
+ PRIMARY KEY(vm_id,session_id,generation),
+ FOREIGN KEY(session_id,generation) REFERENCES workspace_assignment(session_id,generation)
+) STRICT;
+`,
+  },
+  {
+    id: "082_member_vm_grant_revision",
+    sql: `ALTER TABLE member_vm_repository_grant ADD COLUMN revision TEXT NOT NULL DEFAULT '';`,
   },
   {
     id: "075_runner_concurrency",

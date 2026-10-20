@@ -328,5 +328,43 @@ export {
   attributionItemScope,
 } from "./github-attribution";
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
+export {
+  beginMemberGitHubLink,
+  memberGitHubRecord,
+  requireMemberGitHubSession,
+  revokeMemberGitHub,
+  saveMemberGitHubLink,
+  unlinkMemberGitHub,
+  type MemberGitHubBinding,
+  type MemberGitHubRecord,
+} from "./member-github";
+
+export { listOnboardingRunners, readOnboardingVm, saveOnboardingVm } from "./onboarding-vm";
+export type { OnboardingVmScope } from "./onboarding-vm";
+export {
+  armMemberVmJob,
+  observeMemberVmRepositoryGrant,
+  memberVmRepositoryGrantRevision,
+  claimedMemberRunner,
+  disarmMemberVmJob,
+  healthyOnboardingRunners,
+  MEMBER_VM_QUEUE,
+  memberRunnerHeartbeat,
+  readMemberVm,
+  readMemberVmById,
+  reserveMemberVm,
+  runnerPairingByFingerprint,
+  updateMemberVm,
+  type MemberVmChanges,
+  type MemberVmRecord,
+  type MemberVmState,
+  type MemberVmStep,
+} from "./member-vm";
+
+export {
+  bindOnboardingIntake,
+  readOnboardingItemBinding,
+  type OnboardingAdmission,
+} from "./onboarding-intake";
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";

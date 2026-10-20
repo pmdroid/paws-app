@@ -21,7 +21,9 @@ import type {
   LinearMembershipReads,
   TrackerAdapter,
 } from "../linear";
-import { workspaceSecret, workspaceTokenHash } from "./session";
+import { workspaceSecret, workspaceTokenHash, type WorkspacePrincipal } from "./session";
+
+import { onboardingVmState } from "./onboarding-vm";
 
 const QUEUE = "workspace.assignment";
 
@@ -46,6 +48,24 @@ export function createWorkspaceAssignments(options: {
   tracker: TrackerAdapter;
   accept: (event: AcceptedLinearEvent, signal: AbortSignal) => Promise<boolean>;
   continue: (event: AcceptedLinearEvent) => Promise<void | boolean>;
+  onboarding?: {
+    refresh?: (
+      assignment: {
+        sessionId: string;
+        generation: number;
+        workspaceId: string;
+        linearUserId: string;
+      },
+      signal: AbortSignal,
+    ) => Promise<unknown>;
+    readyToContinue?: (assignment: {
+      sessionId: string;
+      generation: number;
+      workspaceId: string;
+      linearUserId: string;
+    }) => boolean;
+    provisioningAvailable?: () => boolean;
+  };
   now?: () => number;
 }) {
   const { db } = options;
@@ -128,6 +148,64 @@ export function createWorkspaceAssignments(options: {
       session.creatorId === hold.actorId
     );
   }
+  function onboardingContext(sessionId: string, generation: number, principal: WorkspacePrincipal) {
+    if (!options.onboarding) return null;
+    const hold = holds(sessionId);
+    if (
+      !hold ||
+      hold.generation !== generation ||
+      hold.workspaceId !== principal.workspaceId ||
+      !["ready", "accepted", "continued"].includes(hold.status) ||
+      !current(hold)
+    )
+      return null;
+    const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+    const expected = JSON.parse(hold.fingerprint) as {
+      installation: {
+        teamId: string;
+        organizationId: string;
+        oauthClientId: string;
+        appUserId: string;
+      };
+      spec: EpicSnapshot;
+    };
+    const installation = getLinearSessionInstallation(db, sessionId);
+    if (
+      !member?.active ||
+      member.userId !== principal.userId ||
+      member.role === "observer" ||
+      !member.teamIds.includes(expected.installation.teamId) ||
+      !installation ||
+      installation.organizationId !== expected.installation.organizationId ||
+      installation.oauthClientId !== expected.installation.oauthClientId ||
+      installation.appUserId !== expected.installation.appUserId ||
+      installation.teamId !== expected.installation.teamId ||
+      getLinearSession(db, sessionId)?.issueId !== expected.spec.linearIssueId
+    )
+      return null;
+    return {
+      sessionId,
+      generation,
+      workspaceId: hold.workspaceId,
+      userId: member.userId,
+      issue: expected.spec,
+    };
+  }
+  function postOnboardingLink(hold: Hold, path: string) {
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: hold.sessionId,
+      idempotencyKey: `assignment:onboarding:${hold.tokenHash}`,
+      generation: hold.generation,
+      payload: {
+        sessionId: hold.sessionId,
+        kind: "thought",
+        body: `Linear connected. Member GitHub repository access has not been checked. ${options.onboarding?.provisioningAvailable?.() === true ? "Paws sets up your VM automatically, or reuses the one it set up for you before." : "Automatic VM setup is not configured for this workspace."} Your assignment waits for setup. [View onboarding](${origin.origin}${path}). You can close the page or Stop this assignment in Linear.`,
+      },
+      now: now(),
+    });
+  }
   function issueAction(hold: Omit<Hold, "tokenHash" | "expiresAt" | "status">) {
     const token = workspaceSecret();
     const tokenHash = workspaceTokenHash(token);
@@ -202,7 +280,19 @@ export function createWorkspaceAssignments(options: {
           member.checkedAt <= before))
     );
   }
+  function ready(hold: Hold) {
+    if (!options.onboarding) return true;
+    return (
+      options.onboarding.readyToContinue?.({
+        sessionId: hold.sessionId,
+        generation: hold.generation,
+        workspaceId: hold.workspaceId,
+        linearUserId: hold.actorId,
+      }) === true
+    );
+  }
   return {
+    onboardingContext,
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
       const hold = holds(sessionId);
       if (!hold) return true;
@@ -211,6 +301,7 @@ export function createWorkspaceAssignments(options: {
         spec: EpicSnapshot;
         repositories: unknown;
       };
+      if (!ready(hold)) return false;
       const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
       if (
         !member?.active ||
@@ -245,6 +336,7 @@ export function createWorkspaceAssignments(options: {
           verified.fingerprint === hold.fingerprint &&
           (await eligible(verified, signal)) &&
           current(hold) &&
+          ready(hold) &&
           holds(hold.sessionId)?.status === "accepted"
         );
       }
@@ -258,7 +350,11 @@ export function createWorkspaceAssignments(options: {
         getLinearSessionAccess(db, event.sessionId) !== "allowed"
       )
         return false;
-      if (workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null) return true;
+      if (
+        !options.onboarding?.refresh &&
+        workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null
+      )
+        return true;
       return immediate(db, () => {
         if (holds(event.sessionId!)?.generation === verified.generation) return false;
         const session = getLinearSession(db, event.sessionId!)!;
@@ -283,8 +379,68 @@ export function createWorkspaceAssignments(options: {
       const value = hold ? holds(hold.sessionId) : null;
       return value && current(value) ? hash : null;
     },
-    complete(hash: string, workspaceId: string, linearUserId: string): void {
-      immediate(db, () => {
+    beginReturn(path: string): string | null {
+      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})$/.exec(
+        path,
+      );
+      if (!options.onboarding || !match) return null;
+      const hold = holds(match[1]!);
+      return hold &&
+        hold.generation === Number(match[2]) &&
+        ["pending", "ready", "accepted", "continued"].includes(hold.status) &&
+        current(hold) &&
+        (hold.status !== "pending" || hold.expiresAt > now())
+        ? `onboarding:${hold.tokenHash}`
+        : null;
+    },
+    completeReturn(context: string, workspaceId: string, linearUserId: string): string {
+      const hash = context.slice("onboarding:".length);
+      const row = db
+        .query<{ sessionId: string }, [string]>(
+          "SELECT session_id AS sessionId FROM workspace_assignment WHERE token_hash=?",
+        )
+        .get(hash);
+      const hold = row ? holds(row.sessionId) : null;
+      if (hold?.tokenHash === hash && hold.status === "pending")
+        return this.complete(hash, workspaceId, linearUserId);
+      const member = workspaceLinearMember(db, workspaceId, linearUserId);
+      if (
+        !hold ||
+        hold.tokenHash !== hash ||
+        !member ||
+        (hold.status !== "pending" &&
+          !this.onboarding(hold.sessionId, hold.generation, {
+            workspaceId,
+            userId: member.userId,
+            role: member.role,
+            teamIds: member.teamIds,
+            authenticatedAt: now(),
+          }))
+      )
+        throw new Error("Onboarding return is unavailable.");
+      return `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
+    },
+    onboarding(sessionId: string, generation: number, principal: WorkspacePrincipal) {
+      const context = onboardingContext(sessionId, generation, principal);
+      if (!context) return null;
+      return {
+        issue: {
+          id: context.issue.linearIssueId,
+          identifier: context.issue.identifier,
+          title: context.issue.title,
+        },
+        linear: { state: "connected", detail: "Linear connected" },
+        github: { state: "not_checked", detail: "Member repository access has not been checked." },
+        vm: onboardingVmState(
+          db,
+          context,
+          now(),
+          options.onboarding?.provisioningAvailable?.() === true,
+        ),
+      };
+    },
+    complete(hash: string, workspaceId: string, linearUserId: string): string {
+      return immediate(db, () => {
         const row = db
           .query<{ sessionId: string }, [string]>(
             "SELECT session_id AS sessionId FROM workspace_assignment WHERE token_hash=?",
@@ -314,11 +470,21 @@ export function createWorkspaceAssignments(options: {
           queue: QUEUE,
           jobKey: `assignment:${hash}`,
           payload: { sessionId: hold.sessionId, tokenHash: hash },
+          ...(options.onboarding ? { recurringEveryMs: 60_000 } : {}),
           now: now(),
         });
+        if (!options.onboarding) return "/status/";
+        const path = `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
+        postOnboardingLink(hold, path);
+        return path;
       });
     },
     register(jobs: JobLoop) {
+      if (options.onboarding)
+        db.run(
+          "UPDATE job SET recurring_every_ms=60000 WHERE queue=? AND status IN ('pending','running') AND recurring_every_ms IS NULL",
+          [QUEUE],
+        );
       enqueueJobOnce(db, {
         queue: `${QUEUE}.expire`,
         jobKey: `${QUEUE}.expire`,
@@ -342,8 +508,33 @@ export function createWorkspaceAssignments(options: {
           !hold ||
           hold.tokenHash !== payload.tokenHash ||
           !["ready", "accepted"].includes(hold.status)
-        )
+        ) {
+          if (context.isCurrent()) {
+            db.run("UPDATE job SET recurring_every_ms=NULL WHERE id=? AND locked_by=?", [
+              job.id,
+              job.lockedBy,
+            ]);
+            job.recurringEveryMs = null;
+          }
           return;
+        }
+        if (!current(hold)) {
+          invalidate(hold);
+          return;
+        }
+        if (options.onboarding?.refresh) {
+          await options.onboarding.refresh(
+            {
+              sessionId: hold.sessionId,
+              generation: hold.generation,
+              workspaceId: hold.workspaceId,
+              linearUserId: hold.actorId,
+            },
+            context.signal,
+          );
+          if (!context.isCurrent() || !current(hold)) return;
+        }
+        if (!ready(hold)) return;
         const event: AcceptedLinearEvent = JSON.parse(hold.event);
         const verified = await snapshot(event, context.signal);
         if (
@@ -356,12 +547,14 @@ export function createWorkspaceAssignments(options: {
           invalidate(hold);
           return;
         }
+        if (!ready(hold)) return;
         const accepted = immediate(db, () => {
           if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
           if (!current(hold) || holds(hold.sessionId)?.status === "invalid") {
             invalidate(hold);
             return false;
           }
+          if (!ready(hold)) return false;
           const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
           if (
             !member?.active ||

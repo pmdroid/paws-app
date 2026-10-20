@@ -249,7 +249,8 @@ export function runnerForCertificate(
       `SELECT r.id FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
     JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
     WHERE c.fingerprint=? AND c.revoked_at IS NULL AND c.not_before<=?
-    AND c.accepted_until>? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1`,
+    AND c.accepted_until>? AND r.revoked_at IS NULL AND r.status<>'revoked' AND m.active=1
+    AND m.role IN ('owner','admin','member')`,
     )
     .get(fingerprint, now, now);
   return row ? getRunner(db, row.id) : null;

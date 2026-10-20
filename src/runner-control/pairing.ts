@@ -30,7 +30,7 @@ export function createRunnerControl(options: {
   db: Database;
   authority: RunnerAuthority;
   certificateRoot: string;
-  disconnect(fingerprint: string): void;
+  disconnect(fingerprint: string, permanent: boolean): void;
   now?: () => number;
   /** Installed Paws release, or null for a source checkout. Read from the release path by default. */
   serverVersion?: string | null;
@@ -43,6 +43,11 @@ export function createRunnerControl(options: {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!member?.active || !["owner", "admin"].includes(member.role))
       throw new Error("Workspace administrator access is required.");
+  }
+  function pairingMember(principal: WorkspacePrincipal) {
+    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+    if (!member?.active || !["owner", "admin", "member"].includes(member.role))
+      throw new Error("Active permitted workspace membership is required to pair a runner.");
   }
   function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
     const runner = runnerForCertificate(db, peer.fingerprint, at);
@@ -97,7 +102,7 @@ export function createRunnerControl(options: {
     },
     inspectPairing(principal: WorkspacePrincipal, code: string) {
       const at = now();
-      admin(principal);
+      pairingMember(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
       if (!pairing || pairing.expiresAt <= at || pairing.runnerId !== null)
         throw new Error("Runner pairing is invalid or expired.");
@@ -107,16 +112,29 @@ export function createRunnerControl(options: {
         expiresAt: pairing.expiresAt,
       };
     },
-    async approvePairing(principal: WorkspacePrincipal, code: string) {
-      admin(principal);
+    async approvePairing(
+      principal: WorkspacePrincipal,
+      code: string,
+      expected?: { requestFingerprint: string; name: string; authorize(): void },
+    ) {
+      pairingMember(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
-      if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
+      if (
+        !pairing ||
+        pairing.expiresAt <= now() ||
+        pairing.runnerId !== null ||
+        (expected &&
+          (pairing.requestFingerprint !== expected.requestFingerprint ||
+            pairing.name !== expected.name))
+      )
         throw new Error("Runner pairing is invalid or expired.");
+      expected?.authorize();
       const certificate = await options.authority.issue(pairing.csr, undefined, now());
       const at = now();
       const runnerId = workspaceId(at);
       immediate(db, () => {
-        admin(principal);
+        pairingMember(principal);
+        expected?.authorize();
         approveRunnerPairing(db, {
           pairingId: pairing.id,
           runnerId,
@@ -157,14 +175,16 @@ export function createRunnerControl(options: {
     expireConnections() {
       expireRunnerPairings(db, now());
       const fingerprints = db
-        .query<{ fingerprint: string }, [number]>(
-          `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
+        .query<{ fingerprint: string; permanent: number }, [number, number]>(
+          `SELECT c.fingerprint, CASE WHEN c.revoked_at IS NOT NULL OR c.accepted_until<=?
+        OR r.revoked_at IS NOT NULL OR r.status='revoked' OR m.active=0 THEN 1 ELSE 0 END AS permanent FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
         JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
         WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
-        OR r.status='revoked' OR m.active=0`,
+        OR r.status='revoked' OR m.active=0 OR m.role NOT IN ('owner','admin','member')`,
         )
-        .all(now());
-      for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);
+        .all(now(), now());
+      for (const { fingerprint, permanent } of fingerprints)
+        options.disconnect(fingerprint, permanent === 1);
     },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
@@ -189,7 +209,7 @@ export function createRunnerControl(options: {
           now: at,
         });
       });
-      for (const fingerprint of fingerprints) options.disconnect(fingerprint);
+      for (const fingerprint of fingerprints) options.disconnect(fingerprint, true);
     },
     setConcurrency(principal: WorkspacePrincipal, runnerId: string, concurrency: number) {
       immediate(db, () => {

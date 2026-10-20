@@ -411,6 +411,9 @@ export function createRunners() {
   function manages() {
     return session !== null && ["owner", "admin"].includes(session.role);
   }
+  function pairs() {
+    return session !== null && ["owner", "admin", "member"].includes(session.role);
+  }
   function reset() {
     session = null;
     loaded = false;
@@ -492,7 +495,7 @@ export function createRunners() {
       usage = activity.usage;
       usageRunner = target;
       stale = "";
-      if (!manages()) {
+      if (!pairs()) {
         inspection = null;
         pairingOpen = false;
       }
@@ -519,7 +522,7 @@ export function createRunners() {
   }
   async function change(action: () => Promise<void>, administrator = true) {
     if (busy) return;
-    if (administrator ? !manages() : session === null || session.role === "observer") {
+    if (administrator ? !manages() : !pairs()) {
       error = "You do not have permission to update these runner settings.";
       paint();
       return;
@@ -541,14 +544,14 @@ export function createRunners() {
   function listView(now: number, disabled: string, status: string): string {
     const rows = runners.map((runner) => runnerRowMarkup(runner, { now, serverVersion })).join("");
     const alert = error ? `<p role="alert" class="err">${esc(error)}</p>` : "";
-    const pairing = manages() && pairingOpen;
+    const pairing = pairs() && pairingOpen;
     const dialog = pairing
       ? `<dialog id="runner-pair-dialog" aria-labelledby="runner-pair-heading"><div class="dialog-body"><div class="between"><h2 id="runner-pair-heading">Pair a host</h2><button class="btn" data-runner-pair-close data-focus="pair-close">Close</button></div><p>On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</p>${alert}<form id="runner-pairing"><label class="field"><span>Pairing code from the host</span><input name="code" data-focus="code" required pattern="[A-Fa-f0-9]{16}" maxlength="16" autocomplete="off" spellcheck="false" value="${esc(code)}"${disabled}></label><button class="btn" type="submit" data-focus="inspect"${disabled}>Inspect host</button></form>${inspection ? `<div id="runner-inspection"><h3>${esc(inspection.name)}</h3><p>Compare this request fingerprint with the host before approving.</p><code>${esc(inspection.requestFingerprint)}</code><p class="muted">Expires ${esc(new Date(inspection.expiresAt).toLocaleTimeString())}</p><button class="btn primary" data-runner-approve data-focus="approve"${disabled}>Approve runner</button></div>` : ""}</div></dialog>`
       : "";
-    const empty = manages()
+    const empty = pairs()
       ? "<p>No runners are paired. Select <b>Pair a host</b> to connect a Linux host.</p>"
       : "<p>No runners are paired. On the Linux host, run <code>curl -fsSL https://get.paws.boo/ | sudo sh</code> and enter its pairing code.</p>";
-    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${manages() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${dialog}`;
+    return `<h1 class="sr-only">Runners</h1><div class="between"><p class="sub">The Linux hosts that execute work delegated in Linear. Select a runner for its details and execution history.</p>${pairs() ? `<button class="btn primary" data-runner-pair aria-haspopup="dialog" data-focus="pair">Pair a host</button>` : ""}</div>${pairing ? "" : alert}${status}${runners.length ? `<ul class="runner-rows" role="list" aria-label="Runners">${rows}</ul>` : ""}${!busy && !runners.length && !error ? empty : ""}${dialog}`;
   }
   function detailView(id: string, now: number, notices: string): string {
     const list = routeHref({ view: "runners", id: null });
@@ -570,7 +573,7 @@ export function createRunners() {
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
-      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</li></ol><p>Sign in as a workspace owner or admin to approve the host's pairing code.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
+      return `<h1 class="sr-only">Runners</h1><p class="sub">Connect a Linux host to execute work delegated in Linear.</p><section class="runner-section" aria-labelledby="runner-setup-heading"><h2 id="runner-setup-heading">Set up remote runners</h2><p>Enable secure runner access on your Paws server to pair a host.</p><ol>${workspaceReady ? "" : '<li>Configure workspace sign-in over HTTPS. <a href="https://github.com/pmdroid/paws-app/blob/main/docs/workspace-access.md" target="_blank" rel="noopener noreferrer">Open the workspace setup guide</a>.</li>'}<li>Initialize the runner identity once on the Paws server: <code>bun run paws runner-authority init</code>.</li><li>Enable the runner listener with <code>PAWS_RUNNER_HOST</code>, then restart Paws with your HTTPS workspace configuration.</li><li>On the Linux host, install the runner: <code>curl -fsSL https://get.paws.boo/ | sudo sh</code>.</li></ol><p>Sign in as an active workspace member to pair this host with your account.</p><button class="btn" data-runners-setup data-focus="setup"${busy ? " disabled" : ""}>${busy ? "Checking setup…" : "Check setup"}</button>${error ? `<p role="alert" class="err">${esc(error)}</p>` : ""}</section>`;
     const disabled = busy ? " disabled" : "";
     const now = Date.now();
     const status = `${stale ? `<p class="muted">${esc(stale)}</p>` : ""}<p role="status">${busy && !loaded ? "Loading runners…" : esc(feedback)}</p>`;
@@ -679,7 +682,7 @@ export function createRunners() {
           code,
         });
         inspection = { ...result, code };
-      });
+      }, false);
     });
     root!.querySelector("[data-runner-approve]")?.addEventListener(
       "click",
@@ -694,7 +697,7 @@ export function createRunners() {
           pairingOpen = false;
           refocus("pair");
           feedback = "Runner approved. The host can complete pairing.";
-        }),
+        }, false),
     );
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-signin]"))
       button.addEventListener("click", () => {

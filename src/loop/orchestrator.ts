@@ -1,3 +1,4 @@
+import { bindOnboardingIntake, type OnboardingAdmission } from "../db";
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -241,6 +242,11 @@ export type OrchestratorOptions = {
   closeoutPolicyRoot?: (repository: RepositoryBinding) => string | undefined;
   tracker?: TrackerAdapter | null;
   linearTaskModes?: boolean;
+  onboardingIntake?: {
+    applies?(sessionId: string): boolean;
+    admission(sessionId: string): OnboardingAdmission | null;
+    assertAdmission(snapshot: OnboardingAdmission): void;
+  };
   linearAccess?: LinearTaskAccess;
   authorizeLinearEvent?: (event: AcceptedLinearEvent) => Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
@@ -265,6 +271,7 @@ export type OrchestratorOptions = {
     repository: RepositoryBinding,
     signal: AbortSignal,
     access?: "read" | "write",
+    item?: WorkItemRecord,
   ) => Promise<boolean>;
   repositoryToken?: (
     item: WorkItemRecord,
@@ -272,8 +279,18 @@ export type OrchestratorOptions = {
     signal: AbortSignal,
     access: "read" | "write",
   ) => Promise<string>;
+  assertRepository?: (
+    item: WorkItemRecord,
+    repository: RepositoryBinding,
+    signal: AbortSignal,
+    access: "read" | "write",
+  ) => Promise<void>;
   github?: GitHubBinding | null;
-  githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
+  githubForRepository?: (
+    repository: RepositoryBinding,
+    item?: { id: string },
+    operation?: { signal: AbortSignal; assertCurrent(): void },
+  ) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
   launch?: AgentLaunch;
   remoteExecution?: {
@@ -334,6 +351,10 @@ export class Orchestrator {
       generation: number;
       controller: AbortController;
       progress: string | null;
+      publication: {
+        assertCurrent(expected?: WorkItemRecord): void;
+        advance(expected: WorkItemRecord): void;
+      } | null;
       done: Promise<void>;
       finish(): void;
     }
@@ -672,6 +693,16 @@ export class Orchestrator {
     const tracker = this.tracker;
     if (!tracker) throw new Error("Linear is not connected");
     const initialSession = sessionId ? getLinearSession(this.db, sessionId) : null;
+    const onboarding =
+      sessionId && this.options.onboardingIntake?.applies?.(sessionId) !== false
+        ? this.options.onboardingIntake
+        : undefined;
+    const prepared = onboarding && sessionId ? onboarding.admission(sessionId) : null;
+    if (onboarding && !prepared) throw new Error("Onboarding intake is held.");
+    const assertPrepared = () => {
+      if (prepared) onboarding!.assertAdmission(prepared);
+    };
+    assertPrepared();
     const isCurrent = () => {
       if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
@@ -680,7 +711,8 @@ export class Orchestrator {
     };
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
     const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
-    const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
+    const redirect =
+      !prepared && savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
     const progressTracker =
       sessionId && this.options.channel !== "comments"
@@ -696,19 +728,32 @@ export class Orchestrator {
         : tracker;
     let authorizedSnapshot: EpicSnapshot | null = null;
     const authorizeSnapshot = (snapshot: EpicSnapshot) => {
+      assertPrepared();
       if (sessionId && this.options.authorizeLinearIntake?.(sessionId, snapshot) === false)
         throw new Error("The Linear assignment changed before intake.");
       authorizedSnapshot = snapshot;
-      return sessionId
+      const scoped = sessionId
         ? (this.options.linearIntakeScope?.(sessionId, snapshot) ?? snapshot)
         : snapshot;
+      if (
+        prepared &&
+        (scoped.linearIssueId !== prepared.issueId ||
+          scoped.subIssues.some(
+            (issue) => !["completed", "canceled"].includes(issue.stateType ?? ""),
+          ))
+      )
+        throw new Error("Extra issues require their own onboarding answer.");
+      if (prepared && JSON.stringify(scoped) !== prepared.issueFingerprint)
+        throw new Error("The prepared issue changed before intake.");
+      return scoped;
     };
     let intakeTracker = {
       ...progressTracker,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
-    const classification =
-      this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
+    const classification = prepared
+      ? { mode: prepared.mode, repository: prepared.repositoryContext }
+      : this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
         ? await this.taskPlanner.plan({
             taskKey,
             sessionId,
@@ -755,11 +800,15 @@ export class Orchestrator {
           item.id,
         ]);
     };
-    const intakeCurrent = () =>
-      isCurrent() &&
-      (!sessionId ||
-        authorizedSnapshot === null ||
-        this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false);
+    const intakeCurrent = () => {
+      assertPrepared();
+      return (
+        isCurrent() &&
+        (!sessionId ||
+          authorizedSnapshot === null ||
+          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false)
+      );
+    };
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
@@ -787,7 +836,16 @@ export class Orchestrator {
               bindLinearSessionTask(this.db, sessionId, accepted.delegation.id, { actorId });
             this.assignSession(accepted.delegation.id, sessionId);
             this.options.onLinearIntake?.(sessionId, accepted);
-            if (accepted.ok) assignUnownedItems(actorId, accepted.items);
+            if (accepted.ok) {
+              if (prepared)
+                bindOnboardingIntake(
+                  this.db,
+                  prepared,
+                  accepted.items,
+                  onboarding!.assertAdmission,
+                );
+              else assignUnownedItems(actorId, accepted.items);
+            }
           }
           if (redirect && accepted.ok && this.options.caps)
             for (const child of accepted.items)
@@ -972,7 +1030,7 @@ export class Orchestrator {
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
-      const github = repository ? this.githubForRepository(repository) : null;
+      const github = repository ? this.githubForRepository(repository, item) : null;
       if (!repository || !github) return;
       context.signal.throwIfAborted();
       await closeStoppedPull({
@@ -1052,6 +1110,8 @@ export class Orchestrator {
         if (!item || item.state !== "running" || item.cancelRequested) return;
         const mode = getTaskMode(this.db, item.id);
         if (mode === "answer" || mode === "artifact") {
+          this.ensureRun(item);
+          item = getWorkItem(this.db, item.id)!;
           if (
             taskRequiresRepository(this.db, item.id) &&
             !(await this.selectRepository(item, "read"))
@@ -1630,7 +1690,11 @@ export class Orchestrator {
       this.assertJobCurrent(item.id);
       return verdict;
     }
+    const publication = this.live.get(`operation:${item.id}`)?.publication;
+    publication?.assertCurrent();
+    if (publication) item = getWorkItem(this.db, item.id)!;
     const priorRunId = item.currentRunId;
+    let acceptedPublication: WorkItemRecord | null = null;
     let ownedRunId: string | null = null;
     let enteredFromQueue = false;
     try {
@@ -1683,6 +1747,8 @@ export class Orchestrator {
       const runId = item.currentRunId!;
       const assertCurrent = () => {
         this.signalForItem(item.id)?.throwIfAborted();
+        this.assertJobCurrent(item.id);
+        publication?.assertCurrent(item);
         const current = getWorkItem(this.db, item.id);
         const identity = this.readProfileSnapshot(runId)?.candidate;
         if (
@@ -1705,11 +1771,13 @@ export class Orchestrator {
         assertCurrent,
       );
       assertCurrent();
-      if (enteredFromQueue && verdict.decision === "accepted" && !verdict.exhausted)
-        applyWorkItemEvent(this.db, item.id, "closeout_accepted");
+      if (enteredFromQueue && verdict.decision === "accepted" && !verdict.exhausted) {
+        acceptedPublication = applyWorkItemEvent(this.db, item.id, "closeout_accepted");
+      }
       return verdict;
     } finally {
       if (ownedRunId) markRunEnded(this.db, ownedRunId, this.now());
+      if (acceptedPublication) publication?.advance(acceptedPublication);
     }
   }
 
@@ -1867,6 +1935,7 @@ export class Orchestrator {
       },
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
+      policyGit: this.policyGit(item, deps.signal),
       ...recoveryOptions(this.db, item.id),
       progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
     });
@@ -2033,7 +2102,8 @@ export class Orchestrator {
     }
     this.assertReconciled(item);
     const repository = this.repositoryForItem(item);
-    const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
+    const configuredGitHub =
+      repository === null ? null : this.githubForRepository(repository, item);
     if (
       repository === null ||
       repository === undefined ||
@@ -2941,7 +3011,7 @@ export class Orchestrator {
         }
       },
       mergedHeads: async (item, repository) => {
-        const github = this.githubForRepository(repository);
+        const github = this.githubForRepository(repository, item);
         if (!github) return [];
         return mergedPullHeads({
           client: github.client,
@@ -3364,6 +3434,10 @@ export class Orchestrator {
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller,
       progress: null as string | null,
+      publication: null as {
+        assertCurrent(expected?: WorkItemRecord): void;
+        advance(expected: WorkItemRecord): void;
+      } | null,
       done: new Promise<void>((resolve) => {
         finish = resolve;
       }),
@@ -3387,13 +3461,17 @@ export class Orchestrator {
     repository: RepositoryBinding,
     signal: AbortSignal,
     access: "read" | "write",
+    required = false,
   ) {
-    if (!this.options.repositoryToken) return undefined;
+    if (!required && !this.options.repositoryToken) return undefined;
     const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
     return createRepositoryGit({
       remoteUrl: repository.remoteUrl,
       signal,
-      token: (ownedSignal) => this.options.repositoryToken!(item, repository, ownedSignal, access),
+      token: (ownedSignal) => {
+        if (!this.options.repositoryToken) throw new Error("GitHub sign-in is required.");
+        return this.options.repositoryToken(item, repository, ownedSignal, access);
+      },
       onCleanupFailure: () => this.blockConversation(item.id),
       assert: async () => {
         signal.throwIfAborted();
@@ -3411,6 +3489,7 @@ export class Orchestrator {
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "initial", signal)))
           throw new Error("GitHub sign-in is required before reading the repository.");
+        await this.options.assertRepository?.(current, repository, signal, access);
       },
     });
   }
@@ -3982,10 +4061,11 @@ export class Orchestrator {
       itemId: itemPathId(item),
       pawsRoot: this.options.pawsRoot,
     });
-    const required = reviewRequirements(
+    const required = await reviewRequirements(
       worktree.path,
       this.options.home,
       this.options.closeoutPolicyRoot?.(repository),
+      this.policyGit(item, signal),
     );
     if (!required.ok) throw new Error(required.message);
     const requirements = required.items.filter((check) => check.gate === "beforePR");
@@ -4047,7 +4127,35 @@ export class Orchestrator {
       return {};
     const { home, policyRoot } = this.closeoutHome(item);
     return {
-      closeoutPolicy: async () => trustedPolicyFiles(input.worktreePath, home, policyRoot),
+      closeoutPolicy: async () =>
+        trustedPolicyFiles(
+          input.worktreePath,
+          home,
+          policyRoot,
+          this.policyGit(item, input.signal),
+        ),
+    };
+  }
+
+  private policyGit(item: WorkItemRecord, signal = this.signalForItem(item.id)) {
+    const repository = this.repositoryForItem(item);
+    if (!repository) return undefined;
+    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
+    return async (repo: string, operation: "fetch" | "ls-remote") => {
+      signal?.throwIfAborted();
+      if (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+        throw new Error("The policy read belongs to an obsolete task.");
+      const bounded = AbortSignal.timeout(operation === "fetch" ? 120_000 : 60_000);
+      const owned = signal ? AbortSignal.any([signal, bounded]) : bounded;
+      const network = this.repositoryGit(item, repository, owned, "write", true)!;
+      return network([
+        "-C",
+        repo,
+        operation,
+        operation === "fetch" ? "--no-tags" : "--exit-code",
+        repository.remoteUrl,
+        "refs/heads/main",
+      ]);
     };
   }
 
@@ -4093,7 +4201,7 @@ export class Orchestrator {
         }
         const allowed =
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(bound, controller.signal, access));
+          (await this.options.repositoryAccess(bound, controller.signal, access, item));
         controller.signal.throwIfAborted();
         if (this.stopped(item.id)) return false;
         if (!allowed) throw new Error("The selected repository is no longer accessible");
@@ -4117,7 +4225,7 @@ export class Orchestrator {
         if (
           listed(candidate) ||
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(candidate, controller.signal, access))
+          (await this.options.repositoryAccess(candidate, controller.signal, access, item))
         )
           candidates.push(candidate);
       }
@@ -4178,7 +4286,7 @@ export class Orchestrator {
         }
         const accessible =
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(selected, controller.signal, access));
+          (await this.options.repositoryAccess(selected, controller.signal, access, item));
         controller.signal.throwIfAborted();
         if (this.stopped(item.id)) return false;
         if (accessible) {
@@ -4211,7 +4319,7 @@ export class Orchestrator {
         const accessible =
           !auth ||
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(candidates[0]!, controller.signal, access));
+          (await this.options.repositoryAccess(candidates[0]!, controller.signal, access, item));
         controller.signal.throwIfAborted();
         if (!current()) return false;
         if (!accessible) {
@@ -4289,7 +4397,7 @@ export class Orchestrator {
       if ("bind" in choice) {
         const accessible =
           !this.options.repositoryAccess ||
-          (await this.options.repositoryAccess(choice.bind, controller.signal, access));
+          (await this.options.repositoryAccess(choice.bind, controller.signal, access, item));
         controller.signal.throwIfAborted();
         if (!current()) return false;
         if (accessible) {
@@ -4352,8 +4460,49 @@ export class Orchestrator {
     }
   }
 
-  private githubForRepository(repository: RepositoryBinding): GitHubBinding | null {
-    if (this.options.githubForRepository) return this.options.githubForRepository(repository);
+  private githubForRepository(
+    repository: RepositoryBinding,
+    item?: { id: string },
+  ): GitHubBinding | null {
+    const live = item ? this.live.get(`operation:${item.id}`) : undefined;
+    const authority = item ? this.jobContexts.get(item.id) : undefined;
+    if (live && item && !live.publication) {
+      let captured = getWorkItem(this.db, item.id);
+      const assertCurrent = (expected = captured) => {
+        live.controller.signal.throwIfAborted();
+        this.assertJobCurrent(item.id);
+        const current = getWorkItem(this.db, item.id);
+        if (
+          this.jobContexts.get(item.id) !== authority ||
+          !current ||
+          !expected ||
+          current.version !== expected.version ||
+          current.currentRunId !== expected.currentRunId ||
+          current.state !== expected.state ||
+          this.live.get(`operation:${item.id}`) !== live ||
+          this.stopped(item.id) ||
+          (live.sessionId !== null &&
+            (getLinearSessionGeneration(this.db, live.sessionId) !== live.generation ||
+              getLinearSession(this.db, live.sessionId)?.stoppedAt !== null))
+        )
+          throw new Error("Publication operation changed.");
+      };
+      live.publication = {
+        assertCurrent,
+        advance(expected) {
+          assertCurrent(expected);
+          captured = expected;
+        },
+      };
+    }
+    const operation = live?.publication
+      ? {
+          signal: live.controller.signal,
+          assertCurrent: () => live.publication!.assertCurrent(),
+        }
+      : undefined;
+    if (this.options.githubForRepository)
+      return this.options.githubForRepository(repository, item, operation);
     const configured = this.options.repository;
     if (
       configured?.owner !== repository.owner ||

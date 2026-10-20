@@ -1,5 +1,10 @@
+import { handleOnboardingAgents, type OnboardingAgents } from "./onboarding-agents";
+import { handleOnboardingPreparation } from "./onboarding-preparation-route";
+import type { createOnboardingPreparation } from "./onboarding-preparation";
+import { handleOnboardingVm, type OnboardingVmProvisioning } from "./onboarding-vm";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
+import { createMemberGitHubOAuth } from "./member-github-oauth";
 import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import {
@@ -34,6 +39,9 @@ import {
 export type WorkspaceAccessOptions = {
   db: Database;
   assignments?: WorkspaceAssignments;
+  onboardingAgents?: () => OnboardingAgents | undefined;
+  onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
+  onboardingVmProvisioning?: OnboardingVmProvisioning;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -42,6 +50,7 @@ export type WorkspaceAccessOptions = {
   now?: () => number;
   slackIdentities?: SlackIdentityReads | null;
   githubAttributionClient?: { clientId: string; clientSecret: string };
+  memberGitHub?: { secretsDir: string; client?: { clientId: string; clientSecret: string } };
   verifyTeam?: (id: string, signal: AbortSignal) => Promise<boolean>;
   readTeams?: (signal: AbortSignal) => Promise<{ id: string; name: string; key: string }[]>;
 };
@@ -60,6 +69,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
+  const agentChallenges = new Map<string, { binding: string; expiresAt: number }>();
   const authorizeLinearEvent = createWorkspaceLinearActions({
     db: options.db,
     organizationId: options.installedOrganization.id,
@@ -132,6 +142,36 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     fetch: options.fetch,
     now,
   });
+  const memberGitHub = options.memberGitHub
+    ? createMemberGitHubOAuth({
+        db: options.db,
+        origin,
+        secretsDir: options.memberGitHub.secretsDir,
+        client: options.memberGitHub.client,
+        onboarding: (sessionId, generation, binding) => {
+          const access = workspaceMember(options.db, binding.workspaceId, binding.userId);
+          const session = options.db
+            .query<{ authenticatedAt: number }, [string]>(
+              "SELECT authenticated_at AS authenticatedAt FROM workspace_session WHERE token_hash=?",
+            )
+            .get(binding.sessionHash);
+          return (
+            access !== null &&
+            session !== null &&
+            options.assignments?.onboarding(sessionId, generation, {
+              workspaceId: binding.workspaceId,
+              userId: binding.userId,
+              role: access.role,
+              teamIds: access.teamIds,
+              authenticatedAt: session.authenticatedAt,
+            }) != null
+          );
+        },
+        refresh: (workspaceKey, userId) => refresh(workspaceKey, userId, true, true),
+        fetch: options.fetch,
+        now,
+      })
+    : undefined;
   async function refreshMemberships() {
     const workspace = workspaceForOrganization(options.db, options.installedOrganization.id);
     if (workspace === null) return;
@@ -149,10 +189,19 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
   async function handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const memberGitHubResponse = await memberGitHub?.handle(request);
+    if (memberGitHubResponse) return memberGitHubResponse;
     const identityResponse = await attribution.handle(request);
     if (identityResponse) return identityResponse;
+    const onboardingPage =
+      /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(path);
     if (
+      !onboardingPage &&
+      !path.startsWith("/api/workspaces/onboarding/agents") &&
+      path !== "/api/workspaces/onboarding/preparation" &&
       ![
+        "/api/workspaces/onboarding",
+        "/api/workspaces/onboarding/vm/retry",
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
@@ -192,7 +241,14 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           return json({ error: "Invalid bootstrap grant" }, 400);
       }
       const token = url.searchParams.get("assignment");
-      const assignmentHash = token === null ? null : options.assignments?.begin(token);
+      const returnPath = url.searchParams.get("return");
+      if (token !== null && returnPath !== null)
+        return json({ error: "Choose one sign-in context." }, 400);
+      const returnContext =
+        returnPath === null ? null : options.assignments?.beginReturn(returnPath);
+      if (returnPath !== null && !returnContext)
+        return json({ error: "Onboarding return is unavailable." }, 400);
+      const assignmentHash = token === null ? returnContext : options.assignments?.begin(token);
       if (token !== null && !assignmentHash)
         return json(
           { error: "Assignment sign-in is unavailable. Use the latest Linear sign-in action." },
@@ -273,9 +329,20 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           teamIds: identity.teamIds,
           now: syncAt,
         });
+        let destination = "/status/";
         if (result.assignmentHash !== null) {
           if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-          options.assignments.complete(result.assignmentHash, workspace.id, result.identity.userId);
+          destination = result.assignmentHash.startsWith("onboarding:")
+            ? options.assignments.completeReturn(
+                result.assignmentHash,
+                workspace.id,
+                result.identity.userId,
+              )
+            : options.assignments.complete(
+                result.assignmentHash,
+                workspace.id,
+                result.identity.userId,
+              );
         }
         await links.syncUser(workspace.id, userId);
         const previous = requestWorkspaceSession(options.db, request, now());
@@ -286,7 +353,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           now: now(),
         });
         const headers = new Headers({
-          location: "/status/",
+          location: destination,
           "cache-control": "no-store",
           "referrer-policy": "no-referrer",
         });
@@ -309,10 +376,66 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     } catch {
       return json({ error: "Linear membership could not be refreshed." }, 503);
     }
-    if (access === null) return json({ error: "Sign in to Paws." }, 401);
+    if (access === null) {
+      if (onboardingPage && request.method === "GET") return null;
+      return json({ error: "Sign in to Paws." }, 401);
+    }
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
     if (selected !== null && selected !== access.principal.workspaceId)
       return json({ error: "Workspace access denied." }, 403);
+    if (path.startsWith("/api/workspaces/onboarding/agents")) {
+      const dependencies = options.onboardingAgents?.();
+      if (!options.assignments || !dependencies)
+        return json({ error: "Agent onboarding is unavailable." }, 503);
+      return handleOnboardingAgents(request, {
+        db: options.db,
+        assignments: options.assignments,
+        dependencies,
+        challenges: agentChallenges,
+        ...access,
+        origin,
+        now,
+      });
+    }
+    if (path === "/api/workspaces/onboarding/preparation") {
+      if (!options.assignments || !options.onboardingPreparation)
+        return json({ error: "Onboarding is unavailable." }, 404);
+      return handleOnboardingPreparation(request, {
+        db: options.db,
+        assignments: options.assignments,
+        preparation: options.onboardingPreparation,
+        ...access,
+        origin,
+      });
+    }
+    if (path === "/api/workspaces/onboarding/vm/retry") {
+      if (!options.assignments) return json({ error: "Onboarding is unavailable." }, 404);
+      return handleOnboardingVm(request, {
+        db: options.db,
+        assignments: options.assignments,
+        ...access,
+        origin,
+        now,
+        ...(options.onboardingVmProvisioning
+          ? { provisioning: options.onboardingVmProvisioning }
+          : {}),
+      });
+    }
+    if (onboardingPage || path === "/api/workspaces/onboarding") {
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+      const sessionId = onboardingPage?.[1] ?? url.searchParams.get("session") ?? "";
+      const generation = onboardingPage?.[2] ?? url.searchParams.get("generation") ?? "";
+      const state =
+        /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) && /^(0|[1-9][0-9]{0,9})$/.test(generation)
+          ? options.assignments?.onboarding(sessionId, Number(generation), access.principal)
+          : null;
+      if (!state)
+        return json(
+          { error: "Onboarding is unavailable. Use the current Linear assignment." },
+          404,
+        );
+      return onboardingPage ? null : json(state);
+    }
     if (path === "/api/workspaces/select") {
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
       if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))

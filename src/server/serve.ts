@@ -62,6 +62,7 @@ export type ServerOptions = {
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken">;
+  refreshRepositoryCatalog?: () => Promise<boolean>;
 };
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -122,6 +123,9 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
+          ...(options.refreshRepositoryCatalog
+            ? { refreshRepositoryCatalog: options.refreshRepositoryCatalog }
+            : {}),
         }))();
       requests.add(operation);
       return operation.finally(() => requests.delete(operation));
@@ -160,6 +164,7 @@ type Secrets = {
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  refreshRepositoryCatalog?: () => Promise<boolean>;
 };
 
 async function route(request: Request, secrets: Secrets): Promise<Response> {
@@ -208,6 +213,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         env,
         origin: workspace.origin,
         teams: (setupRequest, signal) => workspace.repositoryTeams(setupRequest, signal),
+        ...(secrets.refreshRepositoryCatalog
+          ? { refreshCatalog: secrets.refreshRepositoryCatalog }
+          : {}),
       })(request);
       if (setup) return setup;
       return (await createHostedGitHubConnect({
