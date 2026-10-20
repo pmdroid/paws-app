@@ -137,7 +137,7 @@ export type RunnerWorkerEvent =
   | { type: "acp"; event: AcpEvent }
   | { type: "question"; requestId: string; question: string; options: readonly unknown[] }
   | { type: "artifact"; requestId: string; artifact: RunnerArtifact }
-  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" }>;
+  | Extract<RunnerEvent, { type: "plan" | "pull_request" | "progress" | "closeout" }>;
 
 export interface RunnerWorkerResult {
   executionId: string;
@@ -571,6 +571,17 @@ export async function executeRunnerCommand(
                 if (!parsed.success || parsed.data.type !== "plan")
                   throw new Error("update_plan requires 1 to 16 steps with content and status");
                 emit(parsed.data);
+              },
+            }
+          : undefined,
+      closeoutProgress:
+        command.type === "run"
+          ? {
+              record(progress) {
+                // Closeout output must not use up the journal the run itself needs.
+                if (journalSize > 8_388_608) return;
+                const parsed = RunnerEventSchema.safeParse({ type: "closeout", progress });
+                if (parsed.success && parsed.data.type === "closeout") emit(parsed.data);
               },
             }
           : undefined,
