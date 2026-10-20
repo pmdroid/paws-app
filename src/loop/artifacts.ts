@@ -128,7 +128,7 @@ export function createEvidenceArtifactPublisher(options: {
           generation,
           now: now(),
           payload: {
-            id: stored.id,
+            id: randomUUID(),
             sessionId: options.sessionId,
             kind: "thought",
             body: `Closeout evidence for check \`${evidence.checkId}\`: [${label}](<${url}>)`,
