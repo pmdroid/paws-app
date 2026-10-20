@@ -49,7 +49,7 @@ test("protected revisioned guest publication reloads without restarting active t
       ],
       {
         env: {
-          PATH: "/usr/bin:/bin",
+          PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
           HOME: join(root, "home"),
           KYOTOAGENT_ROOT: join(root, "home/.kyotoagent"),
         },
