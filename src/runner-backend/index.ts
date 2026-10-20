@@ -43,6 +43,8 @@ import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
 
+const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
+
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {
@@ -104,7 +106,48 @@ export function createRemoteAgentRunner(options: {
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Map<string, string>();
+  function usageLimitReset(agent: string, sessionId: string | null): number | null {
+    const runnerInScope = `r.status='active' AND r.revoked_at IS NULL AND r.workspace_id IN
+      (SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE s.session_id=?2)`;
+    return (
+      db
+        .query<{ resetsAt: number | null }, [string, string | null, number]>(
+          `SELECT MIN(resets_at) AS resetsAt FROM (
+         SELECT a.cooldown_until AS resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+         WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
+         UNION ALL
+         SELECT p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})`,
+        )
+        .get(agent, sessionId, now())?.resetsAt ?? null
+    );
+  }
   async function select(
+    itemId: string,
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+    runnerId?: string,
+  ) {
+    const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
+    for (;;) {
+      const selected = await place(itemId, placement, runnerId);
+      if (selected) return selected;
+      const agent = placement.profile?.agent;
+      const resetsAt = agent
+        ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
+        : null;
+      if (resetsAt === null)
+        throw new RunnerUnavailableError(
+          "No available paired runner can access this Linear task repository",
+        );
+      const wait = resetsAt - now();
+      if (wait > deadline - performance.now())
+        throw new RunnerUnavailableError(
+          `${agent} reached its usage limit until ${new Date(resetsAt).toISOString()}`,
+        );
+      await delay(Math.min(wait, interval * 20), undefined, { signal: placement.signal });
+    }
+  }
+  async function place(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     runnerId?: string,
@@ -153,9 +196,7 @@ export function createRemoteAgentRunner(options: {
         return { ...runner, runId: item.currentRunId };
       } catch {}
     }
-    throw new RunnerUnavailableError(
-      "No available paired runner can access this Linear task repository",
-    );
+    return null;
   }
   const cancelItem = createRemoteCancellation(options);
   return {
