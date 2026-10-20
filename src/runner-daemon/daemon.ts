@@ -71,6 +71,7 @@ export type RunnerDaemonOptions = {
   serverCa?: string;
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories: readonly string[];
+  repositoryPolicy?: () => readonly string[];
   concurrency?: number;
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
@@ -183,7 +184,17 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         "SELECT payload FROM pending_command WHERE acknowledged=0 ORDER BY rowid",
       )
       .all()
-      .map((row) => RunnerCommandSchema.parse(JSON.parse(row.payload)));
+      .map((row) => RunnerCommandSchema.parse(JSON.parse(row.payload)))
+      .filter((command) => {
+        if (!options.repositoryPolicy || !("repository" in command) || !command.repository)
+          return true;
+        try {
+          const repository = `${command.repository.owner}/${command.repository.repo}`.toLowerCase();
+          return options.repositoryPolicy().some((allowed) => allowed.toLowerCase() === repository);
+        } catch {
+          return false;
+        }
+      });
   }
   async function acknowledgeCommand(id: string): Promise<void> {
     const identity = paired();
@@ -244,7 +255,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           runnerId: identity.runnerId,
           workspaceId: identity.workspaceId,
           now: now(),
-          allowedRepositories: options.allowedRepositories,
+          get allowedRepositories() {
+            try {
+              return options.repositoryPolicy?.() ?? options.allowedRepositories;
+            } catch {
+              return [];
+            }
+          },
           claimCommand: (id, expiresAt) =>
             db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
               id,
