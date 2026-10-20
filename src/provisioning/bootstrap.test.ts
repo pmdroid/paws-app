@@ -117,6 +117,7 @@ test("install start never interrupts an active installer and completion requires
     controlPlaneUrl: ORIGIN,
     runnerApiUrl: "https://paws.example.invalid:8788",
     allowedRepositories: [],
+    repositoryPolicy: "/etc/paws-runner/repository-policy.json",
   });
   const status = (lines: string[]) => {
     outputs.push({ stdout: `${lines.join("\n")}\n`, exitCode: 0 });

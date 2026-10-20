@@ -445,14 +445,49 @@ export async function probeRunnerDaemon(
     const heartbeat = (await child("heartbeat")).result;
     assert.equal(heartbeat.fingerprint, renewed.fingerprint);
     assert.deepEqual(heartbeatBodies.at(-1), {});
+    let liveRepositories = ["local/fixture"];
     const configured = openRunnerDaemon({
       ...config,
       allowedRepositories: ["local/fixture"],
+      repositoryPolicy: () => liveRepositories,
       concurrency: 4,
       sampleHost: () => ({ cpuPercent: 12.5, osId: "debian", runnerVersion: "1.4.0" }),
     });
     try {
       assert.equal(configured.capacity(), 4);
+      const live = {
+        ...command,
+        id: "live-policy-b",
+        repository: {
+          ...command.repository!,
+          repo: "second",
+          remoteUrl: "https://github.com/local/second.git",
+        },
+      } as RunnerCommand;
+      commands = [signed(live)];
+      assert.deepEqual((await configured.pollCommands()).rejected, ["repository_denied"]);
+      liveRepositories = ["local/fixture", "local/second"];
+      assert.deepEqual(
+        (await configured.pollCommands()).commands.map((entry) => entry.id),
+        [live.id],
+      );
+      liveRepositories = ["local/fixture"];
+      assert.deepEqual(configured.pendingCommands(), []);
+      liveRepositories = ["local/fixture", "local/second"];
+      await configured.acknowledgeCommand(live.id);
+      const policyDb = openDatabase(dbPath);
+      policyDb.run("DELETE FROM pending_command WHERE id=?", [live.id]);
+      policyDb.run("DELETE FROM command_receipt WHERE id=?", [live.id]);
+      policyDb.close();
+      liveRepositories = ["local/second"];
+      commands = [signed({ ...command, id: "live-policy-revoked" })];
+      assert.deepEqual((await configured.pollCommands()).rejected, ["repository_denied"]);
+      commands = [];
+      observe(
+        "one live daemon reloads repository additions and revocations for every signed command without restart",
+        true,
+        { repositories: liveRepositories, admitted: live.id },
+      );
       await configured.heartbeat();
       assert.deepEqual(heartbeatBodies.at(-1), {
         cpuPercent: 12.5,

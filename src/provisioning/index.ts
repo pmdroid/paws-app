@@ -2,6 +2,7 @@ export {
   AGENT_TASK_PATH,
   BootstrapError,
   createExeDevBootstrap,
+  guestRepositoryList,
   MISE_PATH,
   RUNNER_SERVICE_PATH,
   validMiseRelease,

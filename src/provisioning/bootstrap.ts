@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { quote } from "./commands";
 import type { ExeDev } from "./types";
 
-export type BootstrapOperation = "install" | "pair" | "runner";
+export type BootstrapOperation = "install" | "pair" | "runner" | "policy";
 
 export class BootstrapError extends Error {
   override name = "BootstrapError";
@@ -26,6 +27,11 @@ export interface MemberVmBootstrap {
   requestPairing(vmName: string): Promise<PairingChallenge>;
   completePairing(vmName: string): Promise<GuestPairing>;
   startRunner(vmName: string): Promise<void>;
+  allowRepositories(
+    vmName: string,
+    repositories: readonly string[],
+    policy: { revision: number; fence: number },
+  ): Promise<void>;
 }
 
 export type MiseRelease = {
@@ -46,10 +52,12 @@ export type BootstrapOptions = {
 export const MISE_PATH = "/usr/local/bin/mise";
 export const RUNNER_SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 export const AGENT_TASK_PATH = "/opt/paws-runner/bin:/usr/local/bin:/usr/bin:/bin";
+export const REPOSITORY_PATTERN = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
 const UNIT = "paws-provision-install.service";
 const STAGING = "/var/lib/paws-provision";
 const CONFIG = "/etc/paws-runner/config.json";
+const POLICY = "/etc/paws-runner/repository-policy.json";
 const RUNNER =
   "sudo /usr/sbin/runuser --user paws-runner -- /usr/bin/env -i --chdir=/var/lib/paws-runner HOME=/var/lib/paws-runner PATH=/opt/paws-runner/bin:/usr/bin:/bin LANG=C";
 const SEMVER = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -101,6 +109,7 @@ function provisionScript(options: BootstrapOptions): string {
     "umask 022",
     `/bin/sh ${STAGING}/install-runner.sh ${options.runnerVersion}`,
     `install -o root -g paws-runner -m 0640 ${STAGING}/config.json ${CONFIG}`,
+    `if [ ! -e ${POLICY} ]; then printf '%s\\n' '{"revision":0,"fence":0,"repositories":[]}' > ${STAGING}/repository-policy.json; install -o root -g paws-runner -m 0640 ${STAGING}/repository-policy.json ${POLICY}; fi`,
     "arch=$(dpkg --print-architecture)",
     'case "$arch" in',
     `  amd64) asset=x64; expected=${quote(sha256.amd64 ?? "")} ;;`,
@@ -129,6 +138,7 @@ function runnerConfig(options: BootstrapOptions, repositories: readonly string[]
     controlPlaneUrl: origin(options.controlPlaneUrl),
     runnerApiUrl: origin(options.runnerApiUrl),
     allowedRepositories: repositories,
+    repositoryPolicy: POLICY,
     ...(options.serverCa === undefined ? {} : { serverCa: options.serverCa }),
   })}\n`;
 }
@@ -164,6 +174,16 @@ function pendingChallenge(line: string): PairingChallenge | null {
     requestFingerprint: parsed.requestFingerprint,
     expiresAt: parsed.expiresAt,
   };
+}
+
+export function guestRepositoryList(repositories: readonly string[]): string[] {
+  const list = [...new Set(repositories)].sort();
+  if (
+    list.length > 256 ||
+    !list.every((entry) => entry.length <= 256 && REPOSITORY_PATTERN.test(entry))
+  )
+    throw new Error("Runner repository policy is invalid.");
+  return list;
 }
 
 export function createExeDevBootstrap(options: BootstrapOptions): MemberVmBootstrap {
@@ -264,5 +284,77 @@ export function createExeDevBootstrap(options: BootstrapOptions): MemberVmBootst
       );
       if (result.exitCode !== 0) throw new BootstrapError("runner", "exit");
     },
+    async allowRepositories(vmName, repositories, policy) {
+      if (
+        !Number.isSafeInteger(policy.revision) ||
+        policy.revision < 0 ||
+        !Number.isSafeInteger(policy.fence) ||
+        policy.fence < 1
+      )
+        throw new Error("Repository policy revision is invalid.");
+      const document = JSON.stringify({
+        ...policy,
+        repositories: guestRepositoryList(repositories),
+      });
+      if (Buffer.byteLength(document) > 65536)
+        throw new Error("Repository policy exceeds its size limit.");
+      const digest = createHash("sha256").update(document).digest("hex");
+      const program = repositoryPolicyProgram(document);
+      const result = await exec(
+        vmName,
+        `: paws-runner-policy; sudo /usr/bin/python3 -c ${quote(program)}`,
+      );
+      if (result.exitCode !== 0) throw new BootstrapError("policy", "exit");
+      if (result.stdout.trim() !== digest) throw new BootstrapError("policy", "output");
+    },
   };
+}
+
+function repositoryPolicyProgram(document: string): string {
+  return `import os,stat,json,hashlib,fcntl,tempfile,grp
+path="${POLICY}"
+parent=os.path.dirname(path)
+check=parent
+while True:
+ s=os.lstat(check)
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022: raise RuntimeError("unsafe parent")
+ if check=="/": break
+ check=os.path.dirname(check)
+gid=grp.getgrnam("paws-runner").gr_gid
+flags=os.O_NOFOLLOW|os.O_NONBLOCK
+lock=os.open(path+".lock",os.O_RDWR|os.O_CREAT|flags,0o600)
+s=os.fstat(lock)
+if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_nlink!=1 or s.st_mode&0o7777!=0o600: raise RuntimeError("unsafe lock")
+fcntl.flock(lock,fcntl.LOCK_EX)
+data=${JSON.stringify(document)}.encode()
+next=json.loads(data)
+try:
+ fd=os.open(path,os.O_RDONLY|flags)
+except FileNotFoundError:
+ current={"revision":-1,"fence":-1}
+else:
+ try:
+  s=os.fstat(fd)
+  if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_gid!=gid or s.st_nlink!=1 or s.st_mode&0o7777!=0o640 or s.st_size>65536: raise RuntimeError("unsafe policy")
+  current=json.loads(os.read(fd,65537))
+ finally:
+  os.close(fd)
+if next["fence"]<current["fence"] or next["revision"]<current["revision"]: raise RuntimeError("stale policy")
+if next["fence"]==current["fence"] and next!=current: raise RuntimeError("conflicting policy")
+fd,name=tempfile.mkstemp(prefix=".repository-policy-",dir=parent)
+try:
+ os.fchown(fd,0,gid)
+ os.fchmod(fd,0o640)
+ with os.fdopen(fd,"wb") as out:
+  out.write(data)
+  out.flush()
+  os.fsync(out.fileno())
+ os.replace(name,path)
+ directory=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ try: os.fsync(directory)
+ finally: os.close(directory)
+finally:
+ if os.path.exists(name): os.unlink(name)
+print(hashlib.sha256(data).hexdigest())
+`;
 }
