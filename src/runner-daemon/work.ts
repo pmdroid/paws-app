@@ -9,6 +9,8 @@ const assignment = z.strictObject({ runId: identifier, generation });
 export const RunnerHeartbeatSchema = z.strictObject({
   leases: z.array(z.strictObject({ ...assignment.shape, expiresAt: timestamp })),
   fenced: z.array(assignment),
+  /** Concurrency chosen in Paws, sent only to runners that report a ceiling. */
+  concurrency: z.number().int().min(1).max(16).optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });
 export const RunnerGrantTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
