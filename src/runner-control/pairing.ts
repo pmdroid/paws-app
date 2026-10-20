@@ -111,16 +111,29 @@ export function createRunnerControl(options: {
         expiresAt: pairing.expiresAt,
       };
     },
-    async approvePairing(principal: WorkspacePrincipal, code: string) {
+    async approvePairing(
+      principal: WorkspacePrincipal,
+      code: string,
+      expected?: { requestFingerprint: string; name: string; authorize(): void },
+    ) {
       pairingMember(principal);
       const pairing = findRunnerPairing(db, { codeHash: workspaceTokenHash(code) });
-      if (!pairing || pairing.expiresAt <= now() || pairing.runnerId !== null)
+      if (
+        !pairing ||
+        pairing.expiresAt <= now() ||
+        pairing.runnerId !== null ||
+        (expected &&
+          (pairing.requestFingerprint !== expected.requestFingerprint ||
+            pairing.name !== expected.name))
+      )
         throw new Error("Runner pairing is invalid or expired.");
+      expected?.authorize();
       const certificate = await options.authority.issue(pairing.csr, undefined, now());
       const at = now();
       const runnerId = workspaceId(at);
       immediate(db, () => {
         pairingMember(principal);
+        expected?.authorize();
         approveRunnerPairing(db, {
           pairingId: pairing.id,
           runnerId,

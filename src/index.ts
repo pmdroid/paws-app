@@ -1,7 +1,17 @@
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createMemberVmProvisioner, type MemberVmProvisioner } from "./member-vm";
+import {
+  createExeDev,
+  createExeDevBootstrap,
+  type CreateVm,
+  type ExeDev,
+  type MemberVmBootstrap,
+  type MiseRelease,
+} from "./provisioning";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
@@ -24,6 +34,7 @@ import {
   ensureLayout,
   loadRuntime,
   loadEnv,
+  loadMemberVmConfig,
   loadRunnerControl,
   pawsPaths,
   type EnvSource,
@@ -197,6 +208,17 @@ export type StartOptions = {
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
   refreshRepositories?: boolean;
+  memberVm?: {
+    exeDev: ExeDev;
+    resources: Omit<CreateVm, "name">;
+    runnerVersion: string;
+    runnerApiUrl: string;
+    serverCa?: string;
+    installer?: string;
+    mise?: MiseRelease;
+    bootstrap?: MemberVmBootstrap;
+    pollMs?: number;
+  };
 };
 
 const LOOPBACK = "127.0.0.1";
@@ -213,6 +235,32 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
+  const memberVmConfig = loadMemberVmConfig(envSource, runtime.env);
+  if ((memberVmConfig !== null || options?.memberVm) && runnerConfig === null)
+    throw new Error("Automatic member VM setup requires runner control (PAWS_RUNNER_HOST).");
+  if ((memberVmConfig !== null || options?.memberVm) && !runtime.publicUrl?.startsWith("https://"))
+    throw new Error("Automatic member VM setup requires an HTTPS PAWS_PUBLIC_URL.");
+  const memberVmSettings =
+    options?.memberVm ??
+    (memberVmConfig === null
+      ? undefined
+      : {
+          exeDev: createExeDev({
+            fetch: (url, init) => fetch(url, init),
+            readToken: async () => {
+              const token = readSecretFile(memberVmConfig.tokenFile)?.trim();
+              if (!token) throw new Error("The exe.dev token file is missing or empty.");
+              return token;
+            },
+          }),
+          resources: memberVmConfig.resources,
+          runnerVersion: memberVmConfig.runnerVersion,
+          runnerApiUrl: memberVmConfig.runnerApiUrl,
+          mise: memberVmConfig.mise,
+          ...(memberVmConfig.serverCaFile === undefined
+            ? {}
+            : { serverCa: readFileSync(memberVmConfig.serverCaFile, "utf8") }),
+        });
   let repositoryAccess = options?.runnerRepositoryAccess;
   const remotePlacementReady =
     runnerConfig !== null && (repositoryAccess !== undefined || runtime.githubAuth === "app");
@@ -391,6 +439,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         access: ReturnType<typeof createMemberRepositoryAccess>;
       }
     | undefined;
+  let memberVm: MemberVmProvisioner | undefined;
   const stopLinearSession = (sessionId: string): void => {
     for (const item of listWorkItems(db)) {
       if (item.sessionKey !== sessionId) continue;
@@ -515,11 +564,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 onboarding: {
                   refresh: async (context, signal) => {
                     if (!onboarding) throw new Error("Onboarding is unavailable.");
+                    memberVm?.ensure(context);
                     await onboarding.preparation.refresh(context, signal);
                     return onboarding.readiness.refresh(context, signal);
                   },
                   readyToContinue: (context) =>
                     onboarding?.readiness.readyToContinue(context) === true,
+                  provisioningAvailable: () => memberVm !== undefined,
                 },
               }),
         });
@@ -558,8 +609,41 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               preparation,
               access,
               agents: onboardingAgents,
+              repositoryPolicy: (input, signal) =>
+                memberVm ? memberVm.allowRepository(input, signal) : Promise.resolve(false),
             }),
           };
+          const configured = memberVmSettings;
+          if (configured && !configured.bootstrap && !configured.mise)
+            throw new Error("Automatic member VM setup requires a pinned mise release.");
+          if (configured)
+            memberVm = createMemberVmProvisioner({
+              db,
+              exeDev: configured.exeDev,
+              resources: configured.resources,
+              assignments,
+              ...(configured.pollMs === undefined ? {} : { pollMs: configured.pollMs }),
+              bootstrap:
+                configured.bootstrap ??
+                createExeDevBootstrap({
+                  exeDev: configured.exeDev,
+                  runnerVersion: configured.runnerVersion,
+                  installer:
+                    configured.installer ??
+                    readFileSync(
+                      join(import.meta.dir, "..", "deploy", "linux", "install-runner.sh"),
+                      "utf8",
+                    ),
+                  controlPlaneUrl: runtime.publicUrl!,
+                  runnerApiUrl: configured.runnerApiUrl,
+                  mise: configured.mise!,
+                  ...(configured.serverCa === undefined ? {} : { serverCa: configured.serverCa }),
+                }),
+              approve: (principal, code, expected) => {
+                if (!runner) return Promise.reject(new Error("Runner control is starting."));
+                return runner.control.approvePairing(principal, code, expected);
+              },
+            });
         }
       }
       const githubClient = (() => {
@@ -576,6 +660,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ? {
               onboardingAgents: () => (runner ? onboardingAgents : undefined),
               onboardingPreparation: onboarding.preparation,
+              ...(memberVm ? { onboardingVmProvisioning: memberVm.provisioning } : {}),
             }
           : {}),
         githubAttributionClient: githubClient,
@@ -828,6 +913,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     concurrency: workspace && linear?.tracker && linear.issueLifecycle ? 4 : 1,
     prepare(created) {
       assignments?.register(created.jobs);
+      memberVm?.register(created.jobs);
       const attached = attachOrchestrator({
         db,
         jobs: created.jobs,

@@ -3,20 +3,25 @@ import { createRoot } from "react-dom/client";
 import { Check, GitBranch, Monitor, RefreshCw } from "lucide-react";
 import { AppearanceControl, initializeAppearance } from "./appearance";
 import { Button } from "./ui/button";
-import { OnboardingAgents } from "./onboarding-agents";
-import { NativeSelect } from "./ui/native-select";
+import {
+  OnboardingVmPanel,
+  readOnboardingVm,
+  VmAgentSignIn,
+  type OnboardingVm,
+} from "./onboarding-vm";
 
 export type Onboarding = {
   issue: { id: string; identifier: string; title: string };
   linear: { state: string; detail: string };
   github: { state: string; detail: string };
-  vm: {
-    state: "not_linked" | "choice_required" | "ready";
-    detail: string;
-    runners: { id: string; name: string }[];
-    selectedRunner: { id: string; name: string } | null;
-  };
+  vm: OnboardingVm;
 };
+
+const PAGE = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/;
+
+function freshest(current: Onboarding | null, next: Onboarding): Onboarding {
+  return current && current.vm.revision > next.vm.revision ? { ...next, vm: current.vm } : next;
+}
 
 type GitHubLink = {
   configured: boolean;
@@ -29,14 +34,11 @@ function OnboardingPage() {
   const [github, setGitHub] = useState<GitHubLink | null>(null);
   const [githubError, setGitHubError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [runnerId, setRunnerId] = useState("");
-  const [vmBusy, setVmBusy] = useState(false);
-  const [vmError, setVmError] = useState("");
   const [revision, setRevision] = useState(0);
+  const page = PAGE.exec(window.location.pathname);
+  const context = { session: page?.[1] ?? "", generation: Number(page?.[2] ?? -1) };
   useEffect(() => {
-    const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
-      window.location.pathname,
-    );
+    const match = PAGE.exec(window.location.pathname);
     if (!match) {
       setError("Open onboarding from your current Linear assignment.");
       return;
@@ -52,6 +54,7 @@ function OnboardingPage() {
             signal: controller.signal,
           },
         );
+        if (controller.signal.aborted) return;
         if (!response.ok) {
           setGitHub(null);
           setState(null);
@@ -64,7 +67,10 @@ function OnboardingPage() {
           );
           return;
         }
-        setState(await response.json());
+        const projection: Onboarding = await response.json();
+        const vm = readOnboardingVm(projection?.vm);
+        if (!vm || controller.signal.aborted) throw new Error();
+        setState((current) => freshest(current, { ...projection, vm }));
         setError("");
         try {
           const link = await fetch("/api/workspaces/member-github", {
@@ -86,7 +92,7 @@ function OnboardingPage() {
             setGitHubError("GitHub connection could not be refreshed. Try again.");
           }
         }
-        timer = setTimeout(refresh, 5000);
+        timer = setTimeout(refresh, vm.state === "provisioning" ? 2000 : 5000);
       } catch {
         if (!controller.signal.aborted) {
           setState(null);
@@ -108,9 +114,7 @@ function OnboardingPage() {
       if (!session.ok) throw new Error();
       const auth: { csrfToken?: string } = await session.json();
       if (!auth.csrfToken) throw new Error();
-      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
-        window.location.pathname,
-      );
+      const match = PAGE.exec(window.location.pathname);
       if (!match) throw new Error();
       const response = await fetch("/api/workspaces/member-github", {
         method,
@@ -148,35 +152,6 @@ function OnboardingPage() {
       );
     } finally {
       setBusy(false);
-    }
-  }
-  async function selectVm() {
-    if (!state?.vm.runners.some((runner) => runner.id === runnerId)) return;
-    setVmBusy(true);
-    setVmError("");
-    try {
-      const session = await fetch("/api/auth/session", { cache: "no-store" });
-      if (!session.ok) throw new Error();
-      const auth: { csrfToken?: string } = await session.json();
-      const match = /^\/status\/onboarding\/([A-Za-z0-9_-]{1,128})\/(0|[1-9][0-9]{0,9})\/?$/.exec(
-        window.location.pathname,
-      );
-      if (!auth.csrfToken || !match) throw new Error();
-      const response = await fetch("/api/workspaces/onboarding/vm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Paws-CSRF": auth.csrfToken },
-        body: JSON.stringify({ session: match[1], generation: Number(match[2]), runnerId }),
-      });
-      if (!response.ok) throw new Error();
-      const vm: Onboarding["vm"] = await response.json();
-      setState((current) => (current ? { ...current, vm } : null));
-      setRunnerId("");
-    } catch {
-      setVmError("This VM could not be selected. Refresh the available VMs and choose again.");
-      setRunnerId("");
-      setRevision((value) => value + 1);
-    } finally {
-      setVmBusy(false);
     }
   }
   return (
@@ -238,57 +213,18 @@ function OnboardingPage() {
                       </div>
                       <p className="max-w-[65ch] text-sm leading-6">{step.detail}</p>
                       {name === "Your VM" && (
-                        <div className="space-y-3 pt-2">
-                          {state.vm.selectedRunner && (
-                            <p className="text-sm font-semibold">
-                              Selected VM: {state.vm.selectedRunner.name}
-                            </p>
-                          )}
-                          {(state.vm.runners.length > 1 ||
-                            (state.vm.runners.length > 0 && !state.vm.selectedRunner)) && (
-                            <form
-                              className="space-y-3"
-                              onSubmit={(event) => {
-                                event.preventDefault();
-                                void selectVm();
-                              }}
-                            >
-                              <label className="flex max-w-md flex-col gap-2 text-sm font-semibold">
-                                Your paired VM
-                                <NativeSelect
-                                  value={
-                                    state.vm.runners.some((runner) => runner.id === runnerId)
-                                      ? runnerId
-                                      : ""
-                                  }
-                                  disabled={vmBusy}
-                                  onChange={(event) => setRunnerId(event.currentTarget.value)}
-                                >
-                                  <option value="">Choose a VM</option>
-                                  {state.vm.runners.map((runner) => (
-                                    <option key={runner.id} value={runner.id}>
-                                      {runner.name}
-                                    </option>
-                                  ))}
-                                </NativeSelect>
-                              </label>
-                              <Button
-                                disabled={
-                                  vmBusy ||
-                                  !state.vm.runners.some((runner) => runner.id === runnerId)
-                                }
-                                type="submit"
-                              >
-                                {vmBusy ? "Selecting VM…" : "Use this VM"}
-                              </Button>
-                            </form>
-                          )}
-                          {vmError && (
-                            <p role="alert" className="text-sm">
-                              {vmError}
-                            </p>
-                          )}
-                        </div>
+                        <OnboardingVmPanel
+                          vm={state.vm}
+                          context={context}
+                          onVm={(vm) =>
+                            setState((current) =>
+                              current && vm.revision >= current.vm.revision
+                                ? { ...current, vm }
+                                : current,
+                            )
+                          }
+                          onStale={() => setRevision((value) => value + 1)}
+                        />
                       )}
                       {name === "GitHub" && (
                         <div className="space-y-3 pt-2">
@@ -352,14 +288,7 @@ function OnboardingPage() {
                 ))}
               </ol>
             </section>
-            {state.vm.selectedRunner ? (
-              <OnboardingAgents
-                key={state.vm.selectedRunner.id}
-                runnerId={state.vm.selectedRunner.id}
-              />
-            ) : (
-              <p className="text-sm">Select your VM before signing in to Claude and Codex.</p>
-            )}
+            <VmAgentSignIn vm={state.vm} />
             <div className="space-y-3 text-sm leading-6">
               <p>
                 Your assignment waits for setup. You can close this page and reopen it from your

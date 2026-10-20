@@ -37,7 +37,17 @@ export {
   type TaskRepositoryAccessResult,
 } from "./member-repository-access";
 
-export { handleOnboardingVm } from "./onboarding-vm";
+export {
+  handleOnboardingVm,
+  onboardingVmState,
+  PERMANENT_VM_FAILURES,
+  selectedOnboardingRunner,
+  RUNNER_HEALTH_MS,
+  VM_STEPS,
+  type OnboardingVmProjection,
+  type OnboardingVmProvisioning,
+  type VmStepName,
+} from "./onboarding-vm";
 export { handleOnboardingPreparation } from "./onboarding-preparation-route";
 export {
   createOnboardingPreparation,
@@ -55,6 +65,7 @@ export {
   createOnboardingReadiness,
   type OnboardingReadiness,
   type OnboardingReadinessContext,
+  type OnboardingRepositoryPolicy,
 } from "./onboarding-readiness";
 
 export {

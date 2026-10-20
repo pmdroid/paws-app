@@ -1,7 +1,7 @@
 import { handleOnboardingAgents, type OnboardingAgents } from "./onboarding-agents";
 import { handleOnboardingPreparation } from "./onboarding-preparation-route";
 import type { createOnboardingPreparation } from "./onboarding-preparation";
-import { handleOnboardingVm } from "./onboarding-vm";
+import { handleOnboardingVm, type OnboardingVmProvisioning } from "./onboarding-vm";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
 import { createMemberGitHubOAuth } from "./member-github-oauth";
@@ -41,6 +41,7 @@ export type WorkspaceAccessOptions = {
   assignments?: WorkspaceAssignments;
   onboardingAgents?: () => OnboardingAgents | undefined;
   onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
+  onboardingVmProvisioning?: OnboardingVmProvisioning;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -200,7 +201,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       path !== "/api/workspaces/onboarding/preparation" &&
       ![
         "/api/workspaces/onboarding",
-        "/api/workspaces/onboarding/vm",
+        "/api/workspaces/onboarding/vm/retry",
         "/auth/linear",
         "/auth/linear/callback",
         "/api/auth/session",
@@ -407,7 +408,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         origin,
       });
     }
-    if (path === "/api/workspaces/onboarding/vm") {
+    if (path === "/api/workspaces/onboarding/vm/retry") {
       if (!options.assignments) return json({ error: "Onboarding is unavailable." }, 404);
       return handleOnboardingVm(request, {
         db: options.db,
@@ -415,6 +416,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         ...access,
         origin,
         now,
+        ...(options.onboardingVmProvisioning
+          ? { provisioning: options.onboardingVmProvisioning }
+          : {}),
       });
     }
     if (onboardingPage || path === "/api/workspaces/onboarding") {

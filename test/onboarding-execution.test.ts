@@ -120,7 +120,10 @@ function fixture(
         [id!, owner!, agent, now],
       );
   }
-  db.run("INSERT INTO onboarding_vm VALUES('session',0,'own',0,?)", [now]);
+  db.run(
+    "INSERT INTO member_vm(id,workspace_id,user_id,provider_name,step,state,create_outcome,runner_id,origin_session_id,origin_generation,created_at,updated_at) VALUES('vm','w','member','paws-fixture','ready','ready','created','own','session',0,?,?)",
+    [now, now],
+  );
   const admission: OnboardingAdmission = {
     sessionId: "session",
     generation: 0,
@@ -274,7 +277,7 @@ function fixture(
       mutate = action;
     },
     flip(name: string) {
-      if (name === "vm") db.run("UPDATE onboarding_vm SET runner_id='extra'");
+      if (name === "vm") db.run("UPDATE member_vm SET runner_id='extra'");
       if (name === "stop") db.run("UPDATE linear_session SET stopped_at=?", [now]);
       if (name === "generation") db.run("UPDATE linear_session SET generation=generation+1");
       if (name === "member")

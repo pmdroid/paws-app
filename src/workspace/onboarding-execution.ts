@@ -6,16 +6,18 @@ import {
   getTaskModeGeneration,
   getWorkItem,
   getWorkItemRepository,
-  listOnboardingRunners,
   memberGitHubRecord,
   readOnboardingItemBinding,
   taskRequiresRepository,
   workspaceMember,
+  observeMemberVmRepositoryGrant,
+  memberVmRepositoryGrantRevision,
 } from "../db";
 import type { RepositoryBinding } from "../core";
 import type { WorkspaceAssignments } from "./assignments";
 import type { createMemberRepositoryAccess } from "./member-repository-access";
 import { onboardingAgentsState, type OnboardingAgents } from "./onboarding-agents";
+import { selectedOnboardingRunner } from "./onboarding-vm";
 
 type Target = { runnerId?: string; workspaceId?: string; memberId?: string };
 export type OnboardingExecution = ReturnType<typeof createOnboardingExecution>;
@@ -104,11 +106,11 @@ export function createOnboardingExecution(options: {
       { session: binding.sessionId, generation: binding.generation },
       now(),
     );
-    const runner = scope
-      ? listOnboardingRunners(db, scope, now()).find(
-          (entry) => entry.id === binding.runnerId && entry.fence === binding.runnerFence,
-        )
-      : undefined;
+    const selected = scope ? selectedOnboardingRunner(db, scope, now()).runner : undefined;
+    const runner =
+      selected?.id === binding.runnerId && selected.fence === binding.runnerFence
+        ? selected
+        : undefined;
     if (
       !scope ||
       JSON.stringify(scope.issue) !== binding.issueFingerprint ||
@@ -186,8 +188,19 @@ export function createOnboardingExecution(options: {
       throw new Error("Onboarding repository authority changed.");
     const checkMember = async () => {
       if (!options.access) throw new Error("Member repository access is unavailable.");
+      const permissionRevision = memberVmRepositoryGrantRevision(db, guard.binding);
       const result = await options.access.check(itemId, signal);
       signal.throwIfAborted();
+      if (result.state !== "unavailable") {
+        observeMemberVmRepositoryGrant(
+          db,
+          guard.binding,
+          permissionRevision,
+          result.state === "ready",
+          guard.assertCurrent,
+          now(),
+        );
+      }
       if (result.state !== "ready")
         throw new Error("Member GitHub repository access is not ready.");
       guard.assertCurrent();

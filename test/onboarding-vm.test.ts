@@ -23,7 +23,7 @@ import {
   WORKSPACE_COOKIE,
 } from "../src/workspace";
 
-test("assignment VM selection is durable, member-owned, generation-fenced and independent of GitHub", async () => {
+test("onboarding shows only the member's provisioned healthy VM and offers no runner picker", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-onboarding-vm-"));
   const path = join(root, "paws.sqlite");
   let db = openDatabase(path);
@@ -130,17 +130,10 @@ test("assignment VM selection is durable, member-owned, generation-fenced and in
     });
   let assignments = buildAssignments();
   let access: ReturnType<typeof createWorkspaceAccess>;
-  let authenticatedBody: (() => void) | undefined;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request): Promise<Response> {
-      if (authenticatedBody) {
-        await access.authenticate(request);
-        const beforeBody = authenticatedBody;
-        authenticatedBody = undefined;
-        beforeBody();
-      }
       return (await access.handle(request)) ?? new Response(null, { status: 404 });
     },
   });
@@ -162,85 +155,107 @@ test("assignment VM selection is durable, member-owned, generation-fenced and in
     "x-paws-csrf": sessions[user]!.session.csrfToken,
     "content-type": "application/json",
   });
+  const read = (generation = 0, user = "member") =>
+    fetch(`${origin}/api/workspaces/onboarding?session=session&generation=${generation}`, {
+      headers: headers(user),
+    });
   const state = async (generation = 0) =>
-    (
-      await fetch(`${origin}/api/workspaces/onboarding?session=session&generation=${generation}`, {
-        headers: headers(),
-      })
-    ).json() as Promise<{
+    (await read(generation)).json() as Promise<{
       github: { state: string };
-      vm: { state: string; selectedRunner: { id: string } | null; runners: { id: string }[] };
+      vm: {
+        state: string;
+        ready: boolean;
+        runner: { id: string } | null;
+        machine: { name: string; reused: boolean } | null;
+        steps: { name: string; state: string }[];
+      };
     }>;
-  const select = (runnerId: string, user = "member", extra = {}, generation = 0, override = {}) =>
+  const select = (runnerId: string) =>
     fetch(`${origin}/api/workspaces/onboarding/vm`, {
       method: "POST",
-      headers: { ...headers(user), ...override },
-      body: JSON.stringify({ session: "session", generation, runnerId, ...extra }),
+      headers: headers(),
+      body: JSON.stringify({ session: "session", generation: 0, runnerId }),
     });
-  const addRunner = (owner = "member", status = "active", valid = true) => {
+  const addRunner = (owner = "member") => {
     const id = workspaceId();
     db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES(?,?,?,?,?,?)",
-      [id, "workspace", owner, id, status, now],
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
+      [id, "workspace", owner, id, now, now],
     );
     db.run(
       "INSERT INTO runner_certificate(fingerprint,serial,runner_id,pem,not_before,not_after,accepted_until) VALUES(?,?,?,?,?,?,?)",
-      [id, id, id, "synthetic certificate", now - 1, now + 600000, valid ? now + 600000 : now],
+      [id, id, id, "synthetic certificate", now - 1, now + 600000, now + 600000],
     );
     return id;
   };
+  const provision = (runnerId: string) =>
+    db.run(
+      "INSERT INTO member_vm(id,workspace_id,user_id,provider_name,step,state,create_outcome,runner_id,origin_session_id,origin_generation,created_at,updated_at) VALUES('vm','workspace','member','paws-member','ready','ready','created',?,'session',0,?,?)",
+      [runnerId, now, now],
+    );
   try {
     expect(
       (
-        await fetch(`${origin}/api/workspaces/onboarding/vm`, {
+        await fetch(`${origin}/api/workspaces/onboarding/vm/retry`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
         })
       ).status,
     ).toBe(401);
-    assignments = buildAssignments(false);
-    access = buildAccess();
-    expect((await select(workspaceId())).status).toBe(404);
+    const paired = addRunner();
+    expect((await state()).vm).toMatchObject({ state: "unavailable", runner: null, steps: [] });
+    expect((await select(paired)).status).toBe(404);
+    expect((await state()).vm.runner).toBeNull();
+    expect(db.query("SELECT count(*) AS count FROM onboarding_vm").get()).toEqual({ count: 0 });
+    expect(
+      db
+        .query(
+          "SELECT count(*) AS count FROM workspace_access_audit WHERE action LIKE 'assignment.vm%'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    const first = addRunner();
+    provision(first);
+    db.close();
+    db = openDatabase(path);
     assignments = buildAssignments();
     access = buildAccess();
-    expect((await state()).vm.state).toBe("not_linked");
-    const foreign = addRunner("other");
-    addRunner("member", "paused");
-    addRunner("member", "draining");
-    addRunner("member", "active", false);
-    expect((await state()).vm.runners).toEqual([]);
-    const unclaimed = addRunner();
+    expect((await state()).vm).toMatchObject({
+      state: "ready",
+      ready: true,
+      runner: { id: first },
+      machine: { name: "paws-member", reused: false },
+    });
+    expect((await state()).github.state).toBe("not_checked");
+    expect(assignments.authorizeIntake("session", spec)).toBe(false);
+    expect((await read(0, "other")).status).toBe(404);
+    expect((await read(0, "owner")).status).toBe(404);
+    const withdrawn = async () => {
+      const vm = (await state()).vm;
+      expect(vm).toMatchObject({ ready: false, runner: null });
+      expect(vm.steps.map((entry) => `${entry.name}:${entry.state}`)).toEqual([
+        "create:done",
+        "install:done",
+        "pair:done",
+        "health:running",
+      ]);
+    };
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 120000, first]);
+    await withdrawn();
+    db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now, first]);
+    db.run("UPDATE runner_certificate SET accepted_until=? WHERE runner_id=?", [now, first]);
+    await withdrawn();
+    db.run("UPDATE runner_certificate SET accepted_until=? WHERE runner_id=?", [
+      now + 600000,
+      first,
+    ]);
     db.run(
       "INSERT INTO runner_pairing(id,claim_hash,code_hash,csr,name,request_fingerprint,expires_at,runner_id) VALUES(?,?,?,?,?,?,?,?)",
-      [
-        unclaimed,
-        unclaimed,
-        unclaimed,
-        "synthetic CSR",
-        "Unclaimed",
-        unclaimed,
-        now + 600000,
-        unclaimed,
-      ],
+      [first, first, first, "synthetic CSR", "Unclaimed", first, now + 600000, first],
     );
-    expect((await state()).vm.runners).toEqual([]);
-    const first = addRunner();
-    expect((await state()).vm.selectedRunner?.id).toBe(first);
-    expect(db.query("SELECT count(*) AS count FROM onboarding_vm").get()).toEqual({ count: 0 });
-    const second = addRunner();
-    expect((await state()).vm.state).toBe("choice_required");
-    expect((await select(foreign)).status).toBe(409);
-    expect((await select(first, "other")).status).toBe(404);
-    expect((await select(first, "owner")).status).toBe(404);
-    expect((await select(first, "member", { userId: "other" })).status).toBe(400);
-    expect((await select(first, "member", {}, 0, { "x-paws-csrf": "wrong" })).status).toBe(403);
-    expect(
-      (await select(first, "member", {}, 0, { origin: "https://foreign.invalid" })).status,
-    ).toBe(403);
-    expect((await select(first, "member", {}, 0, { "x-paws-workspace": "foreign" })).status).toBe(
-      403,
-    );
+    await withdrawn();
+    db.run("DELETE FROM runner_pairing WHERE id=?", [first]);
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('foreign-workspace','foreign-org','Foreign',?)",
       [now],
@@ -254,49 +269,20 @@ test("assignment VM selection is durable, member-owned, generation-fenced and in
       now,
     });
     db.run("UPDATE runner SET workspace_id='foreign-workspace' WHERE id=?", [first]);
-    expect((await select(first)).status).toBe(409);
+    await withdrawn();
     db.run("UPDATE runner SET workspace_id='workspace' WHERE id=?", [first]);
-    expect((await select(first)).status).toBe(200);
-    expect((await select(first)).status).toBe(200);
-    expect(
-      db
-        .query(
-          "SELECT count(*) AS count FROM workspace_access_audit WHERE action='assignment.vm_selected'",
-        )
-        .get(),
-    ).toEqual({ count: 1 });
-    db.close();
-    db = openDatabase(path);
-    assignments = buildAssignments();
-    access = buildAccess();
-    expect((await state()).vm.selectedRunner?.id).toBe(first);
-    expect((await state()).github.state).toBe("not_checked");
-    expect(assignments.authorizeIntake("session", spec)).toBe(false);
-    db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [first]);
-    expect((await state()).vm.selectedRunner).toBeNull();
-    expect((await select(first)).status).toBe(200);
-    db.run("UPDATE runner_certificate SET accepted_until=? WHERE runner_id=?", [now, first]);
-    expect((await state()).vm.selectedRunner).toBeNull();
-    db.run("UPDATE runner_certificate SET accepted_until=? WHERE runner_id=?", [
-      now + 600000,
-      first,
-    ]);
-    authenticatedBody = () => db.run("DELETE FROM workspace_user_team WHERE user_id='member'");
-    expect((await select(second)).status).toBe(404);
-    db.run("INSERT INTO workspace_user_team VALUES('workspace','member','team')");
-    expect((await state()).vm.selectedRunner?.id).toBe(first);
-    db.run("UPDATE runner SET status='revoked',revoked_at=?,fence=fence+1 WHERE id=?", [
-      now,
-      first,
-    ]);
-    expect((await state()).vm.state).toBe("choice_required");
-    expect((await state()).vm.selectedRunner).toBeNull();
-    expect((await select(first)).status).toBe(409);
-    expect((await select(second)).status).toBe(200);
+    db.run("UPDATE member_vm SET runner_id=?", [addRunner("other")]);
+    await withdrawn();
+    db.run("UPDATE member_vm SET runner_id=?", [first]);
+    expect((await state()).vm.runner?.id).toBe(first);
     advanceLinearSessionGeneration(db, "session", { now });
-    expect((await select(second)).status).toBe(404);
+    expect((await read(0)).status).toBe(404);
     insertAssignment(1);
-    expect((await state(1)).vm.selectedRunner?.id).toBe(second);
+    expect((await state(1)).vm).toMatchObject({
+      state: "ready",
+      runner: { id: first },
+      machine: { name: "paws-member", reused: true },
+    });
     syncWorkspaceMember(db, {
       workspaceId: "workspace",
       userId: "member",
@@ -305,7 +291,7 @@ test("assignment VM selection is durable, member-owned, generation-fenced and in
       teamIds: ["team"],
       now: now + 1,
     });
-    expect((await select(second, "member", {}, 1)).status).toBe(404);
+    expect((await read(1)).status).toBe(404);
     for (const table of ["runner_command", "runner_work_grant", "work_item", "job"])
       expect(db.query(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
   } finally {
