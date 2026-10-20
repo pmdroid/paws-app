@@ -128,7 +128,8 @@ export function createEvidenceArtifactPublisher(options: {
           generation,
           now: now(),
           payload: {
-            id: stored.id,
+            // Linear takes UUID v4 activity ids; the evidence id is a ULID and stays in the key.
+            id: randomUUID(),
             sessionId: options.sessionId,
             kind: "thought",
             body: `Closeout evidence for check \`${evidence.checkId}\`: [${label}](<${url}>)`,
