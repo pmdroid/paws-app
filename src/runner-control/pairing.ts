@@ -12,6 +12,7 @@ import {
   renewRunnerCertificate,
   isCurrentRunnerCertificate,
   runnerForCertificate,
+  setRunnerConcurrency,
   updateRunnerStatus,
   workspaceMember,
   type RunnerRecord,
@@ -189,6 +190,18 @@ export function createRunnerControl(options: {
         });
       });
       for (const fingerprint of fingerprints) options.disconnect(fingerprint);
+    },
+    setConcurrency(principal: WorkspacePrincipal, runnerId: string, concurrency: number) {
+      immediate(db, () => {
+        admin(principal);
+        setRunnerConcurrency(db, {
+          runnerId,
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          concurrency,
+          now: now(),
+        });
+      });
     },
     async renew(peer: RunnerPeer, csr: string) {
       authorized(peer);
