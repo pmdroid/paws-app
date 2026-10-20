@@ -29,7 +29,6 @@ const closeoutAttempt = {
   maxAttempts: z.number().int().min(0).max(1000).nullable(),
 };
 
-/** The agent's `get_closeout` report or one `run_closeout` attempt, as the runner saw it. */
 export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("report"),

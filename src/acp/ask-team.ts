@@ -61,7 +61,6 @@ export interface PullRequestHook {
   update(description: PullRequestDescription): Promise<void>;
 }
 
-/** Receives the agent's `get_closeout` reports and `run_closeout` attempts as they happen. */
 export interface CloseoutProgressHook {
   record(event: CloseoutSessionEvent): void | Promise<void>;
 }
@@ -571,9 +570,7 @@ function progressListener(hook: CloseoutProgressHook): (event: CloseoutSessionEv
   return (event) => {
     try {
       void Promise.resolve(hook.record(event)).catch(() => undefined);
-    } catch {
-      // Recording progress never interrupts the agent's Closeout.
-    }
+    } catch {}
   };
 }
 

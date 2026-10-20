@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import { CLOSEOUT_OUTPUT_CAP_BYTES } from "./closeout-progress";
 import { immediate } from "./tx";
 
-/** One required check in the agent's `get_closeout` report. */
 export type AgentCloseoutCheck = {
   id: string;
   kind: string;
@@ -11,7 +10,6 @@ export type AgentCloseoutCheck = {
   failedAttempts: number;
 };
 
-/** The agent's `get_closeout` report or one `run_closeout` attempt. */
 export type AgentCloseoutProgress =
   | {
       type: "report";
@@ -77,7 +75,6 @@ type EventSql = {
   blocked: string | null;
 };
 
-/** Appends one step of the agent's Closeout to its run, keeping the last 64 KiB of each stream. */
 export function recordAgentCloseout(
   db: Database,
   runId: string,
@@ -125,7 +122,6 @@ export function recordAgentCloseout(
   });
 }
 
-/** Every recorded step of the given runs, oldest first per run. */
 export function listAgentCloseout(db: Database, runIds: readonly string[]): AgentCloseoutEvent[] {
   if (runIds.length === 0) return [];
   return db
@@ -186,7 +182,6 @@ function parseChecks(text: string | null): AgentCloseoutCheck[] {
   }
 }
 
-/** Keeps the end of the output, where a failing check says why, cut on a UTF-8 boundary. */
 function keepTail(text: string): { text: string; cut: boolean } {
   const bytes = Buffer.from(text);
   if (bytes.length <= CLOSEOUT_OUTPUT_CAP_BYTES) return { text, cut: false };

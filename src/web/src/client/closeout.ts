@@ -92,12 +92,9 @@ export function checkAnchor(attempt: number, checkId: string, itemId = ""): stri
   return `${agent}check-${attempt}-${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
 }
 
-/** How the agent's Closeout reuses these rows: its own heading, result card and attempt budget. */
 export interface CloseoutChecksOptions {
-  /** Toolbar heading. Null leaves it out, for a section that already has one. */
   heading?: string | null;
   result?: { title: string; description: string; icon: string };
-  /** Failed runs a check may have, shown as "attempt 2 of 3" on retried checks. */
   checkAttempts?: number | null;
 }
 

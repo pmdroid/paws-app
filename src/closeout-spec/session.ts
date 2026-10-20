@@ -22,7 +22,6 @@ export type SessionCommandResult = {
 };
 
 export type CloseoutSession = {
-  /** `progress` tells `onProgress` about the report. Only the agent's own `get_closeout` sets it. */
   report(options?: { progress?: boolean }): Promise<string>;
   run(id: string, model?: string): Promise<string>;
 };
@@ -31,11 +30,9 @@ export type CloseoutSessionOptions = {
   policy: () => Promise<PolicyFilesLoad>;
   signal?: AbortSignal;
   allowCommand?: (argv: readonly string[]) => void;
-  /** Sees each report and check run, so Paws can show the agent's Closeout as it happens. */
   onProgress?: (event: CloseoutSessionEvent) => void;
 };
 
-/** One required check as the last `get_closeout` reported it. */
 export type CloseoutSessionCheck = {
   id: string;
   kind: string;
@@ -44,7 +41,6 @@ export type CloseoutSessionCheck = {
   failedAttempts: number;
 };
 
-/** What the agent's Closeout did. Output is scrubbed and keeps the last 16,000 characters per stream. */
 export type CloseoutSessionEvent =
   | {
       type: "report";
@@ -206,13 +202,10 @@ function notifyReport(
   });
 }
 
-/** Progress is a side channel. A failing listener never changes what the agent sees. */
 function notify(options: CloseoutSessionOptions, event: CloseoutSessionEvent): void {
   try {
     options.onProgress?.(event);
-  } catch {
-    // ignored
-  }
+  } catch {}
 }
 
 function maxAttempts(policy: TreePolicy): number | null {

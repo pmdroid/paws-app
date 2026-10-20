@@ -22,11 +22,6 @@ type Run = {
 
 type Check = { id: string; kind: string; command: string; runs: Run[] };
 
-/**
- * Folds the agent's recorded `get_closeout` and `run_closeout` steps of one run into the
- * Closeout attempt shape. Attempt N holds each check's Nth run, or its latest earlier run, so
- * passed checks stay visible while the agent retries the one that failed.
- */
 export function agentCloseoutOf(
   itemId: string,
   runId: string,
@@ -79,7 +74,6 @@ export function agentCloseoutOf(
         finished,
       });
   }
-  // Reviews are not the agent's to run. An independent reviewer runs them in Paws Closeout.
   const order = [
     ...(report?.order ?? []),
     ...[...checks.keys()].filter((id) => !report?.order.includes(id)),
@@ -91,7 +85,6 @@ export function agentCloseoutOf(
     const shown = order.map((id) => {
       const entry = checks.get(id)!;
       const run = entry.runs[Math.min(number, entry.runs.length) - 1];
-      // A later report that calls a finished check stale means the agent must run it again.
       const status = report?.status.get(id);
       const stale =
         latest &&

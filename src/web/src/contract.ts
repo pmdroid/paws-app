@@ -191,20 +191,13 @@ export interface StatusCloseoutAttempt {
   checks: StatusCheck[];
 }
 
-/**
- * The agent's own Closeout during implementation: what `get_closeout` reported and how each
- * `run_closeout` attempt ended. `attempts` reuses the Closeout attempt shape; attempt N shows each
- * check's Nth run, or its latest earlier run. The last attempt is the current state.
- */
 export interface StatusAgentCloseout {
   itemId: string;
   runId: string;
-  /** Failed runs a check may have before it is exhausted. Null means unlimited. */
   maxAttempts: number | null;
   blocked: string | null;
   updatedAt: string;
   attempts: StatusCloseoutAttempt[];
-  /** Every `get_closeout` and `run_closeout` step, oldest first. */
   steps: StatusAgentCloseoutStep[];
 }
 
@@ -268,7 +261,6 @@ export interface StatusSnapshot {
   events: StatusEvent[];
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
-  /** The agent's Closeout on each item's latest run. */
   agentCloseout?: StatusAgentCloseout[];
 }
 

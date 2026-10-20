@@ -336,7 +336,6 @@ const DEMO: StatusSnapshot = {
   ],
 };
 
-/** ENG-102 while the agent works: its first `bun test` failed, attempt 2 is running. */
 function agentCloseout(): NonNullable<StatusSnapshot["agentCloseout"]>[number] {
   const passed = (
     id: string,

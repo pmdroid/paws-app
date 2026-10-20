@@ -3202,7 +3202,6 @@ export class Orchestrator {
     };
   }
 
-  /** Records the agent's own Closeout so the run page shows it while the agent works. */
   private agentCloseoutHook(item: WorkItemRecord, runId: string): CloseoutProgressHook {
     return {
       record: (progress) => {
