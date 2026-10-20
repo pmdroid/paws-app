@@ -21,6 +21,7 @@ import {
   isOpen,
   parseCheckHash,
 } from "./closeout";
+import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
 import { render, type RenderModel } from "./render";
 import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
 import type { SettingsPage } from "./settings-pages";
@@ -503,6 +504,10 @@ function onClick(event: MouseEvent): void {
   const attempt = Number(holder?.getAttribute("data-attempt") ?? "");
   const checkId = holder?.getAttribute("data-check") ?? "";
   if (!itemId || !Number.isInteger(attempt) || attempt < 1) return;
+  if (action === "agent-closeout-toggle") {
+    closeout.open[`section\n${itemId}`] = holder?.getAttribute("data-open") !== "true";
+    paint();
+  }
   if (action === "closeout-attempt") {
     closeout.attempt[itemId] = attempt;
     paint();
@@ -543,8 +548,16 @@ function onClick(event: MouseEvent): void {
   if (action === "download-output") downloadOutput(itemId, attempt, checkId);
 }
 
+/** Paws Closeout of an item, or the agent's Closeout of a run when the key says so. */
+function closeoutVerdict(itemId: string) {
+  const runId = agentCloseoutRun(itemId);
+  if (runId === null) return snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  const agent = findAgentCloseout(snapshot?.agentCloseout, runId);
+  return agent ? agentVerdict(agent) : undefined;
+}
+
 function closeoutChecks(itemId: string, attempt: number) {
-  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
+  const verdict = closeoutVerdict(itemId);
   if (!verdict) return [];
   return attemptsOf(verdict).find((entry) => entry.number === attempt)?.checks ?? [];
 }
@@ -567,19 +580,28 @@ function openLinkedCheck(): boolean {
     linkedHash = hash;
     return false;
   }
-  const itemId = document
-    .querySelector('#page-content section[aria-label="Closeout"] [data-item]')
-    ?.getAttribute("data-item");
-  const verdict = snapshot?.verdicts.find((entry) => entry.itemId === itemId);
-  if (!itemId || !verdict) return false;
+  const sections = document.querySelectorAll(
+    '#page-content section[aria-label="Closeout"] [data-item], #page-content section[aria-label="Agent Closeout"] [data-item]',
+  );
+  const found = [
+    ...new Set([...sections].map((element) => element.getAttribute("data-item") ?? "")),
+  ].flatMap((key) => {
+    const verdict = closeoutVerdict(key);
+    const attempt = verdict
+      ? attemptsOf(verdict).find((entry) => entry.number === linked.attempt)
+      : undefined;
+    return attempt?.checks.some((check) => check.id === linked.checkId) ? [{ key, attempt }] : [];
+  })[0];
+  if (!found) return false;
   linkedHash = hash;
-  const attempt = attemptsOf(verdict).find((entry) => entry.number === linked.attempt);
-  if (!attempt?.checks.some((check) => check.id === linked.checkId)) return false;
+  const itemId = found.key;
+  const attempt = found.attempt;
+  if (agentCloseoutRun(itemId) !== null) closeout.open[`section\n${itemId}`] = true;
   closeout.attempt[itemId] = attempt.number;
   closeout.open[checkKey(itemId, attempt.number, linked.checkId)] = true;
   paint();
   document
-    .getElementById(checkAnchor(attempt.number, linked.checkId))
+    .getElementById(checkAnchor(attempt.number, linked.checkId, itemId))
     ?.scrollIntoView({ block: "start" });
   return true;
 }
