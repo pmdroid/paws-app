@@ -116,7 +116,7 @@ try {
     await page.locator('.overview-work a[href="/status/runs/r-102"]').click();
     await expect(page).toHaveURL(/\/runs\/r-102$/);
     await expect(
-      page.getByRole("heading", { name: "Agent transcript", exact: true }),
+      page.getByText("Task activity and agent transcript", { exact: true }),
     ).toBeVisible();
     await page.goBack();
     if (width < 768) {
@@ -201,7 +201,7 @@ try {
       await page.setViewportSize({ width, height: 1000 });
     }
     await navigate(page, "Runs", width);
-    await expect(page.getByRole("combobox", { name: "Run", exact: true })).toBeVisible();
+    await page.locator(`a[href="/status/runs/${snapshot.runs[0]!.id}"]`).click();
     await page.getByRole("button", { name: "Pause item", exact: true }).click();
     await expect.poll(() => actions.includes("pause")).toBe(true);
     await page.getByText("Stop this item", { exact: true }).click();
@@ -217,7 +217,8 @@ try {
     )!;
     await page.goto(`http://127.0.0.1:${server.port}/status/#/runs/${verified.id}`);
     await expect(page).toHaveURL(new RegExp(`/status/runs/${verified.id}$`));
-    await expect(page.getByRole("heading", { name: "Verification" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Closeout", exact: true })).toBeVisible();
+    await page.getByText("Task activity and agent transcript", { exact: true }).click();
     await expect(page.getByRole("log", { name: "Agent transcript" })).toHaveCount(0);
     await expect(
       page.getByRole("link", { name: "Open full agent transcript", exact: true }),
@@ -225,9 +226,11 @@ try {
       "href",
       `http://127.0.0.1:${server.port}/api/runs/transcript?run=${verified.id}`,
     );
-    await expect(page.getByRole("combobox", { name: "Candidate", exact: true })).toBeVisible();
-    await page.locator('[data-action="select-check"]').last().click();
-    await expect(page.locator('[data-action="select-check"][aria-current="true"]')).toHaveCount(1);
+    await expect(page.getByRole("combobox", { name: "Candidate", exact: true })).toHaveCount(0);
+    await page.locator('[data-action="toggle-check"]').first().click();
+    await expect(
+      page.locator('[data-action="toggle-check"][aria-expanded="true"]').first(),
+    ).toBeVisible();
     await navigate(page, "Conversations", width);
     await expect(page.locator("#linear-session-start")).toBeVisible();
     expect(

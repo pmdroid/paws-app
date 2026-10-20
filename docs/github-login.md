@@ -4,22 +4,23 @@ Paws supports GitHub App browser sign-in with repository work performed by the A
 
 ## GitHub App sign-in
 
-Create a GitHub App under **Settings > Developer settings > GitHub Apps**. Set its callback URL to `http://127.0.0.1:3000/oauth/github/callback`. This listener runs during sign-in; the Paws dashboard uses port `8787`.
+Create a GitHub App under **Settings > Developer settings > GitHub Apps**. Register `https://YOUR-PAWS-HOST/auth/github-app/callback` for Integrations and `https://YOUR-PAWS-HOST/auth/github-attribution/callback` for account attribution, using your configured Paws HTTPS origin.
 
 Grant repository **Contents**, **Pull requests**, **Checks**, and **Issues** permissions with **Read and write** access. GitHub grants **Metadata** read access automatically. Set the webhook URL to your HTTPS tunnel followed by `/webhooks/github`, choose a webhook secret, and set `GITHUB_WEBHOOK_SECRET` before sign-in. Subscribe to **Pull requests**, **Check runs**, **Check suites**, **Pushes**, **Installations** and **Installation repositories**. Signed deliveries are stored durably and deduplicated by delivery ID. Install the App on the repositories Paws will work on.
 
-Generate a client secret and a private key. Set `GITHUB_APP_ID`, `PAWS_GITHUB_CLIENT_ID`, `PAWS_GITHUB_CLIENT_SECRET`, and `GITHUB_APP_PRIVATE_KEY_PATH` in your local environment, then run:
+Generate a client secret and a private key. Set `GITHUB_APP_ID`, `PAWS_GITHUB_CLIENT_ID`, `PAWS_GITHUB_CLIENT_SECRET`, and `GITHUB_APP_PRIVATE_KEY_PATH` on the Paws server. Set `GITHUB_AUTH=app`, start Paws, sign in with Linear and open **Integrations**. Select **Continue with GitHub**, choose repositories, and map them to Linear teams.
+
+For the standalone terminal login, also register `http://127.0.0.1:3000/oauth/github/callback`, then run:
 
 ```sh
 bun run paws login github --app --repo owner/name
-bun run paws setup --repo owner/name
 ```
 
 Paws opens the App's authorization page. After you approve it, Paws checks your repository access, discovers the installation, and verifies that it can mint a token restricted to that repository. It sets `github.auth = "app"` and preserves the rest of your config. [GitHub App user authorization](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app) uses the App's permissions rather than OAuth App scopes.
 
 The private key and App credentials are envelope-encrypted and saved as `~/.paws/secrets/github-app.pem` and `github-app.json`, both mode `0600`, inside the mode `0700` secrets directory. Subsequent starts load these files. Environment variables override saved credentials. Your sign-in token uses the token store described below. Repository operations mint installation tokens and appear as `<app-slug>[bot]`.
 
-With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. Setup preserves App mode when connecting Linear.
+With App mode configured, the dashboard's **Sign in with GitHub** button provides a **Continue with GitHub** authorization link. The browser onboarding flow uses the configured GitHub App.
 
 ## OAuth App device sign-in
 
@@ -29,7 +30,7 @@ bun run paws login github
 
 Paws prints a one-time code and tells you to approve it at [github.com/login/device](https://github.com/login/device). It polls GitHub's token endpoint on the interval GitHub returns, until you approve the code or GitHub expires it.
 
-`bun run paws setup` runs this sign-in while it writes `~/.paws/config.toml`. When a token is already stored, setup goes on to the repository question.
+Workspace owners connect GitHub and choose repositories through Integrations after signing in with Linear.
 
 The dashboard at `http://127.0.0.1:8787` has a **Sign in with GitHub** button. The button starts this device flow in the local process and shows the same code and device page.
 
@@ -84,7 +85,7 @@ repo = "owner/name"
 | `oauth_client_id` | Client id of the GitHub App or OAuth App.                                                   |
 | `repo`            | `owner/name` Paws pushes to and opens pull requests against                                 |
 
-Setup writes `auth = "oauth"` after the device flow succeeds and preserves `auth = "app"` after GitHub App sign-in.
+GitHub App sign-in writes `auth = "app"` and preserves the other configuration.
 
 `github.auth = "gh"` takes a fresh `gh auth token` for each operation. Log in with `gh auth login` first. Paws does not copy that token into `~/.paws/secrets`.
 

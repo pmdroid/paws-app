@@ -467,7 +467,25 @@ export async function probeRunnerOrchestration(
               ...result,
               closeoutReport: JSON.stringify(
                 implementationCount > 1
-                  ? { required: [], pending: [], blocked: null, bypassed: false }
+                  ? {
+                      required: ["prepare", "check"].map((id) => ({
+                        id,
+                        status: "passed",
+                        result: {
+                          argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
+                          head: result.checkpoint?.sha ?? "",
+                          exitCode: 0,
+                          timedOut: false,
+                          durationMs: 42,
+                          stdout: `remote ${id} output\n`,
+                          stderr: "",
+                          truncated: false,
+                        },
+                      })),
+                      pending: [],
+                      blocked: null,
+                      bypassed: false,
+                    }
                   : { required: ["check"], pending: ["check"], blocked: null, bypassed: false },
               ),
             };

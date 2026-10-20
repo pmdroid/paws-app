@@ -10,7 +10,7 @@ export function assertLinearQueue(path: string): void {
         continue;
       if (db.query(`SELECT 1 FROM ${table} WHERE linear_issue_id LIKE 'github:%' LIMIT 1`).get()) {
         throw new Error(
-          "This database contains GitHub issue work. Keep it as an archive and run paws setup --home <new-directory> with Linear credentials to start a separate queue. Existing data has not been changed.",
+          "This database contains GitHub issue work. Keep it as an archive and start Paws with a fresh PAWS_HOME and connect Linear in the website to start a separate queue. Existing data has not been changed.",
         );
       }
     }

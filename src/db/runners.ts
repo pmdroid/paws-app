@@ -408,3 +408,13 @@ export function expireRunnerPairings(db: Database, now: number): void {
     }
   });
 }
+
+export function runRunnerName(db: Database, runId: string): string | null {
+  return (
+    db
+      .query<{ name: string }, [string]>(
+        "SELECT r.name FROM runner_work w JOIN runner r ON r.id=w.runner_id WHERE w.run_id=?",
+      )
+      .get(runId)?.name ?? null
+  );
+}

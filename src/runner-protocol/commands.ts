@@ -136,7 +136,7 @@ export const RunnerCommandSchema = z
       ...common,
       type: z.literal("login"),
       memberId: id,
-      agent: z.enum(["claude", "codex"]),
+      agent,
     }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     z.strictObject({

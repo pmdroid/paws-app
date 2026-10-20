@@ -120,6 +120,7 @@ export {
   expireRunnerPairings,
   findRunnerPairing,
   getRunner,
+  runRunnerName,
   listRunners,
   listRunnerOverview,
   recordRunnerHostStatus,
@@ -340,3 +341,5 @@ export {
   readOnboardingItemBinding,
   type OnboardingAdmission,
 } from "./onboarding-intake";
+
+export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";

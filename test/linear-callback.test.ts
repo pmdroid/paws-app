@@ -61,7 +61,7 @@ test("Linear callback rejects unrelated requests and exchanges a valid code once
       const response = await fetch(callback);
       expect(response.status).toBe(200);
       const body = await response.text();
-      expect(body).toContain("Return to Paws setup");
+      expect(body).toContain("Return to Paws");
       expect(body).not.toContain("fake-access-token");
       expect(body).not.toContain("fake-refresh-token");
       expect((await fetch(callback)).status).toBe(409);

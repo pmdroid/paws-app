@@ -1,7 +1,7 @@
 import type { EvidenceKind, StatusEvidence, StatusSnapshot } from "../contract";
 import { parseEngineUrl } from "../endpoint";
 import { checkHash } from "./closeout";
-import { agentChip, esc } from "./format";
+import { esc } from "./format";
 import { routeHref } from "./route";
 
 /** What the browser learned from the loaded file. The store keeps neither. */
@@ -108,10 +108,9 @@ export function renderEvidencePage(
 ): string {
   const evidence = id === null ? undefined : snapshot.evidence?.find((entry) => entry.id === id);
   if (!evidence) return noEvidenceAccess();
-  const item = snapshot.items.find((entry) => entry.id === evidence.itemId);
   const file = evidenceFileUrl(evidence.id, engineUrl);
   const measure = measureLabel(evidence.kind, info.get(evidence.id));
-  const others = runEvidence(snapshot, evidence.runId).filter((entry) => entry.id !== evidence.id);
+  const others = runEvidence(snapshot, evidence.runId);
   const issue = `<a class="lin-id" href="${esc(routeHref({ view: "issues", id: evidence.itemId }))}">${esc(evidence.itemId)}</a>`;
   const more = others.length
     ? `<ul class="evidence-more">${others
@@ -121,35 +120,21 @@ export function renderEvidencePage(
         )
         .join("")}</ul>`
     : '<p class="muted">No other evidence from this run.</p>';
-  return `<h1 class="sr-only">Evidence</h1>
-    <div class="split"><div>
-      <div class="row">${issue}<span class="tag">${esc(kindLabel(evidence.kind))}</span>${measure ? `<span class="mono muted">${esc(measure)}</span>` : ""}</div>
-      <h2>${esc(evidence.displayName)}</h2>
-      ${item ? `<p class="muted">${esc(item.title)}</p>` : ""}
+  return `<nav class="crumbs" aria-label="Breadcrumb"><span>Evidence</span><span>/</span>${issue}<span>/</span><span class="mono">${esc(evidence.id)}</span></nav>
+    <header class="run-heading"><div class="row">${issue}<span class="tag">${esc(evidence.checkId)}</span><span class="mono muted">${esc(snapshot.project.repo)} · head ${esc(evidence.headCommit.slice(0, 7))}</span></div><h1>${esc(evidence.displayName)}</h1><p class="muted">Anyone signed in to Paws with access to ${esc(snapshot.project.repo)} sees this evidence.</p></header>
+    <div class="evidence-layout"><div>
       <div id="evidence-player" data-evidence="${esc(evidence.id)}"></div>
-      <div class="row"><button type="button" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div>
-      <section class="col" aria-label="More from this run">
+
+    </div><aside class="evidence-aside"><div class="card"><div class="row"><button type="button" class="primary" data-action="evidence-copy" data-evidence="${esc(evidence.id)}">Copy link</button><a class="btn" href="${esc(file)}" download="${esc(evidence.displayName)}">Download</a></div><div class="kv"><span class="k">Run</span><a class="mono" href="${esc(routeHref({ view: "runs", id: evidence.runId }))}">${esc(evidence.runId)}</a><span class="k">Check</span><span>${esc(evidence.checkId)} · attempt ${evidence.attempt}</span><span class="k">Published</span><span>${esc(evidence.publisher)} · ${esc(new Date(evidence.publishedAt).toLocaleString())}</span><span class="k">File</span><span>${esc(evidence.mediaType)} · ${esc(sizeLabel(evidence.sizeBytes))}${measure ? ` · ${esc(measure)}` : ""}</span></div><p class="muted">Stored on this Paws host, never uploaded to Linear.</p></div><section class="card" aria-label="More from this run">
         <div class="between"><h3>More from this run</h3><a href="${esc(closeoutOutputHref(evidence))}">Closeout output</a></div>
         ${more}
       </section>
-    </div>
-    <div class="card"><h3>Details</h3><div class="kv">
-      <span class="k">Issue</span><span>${issue}${item ? ` ${esc(item.title)}` : ""}</span>
-      <span class="k">Check</span><span class="mono">${esc(evidence.checkId)}</span>
-      <span class="k">Attempt</span><span class="mono">${evidence.attempt}</span>
-      <span class="k">Published by</span><span>${agentChip(evidence.publisher)}</span>
-      <span class="k">Published</span><span>${esc(new Date(evidence.publishedAt).toLocaleString())}</span>
-      <span class="k">File</span><span class="mono">${esc(evidence.mediaType)}</span>
-      <span class="k">Size</span><span class="mono">${esc(sizeLabel(evidence.sizeBytes))}</span>
-      <span class="k">${evidence.kind === "video" ? "Duration" : "Dimensions"}</span><span class="mono">${esc(measure || "—")}</span>
-      <span class="k">Head commit</span><span class="mono" title="${esc(evidence.headCommit)}">${esc(evidence.headCommit.slice(0, 12))}</span>
-      <span class="k">Run</span><a class="mono" href="${esc(routeHref({ view: "runs", id: evidence.runId }))}">${esc(evidence.runId)}</a>
-    </div></div></div>`;
+    </aside></div>`;
 }
 
 /**
  * Missing and forbidden look the same, so the page names no issue, repository or file.
  */
 export function noEvidenceAccess(): string {
-  return `<h1 class="sr-only">Evidence</h1><section class="card" aria-label="No access"><h2>You don't have access to this evidence</h2><p class="muted">It belongs to a repository your Paws workspace membership does not include, or it was removed. Ask a workspace owner for access to the repository, then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "runs", id: null }))}">Go to runs</a></div></section>`;
+  return `<h1 class="sr-only">Evidence</h1><section class="card" aria-label="No access"><h2>You don't have access to this evidence</h2><p class="muted">Ask a workspace owner for access to the repository, or sign in with another account. Then open the link again.</p><div class="row"><a class="btn" href="${esc(routeHref({ view: "settings", page: "account" }))}">Switch account</a><a class="btn" href="${esc(routeHref({ view: "overview" }))}">Back to Overview</a></div></section>`;
 }

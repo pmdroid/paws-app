@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { createInboxStore, linearTokenPath, writeStoredToken } from "../../src/linear";
-import { createLinearReconnect } from "../../src/linear-reconnect";
+import { createLinearReconnect } from "../../src/onboarding";
 import { startPaws } from "../../src/index";
 
 const home = process.argv[2]!;

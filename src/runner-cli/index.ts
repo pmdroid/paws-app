@@ -148,6 +148,17 @@ export async function runRunnerCli(
         abort.signal.throwIfAborted();
         return 0;
       }
+      const current = daemon.status();
+      if (current.phase === "paired") {
+        write(
+          JSON.stringify({
+            paired: true,
+            runnerId: current.runnerId,
+            workspaceId: current.workspaceId,
+          }),
+        );
+        return 0;
+      }
       const pending = await daemon.beginPairing(args[3]!);
       abort.signal.throwIfAborted();
       if (pending.phase !== "pending") throw new Error("Pairing is not pending");

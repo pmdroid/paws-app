@@ -100,7 +100,9 @@ test("run checks, transcripts, and stop controls keep their columns aligned", ()
   const checks = classNames(html, "chk");
   expect(checks.length).toBeGreaterThan(1);
   for (const value of checks) {
-    expect(value).toContain("grid-cols-[3rem_12rem_minmax(0,1fr)_auto]");
+    expect(value).toContain("focus-visible:outline-2");
+    expect(html).toContain("check-command");
+    expect(html).toContain("check-meta");
     expect(value).not.toContain("flex-wrap");
   }
   const lines = classNames(html, "ln");

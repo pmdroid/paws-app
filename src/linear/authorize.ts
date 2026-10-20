@@ -33,16 +33,16 @@ export async function authorizeLinear(input: {
       if (url.pathname !== "/oauth/callback") return response("Not found.", 404);
       if (request.method !== "GET") return response("Use GET for the OAuth callback.", 405);
       if (url.searchParams.get("state") !== state) {
-        return response("Invalid Linear authorization state. Return to Paws setup.", 400);
+        return response("Invalid Linear authorization state. Return to Paws.", 400);
       }
       if (claimed) return response("This Linear authorization has already been used.", 409);
       if (url.searchParams.has("error")) {
         claimed = true;
-        result.reject(new Error("Linear authorization was denied. Run paws setup again."));
-        return response("Linear authorization was denied. Return to Paws setup.", 400);
+        result.reject(new Error("Linear authorization was denied. Retry Linear authorization."));
+        return response("Linear authorization was denied. Return to Paws.", 400);
       }
       const code = url.searchParams.get("code");
-      if (!code) return response("Missing Linear authorization code. Return to Paws setup.", 400);
+      if (!code) return response("Missing Linear authorization code. Return to Paws.", 400);
       claimed = true;
       try {
         const token = await exchangeLinearCode({
@@ -54,19 +54,21 @@ export async function authorizeLinear(input: {
           fetch: (tokenUrl, init) => fetchToken(tokenUrl, { ...init, signal: abort.signal }),
         });
         result.resolve(token);
-        return response("Linear authorization received. Return to Paws setup.", 200);
+        return response("Linear authorization received. Return to Paws.", 200);
       } catch {
         result.reject(
-          new Error("Could not exchange the Linear authorization code. Run paws setup again."),
+          new Error(
+            "Could not exchange the Linear authorization code. Retry Linear authorization.",
+          ),
         );
-        return response("Linear authorization failed. Return to Paws setup.", 502);
+        return response("Linear authorization failed. Return to Paws.", 502);
       }
     },
   });
   redirectUri = `http://localhost:${server.port}/oauth/callback`;
   const timeout = setTimeout(
     () => {
-      result.reject(new Error("Linear authorization timed out. Run paws setup again."));
+      result.reject(new Error("Linear authorization timed out. Retry Linear authorization."));
     },
     input.timeoutMs ?? 5 * 60_000,
   );

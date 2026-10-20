@@ -2,7 +2,7 @@ import { readCsrfToken } from "./github-auth";
 import { renderMarkup } from "./theme";
 import { esc } from "./format";
 
-type Agent = "claude" | "codex";
+type Agent = "claude" | "codex" | "grok";
 type Login = {
   id: string;
   agent: Agent;
@@ -42,7 +42,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
   document.body.append(host);
   renderMarkup(
     host,
-    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude and Codex on this runner. Each member signs in separately.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
+    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude, Codex, and Grok on this runner. Each member signs in separately.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
   );
   const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
   const feedback = dialog.querySelector<HTMLElement>("[data-account-feedback]")!;
@@ -61,10 +61,10 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
 
   function paint() {
     if (!dialog.isConnected) return;
-    for (const agent of ["claude", "codex"] as const) {
+    for (const agent of ["claude", "codex", "grok"] as const) {
       const account = accounts.find((entry) => entry.agent === agent);
       if (!account) continue;
-      const name = agent === "claude" ? "Claude" : "Codex";
+      const name = { claude: "Claude", codex: "Codex", grok: "Grok" }[agent];
       let row = list.querySelector<HTMLElement>(`[data-agent="${agent}"]`);
       if (!row) {
         row = document.createElement("div");
@@ -243,7 +243,9 @@ function providerUrl(value: string, agent: Agent): string {
   const hosts =
     agent === "codex"
       ? ["auth.openai.com", "chatgpt.com"]
-      : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
+      : agent === "grok"
+        ? ["auth.x.ai"]
+        : ["claude.ai", "console.anthropic.com", "platform.claude.com"];
   if (
     url.protocol !== "https:" ||
     url.username ||

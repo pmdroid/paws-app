@@ -188,6 +188,9 @@ test("migration 059 is append-only and runs after the task_block copy", () => {
       .all()
       .map((row) => row.id);
     expect(ids).toContain("072_runner_follow_up");
+    expect(ids.indexOf("073_grok_runner_login")).toBeLessThan(
+      ids.indexOf("074_browser_installation"),
+    );
     expect(ids.indexOf("058_one_active_item")).toBeLessThan(ids.indexOf("059_drop_old_blocks"));
     expect(ids.indexOf("059_drop_old_blocks")).toBeLessThan(
       ids.indexOf("060_session_link_on_item"),
