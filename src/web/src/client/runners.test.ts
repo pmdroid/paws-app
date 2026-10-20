@@ -7,7 +7,9 @@ import {
   runnerDetailMarkup,
   runnerHistoryMarkup,
   runnerRowMarkup,
+  runnerRunningMarkup,
   type Runner,
+  type RunningSession,
   type Usage,
 } from "./runners";
 import { parseRoute, routeHref } from "./route";
@@ -127,6 +129,74 @@ describe("runner execution history", () => {
 
   test("an unused runner has an empty history", () => {
     expect(runnerHistoryMarkup([])).toContain("has not executed any work yet");
+  });
+});
+
+describe("what a runner is running now", () => {
+  const working: RunningSession = {
+    runId: "run-1",
+    identifier: "ENG-7",
+    title: "Parse <config> files",
+    phase: "working",
+    startedAt: now - 12 * 60_000,
+  };
+  const closeout: RunningSession = {
+    runId: "run-2",
+    identifier: "ENG-9",
+    title: "Cache the token",
+    phase: "closeout",
+    startedAt: now - 75 * 60_000,
+  };
+  const row = { now, serverVersion: "1.2.0" };
+
+  test("an idle runner shows nothing running", () => {
+    expect(runnerRunningMarkup([], now)).toBe('<p class="muted">Nothing running</p>');
+    expect(runnerRowMarkup({ ...runner, running: [] }, row)).toContain(
+      '<span class="tag ok">Idle</span>',
+    );
+    expect(runnerDetailMarkup({ ...runner, running: [] }, view)).toContain(
+      '<span class="tag">Idle</span>',
+    );
+  });
+
+  test("a runner with one session links its issue to the run page", () => {
+    const html = runnerRunningMarkup([working], now);
+    expect(html).toContain('aria-label="Running sessions"');
+    expect(html).toContain('href="/runs/run-1"');
+    expect(html).toContain('<span class="lin-id">ENG-7</span> <b>Parse &lt;config&gt; files</b>');
+    expect(html).toContain('<span class="st running">Working</span>');
+    expect(html).toContain("Running for 12m");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("<input");
+    const busy = { ...runner, idle: false, running: [working] };
+    expect(runnerRowMarkup(busy, row)).toContain('<span class="tag running">Running 1</span>');
+    expect(runnerDetailMarkup(busy, view)).toContain('<span class="tag running">Running 1</span>');
+    expect(runnerDetailMarkup(busy, view)).not.toContain("Busy");
+  });
+
+  test("a runner with two sessions lists both with their phases", () => {
+    const html = runnerRunningMarkup([working, closeout], now);
+    expect(html.match(/<li /g)).toHaveLength(2);
+    expect(html.indexOf("ENG-7")).toBeLessThan(html.indexOf("ENG-9"));
+    expect(html).toContain('href="/runs/run-2"');
+    expect(html).toContain('<span class="st verifying">Closeout</span>');
+    expect(html).toContain("Running for 1h 15m");
+    expect(
+      runnerRowMarkup({ ...runner, idle: false, running: [working, closeout] }, row),
+    ).toContain('<span class="tag running">Running 2</span>');
+  });
+
+  test("each phase has its label", () => {
+    const labels = (["working", "closeout", "fixing", "merging"] as const).map((phase) =>
+      runnerRunningMarkup([{ ...working, phase, startedAt: now - 1_000 }], now),
+    );
+    expect(labels.map((html) => />(Working|Closeout|Fixing|Merging)</.exec(html)?.[1])).toEqual([
+      "Working",
+      "Closeout",
+      "Fixing",
+      "Merging",
+    ]);
+    expect(labels[0]).toContain("Running for under a minute");
   });
 });
 

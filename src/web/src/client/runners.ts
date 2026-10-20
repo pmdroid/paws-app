@@ -1,5 +1,5 @@
 import { renderMarkup } from "./theme";
-import { durationLabel, esc } from "./format";
+import { durationLabel, esc, statePill } from "./format";
 import { readCsrfToken } from "./github-auth";
 import { openAgentAccounts } from "./agent-accounts";
 import { routeHref } from "./route";
@@ -39,6 +39,15 @@ export type Runner = {
   /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
   concurrency?: { desired: number | null; applied: number; ceiling: number | null } | null;
   agents?: AgentSignIn[];
+  /** Sessions with a live work lease on this runner, oldest first. */
+  running?: RunningSession[];
+};
+export type RunningSession = {
+  runId: string;
+  identifier: string;
+  title: string;
+  phase: "working" | "closeout" | "fixing" | "merging";
+  startedAt: number;
 };
 export type HostPolicy = {
   ownerUserId: string;
@@ -147,6 +156,8 @@ function updateAvailable(runner: Runner, serverVersion: string | null): boolean 
 function availability(runner: Runner, now: number): [string, string] {
   if (runner.status === "revoked") return ["bad", "Revoked"];
   if (!runnerOnline(runner, now)) return ["bad", "Offline"];
+  const running = runner.running?.length ?? 0;
+  if (running) return ["running", `Running ${running}`];
   return runner.idle ? ["ok", "Idle"] : ["running", "Busy"];
 }
 
@@ -225,6 +236,32 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
   return `<table class="runner-history"><thead><tr><th>Started</th><th>Task</th><th>Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+const PHASES: Record<RunningSession["phase"], [string, string]> = {
+  working: ["running", "Working"],
+  closeout: ["verifying", "Closeout"],
+  fixing: ["warn", "Fixing"],
+  merging: ["now", "Merging"],
+};
+
+function elapsedLabel(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+}
+
+/** The sessions a runner holds now. Read-only for every member. */
+export function runnerRunningMarkup(sessions: readonly RunningSession[], now: number): string {
+  if (!sessions.length) return '<p class="muted">Nothing running</p>';
+  const rows = sessions
+    .map((session) => {
+      const [tone, phase] = PHASES[session.phase] ?? PHASES.working;
+      return `<li class="issue-row" data-running-run="${esc(session.runId)}"><a class="work-title" href="${esc(routeHref({ view: "runs", id: session.runId }))}"><span class="lin-id">${esc(session.identifier)}</span> <b>${esc(session.title)}</b></a>${statePill(tone, phase)}<div class="issue-facts"><span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">Running for ${esc(elapsedLabel(now - session.startedAt))}</span></div></li>`;
+    })
+    .join("");
+  return `<ul class="issue-list" role="list" aria-label="Running sessions">${rows}</ul>`;
+}
+
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
   state: { manages: boolean; busy: boolean },
@@ -291,9 +328,11 @@ export function runnerDetailMarkup(
     `<span class="tag ${statusClass}">${esc(runner.status[0]!.toUpperCase() + runner.status.slice(1))}</span>`,
     online ? '<span class="tag ok">Online</span>' : '<span class="tag bad">Offline</span>',
     online
-      ? runner.idle
-        ? '<span class="tag">Idle</span>'
-        : '<span class="tag running">Busy</span>'
+      ? runner.running?.length
+        ? `<span class="tag running">Running ${runner.running.length}</span>`
+        : runner.idle
+          ? '<span class="tag">Idle</span>'
+          : '<span class="tag running">Busy</span>'
       : "",
   ].join("");
   const behind = updateAvailable(runner, view.serverVersion);
@@ -566,7 +605,7 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
-    })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
+    })}<section class="runner-section" aria-labelledby="runner-running-heading"><h2 id="runner-running-heading">Running now</h2>${runnerRunningMarkup(runner.running ?? [], now)}</section><section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
