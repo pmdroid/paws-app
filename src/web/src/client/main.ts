@@ -21,6 +21,7 @@ import {
   isOpen,
   parseCheckHash,
 } from "./closeout";
+import { followLog, captureLogs, restoreLogs } from "./log-scroll";
 import { render, type RenderModel } from "./render";
 import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
 import type { SettingsPage } from "./settings-pages";
@@ -58,6 +59,7 @@ const painted = new Map<string, string>();
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
 const closeout = emptyCloseoutView();
+const activity: Record<string, boolean> = {};
 let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
@@ -80,6 +82,22 @@ router.subscribe((state) => {
   window.scrollTo({ top: 0, behavior: "instant" });
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
+// `toggle` does not bubble, so listen while it travels down.
+document.addEventListener(
+  "toggle",
+  (event) => {
+    const details = event.target;
+    if (!(details instanceof HTMLDetailsElement) || !details.isConnected) return;
+    const key = details.dataset.activity;
+    // A repaint opening the section as rendered is not the reader's choice.
+    if (key === undefined || String(details.open) === details.dataset.open) return;
+    details.dataset.open = String(details.open);
+    activity[key] = details.open;
+    const log = details.querySelector("[data-follow]");
+    if (details.open && log) followLog(log);
+  },
+  true,
+);
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLSelectElement) || target.dataset.routePicker === undefined) return;
@@ -233,6 +251,7 @@ function paint(): void {
     error,
     engineUrl: currentEngine(),
     closeout,
+    activity,
     mediaInfo: evidence.info,
     conversations: canReadConversations(currentEngine(), source(), location.origin)
       ? conversations
@@ -378,8 +397,6 @@ type HeldFocus =
   | { kind: "tab"; text: string }
   | { kind: "picker"; label: string };
 
-type LogScroll = { key: string; top: number; stick: boolean };
-
 function captureFocus(root: Element): HeldFocus | null {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
@@ -450,27 +467,6 @@ function findHeld(root: Element, held: HeldFocus): Element | null {
     }
   }
   return null;
-}
-
-function captureLogs(root: Element): LogScroll[] {
-  const logs: LogScroll[] = [];
-  for (const node of root.querySelectorAll("[data-log]")) {
-    if (!(node instanceof HTMLElement)) continue;
-    const key = node.getAttribute("data-log");
-    if (!key) continue;
-    const stick = node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
-    logs.push({ key, top: node.scrollTop, stick });
-  }
-  return logs;
-}
-
-function restoreLogs(root: Element, logs: readonly LogScroll[]): void {
-  for (const saved of logs) {
-    for (const node of root.querySelectorAll("[data-log]")) {
-      if (!(node instanceof HTMLElement) || node.getAttribute("data-log") !== saved.key) continue;
-      node.scrollTop = saved.stick ? node.scrollHeight : saved.top;
-    }
-  }
 }
 
 function onClick(event: MouseEvent): void {
