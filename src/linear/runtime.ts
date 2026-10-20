@@ -62,6 +62,7 @@ export function openLinear(options: {
   env: EnvSource;
   publicUrl: string | null;
   noTunnel?: boolean;
+  signal?: AbortSignal;
   isAuthorized?: () => boolean;
   /** Overrides `LINEAR_WEBHOOKS`. Default is that env flag, which is off. */
   webhooks?: boolean;
@@ -76,6 +77,10 @@ export function openLinear(options: {
   fetch?: FetchLike;
   spawn?: SpawnFn;
 }): OpenLinear {
+  const stopping = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, stopping.signal])
+    : stopping.signal;
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(options.db);
   const accessAllowed = options.isAuthorized ?? (() => true);
@@ -96,7 +101,13 @@ export function openLinear(options: {
   const onEvent =
     tracker === null && options.beforeEvent === undefined
       ? undefined
-      : shareEvents(tracker, options.followUp, options.beforeEvent, options.progressReporter);
+      : shareEvents(
+          tracker,
+          options.followUp,
+          options.beforeEvent,
+          options.progressReporter,
+          signal,
+        );
   let running: LinearRunning | null = null;
   return {
     memberships: client === null ? null : createLinearMembershipReads(client),
@@ -140,6 +151,7 @@ export function openLinear(options: {
         tunnelRequested: tunnel.requested,
         tunnelUrl: tunnel.url,
         async stop() {
+          stopping.abort();
           const polling = poller?.stop();
           const events = onEvent?.close();
           tunnel.stop();
@@ -166,6 +178,7 @@ function shareEvents(
     | ((event: AcceptedLinearEvent, request?: TrackerRequestOptions) => Promise<boolean>)
     | undefined,
   progressReporter: ((event: AcceptedLinearEvent) => TrackerAdapter["postProgress"]) | undefined,
+  signal: AbortSignal,
 ): ((event: AcceptedLinearEvent) => Promise<void | boolean>) & { close(): Promise<void> } {
   const inflight = new Map<string, Promise<void | boolean>>();
   const acknowledged = new Set<string>();
@@ -177,7 +190,12 @@ function shareEvents(
     const request = initialActivityRequest(event);
     const reportProgress = progressReporter?.(event);
     const work = (async () => {
-      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return false;
+      signal.throwIfAborted();
+      if (beforeEvent !== undefined && !(await beforeEvent(event, request))) {
+        signal.throwIfAborted();
+        return false;
+      }
+      signal.throwIfAborted();
       request?.signal?.throwIfAborted();
       if (tracker === null) {
         if (event.signal === "stop") {
@@ -191,7 +209,7 @@ function shareEvents(
         event,
         (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
         request,
-        { acknowledged },
+        { acknowledged, signal },
       );
     })().finally(() => {
       inflight.delete(event.dedupeKey);
