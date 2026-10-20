@@ -94,7 +94,7 @@ export function createRemoteSessionAgentRunner(options: {
             .get(now());
           if (!slotBusy || now() >= waitUntil)
             throw new UserFacingError(
-              `No paired runner can run ${profile.agent} for this issue. Check the ${profile.agent} sign-in on your runners.`,
+              `No paired runner can run ${profile.agent} for this issue right now. Check runner availability and usage limits, then retry.`,
             );
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
