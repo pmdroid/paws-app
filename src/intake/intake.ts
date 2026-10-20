@@ -61,6 +61,7 @@ export async function intakeDelegatedIssue(
     isCurrent?: () => boolean;
     onAccepted?: (result: IntakeResult) => void;
     beforeAdmit?: () => void;
+    reconcileSessions?: (issueIds: readonly string[]) => Promise<void>;
     adoptParent?: (
       sessionId: string,
       snapshot: EpicSnapshot,
@@ -89,6 +90,9 @@ export async function intakeDelegatedIssue(
   const nodes = workNodes(snapshot);
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
+  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  if (ordered.ok && (delegatedAlone || !input.adoptParent))
+    await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
   if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
   const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
