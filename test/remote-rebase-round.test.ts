@@ -53,6 +53,15 @@ async function remoteFixture(losePublication = false) {
     if (code !== 0) throw new Error(`git ${args.join(" ")}: ${err}`);
     return out.trim();
   }
+  // The rebase before a merge commits with the process identity, as on a host.
+  const identity = {
+    GIT_AUTHOR_NAME: "Fixture",
+    GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+    GIT_COMMITTER_NAME: "Fixture",
+    GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
   await git(["init", "-b", "main", source]);
   mkdirSync(join(source, ".agents"));
   writeFileSync(join(source, "README.md"), "Fixture\n");
@@ -254,6 +263,10 @@ async function remoteFixture(losePublication = false) {
     await orchestrator.shutdown();
     db.close();
     rmSync(root, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   };
   return {
     db,
