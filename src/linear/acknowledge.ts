@@ -5,13 +5,16 @@ import type { AcceptedLinearEvent } from "./events";
 /** Posted before intake so a slow Linear read still meets the 10 second first-activity rule. */
 export const FIRST_ACTIVITY_BODY = "Picked up this issue.";
 
+export class LinearIntakePendingError extends Error {}
+
 export async function acknowledgeNewSession(
   tracker: TrackerAdapter,
   event: AcceptedLinearEvent,
   followUp?: (event: AcceptedLinearEvent) => Promise<void | boolean>,
   initialRequest?: TrackerRequestOptions,
-  options: { acknowledged?: Set<string> } = {},
+  options: { acknowledged?: Set<string>; signal?: AbortSignal } = {},
 ): Promise<void | boolean> {
+  options.signal?.throwIfAborted();
   if (event.signal === "stop") {
     return followUp?.(event);
   }
@@ -36,26 +39,36 @@ export async function acknowledgeNewSession(
   if (followUp === undefined) return;
   try {
     const accepted = await followUp(event);
+    options.signal?.throwIfAborted();
     if (accepted === false && first && event.sessionId !== null)
-      await tracker.postProgress({
-        sessionId: event.sessionId,
-        kind: "error",
-        body: "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
-      });
+      await tracker.postProgress(
+        {
+          sessionId: event.sessionId,
+          kind: "error",
+          body: "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
+        },
+        { signal: options.signal },
+      );
     return accepted;
   } catch (error) {
+    if (options.signal?.aborted) throw error;
     const message = error instanceof Error ? error.message : "follow-up failed";
     console.error(`linear session follow-up failed: ${message}`);
     if (event.sessionId !== null && !(error instanceof UserFacingError && error.reported)) {
       try {
-        await tracker.postProgress({
-          sessionId: event.sessionId,
-          kind: "error",
-          body:
-            error instanceof UserFacingError
-              ? `Paws could not start work on this issue: ${error.message}`
-              : "Paws could not start work on this issue. Please retry.",
-        });
+        await tracker.postProgress(
+          {
+            sessionId: event.sessionId,
+            kind: error instanceof LinearIntakePendingError ? "thought" : "error",
+            body:
+              error instanceof LinearIntakePendingError
+                ? error.message
+                : error instanceof UserFacingError
+                  ? `Paws could not start work on this issue: ${error.message}`
+                  : "Paws could not start work on this issue. Please retry.",
+          },
+          { signal: options.signal },
+        );
       } catch {
         console.error("linear follow-up error activity failed");
       }

@@ -375,6 +375,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     channel === "agent-session"
       ? openLinear({
           db,
+          signal: abort.signal,
           secretsDir: paths.secretsDir,
           isAuthorized: () =>
             !isLinearAppRevoked(db, {
