@@ -274,5 +274,39 @@ test("a completed member sign-in queues one login check for that member and agen
   expect(f.health.agents(f.owner, runnerId).map(({ agent, status }) => [agent, status])).toEqual([
     ["claude", "checking"],
     ["codex", "unknown"],
+    ["grok", "unknown"],
   ]);
+});
+
+test("an authenticated member login check restores the account model catalogs use", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
+  const session = login.start(f.owner, runnerId, "grok");
+  login.exchange(runnerId, session.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  const connected = () =>
+    f.db
+      .query<{ connected: number }, [string]>(
+        "SELECT connected FROM runner_member_account WHERE runner_id=? AND agent='grok'",
+      )
+      .get(runnerId)!.connected;
+  f.db.run("UPDATE runner_member_account SET connected=0 WHERE runner_id=? AND agent='grok'", [
+    runnerId,
+  ]);
+  f.health.refresh();
+  const check = f.checks(runnerId).find((command) => command.agent === "grok");
+  f.answer(check!);
+  expect(connected()).toBe(1);
+  f.db.run(
+    "UPDATE runner_member_account SET connected=0,updated_at=? WHERE runner_id=? AND agent='grok'",
+    [f.now() - 1, runnerId],
+  );
+  f.advance(1);
+  f.health.refresh();
+  expect(connected()).toBe(1);
 });
