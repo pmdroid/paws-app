@@ -67,7 +67,6 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
   dispatcher.setHandler((row, context) =>
     deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
-  // Each round runs an hour later so retry backoff never hides a row.
   for (let round = 0; round < 50; round++) {
     dispatcher.tick();
     await dispatcher.idle();

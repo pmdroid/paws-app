@@ -128,7 +128,6 @@ export function createEvidenceArtifactPublisher(options: {
           generation,
           now: now(),
           payload: {
-            // Linear takes UUID v4 activity ids; the evidence id is a ULID and stays in the key.
             id: randomUUID(),
             sessionId: options.sessionId,
             kind: "thought",
