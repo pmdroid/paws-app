@@ -68,7 +68,6 @@ import {
   prepareShutdown,
   recoverOnStartup,
   recordGitHubDelivery,
-  refreshRepositoryCatalog,
   startLoops,
   submitCommand,
   type WorkItemRecord,
@@ -143,7 +142,7 @@ import {
 import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./intake";
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
-import { startServer } from "./server";
+import { createRepositoryCatalogRefresh, startServer } from "./server";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
@@ -326,9 +325,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     );
     return lists.flat();
   };
+  const catalog = createRepositoryCatalogRefresh(db, listCatalog, abort.signal);
   if (options?.refreshRepositories) {
-    void refreshRepositoryCatalog(db, listCatalog);
-    const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
+    void catalog.refresh();
+    const catalogTimer = setInterval(() => void catalog.refresh(), 600_000);
     catalogTimer.unref?.();
     abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
   }
@@ -492,7 +492,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
 
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
-      db.close();
+      abort.abort();
+      void catalog.stopped().then(() => db.close());
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
     try {
@@ -590,7 +591,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     } catch (error) {
       abort.abort();
-      db.close();
+      void catalog.stopped().then(() => db.close());
       throw error;
     }
   }
@@ -806,13 +807,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
       },
+      refreshRepositoryCatalog: catalog.refresh,
     });
   } catch (error) {
     abort.abort();
-    if (runnerConfig !== null)
-      void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
-    else if (workspace === undefined) db.close();
-    else void workspace.stop().then(() => db.close());
+    void Promise.all([workspace?.stop(), stopRunner(), catalog.stopped()]).then(() => db.close());
     throw error;
   }
 
@@ -1420,6 +1419,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         await Promise.all([loops.stop(), linearStopped, serverStopped]);
         await workspace?.stop();
         await stopRunner();
+        await catalog.stopped();
         prepareShutdown(db, Date.now(), (item) => {
           const policy = getItemRunCommitPolicy(db, item.id);
           if (runtime.githubAuth !== "app" || policy)

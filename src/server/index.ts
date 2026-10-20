@@ -3,3 +3,4 @@ export type { ServerOptions } from "./serve";
 export { createHostedGitHubConnect } from "./github-connect";
 
 export { createGitHubRepositorySetup } from "./github-repository-setup";
+export { createRepositoryCatalogRefresh } from "./repository-catalog-refresh";
