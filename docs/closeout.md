@@ -45,7 +45,7 @@ The agent cannot end its turn while a check is still pending. When the agent tri
 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:
 
-- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked.
+- **Command checks.** On a local runner, Paws runs them against the candidate checkout. On a remote runner, Paws uses the agent Closeout result for the same commit. A check passes when that result has nothing pending and nothing blocked. When a commit has no result, for example after a rebase, Paws runs the checks on the item's runner against that commit, the same way `run_closeout` does, and judges those results. A missing result never counts as a failed check. If the runner cannot run them, Paws retries, and then asks in Linear, saying that the checks could not run.
 - **Independent review.** A reviewer in a separate session runs the review skill. A finding at or above the policy's `failOn` severity fails the review.
 
 The run page shows these steps and their output while they run.
@@ -75,4 +75,4 @@ Only a bypass in reply to this question counts. A bypass the agent proposes in i
 
 ### After acceptance
 
-An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Paws Closeout again on the rebased commit. Closeout must accept the commit that is actually merged.
+An accepted candidate enters the merge queue. If `main` moves before the merge, Paws rebases the branch and runs Paws Closeout again on the rebased commit. Closeout must accept the commit that is actually merged. On a remote runner, Paws runs the command checks for the rebased commit on the item's runner. A failing check starts a normal fix round with its output. The review check keeps its usual rules.
