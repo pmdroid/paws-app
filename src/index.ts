@@ -63,6 +63,7 @@ import {
   workspaceForOrganization,
   listWorkspaceMembers,
   listWorkspaceRepositories,
+  listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
   getLinearSessionAccess,
@@ -160,7 +161,6 @@ import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
   createCommitPolicyForItem,
-  MissingCommitAttributionError,
   createWorkspaceAssignments,
   createMemberGitHubAccounts,
   createMemberRepositoryAccess,
@@ -451,6 +451,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     channel === "agent-session"
       ? openLinear({
           db,
+          signal: abort.signal,
           secretsDir: paths.secretsDir,
           isAuthorized: () =>
             !isLinearAppRevoked(db, {
@@ -680,8 +681,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
-  const commitPolicyForItem = async (item: WorkItemRecord): Promise<GitCommitPolicy> => {
-    const selected = getWorkItemRepository(db, item.id) ?? repository;
+  const commitPolicyForItem = async (
+    item: WorkItemRecord,
+    selected = getWorkItemRepository(db, item.id) ?? repository,
+  ): Promise<GitCommitPolicy> => {
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
@@ -1011,12 +1014,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   const selected =
                     getWorkItemRepositoryChoice(db, item.id) ??
                     (answer ? repositoryAnswer(answer.answer, answer.candidates) : null);
-                  const configured = repositories.filter(
-                    (candidate, index) =>
-                      repositories.findIndex(
-                        (other) => other.owner === candidate.owner && other.repo === candidate.repo,
-                      ) === index,
-                  );
+                  const configured = listRepositoryCandidates(db, item.sessionKey, repositories);
                   return selected
                     ? (configured.find(
                         (candidate) =>
@@ -1033,14 +1031,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     ? "read"
                     : "write",
                 actorForItem: (item) => delegatedLinearUserId(db, item.id),
-                attributionReady: async (item) => {
-                  try {
-                    if (getTaskMode(db, item.id) === "code") await commitPolicyForItem(item);
-                    return true;
-                  } catch (error) {
-                    if (error instanceof MissingCommitAttributionError) return false;
-                    throw error;
-                  }
+                attributionReady: async (item, selected) => {
+                  if (getTaskMode(db, item.id) === "code")
+                    await commitPolicyForItem(item, selected);
+                  return true;
                 },
                 authorizeItem: async (item, signal, selectedRepository) => {
                   if (
@@ -1456,7 +1450,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 return null;
               }
             } catch {}
-            return "Restart stopped: verified GitHub attribution for the project lead and task steerer is missing. WIP is preserved. Restore the attribution links before retrying.";
+            return "Restart stopped: a valid GitHub App commit policy is missing. WIP is preserved. Restore the run policy before retrying.";
           }
         : undefined,
     restartFromMain: (item) => {
@@ -1785,7 +1779,7 @@ export function createLinearGitHubAuth(input: {
   currentIntegrationItem?: (item: WorkItemRecord) => boolean;
   administratorsForItem?: (item: WorkItemRecord) => readonly string[];
   accessForItem?: (item: WorkItemRecord) => "read" | "write";
-  attributionReady?: (item: WorkItemRecord) => Promise<boolean>;
+  attributionReady?: (item: WorkItemRecord, repository: RepositoryBinding) => Promise<boolean>;
 }): HostGitHubAuth {
   const loginFor = (item: WorkItemRecord) => {
     const repository = input.repositoryForItem(item);
@@ -1820,7 +1814,11 @@ export function createLinearGitHubAuth(input: {
                 (!input.authorizeItem || (await input.authorizeItem(item, signal, selected)))
               );
             },
-            attributionReady: input.attributionReady,
+            attributionReady: async (item) => {
+              if (!input.attributionReady) return true;
+              const selected = input.repositoryForItem(item);
+              return selected !== null && input.attributionReady(item, selected);
+            },
             async check(item: WorkItemRecord, signal: AbortSignal) {
               const selected = input.repositoryForItem(item);
               return (

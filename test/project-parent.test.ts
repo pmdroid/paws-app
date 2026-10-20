@@ -482,7 +482,9 @@ test("a sub-issue already managed in another session is rejected", async () => {
     });
     await expect(
       fixture.orchestrator.intakeLinearTask("parent", "parent-session", "parent-task"),
-    ).rejects.toThrow("PAR-2 is already being worked on in another session.");
+    ).rejects.toThrow(
+      "PAR-2 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.",
+    );
     expect(
       fixture.db
         .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")

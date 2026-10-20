@@ -292,7 +292,7 @@ for (const source of ["local", "live"] as const) {
   });
 }
 
-test("missing verified attribution parks canonically and automatically resumes exactly once after consent", async () => {
+test("unverified commit policy parks canonically and automatically resumes exactly once when ready", async () => {
   const f = fixture();
   let consent = false;
   Object.assign(f.integration, { attributionReady: async () => consent });
@@ -302,7 +302,9 @@ test("missing verified attribution parks canonically and automatically resumes e
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(
-      listOutbox(f.db).some((entry) => JSON.stringify(entry.payload).includes("consent")),
+      listOutbox(f.db).some((entry) =>
+        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
+      ),
     ).toBe(true);
     expect(listOutbox(f.db).filter((entry) => entry.op === "elicitation")).toHaveLength(0);
     await f.auth.recover();
@@ -334,8 +336,48 @@ test("attribution provider outage is a retryable unavailable hold, not missing c
       ),
     ).toBe(true);
     expect(
-      listOutbox(f.db).some((entry) => JSON.stringify(entry.payload).includes("consent")),
+      listOutbox(f.db).some((entry) =>
+        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
+      ),
     ).toBe(false);
+  } finally {
+    f.auth.close();
+    f.db.close();
+  }
+});
+
+test("recovery replaces an unavailable message with the current commit policy blocker only once", async () => {
+  const f = fixture();
+  let unavailable = true;
+  let consent = false;
+  Object.assign(f.integration, {
+    attributionReady: async () => {
+      if (unavailable) throw new Error("Attribution repository is missing");
+      return consent;
+    },
+  });
+  try {
+    f.ready();
+    const item = f.item("changed-blocker");
+    await f.auth.ensure(item, "initial", f.signal);
+    const question = () => f.db.query<{ body: string }, []>("SELECT body FROM question").get()!;
+    expect(question().body).toContain("could not be checked");
+    unavailable = false;
+    await f.auth.recover();
+    await f.auth.recover();
+    expect(question().body).toContain("GitHub App commit policy");
+    expect(
+      listOutbox(f.db).filter((entry) =>
+        JSON.stringify(entry.payload).includes("GitHub App commit policy"),
+      ),
+    ).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    consent = true;
+    await f.auth.recover();
+    await f.auth.recover();
+    expect(getWorkItem(f.db, item.id)?.state).toBe("running");
+    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
   } finally {
     f.auth.close();
     f.db.close();

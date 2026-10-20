@@ -66,6 +66,7 @@ import {
 } from "../core";
 import {
   getTaskMode,
+  assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
   recordConfirmedRemoteMerge,
@@ -135,7 +136,7 @@ import {
   setCurrentRun,
   applyLinearCommand,
   listRepositoryCatalog,
-  listTeamRepositories,
+  listRepositoryCandidates,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
@@ -164,7 +165,12 @@ import type {
   LinearFileTransfer,
   RepositorySuggestion,
 } from "../linear";
-import { parseLinearSessionContext, renderLinearSessionContext } from "../linear";
+import {
+  FIRST_ACTIVITY_BODY,
+  LinearIntakePendingError,
+  parseLinearSessionContext,
+  renderLinearSessionContext,
+} from "../linear";
 import {
   answerQuestion,
   elicitationBody,
@@ -640,12 +646,14 @@ export class Orchestrator {
     return (update, request) =>
       this.enqueueSessionProgress(
         update,
-        `ack:${event.dedupeKey}:${update.kind}`,
+        `ack:${event.dedupeKey}:${update.kind}${update.kind === "thought" && update.body !== FIRST_ACTIVITY_BODY ? ":pending" : ""}`,
         (event.sessionId
           ? getLinearTurnGeneration(this.db, event.sessionId, event.dedupeKey, event.activityId)
           : null) ?? generation,
         request,
-        event.action === "created" && update.kind === "thought",
+        event.action === "created" &&
+          update.kind === "thought" &&
+          update.body === FIRST_ACTIVITY_BODY,
       );
   }
 
@@ -792,18 +800,23 @@ export class Orchestrator {
           item.id,
         ]);
     };
+    const intakeCurrent = () => {
+      assertPrepared();
+      return (
+        isCurrent() &&
+        (!sessionId ||
+          authorizedSnapshot === null ||
+          this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false)
+      );
+    };
     const result = await intakeDelegatedIssue(this.db, intakeTracker, {
       linearIssueId: issueId,
       sessionId,
-      isCurrent: () => {
-        assertPrepared();
-        return (
-          isCurrent() &&
-          (!sessionId ||
-            authorizedSnapshot === null ||
-            this.options.authorizeLinearIntake?.(sessionId, authorizedSnapshot) !== false)
-        );
-      },
+      isCurrent: intakeCurrent,
+      reconcileSessions:
+        sessionId && this.options.channel !== "comments"
+          ? (issueIds) => this.reconcilePreviousSessions(issueIds, sessionId, intakeCurrent)
+          : undefined,
       beforeAdmit: retireRedirectedItem,
       onAccepted: (accepted) => {
         immediate(this.db, () => {
@@ -860,6 +873,78 @@ export class Orchestrator {
       }
     }
     return result;
+  }
+
+  private async reconcilePreviousSessions(
+    issueIds: readonly string[],
+    incomingSessionId: string,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    if (!this.tracker?.getSession) return;
+    const candidates = (issueId: string) =>
+      this.db
+        .query<{ session_id: string }, [string, string]>(
+          `SELECT DISTINCT previous.session_id FROM work_item item
+       JOIN linear_session previous ON previous.session_id = item.session_key
+       JOIN linear_session incoming ON incoming.session_id = ?
+         AND incoming.organization_id = previous.organization_id
+         AND incoming.oauth_client_id = previous.oauth_client_id
+         AND incoming.app_user_id = previous.app_user_id
+         AND incoming.team_id = previous.team_id
+       WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
+         AND item.state NOT IN ('completed', 'merged')`,
+        )
+        .all(incomingSessionId, issueId);
+    try {
+      for (const issueId of issueIds) {
+        for (const { session_id: sessionId } of candidates(issueId)) {
+          const previous = getLinearSession(this.db, sessionId)!;
+          const unfinished = this.itemsForSession(sessionId).some(
+            (item) => !["completed", "merged", "cancelled"].includes(item.state),
+          );
+          if (previous.stoppedAt === null && unfinished) {
+            const snapshot = await this.tracker.getSession(sessionId, {
+              signal: AbortSignal.any([
+                this.authRecoveryController.signal,
+                AbortSignal.timeout(10_000),
+              ]),
+            });
+            if (
+              !isCurrent() ||
+              getLinearSession(this.db, sessionId)?.generation !== previous.generation ||
+              !candidates(issueId).some((candidate) => candidate.session_id === sessionId)
+            )
+              throw new Error("Linear session ownership changed");
+            if (
+              snapshot.id !== sessionId ||
+              snapshot.appUserId !== previous.appUserId ||
+              snapshot.issue?.id !== previous.issueId
+            )
+              throw new Error("Linear session identity changed");
+            if (
+              !snapshot.endedAt &&
+              !snapshot.dismissedAt &&
+              !["complete", "error", "stopping"].includes(snapshot.status)
+            )
+              continue;
+            await this.stopSession(
+              sessionId,
+              `reconcile:${sessionId}:${previous.generation}`,
+              this.now(),
+            );
+          } else {
+            await this.interruptLinearSession(sessionId);
+          }
+          if (!isCurrent()) throw new Error("Linear intake changed during cleanup");
+          assertLinearSessionCleanup(this.db, sessionId);
+        }
+      }
+    } catch (cause) {
+      throw new LinearIntakePendingError(
+        "Paws is checking the previous session and waiting for its work to stop safely. This request will retry automatically.",
+        { cause },
+      );
+    }
   }
 
   stopTaskPlanning = (sessionId?: string): Promise<void> => this.taskPlanner.stop(sessionId);
@@ -3824,7 +3909,7 @@ export class Orchestrator {
     if (!resolved) throw new Error("Run attribution authority is unavailable");
     if (prior && resolved && JSON.stringify(prior) !== JSON.stringify(resolved))
       throw new Error(
-        "Run attribution authority changed; restore the snapshotted lead and steerer or start a new task.",
+        "Run attribution authority changed; restore the snapshotted commit policy or start a new task.",
       );
     const policy = prior ?? resolved;
     if (policy) {
@@ -4127,28 +4212,11 @@ export class Orchestrator {
         repo,
         remoteUrl,
       }));
-      const available = [
-        ...(this.options.repositories ??
-          (this.options.repository ? [this.options.repository] : [])),
-        ...catalog,
-      ];
-      const teamLinks = item.sessionKey ? listTeamRepositories(this.db, item.sessionKey) : [];
-      const configured = available.filter(
-        (candidate, index) =>
-          available.findIndex(
-            (other) =>
-              `${other.owner}/${other.repo}`.toLowerCase() ===
-              `${candidate.owner}/${candidate.repo}`.toLowerCase(),
-          ) === index,
+      const configured = listRepositoryCandidates(
+        this.db,
+        item.sessionKey,
+        this.options.repositories ?? (this.options.repository ? [this.options.repository] : []),
       );
-      if (teamLinks.length)
-        configured.splice(
-          0,
-          configured.length,
-          ...configured.filter((candidate) =>
-            teamLinks.includes(`${candidate.owner}/${candidate.repo}`.toLowerCase()),
-          ),
-        );
       const listed = (candidate: RepositoryBinding) =>
         catalog.some((entry) => sameRepository(entry, candidate));
       const candidates: RepositoryBinding[] = auth ? [...configured] : [];

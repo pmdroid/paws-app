@@ -9,24 +9,21 @@ export type VerifiedGitHubCoauthor = GitCommitIdentity & { id: number; login: st
 export type GitCommitPolicy = {
   bot: AppBotIdentity;
   projectLead: VerifiedGitHubCoauthor | null;
-  taskSteerer: VerifiedGitHubCoauthor;
+  taskSteerer: VerifiedGitHubCoauthor | null;
 };
 
 export function policyCoauthors(policy: GitCommitPolicy): VerifiedGitHubCoauthor[] {
   appBotCommitIdentity(policy.bot);
   const result: VerifiedGitHubCoauthor[] = [];
-  for (const human of policy.projectLead === null
-    ? [policy.taskSteerer]
-    : [policy.projectLead, policy.taskSteerer]) {
+  for (const human of [policy.projectLead, policy.taskSteerer]) {
+    if (human === null) continue;
     if (
       !human ||
       !Number.isSafeInteger(human.id) ||
       human.id <= 0 ||
       !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(human.login)
     )
-      throw new Error(
-        "Link consenting verified GitHub identities for the task steerer and any project lead before running App work.",
-      );
+      throw new Error("Invalid verified GitHub coauthor identity.");
     commitIdentityEnv(human);
     if (!/^[^\s<>@]+@[^\s<>@]+$/.test(human.email))
       throw new Error("Invalid verified GitHub coauthor email");
@@ -47,7 +44,7 @@ export function commitPolicyMessage(message: string, policy: GitCommitPolicy): s
   const trailers = policyCoauthors(policy).map(
     (human) => `Co-authored-by: ${human.name} <${human.email}>`,
   );
-  return `${message.trim()}\n\n${trailers.join("\n")}\n`;
+  return `${message.trim()}${trailers.length ? `\n\n${trailers.join("\n")}` : ""}\n`;
 }
 
 export function validateCommitAttribution(
@@ -68,7 +65,7 @@ export function validateCommitAttribution(
     .sort();
   if (JSON.stringify([...trailers].sort()) !== JSON.stringify(expected))
     throw new Error(
-      "Candidate attribution rejected: add exactly the verified task steerer and any project lead Co-authored-by trailers before verification. No candidate was rewritten.",
+      "Candidate attribution rejected: Co-authored-by trailers must match the consenting identities in the run policy. No candidate was rewritten.",
     );
 }
 
@@ -80,7 +77,11 @@ export function policyPullRequestCredit(policy: GitCommitPolicy): string {
           `Project lead: [@${policy.projectLead.login}](https://github.com/${policy.projectLead.login})`,
         ]
       : []),
-    `Task steerer: [@${policy.taskSteerer.login}](https://github.com/${policy.taskSteerer.login})`,
+    ...(policy.taskSteerer
+      ? [
+          `Task steerer: [@${policy.taskSteerer.login}](https://github.com/${policy.taskSteerer.login})`,
+        ]
+      : []),
   ].join("\n");
 }
 

@@ -3,7 +3,13 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createWorkspaceGitHubActivation } from "../src/auth";
-import { listRepositoryCatalog, refreshRepositoryCatalog } from "../src/db";
+import {
+  ensureLinearSession,
+  recordLinearInstallation,
+  listRepositoryCandidates,
+  listRepositoryCatalog,
+  refreshRepositoryCatalog,
+} from "../src/db";
 import {
   listAppRepositories,
   listUserRepositories,
@@ -180,6 +186,76 @@ test("app installations come from the workspace GitHub connections", () => {
     );
     expect(activation.installations()).toEqual([
       expect.objectContaining({ appId: "1", installationId: "42", generation: 3 }),
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("fresh workspace repository choices are available before catalog refresh and follow current team mappings", async () => {
+  const db = tempDb();
+  try {
+    db.run(
+      "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0),('other','other-org','Other workspace',0)",
+    );
+    db.run(
+      "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','Acme/One','team'),('ws','acme/two','team'),('ws','acme/other-team','another-team'),('other','acme/other-workspace','team')",
+    );
+    ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
+    recordLinearInstallation(db, {
+      sessionId: "session",
+      organizationId: "org",
+      oauthClientId: "client",
+      appUserId: "app",
+      teamId: "team",
+      observedAtMs: 1,
+    });
+    const one = { owner: "acme", repo: "one", remoteUrl: "https://github.com/acme/one.git" };
+    const two = { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" };
+    expect(listRepositoryCatalog(db)).toEqual([]);
+    expect(listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
+    expect(listRepositoryCandidates(db, "unrelated-session", [])).toEqual([]);
+    expect(listRepositoryCandidates(db, null, [])).toEqual([]);
+    await refreshRepositoryCatalog(db, async () => [
+      { ...one, defaultBranch: "main" },
+      {
+        owner: "acme",
+        repo: "other-team",
+        remoteUrl: "https://github.com/acme/other-team.git",
+        defaultBranch: "main",
+      },
+    ]);
+    expect(listRepositoryCandidates(db, "session", [])).toEqual([one, two]);
+    db.run(
+      "DELETE FROM workspace_repository WHERE workspace_id='ws' AND lower(repository)='acme/one'",
+    );
+    expect(listRepositoryCandidates(db, "session", [one])).toEqual([two]);
+  } finally {
+    db.close();
+  }
+});
+
+test("repository candidates preserve configured clone URLs and deduplicate catalog entries", async () => {
+  const db = tempDb();
+  try {
+    const configured = { owner: "Acme", repo: "One", remoteUrl: "/synthetic-paws-remotes/one.git" };
+    await refreshRepositoryCatalog(db, async () => [
+      {
+        owner: "acme",
+        repo: "one",
+        remoteUrl: "https://github.com/acme/one.git",
+        defaultBranch: "main",
+      },
+      {
+        owner: "acme",
+        repo: "two",
+        remoteUrl: "https://github.com/acme/two.git",
+        defaultBranch: "main",
+      },
+    ]);
+    expect(listRepositoryCandidates(db, null, [configured, configured])).toEqual([
+      configured,
+      { owner: "acme", repo: "two", remoteUrl: "https://github.com/acme/two.git" },
     ]);
   } finally {
     db.close();

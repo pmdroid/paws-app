@@ -137,18 +137,49 @@ test("trusted policy provider resolves current Linear lead and actual task actor
     const policy = await f.policy(f.item);
     expect(policy.projectLead).toEqual(githubAttribution(f.db, "workspace", "lead")!);
     expect(policy.taskSteerer).toEqual(githubAttribution(f.db, "workspace", "steerer")!);
-    expect(policy.projectLead!.id).not.toBe(policy.taskSteerer.id);
+    expect(policy.projectLead!.id).not.toBe(policy.taskSteerer!.id);
     expect(f.memberReads).toBe(2);
     revokeGitHubAttribution(f.db, f.bindings.get("lead")!, f.now);
     f.db.run(
       "INSERT INTO workspace_identity_link(workspace_id,user_id,provider,external_id,installation_id,method,status,checked_at) VALUES('workspace','lead','github','lead',NULL,'manual','linked',?)",
       [f.now],
     );
-    await expect(f.policy(f.item)).rejects.toThrow("verifiedConsent");
+    expect((await f.policy(f.item)).projectLead).toBeNull();
   } finally {
     f.db.close();
   }
 });
+
+test("App work proceeds without personal GitHub consent", async () => {
+  const f = fixture();
+  try {
+    for (const binding of f.bindings.values()) revokeGitHubAttribution(f.db, binding, f.now);
+    expect(await f.policy(f.item)).toEqual({
+      bot: { appId: "123", id: 3, login: "paws[bot]" },
+      projectLead: null,
+      taskSteerer: null,
+    });
+    expect(f.memberReads).toBe(1);
+  } finally {
+    f.db.close();
+  }
+});
+
+test.each([null, "unknown"])(
+  "project lead %s does not require a Paws account or credit",
+  async (leadId) => {
+    const f = fixture();
+    try {
+      f.context = { ...f.context, leadId };
+      const policy = await f.policy(f.item);
+      expect(policy.projectLead).toBeNull();
+      expect(policy.taskSteerer).not.toBeNull();
+      expect(f.memberReads).toBe(1);
+    } finally {
+      f.db.close();
+    }
+  },
+);
 
 test("same lead and actual steerer returns one verified identity at the policy dedup seam", async () => {
   const f = fixture();
@@ -162,7 +193,7 @@ test("same lead and actual steerer returns one verified identity at the policy d
   }
 });
 
-test("standalone issues require only the verified consenting task steerer", async () => {
+test("standalone issues include task steerer credit only while consented", async () => {
   const f = fixture();
   try {
     f.context = { ...f.context, projectId: null, leadId: null };
@@ -172,7 +203,7 @@ test("standalone issues require only the verified consenting task steerer", asyn
     expect(policy.taskSteerer).toEqual(githubAttribution(f.db, "workspace", "steerer")!);
     expect(f.memberReads).toBe(1);
     revokeGitHubAttribution(f.db, f.bindings.get("steerer")!, f.now);
-    await expect(f.policy(f.item)).rejects.toThrow("verifiedConsent");
+    expect((await f.policy(f.item)).taskSteerer).toBeNull();
   } finally {
     f.db.close();
   }
@@ -209,9 +240,7 @@ for (const failure of [
 }
 
 for (const failure of [
-  "projectLead",
   "taskSteerer",
-  "outsider",
   "team",
   "revoked",
   "changed-actor",
@@ -227,10 +256,8 @@ for (const failure of [
         if (failure === "stale-inactive") f.active = false;
         else f.guest = true;
       }
-      if (failure === "projectLead") f.context = { ...f.context, leadId: null };
       if (failure === "taskSteerer")
         f.db.run("UPDATE work_item SET owner_user_id=NULL, delegated_by=NULL");
-      if (failure === "outsider") f.context = { ...f.context, leadId: "unknown" };
       if (failure === "team") f.db.run("UPDATE linear_session SET team_id='other'");
       if (failure === "revoked")
         f.onMember = () => {

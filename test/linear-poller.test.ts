@@ -921,7 +921,7 @@ test("stopping joins a manual Linear poll before its final SQLite write", async 
   }
 });
 
-test("Linear runtime stop joins accepted events and rejects new handlers before SQLite closes", async () => {
+test("Linear runtime stop joins interrupted events and rejects new handlers before SQLite closes", async () => {
   const db = tempDb();
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -952,7 +952,10 @@ test("Linear runtime stop joins accepted events and rejects new handlers before 
     payload: "{}",
   };
   linear.webhook.store.commit(event);
-  const accepted = Promise.resolve(linear.webhook.onEvent!(event));
+  const accepted = Promise.resolve(linear.webhook.onEvent!(event)).then(
+    () => null,
+    (error: unknown) => error,
+  );
   try {
     await ready.promise;
     let stopped = false;
@@ -965,7 +968,7 @@ test("Linear runtime stop joins accepted events and rejects new handlers before 
       Promise.resolve(linear.webhook.onEvent!({ ...event, dedupeKey: "new" })),
     ).rejects.toThrow("shutting down");
     release.resolve();
-    await accepted;
+    expect(await accepted).toMatchObject({ name: "AbortError" });
     await stopping;
     expect(stopped).toBe(true);
     expect(linear.webhook.store.listUnhandled()).toEqual([]);
