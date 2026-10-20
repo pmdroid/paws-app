@@ -9,6 +9,8 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
@@ -75,8 +77,11 @@ export async function commitCheckpoint(
     const originalIndex = existsSync(index) ? readFileSync(index) : undefined;
     const privateIndex = join(temporary, "index");
     const env = { ...baseEnv, ...commitEnv, GIT_INDEX_FILE: privateIndex };
-    if (originalIndex) writeFileSync(privateIndex, originalIndex);
-    else await git(["-C", tree, "read-tree", head], { env });
+    if (originalIndex) {
+      writeFileSync(privateIndex, originalIndex);
+      const { atime, mtime } = statSync(index);
+      utimesSync(privateIndex, atime, mtime);
+    } else await git(["-C", tree, "read-tree", head], { env });
     if (excludePaths.length)
       await git(
         [
