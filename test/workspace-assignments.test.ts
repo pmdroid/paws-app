@@ -791,3 +791,58 @@ test("signed-out onboarding serves a private-data-free shell and reauth returns 
     await f.close();
   }
 });
+
+test("pending onboarding return completes the exact hold through OAuth and survives restart", async () => {
+  const f = fixture(false);
+  try {
+    await f.assignments.authorize(f.event);
+    const start = await f.begin(
+      "https://paws.example.invalid/auth/linear?return=" +
+        encodeURIComponent("/status/onboarding/session/0"),
+    );
+    expect((await f.callback(start, "owner")).status).toBe(400);
+    const current = await f.begin(
+      "https://paws.example.invalid/auth/linear?return=" +
+        encodeURIComponent("/status/onboarding/session/0"),
+    );
+    const response = await f.callback(current);
+    expect(response.status).toBe(303);
+    expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
+      status: "ready",
+    });
+    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(1);
+    const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+    await f.restart();
+    expect(
+      (await f.read("/api/workspaces/onboarding?session=session&generation=0", cookie)).status,
+    ).toBe(200);
+    expect((await f.callback(current)).status).toBe(400);
+    expect(f.calls).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const change of ["expiry", "stop", "generation", "actor", "team"] as const)
+  test(`pending return completion rejects ${change} changes`, async () => {
+    const f = fixture(false);
+    try {
+      await f.assignments.authorize(f.event);
+      const start = await f.begin(
+        "https://paws.example.invalid/auth/linear?return=" +
+          encodeURIComponent("/status/onboarding/session/0"),
+      );
+      if (change === "expiry") f.clock.advance(31 * 60_000);
+      if (change === "stop")
+        advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+      if (change === "generation")
+        advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+      if (change === "actor")
+        f.db.run("UPDATE linear_session SET creator_id='owner' WHERE session_id='session'");
+      if (change === "team") f.setTeams([]);
+      expect((await f.callback(start)).status).toBe(400);
+      expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(0);
+    } finally {
+      await f.close();
+    }
+  });

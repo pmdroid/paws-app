@@ -382,12 +382,22 @@ for (const known of [true, false])
     } as Parameters<typeof assignments.authorize>[0];
     expect(await assignments.authorize(event)).toBe(false);
     const hold = f.db
-      .query<{ status: string }, []>("SELECT status FROM workspace_assignment")
+      .query<{ status: string; hash: string }, []>(
+        "SELECT status,token_hash AS hash FROM workspace_assignment",
+      )
       .get();
-    expect(hold?.status).toBe(known ? "ready" : "pending");
-    if (!known) f.db.run("UPDATE workspace_assignment SET status='ready'");
+    expect(hold?.status).toBe("pending");
+    expect(f.db.query("SELECT count(*) AS count FROM outbox WHERE op='elicitation'").get()).toEqual(
+      { count: 1 },
+    );
+    if (known) assignments.complete(hold!.hash, "w", "member");
+    else f.db.run("UPDATE workspace_assignment SET status='ready'");
+    expect(
+      f.db.query<{ status: string }, []>("SELECT status FROM workspace_assignment").get()?.status,
+    ).toBe("ready");
     const jobs = new JobLoop(f.db, systemClock);
     assignments.register(jobs);
+    await jobs.tick();
     await jobs.tick();
     expect(continued).toBe(0);
     expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
