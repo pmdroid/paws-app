@@ -9,7 +9,6 @@ import { durationLabel, esc } from "./format";
 
 const AGENT_KEY = "agent:";
 
-/** View-state key of a run's Agent Closeout. It never matches an item id, so rows stay separate. */
 export function agentCloseoutKey(runId: string): string {
   return `${AGENT_KEY}${runId}`;
 }
@@ -18,7 +17,6 @@ export function agentCloseoutRun(key: string): string | null {
   return key.startsWith(AGENT_KEY) ? key.slice(AGENT_KEY.length) : null;
 }
 
-/** The agent's Closeout in the shape the shared Closeout rows read. */
 export function agentVerdict(agent: StatusAgentCloseout): StatusVerdict {
   const latest = agent.attempts.at(-1);
   return {
@@ -44,21 +42,15 @@ export function findAgentCloseout(
   return agents?.find((entry) => entry.runId === runId);
 }
 
-/** "4 of 7 passed", counted on the current state. */
 export function agentProgress(agent: StatusAgentCloseout): string {
   const checks = agent.attempts.at(-1)?.checks ?? [];
   return `${checks.filter((check) => check.state === "passed").length} of ${checks.length} passed`;
 }
 
-/** Key of the reader's open or closed choice for the whole section. */
 export function agentSectionKey(runId: string): string {
   return `section\n${agentCloseoutKey(runId)}`;
 }
 
-/**
- * The run page section. While the agent implements, it is open where Paws Closeout sits later.
- * Once Paws Closeout starts, it sits below that section, collapsed until the reader opens it.
- */
 export function renderAgentCloseout(
   agent: StatusAgentCloseout,
   view: CloseoutView,

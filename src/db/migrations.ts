@@ -1882,7 +1882,7 @@ WHERE target = 'linear' AND op = 'activity' AND status IN ('pending', 'dead')
 `,
   },
   {
-    id: "076_agent_closeout",
+    id: "077_agent_closeout",
     sql: `
 CREATE TABLE agent_closeout_event (
   run_id TEXT NOT NULL,

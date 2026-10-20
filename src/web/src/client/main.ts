@@ -544,7 +544,6 @@ function onClick(event: MouseEvent): void {
   if (action === "download-output") downloadOutput(itemId, attempt, checkId);
 }
 
-/** Paws Closeout of an item, or the agent's Closeout of a run when the key says so. */
 function closeoutVerdict(itemId: string) {
   const runId = agentCloseoutRun(itemId);
   if (runId === null) return snapshot?.verdicts.find((entry) => entry.itemId === itemId);

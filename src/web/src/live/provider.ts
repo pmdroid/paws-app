@@ -188,7 +188,6 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   };
 }
 
-/** The agent's Closeout on each visible item's latest run. */
 function agentCloseoutFor(
   db: Database,
   items: readonly StatusItem[],

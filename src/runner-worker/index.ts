@@ -578,7 +578,6 @@ export async function executeRunnerCommand(
         command.type === "run"
           ? {
               record(progress) {
-                // Closeout output must not use up the journal the run itself needs.
                 if (journalSize > 8_388_608) return;
                 const parsed = RunnerEventSchema.safeParse({ type: "closeout", progress });
                 if (parsed.success && parsed.data.type === "closeout") emit(parsed.data);

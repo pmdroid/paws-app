@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 
-/** Stored output per stream, for Paws Closeout and the agent's Closeout alike. */
 export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
 
 export type CloseoutProgressIdentity = {
