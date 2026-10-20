@@ -697,16 +697,25 @@ export function createRemoteAgentRunner(options: {
           if (complete.candidateSha) {
             if (assigned.type !== "run" || !input.networkGit)
               throw new Error("Runner candidate requires an authorized implementation import.");
-            await options.fetchCandidate({
-              itemId,
-              worktree: input.worktreePath,
-              baseSha: baseSha!,
-              candidateSha: complete.candidateSha,
-              branch: scoped.item.branchName,
-              remoteUrl: assigned.repository.remoteUrl,
-              networkGit: input.networkGit,
-              signal,
-            });
+            const branch = scoped.item.branchName;
+            await options
+              .fetchCandidate({
+                itemId,
+                worktree: input.worktreePath,
+                baseSha: baseSha!,
+                candidateSha: complete.candidateSha,
+                branch,
+                remoteUrl: assigned.repository.remoteUrl,
+                networkGit: input.networkGit,
+                signal,
+              })
+              .catch((error: unknown) => {
+                if (signal.aborted) throw error;
+                throw new Error(
+                  `Paws could not import the runner's commit ${complete.candidateSha!.slice(0, 7)} from ${branch}: ${error instanceof Error ? error.message : String(error)}`,
+                  { cause: error },
+                );
+              });
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
             if (

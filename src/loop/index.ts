@@ -33,7 +33,7 @@ export {
   type ExecutionChanges,
   type RepositoryBinding,
 } from "./orchestrator";
-export { itemPathId, worktreeBranch } from "./sources";
+export { itemPathId, legacyTaskBranch, taskBranch } from "./sources";
 
 export { handleLinearAdministration } from "./linear-administration";
 export { LinearTaskAccess } from "./linear-task-access";

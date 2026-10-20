@@ -7,6 +7,7 @@ import { readSecretFile } from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
+  branchName,
   commitCheckpointSync,
   restartFromFreshMain,
   worktreePath,
@@ -117,7 +118,6 @@ import {
   createLinearArtifactReader,
   itemPathId,
   repositoryAnswer,
-  worktreeBranch,
   type GitHubBinding,
   LinearTaskAccess,
   authorizeLinearTask,
@@ -1197,7 +1197,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         owner: selected.owner,
         repo: selected.repo,
         itemId: itemPathId(item),
-        wipBranch: worktreeBranch(item),
+        wipBranch: branchName(itemPathId(item)),
         commitPolicy: policy,
       });
     },

@@ -1,4 +1,5 @@
 import type { WorkItemRecord } from "../db";
+import { branchForIssue } from "../github";
 
 /**
  * Directory and branch key for one work item.
@@ -17,8 +18,23 @@ export function itemPathId(item: {
     : name;
 }
 
-export function worktreeBranch(
-  item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
-): string {
-  return `paws/${itemPathId(item).toLowerCase()}`;
+type BranchItem = Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">;
+
+/**
+ * The one remote branch of a task. The runner pushes the agent's work here, the
+ * pull request uses it as its head, the rebase before a merge pushes to it and
+ * the candidate fetch reads it.
+ */
+export function taskBranch(item: BranchItem): string {
+  return branchForIssue(itemPathId(item));
+}
+
+/**
+ * Lowercased agent branch older tasks pushed to before they shared the pull
+ * request branch. Null when it is the same name as {@link taskBranch}.
+ */
+export function legacyTaskBranch(item: BranchItem): string | null {
+  const branch = taskBranch(item);
+  const legacy = branch.toLowerCase();
+  return legacy === branch ? null : legacy;
 }

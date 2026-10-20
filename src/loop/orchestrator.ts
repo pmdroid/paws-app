@@ -145,7 +145,6 @@ import {
   publishAccepted,
   closeStoppedPull,
   mergedPullHeads,
-  branchForIssue,
   serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubClient,
@@ -187,7 +186,7 @@ import {
 } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { itemPathId, worktreeBranch } from "./sources";
+import { itemPathId, legacyTaskBranch, taskBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   createAcpFixRunner,
@@ -986,7 +985,7 @@ export class Orchestrator {
         client: github.client,
         owner: repository.owner,
         repo: repository.repo,
-        branch: branchForIssue(itemPathId(item)),
+        branch: taskBranch(item),
         ...this.gitHubCredentials(github),
         signal: context.signal,
       });
@@ -1391,7 +1390,7 @@ export class Orchestrator {
     }
     if (this.stopped(item.id)) return;
     const pathId = itemPathId(item);
-    const branch = worktreeBranch(item);
+    const branch = taskBranch(item);
     if (item.branchName !== branch) {
       this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
     }
@@ -1567,7 +1566,8 @@ export class Orchestrator {
         !current.cancelRequested
       ) {
         const message = error instanceof Error ? error.message : String(error);
-        this.fail(current, "run_error", message);
+        // One key per run: a later round that fails again still reaches Linear.
+        this.fail(current, `run_error:${run.id}`, message);
       }
     } finally {
       activity.flush();
@@ -2181,6 +2181,7 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       isCancelled: () => this.stopped(item.id) || !artifactPublicationReady(this.db, item.id),
       releaseWhilePending: true,
+      staleBranches: [legacyTaskBranch(item)].filter((branch) => branch !== null),
       ...(priorVerification === undefined ? {} : { priorVerification }),
       onWait: async (message) => {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
@@ -2957,7 +2958,7 @@ export class Orchestrator {
           client: github.client,
           owner: repository.owner,
           repo: repository.repo,
-          branch: branchForIssue(itemPathId(item)),
+          branch: taskBranch(item),
           ...this.gitHubCredentials(github),
           signal,
         });

@@ -27,6 +27,8 @@ export async function fetchRunnerCandidate(input: {
   };
   await run(["check-ref-format", `refs/heads/${input.branch}`]);
   await unchanged();
+  // No new commit: the runner publishes nothing and the task already holds the candidate.
+  if (input.candidateSha === input.baseSha) return;
   try {
     await input.networkGit([
       "-C",
