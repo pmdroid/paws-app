@@ -190,6 +190,21 @@ export function createWorkspaceAssignments(options: {
       issue: expected.spec,
     };
   }
+  function postOnboardingLink(hold: Hold, path: string) {
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: hold.sessionId,
+      idempotencyKey: `assignment:onboarding:${hold.tokenHash}`,
+      generation: hold.generation,
+      payload: {
+        sessionId: hold.sessionId,
+        kind: "thought",
+        body: `Linear connected. Member GitHub repository access has not been checked. No VM is linked to this assignment. Your assignment waits for setup. [View onboarding](${origin.origin}${path}). You can close the page or Stop this assignment in Linear.`,
+      },
+      now: now(),
+    });
+  }
   function issueAction(hold: Omit<Hold, "tokenHash" | "expiresAt" | "status">) {
     const token = workspaceSecret();
     const tokenHash = workspaceTokenHash(token);
@@ -349,22 +364,6 @@ export function createWorkspaceAssignments(options: {
         )
           return false;
         issueAction({ sessionId: event.sessionId!, ...verified, event: JSON.stringify(event) });
-        if (
-          options.onboarding &&
-          workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null
-        ) {
-          const created = holds(event.sessionId!)!;
-          db.run("UPDATE workspace_assignment SET status='ready' WHERE token_hash=?", [
-            created.tokenHash,
-          ]);
-          enqueueJobOnce(db, {
-            queue: QUEUE,
-            jobKey: `assignment:${created.tokenHash}`,
-            payload: { sessionId: created.sessionId, tokenHash: created.tokenHash },
-            recurringEveryMs: 60_000,
-            now: now(),
-          });
-        }
         return false;
       });
     },
@@ -387,8 +386,9 @@ export function createWorkspaceAssignments(options: {
       const hold = holds(match[1]!);
       return hold &&
         hold.generation === Number(match[2]) &&
-        ["ready", "accepted", "continued"].includes(hold.status) &&
-        current(hold)
+        ["pending", "ready", "accepted", "continued"].includes(hold.status) &&
+        current(hold) &&
+        (hold.status !== "pending" || hold.expiresAt > now())
         ? `onboarding:${hold.tokenHash}`
         : null;
     },
@@ -400,18 +400,21 @@ export function createWorkspaceAssignments(options: {
         )
         .get(hash);
       const hold = row ? holds(row.sessionId) : null;
+      if (hold?.tokenHash === hash && hold.status === "pending")
+        return this.complete(hash, workspaceId, linearUserId);
       const member = workspaceLinearMember(db, workspaceId, linearUserId);
       if (
         !hold ||
         hold.tokenHash !== hash ||
         !member ||
-        !this.onboarding(hold.sessionId, hold.generation, {
-          workspaceId,
-          userId: member.userId,
-          role: member.role,
-          teamIds: member.teamIds,
-          authenticatedAt: now(),
-        })
+        (hold.status !== "pending" &&
+          !this.onboarding(hold.sessionId, hold.generation, {
+            workspaceId,
+            userId: member.userId,
+            role: member.role,
+            teamIds: member.teamIds,
+            authenticatedAt: now(),
+          }))
       )
         throw new Error("Onboarding return is unavailable.");
       return `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
@@ -466,19 +469,7 @@ export function createWorkspaceAssignments(options: {
         });
         if (!options.onboarding) return "/status/";
         const path = `/status/onboarding/${encodeURIComponent(hold.sessionId)}/${hold.generation}`;
-        enqueueOutboxOnce(db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: hold.sessionId,
-          idempotencyKey: `assignment:onboarding:${hash}`,
-          generation: hold.generation,
-          payload: {
-            sessionId: hold.sessionId,
-            kind: "thought",
-            body: `Linear connected. Member GitHub repository access has not been checked. No VM is linked to this assignment. Your assignment waits for setup. [View onboarding](${origin.origin}${path}). You can close the page or Stop this assignment in Linear.`,
-          },
-          now: now(),
-        });
+        postOnboardingLink(hold, path);
         return path;
       });
     },

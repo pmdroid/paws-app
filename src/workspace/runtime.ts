@@ -2,12 +2,16 @@ import type { Database } from "bun:sqlite";
 import type { WorkspaceAssignments } from "./assignments";
 import type { LinearMembershipReads } from "../linear";
 import type { SlackIdentityReads } from "../slack";
+import type { OnboardingAgents } from "./onboarding-agents";
+import type { createOnboardingPreparation } from "./onboarding-preparation";
 import { createWorkspaceAccess } from "./access";
 import { issueWorkspaceBootstrap } from "./session";
 
 export async function createWorkspaceAccessFromLinear(options: {
   db: Database;
   assignments?: WorkspaceAssignments;
+  onboardingAgents?: () => OnboardingAgents | undefined;
+  onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
   publicUrl: string;
   clientId: string;
   memberships: LinearMembershipReads;

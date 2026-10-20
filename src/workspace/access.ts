@@ -1,4 +1,6 @@
 import { handleOnboardingAgents, type OnboardingAgents } from "./onboarding-agents";
+import { handleOnboardingPreparation } from "./onboarding-preparation-route";
+import type { createOnboardingPreparation } from "./onboarding-preparation";
 import { handleOnboardingVm } from "./onboarding-vm";
 import { handleDecisions } from "./decisions";
 import { createGitHubAttributionLink } from "./github-attribution";
@@ -38,6 +40,7 @@ export type WorkspaceAccessOptions = {
   db: Database;
   assignments?: WorkspaceAssignments;
   onboardingAgents?: () => OnboardingAgents | undefined;
+  onboardingPreparation?: Pick<ReturnType<typeof createOnboardingPreparation>, "read" | "answer">;
   publicUrl: string;
   clientId: string;
   installedOrganization: { id: string; name: string };
@@ -194,6 +197,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (
       !onboardingPage &&
       !path.startsWith("/api/workspaces/onboarding/agents") &&
+      path !== "/api/workspaces/onboarding/preparation" &&
       ![
         "/api/workspaces/onboarding",
         "/api/workspaces/onboarding/vm",
@@ -390,6 +394,17 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         ...access,
         origin,
         now,
+      });
+    }
+    if (path === "/api/workspaces/onboarding/preparation") {
+      if (!options.assignments || !options.onboardingPreparation)
+        return json({ error: "Onboarding is unavailable." }, 404);
+      return handleOnboardingPreparation(request, {
+        db: options.db,
+        assignments: options.assignments,
+        preparation: options.onboardingPreparation,
+        ...access,
+        origin,
       });
     }
     if (path === "/api/workspaces/onboarding/vm") {

@@ -251,11 +251,11 @@ export function createOnboardingPreparation(options: {
     },
     answer(
       context: Context,
-      binding: MemberGitHubBinding,
+      binding: MemberGitHubBinding | { workspaceId: string; userId: string },
       input: { revision: number; mode?: (typeof PREPARATION_MODES)[number]; repository?: string },
     ): OnboardingPreparation {
       return immediate(db, () => {
-        requireMemberGitHubSession(db, binding, now());
+        if ("sessionHash" in binding) requireMemberGitHubSession(db, binding, now());
         const selected = current(context);
         if (
           !selected ||
