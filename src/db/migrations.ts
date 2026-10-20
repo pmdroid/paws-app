@@ -1867,8 +1867,6 @@ ALTER TABLE runner_capacity ADD COLUMN desired INTEGER CHECK(desired IS NULL OR 
 `,
   },
   {
-    // Closeout evidence posts used the evidence ULID as the Linear activity id, which Linear
-    // refuses. The dead row blocked its session, so it gets a UUID v4 id and goes back to pending.
     id: "076_evidence_activity_uuid",
     sql: `
 UPDATE outbox SET
