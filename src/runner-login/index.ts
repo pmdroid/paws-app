@@ -172,7 +172,7 @@ export function createRunnerLogin(options: {
           [id, runnerId, principal.workspaceId, principal.userId, agent, expiresAt, at],
         );
         db.run(
-          "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES(?,?,?,0,?) ON CONFLICT(runner_id,user_id,agent) DO UPDATE SET connected=0,updated_at=excluded.updated_at",
+          "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES(?,?,?,0,?) ON CONFLICT(runner_id,user_id,agent) DO UPDATE SET updated_at=excluded.updated_at",
           [runnerId, principal.userId, agent, at],
         );
         auditWorkspaceAccess(db, {
