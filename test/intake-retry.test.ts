@@ -248,3 +248,23 @@ test("created events replace a failed start, bind the new session and fence repl
     await orchestrator.shutdown();
   }
 });
+
+test("concurrent deliveries of the same task share admission after session reconciliation", async () => {
+  const { db, tracker } = fixture();
+  const ready = Promise.withResolvers<void>();
+  let arrivals = 0;
+  const admit = () =>
+    intakeDelegatedIssue(db, tracker, {
+      linearIssueId: "issue",
+      sessionId: "new",
+      taskKey: "same-task",
+      reconcileSessions: async () => {
+        if (++arrivals === 2) ready.resolve();
+        await ready.promise;
+      },
+    });
+  const results = await Promise.all([admit(), admit()]);
+  expect(results.every((result) => result.ok)).toBe(true);
+  expect(results.filter((result) => result.alreadyExisted)).toHaveLength(1);
+  expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
+});
