@@ -421,6 +421,9 @@ export function createRemoteAgentRunner(options: {
                   ...(input.commitPolicy
                     ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }
                     : {}),
+                  ...(input.closeoutBase && input.role === "implementer"
+                    ? { checksBaseSha: input.closeoutBase }
+                    : {}),
                 }),
           };
           immediate(db, () => {
@@ -691,9 +694,12 @@ export function createRemoteAgentRunner(options: {
             !complete.authRequired &&
             complete.agentExited &&
             !complete.errorMessage &&
-            !complete.candidateSha
+            !complete.candidateSha &&
+            !assigned.checksBaseSha
           )
             throw new Error("Remote implementation has no candidate commit");
+          if (assigned.type === "run" && assigned.checksBaseSha && complete.candidateSha)
+            throw new Error("A Closeout checks run returned a candidate commit");
           if (complete.candidateSha) {
             if (assigned.type !== "run" || !input.networkGit)
               throw new Error("Runner candidate requires an authorized implementation import.");

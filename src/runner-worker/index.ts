@@ -386,7 +386,17 @@ export async function executeRunnerCommand(
       );
       options.signal?.throwIfAborted();
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
-      await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", base]);
+      // A checks run compares the commit against its real base, so Closeout selects the checks for the change.
+      const comparison = command.type === "run" ? command.checksBaseSha : undefined;
+      if (comparison)
+        await invokeGit(["-C", worktree, "merge-base", "--is-ancestor", comparison, base]);
+      await invokeGit([
+        "-C",
+        worktree,
+        "update-ref",
+        "refs/remotes/origin/main",
+        comparison ?? base,
+      ]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -479,7 +489,7 @@ export async function executeRunnerCommand(
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose === "answer" : command.type !== "run",
-      checkpoint: command.type === "run",
+      checkpoint: command.type === "run" && !command.checksBaseSha,
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
@@ -711,8 +721,11 @@ export async function executeRunnerCommand(
         }
       } else result.reviewText = reviewText;
     };
-    if (repository && run.agentExited && clean) await recordCandidate();
-    else if (repository && run.agentExited && wip) {
+    // A checks run publishes no candidate. Results recorded on another commit do not match its head.
+    const publishes =
+      repository && run.agentExited && !(command.type === "run" && command.checksBaseSha);
+    if (publishes && clean) await recordCandidate();
+    else if (publishes && wip) {
       await recordCandidate().catch(() => {
         delete result.candidateSha;
       });
