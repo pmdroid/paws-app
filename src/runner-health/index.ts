@@ -34,7 +34,6 @@ type History = {
 const SIGN_IN_INTERVAL_MS = 5 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
 const runnerAgents = ["claude", "codex", "grok"] as const;
-const memberAgents = ["claude", "codex"] as const;
 
 export function createRunnerHealth(options: {
   db: Database;
@@ -195,8 +194,18 @@ export function createRunnerHealth(options: {
         try {
           immediate(db, () => {
             const last = history(runner.id, at);
+            const due = targets(runner.id);
+            for (const target of due) {
+              if (!target.memberId) continue;
+              const entry = last(target);
+              if (!entry?.result?.authenticated || entry.inFlight) continue;
+              db.run(
+                "UPDATE runner_member_account SET connected=1,updated_at=? WHERE runner_id=? AND user_id=? AND agent=? AND connected=0 AND updated_at<?",
+                [at, runner.id, target.memberId, target.agent, entry.result.receivedAt],
+              );
+            }
             let pending = pendingChecks(runner.id, at);
-            for (const target of targets(runner.id)) {
+            for (const target of due) {
               if (pending >= 4) return;
               const entry = last(target);
               if (
@@ -239,7 +248,7 @@ export function createRunnerHealth(options: {
       const at = now();
       const last = history(runnerId, at);
       const member = memberAccounts(runnerId);
-      return (member ? memberAgents : runnerAgents).map((agent) => {
+      return runnerAgents.map((agent) => {
         const entry = last(member ? { memberId: principal.userId, agent } : { agent });
         const checkedAt = entry?.result?.receivedAt ?? null;
         if (entry?.inFlight) return { agent, status: "checking", checkedAt };
@@ -310,6 +319,11 @@ export function createRunnerHealth(options: {
           value,
           at,
         ]);
+        if (assigned.type === "login_check" && assigned.memberId && result.login)
+          db.run(
+            "UPDATE runner_member_account SET connected=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [result.login.authenticated ? 1 : 0, at, runnerId, assigned.memberId, assigned.agent],
+          );
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };
       });
