@@ -254,7 +254,7 @@ test("home-prefixed absolute suffixes open the exact authorized skill path", asy
       worktree: layout.source,
       home: layout.root,
       pawsRoot: layout.pawsRoot,
-      skillRoots: [join(layout.root, "tmp")],
+      skillRoots: [join(inside, "..")],
     },
   );
   expect(result.content).toBe("Authorized resource");
