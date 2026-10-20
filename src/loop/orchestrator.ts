@@ -426,6 +426,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted" && !event.body?.trim()) return;
+    await this.taskAccess()?.assertOpenIssue(event);
     let turnEventKey = event.dedupeKey;
     if (
       event.action === "prompted" &&
