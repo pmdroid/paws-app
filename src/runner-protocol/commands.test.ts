@@ -77,6 +77,28 @@ test.each<RunnerCommand>([
   expect(verifyRunnerCommand(signed(command), context())).toEqual({ ok: true, command });
 });
 
+test("signed bot-only commit policies preserve explicit absent humans", () => {
+  const commitPolicy = {
+    bot: { appId: "99", id: 88, login: "paws-test[bot]" },
+    projectLead: null,
+    taskSteerer: null,
+  };
+  const command = { ...run, commitPolicy };
+  expect(verifyRunnerCommand(signed(command), context())).toEqual({ ok: true, command });
+  expect(
+    RunnerCommandSchema.safeParse({
+      ...command,
+      commitPolicy: { ...commitPolicy, taskSteerer: undefined },
+    }).success,
+  ).toBe(false);
+  expect(
+    RunnerCommandSchema.safeParse({
+      ...command,
+      commitPolicy: { ...commitPolicy, taskSteerer: {} },
+    }).success,
+  ).toBe(false);
+});
+
 test("signing is stable across object insertion order and absent optional fields", () => {
   const reordered = {
     ...run,

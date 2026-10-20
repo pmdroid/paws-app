@@ -79,12 +79,14 @@ export type RunnerDaemonOptions = {
 };
 
 export function openRunnerDaemon(options: RunnerDaemonOptions) {
-  const concurrency = z
+  /** The config value is the host's ceiling; Paws chooses the applied value up to it. */
+  const ceiling = z
     .number()
     .int()
     .min(1)
     .max(16)
     .parse(options.concurrency ?? 1);
+  let applied = ceiling;
   const origins = {
     controlPlaneUrl: httpsOrigin(options.controlPlaneUrl),
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
@@ -287,7 +289,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   return {
     status,
-    capacity: () => concurrency,
+    capacity: () => applied,
+    ceiling: () => ceiling,
     pendingCommands,
     async beginPairing(name: string) {
       ensureOpen();
@@ -384,12 +387,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return status();
     },
     async heartbeat() {
-      return RunnerHeartbeatSchema.parse(
+      const response = RunnerHeartbeatSchema.parse(
         await authenticated("/v1/heartbeat", "POST", {
           ...options.sampleHost?.(),
-          ...(options.concurrency === undefined ? {} : { capacity: concurrency }),
+          ...(options.concurrency === undefined ? {} : { capacity: applied, ceiling }),
         }),
       );
+      if (options.concurrency !== undefined && response.concurrency !== undefined)
+        applied = Math.min(response.concurrency, ceiling);
+      return response;
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {
       z.uuid().parse(id);

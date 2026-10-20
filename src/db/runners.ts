@@ -107,6 +107,8 @@ export type RunnerOverview = RunnerRecord & {
   version: string | null;
   idle: boolean;
   slots: { used: number; total: number };
+  /** Desired is set in Paws; applied and ceiling are what the runner last reported. */
+  concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
 };
 
 /** Keeps only the latest host sample per runner. */
@@ -166,6 +168,9 @@ export function listRunnerOverview(
     busy: number;
     used: number;
     total: number;
+    applied: number | null;
+    ceiling: number | null;
+    desired: number | null;
   };
   return db
     .query<Row, [number, number, number, string]>(
@@ -180,8 +185,10 @@ export function listRunnerOverview(
        AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
     (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL AND w.lease_until>?) +
     (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used,
-    COALESCE((SELECT capacity FROM runner_capacity c WHERE c.runner_id=r.id),1) AS total
+    COALESCE(MIN(c.capacity,COALESCE(c.desired,16)),1) AS total,
+    c.capacity AS applied,c.ceiling,c.desired
     FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
+    LEFT JOIN runner_capacity c ON c.runner_id=r.id
     WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
     )
     .all(now, now, now, workspaceId)
@@ -213,6 +220,10 @@ export function listRunnerOverview(
       version: row.runnerVersion,
       idle: row.busy === 0,
       slots: { used: row.used, total: row.total },
+      concurrency:
+        row.applied === null
+          ? null
+          : { desired: row.desired, applied: row.applied, ceiling: row.ceiling },
     }));
 }
 

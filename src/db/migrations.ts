@@ -2005,4 +2005,11 @@ CREATE TABLE member_vm_repository_grant (
     id: "082_member_vm_grant_revision",
     sql: `ALTER TABLE member_vm_repository_grant ADD COLUMN revision TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    id: "075_runner_concurrency",
+    sql: `
+ALTER TABLE runner_capacity ADD COLUMN ceiling INTEGER CHECK(ceiling IS NULL OR ceiling BETWEEN 1 AND 16);
+ALTER TABLE runner_capacity ADD COLUMN desired INTEGER CHECK(desired IS NULL OR desired BETWEEN 1 AND 16);
+`,
+  },
 ];

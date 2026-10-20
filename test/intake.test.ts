@@ -264,7 +264,8 @@ describe("intake", () => {
       taskKey: "first",
     });
     expect(first.ok).toBe(true);
-    const message = "ENG-9 is already being worked on in another session.";
+    const message =
+      "ENG-9 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.";
     await expect(
       intakeDelegatedIssue(db, tracker, {
         linearIssueId: "only",

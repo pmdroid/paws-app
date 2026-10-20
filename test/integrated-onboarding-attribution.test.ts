@@ -20,7 +20,7 @@ import {
 import { attachOrchestrator, FakeHostGitHubAuth, GitHubAuthQuestions } from "../src/loop";
 import * as workspace from "../src/workspace";
 
-test("onboarded authoritative creator resumes once only with current App and consenting attribution", async () => {
+test("onboarded authoritative creator resumes once with current App and no personal GitHub consent", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-joined-onboarding-"));
   const path = join(root, "paws.sqlite");
   let db = dbApi.openDatabase(path);
@@ -340,9 +340,9 @@ test("onboarded authoritative creator resumes once only with current App and con
     rotateDuringCheck = true;
     expect(await installation("acme/widgets", "write", signal)).toBe(false);
     await auth.recover();
-    expect(current().state).toBe("awaiting_input");
-    expect(captured).toBeUndefined();
-    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    expect(current().state).toBe("running");
+    expect(policyCoauthors(await policy())).toEqual([]);
+    expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
     const member = dbApi.workspaceLinearMember(db, "workspace", "creator")!;
     const login = workspace.issueWorkspaceSession(db, {
       workspaceId: "workspace",
@@ -377,7 +377,7 @@ test("onboarded authoritative creator resumes once only with current App and con
       name: "paws-test[bot]",
       email: "88+paws-test[bot]@users.noreply.github.com",
     });
-    expect(policyCoauthors(captured!)).toEqual([
+    expect(policyCoauthors(await policy())).toEqual([
       { id: 7, login: "creator", name: "Creator", email: "7+creator@users.noreply.github.com" },
     ]);
     dbApi.saveRunCommitPolicy(db, current().currentRunId!, captured!);
@@ -394,25 +394,18 @@ test("onboarded authoritative creator resumes once only with current App and con
       { workspaceId: "workspace", userId: member.userId, sessionHash: login.session.tokenHash },
       now(),
     );
-    await expect(policy()).rejects.toThrow("verifiedConsent");
-    expect(await auth.ensure(current(), "publication", signal)).toBe(false);
+    expect(policyCoauthors(await policy())).toEqual([]);
+    expect(await auth.ensure(current(), "publication", signal)).toBe(true);
     await auth.recover();
-    expect(current().state).toBe("awaiting_input");
+    expect(current().state).toBe("running");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);
-    dbApi.beginGitHubAttribution(db, binding, request);
-    dbApi.saveGitHubAttribution(
-      db,
-      binding,
-      captured!.taskSteerer,
-      dbApi.consumeGitHubAttribution(db, binding, request),
-      now(),
-    );
-    expect(policyCoauthors(await policy())).toHaveLength(1);
     active = false;
     clock.advance(1);
     await expect(policy()).rejects.toThrow("membership");
     expect(dbApi.workspaceLinearMember(db, "workspace", "creator")!.active).toBe(false);
+    expect(await auth.ensure(current(), "publication", signal)).toBe(false);
     await auth.recover();
+    expect(current().state).toBe("awaiting_input");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);
     expect(requests).toContain("/app/installations/22/access_tokens");
     expect(requests).not.toContain("/user");

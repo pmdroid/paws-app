@@ -1,4 +1,4 @@
-import { teamRepositoryAllowedSql } from "../db";
+import { recordRunnerCapacity, teamRepositoryAllowedSql } from "../db";
 import { authorizeRunnerAccount } from "../runner-accounts";
 import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -429,15 +429,11 @@ export function createRunnerWork(options: {
       )
         throw new Error("Runner command is unknown.");
     },
-    heartbeat(runnerId: string, capacity = 1, host: RunnerHostSample = {}) {
+    /** `ceiling` comes from runners that apply the desired concurrency from the reply. */
+    heartbeat(runnerId: string, capacity = 1, host: RunnerHostSample = {}, ceiling?: number) {
       return immediate(db, () => {
         runner(runnerId);
-        if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 16)
-          throw new Error("Invalid runner capacity");
-        db.run(
-          "INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?) ON CONFLICT(runner_id) DO UPDATE SET capacity=excluded.capacity",
-          [runnerId, capacity],
-        );
+        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         if (Object.values(host).some((value) => value !== undefined))
@@ -461,7 +457,7 @@ export function createRunnerWork(options: {
             fenced.push({ runId: row.runId, generation: row.generation });
           }
         }
-        return { leases, fenced };
+        return concurrency === undefined ? { leases, fenced } : { leases, fenced, concurrency };
       });
     },
     issueGrant(input: { runnerId: string; runId: string; commandId: string; generation: number }) {

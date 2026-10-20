@@ -1,4 +1,8 @@
-export { acknowledgeNewSession, FIRST_ACTIVITY_BODY } from "./acknowledge";
+export {
+  acknowledgeNewSession,
+  FIRST_ACTIVITY_BODY,
+  LinearIntakePendingError,
+} from "./acknowledge";
 export type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 export { authorizeLinear, LINEAR_REDIRECT_URI } from "./authorize";
 export { linearBudget, LinearRateLimitError } from "./budget";

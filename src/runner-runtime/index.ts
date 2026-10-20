@@ -92,7 +92,8 @@ export async function openRunnerRuntime(options: {
   now?: () => number;
   monotonic?: () => number;
   onError?: (error: Error) => void;
-  concurrency?: number;
+  /** Read before admitting work, so a lowered value holds back new work without stopping any. */
+  concurrency?: number | (() => number);
   stopWaitMs?: number;
 }) {
   if (options.daemon.status().phase !== "paired")
@@ -132,12 +133,18 @@ export async function openRunnerRuntime(options: {
     journal.close();
     throw error;
   }
-  const concurrency = z
-    .number()
-    .int()
-    .min(1)
-    .max(16)
-    .parse(options.concurrency ?? 1);
+  const concurrency = () =>
+    z
+      .number()
+      .int()
+      .min(1)
+      .max(16)
+      .parse(
+        typeof options.concurrency === "function"
+          ? options.concurrency()
+          : (options.concurrency ?? 1),
+      );
+  concurrency();
   const active = new Map<string, Active>();
   let closed = false;
   let ticking: Promise<void> | undefined;
@@ -702,7 +709,7 @@ export async function openRunnerRuntime(options: {
         if (!entry.task) prepare(entry);
       }
     }
-    if (active.size < concurrency) {
+    if (active.size < concurrency()) {
       for (const command of commands) {
         if (command.type !== "run" && command.type !== "review" && command.type !== "task")
           continue;
@@ -723,7 +730,7 @@ export async function openRunnerRuntime(options: {
         active.set(key(command), entry);
         prepare(entry);
         await options.daemon.acknowledgeCommand(command.id).catch(report);
-        if (active.size >= concurrency) break;
+        if (active.size >= concurrency()) break;
       }
     }
     for (const entry of active.values()) {
