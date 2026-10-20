@@ -7,6 +7,12 @@ export const FIRST_ACTIVITY_BODY = "Picked up this issue.";
 
 export class LinearIntakePendingError extends Error {}
 
+export class LinearIssueClosedError extends UserFacingError {
+  constructor(identifier: string) {
+    super(`${identifier} is closed, so Paws won't start work on it. Reopen the issue to continue.`);
+  }
+}
+
 export async function acknowledgeNewSession(
   tracker: TrackerAdapter,
   event: AcceptedLinearEvent,
@@ -52,6 +58,13 @@ export async function acknowledgeNewSession(
     return accepted;
   } catch (error) {
     if (options.signal?.aborted) throw error;
+    if (error instanceof LinearIssueClosedError && event.sessionId !== null) {
+      await tracker.postProgress(
+        { sessionId: event.sessionId, kind: "error", body: error.message },
+        { signal: options.signal },
+      );
+      return false;
+    }
     const message = error instanceof Error ? error.message : "follow-up failed";
     console.error(`linear session follow-up failed: ${message}`);
     if (event.sessionId !== null && !(error instanceof UserFacingError && error.reported)) {
