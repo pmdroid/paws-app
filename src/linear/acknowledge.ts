@@ -39,7 +39,7 @@ export async function acknowledgeNewSession(
     if (accepted === false && first && event.sessionId !== null)
       await tracker.postProgress({
         sessionId: event.sessionId,
-        kind: "error",
+        kind: "thought",
         body: "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
       });
     return accepted;

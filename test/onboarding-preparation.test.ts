@@ -11,7 +11,11 @@ import {
   saveTaskClassification,
   syncWorkspaceMember,
 } from "../src/db";
-import { createOnboardingPreparation, issueWorkspaceSession } from "../src/workspace";
+import {
+  createOnboardingPreparation,
+  handleOnboardingPreparation,
+  issueWorkspaceSession,
+} from "../src/workspace";
 import { createFakeTracker } from "../src/linear";
 
 const cleanups: (() => void)[] = [];
@@ -333,3 +337,144 @@ test("a member cannot downgrade a canonical code classification to readonly", as
     }),
   ).toThrow("canonical task mode");
 });
+
+test("preparation HTTP answers require the current member and CSRF and reject stale revisions", async () => {
+  const f = fixture();
+  const prepared = await f.preparation.refresh(context, signal());
+  const issued = issueWorkspaceSession(f.db, {
+    workspaceId: "w",
+    userId: "member",
+    now: Date.now(),
+  });
+  const principal = {
+    workspaceId: "w",
+    userId: "member",
+    role: "member" as const,
+    teamIds: ["team"],
+    authenticatedAt: Date.now(),
+  };
+  const scope = {
+    ...context,
+    workspaceId: "w",
+    userId: "member",
+    issue: { linearIssueId: "issue" },
+  };
+  const send = (body: unknown, csrf = issued.session.csrfToken, current = true) =>
+    handleOnboardingPreparation(
+      new Request("https://paws.example/api/workspaces/onboarding/preparation", {
+        method: "POST",
+        headers: {
+          origin: "https://paws.example",
+          "content-type": "application/json",
+          "x-paws-csrf": csrf,
+        },
+        body: JSON.stringify(body),
+      }),
+      {
+        db: f.db,
+        preparation: f.preparation,
+        principal,
+        session: issued.session,
+        origin: "https://paws.example",
+        assignments: { onboardingContext: () => (current ? scope : null) } as Parameters<
+          typeof handleOnboardingPreparation
+        >[1]["assignments"],
+      },
+    );
+  const body = {
+    session: "session",
+    generation: 0,
+    revision: prepared.revision,
+    mode: "code",
+    repository: "1",
+  };
+  expect((await send(body, "invalid"))?.status).toBe(403);
+  expect((await send(body, undefined, false))?.status).toBe(404);
+  expect((await send({ ...body, revision: prepared.revision + 1 }))?.status).toBe(409);
+  expect((await send({ ...body, mode: "guess" }))?.status).toBe(400);
+  expect((await send({ ...body, extra: true }))?.status).toBe(400);
+  expect((await send({ session: "session", generation: 0 }))?.status).toBe(400);
+  const modeOnly = await send({
+    session: "session",
+    generation: 0,
+    revision: prepared.revision,
+    mode: "code",
+  });
+  expect(modeOnly?.status).toBe(200);
+  const next = (await modeOnly!.json()) as { revision: number };
+  const response = await send({
+    session: "session",
+    generation: 0,
+    revision: next.revision,
+    repository: "1",
+  });
+  expect(response?.status).toBe(200);
+  expect(await response!.json()).toMatchObject({
+    state: "prepared",
+    mode: "code",
+    repository: { owner: "acme", repo: "one" },
+  });
+  expect((await send(body))?.status).toBe(409);
+  expect(f.db.query("SELECT * FROM work_item").all()).toEqual([]);
+});
+
+for (const mode of ["answer", "artifact"] as const)
+  test(`preparation HTTP accepts repository-free ${mode} independently`, async () => {
+    const f = fixture();
+    f.db.run("DELETE FROM repository_catalog");
+    const prepared = await f.preparation.refresh(context, signal());
+    const issued = issueWorkspaceSession(f.db, {
+      workspaceId: "w",
+      userId: "member",
+      now: Date.now(),
+    });
+    const response = await handleOnboardingPreparation(
+      new Request("https://paws.example/api/workspaces/onboarding/preparation", {
+        method: "POST",
+        headers: {
+          origin: "https://paws.example",
+          "content-type": "application/json",
+          "x-paws-csrf": issued.session.csrfToken,
+        },
+        body: JSON.stringify({
+          session: "session",
+          generation: 0,
+          revision: prepared.revision,
+          mode,
+        }),
+      }),
+      {
+        db: f.db,
+        preparation: f.preparation,
+        session: issued.session,
+        origin: "https://paws.example",
+        principal: {
+          workspaceId: "w",
+          userId: "member",
+          role: "member",
+          teamIds: ["team"],
+          authenticatedAt: Date.now(),
+        },
+        assignments: {
+          onboardingContext: () => ({
+            ...context,
+            workspaceId: "w",
+            userId: "member",
+            issue: {
+              linearIssueId: "issue",
+              identifier: "TEST-1",
+              title: "Task",
+              description: null,
+              subIssues: [],
+            },
+          }),
+        } as Parameters<typeof handleOnboardingPreparation>[1]["assignments"],
+      },
+    );
+    expect(response?.status).toBe(200);
+    expect(await response!.json()).toMatchObject({
+      state: "prepared",
+      mode,
+      repositoryContext: false,
+    });
+  });
