@@ -87,8 +87,18 @@ export function parseCheckHash(hash: string): { attempt: number; checkId: string
   }
 }
 
-export function checkAnchor(attempt: number, checkId: string): string {
-  return `check-${attempt}-${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+export function checkAnchor(attempt: number, checkId: string, itemId = ""): string {
+  const agent = itemId.startsWith("agent:") ? "agent-" : "";
+  return `${agent}check-${attempt}-${checkId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+/** How the agent's Closeout reuses these rows: its own heading, result card and attempt budget. */
+export interface CloseoutChecksOptions {
+  /** Toolbar heading. Null leaves it out, for a section that already has one. */
+  heading?: string | null;
+  result?: { title: string; description: string; icon: string };
+  /** Failed runs a check may have, shown as "attempt 2 of 3" on retried checks. */
+  checkAttempts?: number | null;
 }
 
 export function renderCloseoutChecks(
@@ -97,6 +107,7 @@ export function renderCloseoutChecks(
   engineUrl: string | null,
   pr: StatusPullRequest | null = null,
   itemState?: ItemState,
+  options: CloseoutChecksOptions = {},
 ): string {
   const attempts = attemptsOf(verdict);
   const attempt = shownAttempt(verdict, view);
@@ -114,7 +125,9 @@ export function renderCloseoutChecks(
     ? `<button type="button" class="btn sm ghost" data-action="closeout-expand-all" data-item="${item}" data-attempt="${attempt.number}" aria-pressed="${allOpen}">${allOpen ? "Collapse all" : "Expand all"}</button>`
     : "";
   const rows = attempt.checks.length
-    ? attempt.checks.map((check) => checkRow(verdict, attempt, check, view, engineUrl)).join("")
+    ? attempt.checks
+        .map((check) => checkRow(verdict, attempt, check, view, engineUrl, options))
+        .join("")
     : '<div class="dim">No checks recorded for this attempt yet.</div>';
   const decision = attempt.decision;
   const accepted = decision === "accepted";
@@ -132,7 +145,18 @@ export function renderCloseoutChecks(
           .map((check) => check.id)
           .join(", ") || "Checks",
       )} ${decision === "running" ? "are running" : "did not pass"}${head}.`;
-  return `<div class="between closeout-toolbar"><h2>Closeout</h2><div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${accepted ? "✓" : decision === "running" ? "…" : "✕"}</span><div><h3>${esc(title)}</h3><p>${description}</p></div></div><div class="check-list">${rows}</div>`;
+  const result = options.result ?? {
+    title: esc(title),
+    description,
+    icon: accepted ? "✓" : decision === "running" ? "…" : "✕",
+  };
+  const heading =
+    options.heading === undefined
+      ? "<h2>Closeout</h2>"
+      : options.heading === null
+        ? "<span></span>"
+        : `<h2>${esc(options.heading)}</h2>`;
+  return `<div class="between closeout-toolbar">${heading}<div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${result.icon}</span><div><h3>${result.title}</h3><p>${result.description}</p></div></div><div class="check-list">${rows}</div>`;
 }
 
 function attemptLabel(attempt: StatusCloseoutAttempt): string {
@@ -149,14 +173,15 @@ function checkRow(
   check: StatusCheck,
   view: CloseoutView,
   engineUrl: string | null,
+  options: CloseoutChecksOptions,
 ): string {
   const open = isOpen(view, verdict.itemId, attempt.number, check);
-  const anchor = checkAnchor(attempt.number, check.id);
-  const meta = checkMeta(check);
+  const anchor = checkAnchor(attempt.number, check.id, verdict.itemId);
+  const meta = checkMeta(check, options.checkAttempts);
   const command = check.kind === "review" ? "closeout review --independent" : check.command;
   const head = `<button class="chk${open ? " on" : ""}" type="button" data-action="toggle-check" data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}" aria-expanded="${open}" aria-controls="${anchor}-out"><span class="ico ${esc(check.state)}" aria-label="${esc(check.state)}">${checkMark(check.state)}</span><span class="mono check-name">${esc(check.id)}</span><span class="mono muted check-command">${esc(command)}</span><span class="tag">${esc(check.kind)}</span><span class="check-meta">${meta}</span><span class="check-chevron" aria-hidden="true">${open ? "⌄" : "›"}</span></button>`;
   const body = open
-    ? `<div class="check-detail" id="${anchor}-out">${checkBody(verdict, attempt, check, view, engineUrl)}</div>`
+    ? `<div class="check-detail" id="${anchor}-out">${checkBody(verdict, attempt, check, view, engineUrl, options)}</div>`
     : "";
   return `<div class="check-row" id="${anchor}">${head}${body}</div>`;
 }
@@ -167,8 +192,13 @@ function checkBody(
   check: StatusCheck,
   view: CloseoutView,
   engineUrl: string | null,
+  options: CloseoutChecksOptions,
 ): string {
   const key = checkKey(verdict.itemId, attempt.number, check.id);
+  const shown =
+    options.checkAttempts !== undefined && typeof check.attempt === "number"
+      ? check.attempt
+      : attempt.number;
   const wrap = view.wrap[key] === true;
   const data = `data-item="${esc(verdict.itemId)}" data-attempt="${attempt.number}" data-check="${esc(check.id)}"`;
   const finished = check.state !== "running" && check.state !== "pending";
@@ -199,7 +229,7 @@ function checkBody(
         `<button type="button" class="btn sm" data-action="check-stream" ${data} data-stream="${stream}" aria-pressed="${selectedStream === stream}">${stream}</button>`,
     )
     .join("");
-  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${attempt.number} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, wrap, selectedStream)}${truncated}</div>${findings}`;
+  return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, wrap, selectedStream)}${truncated}</div>${findings}`;
 }
 
 function output(
@@ -244,8 +274,14 @@ function logKey(itemId: string, attempt: number, checkId: string, stream: string
   return `${encodeURIComponent(itemId)}:${attempt}:${encodeURIComponent(checkId)}:${stream}`;
 }
 
-function checkMeta(check: StatusCheck): string {
+function checkMeta(check: StatusCheck, checkAttempts?: number | null): string {
   const parts: string[] = [];
+  if (
+    checkAttempts !== undefined &&
+    typeof check.attempt === "number" &&
+    (check.attempt > 1 || check.state === "failed" || check.state === "exhausted")
+  )
+    parts.push(`attempt ${check.attempt}${checkAttempts === null ? "" : ` of ${checkAttempts}`}`);
 
   if (typeof check.elapsedMs === "number") parts.push(durationLabel(check.elapsedMs));
 

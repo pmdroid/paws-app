@@ -1,5 +1,6 @@
 import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
+  StatusAgentCloseout,
   StatusItem,
   StatusQuestion,
   StatusRun,
@@ -21,6 +22,7 @@ import {
 import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
 import { emptyCloseoutView, renderCloseoutChecks, type CloseoutView } from "./closeout";
+import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-closeout";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
@@ -47,6 +49,7 @@ export interface Rendered {
 }
 
 const ACTIVE_RUN = new Set(["running", "awaiting_input", "verifying", "paused"]);
+const IMPLEMENTING = new Set(["queued", "planning", "running", "awaiting_input"]);
 
 export function render(model: RenderModel): Rendered {
   const snapshot = model.snapshot;
@@ -331,6 +334,7 @@ function viewRuns(
   const item = findItem(snapshot, selected.itemId);
   const title = item?.title ?? selected.itemId;
   const verdict = itemVerdict(snapshot, selected.itemId);
+  const agent = findAgentCloseout(snapshot.agentCloseout, selected.id);
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
@@ -341,7 +345,7 @@ function viewRuns(
       <h1>${esc(title)}</h1>
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
     </header>
-    ${phaseStrip(item, selected, verdict)}
+    ${phaseStrip(item, selected, verdict, agent)}
     <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
@@ -351,6 +355,7 @@ function viewRuns(
       )
       .join("")}
     ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
+    ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item?.state ?? "running")) : ""}
     ${evidenceSlot(snapshot, selected.id)}
     <details class="run-activity" data-activity="${esc(activityKey(selected))}" data-open="${open}"${open ? ' open=""' : ""}><summary>Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</summary>
       <p class="muted">${esc(selected.summary)}</p>
@@ -417,10 +422,13 @@ function phaseStrip(
   item: StatusItem | undefined,
   run: StatusRun | undefined,
   verdict?: StatusVerdict,
+  agent?: StatusAgentCloseout,
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
   const names = [
-    "Implementation",
+    agent?.attempts.at(-1)?.checks.length
+      ? `Implementation · Agent Closeout ${agentProgress(agent)}`
+      : "Implementation",
     `Closeout${verdict ? ` · ${verdict.attempt} of ${verdict.maxAttempts}` : ""}`,
     "Waiting to merge",
     "Complete",
