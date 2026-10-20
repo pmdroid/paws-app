@@ -233,6 +233,50 @@ describe("runner details", () => {
       runnerDetailMarkup(runner, { ...view, userId: "guest", role: "observer" }),
     ).not.toContain("data-runner-signin");
   });
+
+  describe("concurrency", () => {
+    const tuned: Runner = {
+      ...runner,
+      slots: { used: 1, total: 2 },
+      concurrency: { desired: 2, applied: 2, ceiling: 4 },
+    };
+
+    test("owners and admins edit it next to the slots, up to the host limit", () => {
+      for (const role of ["owner", "admin"]) {
+        const html = runnerDetailMarkup(tuned, { ...view, role });
+        expect(html).toContain("<dt>Slots</dt><dd>1 of 2 in use</dd><dt>Concurrency</dt>");
+        expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
+        expect(html).toContain('aria-label="Concurrency, from 1 to 4" value="2"');
+        expect(html).toContain("Host limit 4. Runner applied 2.");
+      }
+      expect(runnerDetailMarkup(tuned, { ...view, busy: true })).toMatch(
+        /name="concurrency"[^>]* disabled/,
+      );
+      expect(runnerDetailMarkup(tuned, { ...view, concurrencyDraft: "3" })).toContain('value="3"');
+    });
+
+    test("members and observers see the value without a field", () => {
+      for (const role of ["member", "observer"]) {
+        const html = runnerDetailMarkup(tuned, { ...view, userId: role, role });
+        expect(html).toContain(
+          '<dt>Concurrency</dt><dd>2 <span class="muted">Host limit 4. Runner applied 2.</span></dd>',
+        );
+        expect(html).not.toContain("data-runner-concurrency");
+      }
+    });
+
+    test("a runner without a reported ceiling keeps its config value", () => {
+      const html = runnerDetailMarkup(
+        { ...tuned, concurrency: { desired: null, applied: 2, ceiling: null } },
+        view,
+      );
+      expect(html).toContain("Update the runner to change it here.");
+      expect(html).not.toContain("data-runner-concurrency");
+      expect(runnerDetailMarkup({ ...tuned, status: "revoked" }, view)).not.toContain(
+        "<dt>Concurrency</dt>",
+      );
+    });
+  });
 });
 
 test("runner actions share one row and resume a paused runner", () => {

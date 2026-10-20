@@ -332,3 +332,116 @@ test("a command for a repository the runner does not allow is reported once", as
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("lowering concurrency holds back new work and lets running work continue", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-runtime-concurrency-"));
+  const now = Date.now();
+  const paired = {
+    phase: "paired" as const,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    fingerprint: "fixture",
+    expiresAt: now + 3_600_000,
+  };
+  const run = (id: string, runId: string): RunnerCommand => ({
+    id,
+    type: "run",
+    runId,
+    itemId: `item-${runId}`,
+    generation: 1,
+    runnerId: "runner",
+    workspaceId: "workspace",
+    issuedAt: now,
+    expiresAt: now + 60_000,
+    repository: {
+      owner: "fixture",
+      repo: "repository",
+      remoteUrl: "https://github.com/fixture/repository.git",
+      baseSha: "a".repeat(40),
+    },
+    profile: { agent: "claude", model: null },
+    prompt: "Implement the assigned issue",
+  });
+  let limit = 2;
+  let commands: RunnerCommand[] = [run("first", "run-a"), run("second", "run-b")];
+  const calls: string[] = [];
+  const runtime = await openRunnerRuntime({
+    root,
+    repositoryRoot: join(root, "repositories"),
+    home: root,
+    concurrency: () => limit,
+    stopWaitMs: 50,
+    spool: { root: join(root, "spool"), runnerUid: 1001, agentGid: 1002 },
+    results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
+    broker: {
+      async start() {
+        return { alreadyAdmitted: false };
+      },
+      async stop(id) {
+        calls.push(`stop:${id}`);
+      },
+    },
+    daemon: {
+      status: () => paired,
+      async heartbeat() {
+        return {
+          leases: commands.map((command) => ({
+            runId: (command as { runId: string }).runId,
+            generation: 1,
+            expiresAt: now + 60_000,
+          })),
+          fenced: [],
+        };
+      },
+      async pollCommands() {
+        return { commands, rejected: [], deniedRepositories: [] };
+      },
+      pendingCommands: () => commands,
+      async acknowledgeCommand(id) {
+        calls.push(`ack:${id}`);
+      },
+      async issueRunGrant() {
+        return { token: Buffer.alloc(32, 1).toString("base64url"), expiresAt: now + 60_000 };
+      },
+      async sendEvent() {
+        return { duplicate: false };
+      },
+      async answers() {
+        return { answers: [] };
+      },
+      async postResult() {
+        return { duplicate: false };
+      },
+      async repositoryCredential() {
+        throw new Error("unused");
+      },
+      async renewCertificate() {
+        return paired;
+      },
+      async uploadTranscript() {
+        throw new Error("unused");
+      },
+      async finishTranscript() {
+        throw new Error("unused");
+      },
+      async uploadArtifact() {
+        return { ok: true };
+      },
+    },
+  });
+  try {
+    await runtime.tick();
+    expect(calls).toEqual(["ack:first", "ack:second"]);
+    limit = 1;
+    commands = [...commands, run("third", "run-c")];
+    await runtime.tick();
+    await runtime.tick();
+    expect(calls).toEqual(["ack:first", "ack:second"]);
+    limit = 3;
+    await runtime.tick();
+    expect(calls).toEqual(["ack:first", "ack:second", "ack:third"]);
+  } finally {
+    await runtime.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

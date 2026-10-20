@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerConcurrencyError } from "../db";
 import type { RunnerPeer } from "../runner-identity";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerControl } from "./pairing";
@@ -12,6 +13,7 @@ const certificate = z.object({ csr: z.string().max(16_384) }).strict();
 const runnerStatus = z
   .object({ status: z.enum(["active", "paused", "draining", "revoked"]) })
   .strict();
+const runnerConcurrency = z.object({ concurrency: z.number().int().min(1).max(16) }).strict();
 
 export function createRunnerHttp(
   control: RunnerControl,
@@ -70,8 +72,18 @@ export function createRunnerHttp(
           );
           return json({ ok: true });
         }
+        const concurrency = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/concurrency$/.exec(path);
+        if (concurrency && request.method === "POST") {
+          control.setConcurrency(
+            principal,
+            concurrency[1]!,
+            runnerConcurrency.parse(await readJson(request)).concurrency,
+          );
+          return json({ ok: true });
+        }
         return null;
-      } catch {
+      } catch (error) {
+        if (error instanceof RunnerConcurrencyError) return json({ error: error.message }, 400);
         return json({ error: "Runner access denied or request is invalid." }, 403);
       }
     },

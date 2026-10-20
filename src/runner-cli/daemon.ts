@@ -41,7 +41,7 @@ export async function runPairedDaemon(
     root: join(root, "runtime"),
     repositoryRoot: join(root, "repositories"),
     home: root,
-    concurrency: daemon.capacity(),
+    concurrency: () => daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;
   let stopping: Promise<void> | undefined;
