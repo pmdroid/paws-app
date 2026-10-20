@@ -138,7 +138,7 @@ for (const outcome of ["success", "failure", "cancel"] as const) {
       writeFileSync(
         path,
         `
-process.stderr.write(${JSON.stringify("To sign in, open this URL in your browser:\n  https://auth.x.ai/device\nThen enter this code:\nABCD-1234\nWaiting for authorization...\n")});
+process.stderr.write(${JSON.stringify("\nTo sign in, open this URL in your browser:\n\n  https://accounts.x.ai/oauth2/device?user_code=ABCD-1234\n\nConfirm this code in your browser:\n\n  ABCD-1234\n\n\u001b[90mOnly continue with a code you requested. Don't share it with anyone.\u001b[0m\n\nWaiting for authorization...\n")});
 process.stdout.write("synthetic-private-token");
 ${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => process.exit(${outcome === "success" ? 0 : 1}), 100);`}
 `,
@@ -154,7 +154,11 @@ ${outcome === "cancel" ? "setInterval(() => {}, 1000);" : `setTimeout(() => proc
         },
       });
       expect(
-        updates.some((update) => update.authorization?.url === "https://auth.x.ai/device"),
+        updates.some(
+          (update) =>
+            update.authorization?.url ===
+            "https://accounts.x.ai/oauth2/device?user_code=ABCD-1234",
+        ),
       ).toBe(true);
       expect(updates.find((update) => update.authorization)?.authorization?.message).toContain(
         "ABCD-1234",
