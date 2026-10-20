@@ -209,6 +209,28 @@ test("async checkpoint publishes a clean index and skips hooks and signing", asy
   expect((await commitCheckpoint(tree)).committed).toBe(false);
 });
 
+test("async checkpoint commits a same-size rewrite in the index timestamp", async () => {
+  const layout = await itemWorktree("ENG-21");
+  const tree = layout.worktree.path;
+  const file = join(tree, "ok.txt");
+  await git(["-C", tree, "config", "core.trustctime", "false"]);
+  const stamp = Math.floor(Date.now() / 1000) - 10;
+  await writeFile(file, "revision-1\n");
+  fs.utimesSync(file, stamp, stamp);
+  expect((await commitCheckpoint(tree)).committed).toBe(true);
+  const index = (
+    await git(["-C", tree, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+  ).trim();
+  await writeFile(file, "revision-2\n");
+  fs.utimesSync(file, stamp, stamp);
+  fs.utimesSync(index, stamp, stamp);
+
+  const checkpoint = await commitCheckpoint(tree);
+  expect(checkpoint.committed).toBe(true);
+  expect(await git(["-C", tree, "show", `${checkpoint.sha}:ok.txt`])).toBe("revision-2\n");
+  expect(await git(["-C", tree, "status", "--porcelain"])).toBe("");
+});
+
 test("a long sleep checks out fresh main and keeps the WIP branch", async () => {
   const layout = await itemWorktree("ENG-21");
   await writeFile(join(layout.worktree.path, "notes.txt"), "wip\n");
