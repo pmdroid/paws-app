@@ -36,6 +36,8 @@ export type Runner = {
   version: string | null;
   idle: boolean;
   slots?: { used: number; total: number };
+  /** Desired is chosen in Paws; applied and ceiling are what the runner last reported. */
+  concurrency?: { desired: number | null; applied: number; ceiling: number | null } | null;
   agents?: AgentSignIn[];
 };
 export type HostPolicy = {
@@ -241,6 +243,26 @@ export function runnerActionsMarkup(
   return `<div class="row">${pause}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
 }
 
+/** The concurrency field for owners and admins, or the values for everyone else. */
+export function runnerConcurrencyMarkup(
+  runner: Runner,
+  state: { manages: boolean; busy: boolean; draft?: string },
+): string {
+  const concurrency = runner.concurrency;
+  if (!concurrency || runner.status === "revoked") return "";
+  const { desired, applied, ceiling } = concurrency;
+  const value = Math.min(desired ?? applied, ceiling ?? 16);
+  const id = esc(runner.id);
+  const reported =
+    ceiling === null
+      ? "Set in the host config. Update the runner to change it here."
+      : `Host limit ${ceiling}. Runner applied ${applied}.`;
+  if (!state.manages || ceiling === null)
+    return `${esc(String(value))} <span class="muted">${esc(reported)}</span>`;
+  const disabled = state.busy ? " disabled" : "";
+  return `<form class="row" data-runner-concurrency="${id}"><input name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Concurrency, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
+}
+
 export function runnerDetailMarkup(
   runner: Runner,
   view: {
@@ -251,6 +273,7 @@ export function runnerDetailMarkup(
     role: string | null;
     busy: boolean;
     open?: ReadonlySet<string>;
+    concurrencyDraft?: string;
   },
 ): string {
   const id = esc(runner.id);
@@ -291,6 +314,11 @@ export function runnerDetailMarkup(
           .join(" / ")
       : null;
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
+  const concurrency = runnerConcurrencyMarkup(runner, {
+    manages: view.role === "owner" || view.role === "admin",
+    busy: view.busy,
+    ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
+  });
   const facts = [
     [
       "Version",
@@ -305,6 +333,7 @@ export function runnerDetailMarkup(
     ...(runner.slots
       ? [["Slots", esc(`${runner.slots.used} of ${runner.slots.total} in use`)]]
       : []),
+    ...(concurrency ? [["Concurrency", concurrency]] : []),
     ["OS", os ? esc(os) : "Not reported"],
     ["CPU", known(metrics?.cpuPercent, (value) => `${Math.round(value)}%`)],
     ["Memory", memory ? esc(memory) : "Not reported"],
@@ -376,6 +405,7 @@ export function createRunners() {
   let available = false;
   let painted = "";
   let pendingFocus: string | null = null;
+  const concurrencyDrafts = new Map<string, string>();
   let stopPolling: (() => void) | null = null;
 
   function manages() {
@@ -533,6 +563,9 @@ export function createRunners() {
       userId: session?.userId ?? null,
       role: session?.role ?? null,
       busy,
+      ...(concurrencyDrafts.has(runner.id)
+        ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
+        : {}),
     })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
   }
   function markup(open: ReadonlySet<string>): string {
@@ -670,6 +703,32 @@ export function createRunners() {
         refocus(`signin:${runner.id}`);
         openAgentAccounts(runner, () => void load(true));
       });
+    for (const form of root!.querySelectorAll<HTMLFormElement>("form[data-runner-concurrency]")) {
+      const runnerId = form.dataset.runnerConcurrency!;
+      const input = form.querySelector<HTMLInputElement>('input[name="concurrency"]')!;
+      input.addEventListener("input", () => concurrencyDrafts.set(runnerId, input.value));
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const ceiling = runners.find((entry) => entry.id === runnerId)?.concurrency?.ceiling;
+        const value = Number(input.value);
+        if (
+          !/^\d+$/.test(input.value.trim()) ||
+          value < 1 ||
+          (ceiling != null && value > ceiling)
+        ) {
+          error = `Concurrency must be from 1 to ${ceiling ?? 16}, the limit set on the host.`;
+          paint();
+          return;
+        }
+        void change(async () => {
+          await api(`/api/runners/${encodeURIComponent(runnerId)}/concurrency`, {
+            concurrency: value,
+          });
+          concurrencyDrafts.delete(runnerId);
+          feedback = "Concurrency saved. The runner applies it to new work at its next heartbeat.";
+        });
+      });
+    }
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))
       button.addEventListener(
         "click",
