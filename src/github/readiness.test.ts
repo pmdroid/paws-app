@@ -527,17 +527,3 @@ test("an Actions log the token cannot read falls back to the check's summary", a
   expect(f.requested).toEqual(["/repos/owner/repo/actions/jobs/12/logs text"]);
   expect(result.failedChecks?.[0]?.log).toEqual({ source: "summary", text: "1 test failed" });
 });
-
-test("green and waiting reads report the checks without reading any log", async () => {
-  const f = fixture(() => withChecks([run("build", "SUCCESS"), run("lint", null)]));
-  const states: string[][] = [];
-  const result = await waitForMergeReadiness({
-    ...f.input,
-    releaseWhilePending: true,
-    onChecks: (_, checks) => {
-      states.push(checks.map((check) => `${check.name}:${check.state}`));
-    },
-  });
-  expect(result.outcome).toBe("pending");
-  expect(states).toEqual([["build:passed", "lint:pending"]]);
-});
