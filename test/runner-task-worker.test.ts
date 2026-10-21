@@ -121,7 +121,7 @@ for (const purpose of ["answer", "artifact"] as const) {
       expect(trace.askTeam.ok).toBe(true);
       expect(trace.permissions[0].outcome.outcome).toEqual(
         purpose === "answer"
-          ? { outcome: "cancelled" }
+          ? { outcome: "selected", optionId: "deny" }
           : { outcome: "selected", optionId: "allow" },
       );
       if (purpose === "answer") {
