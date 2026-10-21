@@ -47,7 +47,7 @@ class RunnerUnavailableError extends Error {}
 
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 /** Runners from this version load a stopped agent session named by `resumeSessionId`. */
-const SESSION_RESUME_RUNNER_VERSION = [0, 1, 21];
+const SESSION_RESUME_RUNNER_VERSION = [0, 1, 22];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version

@@ -2124,7 +2124,7 @@ export async function probeRunnerBackend(
       );
 
       await drain();
-      reportVersion("0.1.21");
+      reportVersion("0.1.22");
       for (const hostId of hostIds) work.heartbeat(hostId);
       const continued = tracked();
       const stopContinued = new AbortController();
@@ -2173,7 +2173,7 @@ export async function probeRunnerBackend(
       await drain();
       coolDown(0);
       observe(
-        "after a usage limit the same runner loads the stopped agent session on 0.1.21 or later",
+        "after a usage limit the same runner loads the stopped agent session on 0.1.22 or later",
         true,
         { host },
       );
