@@ -247,7 +247,10 @@ export async function probeRunnerBackend(
   let pendingFailover: Promise<unknown> | undefined;
   try {
     const denied = item();
-    await assert.rejects(backend.forItem(denied.id)(input(denied)), /No available paired runner/);
+    await assert.rejects(
+      backend.forItem(denied.id)(input(denied)),
+      /No available paired runner .*outside the runner workspace repository access/,
+    );
     assert.equal(work.commands(runnerId).length, 0);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
       workspace.id,
