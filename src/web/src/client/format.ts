@@ -65,7 +65,6 @@ export function runLabel(state: RunState): string {
   return RUN_LABEL[state];
 }
 
-/** Names of the run page phase strip, indexed by `taskPhase().current`. */
 export const PHASE_NAMES = ["Implementation", "Closeout", "Waiting to merge", "Complete"] as const;
 
 export const RUN_STATES = Object.keys(RUN_LABEL) as RunState[];
