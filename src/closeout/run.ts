@@ -51,6 +51,7 @@ export type EvaluateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  reviewRetryDelaysMs?: readonly number[];
 };
 
 export type Evaluation = {
@@ -83,6 +84,7 @@ export type GateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  reviewRetryDelaysMs?: readonly number[];
 };
 
 /**
