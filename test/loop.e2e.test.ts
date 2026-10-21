@@ -1021,6 +1021,67 @@ test("a missing reviewer blocks the item and needs a person", async () => {
   }
 }, 60_000);
 
+test("a failed implementer preparation names the implementer in its question", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "iss-8",
+      identifier: "ENG-8",
+      title: "Needs an implementer",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const launch: AgentLaunch = (input) => {
+    if (input.purpose === "prepare" && input.role === "implementer")
+      return { command: "/bin/false", args: [] };
+    const scriptPath = path.join(layout.root, "implementer-missing.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        steps: [writeOk(input.worktree), { type: "end", stopReason: "end_turn" }],
+      }),
+    );
+    return {
+      command: process.execPath,
+      args: [fakeAgent, "", scriptPath],
+      env: process.env,
+    };
+  };
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    launch,
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "iss-8"));
+    const deadline = Date.now() + 40_000;
+    while (Date.now() < deadline && stateOf(db, "ENG-8") !== "awaiting_input") {
+      const job = await jobs.tick();
+      if (job === null) await Bun.sleep(20);
+    }
+    expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
+    expect(tracker.progress.some((update) => update.kind === "error")).toBe(false);
+    expect(tracker.questions).toHaveLength(1);
+    expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+    const questionBody = tracker.questions[0]?.body;
+    expect(questionBody).toContain("implementer preparation failed");
+    expect(questionBody).not.toContain("reviewer failed");
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+}, 60_000);
+
 for (const recovery of [
   "guidance",
   "bypass",
