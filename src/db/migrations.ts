@@ -1881,4 +1881,33 @@ WHERE target = 'linear' AND op = 'activity' AND status IN ('pending', 'dead')
   AND NOT lower(COALESCE(json_extract(payload, '$.id'), '')) GLOB '${UUID_V4_GLOB}';
 `,
   },
+  {
+    id: "077_agent_closeout",
+    sql: `
+CREATE TABLE agent_closeout_event (
+  run_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence > 0),
+  item_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  type TEXT NOT NULL CHECK(type IN ('report', 'started', 'finished')),
+  head TEXT NOT NULL,
+  max_attempts INTEGER,
+  check_id TEXT,
+  kind TEXT,
+  command TEXT,
+  attempt INTEGER,
+  state TEXT CHECK(state IS NULL OR state IN ('passed', 'failed', 'exhausted', 'cancelled')),
+  exit_code INTEGER,
+  timed_out INTEGER NOT NULL DEFAULT 0 CHECK(timed_out IN (0, 1)),
+  duration_ms INTEGER,
+  stdout TEXT NOT NULL DEFAULT '',
+  stderr TEXT NOT NULL DEFAULT '',
+  truncated INTEGER NOT NULL DEFAULT 0 CHECK(truncated IN (0, 1)),
+  checks TEXT,
+  blocked TEXT,
+  PRIMARY KEY (run_id, sequence)
+) STRICT;
+CREATE INDEX agent_closeout_event_item ON agent_closeout_event (item_id, run_id);
+`,
+  },
 ];
