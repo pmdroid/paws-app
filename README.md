@@ -75,7 +75,7 @@ bun run lint          # oxlint
 bun run fmt           # oxfmt, writes
 bun run fmt:check     # oxfmt, check only
 bun run typecheck     # tsc --noEmit, plus the browser client
-bun test
+bun run test          # bun test --parallel=8
 bun run build:status  # static dashboard → src/web/dist
 bun run links         # local markdown links in README.md and docs/
 bun run check         # all of the above
