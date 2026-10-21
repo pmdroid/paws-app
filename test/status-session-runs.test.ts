@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  applyLinearTurns,
   beginImplementRun,
   enqueueOutbox,
   insertQueuedItem,
@@ -7,6 +8,7 @@ import {
   markRun,
   migrate,
   openDatabase,
+  recordLinearTurn,
   setCurrentRun,
 } from "../src/db";
 import { handleStatusRequest } from "../src/web";
@@ -93,6 +95,61 @@ test("one Linear session shows as one run with every attempt in its timeline", a
     });
     expect(page.content).toContain(`Run ${first.id}`);
     expect(page.content).not.toContain("Run not found");
+  } finally {
+    db.close();
+  }
+});
+
+test("a reply in the Linear session shows in the run's timeline with its author, without its text", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const item = insertQueuedItem(db, {
+      id: "01REPLYITEM",
+      title: "Retry Closeout",
+      sessionKey: "ses_8",
+      branchName: "paws/eng-8",
+      now: NOW,
+    });
+    db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-8", item.id]);
+    const { run } = beginImplementRun(db, item.id, NOW);
+    for (const [at, body] of [
+      [NOW + 500, "Closeout needs your help."],
+      [NOW + 2_500, "Running Closeout again."],
+    ] as const)
+      enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "ses_8",
+        idempotencyKey: `${run.id}:${at}`,
+        payload: { sessionId: "ses_8", kind: "thought", body },
+        now: at,
+      });
+    recordLinearTurn(db, {
+      eventKey: "reply-1",
+      activityId: null,
+      sessionId: "ses_8",
+      actorId: "linear-user",
+      body: "retry",
+      payload: JSON.stringify({ agentActivity: { user: { name: "Pascal" } } }),
+      createdAtMs: NOW + 1_500,
+      now: NOW + 1_500,
+    });
+    applyLinearTurns(db, "ses_8", ["reply-1"], item.id);
+
+    const response = await handleStatusRequest(new Request("http://127.0.0.1/api/status"), {
+      db,
+      env: {},
+    });
+    const parsed = parseStatusSnapshot(await response?.json());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const lines = parsed.snapshot.runs.find((entry) => entry.itemId === "ENG-8")!.activity;
+    expect(lines.map((line) => [line.kind, line.text])).toEqual([
+      ["thought", "Closeout needs your help."],
+      ["prompt", "Pascal replied."],
+      ["thought", "Running Closeout again."],
+    ]);
   } finally {
     db.close();
   }
