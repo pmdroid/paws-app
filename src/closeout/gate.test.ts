@@ -429,6 +429,41 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  for (const [failures, message, outcome, calls] of [
+    [2, "Rate limited", "accepted", 3],
+    [9, "Rate limited", "blocked", 4],
+    [9, "ACP connection closed", "blocked", 1],
+  ] as const) {
+    test(`a reviewer that fails ${failures} times with "${message}" ends ${outcome} after ${calls} calls`, async () => {
+      const repo = await originRepo({
+        ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 5),
+        ".agents/skills/adversarial-review/SKILL.md": SKILL,
+      });
+      let reviews = 0;
+      const result = await runCloseoutGate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewRetryDelaysMs: [0, 0, 0],
+        reviewer: {
+          async review() {
+            reviews += 1;
+            if (reviews <= failures) throw new Error(message);
+            return { session: "codex-session", model: "codex", provider: "openai", findings: [] };
+          },
+        },
+        fixer: committingFixer(repo.dir, [], "ok.txt", "ok\n"),
+      });
+      expect(result.outcome).toBe(outcome);
+      expect(reviews).toBe(calls);
+      await repo.cleanup();
+    });
+  }
+
   test("progress-aware reviews pass the old host cap and preserve task evidence between gate calls", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("review")]).replace(
