@@ -154,6 +154,8 @@ export interface RunnerWorkerResult {
   };
 }
 
+const ACTIVITY_JOURNAL_LIMIT = 15 * 1024 * 1024;
+
 function outputFile(directory: string, name: string, resultsGid: number): number {
   const fd = openSync(
     join(directory, name),
@@ -258,10 +260,20 @@ export async function executeRunnerCommand(
   }
   const eventJournal = resumed ? appendJournal(options.outputDirectory) : createJournal(options);
   let journalSize = fstatSync(eventJournal).size;
+  let activityOmitted = false;
   const updates = createUpdateLimiter();
   function emit(event: RunnerWorkerEvent): void {
     const line = `${JSON.stringify(event)}\n`;
     const length = Buffer.byteLength(line);
+    if (event.type === "acp" && journalSize + length > ACTIVITY_JOURNAL_LIMIT) {
+      if (activityOmitted) return;
+      activityOmitted = true;
+      emit({
+        type: "progress",
+        text: "The run's event journal is nearly full. Later agent activity is omitted.",
+      });
+      return;
+    }
     if (length > 262_144 || journalSize + length > 16_777_216)
       throw new Error("Runner event journal exceeds size limit");
     writeFileSync(eventJournal, line);
