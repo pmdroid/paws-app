@@ -17,8 +17,14 @@ export function itemPathId(item: {
     : name;
 }
 
+export function taskBranchKey(
+  item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
+): string {
+  return itemPathId(item).toLowerCase();
+}
+
 export function worktreeBranch(
   item: Pick<WorkItemRecord, "id" | "taskKey" | "linearIssueId" | "linearIdentifier">,
 ): string {
-  return `paws/${itemPathId(item).toLowerCase()}`;
+  return `paws/${taskBranchKey(item)}`;
 }

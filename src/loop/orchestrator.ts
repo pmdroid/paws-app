@@ -147,7 +147,6 @@ import {
   publishAccepted,
   closeStoppedPull,
   mergedPullHeads,
-  branchForIssue,
   serialMerge,
   UPSTREAM_MAIN_REF,
   type GitHubClient,
@@ -189,7 +188,7 @@ import {
 } from "./activity";
 import { parseRecoveryAnswer, recoveryOptions, recoveryQuestion } from "./closeout-recovery";
 import { createDbCloseoutProgress } from "./closeout-progress";
-import { itemPathId, worktreeBranch } from "./sources";
+import { itemPathId, taskBranchKey, worktreeBranch } from "./sources";
 import {
   createAcpCodexReviewer,
   createAcpFixRunner,
@@ -988,7 +987,7 @@ export class Orchestrator {
         client: github.client,
         owner: repository.owner,
         repo: repository.repo,
-        branch: branchForIssue(itemPathId(item)),
+        branch: worktreeBranch(item),
         ...this.gitHubCredentials(github),
         signal: context.signal,
       });
@@ -2130,7 +2129,7 @@ export class Orchestrator {
       evidence: summary + (policy ? `\n\n${policyPullRequestCredit(policy)}` : ""),
       worktree,
       issue: item.linearIdentifier,
-      branchKey: itemPathId(item),
+      branchKey: taskBranchKey(item),
       owner: repository.owner,
       repo: repository.repo,
       title: draft?.title ?? item.title,
@@ -2168,7 +2167,7 @@ export class Orchestrator {
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
-      branchKey: itemPathId(item),
+      branchKey: taskBranchKey(item),
       owner: repository.owner,
       repo: repository.repo,
       prNumber: published.pull.number,
@@ -2960,7 +2959,7 @@ export class Orchestrator {
           client: github.client,
           owner: repository.owner,
           repo: repository.repo,
-          branch: branchForIssue(itemPathId(item)),
+          branch: worktreeBranch(item),
           ...this.gitHubCredentials(github),
           signal,
         });
