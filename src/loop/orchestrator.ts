@@ -1843,7 +1843,7 @@ export class Orchestrator {
       pullRequest: this.pullRequestHook(item),
       postUpdate: this.updateHook(item),
     });
-    const reviewer = createAcpCodexReviewer(deps);
+    const reviewer = createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) });
     const gate = createCloseoutGate({
       checkoutExclusions,
       candidate,

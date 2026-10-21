@@ -1762,6 +1762,68 @@ test("an ACP reviewer refused a terminal tool with only allow options finishes i
   }
 }, 15_000);
 
+test("a 1M reviewer profile without its entry reviews on the standard model with one Linear line", async () => {
+  const layout = await repoLayout();
+  const scriptPath = path.join(layout.root, "standard-window-review.json");
+  const tracePath = path.join(layout.root, "standard-window-review.trace.json");
+  const script: FakeScript = {
+    model: "default",
+    modelOptions: [
+      { value: "default", name: "Default (recommended)" },
+      { value: "opus", name: "Opus 5.5" },
+    ],
+    steps: [
+      {
+        type: "update",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
+      },
+      { type: "end" },
+    ],
+  };
+  writeFileSync(scriptPath, JSON.stringify(script));
+  const posted: string[] = [];
+  const reviewer = createAcpCodexReviewer({
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    profiles: {
+      implementer: { agent: "codex", model: null },
+      reviewer: { agent: "claude", model: "opus[1m]" },
+    },
+    postUpdate: {
+      async post(text) {
+        posted.push(text);
+        return { posted: true };
+      },
+    },
+    launch: () => ({
+      command: process.execPath,
+      args: [fakeAgent, tracePath, scriptPath],
+      env: process.env,
+    }),
+  });
+  try {
+    const head = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    const result = await reviewer.review({
+      worktree: path.join(layout.root, "seed"),
+      taskId: "standard-window-review",
+      itemId: "independent-review",
+      base: head,
+      head,
+      candidate: { session: "implementer", model: "codex", provider: "openai" },
+    });
+    expect(result.findings).toEqual([]);
+    expect(
+      (JSON.parse(await readFile(tracePath, "utf8")) as { modelSelection?: { value: string } })
+        .modelSelection?.value,
+    ).toBe("opus");
+    expect(posted).toEqual([
+      "Opus 5.5 ran with the standard window: this runner's Claude account doesn't offer 1M.",
+    ]);
+  } finally {
+    await layout.cleanup();
+  }
+}, 15_000);
+
 type DemoSeed = {
   parent: { title: string; description: string };
   children: Array<{ slug: string; title: string; blockedBy: string[] }>;

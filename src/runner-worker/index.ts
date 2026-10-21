@@ -529,6 +529,15 @@ export async function executeRunnerCommand(
               throw new Error("Runner response exceeds size limit");
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
+          if (event.type === "progress" && !event.messageChunk) {
+            const parsed = RunnerEventSchema.safeParse({ type: "progress", text: event.text });
+            if (
+              parsed.success &&
+              parsed.data.type === "progress" &&
+              updates.take(job.executionId).posted
+            )
+              emit(parsed.data);
+          }
         } catch (error) {
           eventFailure = error instanceof Error ? error : new Error(String(error));
           throw error;
