@@ -59,6 +59,6 @@ export {
   type RunnerLoginInput,
 } from "./login";
 
-export { RunnerActivitySchema } from "./activity";
+export { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 
 export { RunnerHostStatusSchema, releaseVersionFromPath, type RunnerHostStatus } from "./host";

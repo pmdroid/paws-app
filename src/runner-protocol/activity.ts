@@ -54,6 +54,16 @@ const activity = z.discriminatedUnion("sessionUpdate", [
   }),
 ]);
 
+export const RunnerPermissionSchema = z.strictObject({
+  toolCallId: z.string().min(1).max(1024),
+  decision: z.enum(["allow", "deny", "cancelled"]),
+  reason: publicString(1024),
+  optionId: z.string().max(1024).optional(),
+  title: publicString(4096).nullable().optional(),
+  kind: z.string().max(64).nullable().optional(),
+  name: z.string().max(256).nullable().optional(),
+});
+
 function publicString(limit: number) {
   return z
     .string()
