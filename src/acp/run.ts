@@ -260,7 +260,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   const emit: AcpEventListener = (event) => {
     emitQueue = emitQueue.then(async () => {
       await appendFile(transcript, `${JSON.stringify({ t: new Date().toISOString(), event })}\n`);
-      if (!state.cancelling || event.type === "cancelled") await options.onEvent?.(event);
+      if (!state.cancelling || event.type === "cancelled" || event.type === "permission")
+        await options.onEvent?.(event);
     });
     return emitQueue;
   };
@@ -276,12 +277,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   let loading = false;
   const app = client({ name: "paws" })
     .onRequest(methods.client.session.requestPermission, (ctx) =>
-      answerPermission(
-        ctx.params,
-        guard,
-        () => state.cancelling || options.readOnly === true,
-        emit,
-      ),
+      answerPermission(ctx.params, guard, () => state.cancelling, options.readOnly === true, emit),
     )
     .onNotification(methods.client.session.update, (ctx) => {
       if (loading) return;
@@ -755,6 +751,7 @@ function answerPermission(
   params: RequestPermissionRequest,
   guard: GuardContext,
   cancelling: () => boolean,
+  readOnly: boolean,
   emit: AcpEventListener,
 ): Promise<RequestPermissionResponse> | RequestPermissionResponse {
   const tool = params.toolCall;
@@ -770,28 +767,37 @@ function answerPermission(
     });
     return { outcome: { outcome: "cancelled" } };
   }
-  const decision = decidePermission(
-    {
-      kind: tool.kind,
-      name: tool.name,
-      title: tool.title,
-      locations: tool.locations,
-      rawInput: tool.rawInput,
-    },
-    guard,
-  );
+  const decision = readOnly
+    ? { allow: false, reason: "read-only session" }
+    : decidePermission(
+        {
+          kind: tool.kind,
+          name: tool.name,
+          title: tool.title,
+          locations: tool.locations,
+          rawInput: tool.rawInput,
+        },
+        guard,
+      );
   const selected = selectOption(params.options, decision.allow);
+  const reason = decision.allow && !selected ? "no allow option offered" : decision.reason;
   void emit({
     type: "permission",
     toolCallId: tool.toolCallId,
-    decision: selected ? (decision.allow ? "allow" : "deny") : "cancelled",
-    reason: decision.reason,
+    decision: decision.allow && selected ? "allow" : "deny",
+    reason,
     ...(selected ? { optionId: selected.optionId } : {}),
     title: tool.title,
     kind: tool.kind,
     name: tool.name,
   });
-  if (!selected) return { outcome: { outcome: "cancelled" } };
+  // A "cancelled" outcome ends the whole prompt turn in ACP. Without a matching
+  // option, refuse only this tool call so the agent continues without it.
+  if (!selected)
+    throw RequestError.invalidParams(
+      { toolCallId: tool.toolCallId },
+      `Permission denied: ${reason}`,
+    );
   return { outcome: { outcome: "selected", optionId: selected.optionId } };
 }
 
