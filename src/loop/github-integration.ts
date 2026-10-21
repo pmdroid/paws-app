@@ -34,8 +34,13 @@ type Hold = {
   status: "pending" | "verified" | "revoked";
 };
 
+const RECENT_READY_MS = 10 * 60_000;
+const TRANSIENT_CHECK_ERROR =
+  /fetch failed|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket|network|rate.?limit|\b429\b|\b5\d\d\b|temporarily unavailable/i;
+
 export class GitHubIntegrationHolds {
   private closed = false;
+  private readonly lastReady = new Map<string, { authority: string; at: number }>();
 
   constructor(
     private readonly db: Database,
@@ -237,18 +242,36 @@ export class GitHubIntegrationHolds {
     signal: AbortSignal,
   ): Promise<"ready" | "installation" | "unavailable" | "denied" | "attribution"> {
     try {
-      if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
-        return "denied";
-      const ready = await this.integration.check(item, signal);
-      if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
-        return "denied";
-      if (!ready) return "installation";
-      if (this.integration.attributionReady && !(await this.integration.attributionReady(item)))
-        return "attribution";
-      return "ready";
-    } catch {
-      return "unavailable";
+      const result = await this.check(item, signal);
+      if (result === "ready")
+        this.lastReady.set(item.id, { authority: this.integration.identity(item), at: this.now() });
+      else this.lastReady.delete(item.id);
+      return result;
+    } catch (error) {
+      const last = this.lastReady.get(item.id);
+      const message = error instanceof Error ? error.message : String(error);
+      return TRANSIENT_CHECK_ERROR.test(message) &&
+        last !== undefined &&
+        last.authority === this.integration.identity(item) &&
+        this.now() - last.at <= RECENT_READY_MS
+        ? "ready"
+        : "unavailable";
     }
+  }
+
+  private async check(
+    item: WorkItemRecord,
+    signal: AbortSignal,
+  ): Promise<"ready" | "installation" | "denied" | "attribution"> {
+    if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
+      return "denied";
+    const ready = await this.integration.check(item, signal);
+    if (this.integration.authorize && !(await this.integration.authorize(item, signal)))
+      return "denied";
+    if (!ready) return "installation";
+    if (this.integration.attributionReady && !(await this.integration.attributionReady(item)))
+      return "attribution";
+    return "ready";
   }
 
   private deny(itemId: string): void {
