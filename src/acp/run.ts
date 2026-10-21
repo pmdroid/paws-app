@@ -16,6 +16,8 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type StopReason,
+  type AnyMessage,
+  type Stream,
 } from "@agentclientprotocol/sdk";
 import { loadConfigFile, resolveAgentProfiles } from "../config";
 import { loadImplementationSkills } from "./skills";
@@ -366,9 +368,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
     assertRunning();
     if (!child.stdin || !child.stdout) throw new Error("agent stdio pipes were not created");
-    const stream = ndJsonStream(
-      Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
+    const stream = endTurnAtPromptResponse(
+      ndJsonStream(
+        Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+        Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
+      ),
     );
     const exit = new Promise<never>((_, reject) => {
       child.once("exit", (code) =>
@@ -656,6 +660,43 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
     }
   }
   return result;
+}
+
+/**
+ * The `session/prompt` response ends the ACP turn, and the connection closes
+ * right after it. An update the agent sends after its response would race
+ * teardown, so drop every one that follows the response in stream order.
+ */
+function endTurnAtPromptResponse(stream: Stream): Stream {
+  const prompts = new Set<unknown>();
+  let ended = false;
+  const writer = stream.writable.getWriter();
+  return {
+    writable: new WritableStream<AnyMessage>({
+      write(message) {
+        if (
+          "id" in message &&
+          "method" in message &&
+          message.method === methods.agent.session.prompt
+        )
+          prompts.add(message.id);
+        return writer.write(message);
+      },
+      close: () => writer.close(),
+      abort: (reason) => writer.abort(reason),
+    }),
+    readable: stream.readable.pipeThrough(
+      new TransformStream<AnyMessage, AnyMessage>({
+        transform(message, controller) {
+          if ("method" in message) {
+            if (ended && message.method === methods.client.session.update && !("id" in message))
+              return;
+          } else if (prompts.has(message.id)) ended = true;
+          controller.enqueue(message);
+        },
+      }),
+    ),
+  };
 }
 
 interface PromptState {
