@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { listCloseoutRecoveries, type CloseoutRecovery } from "../db";
+import { listCloseoutRecoveries, listCloseoutRounds, type CloseoutRecovery } from "../db";
 import type { CloseoutBypass } from "../closeout";
 
 export type RecoveryAnswer =
@@ -23,12 +23,17 @@ export function recoveryOptions(
   db: Database,
   itemId: string,
 ): { retryBaseline: readonly string[]; bypasses: CloseoutBypass[] } {
-  let retryBaseline: readonly string[] = [];
+  const retryBaseline = new Set<string>();
   const bypasses: CloseoutBypass[] = [];
+  // Evidence only grows, so the union is the newest snapshot: a guidance
+  // answer or a rebased head (closeout_round) each start a fresh budget.
+  for (const round of listCloseoutRounds(db, itemId))
+    for (const key of round.retryBaseline) retryBaseline.add(key);
   for (const recovery of listCloseoutRecoveries(db, itemId)) {
     if (recovery.answer === null || recovery.answeredBy === null) continue;
     const answer = parseRecoveryAnswer(recovery.answer, recovery.failedChecks);
-    if (answer?.kind === "guidance") retryBaseline = recovery.retryBaseline;
+    if (answer?.kind === "guidance")
+      for (const key of recovery.retryBaseline) retryBaseline.add(key);
     if (
       answer?.kind === "bypass" &&
       recovery.answeredBy !== "linear" &&
@@ -45,7 +50,7 @@ export function recoveryOptions(
         reason: answer.reason,
       });
   }
-  return { retryBaseline, bypasses };
+  return { retryBaseline: [...retryBaseline], bypasses };
 }
 
 export function recoveryQuestion(

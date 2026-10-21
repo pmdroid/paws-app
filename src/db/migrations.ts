@@ -1910,4 +1910,16 @@ CREATE TABLE agent_closeout_event (
 CREATE INDEX agent_closeout_event_item ON agent_closeout_event (item_id, run_id);
 `,
   },
+  {
+    id: "078_closeout_round",
+    sql: `
+CREATE TABLE closeout_round (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  head TEXT NOT NULL,
+  retry_baseline TEXT NOT NULL CHECK (json_valid(retry_baseline)),
+  started_at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, head)
+) STRICT;
+`,
+  },
 ];

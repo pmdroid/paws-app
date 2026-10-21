@@ -168,6 +168,7 @@ export {
   saveCloseoutRecovery,
   type CloseoutRecovery,
 } from "./closeout-recovery";
+export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
 export {
   recordGitHubDelivery,
   listGitHubDeliveries,
