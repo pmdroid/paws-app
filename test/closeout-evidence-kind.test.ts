@@ -146,7 +146,7 @@ function fixture(evidence: string[]) {
   git(root, ["add", "."]);
   git(root, ["commit", "-m", "init"]);
   git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
-  const base = head(root);
+  const base = headOf(root);
   const f = {
     root,
     message: "",
@@ -155,15 +155,15 @@ function fixture(evidence: string[]) {
       writeFileSync(join(root, path), content);
       git(root, ["add", "."]);
       git(root, ["commit", "-m", `change ${path}`]);
-      return head(root);
+      return headOf(root);
     },
     /** A commit on another branch, which the candidate does not contain. */
     sideCommit(): string {
-      const tip = head(root);
+      const tip = headOf(root);
       git(root, ["checkout", "-q", "-b", "side", base]);
       const side = f.commit("src/web/other.ts", "export {};\n");
       git(root, ["checkout", "-q", "main"]);
-      expect(head(root)).toBe(tip);
+      expect(headOf(root)).toBe(tip);
       return side;
     },
     session(published: PublishedEvidence[]) {
@@ -181,7 +181,7 @@ function fixture(evidence: string[]) {
       const document = await run({
         repo: root,
         base,
-        head: head(root),
+        head: headOf(root),
         gate: "beforePR",
         task: "task",
         candidate: { session: "s", model: "m", provider: "p" },
@@ -198,7 +198,7 @@ function fixture(evidence: string[]) {
   return f;
 }
 
-function head(root: string): string {
+function headOf(root: string): string {
   return spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
 }
 
