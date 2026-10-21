@@ -35,11 +35,34 @@ The agent uses two tools in its session:
 - `get_closeout` returns the required checks for the changed paths, their status, and the ids still pending. It runs nothing.
 - `run_closeout` runs one pending check, after any setup steps it needs, and records the result for the current commit.
 
-Command checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session.
+Command checks run in the agent's workspace. On a remote runner they run on that runner. Review checks are listed but not run here, because the review must come from a different session. Evidence checks run nothing: `run_closeout` answers with the hint and the `publish_artifact` call to make.
 
 Each check has its own retry limit, `retry.maxFailedAttemptsPerItem`, which is 3 in this repository. With `scope: task`, failed attempts count across the whole task, including new commits. When a check fails, the agent fixes the cause and runs it again. When a check reaches its limit, it is exhausted. The agent stops retrying it and finishes with a short note on why. Paws Closeout then decides what happens next.
 
 The agent cannot end its turn while a check is still pending. When the agent tries to finish, the Stop hook checks the Closeout status and sends the agent back with the pending check ids. A check that is exhausted does not hold the agent back.
+
+## Evidence checks
+
+An `evidence` check asks the agent for screenshots or videos instead of running a command. This repository requires one when a change touches the status dashboard or the landing page:
+
+```yaml
+- id: visual-proof
+  kind: evidence
+  gate: beforePR
+  paths: ["src/web/**", "landing/**"]
+  media: [image, video]
+  minimum: 1
+  hint: Screenshot each changed screen at desktop width and at 390 px.
+```
+
+- `paths` works as it does for the other kinds. Without a matching changed file, the check is not required.
+- `media` lists which files count: `image`, `video`, or both. The default is both.
+- `minimum` is how many files the check needs, from 1 to 100. The default is 1.
+- `hint` is shown to the agent by `get_closeout` and in the fix round.
+
+The agent publishes each file with `publish_artifact` and `checkId: "visual-proof"`. Paws keeps it in the evidence store and posts its link to Linear. A file counts when it was published by this task at the candidate commit or at an earlier commit that the candidate contains, so a screenshot taken before the last commit still counts. Until enough files exist, `get_closeout` lists the check as pending and the agent cannot finish.
+
+Paws Closeout counts the same files. With too few, the check fails, and a fix round asks the agent to publish the proof. That fix round does not need a new commit. Evidence checks use the same fix budget as other checks, and `/paws bypass visual-proof -- reason` accepts one without proof. The run page shows the published files in its evidence gallery.
 
 ## Paws Closeout
 
