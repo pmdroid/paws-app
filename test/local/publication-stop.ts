@@ -21,10 +21,10 @@ import {
   applyWorkItemEvent,
   immediate,
 } from "../../src/db";
-import { branchForIssue, closeStoppedPull, createFetchGitHubClient } from "../../src/github";
+import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
 import { readyItems, syncItemDependencies } from "../../src/intake";
-import { itemPathId, Orchestrator, type OrchestratorOptions } from "../../src/loop";
+import { Orchestrator, type OrchestratorOptions } from "../../src/loop";
 import { runDir } from "../../src/acp";
 import { guardGitHubPublication } from "../../src/loop/publication";
 
@@ -138,7 +138,7 @@ export async function probePublicationStop(
     );
     ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
     bindLinearSessionTask(db, "session", "epic");
-    branch = branchForIssue(itemPathId(getWorkItem(db, "item")!));
+    branch = getWorkItem(db, "item")!.branchName;
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId: "item" },
