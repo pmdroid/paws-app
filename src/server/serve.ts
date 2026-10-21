@@ -182,6 +182,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const workspace = secrets.workspaceAccess ?? undefined;
   let csrfToken = secrets.csrfToken;
   let sessionIds: readonly string[] | undefined;
+  let principal: { workspaceId: string; userId: string } | undefined;
   if (workspace !== undefined) {
     const auth = await workspace.handle(request);
     if (auth !== null) return auth;
@@ -284,6 +285,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         }))!;
       }
       csrfToken = access.session.csrfToken;
+      principal = access.principal;
       sessionIds = workspaceSessionIds(
         secrets.db,
         access.principal.workspaceId,
@@ -323,6 +325,18 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const settings = await handleAgentSettingsRequest(request, {
       ...secrets.agentSettings,
       csrfToken,
+      ...(principal === undefined || secrets.db === undefined
+        ? {}
+        : {
+            audit: (action: string, subject: string) =>
+              auditWorkspaceAccess(secrets.db!, {
+                workspaceId: principal!.workspaceId,
+                userId: principal!.userId,
+                action,
+                subject,
+                now: Date.now(),
+              }),
+          }),
       ...(workspace === undefined ? {} : { trustedOrigin: workspace.origin }),
     });
     if (settings !== null) return settings;

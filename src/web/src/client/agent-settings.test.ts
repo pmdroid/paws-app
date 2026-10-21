@@ -62,6 +62,23 @@ describe("agent settings", () => {
     expect(on).toMatch(/name="merge-closeout-after-update"[^>]*checked>/);
   });
 
+  test("the Pull request checks section shows CI fix attempts, 3 when missing", () => {
+    const html = renderAgentSettings(view());
+    expect(html).toContain("<h2>Pull request checks</h2>");
+    expect(html).toContain('<label for="merge-ci-fix-attempts">CI fix attempts</label>');
+    expect(html).toMatch(
+      /name="merge-ci-fix-attempts" type="number"[^>]*min="0" max="10"[^>]*value="3"/,
+    );
+    expect(html).toContain("With 0, Paws asks in Linear on the first failure.");
+    const zero = { ...settings(), merge: { closeoutAfterUpdate: false, ciFixAttempts: 0 } };
+    expect(renderAgentSettings(view(zero))).toMatch(/name="merge-ci-fix-attempts"[^>]*value="0"/);
+    expect(settingsProblems(zero)).toEqual([]);
+    for (const ciFixAttempts of [11, -1, 1.5, NaN])
+      expect(
+        settingsProblems({ ...settings(), merge: { closeoutAfterUpdate: false, ciFixAttempts } }),
+      ).toEqual(["CI fix attempts: enter a whole number from 0 to 10."]);
+  });
+
   test("settings remain reachable before any status items exist", () => {
     expect(parseRoute("/settings")).toEqual({ view: "settings" });
     expect(routeHref({ view: "settings" })).toBe("/settings");
