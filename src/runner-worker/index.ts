@@ -83,6 +83,9 @@ export interface RunnerWorkerOptions {
   resume?: boolean;
 }
 
+export const USAGE_CONTINUE_PROMPT =
+  "Your usage limit has reset. Check git status and the workspace, then continue the task where you left off.";
+
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
 
@@ -247,6 +250,9 @@ export async function executeRunnerCommand(
     }
   }
   const resumed = options.resume === true;
+  // Work stopped at a usage limit loads its agent session again; without it the prompt replays the transcript.
+  const continuedSession =
+    command.type === "run" || command.type === "review" ? command.resumeSessionId : undefined;
   const resumedId = resumed ? resumedSession(options.outputDirectory) : undefined;
   if (!resumed) {
     const claim = outputFile(options.outputDirectory, ".worker-claim", options.resultsGid);
@@ -486,7 +492,10 @@ export async function executeRunnerCommand(
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt: resumed ? RESUME_PROMPT : prompt,
+      prompt: resumed ? RESUME_PROMPT : continuedSession ? USAGE_CONTINUE_PROMPT : prompt,
+      ...(continuedSession && !resumed
+        ? { resume: { sessionId: continuedSession, replayPrompt: prompt } }
+        : {}),
       ...(resumed
         ? {
             resume: {

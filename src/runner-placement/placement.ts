@@ -481,8 +481,15 @@ export function createRunnerPlacement(options: {
           : null;
         if (memberAccount && quota)
           db.run(
-            "UPDATE runner_member_account SET cooldown_until=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
-            [quota.cooldownUntil, input.finishedAt, input.runnerId, usage.ownerId, usage.agent!],
+            "UPDATE runner_member_account SET cooldown_until=?,resets_at=?,updated_at=? WHERE runner_id=? AND user_id=? AND agent=?",
+            [
+              quota.cooldownUntil,
+              quota.resetsAt,
+              input.finishedAt,
+              input.runnerId,
+              usage.ownerId,
+              usage.agent!,
+            ],
           );
         if (memberAccount && success)
           db.run(

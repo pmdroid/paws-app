@@ -39,13 +39,15 @@ import type { RunnerCommand, RunnerResult } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
-import { RetryableRunnerError, runWithFailover } from "./failover";
+import { RetryableRunnerError, runWithFailover, type UsageContinuation } from "./failover";
 import { placeOrWait, type UsageCooldown } from "./usage-pause";
 import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
 
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
+/** Runners from this version load a stopped agent session named by `resumeSessionId`. */
+const SESSION_RESUME_RUNNER_VERSION = [0, 1, 21];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version
@@ -127,11 +129,12 @@ export function createRemoteAgentRunner(options: {
     return (
       db
         .query<UsageCooldown, [string, string | null, number]>(
-          `SELECT a.runner_id AS runnerId,a.user_id AS accountUserId,a.cooldown_until AS cooldownUntil
+          `SELECT a.runner_id AS runnerId,a.user_id AS accountUserId,a.cooldown_until AS cooldownUntil,
+         a.resets_at AS resetsAt
          FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
          WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
          UNION ALL
-         SELECT p.runner_id,NULL,p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+         SELECT p.runner_id,NULL,p.cooldown_until,p.resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
          WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope}
          ORDER BY cooldownUntil LIMIT 1`,
         )
@@ -225,6 +228,7 @@ export function createRemoteAgentRunner(options: {
         input: RunAgentOptions,
         excluded: readonly string[],
         usage: { resetsAt?: number | null; hook?: UsageLimitHook },
+        continuation?: UsageContinuation,
       ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
@@ -352,13 +356,21 @@ export function createRemoteAgentRunner(options: {
             }
             throw new Error("Remote agent preparation timed out");
           }
+          let basePrompt = input.prompt;
+          if (continuation?.confirmElsewhere && continuation.runnerId !== selected.id) {
+            const approved = await continuation.confirmElsewhere();
+            signal.throwIfAborted();
+            basePrompt = `${basePrompt}\n\nContinuation instructions:\n${approved}`;
+          }
+          const resumeSessionId =
+            continuation?.runnerId === selected.id ? continuation.sessionId : undefined;
           const prepared = input.prepareInputFiles
             ? await input.prepareInputFiles({
                 workspace: input.worktreePath,
-                prompt: input.prompt,
+                prompt: basePrompt,
                 signal,
               })
-            : { prompt: input.prompt, inputFiles: [] };
+            : { prompt: basePrompt, inputFiles: [] };
           const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
           const files = snapshotAgentInputs(input.worktreePath, [
             ...suppliedInputs,
@@ -405,14 +417,12 @@ export function createRemoteAgentRunner(options: {
             : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
           if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
             saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
-          const acceptsMainCommit = versionAtLeast(
-            db
-              .query<{ version: string | null }, [string]>(
-                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-              )
-              .get(selected.id)?.version,
-            MAIN_COMMIT_RUNNER_VERSION,
-          );
+          const runnerVersion = db
+            .query<{ version: string | null }, [string]>(
+              "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+            )
+            .get(selected.id)?.version;
+          const acceptsMainCommit = versionAtLeast(runnerVersion, MAIN_COMMIT_RUNNER_VERSION);
           const mainCandidate = input.mainSha ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
           const mainSha =
             !taskScope &&
@@ -511,6 +521,10 @@ export function createRemoteAgentRunner(options: {
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                   ...(skillsInputId !== undefined ? { skillsInputId } : {}),
+                  ...(resumeSessionId &&
+                  versionAtLeast(runnerVersion, SESSION_RESUME_RUNNER_VERSION)
+                    ? { resumeSessionId }
+                    : {}),
                   repository: {
                     ...scoped.repository!,
                     baseSha: baseSha!,
@@ -570,6 +584,7 @@ export function createRemoteAgentRunner(options: {
                 transcript,
                 publishedEffects,
                 Boolean(disposition.usageLimit),
+                complete.sessionId ?? complete.identity?.session,
               );
             }
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
@@ -786,6 +801,7 @@ export function createRemoteAgentRunner(options: {
               transcript,
               publishedEffects,
               Boolean(disposition.usageLimit),
+              complete.sessionId ?? complete.identity?.session,
             );
           }
           if (complete.reviewText)
@@ -855,6 +871,7 @@ export function createRemoteAgentRunner(options: {
                 transcript,
                 publishedEffects,
                 true,
+                complete.sessionId ?? complete.identity?.session,
               );
             }
           }
@@ -921,7 +938,7 @@ export function createRemoteAgentRunner(options: {
         };
         return runWithFailover(
           input,
-          (next, excluded) => attempt(next, excluded, usage),
+          (next, excluded, continuation) => attempt(next, excluded, usage, continuation),
           async () => cancelItem(itemId, input.signal),
         );
       };
@@ -933,6 +950,6 @@ export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
 
-export { RetryableRunnerError, runWithFailover } from "./failover";
+export { RetryableRunnerError, runWithFailover, type UsageContinuation } from "./failover";
 
 export { placeOrWait, USAGE_RESUME_MARGIN_MS, type UsageCooldown } from "./usage-pause";

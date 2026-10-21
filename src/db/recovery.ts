@@ -7,12 +7,18 @@ import {
   type WorkItemState,
 } from "../core";
 import { applyDecision } from "./decisions";
-import { enqueueJobOnce } from "./jobs";
-import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
+import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
+import {
+  applyWorkItemEvent,
+  listInFlightItems,
+  listWorkItemsByStates,
+  setCurrentRun,
+} from "./items";
 import type { WorkItemRecord } from "./items";
 import { markRun, releaseRunCapacity } from "./runs";
 import { immediate } from "./tx";
 import { getTaskMode } from "./tasks";
+import { endUsagePause, getUsagePause } from "./usage-pauses";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
 export type ShutdownWipCommit = (item: WorkItemRecord) => void;
@@ -31,6 +37,10 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     const decisions: StartupDecision[] = [];
     for (const item of items) {
       if (hasPendingAnswerResume(db, item.id)) continue;
+      if (getUsagePause(db, item.id)) {
+        decisions.push(recoverUsagePause(db, item, now));
+        continue;
+      }
       const decision = decideStartup({
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
@@ -46,6 +56,30 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
     }
     return decisions;
   });
+}
+
+/**
+ * A task waiting for its agent's usage limit did not crash, so the restart does
+ * not spend its one recovery. With a checkpoint it resumes; without one nothing
+ * ran yet and it goes back to the queue. Either way placement waits again.
+ */
+function recoverUsagePause(db: Database, item: WorkItemRecord, now: number): StartupDecision {
+  endUsagePause(db, item.id);
+  const mode = getTaskMode(db, item.id);
+  if (item.checkpoint || mode === "answer" || mode === "artifact") {
+    const decision: StartupDecision = {
+      type: "resume",
+      freshSession: true,
+      checkpoint: item.checkpoint,
+    };
+    applyDecision(db, item, decision, now);
+    return decision;
+  }
+  cancelOpenJobs(db, { itemId: item.id, reason: "usage_limit_restart", now });
+  if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+  setCurrentRun(db, item.id, null);
+  applyWorkItemEvent(db, item.id, "restart");
+  return { type: "none" };
 }
 
 function hasPendingAnswerResume(db: Database, itemId: string): boolean {

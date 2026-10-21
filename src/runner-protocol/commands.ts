@@ -96,6 +96,8 @@ const work = {
   prompt: z.string().min(1).max(65_536),
   inputFiles: RunnerInputFilesSchema.optional(),
   promptContext: RunnerPromptContextSchema.optional(),
+  /** The agent session to load before the prompt. Sent to runners on 0.1.21 or later. */
+  resumeSessionId: z.string().min(1).max(512).optional(),
 };
 
 export const RunnerCommandSchema = z
