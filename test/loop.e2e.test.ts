@@ -1704,6 +1704,64 @@ test("ACP review timeout rejects a partial clean array", async () => {
   }
 }, 15_000);
 
+test("an ACP reviewer refused a terminal tool with only allow options finishes its review", async () => {
+  const layout = await repoLayout();
+  const scriptPath = path.join(layout.root, "allow-only-review.json");
+  const tracePath = path.join(layout.root, "allow-only-review.trace.json");
+  const script: FakeScript = {
+    steps: [
+      {
+        type: "permission",
+        toolCall: {
+          toolCallId: "find",
+          title: "find / -path '*react-router/package.json'",
+          name: "run_terminal_command",
+          kind: "execute",
+          rawInput: { command: "find / -path '*react-router/package.json'" },
+        },
+        options: [
+          { optionId: "once", name: "Allow once", kind: "allow_once" },
+          { optionId: "always", name: "Always allow", kind: "allow_always" },
+        ],
+      },
+      {
+        type: "update",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[]" } },
+      },
+      { type: "end" },
+    ],
+  };
+  writeFileSync(scriptPath, JSON.stringify(script));
+  const reviewer = createAcpCodexReviewer({
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    launch: () => ({
+      command: process.execPath,
+      args: [fakeAgent, tracePath, scriptPath],
+      env: process.env,
+    }),
+  });
+  try {
+    const head = (await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])).stdout.trim();
+    const result = await reviewer.review({
+      worktree: path.join(layout.root, "seed"),
+      taskId: "allow-only-review",
+      itemId: "independent-review",
+      base: head,
+      head,
+      candidate: { session: "implementer", model: "claude", provider: "anthropic" },
+    });
+    expect(result.findings).toEqual([]);
+    const trace = JSON.parse(await readFile(tracePath, "utf8")) as {
+      permissions: Array<{ toolCallId: string; outcome: unknown }>;
+    };
+    expect(JSON.stringify(trace.permissions)).toContain("Paws refused this tool call");
+    expect(JSON.stringify(trace.permissions)).not.toContain('"cancelled"');
+  } finally {
+    await layout.cleanup();
+  }
+}, 15_000);
+
 type DemoSeed = {
   parent: { title: string; description: string };
   children: Array<{ slug: string; title: string; blockedBy: string[] }>;
