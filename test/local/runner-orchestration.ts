@@ -194,6 +194,7 @@ export async function probeRunnerOrchestration(
       replacementTick = other.tick();
       if (owned.queue === JOB_KIND.start) {
         assert.equal(await replacementTick, null);
+        db.run("UPDATE job SET locked_by = ? WHERE id = ?", ["replacement:claim", owned.id]);
         replacementRunId = listWorkItems(db)[0]!.currentRunId!;
       } else {
         await Promise.race([
