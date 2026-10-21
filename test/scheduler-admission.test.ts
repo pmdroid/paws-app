@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import {
+  applyWorkItemEvent,
   bindLinearSessionTask,
   bindWorkItemRepository,
+  consumeWorkspaceBootstrap,
   ensureLinearSession,
   insertQueuedItem,
+  putWorkspaceUser,
   recordLinearInstallation,
 } from "../src/db";
 import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 import { dispatchReadyItems, saveSchedulingContext } from "../src/scheduler";
+import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { tempDb } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
@@ -207,6 +211,42 @@ test("task_block depth stays on the active item when a merged row shares its iss
       "d",
       "b",
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("queued items wait for a free runner slot, and work in flight keeps its slot", () => {
+  const db = tempDb();
+  try {
+    const userId = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: "owner",
+      name: "Owner",
+      email: "owner@example.invalid",
+    });
+    const workspace = consumeWorkspaceBootstrap(db, {
+      id: workspaceId(),
+      organizationId: "org",
+      name: "Fixture",
+      userId,
+      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", 0)),
+      now: 0,
+    });
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'runner','active',0,1000)",
+      [workspace.id, userId],
+    );
+    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
+    insertQueuedItem(db, { id: "busy", now: 0 });
+    applyWorkItemEvent(db, "busy", "dispatched");
+    for (const [index, id] of ["a", "b", "c"].entries())
+      insertQueuedItem(db, { id, now: index + 1 });
+    const ready = ["a", "b", "c"];
+    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ready }), ["a"]);
+    assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ready }), []);
+    applyWorkItemEvent(db, "busy", "blocking_question");
+    assert.deepEqual(dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ready }), ["b"]);
   } finally {
     db.close();
   }
