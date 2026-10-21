@@ -93,4 +93,4 @@ export {
   parentTaskKeySql,
 } from "./delegation";
 
-export { UserFacingError } from "./user-facing-error";
+export { RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";

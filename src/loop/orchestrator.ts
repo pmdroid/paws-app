@@ -61,6 +61,7 @@ import {
   commitPolicyMessage,
   type GitCommitPolicy,
   JOB_KIND,
+  OUTBOX_ACTIVITY,
   delegationHasOpenWork,
   delegationIssueIdSql,
   parentTaskKeySql,
@@ -98,6 +99,7 @@ import {
   enqueueJob,
   enqueueOutboxOnce,
   failWorkItem,
+  queueWaitSince,
   getRun,
   getConversation,
   saveConversation,
@@ -323,6 +325,7 @@ class LinearReconciliationPendingError extends Error {}
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
 const MAX_REBASE_RETURNS = 3;
+const QUEUE_START_TIMEOUT_MS = 24 * 3_600_000;
 const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_CONFLICT_THOUGHT =
@@ -3228,6 +3231,7 @@ export class Orchestrator {
     );
     if (this.options.dispatchReady) {
       this.options.dispatchReady({ legacyReadyItemIds: ready.map((item) => item.id) });
+      this.noteQueued(ready);
       return;
     }
     if (listInFlightItems(this.db).length > 0) return;
@@ -3249,6 +3253,47 @@ export class Orchestrator {
         now: this.now(),
       });
     });
+  }
+
+  private noteQueued(ready: readonly WorkItemRecord[]): void {
+    const now = this.now();
+    for (const { id } of ready) {
+      const item = getWorkItem(this.db, id);
+      if (!item || item.state !== "queued" || item.cancelRequested) continue;
+      if (
+        this.db
+          .query(
+            "SELECT 1 FROM job WHERE queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=? LIMIT 1",
+          )
+          .get(JOB_KIND.start, item.id)
+      )
+        continue;
+      const name = item.linearIdentifier ?? "this issue";
+      if (now - queueWaitSince(this.db, item.id, item.version, now) >= QUEUE_START_TIMEOUT_MS) {
+        failWorkItem(
+          this.db,
+          item,
+          "start_timeout",
+          `Paws couldn't start ${name} within ${QUEUE_START_TIMEOUT_MS / 3_600_000} hours because every runner slot stayed busy. Delegate it again to retry.`,
+          now,
+        );
+        continue;
+      }
+      const sessionId = this.activitySession(item);
+      if (sessionId === null) continue;
+      enqueueOutboxOnce(this.db, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: sessionId,
+        idempotencyKey: `queued:${item.id}:${item.version}`,
+        payload: {
+          sessionId,
+          kind: "thought",
+          body: `Queued: every runner slot is busy. Paws starts ${name} when a slot frees.`,
+        },
+        now,
+      });
+    }
   }
 
   private yieldIdleMergeSessions(): void {
