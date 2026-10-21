@@ -259,24 +259,35 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       continue;
     }
     if (step.type === "permission") {
-      const outcome = await request("session/request_permission", {
-        sessionId,
-        toolCall: {
-          toolCallId: step.toolCall.toolCallId,
-          title: step.toolCall.title ?? step.toolCall.toolCallId,
-          name: step.toolCall.name,
-          kind: step.toolCall.kind,
-          status: "pending",
-          locations: step.toolCall.locations,
-          rawInput: step.toolCall.rawInput,
-        },
-        options: step.options ?? [
-          { optionId: "allow", name: "Allow", kind: "allow_once" },
-          { optionId: "deny", name: "Deny", kind: "reject_once" },
-        ],
-      });
+      let outcome: unknown;
+      try {
+        outcome = await request("session/request_permission", {
+          sessionId,
+          toolCall: {
+            toolCallId: step.toolCall.toolCallId,
+            title: step.toolCall.title ?? step.toolCall.toolCallId,
+            name: step.toolCall.name,
+            kind: step.toolCall.kind,
+            status: "pending",
+            locations: step.toolCall.locations,
+            rawInput: step.toolCall.rawInput,
+          },
+          options: step.options ?? [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        });
+      } catch (error) {
+        // Like a real agent, a failed permission request fails only that tool call.
+        outcome = { error: error instanceof Error ? error.message : String(error) };
+      }
       state.permissions.push({ toolCallId: step.toolCall.toolCallId, outcome });
       persist();
+      // A cancelled outcome means the client cancelled the prompt turn.
+      if ((outcome as { outcome?: { outcome?: string } }).outcome?.outcome === "cancelled") {
+        send({ jsonrpc: "2.0", id: prompt, result: { stopReason: "cancelled" } });
+        return true;
+      }
       continue;
     }
     if (step.type === "fs_read" || step.type === "fs_write") {

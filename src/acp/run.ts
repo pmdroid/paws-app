@@ -44,7 +44,7 @@ import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckRes
 import { sessionModel, selectSessionProfile, providerFor } from "./model";
 import { minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
-import { decidePermission, type GuardContext } from "./permissions";
+import { decidePermission, decideReadOnlyPermission, type GuardContext } from "./permissions";
 import { captureStderr, killTree, spawnAgent, stopChild, waitForExit } from "./process";
 import {
   DEFAULT_CANCEL_GRACE_MS,
@@ -279,7 +279,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       answerPermission(
         ctx.params,
         guard,
-        () => state.cancelling || options.readOnly === true,
+        options.readOnly === true,
+        () => state.cancelling,
         emit,
       ),
     )
@@ -754,6 +755,7 @@ async function runPrompt(options: {
 function answerPermission(
   params: RequestPermissionRequest,
   guard: GuardContext,
+  readOnly: boolean,
   cancelling: () => boolean,
   emit: AcpEventListener,
 ): Promise<RequestPermissionResponse> | RequestPermissionResponse {
@@ -770,7 +772,7 @@ function answerPermission(
     });
     return { outcome: { outcome: "cancelled" } };
   }
-  const decision = decidePermission(
+  const decision = (readOnly ? decideReadOnlyPermission : decidePermission)(
     {
       kind: tool.kind,
       name: tool.name,
@@ -781,18 +783,25 @@ function answerPermission(
     guard,
   );
   const selected = selectOption(params.options, decision.allow);
+  const reason =
+    decision.allow && !selected ? "the agent offered no allow option" : decision.reason;
   void emit({
     type: "permission",
     toolCallId: tool.toolCallId,
-    decision: selected ? (decision.allow ? "allow" : "deny") : "cancelled",
-    reason: decision.reason,
+    decision: decision.allow && selected ? "allow" : "deny",
+    reason,
     ...(selected ? { optionId: selected.optionId } : {}),
     title: tool.title,
     kind: tool.kind,
     name: tool.name,
   });
-  if (!selected) return { outcome: { outcome: "cancelled" } };
-  return { outcome: { outcome: "selected", optionId: selected.optionId } };
+  if (selected) return { outcome: { outcome: "selected", optionId: selected.optionId } };
+  // A "cancelled" outcome cancels the whole prompt turn in ACP. Without a matching
+  // option, fail only this tool call so the agent continues without it.
+  throw RequestError.internalError(
+    { toolCallId: tool.toolCallId },
+    `Paws refused this tool call: ${reason}`,
+  );
 }
 
 function selectOption(options: PermissionOption[], allow: boolean): PermissionOption | undefined {
