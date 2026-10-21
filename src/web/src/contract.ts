@@ -66,6 +66,10 @@ export const ACTIVITY_KINDS = [
   "prompt",
 ] as const;
 export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
+export const CI_CHECK_STATES = ["passed", "failed", "running", "skipped", "neutral"] as const;
+export const CI_ROUND_OUTCOMES = ["running", "failed", "passed"] as const;
+export const CI_ROUND_ACTIONS = ["sent_back", "asked"] as const;
+export const CI_LOG_SOURCES = ["actions", "summary"] as const;
 export const SOURCES = ["demo", "live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
@@ -79,6 +83,10 @@ export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 export type EventLevel = (typeof EVENT_LEVELS)[number];
 export type StatusSource = (typeof SOURCES)[number];
+export type CiCheckState = (typeof CI_CHECK_STATES)[number];
+export type CiRoundOutcome = (typeof CI_ROUND_OUTCOMES)[number];
+export type CiRoundAction = (typeof CI_ROUND_ACTIONS)[number];
+export type CiLogSource = (typeof CI_LOG_SOURCES)[number];
 
 export interface StatusLink {
   label: string;
@@ -238,6 +246,38 @@ export interface StatusMergeEntry {
   steps: StatusMergeStep[];
 }
 
+/** One check on a pull request head. */
+export interface StatusCiCheck {
+  name: string;
+  state: CiCheckState;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  /** Failed checks only: the last lines of the Actions job log, or the check's summary text. */
+  logTail: string | null;
+  logSource: CiLogSource | null;
+}
+
+/**
+ * The checks Paws read on one pull request head, oldest first in
+ * `StatusSnapshot.ciRounds`. `action` says what Paws did after a failure:
+ * sent it back to the agent (fix `fixAttempt` of `fixLimit`) or asked in Linear.
+ */
+export interface StatusCiRound {
+  itemId: string;
+  /** 1-based, per item. */
+  round: number;
+  headSha: string;
+  outcome: CiRoundOutcome;
+  action: CiRoundAction | null;
+  fixAttempt: number | null;
+  fixLimit: number | null;
+  startedAt: string;
+  updatedAt: string;
+  checks: StatusCiCheck[];
+}
+
 export interface StatusEvent {
   at: string;
   level: EventLevel;
@@ -265,6 +305,8 @@ export interface StatusSnapshot {
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
   agentCloseout?: StatusAgentCloseout[];
+  /** Pull request CI rounds of the visible items, oldest first. */
+  ciRounds?: StatusCiRound[];
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -396,6 +438,44 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readAgentCloseout(entry, `agentCloseout[${index}]`),
           ),
         }),
+    ...(body.ciRounds === undefined
+      ? {}
+      : {
+          ciRounds: array(body, "ciRounds", "status").map((entry, index) =>
+            readCiRound(entry, `ciRounds[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readCiRound(input: unknown, path: string): StatusCiRound {
+  const body = object(input, path);
+  const action = optionalText(body, "action");
+  return {
+    itemId: text(body, "itemId", path),
+    round: positiveInteger(body, "round", path),
+    headSha: text(body, "headSha", path),
+    outcome: oneOf(string(body, "outcome", path), CI_ROUND_OUTCOMES, `${path}.outcome`),
+    action: action === null ? null : oneOf(action, CI_ROUND_ACTIONS, `${path}.action`),
+    fixAttempt: optionalCount(body, "fixAttempt", path),
+    fixLimit: optionalCount(body, "fixLimit", path),
+    startedAt: dateString(body, "startedAt", path),
+    updatedAt: dateString(body, "updatedAt", path),
+    checks: array(body, "checks", path).map((entry, index) => {
+      const at = `${path}.checks[${index}]`;
+      const check = object(entry, at);
+      const source = optionalText(check, "logSource");
+      return {
+        name: text(check, "name", at),
+        state: oneOf(string(check, "state", at), CI_CHECK_STATES, `${at}.state`),
+        url: optionalText(check, "url"),
+        startedAt: optionalText(check, "startedAt"),
+        completedAt: optionalText(check, "completedAt"),
+        durationMs: optionalCount(check, "durationMs", at),
+        logTail: optionalText(check, "logTail"),
+        logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
+      };
+    }),
   };
 }
 

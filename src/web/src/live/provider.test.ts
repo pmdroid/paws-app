@@ -13,7 +13,9 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  recordCiRound,
   saveTaskBlocks,
+  setCiRoundAction,
   startCloseoutRound,
   upsertCloseoutStep,
   type CloseoutStepWrite,
@@ -468,6 +470,88 @@ describe("live status provider", () => {
     ]);
     const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
     expect(parsed.ok).toBe(true);
+  });
+
+  test("CI rounds carry each head's checks, log tails, and what Paws did next", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const item = insertQueuedItem(db, { id: "ENG-7", title: "CI", sessionKey: "ses_7", now });
+    insertQueuedItem(db, { id: "ENG-8", title: "Hidden", sessionKey: "ses_8", now });
+    const check = (name: string, state: "passed" | "failed" | "running", logTail?: string) => ({
+      name,
+      state,
+      url: `https://github.com/acme/app/runs/${name}`,
+      startedAt: "2026-10-21T10:00:00Z",
+      completedAt: state === "running" ? null : "2026-10-21T10:04:51Z",
+      logTail: logTail ?? null,
+      logSource: logTail === undefined ? null : ("actions" as const),
+    });
+    recordCiRound(db, {
+      itemId: item.id,
+      head: "a".repeat(40),
+      checks: [check("lint", "running"), check("test", "running")],
+      now,
+    });
+    recordCiRound(db, {
+      itemId: item.id,
+      head: "a".repeat(40),
+      checks: [
+        check("lint", "passed"),
+        check("test", "failed", "1 fail\ntoken ghp_abcdefghijklmnopqrstuvwxyz0123"),
+        check("e2e", "running"),
+      ],
+      now: now + 1,
+    });
+    setCiRoundAction(db, {
+      itemId: item.id,
+      head: "a".repeat(40),
+      action: "sent_back",
+      fixAttempt: 1,
+      fixLimit: 3,
+    });
+    recordCiRound(db, {
+      itemId: item.id,
+      head: "b".repeat(40),
+      checks: [check("lint", "passed"), check("test", "passed")],
+      now: now + 2,
+    });
+    recordCiRound(db, {
+      itemId: "ENG-8",
+      head: "c".repeat(40),
+      checks: [check("lint", "passed")],
+      now,
+    });
+    const snapshot = createLiveStatusProvider(db, {
+      now: () => new Date(now + 3),
+      sessionIds: ["ses_7"],
+      env: {},
+    }).snapshot();
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok).toBe(true);
+    const rounds = parsed.ok ? (parsed.snapshot.ciRounds ?? []) : [];
+    expect(rounds.map((round) => [round.itemId, round.round, round.headSha[0]])).toEqual([
+      ["ENG-7", 1, "a"],
+      ["ENG-7", 2, "b"],
+    ]);
+    expect(rounds[0]).toMatchObject({
+      outcome: "failed",
+      action: "sent_back",
+      fixAttempt: 1,
+      fixLimit: 3,
+      startedAt: new Date(now).toISOString(),
+      updatedAt: new Date(now + 1).toISOString(),
+    });
+    expect(rounds[0]?.checks.map((entry) => [entry.name, entry.state, entry.durationMs])).toEqual([
+      ["lint", "passed", 291_000],
+      ["test", "failed", 291_000],
+      ["e2e", "running", null],
+    ]);
+    expect(rounds[0]?.checks[1]).toMatchObject({
+      url: "https://github.com/acme/app/runs/test",
+      logSource: "actions",
+      logTail: "1 fail\ntoken [redacted]",
+    });
+    expect(rounds[1]).toMatchObject({ outcome: "passed", action: null, fixAttempt: null });
   });
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
