@@ -14,6 +14,7 @@ import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
   fakeMergeReadiness,
+  fakeRequiredChecks,
   type GitHubClient,
   type GitHubResponse,
 } from "../src/github";
@@ -328,6 +329,8 @@ function githubClient(
         const { head } = (req.body as { variables: { head: string } }).variables;
         return { status: 200, body: fakeMergeReadiness(head) };
       }
+      const required = fakeRequiredChecks(req);
+      if (required) return required;
       if (req.path.endsWith("/access_tokens")) {
         await github.mintInstallationToken({
           installationId: "2",

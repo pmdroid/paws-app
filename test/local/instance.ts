@@ -14,7 +14,12 @@ import {
 } from "../../src/db";
 import { createCommentMode, createFakeCommentBoard } from "../../src/comments";
 import { createFakeTracker } from "../../src/linear";
-import { createFakeGitHub, fakeMergeReadiness, type GitHubClient } from "../../src/github";
+import {
+  createFakeGitHub,
+  fakeMergeReadiness,
+  fakeRequiredChecks,
+  type GitHubClient,
+} from "../../src/github";
 import { commentTracker, syncComments, startPaws } from "../../src/index";
 import { attachOrchestrator, type AgentLaunch } from "../../src/loop";
 import { handleStatusRequest, parseStatusSnapshot } from "../../src/web";
@@ -138,6 +143,8 @@ async function scenario(
         const { head } = (request.body as { variables: { head: string } }).variables;
         return { status: 200, body: fakeMergeReadiness(head) };
       }
+      const required = fakeRequiredChecks(request);
+      if (required) return required;
       if (request.method === "POST" && request.path.endsWith("/pulls")) {
         const body = request.body as { title: string; head: string; base: string; body: string };
         const pull = await pulls.open({ repository: "local/fixture", ...body });

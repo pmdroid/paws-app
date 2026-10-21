@@ -32,7 +32,7 @@ import {
 import { createFakeTracker } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
-import { fakeMergeReadiness } from "../../src/github";
+import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
 import { dispatchReadyItems, saveSchedulingContext } from "../../src/scheduler";
 
@@ -285,6 +285,8 @@ export async function probeRunnerOrchestration(
                     const { head } = (request.body as { variables: { head: string } }).variables;
                     return { status: 200, body: fakeMergeReadiness(head) };
                   }
+                  const required = fakeRequiredChecks(request);
+                  if (required) return required;
                   if (request.method === "POST" && request.path.endsWith("/pulls"))
                     return {
                       status: 201,
