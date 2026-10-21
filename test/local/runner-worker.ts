@@ -665,6 +665,33 @@ export async function probeRunnerWorker(
       .filter((line) => line.includes('"agent_message_chunk"')).length,
     1,
   );
+  const noisyAgent = launch(11, [
+    ...Array.from({ length: 90 }, (_, index) => ({
+      type: "update",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: `call-${index}`,
+        status: "completed",
+        rawOutput: { stdout: "x".repeat(190_000) },
+      },
+    })),
+    { type: "update", update: chunk },
+    { type: "end" },
+  ]);
+  const noisyOutput = output(11);
+  const noisy = await execute({
+    job: job(6, "review"),
+    repositoryBundle,
+    outputDirectory: noisyOutput,
+    workRoot: join(root, "work-noisy"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: noisyAgent.launch,
+  });
+  assert.equal(noisy.run.stopReason, "end_turn");
+  const noisyJournal = readFileSync(join(noisyOutput, "events.jsonl"), "utf8");
+  assert(Buffer.byteLength(noisyJournal) < 16_777_216);
+  assert(noisyJournal.includes("Later agent activity is omitted"));
   const missing = job(3);
   if (missing.command.type !== "run") throw new Error("Expected run");
   missing.command.repository.baseSha = "f".repeat(40);
