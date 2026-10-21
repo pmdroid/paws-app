@@ -22,7 +22,7 @@ test("remote orchestration keeps verification on the selected execution path", a
       assert(passed, name);
       observations.push(name);
     });
-    assert.equal(observations.length, 30);
+    assert.equal(observations.length, 32);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
