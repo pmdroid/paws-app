@@ -43,6 +43,7 @@ import {
   listCloseoutProgress,
   listEvidence,
   listJobs,
+  listLinearTurnsForItem,
   listOpenQuestions,
   listOutbox,
   listRuns,
@@ -284,7 +285,7 @@ function runsFor(
     const record = byItem.get(itemId)!;
     const first = stored[0]!;
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
-    const activity = activityFor(record, stored, rows, generatedAt);
+    const activity = activityFor(db, record, stored, rows, generatedAt);
     const recent = activity.at(-1);
     runs.push({
       id: first.id,
@@ -832,6 +833,7 @@ function mergeSteps(job: Job | undefined): StatusMergeEntry["steps"] {
 }
 
 function activityFor(
+  db: Database,
   record: WorkItemRecord,
   stored: readonly StoredRun[],
   rows: readonly OutboxRow[],
@@ -847,6 +849,15 @@ function activityFor(
     );
     lines.push({ at: row.createdAt, line: { at: iso(row.createdAt), kind, text: body } });
   }
+  for (const turn of listLinearTurnsForItem(db, record.id))
+    lines.push({
+      at: turn.createdAtMs,
+      line: {
+        at: iso(turn.createdAtMs, generatedAt),
+        kind: "prompt",
+        text: `${turnAuthor(turn.payload)} replied.`,
+      },
+    });
   for (const run of stored.slice(1))
     lines.push({
       at: run.createdAt,
@@ -857,6 +868,16 @@ function activityFor(
       },
     });
   return lines.sort((left, right) => left.at - right.at).map((entry) => entry.line);
+}
+
+function turnAuthor(payload: string): string {
+  try {
+    const name = (JSON.parse(payload) as { agentActivity?: { user?: { name?: unknown } } })
+      .agentActivity?.user?.name;
+    return typeof name === "string" && name.trim() ? name.trim() : "Someone";
+  } catch {
+    return "Someone";
+  }
 }
 
 function eventsFor(rows: readonly OutboxRow[]): StatusEvent[] {
