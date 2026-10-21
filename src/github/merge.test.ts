@@ -87,6 +87,46 @@ describe("pull requests and serial merge", () => {
     });
   }
 
+  test("does not merge when stopped while the checks are read just before the merge", async () => {
+    const repo = await oneClone();
+    try {
+      await commitFile(repo.work, "file.txt", "candidate\n");
+      const client = mergingClient(repo.bare, []);
+      let merges = 0;
+      let reads = 0;
+      let cancelled = false;
+      const result = await serialMerge({
+        ...creds({
+          async request(req) {
+            if (req.path === "/graphql") {
+              reads += 1;
+              // The final read comes back green, but the item is stopped meanwhile.
+              if (reads > 1) cancelled = true;
+            }
+            if (req.path.endsWith("/merge")) merges += 1;
+            return client.request(req);
+          },
+        }),
+        worktree: repo.work,
+        issue: "ENG-8",
+        prNumber: 8,
+        remoteUrl: repo.bare,
+        sleep: async () => {},
+        isCancelled: () => cancelled,
+        reverify: async () => ({ accepted: true, outcome: "merged", summary: "accepted" }),
+      });
+      expect(reads).toBe(2);
+      expect(merges).toBe(0);
+      expect(result).toMatchObject({
+        merged: false,
+        outcome: "blocked",
+        message: "merge cancelled",
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("Paws-controlled squash preserves both human trailers without claiming GitHub committer control", async () => {
     const repo = await oneClone();
     try {
