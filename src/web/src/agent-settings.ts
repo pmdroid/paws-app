@@ -7,8 +7,8 @@ export type AgentRole = "implementer" | "reviewer";
 export type AgentSettings = {
   defaults: Record<AgentRole, AgentProfile>;
   projects: { repo: string; implementer?: AgentProfile; reviewer?: AgentProfile }[];
-  /** Workspace merge settings. A missing value means off. */
-  merge?: { closeoutAfterUpdate: boolean };
+  /** Workspace merge settings. A missing switch means off, missing attempts mean 3. */
+  merge?: { closeoutAfterUpdate: boolean; ciFixAttempts?: number };
 };
 export type AgentModelCatalog = {
   agent: AgentProfile["agent"];
