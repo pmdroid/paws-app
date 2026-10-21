@@ -79,6 +79,7 @@ export function listRunners(db: Database, workspaceId: string): RunnerRecord[] {
 
 export type RunnerHostSample = {
   cpuPercent?: number;
+  cpuCount?: number;
   memoryTotalBytes?: number;
   memoryAvailableBytes?: number;
   load1?: number;
@@ -94,6 +95,7 @@ export type RunnerHostSample = {
 export type RunnerOverview = RunnerRecord & {
   metrics: {
     cpuPercent: number | null;
+    cpuCount: number | null;
     memoryTotalBytes: number | null;
     memoryAvailableBytes: number | null;
     load1: number | null;
@@ -158,10 +160,10 @@ export function recordRunnerHostStatus(
   reportedAt: number,
 ): void {
   db.run(
-    `INSERT INTO runner_host_status(runner_id,cpu_percent,memory_total_bytes,memory_available_bytes,
+    `INSERT INTO runner_host_status(runner_id,cpu_percent,cpu_count,memory_total_bytes,memory_available_bytes,
     load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,reported_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,cpu_count=excluded.cpu_count,
     memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
     load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
     disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
@@ -170,6 +172,7 @@ export function recordRunnerHostStatus(
     [
       runnerId,
       sample.cpuPercent ?? null,
+      sample.cpuCount ?? null,
       sample.memoryTotalBytes ?? null,
       sample.memoryAvailableBytes ?? null,
       sample.load1 ?? null,
@@ -193,6 +196,7 @@ export function listRunnerOverview(
 ): RunnerOverview[] {
   type Row = RunnerRecord & {
     cpuPercent: number | null;
+    cpuCount: number | null;
     memoryTotalBytes: number | null;
     memoryAvailableBytes: number | null;
     load1: number | null;
@@ -215,7 +219,7 @@ export function listRunnerOverview(
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
-    h.cpu_percent AS cpuPercent,h.memory_total_bytes AS memoryTotalBytes,
+    h.cpu_percent AS cpuPercent,h.cpu_count AS cpuCount,h.memory_total_bytes AS memoryTotalBytes,
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
     h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
@@ -244,6 +248,7 @@ export function listRunnerOverview(
           ? null
           : {
               cpuPercent: row.cpuPercent,
+              cpuCount: row.cpuCount,
               memoryTotalBytes: row.memoryTotalBytes,
               memoryAvailableBytes: row.memoryAvailableBytes,
               load1: row.load1,
