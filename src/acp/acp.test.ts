@@ -1539,6 +1539,69 @@ test("ACP selects the advertised model and returns real session identity", async
   });
 });
 
+for (const offered of [true, false]) {
+  test(`ACP ${offered ? "selects the [1m] entry" : "runs the standard window with one Linear line"} for a 1M profile`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      sessionId: "one-million",
+      model: "default",
+      modelOptions: [
+        { value: "default", name: "Default (recommended)", description: "Sonnet 5.5" },
+        { value: "sonnet", name: "Sonnet 5.5" },
+        { value: "opus", name: "Opus 5.5" },
+        ...(offered
+          ? [
+              {
+                value: "opus[1m]",
+                name: "Opus (1M context)",
+                description: "Opus 5.5 for long work",
+              },
+            ]
+          : []),
+      ],
+      steps: [{ type: "end" }],
+    });
+    const events: AcpEvent[] = [];
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: "opus[1m]" },
+      itemId: "ENG-1",
+      runId: "one-million",
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+      onEvent: (event) => void events.push(event),
+    });
+    const model = offered ? "opus[1m]" : "opus";
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.identity?.model).toBe(model);
+    expect((await readResult(files.resultPath)).modelSelection).toEqual({
+      sessionId: "one-million",
+      configId: "model",
+      value: model,
+    });
+    if (offered)
+      expect(result.models).toContainEqual({
+        id: "opus[1m]",
+        name: "Opus (1M context)",
+        description: "Opus 5.5 for long work",
+      });
+    expect(events.filter((event) => event.type === "progress")).toEqual(
+      offered
+        ? []
+        : [
+            {
+              type: "progress",
+              text: "Opus 5.5 ran with the standard window: this runner's Claude account doesn't offer 1M.",
+            },
+          ],
+    );
+  });
+}
+
 for (const recommendation of ["Sonnet 5.5", "claude-sonnet-5-5"]) {
   test(`ACP confirms the concrete default model described as ${recommendation} before preflight`, async () => {
     const layout = await layoutRepo();

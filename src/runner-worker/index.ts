@@ -517,6 +517,8 @@ export async function executeRunnerCommand(
               throw new Error("Runner response exceeds size limit");
           }
           emit({ type: "acp", event: compactAcpEvent(event) });
+          if ((repository || task) && event.type === "progress" && !event.messageChunk)
+            emit({ type: "progress", text: event.text.slice(0, 500) });
         } catch (error) {
           eventFailure = error instanceof Error ? error : new Error(String(error));
           throw error;
