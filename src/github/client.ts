@@ -7,9 +7,10 @@ export function createFetchGitHubClient(
   baseUrl = "https://api.github.com",
 ): GitHubClient {
   return {
-    async request({ method, path, token, body, signal }): Promise<GitHubResponse> {
+    async request({ method, path, token, body, signal, responseType }): Promise<GitHubResponse> {
       signal?.throwIfAborted();
       const response = await fetchImpl(`${baseUrl}${path}`, {
+        ...(responseType === "text" ? { redirect: "manual" as const } : {}),
         method,
         headers: {
           Accept: "application/vnd.github+json",
@@ -21,6 +22,15 @@ export function createFetchGitHubClient(
         body: body === undefined ? undefined : JSON.stringify(body),
         signal,
       });
+      if (responseType === "text") {
+        // Log downloads redirect to signed storage URLs, which must not see the token.
+        const location = response.headers.get("location");
+        if (response.status >= 300 && response.status < 400 && location) {
+          const redirected = await fetchImpl(location, { signal });
+          return { status: redirected.status, body: await redirected.text() };
+        }
+        return { status: response.status, body: await response.text() };
+      }
       const text = await response.text();
       let parsed: unknown = {};
       if (text !== "") {

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
+import type { CiCheck } from "./check-logs";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, redact, withCredential } from "./git";
@@ -42,6 +43,8 @@ export type SerialMergeInput = {
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
+  /** Every check on the pushed head after each CI read, with failing checks' log tails. */
+  onChecks?: (head: string, checks: CiCheck[]) => Promise<void> | void;
   releaseWhilePending?: boolean;
   priorVerification?: {
     base: string;

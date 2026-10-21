@@ -19,12 +19,36 @@ export type FakeGitHub = GitHubApp &
 
 export type FakeCheckContext = {
   name?: string;
+  databaseId?: number | null;
+  status?: string | null;
   conclusion?: string | null;
   detailsUrl?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  summary?: string | null;
+  checkSuite?: { app: { slug: string } | null } | null;
   context?: string;
   state?: string;
   targetUrl?: string | null;
+  description?: string | null;
+  createdAt?: string | null;
 } | null;
+
+/**
+ * Answers `GET /actions/jobs/:id/logs` with the text in `logs` for that job id,
+ * or 404. Returns null for other paths.
+ */
+export function fakeActionsLogs(
+  request: { method: string; path: string },
+  logs: Record<number, string>,
+): GitHubResponse | null {
+  const match = /\/actions\/jobs\/(\d+)\/logs$/.exec(request.path);
+  if (request.method !== "GET" || !match) return null;
+  const log = logs[Number(match[1])];
+  return log === undefined
+    ? { status: 404, body: '{"message":"Not Found"}' }
+    : { status: 200, body: log };
+}
 
 function fakeContexts(nodes: FakeCheckContext[]) {
   return {

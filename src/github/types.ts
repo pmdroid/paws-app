@@ -1,3 +1,5 @@
+import type { FailedCheck } from "./readiness";
+
 export const MAX_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const TOKEN_TTL_SKEW_MS = 30 * 1000;
 export const MAX_SHA_GUARD_CYCLES = 3;
@@ -30,6 +32,8 @@ export interface GitHubClient {
     token: string;
     body?: unknown;
     signal?: AbortSignal;
+    /** `"text"` returns the body as a string and follows a redirect without the token. */
+    responseType?: "json" | "text";
   }): Promise<GitHubResponse>;
 }
 
@@ -103,7 +107,7 @@ export type SerialMergeResult = {
   summary?: string;
   cycle?: number;
   message?: string;
-  failedChecks?: { name: string; url: string | null }[];
+  failedChecks?: FailedCheck[];
 };
 
 export type ReverifyInput = {
