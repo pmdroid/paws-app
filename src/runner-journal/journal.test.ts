@@ -349,3 +349,88 @@ test("plan records replace the checklist without waiting for an answer", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("permission decisions become run events with the tool and the reason", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-execution-permission-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const records = [
+      {
+        type: "permission",
+        toolCallId: "edit-1",
+        decision: "allow",
+        reason: "inside worktree",
+        optionId: "allow",
+        title: "Edit README",
+        kind: "edit",
+        name: null,
+      },
+      {
+        type: "permission",
+        toolCallId: "find-1",
+        decision: "deny",
+        reason: "read-only session",
+        title: "find / -path '*react-router/package.json'",
+        kind: "execute",
+        name: "run_terminal_command",
+      },
+      {
+        type: "permission",
+        toolCallId: "push-1",
+        decision: "cancelled",
+        reason: "run cancelled",
+        title: "git push",
+      },
+    ];
+    journal.ingest(
+      execution.id,
+      Buffer.from(records.map((event) => `${JSON.stringify({ type: "acp", event })}\n`).join("")),
+    );
+    expect(journal.pending(execution.id)).toEqual([
+      {
+        sequence: 1,
+        event: {
+          type: "permission",
+          permission: {
+            toolCallId: "edit-1",
+            decision: "allow",
+            reason: "inside worktree",
+            optionId: "allow",
+            title: "Edit README",
+            kind: "edit",
+          },
+        },
+      },
+      {
+        sequence: 2,
+        event: {
+          type: "permission",
+          permission: {
+            toolCallId: "find-1",
+            decision: "deny",
+            reason: "read-only session",
+            title: "find / -path '*react-router/package.json'",
+            kind: "execute",
+            name: "run_terminal_command",
+          },
+        },
+      },
+      {
+        sequence: 3,
+        event: {
+          type: "permission",
+          permission: {
+            toolCallId: "push-1",
+            decision: "cancelled",
+            reason: "run cancelled",
+            title: "git push",
+          },
+        },
+      },
+    ]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -8,6 +8,7 @@ import {
   RunnerActivitySchema,
   RunnerCommandSchema,
   RunnerEventSchema,
+  RunnerPermissionSchema,
   type RunnerCommand,
 } from "../runner-protocol";
 
@@ -208,6 +209,37 @@ export function openExecutionJournal(root: string) {
               ["question", "artifact", "closeout_policy"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
+            const decision = z
+              .object({
+                type: z.literal("acp"),
+                event: z.object({ type: z.literal("permission") }).passthrough(),
+              })
+              .safeParse(raw);
+            if (decision.success) {
+              const {
+                toolCallId,
+                decision: choice,
+                reason,
+                optionId,
+                title,
+                kind,
+                name,
+              } = decision.data.event as Record<string, unknown>;
+              const permission = RunnerPermissionSchema.safeParse(
+                Object.fromEntries(
+                  Object.entries({
+                    toolCallId,
+                    decision: choice,
+                    reason,
+                    optionId,
+                    title: typeof title === "string" ? title.slice(0, 4096) : title,
+                    kind,
+                    name,
+                  }).filter(([, value]) => value != null),
+                ),
+              );
+              if (permission.success) event = { type: "permission", permission: permission.data };
+            }
             const acp = z
               .object({
                 type: z.literal("acp"),
