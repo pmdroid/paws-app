@@ -37,7 +37,8 @@ test.skipIf(!ready)(
         const path = new URL(request.url).pathname;
         if (path === "/api/auth/session") return new Response(null, { status: 404 });
         if (path === "/api/execution-controls") {
-          if (request.method === "POST") actions.push((await request.json()).action);
+          if (request.method === "POST")
+            actions.push(((await request.json()) as { action: string }).action);
           return Response.json({ available: true, actions: ["stop", "resume_now"] });
         }
         return (
@@ -66,9 +67,8 @@ test.skipIf(!ready)(
           "Claude reached its usage limit. Paws continues at",
         );
         expect(await page.getByText("Stop", { exact: true }).isVisible()).toBe(true);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-          true,
-        );
+        const scrollWidth = await page.evaluate("document.documentElement.scrollWidth");
+        expect(scrollWidth).toBeLessThanOrEqual(width);
         if (process.env.PAWS_UI_EVIDENCE_DIR)
           await page.screenshot({
             path: join(process.env.PAWS_UI_EVIDENCE_DIR, `run-paused-${width}.png`),
