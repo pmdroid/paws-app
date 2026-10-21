@@ -131,6 +131,15 @@ test("asking ends the run and an answer resumes through verification", async () 
     const state = getWorkItem(fixture.db, item.id)?.state ?? "";
     expect(["verifying", "merge_queue", "merged"]).toContain(state);
     expect(fixture.prompts.some((prompt) => prompt.includes("Answer: parquet"))).toBe(true);
+    const received = fixture.results
+      .map((result) => JSON.parse(readFileSync(result, "utf8")) as { prompts?: unknown[] })
+      .flatMap((result) => result.prompts ?? [])
+      .map((prompt) =>
+        (prompt as Array<{ text?: string }>).map((block) => block.text ?? "").join("\n"),
+      );
+    const firstRequest = received[0]!.trim().split("\n")[0]!;
+    expect(firstRequest.length).toBeGreaterThan(10);
+    expect(received.find((prompt) => prompt.includes("Answer: parquet"))).toContain(firstRequest);
     expect(fixture.resumeHeads).toEqual([head]);
     const resumed = getWorkItem(fixture.db, item.id)!;
     expect(resumed.currentRunId).not.toBe(item.currentRunId);
