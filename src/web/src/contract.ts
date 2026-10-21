@@ -115,6 +115,7 @@ export interface StatusActivity {
 export interface StatusRun {
   runner?: string | null;
   id: string;
+  attempts?: string[];
   itemId: string;
   state: RunState;
   agent: string;
@@ -495,6 +496,7 @@ function readRun(input: unknown, index: number): StatusRun {
   const body = object(input, path);
   return {
     id: text(body, "id", path),
+    ...(body.attempts === undefined ? {} : { attempts: stringArray(body, "attempts", path) }),
     runner: optionalText(body, "runner"),
     itemId: text(body, "itemId", path),
     state: oneOf(string(body, "state", path), RUN_STATES, `${path}.state`),
