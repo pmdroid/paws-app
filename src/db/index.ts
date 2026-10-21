@@ -341,3 +341,10 @@ export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-att
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
 export { queueWaitSince } from "./queue-wait";
+export {
+  clearUsageLimitPause,
+  getUsageLimitPause,
+  resumeUsageLimitPauseNow,
+  saveUsageLimitPause,
+  type UsageLimitPause,
+} from "./usage-limit-pause";

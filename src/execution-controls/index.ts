@@ -3,6 +3,7 @@ import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
   auditWorkspaceAccess,
   getLinearSession,
+  getUsageLimitPause,
   getWorkItem,
   getWorkspace,
   submitCommand,
@@ -15,6 +16,11 @@ export type ExecutionControlPort = {
   pauseItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
   resumeItem(itemId: string, canAct?: () => boolean, onCommitted?: () => void): Promise<boolean>;
   interruptItem(itemId: string): Promise<void>;
+  resumeUsageLimit(
+    itemId: string,
+    canAct?: () => boolean,
+    onCommitted?: () => void,
+  ): Promise<boolean>;
 };
 
 export function createExecutionControls(input: {
@@ -119,7 +125,13 @@ export function createExecutionControls(input: {
         ? []
         : [
             "stop",
-            ...(item.state === "running" ? ["pause"] : item.state === "paused" ? ["resume"] : []),
+            ...(getUsageLimitPause(input.db, item.id)
+              ? ["resume_now"]
+              : item.state === "running"
+                ? ["pause"]
+                : item.state === "paused"
+                  ? ["resume"]
+                  : []),
           ];
       if (request.method === "GET")
         return Response.json(
@@ -174,11 +186,13 @@ export function createExecutionControls(input: {
             .immediate();
           if (applied) await port.interruptItem(item.id);
         } else
-          applied = await port[action === "pause" ? "pauseItem" : "resumeItem"](
-            item.id,
-            canAct,
-            onCommitted,
-          );
+          applied = await port[
+            action === "pause"
+              ? "pauseItem"
+              : action === "resume_now"
+                ? "resumeUsageLimit"
+                : "resumeItem"
+          ](item.id, canAct, onCommitted);
       } catch {
         return Response.json(
           { error: "Execution cleanup could not be confirmed. Refresh the run." },

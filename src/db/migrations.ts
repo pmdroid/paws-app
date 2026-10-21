@@ -1939,4 +1939,18 @@ CREATE TABLE queue_wait (
 ALTER TABLE runner_host_status ADD COLUMN cpu_count INTEGER CHECK(cpu_count>=1);
 `,
   },
+  {
+    id: "081_usage_limit_pause",
+    sql: `
+CREATE TABLE usage_limit_pause (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  run_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  runner_id TEXT,
+  resets_at INTEGER,
+  resume_at INTEGER NOT NULL,
+  paused_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

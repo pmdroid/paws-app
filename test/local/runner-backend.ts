@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createAcpActivityReporter } from "../../src/loop";
+import { UsageLimitError } from "../../src/core";
 import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -1995,36 +1996,27 @@ export async function probeRunnerBackend(
         placementLifecycle.issues.set(issueId, { ...placementLifecycle.issue, id: issueId });
         return record;
       };
-      const limited = tracked();
-      const limitAbort = new AbortController();
-      coolDown(now + 120_000);
-      const limitedRun = placedBackend.forItem(limited.id)(
-        input(limited, { signal: limitAbort.signal }),
-      );
-      let settled = false;
-      void limitedRun.then(
-        () => (settled = true),
-        () => (settled = true),
-      );
-      await delay(60);
-      assert.equal(settled, false);
-      coolDown(0);
-      const placedOn = await dispatched();
-      assert(placedOn);
-      limitAbort.abort();
-      await limitedRun.catch(() => undefined);
-      observe("an agent usage limit waits for its reset instead of failing placement", true, {
-        placedOn,
-      });
-
-      const exhausted = tracked();
-      coolDown(now + 3_600_000);
-      await assert.rejects(
-        placedBackend.forItem(exhausted.id)(input(exhausted)),
-        /codex reached its usage limit until /,
-      );
-      coolDown(0);
-      observe("a usage limit past the wait window names the agent and its reset", true, {});
+      for (const [name, until] of [
+        ["an agent usage limit stops placement with its reset so the task pauses", now + 120_000],
+        [
+          "a usage limit hours away names the agent and its reset instead of failing",
+          now + 3_600_000,
+        ],
+      ] as const) {
+        const limited = tracked();
+        coolDown(until);
+        await assert.rejects(
+          placedBackend.forItem(limited.id)(input(limited)),
+          (error: unknown) =>
+            error instanceof UsageLimitError &&
+            error.agent === "codex" &&
+            error.resetsAt === until &&
+            error.runnerId === null,
+        );
+        assert.equal(await dispatched(), null);
+        coolDown(0);
+        observe(name, true, { until });
+      }
       const occupied = hostIds.map((hostId) => {
         const busy = tracked();
         db.run(

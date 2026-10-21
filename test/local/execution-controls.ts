@@ -124,6 +124,8 @@ export function createExecutionControlsFixture(root: string) {
     bus: orchestrator.bus,
     getPort: () => ({
       pauseItem: (id, canAct, onCommitted) => orchestrator.pauseItem(id, canAct, onCommitted),
+      resumeUsageLimit: (id, canAct, onCommitted) =>
+        orchestrator.resumeUsageLimit(id, canAct, onCommitted),
       resumeItem(id, canAct, onCommitted) {
         const resumed = orchestrator.resumeItem(id, canAct, onCommitted);
         if (revokeOnResume)

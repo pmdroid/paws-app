@@ -1,4 +1,4 @@
-export { NotImplementedError } from "./errors";
+export { NotImplementedError, UsageLimitError } from "./errors";
 export type { IssueBrief, WorkBrief } from "./brief";
 export { TASK_MODES, type TaskMode } from "./task";
 export type { RepositoryBinding } from "./repository";

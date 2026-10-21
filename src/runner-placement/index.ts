@@ -35,7 +35,7 @@ export type RunnerPlacement = {
     result?: RunnerResult | RunnerHelperResult;
     failure?: "heartbeat_lost";
     finishedAt: number;
-  }): { retryable: boolean };
+  }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };
 
 export { createRunnerPlacement } from "./placement";

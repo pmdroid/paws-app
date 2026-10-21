@@ -4,6 +4,7 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "../acp";
+import { UsageLimitError } from "../core";
 
 export class RetryableRunnerError extends Error {
   constructor(
@@ -11,6 +12,7 @@ export class RetryableRunnerError extends Error {
     message: string,
     readonly transcriptPath?: string,
     readonly publishedEffects = false,
+    readonly usageLimit?: { agent: string; resetsAt: number | null },
   ) {
     super(message);
   }
@@ -23,6 +25,7 @@ export async function runWithFailover(
 ): Promise<RunAgentResult> {
   const excluded: string[] = [];
   let prompt = input.prompt;
+  let limited: { runnerId: string; resetsAt: number | null } | undefined;
   let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   for (let index = 0; index < 3; index++) {
     input.signal?.throwIfAborted();
@@ -31,12 +34,19 @@ export async function runWithFailover(
       if (remaining <= 0) throw new Error("Remote runner request timed out during failover");
       return await attempt({ ...input, prompt, timeoutMs: remaining }, excluded);
     } catch (error) {
+      // The interrupted conversation travels with the pause so the resumed run continues it.
+      if (error instanceof UsageLimitError && limited)
+        throw new UsageLimitError(error.agent, limited.resetsAt, limited.runnerId, prompt);
       if (!(error instanceof RetryableRunnerError)) throw error;
       input.signal?.throwIfAborted();
       await settle(error);
       input.signal?.throwIfAborted();
-      if (index === 2 || performance.now() >= deadline) throw error;
-      excluded.push(error.runnerId);
+      if ((index === 2 || performance.now() >= deadline) && !error.usageLimit) throw error;
+      // A usage limit puts the account in cooldown instead of excluding its runner, so placement
+      // can still choose another runner with an available account, or pause until the reset.
+      if (error.usageLimit)
+        limited = { runnerId: error.runnerId, resetsAt: error.usageLimit.resetsAt };
+      else excluded.push(error.runnerId);
       let approved = "";
       if (error.publishedEffects) {
         if (!input.askTeam)
@@ -71,13 +81,22 @@ export async function runWithFailover(
         : [];
       prompt = [
         prompt,
-        "Continue in a fresh agent session on another runner.",
+        error.usageLimit
+          ? "Continue in a fresh agent session."
+          : "Continue in a fresh agent session on another runner.",
         error.message,
         history.length ? `Observed prior conversation:\n${JSON.stringify(history)}` : "",
         approved ? `Continuation instructions:\n${approved}` : "",
       ]
         .filter(Boolean)
         .join("\n\n");
+      if (error.usageLimit && (index === 2 || performance.now() >= deadline))
+        throw new UsageLimitError(
+          error.usageLimit.agent,
+          error.usageLimit.resetsAt,
+          error.runnerId,
+          prompt,
+        );
     }
   }
   throw new Error("Runner failover exhausted");
