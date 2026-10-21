@@ -94,3 +94,4 @@ export {
 } from "./delegation";
 
 export { UserFacingError } from "./user-facing-error";
+export { isOneMillionModel, modelLabel, standardModelId, type ModelChoice } from "./models";

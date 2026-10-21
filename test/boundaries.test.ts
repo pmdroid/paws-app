@@ -232,7 +232,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-health",
     "workspace",
   ],
-  "runner-models": ["db", "runner-work", "runner-protocol"],
+  "runner-models": ["core", "db", "runner-work", "runner-protocol"],
 };
 
 describe("module boundaries", () => {

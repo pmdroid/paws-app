@@ -7,7 +7,13 @@ export const RunnerHealthResultSchema = RunnerResultSchema.omit({
   closeoutReport: true,
 }).extend({
   models: z
-    .array(z.strictObject({ id: z.string().max(256), name: z.string().max(256) }))
+    .array(
+      z.strictObject({
+        id: z.string().max(256),
+        name: z.string().max(256),
+        description: z.string().max(1024).optional(),
+      }),
+    )
     .max(128)
     .optional(),
   efforts: z

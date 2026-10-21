@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { isOneMillionModel, modelLabel } from "../core";
 import { immediate, workspaceMember } from "../db";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema } from "../runner-protocol";
@@ -25,7 +26,8 @@ type Pending = {
 };
 export type AgentModelCatalog = {
   agent: Agent;
-  models: Array<Choice & { efforts: Choice[] | null }>;
+  /** Names are display labels, such as "Opus 5.5 · 1M context" for a 1M entry. */
+  models: Array<Choice & { efforts: Choice[] | null; oneMillion?: true }>;
   efforts: Choice[];
   updatedAt: number;
 };
@@ -200,8 +202,10 @@ export function createRunnerModels(options: {
         efforts: result.efforts ?? [],
         models: (result.models ?? [])
           .filter((model) => concrete(model.id))
-          .map((model) => ({
-            ...model,
+          .map((model, _, models) => ({
+            id: model.id,
+            name: modelLabel(model, models),
+            ...(isOneMillionModel(model) ? { oneMillion: true as const } : {}),
             efforts:
               efforts(model.id) ??
               (result.identity?.model === model.id ? (result.efforts ?? []) : null),
