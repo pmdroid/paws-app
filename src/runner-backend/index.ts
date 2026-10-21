@@ -129,7 +129,8 @@ export function createRemoteAgentRunner(options: {
   ) {
     const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
     for (;;) {
-      const selected = await place(itemId, placement, runnerId);
+      const rejected: string[] = [];
+      const selected = await place(itemId, placement, rejected, runnerId);
       if (selected) return selected;
       const agent = placement.profile?.agent;
       const resetsAt = agent
@@ -137,7 +138,7 @@ export function createRemoteAgentRunner(options: {
         : null;
       if (resetsAt === null)
         throw new RunnerUnavailableError(
-          "No available paired runner can access this Linear task repository",
+          `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
         );
       const wait = resetsAt - now();
       if (wait > deadline - performance.now())
@@ -150,6 +151,7 @@ export function createRemoteAgentRunner(options: {
   async function place(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
+    rejected: string[],
     runnerId?: string,
   ) {
     const item = getWorkItem(db, itemId);
@@ -178,11 +180,14 @@ export function createRemoteAgentRunner(options: {
             )
             .get(runId, now()),
       ).length;
-      if (
-        reservations.has(item.currentRunId) ||
-        !runnerHasCapacity(db, runner.id, now(), "", reserved)
-      )
+      if (reservations.has(item.currentRunId)) {
+        rejected.push(`${runner.id}: the run is already being placed`);
         continue;
+      }
+      if (!runnerHasCapacity(db, runner.id, now(), "", reserved)) {
+        rejected.push(`${runner.id}: no free capacity`);
+        continue;
+      }
       try {
         const mode = getTaskMode(db, itemId);
         if (mode === "answer" || mode === "artifact")
@@ -194,7 +199,9 @@ export function createRemoteAgentRunner(options: {
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
-      } catch {}
+      } catch (error) {
+        rejected.push(`${runner.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     return null;
   }
