@@ -325,7 +325,7 @@ function viewRuns(
   );
   if (id === null && runs.length)
     return `${pageHeading("runs")}${renderRunsList(snapshot, runs, search)}`;
-  const selected = runs.find((run) => run.id === id);
+  const selected = runs.find((run) => run.id === id || (id !== null && run.attempts?.includes(id)));
   const picker = entityPicker(
     "Run",
     runs.map((run) => ({

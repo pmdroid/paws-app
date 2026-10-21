@@ -275,7 +275,10 @@ function paint(): void {
   const route = model.route;
   const detail =
     route.view === "runs"
-      ? snapshot?.runs.find((entry) => entry.id === route.id)
+      ? snapshot?.runs.find(
+          (entry) =>
+            entry.id === route.id || (route.id !== null && entry.attempts?.includes(route.id)),
+        )
       : route.view === "evidence"
         ? snapshot?.evidence?.find((entry) => entry.id === route.id)
         : null;
