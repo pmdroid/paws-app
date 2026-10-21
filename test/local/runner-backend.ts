@@ -15,6 +15,7 @@ import {
   bindLinearSessionTask,
   bindWorkItemRepository,
   getWorkItem,
+  saveCheckpoint,
   saveTaskMode,
   recordAgentCloseout,
 } from "../../src/db";
@@ -1999,6 +2000,54 @@ export async function probeRunnerBackend(
       );
       coolDown(0);
       observe("a usage limit past the wait window names the agent and its reset", true, {});
+      const reportVersion = (version: string) => {
+        for (const hostId of hostIds)
+          db.run(
+            "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+            [hostId, version, now],
+          );
+      };
+      const firstDispatch = async () => {
+        for (let attempt = 0; attempt < 500; attempt++) {
+          for (const hostId of hostIds) if (work.commands(hostId).length) return next(hostId);
+          await delay(2);
+        }
+        throw new Error("No dispatched runner command");
+      };
+      const drain = async () => {
+        for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
+      };
+      const sent = async (version: string) => {
+        await drain();
+        reportVersion(version);
+        for (const hostId of hostIds) work.heartbeat(hostId);
+        const record = tracked();
+        saveCheckpoint(db, record.id, { phase: "running", baseSha: base, wipCommit: head });
+        const stopVersioned = new AbortController();
+        const versionedRun = placedBackend.forItem(record.id)(
+          input(record, { signal: stopVersioned.signal, checkpoint: false }),
+        );
+        void versionedRun.catch(() => undefined);
+        const command = await firstDispatch();
+        stopVersioned.abort();
+        await versionedRun.catch(() => undefined);
+        await drain();
+        return command;
+      };
+      await git(["-C", source, "reset", "--hard", head]);
+      const legacy = await sent("0.1.18");
+      const current = await sent("0.1.19");
+      await git(["-C", source, "reset", "--hard", base]);
+      if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
+      assert.equal(legacy.repository.mainSha, undefined);
+      assert.equal(legacy.checkpoint, undefined);
+      assert.equal(current.repository.mainSha, base);
+      assert.equal(current.checkpoint, false);
+      observe(
+        "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
+        true,
+        { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
+      );
     }
   } finally {
     failoverAbort.abort();
