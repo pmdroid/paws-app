@@ -41,7 +41,6 @@ export interface RenderModel {
   /** Task activity sections the reader opened or closed, by `activityKey`. */
   activity?: Record<string, boolean>;
   mediaInfo?: ReadonlyMap<string, MediaInfo>;
-  /** The page query, such as `?status=running`, which holds the runs list filters. */
   search?: string;
 }
 

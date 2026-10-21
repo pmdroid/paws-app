@@ -15,9 +15,7 @@ export const RUN_FILTER_KEYS = ["project", "lead", "status", "phase"] as const;
 export type RunFilterKey = (typeof RUN_FILTER_KEYS)[number];
 export type RunFilters = Record<RunFilterKey, string[]>;
 
-/** Query values for each phase, indexed like `PHASE_NAMES`. */
 const PHASE_KEYS = ["implementation", "closeout", "merge", "complete"] as const;
-/** Query value for a run whose issue has no project or no lead. */
 const NONE = "none";
 
 interface RunRow {
@@ -40,7 +38,6 @@ export function parseRunFilters(search: string): RunFilters {
   };
 }
 
-/** The query for `filters`, keeping any unrelated parameters already in `current`. */
 export function runFilterSearch(current: string, filters: RunFilters): string {
   const params = new URLSearchParams(current);
   for (const key of RUN_FILTER_KEYS) {
@@ -51,7 +48,6 @@ export function runFilterSearch(current: string, filters: RunFilters): string {
   return query ? `?${query}` : "";
 }
 
-/** The phase strip index for a run, the same value the run page highlights. */
 export function runPhase(snapshot: StatusSnapshot, run: StatusRun): number {
   const item = snapshot.items.find((entry) => entry.id === run.itemId);
   const verdict = snapshot.verdicts.find((entry) => entry.itemId === run.itemId);
