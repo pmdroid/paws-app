@@ -127,6 +127,33 @@ describe("agent settings", () => {
     expect(effort).not.toContain('<option value="high"');
   });
 
+  test("a 1M entry is its own model choice and shows its usage hint only while selected", () => {
+    const state = view();
+    state.catalogs![0]!.models.push(
+      { id: "opus", name: "Opus 5.5", efforts: [{ id: "high", name: "High" }] },
+      {
+        id: "opus[1m]",
+        name: "Opus 5.5 · 1M context",
+        oneMillion: true,
+        efforts: [{ id: "high", name: "High" }],
+      },
+    );
+    const hint = "1M context uses more of your Claude usage.";
+    const standard = renderAgentSettings(state);
+    expect(standard).toContain('<option value="opus" >Opus 5.5</option>');
+    expect(standard).toContain('<option value="opus[1m]" >Opus 5.5 · 1M context</option>');
+    expect(standard).not.toContain(hint);
+    state.data!.defaults.implementer.model = "opus[1m]";
+    state.data!.projects[0]!.implementer = { agent: "claude", model: "sonnet" };
+    const selected = renderAgentSettings(state);
+    expect(selected).toContain('<option value="opus[1m]" selected>Opus 5.5 · 1M context</option>');
+    expect(selected.split(hint)).toHaveLength(2);
+    expect(selected).toContain(
+      '<select id="defaults-implementer-model" name="defaults-implementer-model" aria-describedby="defaults-implementer-model-hint"',
+    );
+    expect(selected).toContain(`<small class="sub" id="defaults-implementer-model-hint">${hint}`);
+  });
+
   test("missing catalogs retain saved choices and show a sign-in action", () => {
     const state = view();
     state.catalogs = [];

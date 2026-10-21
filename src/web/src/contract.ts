@@ -119,6 +119,8 @@ export interface StatusRun {
   itemId: string;
   state: RunState;
   agent: string;
+  /** The implementer's model label, such as "Opus 5.5 · 1M context". */
+  model?: string | null;
   reviewer: string;
   startedAt: string;
   attempt: number;

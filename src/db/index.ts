@@ -126,6 +126,7 @@ export {
   expireRunnerPairings,
   findRunnerPairing,
   getRunner,
+  runModelLabel,
   runRunnerName,
   listRunners,
   listRunnerOverview,

@@ -204,6 +204,14 @@ describe("status views", () => {
     expect(detail).toContain('href="/issues/ENG-104"');
   });
 
+  test("a run detail names the implementer's model label", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs[0]!;
+    run.model = "Opus 5.5 · 1M context";
+    const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(html).toContain(`${run.agent} · Opus 5.5 · 1M context`);
+  });
+
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
     expect(html).toContain("<h2>Closeout</h2>");

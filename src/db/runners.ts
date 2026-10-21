@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { modelLabel, type ModelChoice } from "../core";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -458,6 +459,42 @@ export function expireRunnerPairings(db: Database, now: number): void {
       });
     }
   });
+}
+
+/**
+ * The model the run's latest implementer turn used, labelled from that runner's model catalog,
+ * such as "Opus 5.5 · 1M context". The id stands in when the catalog does not list it.
+ */
+export function runModelLabel(db: Database, runId: string): string | null {
+  const usage = db
+    .query<
+      { runnerId: string; userId: string; agent: string | null; model: string | null },
+      [string]
+    >(
+      `SELECT runner_id AS runnerId,owner_user_id AS userId,agent,COALESCE(resolved_model,model) AS model
+      FROM runner_execution_usage WHERE run_id=? AND role='implementer' AND purpose='work'
+      ORDER BY started_at DESC,rowid DESC LIMIT 1`,
+    )
+    .get(runId);
+  if (!usage?.model || !usage.agent) return null;
+  const catalog = db
+    .query<{ resultJson: string }, [string, string, string]>(
+      "SELECT result_json AS resultJson FROM agent_model_catalog WHERE runner_id=? AND user_id=? AND agent=? AND model=''",
+    )
+    .get(usage.runnerId, usage.userId, usage.agent);
+  let models: ModelChoice[] = [];
+  try {
+    const parsed = catalog ? (JSON.parse(catalog.resultJson) as { models?: unknown }).models : [];
+    if (Array.isArray(parsed))
+      models = parsed.filter(
+        (entry): entry is ModelChoice =>
+          typeof entry?.id === "string" &&
+          typeof entry.name === "string" &&
+          (entry.description === undefined || typeof entry.description === "string"),
+      );
+  } catch {}
+  const model = models.find((entry) => entry.id === usage.model);
+  return model ? modelLabel(model, models) : usage.model;
 }
 
 export function runRunnerName(db: Database, runId: string): string | null {

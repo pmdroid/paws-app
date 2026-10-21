@@ -48,6 +48,12 @@ let browser;
               { id: "max", name: "Max" },
             ],
           },
+          {
+            id: "opus[1m]",
+            name: "Opus 5.5 · 1M context",
+            oneMillion: true,
+            efforts: [{ id: "high", name: "High" }],
+          },
         ],
       },
       {
@@ -160,6 +166,30 @@ let browser;
     assert.equal(await page.locator("#defaults-implementer-model").inputValue(), "opus");
     assert.equal(await page.locator("#defaults-implementer-effort").inputValue(), "max");
     observations.push({ modelChangeResetsEffortAndBackgroundRefreshPreservesDraft: true });
+    const hint = page.locator("#defaults-implementer-model-hint");
+    assert.equal(await hint.count(), 0);
+    await page.locator("#defaults-implementer-model").selectOption("opus[1m]");
+    await hint.waitFor();
+    assert.equal(await hint.textContent(), "1M context uses more of your Claude usage.");
+    assert.equal(
+      await page.locator("#defaults-implementer-model option:checked").textContent(),
+      "Opus 5.5 · 1M context",
+    );
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: path.join(root, "agent-models-1m-" + width + ".png"),
+        fullPage: true,
+      });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator("#defaults-implementer-model").selectOption("opus");
+    assert.equal(await hint.count(), 0);
+    observations.push({ oneMillionEntryListedAndHintOnlyWhileSelected: true });
     await page.locator("#defaults-implementer-agent").selectOption("codex");
     assert.equal(await page.locator("#defaults-implementer-model").inputValue(), "");
     assert.equal(await page.locator("#defaults-implementer-effort").inputValue(), "");

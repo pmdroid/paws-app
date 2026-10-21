@@ -12,7 +12,13 @@ export type AgentSettings = {
 };
 export type AgentModelCatalog = {
   agent: AgentProfile["agent"];
-  models: { id: string; name: string; efforts: { id: string; name: string }[] | null }[];
+  /** `name` is the display label. A 1M context entry is its own model, marked `oneMillion`. */
+  models: {
+    id: string;
+    name: string;
+    efforts: { id: string; name: string }[] | null;
+    oneMillion?: boolean;
+  }[];
   efforts: { id: string; name: string }[];
   updatedAt: number;
 };
