@@ -1949,6 +1949,54 @@ export async function probeRunnerBackend(
         { conflicting: conflicting.id, independent: independent.id, reviewEvents },
       );
     }
+    {
+      const coolDown = (until: number) =>
+        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex'", [until]);
+      const dispatched = async () => {
+        for (let attempt = 0; attempt < 500; attempt++) {
+          for (const hostId of hostIds) if (work.commands(hostId).length) return hostId;
+          await delay(2);
+        }
+        return null;
+      };
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const tracked = () => {
+        const record = item();
+        const issueId = getWorkItem(db, record.id)!.linearIssueId;
+        placementLifecycle.issues.set(issueId, { ...placementLifecycle.issue, id: issueId });
+        return record;
+      };
+      const limited = tracked();
+      const limitAbort = new AbortController();
+      coolDown(now + 120_000);
+      const limitedRun = placedBackend.forItem(limited.id)(
+        input(limited, { signal: limitAbort.signal }),
+      );
+      let settled = false;
+      void limitedRun.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      await delay(60);
+      assert.equal(settled, false);
+      coolDown(0);
+      const placedOn = await dispatched();
+      assert(placedOn);
+      limitAbort.abort();
+      await limitedRun.catch(() => undefined);
+      observe("an agent usage limit waits for its reset instead of failing placement", true, {
+        placedOn,
+      });
+
+      const exhausted = tracked();
+      coolDown(now + 3_600_000);
+      await assert.rejects(
+        placedBackend.forItem(exhausted.id)(input(exhausted)),
+        /codex reached its usage limit until /,
+      );
+      coolDown(0);
+      observe("a usage limit past the wait window names the agent and its reset", true, {});
+    }
   } finally {
     failoverAbort.abort();
     await pendingFailover?.catch(() => undefined);
