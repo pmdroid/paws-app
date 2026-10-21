@@ -234,6 +234,65 @@ test("live deliveries include tool status and output while private thoughts stay
   }
 });
 
+test("permission decisions are delivered with their reason and secrets redacted", () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-permission-"));
+  const journal = openExecutionJournal(root);
+  try {
+    const execution = journal.admit(command, 1000)!;
+    const decisions = [
+      {
+        type: "permission",
+        toolCallId: "find",
+        decision: "deny",
+        reason: "path is outside the worktree",
+        title: "find / -path '*react-router/package.json'",
+        kind: "execute",
+        name: "run_terminal_command",
+      },
+      {
+        type: "permission",
+        toolCallId: "read",
+        decision: "allow",
+        reason: "paths are inside the worktree",
+        optionId: "allow",
+        title: "Read .env with token=ghp_abcdefghijklmnopqrstuvwxyz",
+        kind: "read",
+      },
+    ];
+    journal.ingest(
+      execution.id,
+      Buffer.from(decisions.map((event) => JSON.stringify({ type: "acp", event }) + "\n").join("")),
+    );
+    expect(journal.pending(execution.id).map((row) => row.event)).toEqual([
+      {
+        type: "permission",
+        permission: {
+          toolCallId: "find",
+          decision: "deny",
+          reason: "path is outside the worktree",
+          title: "find / -path '*react-router/package.json'",
+          kind: "execute",
+          name: "run_terminal_command",
+        },
+      },
+      {
+        type: "permission",
+        permission: {
+          toolCallId: "read",
+          decision: "allow",
+          reason: "paths are inside the worktree",
+          optionId: "allow",
+          title: "Read .env with token=[redacted]",
+          kind: "read",
+        },
+      },
+    ]);
+  } finally {
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("pull request records carry the agent's title and description", () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-pr-"));
   const journal = openExecutionJournal(root);

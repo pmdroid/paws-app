@@ -276,13 +276,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
   let loading = false;
   const app = client({ name: "paws" })
     .onRequest(methods.client.session.requestPermission, (ctx) =>
-      answerPermission(
-        ctx.params,
-        guard,
-        options.readOnly === true,
-        () => state.cancelling,
-        emit,
-      ),
+      answerPermission(ctx.params, guard, options.readOnly === true, () => state.cancelling, emit),
     )
     .onNotification(methods.client.session.update, (ctx) => {
       if (loading) return;
