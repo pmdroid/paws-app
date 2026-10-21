@@ -8,6 +8,7 @@ import type {
   PullRequestRef,
   PullRequests,
 } from "./app";
+import type { GitHubResponse } from "./types";
 
 export type FakeGitHub = GitHubApp &
   PullRequests & {
@@ -16,6 +17,26 @@ export type FakeGitHub = GitHubApp &
     merged: MergePullRequest[];
   };
 
+export type FakeCheckContext = {
+  name?: string;
+  conclusion?: string | null;
+  detailsUrl?: string | null;
+  context?: string;
+  state?: string;
+  targetUrl?: string | null;
+} | null;
+
+function fakeContexts(nodes: FakeCheckContext[]) {
+  return {
+    nodes,
+    pageInfo: { hasNextPage: false, endCursor: null as string | null },
+  };
+}
+
+/**
+ * GraphQL merge readiness body for `head`. The head has one green check run,
+ * `ci`; the base branch head has none.
+ */
 export function fakeMergeReadiness(head: string) {
   return {
     data: {
@@ -24,12 +45,19 @@ export function fakeMergeReadiness(head: string) {
           oid: head,
           statusCheckRollup: {
             state: "SUCCESS",
-            contexts: { checkRunCount: 1, statusContextCount: 0 },
+            contexts: fakeContexts([{ name: "ci", conclusion: "SUCCESS", detailsUrl: null }]),
           },
         },
         pullRequest: {
           headRefOid: head,
           state: "OPEN",
+          baseRefName: "main",
+          baseRef: {
+            target: {
+              oid: "f".repeat(40),
+              statusCheckRollup: { state: "SUCCESS", contexts: fakeContexts([]) },
+            },
+          },
           reviewThreads: {
             nodes: [] as { isResolved: boolean }[],
             pageInfo: { hasNextPage: false, endCursor: null as string | null },
@@ -38,6 +66,54 @@ export function fakeMergeReadiness(head: string) {
       },
     },
   };
+}
+
+/**
+ * Answers the base branch reads that merge readiness makes for required
+ * checks: `GET /branches/:branch` (branch protection) and
+ * `GET /rules/branches/:branch` (rulesets). Returns null for other paths.
+ */
+export function fakeRequiredChecks(
+  request: { method: string; path: string },
+  required: { protection?: string[]; rulesets?: string[] } = {},
+): GitHubResponse | null {
+  if (request.method !== "GET") return null;
+  if (/\/rules\/branches\/[^?]+/.test(request.path)) {
+    const checks = required.rulesets ?? [];
+    return {
+      status: 200,
+      body:
+        checks.length === 0 || !request.path.includes("page=1")
+          ? []
+          : [
+              {
+                type: "required_status_checks",
+                parameters: {
+                  required_status_checks: checks.map((context) => ({ context })),
+                },
+              },
+            ],
+    };
+  }
+  if (/\/branches\/[^/?]+$/.test(request.path)) {
+    const contexts = required.protection ?? [];
+    return {
+      status: 200,
+      body: {
+        name: "main",
+        protected: contexts.length > 0,
+        protection: {
+          enabled: contexts.length > 0,
+          required_status_checks: {
+            enforcement_level: contexts.length > 0 ? "non_admins" : "off",
+            contexts,
+            checks: contexts.map((context) => ({ context, app_id: null })),
+          },
+        },
+      },
+    };
+  }
+  return null;
 }
 
 export function createFakeGitHub(): FakeGitHub {

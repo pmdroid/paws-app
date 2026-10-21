@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { branchForIssue, fixesLine } from "./branch";
-import { fakeMergeReadiness } from "./fake";
+import { fakeMergeReadiness, fakeRequiredChecks } from "./fake";
 import { serialMerge } from "./merge";
 import { openPullRequest, publishAccepted, pushBranch } from "./pulls";
 import {
@@ -26,21 +26,35 @@ const { privateKey } = generateKeyPairSync("rsa", {
 const PRIVATE_KEY = privateKey as string;
 
 describe("pull requests and serial merge", () => {
-  for (const scenario of ["failed CI", "unreadable gates", "closed PR", "moved PR head"]) {
+  for (const scenario of [
+    "failed CI",
+    "CI failing on the read just before the merge",
+    "unreadable gates",
+    "closed PR",
+    "moved PR head",
+  ]) {
     test(`does not merge with ${scenario} after Closeout accepts`, async () => {
       const repo = await oneClone();
       try {
         await commitFile(repo.work, "file.txt", "candidate\n");
         const client = mergingClient(repo.bare, []);
         let merges = 0;
+        let reads = 0;
         const guarded: GitHubClient = {
           async request(req) {
             if (req.path === "/graphql") {
+              reads += 1;
               if (scenario === "unreadable gates") return { status: 403, body: {} };
               const { head } = (req.body as { variables: { head: string } }).variables;
               const body = fakeMergeReadiness(head);
               const repository = body.data.repository;
-              if (scenario === "failed CI") repository.object.statusCheckRollup.state = "FAILURE";
+              if (
+                scenario === "failed CI" ||
+                (scenario === "CI failing on the read just before the merge" && reads > 1)
+              )
+                repository.object.statusCheckRollup.contexts.nodes = [
+                  { name: "ci", conclusion: "FAILURE" },
+                ];
               if (scenario === "closed PR") repository.pullRequest.state = "CLOSED";
               if (scenario === "moved PR head") repository.pullRequest.headRefOid = "b".repeat(40);
               return { status: 200, body };
@@ -63,7 +77,7 @@ describe("pull requests and serial merge", () => {
         expect(result.outcome).toBe(
           scenario === "moved PR head"
             ? "sha_moved"
-            : scenario === "failed CI"
+            : scenario.includes("CI")
               ? "ci_failed"
               : "blocked",
         );
@@ -364,7 +378,9 @@ describe("pull requests and serial merge", () => {
             if (req.path === "/graphql") {
               const { head } = (req.body as { variables: { head: string } }).variables;
               const body = fakeMergeReadiness(head);
-              body.data.repository.object.statusCheckRollup.state = "PENDING";
+              body.data.repository.object.statusCheckRollup.contexts.nodes = [
+                { name: "ci", conclusion: null },
+              ];
               return { status: 200, body };
             }
             if (req.path.endsWith("/merge")) merges += 1;
@@ -383,7 +399,7 @@ describe("pull requests and serial merge", () => {
       });
       expect(result.merged).toBe(false);
       expect(result.outcome).toBe("waiting");
-      expect(result.message).toBe("Waiting for CI on the candidate commit.");
+      expect(result.message).toBe("Waiting for checks: ci.");
       expect(result.summary).toBe("accepted");
       expect(sleeps).toBe(0);
       expect(merges).toBe(0);
@@ -494,7 +510,9 @@ describe("pull requests and serial merge", () => {
             if (req.path === "/graphql" && pending) {
               const { head } = (req.body as { variables: { head: string } }).variables;
               const body = fakeMergeReadiness(head);
-              body.data.repository.object.statusCheckRollup.state = "PENDING";
+              body.data.repository.object.statusCheckRollup.contexts.nodes = [
+                { name: "ci", conclusion: null },
+              ];
               return { status: 200, body };
             }
             return client.request(req);
@@ -643,7 +661,9 @@ function ciClient(bare: string, pending: () => boolean): GitHubClient {
       if (req.path === "/graphql" && pending()) {
         const { head } = (req.body as { variables: { head: string } }).variables;
         const body = fakeMergeReadiness(head);
-        body.data.repository.object.statusCheckRollup.state = "PENDING";
+        body.data.repository.object.statusCheckRollup.contexts.nodes = [
+          { name: "ci", conclusion: null },
+        ];
         return { status: 200, body };
       }
       return client.request(req);
@@ -705,7 +725,7 @@ function mergingClient(
         const sha = await squashBranch(bare, req);
         return { status: 200, body: { sha, merged: true, message: "merged" } };
       }
-      return { status: 404, body: {} };
+      return fakeRequiredChecks(req) ?? { status: 404, body: {} };
     },
   };
 }
