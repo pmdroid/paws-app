@@ -499,7 +499,13 @@ async function finish(
   const published =
     input.published === undefined
       ? undefined
-      : await publishedAtHead(input.repo, head, input.published, scrubCommandEnv(input.env));
+      : await publishedAtHead(
+          input.repo,
+          head,
+          input.published,
+          policy.items,
+          scrubCommandEnv(input.env),
+        );
   return evaluate(
     policy,
     snapshot.records,
