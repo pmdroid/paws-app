@@ -1779,6 +1779,7 @@ export class Orchestrator {
               if (!checks) {
                 checks = this.runRunnerCloseout(item, deps, {
                   worktree,
+                  base,
                   head: commit,
                   sessionPath,
                   policy,
@@ -1920,6 +1921,7 @@ export class Orchestrator {
     deps: AcpAgentDeps,
     input: {
       worktree: string;
+      base: string;
       head: string;
       sessionPath: string;
       policy: GitCommitPolicy | undefined;
@@ -1958,6 +1960,7 @@ export class Orchestrator {
           worktreePath: worktree,
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
+          mainSha: input.base,
           ...(input.policy ? { commitPolicy: input.policy } : {}),
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
@@ -1971,6 +1974,8 @@ export class Orchestrator {
         else if (result.stopReason !== "end_turn" || result.errorMessage)
           reason = result.errorMessage ?? `the run stopped (${result.stopReason})`;
         else if (!result.closeoutReport) reason = "the runner returned no Closeout report";
+        else if (!listsChecks(result.closeoutReport))
+          reason = "the runner's Closeout listed no checks";
         else {
           writeSessionCloseout(input.sessionPath, head, result.closeoutReport);
           return;
@@ -4558,4 +4563,13 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
   return (
     left.owner === right.owner && left.repo === right.repo && left.remoteUrl === right.remoteUrl
   );
+}
+
+function listsChecks(report: string): boolean {
+  try {
+    const parsed = JSON.parse(report) as { required?: unknown };
+    return Array.isArray(parsed.required) && parsed.required.length > 0;
+  } catch {
+    return false;
+  }
 }
