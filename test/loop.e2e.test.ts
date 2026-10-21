@@ -1014,7 +1014,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
     const questionBody = tracker.questions[0]?.body;
     expect(questionBody).toContain("Closeout: blocked");
-    expect(questionBody).toContain("reviewer failed");
+    expect(questionBody).toContain("reviewer preparation failed");
   } finally {
     db.close();
     await layout.cleanup();
