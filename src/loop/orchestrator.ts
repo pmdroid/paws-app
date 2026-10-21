@@ -116,6 +116,8 @@ import {
   listInFlightItems,
   listCloseoutRecoveries,
   saveCloseoutRecovery,
+  listCloseoutRounds,
+  startCloseoutRound,
   type CloseoutRecovery,
   markRun,
   releaseRunCapacity,
@@ -1984,6 +1986,27 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * A re-check of a rebased head starts with a fresh retry budget. Earlier
+   * evidence stays on disk; its attempt keys become the round's baseline.
+   */
+  private async startCloseoutRound(item: WorkItemRecord, head: string): Promise<void> {
+    if (head === "" || head === item.checkpoint?.wipCommit) return;
+    if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
+    let retryBaseline: string[];
+    try {
+      retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
+    } catch {
+      return;
+    }
+    startCloseoutRound(this.db, {
+      itemId: item.id,
+      head,
+      retryBaseline,
+      startedAt: this.now(),
+    });
+  }
+
   private async askCloseoutHelp(
     item: WorkItemRecord,
     result: GateResult | undefined,
@@ -2090,6 +2113,7 @@ export class Orchestrator {
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
+    if (item.state === "merge_queue") await this.startCloseoutRound(item, head);
     const verdict = await this.runVerification(item, worktree, base, head, candidate);
     if (this.stopped(item.id)) return;
     if (verdict.decision !== "accepted") {
@@ -2279,6 +2303,7 @@ export class Orchestrator {
         await this.flush();
       },
       reverify: async (input) => {
+        await this.startCloseoutRound(verifying, input.head);
         const verdict = await this.runVerification(
           verifying,
           input.worktree,
