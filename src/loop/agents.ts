@@ -97,7 +97,6 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
   let seq = 0;
   return {
     async review(request): Promise<ReviewResult> {
-      seq += 1;
       const prompt = [
         ...(deps.brief ? [deps.brief] : []),
         request.prompt ?? "Review the change.",
@@ -105,7 +104,6 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         `Base ${request.base}, head ${request.head}.`,
         FINDING_FORMAT,
       ].join("\n");
-      let text = "";
       const launch = deps.launch({
         role: "reviewer",
         profile: deps.profiles?.reviewer,
@@ -114,28 +112,35 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         worktree: request.worktree,
         prompt,
       });
-      const result = await (deps.agentRunner ?? runAgent)({
-        repository: deps.repository,
-        prepareInputFiles: deps.prepareInputFiles,
-        role: "reviewer",
-        profile: deps.profiles?.reviewer,
-        itemId: request.taskId,
-        runId: `rev-${request.taskId}-${seq}`,
-        prompt,
-        worktreePath: request.worktree,
-        pawsRoot: deps.pawsRoot,
-        checkpoint: false,
-        readOnly: true,
-        ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
-        ...(deps.home ? { home: deps.home } : {}),
-        ...(deps.signal ? { signal: deps.signal } : {}),
-        ...spawnOf(launch),
-        onEvent(event) {
-          if (event.type !== "session_update") return;
-          if (event.update.sessionUpdate !== "agent_message_chunk") return;
-          if (event.update.content.type === "text") text += event.update.content.text ?? "";
-        },
-      });
+      let text = "";
+      let result: RunAgentResult;
+      for (let attempt = 1; ; attempt++) {
+        seq += 1;
+        text = "";
+        result = await (deps.agentRunner ?? runAgent)({
+          repository: deps.repository,
+          prepareInputFiles: deps.prepareInputFiles,
+          role: "reviewer",
+          profile: deps.profiles?.reviewer,
+          itemId: request.taskId,
+          runId: `rev-${request.taskId}-${seq}`,
+          prompt,
+          worktreePath: request.worktree,
+          pawsRoot: deps.pawsRoot,
+          checkpoint: false,
+          readOnly: true,
+          ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+          ...(deps.home ? { home: deps.home } : {}),
+          ...(deps.signal ? { signal: deps.signal } : {}),
+          ...spawnOf(launch),
+          onEvent(event) {
+            if (event.type !== "session_update") return;
+            if (event.update.sessionUpdate !== "agent_message_chunk") return;
+            if (event.update.content.type === "text") text += event.update.content.text ?? "";
+          },
+        });
+        if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
+      }
       if (!result.agentExited) deps.onCleanupFailure?.();
       if (result.authRequired) {
         throw new Error(result.errorMessage ?? "Codex login is missing");
