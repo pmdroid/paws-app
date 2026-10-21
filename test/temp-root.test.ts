@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname } from "node:path";
+import { join } from "node:path";
 
-test("tests write temp files under one per-run folder", () => {
-  expect(basename(tmpdir())).toMatch(/^pt-/);
-  expect(dirname(tmpdir())).not.toBe(tmpdir());
-  expect(existsSync(tmpdir())).toBe(true);
+test("tests commit with the same git identity on every machine", () => {
+  const repo = mkdtempSync(join(tmpdir(), "git-identity-"));
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  const ident = Bun.spawnSync(["git", "-C", repo, "var", "GIT_AUTHOR_IDENT"], {
+    env: { ...process.env, HOME: repo },
+  });
+  expect(ident.stdout.toString()).toStartWith("Paws Test <test@paws.invalid>");
 });
