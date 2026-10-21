@@ -40,6 +40,7 @@ import {
   getLinearConversationSource,
   getRun,
   listAgentCloseout,
+  listCiRounds,
   listCloseoutProgress,
   listCloseoutRounds,
   listEvidence,
@@ -69,6 +70,7 @@ import {
   type StatusActivity,
   type StatusAgentCloseout,
   type StatusCheck,
+  type StatusCiRound,
   type StatusCloseoutAttempt,
   type StatusEvent,
   type StatusEvidence,
@@ -191,7 +193,51 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
+    ciRounds: ciRoundsFor(db, records, env),
   };
+}
+
+/** CI rounds of the visible items, numbered per item, with secrets redacted from the log tails. */
+function ciRoundsFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+  env: NodeJS.ProcessEnv,
+): StatusCiRound[] {
+  const byId = new Map(records.map((record) => [record.id, record]));
+  const numbers = new Map<string, number>();
+  return listCiRounds(db, [...byId.keys()]).flatMap((round) => {
+    const record = byId.get(round.itemId);
+    if (!record) return [];
+    const number = (numbers.get(round.itemId) ?? 0) + 1;
+    numbers.set(round.itemId, number);
+    return [
+      {
+        itemId: publicId(record),
+        round: number,
+        headSha: round.head,
+        outcome: round.outcome,
+        action: round.action,
+        fixAttempt: round.fixAttempt,
+        fixLimit: round.fixLimit,
+        startedAt: iso(round.startedAt),
+        updatedAt: iso(round.updatedAt),
+        checks: round.checks.map((check) => {
+          const started = check.startedAt === null ? NaN : Date.parse(check.startedAt);
+          const ended = check.completedAt === null ? NaN : Date.parse(check.completedAt);
+          return {
+            name: check.name,
+            state: check.state,
+            url: check.url === null ? null : httpUrl(check.url),
+            startedAt: check.startedAt,
+            completedAt: check.completedAt,
+            durationMs: ended >= started ? ended - started : null,
+            logTail: check.logTail === null ? null : redactCloseoutText(check.logTail, env),
+            logSource: check.logSource,
+          };
+        }),
+      },
+    ];
+  });
 }
 
 function agentCloseoutFor(

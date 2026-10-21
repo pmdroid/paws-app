@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoStatus } from "./demo";
-import { parseStatusSnapshot, statusIntegrity } from "./contract";
+import { parseStatusSnapshot, statusIntegrity, type StatusCiRound } from "./contract";
 import { statusEndpoint } from "./endpoint";
 import { resolveEngineUrl } from "./source";
 
@@ -27,6 +27,36 @@ describe("status contract", () => {
     snapshot.questions[0]!.recommendedOption = 9;
     const parsed = parseStatusSnapshot(snapshot);
     expect(parsed.ok).toBe(false);
+  });
+
+  test("reads CI rounds and rejects an unknown check state", () => {
+    const round: StatusCiRound = {
+      itemId: "ENG-1",
+      round: 1,
+      headSha: "a".repeat(40),
+      outcome: "failed",
+      action: "sent_back",
+      fixAttempt: 1,
+      fixLimit: 3,
+      startedAt: "2026-10-21T10:00:00Z",
+      updatedAt: "2026-10-21T10:05:00Z",
+      checks: [
+        {
+          name: "check / test",
+          state: "failed",
+          url: "https://github.com/acme/app/runs/1",
+          startedAt: "2026-10-21T10:00:00Z",
+          completedAt: "2026-10-21T10:04:51Z",
+          durationMs: 291_000,
+          logTail: "1 fail",
+          logSource: "actions",
+        },
+      ],
+    };
+    const parsed = parseStatusSnapshot({ ...demoStatus(), ciRounds: [round] });
+    expect(parsed.ok ? parsed.snapshot.ciRounds : null).toEqual([round]);
+    const invalid = { ...round, checks: [{ ...round.checks[0], state: "exploded" }] };
+    expect(parseStatusSnapshot({ ...demoStatus(), ciRounds: [invalid] }).ok).toBe(false);
   });
 });
 
