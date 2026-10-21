@@ -115,3 +115,32 @@ test("a long handler renews its claim while other workers poll", async () => {
   expect(getJob(db, id)?.status).toBe("done");
   db.close();
 });
+
+test("a renewal after a pause keeps the job when nobody claimed it in the meantime", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const clock = new FakeClock(1000);
+  const loop = new JobLoop(db, clock);
+  let context!: import("./loop").JobContext;
+  let entered!: () => void;
+  const started = new Promise<void>((r) => (entered = r));
+  let finish!: () => void;
+  const blocked = new Promise<void>((r) => (finish = r));
+  loop.register("work", async (_job, authority) => {
+    context = authority;
+    entered();
+    await blocked;
+    authority.signal.throwIfAborted();
+  });
+  const id = enqueueJob(db, { queue: "work", now: clock.now() });
+  const running = loop.tick();
+  await started;
+  clock.advance(45_000);
+  expect(context.isCurrent()).toBe(true);
+  expect(context.extendLease()).toBe(true);
+  expect(claimNextJob(db, { workerId: "other", queues: ["work"], now: clock.now() })).toBeNull();
+  finish();
+  await running;
+  expect(getJob(db, id)).toMatchObject({ status: "done", attempts: 1 });
+  db.close();
+});

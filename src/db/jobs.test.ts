@@ -296,7 +296,7 @@ describe("job queue", () => {
 });
 
 for (const operation of ["complete", "fail", "extend"] as const) {
-  for (const scenario of ["expired", "reclaimed", "recurring-failure", "cancelled"] as const) {
+  for (const scenario of ["reclaimed", "recurring-failure", "cancelled"] as const) {
     test(`stale ${operation} cannot change a ${scenario} claim with a reused worker identity`, () => {
       const { db, clock } = queue();
       const id = enqueueJob(db, {
@@ -305,7 +305,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
         ...(scenario === "recurring-failure" ? { recurringEveryMs: 1, maxAttempts: 1 } : {}),
       });
       const first = claim(db, clock, ["work"])!;
-      if (scenario === "expired" || scenario === "reclaimed") clock.advance(5_000);
+      if (scenario === "reclaimed") clock.advance(5_000);
       if (scenario === "recurring-failure") {
         expect(
           failJob(db, first, new Error("first fire failed"), { now: clock.now() }),
@@ -333,4 +333,24 @@ for (const operation of ["complete", "fail", "extend"] as const) {
       db.close();
     });
   }
+}
+
+for (const operation of ["complete", "fail", "extend"] as const) {
+  test(`a late ${operation} still applies when nobody reclaimed the expired claim`, () => {
+    const { db, clock } = queue();
+    const id = enqueueJob(db, { queue: "work", now: clock.now() });
+    const first = claim(db, clock, ["work"])!;
+    clock.advance(5_000);
+    const changed =
+      operation === "complete"
+        ? completeJob(db, first, clock.now())
+        : operation === "fail"
+          ? failJob(db, first, new Error("late failure"), { now: clock.now() })
+          : extendJobLease(db, first, clock.now(), 60_000);
+    expect(changed).toBeTruthy();
+    expect(getJob(db, id)?.status).toBe(
+      operation === "complete" ? "done" : operation === "fail" ? "pending" : "running",
+    );
+    db.close();
+  });
 }

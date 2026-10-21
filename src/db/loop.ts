@@ -52,7 +52,7 @@ export class JobLoop {
     }
     const controller = new AbortController();
     const current = () => {
-      if (!controller.signal.aborted && !isJobCurrent(this.db, job, this.clock.now()))
+      if (!controller.signal.aborted && !isJobCurrent(this.db, job))
         controller.abort(new Error("Job claim is no longer current"));
       return !controller.signal.aborted;
     };
