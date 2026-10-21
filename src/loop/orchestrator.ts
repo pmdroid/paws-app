@@ -223,6 +223,7 @@ import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { sweepWorktrees } from "./worktree-sweep";
+import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
 import {
@@ -320,7 +321,8 @@ export type ExecutionChanges = {
 
 class LinearReconciliationPendingError extends Error {}
 
-const MAX_AGENT_RETURNS = 3;
+/** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
+const MAX_REBASE_RETURNS = 3;
 const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_CONFLICT_THOUGHT =
@@ -2395,27 +2397,26 @@ export class Orchestrator {
         this.returnToAgent(
           item,
           "rebase-conflict",
+          MAX_REBASE_RETURNS,
           REBASE_CONFLICT_INSTRUCTION,
-          REBASE_CONFLICT_THOUGHT,
+          () => REBASE_CONFLICT_THOUGHT,
         )
       )
         return;
       if (merged.outcome === "ci_failed") {
         const checks = merged.failedChecks ?? [];
-        const names = checks.map((check) => check.name).join(", ") || "unknown checks";
+        // Read on every round, so a changed setting applies to the next round of a running task.
+        const limit = this.ciFixAttempts();
         if (
-          this.returnToAgent(
-            item,
-            "ci-failed",
-            [
-              "CI failed on the pull request. Failed checks:",
-              ...checks.map((check) => `- ${check.name}${check.url ? ` (${check.url})` : ""}`),
-              "Run the same checks in this repository to reproduce the failures, fix the code so the change still does what the issue asks, and run the checks again.",
-            ].join("\n"),
-            `CI failed (${names}). Sent it back to the agent to fix.`,
+          this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
+            ciFixRoundLine(checks, attempt, limit),
           )
         )
           return;
+        if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          await this.flush();
+          return;
+        }
       }
       this.post(
         item,
@@ -2461,16 +2462,55 @@ export class Orchestrator {
     await this.flush();
   }
 
-  /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
   private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
+    this.postAfterPullRequest(item, body, `${item.id}:branch-updated:${head}`);
+  }
+
+  /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
+  private postAfterPullRequest(item: WorkItemRecord, body: string, key: string): void {
     this.post(
       item,
       this.options.channel === "comments" ? "thought" : "response",
       body,
-      `${item.id}:branch-updated:${head}`,
+      key,
       {},
       "ordered",
     );
+  }
+
+  /** `[merge] ci_fix_attempts`, read for every CI round. Missing means 3. */
+  private ciFixAttempts(): number {
+    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+      .ciFixAttempts;
+  }
+
+  /** CI fix attempts are spent: ask in the Linear session. A reply resumes the agent once more. */
+  private askCiHelp(item: WorkItemRecord, body: string): boolean {
+    return immediate(this.db, () => {
+      const current = getWorkItem(this.db, item.id);
+      if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
+      const sessionId = this.activitySession(current);
+      if (sessionId === null || findOpenQuestion(this.db, sessionId) !== null) return false;
+      const question = openQuestion(this.db, {
+        itemId: current.id,
+        runId: current.currentRunId,
+        sessionId,
+        body,
+        now: this.now(),
+      });
+      applyWorkItemEvent(this.db, current.id, "blocking_question");
+      if (current.checkpoint)
+        saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "awaiting_input" });
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: sessionId,
+        idempotencyKey: `ci-help:${question.id}`,
+        payload: { sessionId, questionId: question.id, body },
+        now: this.now(),
+      });
+      return true;
+    });
   }
 
   /** `[merge] closeout_after_update`, read when main moved. Missing means off. */
@@ -2482,14 +2522,15 @@ export class Orchestrator {
   private returnToAgent(
     item: WorkItemRecord,
     reason: "rebase-conflict" | "ci-failed",
+    limit: number,
     handoff: string,
-    thought: string,
+    thought: (attempt: number) => string,
   ): boolean {
     return immediate(this.db, () => {
       const current = getWorkItem(this.db, item.id);
       if (!current || current.state !== "merge_queue" || current.cancelRequested) return false;
       const returns = this.agentReturns(current.id, reason);
-      if (returns >= MAX_AGENT_RETURNS) return false;
+      if (returns >= limit) return false;
       const running = applyWorkItemEvent(this.db, current.id, "ejected");
       if (current.checkpoint)
         saveCheckpoint(this.db, current.id, { ...current.checkpoint, phase: "running" });
@@ -2499,7 +2540,9 @@ export class Orchestrator {
         payload: { itemId: current.id, handoff, reason },
         now: this.now(),
       });
-      this.post(running, "thought", thought, `${current.id}:${reason}:${returns}`);
+      const key = `${current.id}:${reason}:${returns}`;
+      if (reason === "ci-failed") this.postAfterPullRequest(running, thought(returns + 1), key);
+      else this.post(running, "thought", thought(returns + 1), key);
       return true;
     });
   }

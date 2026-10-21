@@ -1,11 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import {
+  DEFAULT_CI_FIX_ATTEMPTS,
   loadConfigFile,
   parseAgentSettings,
   parseMergeSettings,
   readAgentSettings,
   readMergeSettings,
   writeAgentSettings,
+  type MergeSettings,
 } from "../config";
 
 export type AgentSettingsOptions = {
@@ -13,6 +15,8 @@ export type AgentSettingsOptions = {
   configPath: string;
   csrfToken: string;
   repos?: string[];
+  /** Records a changed workspace setting in the audit history. */
+  audit?: (action: string, subject: string) => void;
 };
 
 const SETTINGS_PATH = "/api/settings/agents";
@@ -54,24 +58,44 @@ export async function handleAgentSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let settings;
-  let merge;
+  let mergeBody: unknown;
   try {
-    // The workspace merge switch travels next to the agent profiles.
-    const { merge: mergeBody, ...agents }: Record<string, unknown> = isRecord(body) ? body : {};
+    // The workspace merge settings travel next to the agent profiles.
+    const { merge, ...agents }: Record<string, unknown> = isRecord(body) ? body : {};
     settings = parseAgentSettings(isRecord(body) ? agents : body);
-    if (mergeBody !== undefined) merge = parseMergeSettings(mergeBody);
+    mergeBody = merge;
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
+  // A malformed saved file is repaired by this write, so its merge values fall back to defaults.
+  let previous: MergeSettings | null = null;
+  try {
+    previous = readMergeSettings(loadConfigFile(options.configPath));
+  } catch {}
+  let merge: MergeSettings | undefined;
+  try {
+    if (mergeBody !== undefined)
+      merge = {
+        ...(previous ?? { closeoutAfterUpdate: false, ciFixAttempts: DEFAULT_CI_FIX_ATTEMPTS }),
+        ...parseMergeSettings(mergeBody),
+      };
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
+  }
+  let saved: MergeSettings;
   try {
     writeAgentSettings(options.configPath, settings, merge);
-    return json({
-      ...settings,
-      merge: merge ?? readMergeSettings(loadConfigFile(options.configPath)),
-    });
+    saved = merge ?? readMergeSettings(loadConfigFile(options.configPath));
   } catch {
     return json({ error: "Agent settings could not be saved" }, 503);
   }
+  const before = previous?.ciFixAttempts ?? DEFAULT_CI_FIX_ATTEMPTS;
+  if (merge !== undefined && merge.ciFixAttempts !== before)
+    options.audit?.(
+      "settings.ci-fix-attempts",
+      `CI fix attempts ${before} → ${merge.ciFixAttempts}`,
+    );
+  return json({ ...settings, merge: saved });
 }
 
 function localRequest(request: Request, trustedOrigin?: string): boolean {

@@ -83,6 +83,8 @@ export type PawsConfigFile = {
   agentSettings?: AgentSettings;
   /** `[merge] closeout_after_update`. Missing means off. */
   closeoutAfterUpdate?: boolean;
+  /** `[merge] ci_fix_attempts`. Missing means the default of 3. */
+  ciFixAttempts?: number;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -228,7 +230,7 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
     renderProjectSkills(parseProjectSkills(current)) +
-    renderMergeSettings(parseConfigToml(current).closeoutAfterUpdate);
+    renderMergeSettings(parseConfigToml(current));
   const next =
     profiles === null
       ? rendered
@@ -415,6 +417,7 @@ function assignConfig(
   }
   if (section === "merge") {
     if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
+    if (key === "ci_fix_attempts") config.ciFixAttempts = asInt(value, line);
     return;
   }
   if (section === "checkout") {

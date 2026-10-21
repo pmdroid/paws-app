@@ -40,7 +40,12 @@ export {
 } from "./agents";
 export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles } from "./agents";
 
-export { parseMergeSettings, readMergeSettings } from "./merge";
+export {
+  DEFAULT_CI_FIX_ATTEMPTS,
+  MAX_CI_FIX_ATTEMPTS,
+  parseMergeSettings,
+  readMergeSettings,
+} from "./merge";
 export type { MergeSettings } from "./merge";
 
 export { loadRunnerControl } from "./runner-control";

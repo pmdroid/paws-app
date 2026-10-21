@@ -5,6 +5,8 @@ import { esc } from "./format";
 import { readCsrfToken } from "./github-auth";
 
 const ROLES: AgentRole[] = ["implementer", "reviewer"];
+const CI_FIX_ATTEMPTS_DEFAULT = 3;
+const CI_FIX_ATTEMPTS_MAX = 10;
 const AGENTS = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
 
 export function settingsProblems(settings: AgentSettings): string[] {
@@ -16,6 +18,11 @@ export function settingsProblems(settings: AgentSettings): string[] {
       reviewer: project.reviewer ?? settings.defaults.reviewer,
     })),
   ];
+  const attempts = settings.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT;
+  const checks =
+    Number.isInteger(attempts) && attempts >= 0 && attempts <= CI_FIX_ATTEMPTS_MAX
+      ? []
+      : [`CI fix attempts: enter a whole number from 0 to ${CI_FIX_ATTEMPTS_MAX}.`];
   return profiles
     .filter(
       ({ implementer, reviewer }) =>
@@ -23,7 +30,8 @@ export function settingsProblems(settings: AgentSettings): string[] {
     )
     .map(
       ({ name }) => `${name}: choose a different reviewer agent or model for independent review.`,
-    );
+    )
+    .concat(checks);
 }
 
 export async function settingsRequest<T>(
@@ -80,6 +88,7 @@ export function renderAgentSettings(view: SettingsView): string {
       ${view.data.projects.length ? view.data.projects.map((project, index) => `<section class="settings-project"><h3>${esc(project.repo)}</h3><div class="settings-roles">${ROLES.map((role) => profileFields(String(index), role, project[role] ?? view.data!.defaults[role], project[role] === undefined, view.catalogs)).join("")}</div></section>`).join("") : '<p class="sub">No project overrides.</p>'}
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
       ${mergingSection(view.data.merge?.closeoutAfterUpdate === true)}
+      ${checksSection(view.data.merge?.ciFixAttempts ?? CI_FIX_ATTEMPTS_DEFAULT)}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
@@ -89,6 +98,12 @@ function mergingSection(closeoutAfterUpdate: boolean): string {
   return `<section class="settings-section"><div class="settings-label"><h2>Merging</h2><p class="sub">What Paws does when main moved after Closeout accepted a pull request.</p></div><div class="col">
       <label class="settings-inherit"><input type="checkbox" name="merge-closeout-after-update" aria-describedby="merge-closeout-after-update-help" ${closeoutAfterUpdate ? "checked" : ""}>Run Closeout again after a branch update</label>
       <p class="sub" id="merge-closeout-after-update-help">Off: Paws updates the branch onto main, waits for CI on the new commit and merges. On: Paws also runs the full Closeout on the updated commit before the CI wait, with a fresh retry budget.</p></div></section>`;
+}
+
+function checksSection(attempts: number): string {
+  return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
+      <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help">
+      <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p></div></section>`;
 }
 
 function profileFields(
@@ -188,7 +203,17 @@ export function createAgentSettings(invalidate: () => void): {
     const closeoutAfterUpdate = form.querySelector<HTMLInputElement>(
       '[name="merge-closeout-after-update"]',
     );
-    if (closeoutAfterUpdate) view.data.merge = { closeoutAfterUpdate: closeoutAfterUpdate.checked };
+    const ciFixAttempts = form.querySelector<HTMLInputElement>('[name="merge-ci-fix-attempts"]');
+    if (closeoutAfterUpdate || ciFixAttempts)
+      view.data.merge = {
+        closeoutAfterUpdate:
+          closeoutAfterUpdate?.checked ?? view.data.merge?.closeoutAfterUpdate ?? false,
+        ...(ciFixAttempts
+          ? { ciFixAttempts: ciFixAttempts.value.trim() === "" ? NaN : Number(ciFixAttempts.value) }
+          : view.data.merge?.ciFixAttempts === undefined
+            ? {}
+            : { ciFixAttempts: view.data.merge.ciFixAttempts }),
+      };
     view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;
