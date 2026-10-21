@@ -14,6 +14,7 @@ import {
   migrate,
   openDatabase,
   saveTaskBlocks,
+  startCloseoutRound,
   upsertCloseoutStep,
   type CloseoutStepWrite,
 } from "../../../db";
@@ -395,6 +396,78 @@ describe("live status provider", () => {
     expect(snapshot.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
+  });
+
+  test("a re-check of a rebased head starts a new round of Closeout attempts", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const base = "d".repeat(40);
+    const item = insertQueuedItem(db, { id: "ENG-6", title: "Rebased", sessionKey: "ses_6", now });
+    beginImplementRun(db, item.id, now);
+    enterMergeQueue(db, item.id, {
+      phase: "merge_queue",
+      baseSha: base,
+      wipCommit: "b".repeat(40),
+    });
+    const attempt = (head: string, at: number, state: "failed" | "passed") => {
+      const identity = {
+        taskId: item.id,
+        base,
+        head,
+        policyDigest: "sha256:policy",
+        policyPath: ".agents/closeout.yaml",
+      };
+      upsertCloseoutStep(
+        db,
+        item.id,
+        identity,
+        {
+          id: "test",
+          kind: "command",
+          state,
+          command: "bun test",
+          detail: null,
+          attempt: 1,
+          timeoutSeconds: null,
+          startedAt: at,
+          finishedAt: at,
+          exitCode: state === "passed" ? 0 : 1,
+          timedOut: false,
+          timeoutReason: null,
+          truncated: false,
+          logPath: null,
+          evidencePath: null,
+          findings: null,
+          ordinal: 0,
+        },
+        at,
+      );
+      finishCloseoutProgress(
+        db,
+        item.id,
+        identity,
+        state === "passed" ? "accepted" : "rejected",
+        at,
+      );
+    };
+    attempt("a".repeat(40), now, "failed");
+    attempt("b".repeat(40), now + 1, "passed");
+    startCloseoutRound(db, {
+      itemId: item.id,
+      head: "c".repeat(40),
+      retryBaseline: ["a", "b"],
+      startedAt: now + 2,
+    });
+    attempt("c".repeat(40), now + 3, "passed");
+    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).snapshot();
+    const attempts = snapshot.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
+    expect(attempts?.map((entry) => [entry.number, entry.round, entry.headSha?.[0]])).toEqual([
+      [1, 1, "a"],
+      [2, 1, "b"],
+      [3, 2, "c"],
+    ]);
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok).toBe(true);
   });
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {

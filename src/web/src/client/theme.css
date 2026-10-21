@@ -422,6 +422,11 @@ a.evidence-thumb:focus-visible {
 .attempt-tabs button:last-child {
   border-radius: 0 5px 5px 0;
 }
+.attempt-round {
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
 .attempt-dot {
   width: 0.55rem;
   height: 0.55rem;
