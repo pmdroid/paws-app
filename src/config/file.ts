@@ -17,6 +17,7 @@ import {
   type AgentSettings,
 } from "./agents";
 
+import { renderMergeSettings } from "./merge";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
 
 export type LinearConfigMode = "comments" | "agent-session";
@@ -80,6 +81,8 @@ export type PawsConfigFile = {
   closeoutProjects?: Record<string, string>;
   agents: AgentsConfig;
   agentSettings?: AgentSettings;
+  /** `[merge] closeout_after_update`. Missing means off. */
+  closeoutAfterUpdate?: boolean;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -224,7 +227,8 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
       closeoutProjects: config.closeoutProjects ?? parseConfigToml(current).closeoutProjects,
     }) +
     renderCheckoutProjects(parseCheckoutProjects(current)) +
-    renderProjectSkills(parseProjectSkills(current));
+    renderProjectSkills(parseProjectSkills(current)) +
+    renderMergeSettings(parseConfigToml(current).closeoutAfterUpdate);
   const next =
     profiles === null
       ? rendered
@@ -407,6 +411,10 @@ function assignConfig(
   if (section.startsWith("closeout.projects"))
     throw new Error(`config.toml line ${line} requires [closeout.projects."owner/repo"]`);
   if (section === "closeout") {
+    return;
+  }
+  if (section === "merge") {
+    if (key === "closeout_after_update") config.closeoutAfterUpdate = asBoolean(value, line);
     return;
   }
   if (section === "checkout") {

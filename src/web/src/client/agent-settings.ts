@@ -79,9 +79,16 @@ export function renderAgentSettings(view: SettingsView): string {
       <section class="settings-section"><div class="settings-label"><h2>Project overrides</h2><p class="sub">Set a profile for an individual repository, or inherit its global default.</p></div><div class="col">
       ${view.data.projects.length ? view.data.projects.map((project, index) => `<section class="settings-project"><h3>${esc(project.repo)}</h3><div class="settings-roles">${ROLES.map((role) => profileFields(String(index), role, project[role] ?? view.data!.defaults[role], project[role] === undefined, view.catalogs)).join("")}</div></section>`).join("") : '<p class="sub">No project overrides.</p>'}
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
+      ${mergingSection(view.data.merge?.closeoutAfterUpdate === true)}
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <div class="settings-actions"><button class="btn primary" type="submit" ${problems.length ? "disabled" : ""}>Save settings</button><button class="btn" type="button" data-settings="reload">Discard changes</button></div>
     </fieldset>${view.busy ? `<p class="settings-message" role="status">${esc(view.busy)}</p>` : ""}</form>`;
+}
+
+function mergingSection(closeoutAfterUpdate: boolean): string {
+  return `<section class="settings-section"><div class="settings-label"><h2>Merging</h2><p class="sub">What Paws does when main moved after Closeout accepted a pull request.</p></div><div class="col">
+      <label class="settings-inherit"><input type="checkbox" name="merge-closeout-after-update" aria-describedby="merge-closeout-after-update-help" ${closeoutAfterUpdate ? "checked" : ""}>Run Closeout again after a branch update</label>
+      <p class="sub" id="merge-closeout-after-update-help">Off: Paws updates the branch onto main, waits for CI on the new commit and merges. On: Paws also runs the full Closeout on the updated commit before the CI wait, with a fresh retry budget.</p></div></section>`;
 }
 
 function profileFields(
@@ -178,6 +185,10 @@ export function createAgentSettings(invalidate: () => void): {
         else project[role] = read(key, project[role] ?? view.data!.defaults[role]);
       }
     });
+    const closeoutAfterUpdate = form.querySelector<HTMLInputElement>(
+      '[name="merge-closeout-after-update"]',
+    );
+    if (closeoutAfterUpdate) view.data.merge = { closeoutAfterUpdate: closeoutAfterUpdate.checked };
     view.repoDraft = form.querySelector<HTMLInputElement>('[name="repo"]')?.value ?? "";
     view.saved = false;
     view.error = null;

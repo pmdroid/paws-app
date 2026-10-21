@@ -1958,9 +1958,17 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
   }, 30_000);
 }
 
-for (const movedHead of [false, true]) {
-  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {
+for (const [movedHead, closeoutAfterUpdate] of [
+  [false, true],
+  [true, true],
+  [true, false],
+] as const) {
+  test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once${movedHead ? ` (Closeout after update ${closeoutAfterUpdate ? "on" : "off"})` : ""}`, async () => {
     const layout = await repoLayout();
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
+    );
     const tracker = createFakeTracker([
       {
         linearIssueId: "recover-merge",
@@ -2040,13 +2048,23 @@ for (const movedHead of [false, true]) {
       expect(retry!.id).not.toBe(original.id);
       expect(retry!.payload).toMatchObject({ head: item.checkpoint!.wipCommit });
       expect(listJobs(db).find((job) => job.id === original.id)?.status).toBe("cancelled");
-      for (let tick = 0; tick < 5; tick++) await restarted.jobs.tick();
+      for (let tick = 0; tick < 5; tick++) {
+        // Off: the merge goes back to its CI wait. Skip the poll delay.
+        db.run(`UPDATE job SET run_at = 0 WHERE queue = ? AND status = 'pending'`, [
+          JOB_KIND.merge,
+        ]);
+        await restarted.jobs.tick();
+      }
       expect(getWorkItem(db, item.id)?.state, debug(layout, db)).toBe("merged");
       expect(github.merged).toHaveLength(1);
       expect(rejectedHeads).toBe(movedHead ? 2 : 0);
       expect(
         listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "done"),
-      ).toHaveLength(movedHead ? 3 : 1);
+      ).toHaveLength(movedHead && closeoutAfterUpdate ? 3 : 1);
+      expect(
+        listJobs(db).filter((job) => job.queue === JOB_KIND.reverify),
+        debug(layout, db),
+      ).toHaveLength(movedHead && closeoutAfterUpdate ? 3 : 1);
       expect((await exec("git", ["--git-dir", layout.bare, "show", "main:ok.txt"])).stdout).toBe(
         "ok\n",
       );
@@ -2079,6 +2097,36 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
   expect(result.returnPhases, result.detail).toEqual(["running"]);
 }, 90_000);
 
+test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
+  const result = await withGitIdentity(() => runRebaseConflict("clean", undefined, false));
+  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
+  // One comparison so a failure shows every fact at once.
+  expect(
+    {
+      state: result.state,
+      merged: result.merged,
+      rounds: result.rounds,
+      reviewsAfterUpdate: result.reviews - result.reviewsBeforeUpdate,
+      reverifyJobs: result.queues.filter((queue) => queue === JOB_KIND.reverify).length,
+      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
+      mergedOnMovedMain: result.mergedOnMovedMain,
+      updatedNote: result.thoughts.includes(updated),
+      recheckNote: result.thoughts.includes("Branch updated, running Closeout again."),
+    },
+    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
+  ).toEqual({
+    state: "merged",
+    merged: 1,
+    rounds: [],
+    reviewsAfterUpdate: 0,
+    reverifyJobs: 0,
+    mergedAcceptedHead: false,
+    mergedOnMovedMain: true,
+    updatedNote: true,
+    recheckNote: false,
+  });
+}, 120_000);
+
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
   let checks = 0;
   const host = Object.assign(new FakeHostGitHubAuth(), {
@@ -2093,26 +2141,12 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
     },
   });
   host.account = { id: 7, login: "owner" };
-  const identity = {
-    GIT_AUTHOR_NAME: "Paws Test",
-    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
-    GIT_COMMITTER_NAME: "Paws Test",
-    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
-  };
-  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, identity);
-  let result: Awaited<ReturnType<typeof runRebaseConflict>>;
-  try {
-    result = await runRebaseConflict("clean", host);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+  const result = await withGitIdentity(() => runRebaseConflict("clean", host, true));
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
   expect(result.rounds, result.detail).toHaveLength(1);
+  expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
+  expect(result.thoughts, result.detail).toContain("Branch updated, running Closeout again.");
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
 
@@ -2753,8 +2787,16 @@ test("a rebase_failed merge fails the item", async () => {
 async function runRebaseConflict(
   mode: "resolve" | "repeat" | "rebase-failed" | "clean",
   githubAuth?: FakeHostGitHubAuth,
+  closeoutAfterUpdate?: boolean,
 ): Promise<{
   state: string | null;
+  reviews: number;
+  reviewsBeforeUpdate: number;
+  queues: string[];
+  acceptedHead: string;
+  mergedHeads: string[];
+  mergedOnMovedMain: boolean;
+  movedMain: string;
   thoughts: string[];
   prompts: string[];
   handoffs: string[];
@@ -2781,6 +2823,11 @@ async function runRebaseConflict(
       subIssues: [],
     },
   ]);
+  if (closeoutAfterUpdate !== undefined)
+    await writeFile(
+      path.join(layout.pawsRoot, "config.toml"),
+      `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
+    );
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const jobs = new JobLoop(db, systemClock);
@@ -2789,6 +2836,7 @@ async function runRebaseConflict(
   const implementResults: string[] = [];
   let sequence = 0;
   let implementTurns = 0;
+  let reviews = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -2817,6 +2865,7 @@ async function runRebaseConflict(
       else if (mode === "resolve" && implementTurns > 0) steps = rebaseOntoMainSteps();
       else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
       if (input.purpose === "implement") implementTurns += 1;
+      if (input.purpose === "review") reviews += 1;
       writeFileSync(
         scriptPath,
         JSON.stringify({
@@ -2835,11 +2884,23 @@ async function runRebaseConflict(
     await orchestrator.onLinearEvent(linearEvent("created", null, null, `rebase-${mode}`));
     await jobs.tick();
     expect(stateOf(db, identifier), debug(layout, db)).toBe("merge_queue");
+    const reviewsBeforeUpdate = reviews;
+    const acceptedHead = (
+      await exec("git", [
+        "-C",
+        worktreePath(layout.pawsRoot, taskPath(db, identifier)),
+        "rev-parse",
+        "HEAD",
+      ])
+    ).stdout.trim();
     if (mode === "rebase-failed") {
       await commitOnMain(layout.bare, "side\n", "side.txt");
       await installRebaseHook(layout.pawsRoot);
     } else if (mode === "clean") await commitOnMain(layout.bare, "side\n", "side.txt");
     else await commitOnMain(layout.bare, "from-main\n");
+    const movedMain = (
+      await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
+    ).stdout.trim();
     const returnPhases: (string | null)[] = [];
     let idle = 0;
     for (let turn = 0; turn < 40;) {
@@ -2864,6 +2925,15 @@ async function runRebaseConflict(
     }
     return {
       state: stateOf(db, identifier),
+      reviews,
+      reviewsBeforeUpdate,
+      queues: listJobs(db).map((job) => job.queue),
+      acceptedHead,
+      mergedHeads: github.merged.map((merge) => merge.expectedHeadSha),
+      mergedOnMovedMain:
+        github.merged.length === 1 &&
+        (await isAncestor(layout.bare, movedMain, github.merged[0]!.expectedHeadSha)),
+      movedMain,
       thoughts: tracker.progress.map((update) => update.body),
       prompts,
       handoffs: listJobs(db)
@@ -2906,6 +2976,33 @@ function rebaseOntoMainSteps(): FakeScript["steps"] {
     },
     { type: "end", stopReason: "end_turn" },
   ];
+}
+
+/** A clean rebase commits, so it needs an identity even where git has none configured. */
+async function withGitIdentity<T>(run: () => Promise<T>): Promise<T> {
+  const identity = {
+    GIT_AUTHOR_NAME: "Paws Test",
+    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
+    GIT_COMMITTER_NAME: "Paws Test",
+    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function isAncestor(bare: string, ancestor: string, head: string): Promise<boolean> {
+  return exec("git", ["--git-dir", bare, "merge-base", "--is-ancestor", ancestor, head]).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function commitOnMain(bare: string, content: string, file = "ok.txt"): Promise<void> {

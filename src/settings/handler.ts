@@ -2,7 +2,9 @@ import { timingSafeEqual } from "node:crypto";
 import {
   loadConfigFile,
   parseAgentSettings,
+  parseMergeSettings,
   readAgentSettings,
+  readMergeSettings,
   writeAgentSettings,
 } from "../config";
 
@@ -33,7 +35,11 @@ export async function handleAgentSettingsRequest(
         const key = repo.toLowerCase();
         if (!projects.has(key)) projects.set(key, { repo: key });
       }
-      return json({ ...settings, projects: [...projects.values()] });
+      return json({
+        ...settings,
+        projects: [...projects.values()],
+        merge: readMergeSettings(config),
+      });
     } catch {
       return json({ error: "Agent settings could not be read" }, 503);
     }
@@ -48,14 +54,21 @@ export async function handleAgentSettingsRequest(
     return json({ error: "Expected a JSON body of at most 128 KiB" }, 400);
   }
   let settings;
+  let merge;
   try {
-    settings = parseAgentSettings(body);
+    // The workspace merge switch travels next to the agent profiles.
+    const { merge: mergeBody, ...agents }: Record<string, unknown> = isRecord(body) ? body : {};
+    settings = parseAgentSettings(isRecord(body) ? agents : body);
+    if (mergeBody !== undefined) merge = parseMergeSettings(mergeBody);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Invalid agent settings" }, 400);
   }
   try {
-    writeAgentSettings(options.configPath, settings);
-    return json(settings);
+    writeAgentSettings(options.configPath, settings, merge);
+    return json({
+      ...settings,
+      merge: merge ?? readMergeSettings(loadConfigFile(options.configPath)),
+    });
   } catch {
     return json({ error: "Agent settings could not be saved" }, 503);
   }
@@ -105,6 +118,10 @@ async function readJson(request: Request): Promise<unknown> {
     reader.releaseLock();
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function json(body: unknown, status = 200): Response {
