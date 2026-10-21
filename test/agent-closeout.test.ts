@@ -217,6 +217,81 @@ test("a running check reports how long it has run and a later stale report sends
   expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
 });
 
+test("an evidence check takes its state from the report and lets the round finish", () => {
+  const db = tempDb();
+  insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
+  const { run } = beginImplementRun(db, "ENG-9", 2);
+  const head = "c".repeat(40);
+  const proof = {
+    id: "visual-proof",
+    kind: "evidence",
+    command: "Screenshot each changed screen.",
+    failedAttempts: 0,
+  };
+  const lint = { head, id: "lint", kind: "command", command: "bun run lint", attempt: 1 };
+  const report = (lintStatus: string, status: string, at: number) =>
+    recordAgentCloseout(
+      db,
+      run.id,
+      "ENG-9",
+      {
+        type: "report",
+        head,
+        maxAttempts: null,
+        checks: [
+          {
+            id: "lint",
+            kind: "command",
+            command: "bun run lint",
+            status: lintStatus,
+            failedAttempts: 0,
+          },
+          { ...proof, status },
+        ],
+        blocked: null,
+      },
+      at,
+    );
+  report("missing", "missing", 10_000);
+  recordAgentCloseout(db, run.id, "ENG-9", { type: "started", ...lint, maxAttempts: null }, 11_000);
+  recordAgentCloseout(
+    db,
+    run.id,
+    "ENG-9",
+    {
+      type: "finished",
+      ...lint,
+      maxAttempts: null,
+      state: "passed",
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 900,
+      stdout: "",
+      stderr: "",
+      truncated: false,
+    },
+    12_000,
+  );
+  const attemptOf = () => {
+    const parsed = parseStatusSnapshot(
+      JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot())),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    return parsed.snapshot.agentCloseout!.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;
+  };
+  expect(attemptOf().checks.find((check) => check.id === "visual-proof")).toMatchObject({
+    kind: "evidence",
+    state: "pending",
+  });
+  expect(attemptOf().decision).toBe("running");
+  report("passed", "passed", 13_000);
+  expect(attemptOf().checks.find((check) => check.id === "visual-proof")).toMatchObject({
+    kind: "evidence",
+    state: "passed",
+  });
+  expect(attemptOf().decision).toBe("accepted");
+});
+
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr);

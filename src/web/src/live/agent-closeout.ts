@@ -99,7 +99,11 @@ export function agentCloseoutOf(
       run && entry.runs.indexOf(run) === number - 1 ? [run] : [],
     );
     const head = [...runs].sort((a, b) => b.sequence - a.sequence)[0]?.head ?? "";
-    const checksShown = shown.map(({ entry, run }) => toCheck(entry, run, nowMs, env));
+    const checksShown = shown.map(({ entry, run }) =>
+      entry.kind === "evidence"
+        ? evidenceCheck(entry, report?.status.get(entry.id))
+        : toCheck(entry, run, nowMs, env),
+    );
     attempts.push({
       number,
       decision: decisionOf(checksShown),
@@ -161,7 +165,17 @@ function toCheck(
 }
 
 function checkKind(kind: string): CheckKind {
-  return kind === "setup" || kind === "review" ? kind : "command";
+  return kind === "setup" || kind === "review" || kind === "evidence" ? kind : "command";
+}
+
+function evidenceCheck(entry: Check, status: string | undefined): StatusCheck {
+  return {
+    id: entry.id,
+    kind: "evidence",
+    state: status === "passed" ? "passed" : "pending",
+    command: entry.command,
+    detail: null,
+  };
 }
 
 function decisionOf(checks: readonly StatusCheck[]): VerdictDecision {

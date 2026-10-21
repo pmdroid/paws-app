@@ -1106,6 +1106,7 @@ function checkKind(kind: string): CheckKind {
   const value = kind.toLowerCase();
   if (value === "review") return "review";
   if (value === "setup") return "setup";
+  if (value === "evidence") return "evidence";
   return "command";
 }
 
