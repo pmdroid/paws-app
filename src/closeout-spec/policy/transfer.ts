@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { PolicyFilesLoad } from "./load";
+import type { PublishedEvidence } from "../types";
 
 const MAX_FILES = 128;
 const MAX_BYTES = 45_000;
+const MAX_PUBLISHED = 200;
 
 const Transfer = z.union([
   z.strictObject({ absent: z.literal(true) }),
@@ -13,6 +15,16 @@ const Transfer = z.union([
       .array(z.strictObject({ path: z.string().min(1).max(1024), data: z.string().max(65536) }))
       .min(1)
       .max(MAX_FILES),
+    published: z
+      .array(
+        z.strictObject({
+          checkId: z.string().min(1).max(256),
+          media: z.enum(["image", "video"]),
+          commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+        }),
+      )
+      .max(MAX_PUBLISHED)
+      .optional(),
   }),
 ]);
 
@@ -29,6 +41,7 @@ export function encodePolicyFiles(load: PolicyFilesLoad): string {
       path,
       data: Buffer.from(bytes).toString("base64"),
     })),
+    ...(load.published ? { published: load.published.slice(-MAX_PUBLISHED) } : {}),
   });
 }
 
@@ -46,5 +59,12 @@ export function decodePolicyFiles(text: string): PolicyFilesLoad {
   );
   if (files.size !== parsed.files.length)
     return { ok: false, message: "Paws sent an invalid Closeout policy" };
-  return { ok: true, absent: false, digest: parsed.digest, files };
+  const published: PublishedEvidence[] | undefined = parsed.published;
+  return {
+    ok: true,
+    absent: false,
+    digest: parsed.digest,
+    files,
+    ...(published ? { published } : {}),
+  };
 }

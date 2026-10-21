@@ -4,7 +4,9 @@ import { parse, YAMLParseError } from "yaml";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
+  EvidenceMedia,
   PolicyDocument,
+  PolicyEvidence,
   PolicyImport,
   PolicyItem,
   PolicyReview,
@@ -22,6 +24,7 @@ ajv.addSchema(schema);
 const validatePolicy = compiled("urn:closeout:policy:0.1");
 const validateCommand = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/command" });
 const validateReview = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/review" });
+const validateEvidence = ajv.compile({ $ref: "urn:closeout:policy:0.1#/$defs/evidence" });
 
 export type ParsedPolicy = { ok: true; document: PolicyDocument } | { ok: false; message: string };
 
@@ -85,6 +88,9 @@ function itemSchemaMessage(value: unknown): string | undefined {
         return formatUnder(`/items/${index}`, validateCommand.errors?.[0]);
     } else if (item.kind === "review") {
       if (!validateReview(item)) return formatUnder(`/items/${index}`, validateReview.errors?.[0]);
+    } else if (item.kind === "evidence") {
+      if (!validateEvidence(item))
+        return formatUnder(`/items/${index}`, validateEvidence.errors?.[0]);
     } else {
       return `/items/${index} must match exactly one schema in oneOf`;
     }
@@ -198,6 +204,19 @@ function decodeItem(value: unknown): PolicyItem {
     if (paths !== undefined) item.paths = paths;
     return item;
   }
+  if (value.kind === "evidence") {
+    const item: PolicyEvidence = { id: value.id, kind: "evidence", gate: "beforePR" };
+    if (value.media !== undefined) item.media = expectStrings(value.media).map(expectMedia);
+    if (value.minimum !== undefined) item.minimum = expectInt(value.minimum);
+    if (value.hint !== undefined) item.hint = expectString(value.hint);
+    if (paths !== undefined) item.paths = paths;
+    return item;
+  }
+  throw new Error("document does not match the schema");
+}
+
+function expectMedia(value: string): EvidenceMedia {
+  if (value === "image" || value === "video") return value;
   throw new Error("document does not match the schema");
 }
 

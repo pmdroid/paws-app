@@ -99,8 +99,30 @@ export type PolicyReview = {
   paths?: PolicyPaths;
 };
 
+/** Media an evidence requirement counts. */
+export type EvidenceMedia = "image" | "video";
+
+/**
+ * Paws extension to draft 0.1. Screenshots or videos the agent publishes with
+ * `publish_artifact` and this `checkId`. Nothing runs. The requirement passes
+ * when the task published at least `minimum` files of an allowed `media` kind
+ * at the candidate head or an ancestor of it.
+ */
+export type PolicyEvidence = {
+  id: string;
+  kind: "evidence";
+  gate: Gate;
+  /** Defaults to `["image", "video"]`. */
+  media?: EvidenceMedia[];
+  /** Integer from 1 to 100. Defaults to 1. */
+  minimum?: number;
+  /** Shown to the agent by `get_closeout`. 1 to 500 characters. */
+  hint?: string;
+  paths?: PolicyPaths;
+};
+
 /** Unknown kinds are not in `policy.schema.json`. See `ResolvedUnsupported`. */
-export type PolicyItem = PolicyCommand | PolicyReview;
+export type PolicyItem = PolicyCommand | PolicyReview | PolicyEvidence;
 
 /**
  * Entry document only. An imported file that contains `setup` does not load.
@@ -185,6 +207,25 @@ export type ResolvedReview = {
   paths?: string[];
 };
 
+/** Resolved evidence requirement, with `media` and `minimum` defaulted. */
+export type ResolvedEvidence = {
+  id: string;
+  kind: "evidence";
+  gate: Gate;
+  media: EvidenceMedia[];
+  minimum: number;
+  hint?: string;
+  paths?: string[];
+};
+
+/** One video or screenshot Paws keeps for a check of this task. */
+export type PublishedEvidence = {
+  checkId: string;
+  media: EvidenceMedia;
+  /** Lowercase hex commit the workspace was at when the file was published. */
+  commit: string;
+};
+
 /**
  * Resolved setup step. The file has no `kind` and no `gate`; resolution sets
  * `kind` to `setup` and `gate` to `beforePR`. Setup steps are not items.
@@ -220,7 +261,12 @@ export type ResolvedUnsupported = {
 };
 
 /** Every resolved requirement, including setup steps. */
-export type ResolvedItem = ResolvedCommand | ResolvedReview | ResolvedSetup | ResolvedUnsupported;
+export type ResolvedItem =
+  | ResolvedCommand
+  | ResolvedReview
+  | ResolvedEvidence
+  | ResolvedSetup
+  | ResolvedUnsupported;
 
 /** Members of `ResolvedPolicy.items`. Setup steps live on `setup`. */
 export type ResolvedRequirement = Exclude<ResolvedItem, ResolvedSetup>;

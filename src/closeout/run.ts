@@ -32,6 +32,7 @@ import {
   type CloseoutProgressIdentity,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
+  type PublishedEvidence,
 } from "../closeout-spec";
 
 export type EvaluateInput = {
@@ -52,6 +53,8 @@ export type EvaluateInput = {
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
+  /** The task's videos and screenshots, read again for each evaluation. */
+  published?: () => readonly PublishedEvidence[];
 };
 
 export type Evaluation = {
@@ -85,6 +88,7 @@ export type GateInput = {
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
+  published?: () => readonly PublishedEvidence[];
 };
 
 /**
@@ -163,6 +167,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+      ...publishedOf(input),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(input.progress !== undefined ? { progress: input.progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
@@ -213,6 +218,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+      ...publishedOf(input),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -371,9 +377,20 @@ async function attemptFix(
   }
   if (fix.head !== actual)
     return { reason: "fix did not move HEAD to a new commit", final: true, at: actual };
-  if (fix.head === request.head)
+  if (fix.head === request.head && !evidenceOnly(request.items))
     return { reason: "fix did not move HEAD to a new commit", final: false };
   return { head: fix.head };
+}
+
+/** Publishing a screenshot or video needs no new commit. */
+export function evidenceOnly(items: readonly CloseoutItem[]): boolean {
+  const failed = items.filter((item) => item.state === "failed");
+  return failed.length > 0 && failed.every((item) => item.kind === "evidence");
+}
+
+function publishedOf(input: EvaluateInput): { published?: readonly PublishedEvidence[] } {
+  const published = input.published?.();
+  return published ? { published } : {};
 }
 
 export function snapshotRetryBaseline(taskId: string, pawsHome?: string): Promise<string[]> {
@@ -517,6 +534,7 @@ async function addReviewEvidence(
           ...(input.home !== undefined ? { home: input.home } : {}),
           ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
           ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
+          ...publishedOf(input),
         }),
       );
       if (refreshed.items.some((entry) => entry.state === "exhausted")) {
