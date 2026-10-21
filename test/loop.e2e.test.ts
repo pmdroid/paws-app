@@ -2099,17 +2099,32 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
 
 test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
   const result = await runRebaseConflict("clean", undefined, false);
-  expect(result.state, result.detail).toBe("merged");
-  expect(result.merged, result.detail).toBe(1);
-  expect(result.rounds, result.detail).toEqual([]);
-  expect(result.reviews, result.detail).toBe(result.reviewsBeforeUpdate);
-  expect(result.queues, result.detail).not.toContain(JOB_KIND.reverify);
-  expect(result.mergedHeads[0], result.detail).not.toBe(result.acceptedHead);
-  expect(result.mergedOnMovedMain, result.detail).toBe(true);
-  expect(result.thoughts, result.detail).toContain(
-    `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`,
-  );
-  expect(result.thoughts, result.detail).not.toContain("Branch updated, running Closeout again.");
+  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
+  // One comparison so a failure shows every fact at once.
+  expect(
+    {
+      state: result.state,
+      merged: result.merged,
+      rounds: result.rounds,
+      reviewsAfterUpdate: result.reviews - result.reviewsBeforeUpdate,
+      reverifyJobs: result.queues.filter((queue) => queue === JOB_KIND.reverify).length,
+      mergedAcceptedHead: result.mergedHeads[0] === result.acceptedHead,
+      mergedOnMovedMain: result.mergedOnMovedMain,
+      updatedNote: result.thoughts.includes(updated),
+      recheckNote: result.thoughts.includes("Branch updated, running Closeout again."),
+    },
+    `${result.detail}\n${JSON.stringify(result.thoughts)}`,
+  ).toEqual({
+    state: "merged",
+    merged: 1,
+    rounds: [],
+    reviewsAfterUpdate: 0,
+    reverifyJobs: 0,
+    mergedAcceptedHead: false,
+    mergedOnMovedMain: true,
+    updatedNote: true,
+    recheckNote: false,
+  });
 }, 120_000);
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
