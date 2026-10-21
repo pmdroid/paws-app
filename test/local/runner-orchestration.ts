@@ -222,9 +222,11 @@ export async function probeRunnerOrchestration(
     const crashed = scenario.startsWith("crashed-");
     let verificationExclusions: readonly string[] = [];
     let exclusionsForReverify = false;
+    // These scenarios check that a rebase before the merge runs Closeout again on the runner.
+    const mergeSettings = "[merge]\ncloseout_after_update = true\n";
     writeFileSync(
       join(home, "config.toml"),
-      '[checkout.projects."acme/fixture"]\nexclude = ["large"]\n',
+      `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude = ["large"]\n`,
     );
     const orchestrator = attachOrchestrator({
       db,
@@ -337,7 +339,7 @@ export async function probeRunnerOrchestration(
                 assert(verificationExclusions.length > 0);
                 writeFileSync(
                   join(home, "config.toml"),
-                  '[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n',
+                  `${mergeSettings}[checkout.projects."acme/fixture"]\nexclude = ["changed-after-capture"]\n`,
                 );
               }
               assert.deepEqual(
