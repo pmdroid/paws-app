@@ -1806,6 +1806,97 @@ test("ACP reviewer denies writes and commands", async () => {
   expect(trace.terminals[0]?.ok).toBe(false);
 });
 
+test("a read-only reviewer refused a terminal tool with only allow options keeps its turn", async () => {
+  const layout = await layoutRepo();
+  const allowOnly = [
+    { optionId: "once", name: "Allow once", kind: "allow_once" as const },
+    { optionId: "always", name: "Always allow", kind: "allow_always" as const },
+  ];
+  const files = await writeScript(layout.root, {
+    steps: [
+      {
+        type: "permission",
+        toolCall: {
+          toolCallId: "read",
+          title: "Read README.md",
+          kind: "read",
+          locations: [{ path: join(layout.worktree, "README.md") }],
+        },
+        options: allowOnly,
+      },
+      {
+        type: "permission",
+        toolCall: {
+          toolCallId: "find",
+          title: "find / -path '*react-router/package.json'",
+          name: "run_terminal_command",
+          kind: "execute",
+          rawInput: { command: "find / -path '*react-router/package.json'" },
+        },
+        options: allowOnly,
+      },
+      {
+        type: "permission",
+        toolCall: {
+          toolCallId: "test",
+          title: "bun test",
+          name: "run_terminal_command",
+          kind: "execute",
+          rawInput: { command: "bun test" },
+        },
+        options: allowOnly,
+      },
+      {
+        type: "update",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "No findings." },
+        },
+      },
+      { type: "end", stopReason: "end_turn" },
+    ],
+  });
+  const events: AcpEvent[] = [];
+  const result = await runAgent({
+    role: "reviewer",
+    itemId: "ENG-1",
+    runId: "readonly-allow-only",
+    prompt: "review",
+    readOnly: true,
+    checkpoint: false,
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    onEvent: (event) => void events.push(event),
+  });
+  expect(result.stopReason).toBe("end_turn");
+  expect(result.cancelled).toBe(false);
+  const trace = await readResult(files.resultPath);
+  expect(outcome(trace, "read")).toBe("once");
+  const refused = (id: string) =>
+    JSON.stringify(trace.permissions.find((permission) => permission.toolCallId === id)?.outcome);
+  expect(refused("find")).toContain("Paws refused this tool call: path is outside the worktree");
+  expect(refused("test")).toContain("Paws refused this tool call: this session is read-only");
+  expect(events.filter((event) => event.type === "permission")).toEqual([
+    expect.objectContaining({ toolCallId: "read", decision: "allow", optionId: "once" }),
+    {
+      type: "permission",
+      toolCallId: "find",
+      decision: "deny",
+      reason: "path is outside the worktree",
+      title: "find / -path '*react-router/package.json'",
+      kind: "execute",
+      name: "run_terminal_command",
+    },
+    expect.objectContaining({
+      toolCallId: "test",
+      decision: "deny",
+      reason: "this session is read-only",
+    }),
+  ]);
+});
+
 test("connection probe verifies the model in a disposable session", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {

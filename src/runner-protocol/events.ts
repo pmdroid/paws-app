@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RunnerArtifactSchema } from "./artifacts";
-import { RunnerActivitySchema } from "./activity";
+import { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 
 export const RunnerPlanStepSchema = z.strictObject({
   content: z
@@ -65,6 +65,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("artifact"), artifact: RunnerArtifactSchema }),
   z.strictObject({ type: z.literal("progress"), text: z.string().min(1).max(500) }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
+  z.strictObject({ type: z.literal("permission"), permission: RunnerPermissionSchema }),
   z.strictObject({
     type: z.literal("plan"),
     steps: z.array(RunnerPlanStepSchema).min(1).max(16),

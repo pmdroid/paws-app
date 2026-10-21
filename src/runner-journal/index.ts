@@ -6,6 +6,7 @@ import { openDatabase, immediate } from "../db";
 import {
   RunnerArtifactSchema,
   RunnerActivitySchema,
+  RunnerPermissionSchema,
   RunnerCommandSchema,
   RunnerEventSchema,
   type RunnerCommand,
@@ -208,6 +209,17 @@ export function openExecutionJournal(root: string) {
               ["question", "artifact", "closeout_policy"].includes(String(raw.type))
             )
               throw new Error("Invalid runner question");
+            const permission = z
+              .object({
+                type: z.literal("acp"),
+                event: z.object({ type: z.literal("permission") }).loose(),
+              })
+              .safeParse(raw);
+            if (permission.success) {
+              const { type: _type, ...decision } = permission.data.event;
+              const parsed = RunnerPermissionSchema.safeParse(decision);
+              if (parsed.success) event = { type: "permission", permission: parsed.data };
+            }
             const acp = z
               .object({
                 type: z.literal("acp"),

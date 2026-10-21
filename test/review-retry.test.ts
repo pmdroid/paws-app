@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { RunAgentOptions, RunAgentResult } from "../src/acp";
+import type { AcpEvent, RunAgentOptions, RunAgentResult } from "../src/acp";
 import { createAcpCodexReviewer } from "../src/loop";
 
 const finished: RunAgentResult = {
@@ -28,7 +28,17 @@ const request = {
   candidate: { session: "implementer", model: "implementer-model", provider: "fixture" },
 };
 
-function reviewer(outcomes: RunAgentResult[], signal?: AbortSignal) {
+const refusal: AcpEvent = {
+  type: "permission",
+  toolCallId: "find",
+  decision: "deny",
+  reason: "path is outside the worktree",
+  title: "find / -path '*react-router/package.json'",
+  kind: "execute",
+  name: "run_terminal_command",
+};
+
+function reviewer(outcomes: RunAgentResult[], signal?: AbortSignal, before: AcpEvent[] = []) {
   const runs: string[] = [];
   const review = createAcpCodexReviewer({
     pawsRoot: "/tmp/unused",
@@ -37,6 +47,7 @@ function reviewer(outcomes: RunAgentResult[], signal?: AbortSignal) {
     async agentRunner(options: RunAgentOptions) {
       runs.push(options.runId);
       const outcome = outcomes[runs.length - 1]!;
+      for (const event of before) await options.onEvent?.(event);
       if (!outcome.cancelled)
         await options.onEvent?.({
           type: "session_update",
@@ -69,4 +80,18 @@ test("a review cancelled twice still fails", async () => {
   const { review, runs } = reviewer([cancelled, cancelled]);
   await expect(review.review(request)).rejects.toThrow("Review did not complete: cancelled");
   expect(runs).toHaveLength(2);
+});
+
+test("a review cancelled twice after a refused tool call names the tool", async () => {
+  const { review, runs } = reviewer([cancelled, cancelled], undefined, [refusal]);
+  await expect(review.review(request)).rejects.toThrow(
+    "The reviewer stopped after Paws refused its tool call `run_terminal_command` (path is outside the worktree), so the change was not reviewed.",
+  );
+  expect(runs).toHaveLength(2);
+});
+
+test("a refused tool call does not fail a review that finishes", async () => {
+  const { review, runs } = reviewer([finished], undefined, [refusal]);
+  expect((await review.review(request)).findings).toEqual([]);
+  expect(runs).toHaveLength(1);
 });
