@@ -1933,4 +1933,11 @@ CREATE TABLE queue_wait (
 ) STRICT;
 `,
   },
+  {
+    id: "080_runner_cpu_count",
+    sql: `
+ALTER TABLE runner_host_status ADD COLUMN cpu_count INTEGER
+  CHECK (cpu_count IS NULL OR cpu_count BETWEEN 1 AND 1024);
+`,
+  },
 ];

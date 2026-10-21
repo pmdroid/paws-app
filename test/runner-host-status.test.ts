@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { consumeWorkspaceBootstrap, migrate, openDatabase, putWorkspaceUser } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
+import { cpuCountFromStat } from "../src/runner-daemon/host";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { releaseVersionFromPath } from "../src/runner-protocol";
 import { createRunnerWork, createRunnerWorkHttp } from "../src/runner-work";
@@ -139,9 +140,15 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
   });
 
   runner.advance(15_000);
-  expect((await runner.heartbeat({ ...sample, cpuPercent: 5 }))!.status).toBe(200);
+  expect((await runner.heartbeat({ ...sample, cpuPercent: 5, cpuCount: 8 }))!.status).toBe(200);
   const updated = (await runner.list()).runners[0]!;
-  expect(updated.metrics).toMatchObject({ cpuPercent: 5, reportedAt: runner.now() });
+  expect(updated.metrics).toMatchObject({
+    cpuPercent: 5,
+    cpuCount: 8,
+    reportedAt: runner.now(),
+  });
+  expect((await runner.heartbeat({ ...sample, cpuPercent: 5 }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.metrics).toMatchObject({ cpuCount: null });
   expect(runner.db.query("SELECT COUNT(*) AS count FROM runner_host_status").get()).toEqual({
     count: 1,
   });
@@ -167,6 +174,9 @@ test("out-of-range or unknown heartbeat fields are rejected", async () => {
     { osId: "ubuntu; rm -rf /" },
     { runnerVersion: "1.2" },
     { hostname: "leak" },
+    { cpuCount: 0 },
+    { cpuCount: 1.5 },
+    { cpuCount: 1025 },
   ])
     expect((await runner.heartbeat(body))!.status).toBe(403);
   expect((await runner.list()).runners[0]!.metrics).toBeNull();
@@ -188,7 +198,7 @@ test("the host sampler reads /proc, statfs, os-release and the release path", ()
   const proc = join(root, "proc");
   mkdirSync(proc);
   const stat = (user: number, idle: number) =>
-    `cpu  ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu0 ${user} 0 0 ${idle} 0 0 0 0 0 0\n`;
+    `cpu  ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu0 ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu1 ${user} 0 0 ${idle} 0 0 0 0 0 0\n`;
   writeFileSync(join(proc, "stat"), stat(100, 900));
   writeFileSync(
     join(proc, "meminfo"),
@@ -218,6 +228,7 @@ test("the host sampler reads /proc, statfs, os-release and the release path", ()
     osId: "debian",
     osVersion: "12",
     runnerVersion: "1.4.0",
+    cpuCount: 2,
   });
   expect(first.diskTotalBytes).toBeGreaterThan(0);
   expect(first.diskFreeBytes).toBeGreaterThanOrEqual(0);
@@ -235,6 +246,16 @@ test("the host sampler omits fields it cannot read", () => {
     executable: join(root, "missing"),
   });
   expect(sampleHost()).toEqual({});
+});
+
+test("cpu count counts cpuN lines and ignores the aggregate", () => {
+  expect(cpuCountFromStat("cpu  1 0 0 1 0 0 0 0 0 0\n")).toBeUndefined();
+  expect(cpuCountFromStat("cpu  1 0 0 1\ncpu0 1 0 0 1\ncpu1 1 0 0 1\n")).toBe(2);
+  const tooMany = [
+    "cpu  1 0 0 1",
+    ...Array.from({ length: 1025 }, (_, index) => `cpu${index} 1 0 0 1`),
+  ].join("\n");
+  expect(cpuCountFromStat(tooMany)).toBeUndefined();
 });
 
 test("release versions come only from a releases/<semver> path", () => {
