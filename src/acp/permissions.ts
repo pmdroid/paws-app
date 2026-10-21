@@ -40,6 +40,15 @@ const PACKAGE_MANAGERS = new Set([
   "cargo",
 ]);
 const COMMAND_KEYS = new Set(["command", "cmd", "script"]);
+const HOOK_TOOLS = new Set([
+  "ask_team",
+  "update_plan",
+  "open_pull_request",
+  "post_update",
+  "get_closeout",
+  "run_closeout",
+]);
+const READ_ONLY_KINDS = new Set(["read", "search", "think", "switch_mode"]);
 
 export function isInside(parent: string, child: string): boolean {
   const root = resolve(parent);
@@ -47,19 +56,24 @@ export function isInside(parent: string, child: string): boolean {
   return target === root || target.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
+/** A read-only session keeps the guard and also refuses anything that is not a read. */
+export function decideReadOnlyPermission(
+  subject: PermissionSubject,
+  ctx: GuardContext,
+): GuardDecision {
+  const decision = decidePermission(subject, ctx);
+  if (!decision.allow) return decision;
+  if (subject.name && HOOK_TOOLS.has(subject.name)) return decision;
+  if (subject.kind && READ_ONLY_KINDS.has(subject.kind)) return decision;
+  return { allow: false, reason: "this session is read-only" };
+}
+
 export function decidePermission(subject: PermissionSubject, ctx: GuardContext): GuardDecision {
   if (ctx.hostAccess) return { allow: true, reason: "runner user access" };
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
-  if (
-    subject.name === "ask_team" ||
-    subject.name === "update_plan" ||
-    subject.name === "open_pull_request" ||
-    subject.name === "post_update" ||
-    subject.name === "get_closeout" ||
-    subject.name === "run_closeout"
-  ) {
+  if (subject.name && HOOK_TOOLS.has(subject.name)) {
     return { allow: true, reason: `${subject.name} is handled by the injected hook` };
   }
 
