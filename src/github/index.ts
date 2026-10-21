@@ -8,7 +8,7 @@ export type {
   PullRequestRef,
   PullRequests,
 } from "./app";
-export { createFakeGitHub, fakeMergeReadiness, fakeRequiredChecks } from "./fake";
+export { createFakeGitHub, fakeActionsLogs, fakeMergeReadiness, fakeRequiredChecks } from "./fake";
 export type { FakeGitHub } from "./fake";
 export { checkGitHubSignature, handleGitHubWebhook } from "./webhook";
 export type { SignatureCheck } from "./webhook";
@@ -24,6 +24,9 @@ export { branchForIssue, fixesLine, githubHttpsUrl, pullRequestBody } from "./br
 export { createPullRequests, openPullRequest, publishAccepted, pushBranch } from "./pulls";
 export type { PullRequestClientOptions } from "./pulls";
 export { serialMerge } from "./merge";
+export { logTail, LOG_TAIL_CHARS, LOG_TAIL_LINES } from "./check-logs";
+export type { CiCheck, CiCheckLog, CiCheckState } from "./check-logs";
+export type { FailedCheck } from "./readiness";
 export type { SerialMergeInput } from "./merge";
 export {
   agentEnv,

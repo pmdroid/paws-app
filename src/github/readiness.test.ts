@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { fakeMergeReadiness, fakeRequiredChecks, type FakeCheckContext } from "./fake";
+import {
+  fakeActionsLogs,
+  fakeMergeReadiness,
+  fakeRequiredChecks,
+  type FakeCheckContext,
+} from "./fake";
+import type { CiCheck } from "./check-logs";
 import { waitForMergeReadiness } from "./readiness";
 import type { GitHubResponse } from "./types";
 
@@ -185,7 +191,9 @@ test("reads every check context page past the first 100 on the head and the base
     return { status: 200, body };
   });
   expect(result.outcome).toBe("ci_failed");
-  expect(result.failedChecks).toEqual([{ name: "check-100", url: "https://ci.example/check-100" }]);
+  expect(result.failedChecks).toEqual([
+    { name: "check-100", url: "https://ci.example/check-100", log: null },
+  ]);
   expect(seen.map((v) => [v.checksCursor, v.baseChecksCursor, v.readThreads])).toEqual([
     [null, null, true],
     ["checks-2", "base-2", false],
@@ -219,13 +227,15 @@ test("a failing check fails CI with its name, even while others still run", asyn
     expect(result).toEqual({
       outcome: "ci_failed",
       message: "CI failed on the candidate commit",
-      failedChecks: [{ name: "build", url: "https://ci.example/build" }],
+      failedChecks: [{ name: "build", url: "https://ci.example/build", log: null }],
     });
   }
   const status = await readOnce(() =>
     withChecks([{ context: "legacy", state: "ERROR", targetUrl: "https://ci.example/legacy" }]),
   );
-  expect(status.failedChecks).toEqual([{ name: "legacy", url: "https://ci.example/legacy" }]);
+  expect(status.failedChecks).toEqual([
+    { name: "legacy", url: "https://ci.example/legacy", log: null },
+  ]);
 });
 
 test("unreadable required checks block instead of merging", async () => {
@@ -388,4 +398,146 @@ test("a failed read logs the error message with GitHub tokens redacted", async (
   }
   expect(logged[0]).toContain("The Linear publication was superseded.");
   expect(logged.join("\n")).not.toContain(token);
+});
+
+const actions = { app: { slug: "github-actions" } };
+
+const roundChecks = (): FakeCheckContext[] => [
+  {
+    name: "check / lint",
+    databaseId: 11,
+    status: "COMPLETED",
+    conclusion: "SUCCESS",
+    detailsUrl: "https://github.com/o/r/actions/runs/1/job/11",
+    startedAt: "2026-10-21T10:00:00Z",
+    completedAt: "2026-10-21T10:00:38Z",
+    checkSuite: actions,
+  },
+  {
+    name: "check / test",
+    databaseId: 12,
+    status: "COMPLETED",
+    conclusion: "FAILURE",
+    detailsUrl: "https://github.com/o/r/actions/runs/1/job/12",
+    startedAt: "2026-10-21T10:00:00Z",
+    completedAt: "2026-10-21T10:04:51Z",
+    summary: "1 test failed",
+    checkSuite: actions,
+  },
+  {
+    name: "CodeQL / analyze",
+    databaseId: 13,
+    status: "IN_PROGRESS",
+    conclusion: null,
+    detailsUrl: "https://github.com/o/r/runs/13",
+    startedAt: "2026-10-21T10:01:00Z",
+    checkSuite: { app: { slug: "github-code-scanning" } },
+  },
+  {
+    name: "Cloudflare Pages",
+    databaseId: 14,
+    status: "COMPLETED",
+    conclusion: "FAILURE",
+    detailsUrl: "https://dash.cloudflare.com/x",
+    summary: "Build failed: missing env PAGES_TOKEN",
+    checkSuite: { app: { slug: "cloudflare-pages" } },
+  },
+  {
+    context: "deploy/preview",
+    state: "PENDING",
+    targetUrl: null,
+    createdAt: "2026-10-21T10:02:00Z",
+  },
+];
+
+function roundFixture(logs: Record<number, string>) {
+  const requested: string[] = [];
+  const f = fixture(() => withChecks(roundChecks()));
+  const request = f.input.client.request;
+  f.input.client.request = async (req: {
+    method: string;
+    path: string;
+    token: string;
+    body?: unknown;
+    responseType?: string;
+  }) => {
+    const log = fakeActionsLogs(req, logs);
+    if (!log) return request(req);
+    requested.push(`${req.path} ${req.responseType}`);
+    return log;
+  };
+  return { input: f.input, requested };
+}
+
+test("every check on the head reaches onChecks with its state, timing and a failing check's log tail", async () => {
+  const log = [
+    "2026-10-21T10:04:50.1234567Z bun test v1.4.2",
+    "2026-10-21T10:04:50.2234567Z \u001b[31m✗\u001b[0m lists a draining runner's sessions",
+    "2026-10-21T10:04:51.0000000Z  1 fail",
+    "",
+  ].join("\n");
+  const f = roundFixture({ 12: log });
+  const seen: { head: string; checks: CiCheck[] }[] = [];
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    releaseWhilePending: true,
+    onChecks: (at, checks) => {
+      seen.push({ head: at, checks });
+    },
+  });
+  const tail = "bun test v1.4.2\n✗ lists a draining runner's sessions\n 1 fail";
+  expect(f.requested).toEqual(["/repos/owner/repo/actions/jobs/12/logs text"]);
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.failedChecks).toEqual([
+    {
+      name: "check / test",
+      url: "https://github.com/o/r/actions/runs/1/job/12",
+      log: { source: "actions", text: tail },
+    },
+    {
+      name: "Cloudflare Pages",
+      url: "https://dash.cloudflare.com/x",
+      log: { source: "summary", text: "Build failed: missing env PAGES_TOKEN" },
+    },
+  ]);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]!.head).toBe(head);
+  expect(seen[0]!.checks.map((check) => [check.name, check.state])).toEqual([
+    ["check / lint", "passed"],
+    ["check / test", "failed"],
+    ["CodeQL / analyze", "running"],
+    ["Cloudflare Pages", "failed"],
+    ["deploy/preview", "running"],
+  ]);
+  expect(seen[0]!.checks[0]).toEqual({
+    name: "check / lint",
+    state: "passed",
+    url: "https://github.com/o/r/actions/runs/1/job/11",
+    startedAt: "2026-10-21T10:00:00Z",
+    completedAt: "2026-10-21T10:00:38Z",
+    log: null,
+  });
+  expect(seen[0]!.checks[1]!.log).toEqual({ source: "actions", text: tail });
+  expect(seen[0]!.checks[4]!.startedAt).toBe("2026-10-21T10:02:00Z");
+});
+
+test("an Actions log the token cannot read falls back to the check's summary", async () => {
+  const f = roundFixture({});
+  const result = await waitForMergeReadiness({ ...f.input, releaseWhilePending: true });
+  expect(f.requested).toEqual(["/repos/owner/repo/actions/jobs/12/logs text"]);
+  expect(result.failedChecks?.[0]?.log).toEqual({ source: "summary", text: "1 test failed" });
+});
+
+test("green and waiting reads report the checks without reading any log", async () => {
+  const f = fixture(() => withChecks([run("build", "SUCCESS"), run("lint", null)]));
+  const states: string[][] = [];
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    releaseWhilePending: true,
+    onChecks: (_, checks) => {
+      states.push(checks.map((check) => `${check.name}:${check.state}`));
+    },
+  });
+  expect(result.outcome).toBe("pending");
+  expect(states).toEqual([["build:passed", "lint:pending"]]);
 });
