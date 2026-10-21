@@ -27,6 +27,7 @@ import {
   recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
+  listCiRounds,
   listCloseoutRounds,
   listRuns,
   listArtifacts,
@@ -2648,6 +2649,26 @@ test("a CI failure goes back to the agent and merges once the fix is green", asy
   expect(result.implementRuns).toBe(2);
   expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
   expect(result.questions).toEqual([]);
+  expect(result.prompts[1]).toContain("- test (https://ci.example/1)");
+  expect(result.prompts[1]).toContain(
+    "Last lines of the log for test:\n```\nbun test v1.4.2\n(fail) formats an empty list\n1 fail\n```",
+  );
+  const [failed, green] = result.rounds;
+  expect(result.rounds).toHaveLength(2);
+  expect(failed).toMatchObject({
+    outcome: "failed",
+    action: "sent_back",
+    fixAttempt: 1,
+    fixLimit: 3,
+  });
+  expect(failed?.checks.map((check) => [check.name, check.state, check.logSource])).toEqual([
+    ["lint", "passed", null],
+    ["test", "failed", "actions"],
+    ["e2e", "running", null],
+  ]);
+  expect(failed?.checks[1]?.logTail).toBe("bun test v1.4.2\n(fail) formats an empty list\n1 fail");
+  expect(green).toMatchObject({ outcome: "passed", action: null });
+  expect(green?.head).not.toBe(failed?.head);
 }, 120_000);
 
 test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {
@@ -2658,6 +2679,10 @@ test("when the CI fix attempts run out, Paws asks in Linear instead of failing",
   expect(result.questions).toHaveLength(1);
   expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
   expect(result.questions[0]).toContain("- test (https://ci.example/1)");
+  expect(result.rounds.map((round) => [round.outcome, round.action, round.fixAttempt])).toEqual([
+    ["failed", "sent_back", 1],
+    ["failed", "asked", null],
+  ]);
 }, 120_000);
 
 test("a reply with guidance after the last CI fix attempt starts one more fix round", async () => {
@@ -2703,6 +2728,7 @@ async function runCiFix(options: {
   lines: string[];
   questions: string[];
   prompts: string[];
+  rounds: ReturnType<typeof listCiRounds>;
   detail: string;
 }> {
   const layout = await repoLayout();
@@ -2741,6 +2767,12 @@ async function runCiFix(options: {
       privateKeyPem: PRIVATE_KEY,
       client: {
         async request(req) {
+          if (req.path.endsWith("/actions/jobs/7/logs"))
+            return {
+              status: 200,
+              body: {},
+              text: "2026-10-21T10:00:00.0000000Z bun test v1.4.2\n2026-10-21T10:00:01.0000000Z (fail) formats an empty list\n2026-10-21T10:00:01.0000000Z 1 fail\n",
+            };
           if (req.path !== "/graphql") return client.request(req);
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
@@ -2748,7 +2780,14 @@ async function runCiFix(options: {
           const body = fakeMergeReadiness(head);
           body.data.repository.object.statusCheckRollup.contexts.nodes = [
             { name: "lint", conclusion: "SUCCESS", detailsUrl: "https://ci.example/0" },
-            { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
+            {
+              name: "test",
+              conclusion: "FAILURE",
+              detailsUrl: "https://ci.example/1",
+              databaseId: 7,
+              checkSuite: { app: { slug: "github-actions" } },
+            },
+            { name: "e2e", conclusion: null, detailsUrl: null },
           ];
           return { status: 200, body };
         },
@@ -2814,6 +2853,7 @@ async function runCiFix(options: {
         .filter((body) => body.startsWith("CI: ")),
       questions: tracker.questions.map((question) => question.body),
       prompts,
+      rounds: listCiRounds(db),
       detail: debug(layout, db),
     };
   } finally {

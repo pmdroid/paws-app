@@ -1933,4 +1933,21 @@ CREATE TABLE queue_wait (
 ) STRICT;
 `,
   },
+  {
+    id: "080_ci_round",
+    sql: `
+CREATE TABLE ci_round (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  head TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('running', 'failed', 'passed')),
+  checks TEXT NOT NULL CHECK (json_valid(checks)),
+  action TEXT CHECK(action IS NULL OR action IN ('sent_back', 'asked')),
+  fix_attempt INTEGER,
+  fix_limit INTEGER,
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, head)
+) STRICT;
+`,
+  },
 ];

@@ -124,6 +124,8 @@ import {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   listCloseoutRounds,
+  recordCiRound,
+  setCiRoundAction,
   startCloseoutRound,
   type CloseoutRecovery,
   markRun,
@@ -148,6 +150,7 @@ import {
   applyLinearCommand,
   listRepositoryCatalog,
   listRepositoryCandidates,
+  type CiRoundAction,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
@@ -2357,6 +2360,13 @@ export class Orchestrator {
         };
       },
     });
+    if (merged.head !== undefined && merged.checks !== undefined && merged.checks.length > 0)
+      recordCiRound(this.db, {
+        itemId: item.id,
+        head: merged.head,
+        checks: merged.checks,
+        now: this.now(),
+      });
     if (merged.outcome === "waiting") {
       if (this.stopped(item.id)) return;
       return {
@@ -2410,13 +2420,26 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
+        const round = (action: CiRoundAction, fixAttempt: number | null) => {
+          if (merged.head !== undefined)
+            setCiRoundAction(this.db, {
+              itemId: item.id,
+              head: merged.head,
+              action,
+              fixAttempt,
+              fixLimit: limit,
+            });
+        };
         if (
           this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
             ciFixRoundLine(checks, attempt, limit),
           )
-        )
+        ) {
+          round("sent_back", this.agentReturns(item.id, "ci-failed"));
           return;
+        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          round("asked", null);
           await this.flush();
           return;
         }
