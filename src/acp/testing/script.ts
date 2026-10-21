@@ -84,7 +84,7 @@ export interface FakeResult {
   sessionMeta?: unknown;
   loaded?: unknown;
   codexHome?: string;
-  permissions: Array<{ toolCallId?: string; outcome: unknown }>;
+  permissions: Array<{ toolCallId?: string; outcome: unknown; error?: string }>;
   fs: Array<{ op: "read" | "write"; path: string; ok: boolean; error?: string; content?: string }>;
   terminals: Array<{
     command: string;
