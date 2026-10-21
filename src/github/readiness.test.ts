@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
-import { fakeMergeReadiness } from "./fake";
+import { fakeMergeReadiness, fakeRequiredChecks, type FakeCheckContext } from "./fake";
 import { waitForMergeReadiness } from "./readiness";
 import type { GitHubResponse } from "./types";
 
 const head = "a".repeat(40);
 
-function fixture(reply: (cursor: string | null, poll: number) => GitHubResponse) {
+type Variables = Record<string, unknown>;
+
+function fixture(
+  reply: (variables: Variables, poll: number) => GitHubResponse,
+  required: { protection?: string[]; rulesets?: string[] } = {},
+) {
   let polls = 0;
   let sleeps = 0;
   const tokens: string[] = [];
@@ -20,27 +25,51 @@ function fixture(reply: (cursor: string | null, poll: number) => GitHubResponse)
       sleeps++;
     },
     client: {
-      async request(request: { path: string; token: string; body?: unknown }) {
-        expect(request.path).toBe("/graphql");
-        const variables = (request.body as { variables: Record<string, unknown> }).variables;
+      async request(request: { method: string; path: string; token: string; body?: unknown }) {
+        if (request.path !== "/graphql") {
+          const answer = fakeRequiredChecks(request, required);
+          if (!answer) throw new Error(`unexpected request ${request.path}`);
+          return answer;
+        }
+        const variables = (request.body as { variables: Variables }).variables;
         expect(variables.head).toBe(head);
         expect(variables.number).toBe(12);
         tokens.push(request.token);
-        return reply(variables.cursor as string | null, polls);
+        return reply(variables, polls);
       },
     },
   };
   return { input, tokens, sleeps: () => sleeps };
 }
 
+function withChecks(checks: FakeCheckContext[], baseChecks: FakeCheckContext[] = []) {
+  const body = fakeMergeReadiness(head);
+  body.data.repository.object.statusCheckRollup.contexts.nodes = checks;
+  body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts.nodes = baseChecks;
+  return { status: 200, body };
+}
+
+const run = (name: string, conclusion: string | null): FakeCheckContext => ({
+  name,
+  conclusion,
+  detailsUrl: `https://ci.example/${name}`,
+});
+
+async function readOnce(
+  reply: (variables: Variables, poll: number) => GitHubResponse,
+  required?: { protection?: string[]; rulesets?: string[] },
+) {
+  const f = fixture(reply, required);
+  return waitForMergeReadiness({ ...f.input, releaseWhilePending: true });
+}
+
 test("waits for both check runs and legacy statuses on the exact candidate", async () => {
-  const f = fixture((_, poll) => {
-    const body = fakeMergeReadiness(head);
-    const checks = body.data.repository.object.statusCheckRollup;
-    checks.contexts.statusContextCount = 1;
-    checks.state = poll === 1 ? "PENDING" : "SUCCESS";
-    return { status: 200, body };
-  });
+  const f = fixture((_, poll) =>
+    withChecks([
+      run("build", poll === 1 ? null : "SUCCESS"),
+      { context: "legacy", state: "SUCCESS", targetUrl: null },
+    ]),
+  );
   const messages: string[] = [];
   const result = await waitForMergeReadiness({
     ...f.input,
@@ -51,12 +80,176 @@ test("waits for both check runs and legacy statuses on the exact candidate", asy
   expect(result.outcome).toBe("ready");
   expect(f.sleeps()).toBe(1);
   expect(f.tokens).toEqual(["synthetic-token-1", "synthetic-token-2"]);
-  expect(messages).toEqual(["Waiting for CI on the candidate commit."]);
+  expect(messages).toEqual(["Waiting for checks: build."]);
+});
+
+test("a pending legacy status keeps the pull request waiting", async () => {
+  const result = await readOnce(() =>
+    withChecks([run("build", "SUCCESS"), { context: "legacy", state: "PENDING" }]),
+  );
+  expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: legacy." });
+});
+
+test("a check that registers after the others went green holds the merge until it reports", async () => {
+  // Cloudflare Pages reported on the base head, so it is expected on the candidate too.
+  const base = [run("build", "SUCCESS"), run("Cloudflare Pages", "SUCCESS")];
+  const f = fixture((_, poll) =>
+    withChecks(
+      poll === 1
+        ? [run("build", "SUCCESS")]
+        : poll === 2
+          ? [run("build", "SUCCESS"), run("Cloudflare Pages", null)]
+          : [run("build", "SUCCESS"), run("Cloudflare Pages", "SUCCESS")],
+      base,
+    ),
+  );
+  const messages: string[] = [];
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    onWait: async (message) => {
+      messages.push(message);
+    },
+  });
+  expect(result.outcome).toBe("ready");
+  expect(f.tokens.length).toBe(3);
+  expect(messages).toEqual(["Waiting for checks: Cloudflare Pages."]);
+});
+
+for (const source of ["protection", "rulesets"] as const) {
+  test(`waits for a required check from ${source} that has not reported`, async () => {
+    const result = await readOnce(() => withChecks([run("build", "SUCCESS")]), {
+      [source]: ["deploy preview"],
+    });
+    expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: deploy preview." });
+  });
+}
+
+test("a required check that reported green lets the merge through", async () => {
+  const result = await readOnce(
+    () => withChecks([run("build", "SUCCESS"), run("deploy preview", "SUCCESS")]),
+    { protection: ["build"], rulesets: ["deploy preview"] },
+  );
+  expect(result.outcome).toBe("ready");
+});
+
+for (const conclusion of ["NEUTRAL", "STALE", "ACTION_REQUIRED"]) {
+  test(`${conclusion} is not green`, async () => {
+    const result = await readOnce(() =>
+      withChecks([run("build", "SUCCESS"), run("lint", conclusion)]),
+    );
+    expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: lint." });
+  });
+}
+
+test("SKIPPED is green when the same check was skipped on the base head", async () => {
+  const result = await readOnce(() =>
+    withChecks(
+      [run("build", "SUCCESS"), run("release", "SKIPPED")],
+      [run("build", "SUCCESS"), run("release", "SKIPPED")],
+    ),
+  );
+  expect(result.outcome).toBe("ready");
+});
+
+for (const [label, base] of [
+  ["ran", [run("release", "SUCCESS")]],
+  ["did not report", []],
+] as const) {
+  test(`SKIPPED is not green when the check ${label} on the base head`, async () => {
+    const result = await readOnce(() =>
+      withChecks([run("build", "SUCCESS"), run("release", "SKIPPED")], [...base]),
+    );
+    expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: release." });
+  });
+}
+
+test("reads every check context page past the first 100 on the head and the base", async () => {
+  const seen: Variables[] = [];
+  const head100 = Array.from({ length: 100 }, (_, i) => run(`check-${i}`, "SUCCESS"));
+  const base100 = Array.from({ length: 100 }, (_, i) => run(`check-${i}`, "SUCCESS"));
+  const result = await readOnce((variables) => {
+    seen.push(variables);
+    const body = fakeMergeReadiness(head);
+    const checks = body.data.repository.object.statusCheckRollup.contexts;
+    const base = body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts;
+    checks.nodes = variables.checksCursor === null ? head100 : [run("check-100", "FAILURE")];
+    checks.pageInfo = {
+      hasNextPage: variables.checksCursor === null,
+      endCursor: variables.checksCursor === null ? "checks-2" : null,
+    };
+    base.nodes = variables.baseChecksCursor === null ? base100 : [run("late-on-base", "SUCCESS")];
+    base.pageInfo = {
+      hasNextPage: variables.baseChecksCursor === null,
+      endCursor: variables.baseChecksCursor === null ? "base-2" : null,
+    };
+    return { status: 200, body };
+  });
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.failedChecks).toEqual([{ name: "check-100", url: "https://ci.example/check-100" }]);
+  expect(seen.map((v) => [v.checksCursor, v.baseChecksCursor, v.readThreads])).toEqual([
+    [null, null, true],
+    ["checks-2", "base-2", false],
+  ]);
+});
+
+test("a check expected from the base head's second page keeps the merge waiting", async () => {
+  const result = await readOnce((variables) => {
+    const body = fakeMergeReadiness(head);
+    const base = body.data.repository.pullRequest.baseRef.target.statusCheckRollup.contexts;
+    base.nodes =
+      variables.baseChecksCursor === null ? [run("ci", "SUCCESS")] : [run("e2e", "SUCCESS")];
+    base.pageInfo = {
+      hasNextPage: variables.baseChecksCursor === null,
+      endCursor: variables.baseChecksCursor === null ? "base-2" : null,
+    };
+    return { status: 200, body };
+  });
+  expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: e2e." });
+});
+
+test("a failing check fails CI with its name, even while others still run", async () => {
+  for (const conclusion of ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]) {
+    const result = await readOnce(() =>
+      withChecks([
+        run("build", conclusion),
+        run("lint", null),
+        { context: "legacy", state: "SUCCESS", targetUrl: null },
+      ]),
+    );
+    expect(result).toEqual({
+      outcome: "ci_failed",
+      message: "CI failed on the candidate commit",
+      failedChecks: [{ name: "build", url: "https://ci.example/build" }],
+    });
+  }
+  const status = await readOnce(() =>
+    withChecks([{ context: "legacy", state: "ERROR", targetUrl: "https://ci.example/legacy" }]),
+  );
+  expect(status.failedChecks).toEqual([{ name: "legacy", url: "https://ci.example/legacy" }]);
+});
+
+test("unreadable required checks block instead of merging", async () => {
+  const f = fixture(() => withChecks([run("build", "SUCCESS")]));
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    client: {
+      async request(request) {
+        if (request.path.includes("/rules/branches/")) return { status: 403, body: {} };
+        return f.input.client.request(request);
+      },
+    },
+  });
+  expect(result).toEqual({
+    outcome: "blocked",
+    message: "could not read GitHub CI and review threads",
+  });
+  expect(f.sleeps()).toBe(2);
 });
 
 test("reads every review thread page and waits until unresolved threads are resolved", async () => {
-  const cursors: (string | null)[] = [];
-  const f = fixture((cursor, poll) => {
+  const cursors: unknown[] = [];
+  const f = fixture((variables, poll) => {
+    const cursor = variables.threadsCursor;
     cursors.push(cursor);
     const body = fakeMergeReadiness(head);
     const threads = body.data.repository.pullRequest.reviewThreads;
@@ -96,12 +289,13 @@ for (const absent of ["rollup", "contexts"]) {
           },
         };
       }
-      body.data.repository.object.statusCheckRollup.contexts.checkRunCount = 0;
+      body.data.repository.object.statusCheckRollup.contexts.nodes = [];
       return { status: 200, body };
     });
     const result = await waitForMergeReadiness(f.input);
     expect(result.outcome).toBe("blocked");
     expect(result.message).toContain("timed out");
+    expect(result.message).toContain("Waiting for CI on the candidate commit.");
     expect(f.tokens.length).toBe(270);
     expect(f.sleeps()).toBe(269);
   });

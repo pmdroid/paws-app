@@ -1,93 +1,111 @@
 import { z } from "zod";
+import { repoApiPath } from "./client";
 import type { GitHubClient } from "./types";
+
+const pageInfoSchema = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
+
+type PageInfo = z.infer<typeof pageInfoSchema>;
+
+const contextsSchema = z.object({
+  pageInfo: pageInfoSchema,
+  nodes: z.array(
+    z
+      .object({
+        name: z.string().optional(),
+        conclusion: z.string().nullable().optional(),
+        detailsUrl: z.string().nullable().optional(),
+        context: z.string().optional(),
+        state: z.string().optional(),
+        targetUrl: z.string().nullable().optional(),
+      })
+      .nullable(),
+  ),
+});
+
+const rollupSchema = z.object({ contexts: contextsSchema.optional() }).nullable();
 
 const responseSchema = z.object({
   errors: z.array(z.unknown()).optional(),
   data: z.object({
     repository: z.object({
-      object: z.object({
-        oid: z.string(),
-        statusCheckRollup: z
-          .object({
-            state: z.enum(["ERROR", "EXPECTED", "FAILURE", "PENDING", "SUCCESS"]),
-            contexts: z.object({
-              checkRunCount: z.number().int().nonnegative(),
-              statusContextCount: z.number().int().nonnegative(),
-              nodes: z
-                .array(
-                  z
-                    .object({
-                      name: z.string().optional(),
-                      conclusion: z.string().nullable().optional(),
-                      detailsUrl: z.string().nullable().optional(),
-                      context: z.string().optional(),
-                      state: z.string().optional(),
-                      targetUrl: z.string().nullable().optional(),
-                    })
-                    .nullable(),
-                )
-                .optional(),
-            }),
-          })
-          .nullable(),
-      }),
+      object: z.object({ oid: z.string(), statusCheckRollup: rollupSchema }),
       pullRequest: z.object({
         headRefOid: z.string(),
         state: z.enum(["OPEN", "CLOSED", "MERGED"]),
-        reviewThreads: z.object({
-          nodes: z.array(z.object({ isResolved: z.boolean() })),
-          pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
-        }),
+        baseRefName: z.string(),
+        baseRef: z
+          .object({
+            target: z.object({
+              oid: z.string().optional(),
+              statusCheckRollup: rollupSchema.optional(),
+            }),
+          })
+          .nullable(),
+        reviewThreads: z
+          .object({
+            nodes: z.array(z.object({ isResolved: z.boolean() })),
+            pageInfo: pageInfoSchema,
+          })
+          .optional(),
       }),
     }),
   }),
 });
 
-const query = `query MergeReadiness($owner: String!, $repo: String!, $number: Int!, $head: GitObjectID!, $cursor: String) {
+const query = `query MergeReadiness($owner: String!, $repo: String!, $number: Int!, $head: GitObjectID!, $checksCursor: String, $baseChecksCursor: String, $threadsCursor: String, $readChecks: Boolean!, $readBaseChecks: Boolean!, $readThreads: Boolean!) {
   repository(owner: $owner, name: $repo) {
     object(oid: $head) {
       ... on Commit {
         oid
         statusCheckRollup {
           state
-          contexts(first: 100) {
-            checkRunCount
-            statusContextCount
-            nodes {
-              ... on CheckRun { name conclusion detailsUrl }
-              ... on StatusContext { context state targetUrl }
-            }
-          }
+          contexts(first: 100, after: $checksCursor) @include(if: $readChecks) { ...Contexts }
         }
       }
     }
     pullRequest(number: $number) {
       headRefOid
       state
-      reviewThreads(first: 100, after: $cursor) {
+      baseRefName
+      baseRef {
+        target {
+          ... on Commit {
+            oid
+            statusCheckRollup {
+              state
+              contexts(first: 100, after: $baseChecksCursor) @include(if: $readBaseChecks) { ...Contexts }
+            }
+          }
+        }
+      }
+      reviewThreads(first: 100, after: $threadsCursor) @include(if: $readThreads) {
         nodes { isResolved }
         pageInfo { hasNextPage endCursor }
       }
     }
   }
+}
+
+fragment Contexts on StatusCheckRollupContextConnection {
+  pageInfo { hasNextPage endCursor }
+  nodes {
+    ... on CheckRun { name conclusion detailsUrl }
+    ... on StatusContext { context state targetUrl }
+  }
 }`;
 
 export type FailedCheck = { name: string; url: string | null };
 
-type Readiness = {
+export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
   failedChecks?: FailedCheck[];
 };
 
-const FAILED = new Set([
-  "FAILURE",
-  "ERROR",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-]);
+/** Conclusions and states that fail the pull request. Anything else that is not green waits. */
+const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
+
+type Check = { name: string; result: string | null; url: string | null };
 
 type ReadinessInput = {
   client: GitHubClient;
@@ -109,7 +127,7 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
   let failedReads = 0;
   for (let attempt = 0; attempt < 270; attempt++) {
     if (input.isCancelled?.()) return { outcome: "blocked", message: "merge cancelled" };
-    const result = await readReadiness(input);
+    const result = await readMergeReadiness(input);
     if (
       result.outcome === "blocked" &&
       result.message.startsWith("could not read") &&
@@ -129,13 +147,34 @@ export async function waitForMergeReadiness(input: ReadinessInput): Promise<Read
   return { outcome: "blocked", message: `merge timed out waiting for GitHub: ${previous}` };
 }
 
-async function readReadiness(input: ReadinessInput): Promise<Readiness> {
+/**
+ * Read the checks and review threads once. Green means every expected check
+ * (required on the base branch, or reported on the base branch's head) has
+ * reported on `head`, and every reported check finished with SUCCESS.
+ */
+export async function readMergeReadiness(input: ReadinessInput): Promise<Readiness> {
   try {
     const token = await input.token();
-    let cursor: string | null = null;
-    const cursors = new Set<string>();
+    const checks: Check[] = [];
+    const baseChecks: Check[] = [];
+    let baseBranch = "";
     let unresolved = 0;
-    for (;;) {
+    const cursors = {
+      checks: null as string | null,
+      base: null as string | null,
+      threads: null as string | null,
+    };
+    const more = { checks: true, base: true, threads: true };
+    const seen = new Set<string>();
+    const advance = (key: keyof typeof more, info: PageInfo): boolean => {
+      more[key] = info.hasNextPage;
+      if (!info.hasNextPage) return true;
+      if (!info.endCursor || seen.has(`${key}:${info.endCursor}`)) return false;
+      seen.add(`${key}:${info.endCursor}`);
+      cursors[key] = info.endCursor;
+      return true;
+    };
+    while (more.checks || more.base || more.threads) {
       const response = await input.client.request({
         method: "POST",
         path: "/graphql",
@@ -147,7 +186,12 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
             repo: input.repo,
             number: input.prNumber,
             head: input.head,
-            cursor,
+            checksCursor: cursors.checks,
+            baseChecksCursor: cursors.base,
+            threadsCursor: cursors.threads,
+            readChecks: more.checks,
+            readBaseChecks: more.base,
+            readThreads: more.threads,
           },
         },
       });
@@ -162,7 +206,7 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
                 : ", unexpected response shape"
           }`,
         );
-        return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
+        return unreadable();
       }
       const { object: commit, pullRequest: pull } = parsed.data.data.repository;
       if (commit.oid !== input.head || pull.headRefOid !== input.head) {
@@ -171,36 +215,36 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
       if (pull.state !== "OPEN") {
         return { outcome: "blocked", message: "pull request is no longer open" };
       }
-      const checks = commit.statusCheckRollup;
-      if (checks?.state === "FAILURE" || checks?.state === "ERROR") {
-        return {
-          outcome: "ci_failed",
-          message: "CI failed on the candidate commit",
-          failedChecks: (checks.contexts.nodes ?? []).flatMap((node) => {
-            const name = node?.name ?? node?.context;
-            const failed = FAILED.has(node?.conclusion ?? node?.state ?? "");
-            return name && failed
-              ? [{ name, url: node?.detailsUrl ?? node?.targetUrl ?? null }]
-              : [];
-          }),
-        };
+      if (pull.baseRef === null) {
+        return { outcome: "blocked", message: "pull request base branch no longer exists" };
       }
-      if (
-        checks === null ||
-        checks.contexts.checkRunCount + checks.contexts.statusContextCount === 0 ||
-        checks.state !== "SUCCESS"
-      ) {
-        return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
+      baseBranch = pull.baseRefName;
+      const rollups = {
+        checks: commit.statusCheckRollup,
+        base: pull.baseRef.target.statusCheckRollup ?? null,
+      };
+      for (const key of ["checks", "base"] as const) {
+        if (!more[key]) continue;
+        const rollup = rollups[key];
+        if (rollup === null) {
+          // A commit without a rollup has no checks yet.
+          more[key] = false;
+          continue;
+        }
+        if (!rollup.contexts) return unreadable();
+        (key === "checks" ? checks : baseChecks).push(...toChecks(rollup.contexts.nodes));
+        if (!advance(key, rollup.contexts.pageInfo)) return unreadable();
       }
-      unresolved += pull.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
-      const page = pull.reviewThreads.pageInfo;
-      if (!page.hasNextPage) break;
-      if (!page.endCursor || cursors.has(page.endCursor)) {
-        return { outcome: "blocked", message: "could not read all GitHub review threads" };
+      if (more.threads) {
+        if (!pull.reviewThreads) return unreadable();
+        unresolved += pull.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
+        if (!advance("threads", pull.reviewThreads.pageInfo)) return unreadable();
       }
-      cursors.add(page.endCursor);
-      cursor = page.endCursor;
     }
+    const required = await readRequiredChecks(input, token, baseBranch);
+    if (required === null) return unreadable();
+    const ci = judgeChecks(checks, baseChecks, required);
+    if (ci.outcome !== "ready") return ci;
     return unresolved > 0
       ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
@@ -214,6 +258,129 @@ async function readReadiness(input: ReadinessInput): Promise<Readiness> {
           : "unknown error"
       }`,
     );
-    return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
+    return unreadable();
+  }
+}
+
+function unreadable(): Readiness {
+  return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
+}
+
+function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
+  return nodes.flatMap((node) => {
+    const name = node?.name ?? node?.context;
+    if (!node || !name) return [];
+    return [
+      {
+        name,
+        result: node.conclusion ?? node.state ?? null,
+        url: node.detailsUrl ?? node.targetUrl ?? null,
+      },
+    ];
+  });
+}
+
+function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+  const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
+  if (failed.length > 0) {
+    return {
+      outcome: "ci_failed",
+      message: "CI failed on the candidate commit",
+      failedChecks: failed.map((check) => ({ name: check.name, url: check.url })),
+    };
+  }
+  const skippedOnBase = new Set(
+    baseChecks.filter((check) => check.result === "SKIPPED").map((check) => check.name),
+  );
+  const expected = new Set([...required, ...baseChecks.map((check) => check.name)]);
+  if (checks.length === 0 && expected.size === 0) {
+    return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
+  }
+  const reported = new Set(checks.map((check) => check.name));
+  const waiting = new Set([...expected].filter((name) => !reported.has(name)));
+  for (const check of checks) {
+    const green =
+      check.result === "SUCCESS" || (check.result === "SKIPPED" && skippedOnBase.has(check.name));
+    if (!green) waiting.add(check.name);
+  }
+  if (waiting.size > 0) {
+    return {
+      outcome: "pending",
+      message: `Waiting for checks: ${[...waiting].sort().join(", ")}.`,
+    };
+  }
+  return { outcome: "ready", message: "CI passed" };
+}
+
+const protectionSchema = z.object({
+  protection: z
+    .object({
+      required_status_checks: z
+        .object({
+          enforcement_level: z.string().optional(),
+          contexts: z.array(z.string()).optional(),
+          checks: z.array(z.object({ context: z.string() })).optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+const rulesSchema = z.array(
+  z.object({
+    type: z.string(),
+    parameters: z
+      .object({
+        required_status_checks: z.array(z.object({ context: z.string() })).optional(),
+      })
+      .passthrough()
+      .optional(),
+  }),
+);
+
+/** Required checks on the base branch from branch protection and rulesets, or null if unreadable. */
+async function readRequiredChecks(
+  input: ReadinessInput,
+  token: string,
+  branch: string,
+): Promise<Set<string> | null> {
+  const encoded = branch.split("/").map(encodeURIComponent).join("/");
+  const required = new Set<string>();
+  const branchResponse = await input.client.request({
+    method: "GET",
+    path: repoApiPath(input.owner, input.repo, `/branches/${encoded}`),
+    token,
+  });
+  const protection = protectionSchema.safeParse(branchResponse.body);
+  if (branchResponse.status !== 200 || !protection.success) {
+    console.error(`GitHub required checks read failed: branch status ${branchResponse.status}`);
+    return null;
+  }
+  const status = protection.data.protection?.required_status_checks;
+  if (status && status.enforcement_level !== "off") {
+    for (const name of status.contexts ?? []) required.add(name);
+    for (const check of status.checks ?? []) required.add(check.context);
+  }
+  for (let page = 1; ; page++) {
+    const response = await input.client.request({
+      method: "GET",
+      path: repoApiPath(
+        input.owner,
+        input.repo,
+        `/rules/branches/${encoded}?per_page=100&page=${page}`,
+      ),
+      token,
+    });
+    const rules = rulesSchema.safeParse(response.body);
+    if (response.status !== 200 || !rules.success) {
+      console.error(`GitHub required checks read failed: rules status ${response.status}`);
+      return null;
+    }
+    for (const rule of rules.data) {
+      if (rule.type !== "required_status_checks") continue;
+      for (const check of rule.parameters?.required_status_checks ?? [])
+        required.add(check.context);
+    }
+    if (rules.data.length < 100) return required;
   }
 }

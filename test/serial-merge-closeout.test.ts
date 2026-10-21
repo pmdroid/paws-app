@@ -9,6 +9,7 @@ import { evaluateCandidate, type Evaluation } from "../src/closeout";
 import {
   INSTALLATION_PERMISSIONS,
   fakeMergeReadiness,
+  fakeRequiredChecks,
   serialMerge,
   type GitHubClient,
   type GitHubResponse,
@@ -127,6 +128,8 @@ function mergingClient(bare: string, onMerge?: () => GitHubResponse | null): Git
         const { head } = (req.body as { variables: { head: string } }).variables;
         return { status: 200, body: fakeMergeReadiness(head) };
       }
+      const required = fakeRequiredChecks(req);
+      if (required) return required;
       if (req.path.endsWith("/access_tokens")) {
         n += 1;
         return { status: 201, body: tokenBody(`ghs_merge_${n}`) };
