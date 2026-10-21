@@ -304,6 +304,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 
     const feedback = await repairFeedback(input, evaluation);
     const failures: string[] = [];
+    let lastThrown: string | undefined;
     let fixed: string | undefined;
     while (fixed === undefined) {
       if (fixAttempts >= maxFixAttempts) {
@@ -330,7 +331,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
         summary: [feedback, ...failures].join("\n\n"),
       });
       if ("head" in outcome) fixed = outcome.head;
-      else if (outcome.final)
+      else if (outcome.final || (outcome.thrown && outcome.reason === lastThrown))
         return finalResult(
           input,
           "fix_failed",
@@ -341,6 +342,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
           outcome.reason,
         );
       else failures.push(`Fix attempt ${fixAttempts} failed: ${outcome.reason}`);
+      lastThrown = "thrown" in outcome && outcome.thrown ? outcome.reason : undefined;
     }
     head = fixed;
   }
@@ -349,7 +351,7 @@ export async function runCloseoutGate(input: GateInput): Promise<GateResult> {
 async function attemptFix(
   input: GateInput,
   request: FixRequest,
-): Promise<{ head: string } | { reason: string; final: boolean; at?: string }> {
+): Promise<{ head: string } | { reason: string; final: boolean; at?: string; thrown?: boolean }> {
   let fix;
   try {
     fix = await input.fixer.applyFix(request);
@@ -357,6 +359,7 @@ async function attemptFix(
     return {
       reason: error instanceof Error ? error.message : String(error),
       final: error instanceof Error && error.name === "AbortError",
+      thrown: true,
     };
   }
   if (!fix.ok) return { reason: fix.reason, final: fix.reason === "fix cancelled" };
