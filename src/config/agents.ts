@@ -11,6 +11,7 @@ import {
 import { dirname } from "node:path";
 import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
+import { setMergeSettingsText, type MergeSettings } from "./merge";
 
 export type AgentProfile = { agent: ImplementerName; model: string | null; effort?: string };
 export type AgentProfiles = { implementer: AgentProfile; reviewer: AgentProfile };
@@ -181,9 +182,14 @@ export function selectDefaultImplementer(
   });
 }
 
-export function writeAgentSettings(path: string, input: AgentSettings): void {
+export function writeAgentSettings(
+  path: string,
+  input: AgentSettings,
+  merge?: MergeSettings,
+): void {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const next = renderAgentSettingsText(current, input);
+  const agents = renderAgentSettingsText(current, input);
+  const next = merge === undefined ? agents : setMergeSettingsText(agents, merge);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
   const temp = `${path}.${crypto.randomUUID()}.tmp`;

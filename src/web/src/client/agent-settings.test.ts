@@ -53,6 +53,15 @@ describe("agent settings", () => {
     expect(settingsProblems(data)[0]).toStartWith("Global defaults:");
   });
 
+  test("the Merging section shows the Closeout after update switch, off when missing", () => {
+    const off = renderAgentSettings(view());
+    expect(off).toContain("<h2>Merging</h2>");
+    expect(off).toContain("Run Closeout again after a branch update");
+    expect(off).toMatch(/name="merge-closeout-after-update"[^>]*aria-describedby="[^"]+" >/);
+    const on = renderAgentSettings(view({ ...settings(), merge: { closeoutAfterUpdate: true } }));
+    expect(on).toMatch(/name="merge-closeout-after-update"[^>]*checked>/);
+  });
+
   test("settings remain reachable before any status items exist", () => {
     expect(parseRoute("/settings")).toEqual({ view: "settings" });
     expect(routeHref({ view: "settings" })).toBe("/settings");

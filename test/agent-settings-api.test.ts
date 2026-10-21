@@ -60,6 +60,7 @@ describe("local agent settings API", () => {
         { repo: "pmdroid/library" },
         { repo: "pmdroid/barkvisor" },
       ],
+      merge: { closeoutAfterUpdate: false },
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
@@ -69,9 +70,52 @@ describe("local agent settings API", () => {
     writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
     const response = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(response?.status).toBe(200);
-    expect(await response!.json()).toEqual(settings);
+    expect(await response!.json()).toEqual({ ...settings, merge: { closeoutAfterUpdate: false } });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
+  });
+
+  test("reads and writes the Closeout after update switch, and a missing key means off", async () => {
+    const { options } = fixture();
+    writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
+    const read = async () =>
+      ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
+        .merge;
+    expect(await read()).toEqual({ closeoutAfterUpdate: false });
+
+    const on = await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: true } }),
+      options,
+    );
+    expect(on?.status).toBe(200);
+    expect(((await on!.json()) as { merge: unknown }).merge).toEqual({ closeoutAfterUpdate: true });
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      "[merge]\ncloseout_after_update = true",
+    );
+    expect(await read()).toEqual({ closeoutAfterUpdate: true });
+
+    // Saving profiles without the switch keeps the stored value.
+    await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
+    expect(await read()).toEqual({ closeoutAfterUpdate: true });
+
+    await handleAgentSettingsRequest(
+      request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: false } }),
+      options,
+    );
+    expect(await read()).toEqual({ closeoutAfterUpdate: false });
+    const text = readFileSync(options.configPath, "utf8");
+    expect(text.match(/\[merge\]/g)).toHaveLength(1);
+    expect(text).toContain("max_turns = 31");
+    expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
+
+    for (const merge of [{ closeoutAfterUpdate: "yes" }, { other: true }, true]) {
+      const rejected = await handleAgentSettingsRequest(
+        request(undefined, "PUT", { ...settings, merge }),
+        options,
+      );
+      expect(rejected?.status).toBe(400);
+    }
+    expect(await read()).toEqual({ closeoutAfterUpdate: false });
   });
 
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {
