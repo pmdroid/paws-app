@@ -37,6 +37,7 @@ import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
   fakeMergeReadiness,
+  fakeRequiredChecks,
   type GitHubClient,
   type GitHubResponse,
   type GitHubTokenProvider,
@@ -1995,7 +1996,9 @@ test("the active task merges while a later task in its session also waits to mer
           const body = fakeMergeReadiness(
             (req.body as { variables: { head: string } }).variables.head,
           );
-          body.data.repository.object.statusCheckRollup.state = "PENDING";
+          body.data.repository.object.statusCheckRollup.contexts.nodes = [
+            { name: "ci", conclusion: null },
+          ];
           return { status: 200, body };
         },
       },
@@ -2112,7 +2115,9 @@ test.each(["pending", "merged"] as const)(
                 const body = fakeMergeReadiness(
                   (req.body as { variables: { head: string } }).variables.head,
                 );
-                body.data.repository.object.statusCheckRollup.state = "PENDING";
+                body.data.repository.object.statusCheckRollup.contexts.nodes = [
+                  { name: "ci", conclusion: null },
+                ];
                 return { status: 200, body };
               }
               return client.request(req);
@@ -2360,16 +2365,9 @@ test.each([false, true])(
             if (failedHeads.size > 0 && !failedHeads.has(head)) return client.request(req);
             failedHeads.add(head);
             const body = fakeMergeReadiness(head);
-            Object.assign(body.data.repository.object.statusCheckRollup, {
-              state: "FAILURE",
-              contexts: {
-                checkRunCount: 1,
-                statusContextCount: 0,
-                nodes: [
-                  { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
-                ],
-              },
-            });
+            body.data.repository.object.statusCheckRollup.contexts.nodes = [
+              { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
+            ];
             return { status: 200, body };
           },
         },
@@ -2488,7 +2486,9 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
           const body = fakeMergeReadiness(
             (req.body as { variables: { head: string } }).variables.head,
           );
-          body.data.repository.object.statusCheckRollup.state = "PENDING";
+          body.data.repository.object.statusCheckRollup.contexts.nodes = [
+            { name: "ci", conclusion: null },
+          ];
           return { status: 200, body };
         },
       },
@@ -2972,6 +2972,8 @@ function githubClient(
         const { head } = (req.body as { variables: { head: string } }).variables;
         return { status: 200, body: fakeMergeReadiness(head) };
       }
+      const required = fakeRequiredChecks(req);
+      if (required) return required;
       if (req.path.endsWith("/access_tokens")) {
         n += 1;
         await github.mintInstallationToken({
