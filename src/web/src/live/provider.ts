@@ -38,6 +38,7 @@ import type {
 } from "../../../db";
 import {
   getLinearConversationSource,
+  getRun,
   listAgentCloseout,
   listCloseoutProgress,
   listEvidence,
@@ -184,7 +185,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
-    evidence: evidenceFor(db, records, runs),
+    evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
   };
 }
@@ -212,11 +213,7 @@ function agentCloseoutFor(
 }
 
 /** Evidence of the visible items only, so a reader without the item's session sees none of it. */
-function evidenceFor(
-  db: Database,
-  records: readonly WorkItemRecord[],
-  runs: readonly StatusRun[],
-): StatusEvidence[] {
+function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEvidence[] {
   return records
     .flatMap((record) =>
       listEvidence(db, record.id).map((stored) => ({
@@ -231,7 +228,7 @@ function evidenceFor(
         sizeBytes: stored.sizeBytes,
         headCommit: stored.headCommit,
         publishedAt: new Date(stored.createdAt).toISOString(),
-        publisher: runs.find((run) => run.id === stored.runId)?.agent ?? "Paws",
+        publisher: agentName(getRun(db, stored.runId)?.agent ?? "paws"),
       })),
     )
     .sort(

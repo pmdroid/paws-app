@@ -96,7 +96,8 @@ describe("live evidence", () => {
       `<div id="evidence-gallery" data-run="${run.id}"></div>`,
     );
     expect(filterEvidence(snapshot.evidence!, "video").map((entry) => entry.id)).toEqual([VIDEO]);
-    const bare = insertRun(db, { itemId: "item", now: 40, agent: "claude" });
+    insertQueuedItem(db, { id: "bare-item", title: "No evidence", sessionKey: "visible", now: 3 });
+    const bare = insertRun(db, { itemId: "bare-item", now: 40, agent: "claude" });
     const html = page(snapshotFor(db), { view: "runs", id: bare.id });
     expect(html).not.toContain("evidence-gallery");
     expect(page(snapshot, { view: "runs", id: later.id })).toContain("evidence-gallery");
@@ -127,7 +128,7 @@ describe("live evidence", () => {
       'alt="Cart &lt;total&gt;.png"',
     ])
       expect(html).toContain(text);
-    expect(html).not.toContain(OTHER_RUN);
+    expect(html).toContain(OTHER_RUN);
     const image = page(snapshot, { view: "evidence", id: IMAGE });
     expect(image).toContain("1280×720");
   });
