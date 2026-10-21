@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, and an independent review must pass before a pull request.
+description: Lint, format, typecheck, tests, the status dashboard build, Markdown links, screenshots of changed screens, and an independent review must pass before a pull request.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -39,6 +39,13 @@ items:
     gate: beforePR
     exec: ["bun", "run", "links"]
     timeoutSeconds: 300
+  - id: visual-proof
+    kind: evidence
+    gate: beforePR
+    paths: ["src/web/**", "landing/**"]
+    media: [image, video]
+    minimum: 1
+    hint: Screenshot each changed screen at desktop width and at 390 px.
   - id: independent-review
     kind: review
     gate: beforePR
