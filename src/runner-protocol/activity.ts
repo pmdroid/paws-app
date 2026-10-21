@@ -61,6 +61,16 @@ function publicString(limit: number) {
     .pipe(z.string().max(limit * 3));
 }
 
+export const RunnerPermissionSchema = z.strictObject({
+  toolCallId: z.string().min(1).max(1024),
+  decision: z.enum(["allow", "deny", "cancelled"]),
+  reason: publicString(1024),
+  optionId: z.string().max(1024).optional(),
+  title: publicString(4096).optional(),
+  kind: z.string().max(64).optional(),
+  name: publicString(256).optional(),
+});
+
 export const RunnerActivitySchema = activity.transform((update) => {
   if (update.sessionUpdate === "agent_message_chunk") return update;
   if (update.sessionUpdate === "plan")
