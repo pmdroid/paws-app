@@ -283,6 +283,7 @@ export function runnerRunningMarkup(sessions: readonly RunningSession[], now: nu
   return `<ul class="issue-list" role="list" aria-label="Running sessions">${rows}</ul>`;
 }
 
+/** Pause, drain, and revoke. Empty when this person cannot change runner status. */
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
   state: { manages: boolean; busy: boolean },
@@ -292,13 +293,29 @@ export function runnerActionsMarkup(
   const id = esc(runner.id);
   const pause =
     runner.status === "active"
-      ? `<button class="btn" data-runner-status="paused" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Pause</button>`
-      : `<button class="btn" data-runner-status="active" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Resume</button>`;
+      ? `<button type="button" class="btn" data-runner-status="paused" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Pause</button>`
+      : `<button type="button" class="btn" data-runner-status="active" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Resume</button>`;
   const drain =
     runner.status !== "draining"
-      ? `<button class="btn" data-runner-status="draining" data-runner="${id}" data-focus="status:${id}:draining"${disabled}>Drain</button>`
+      ? `<button type="button" class="btn" data-runner-status="draining" data-runner="${id}" data-focus="status:${id}:draining"${disabled}>Drain</button>`
       : "";
-  return `<div class="row">${pause}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
+  return `${pause}${drain}<details class="runner-revoke" data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button type="button" class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details>`;
+}
+
+/** One control at the top of the card. Copy stays a button when it is the only action. */
+function runnerMenuMarkup(runner: Runner, view: { role: string | null; busy: boolean }): string {
+  const id = esc(runner.id);
+  const copy = `<button type="button" class="btn" data-runner-copy="${id}" data-focus="copy:${id}" aria-label="Copy runner id ${id}">Copy id</button>`;
+  const signIn =
+    runner.status === "revoked" || view.role === null || view.role === "observer"
+      ? ""
+      : `<button type="button" class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
+  const actions = runnerActionsMarkup(runner, {
+    manages: view.role === "owner" || view.role === "admin",
+    busy: view.busy,
+  });
+  if (!signIn && !actions) return copy;
+  return `<details class="runner-menu" data-details="menu:${id}"><summary class="btn" data-focus="menu:${id}" aria-haspopup="menu">Actions</summary><div class="runner-menu-panel">${copy}${signIn}${actions}</div></details>`;
 }
 
 /** The concurrency field for owners and admins, or the values for everyone else. */
@@ -501,21 +518,12 @@ export function runnerDetailMarkup(
       return `<li class="runner-agent"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</li>`;
     })
     .join("");
-  const signIn =
-    revoked || view.role === null || view.role === "observer"
-      ? ""
-      : `<div class="row"><button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button></div>`;
   const sharing =
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><div class="runner-heading"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><p class="runner-status" data-runner-state data-tone="${status.tone}">${esc(status.text)}</p></div><button type="button" class="btn" data-runner-copy="${id}" data-focus="copy:${id}" aria-label="Copy runner id ${id}">Copy id</button></div>${metadataLine(runner, view)}${hostMeters(runner, view.now)}${capacity}<ul class="runner-agents" aria-label="Agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
-    runner,
-    {
-      manages: view.role === "owner" || view.role === "admin",
-      busy: view.busy,
-    },
-  )}</section>`;
+  const menu = runnerMenuMarkup(runner, { role: view.role, busy: view.busy });
+  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><div class="runner-heading"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><p class="runner-status" data-runner-state data-tone="${status.tone}">${esc(status.text)}</p></div>${menu}</div>${metadataLine(runner, view)}${hostMeters(runner, view.now)}${capacity}<ul class="runner-agents" aria-label="Agents">${agents}</ul>${sharing}</section>`;
 }
 
 export function createRunners() {

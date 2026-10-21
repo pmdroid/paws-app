@@ -177,6 +177,7 @@ function replace(node: DOMNode): ReactElement | undefined {
             variant: has("primary") || attribs["aria-pressed"] === "true" ? "default" : "neutral",
             size: "default",
           }),
+          ancestorHas(node, "runner-menu-panel") && "w-full justify-start",
         ),
       },
       children(),
@@ -212,6 +213,10 @@ function replace(node: DOMNode): ReactElement | undefined {
         : name === "h2"
           ? "text-xl font-heading"
           : "text-base font-heading",
+    );
+  if (name === "summary" && ancestorHas(node, "runner-menu-panel"))
+    return styled(
+      "flex min-h-control w-full cursor-pointer list-none items-center rounded-base border-2 border-border bg-secondary-background px-4 py-2 text-left text-sm font-base [&::-webkit-details-marker]:hidden [&::marker]:content-none",
     );
   if (name === "summary" && (has("btn") || inRow(node)))
     return styled(
@@ -453,6 +458,14 @@ function replace(node: DOMNode): ReactElement | undefined {
       "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow outline-none backdrop:bg-overlay sm:max-w-lg",
     );
   if (has("dialog-body")) return styled("flex min-w-0 flex-col gap-4 p-6 [overflow-wrap:anywhere]");
+  if (has("runner-menu"))
+    return styled("relative min-w-0 max-w-full self-start open:basis-full sm:open:basis-auto");
+  if (has("runner-menu-panel"))
+    return styled(
+      "mt-2 flex w-full min-w-0 flex-col items-stretch gap-2 rounded-base border-2 border-border bg-secondary-background p-3 shadow-shadow sm:absolute sm:top-full sm:right-0 sm:z-20 sm:w-64",
+    );
+  if (has("runner-revoke"))
+    return styled("flex flex-col items-stretch gap-2 [&:not([open])]:gap-0");
   if (name === "details")
     return styled(
       inRow(node)
@@ -572,6 +585,15 @@ function metricTone(node: Element): { warn: boolean; stale: boolean } {
     current = current.parent instanceof Element ? current.parent : null;
   }
   return { warn: false, stale: false };
+}
+
+function ancestorHas(node: Element, className: string): boolean {
+  let current: Element | null = node.parent instanceof Element ? node.parent : null;
+  while (current) {
+    if ((current.attribs.class ?? "").split(/\s+/).includes(className)) return true;
+    current = current.parent instanceof Element ? current.parent : null;
+  }
+  return false;
 }
 
 function inRow(node: Element): boolean {
