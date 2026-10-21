@@ -102,6 +102,7 @@ async function fixture() {
 
 const sample = {
   cpuPercent: 37.5,
+  cpuCount: 8,
   memoryTotalBytes: 8_000_000_000,
   memoryAvailableBytes: 3_000_000_000,
   load1: 0.5,
@@ -124,6 +125,7 @@ test("a heartbeat stores host metrics and the runner list returns them", async (
     id: runner.runnerId,
     metrics: {
       cpuPercent: 37.5,
+      cpuCount: 8,
       memoryTotalBytes: 8_000_000_000,
       memoryAvailableBytes: 3_000_000_000,
       load1: 0.5,
@@ -163,6 +165,8 @@ test("out-of-range or unknown heartbeat fields are rejected", async () => {
   const runner = await fixture();
   for (const body of [
     { cpuPercent: 101 },
+    { cpuCount: 0 },
+    { cpuCount: 2.5 },
     { memoryTotalBytes: -1 },
     { osId: "ubuntu; rm -rf /" },
     { runnerVersion: "1.2" },
@@ -188,7 +192,7 @@ test("the host sampler reads /proc, statfs, os-release and the release path", ()
   const proc = join(root, "proc");
   mkdirSync(proc);
   const stat = (user: number, idle: number) =>
-    `cpu  ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu0 ${user} 0 0 ${idle} 0 0 0 0 0 0\n`;
+    `cpu  ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu0 ${user} 0 0 ${idle} 0 0 0 0 0 0\ncpu1 0 0 0 0 0 0 0 0 0 0\nintr 1 2\n`;
   writeFileSync(join(proc, "stat"), stat(100, 900));
   writeFileSync(
     join(proc, "meminfo"),
@@ -210,6 +214,7 @@ test("the host sampler reads /proc, statfs, os-release and the release path", ()
   const first = sampleHost();
   expect(first.cpuPercent).toBeUndefined();
   expect(first).toMatchObject({
+    cpuCount: 2,
     memoryTotalBytes: 16_384_000 * 1024,
     memoryAvailableBytes: 8_192_000 * 1024,
     load1: 0.1,

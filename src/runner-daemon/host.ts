@@ -22,12 +22,14 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
   let previous: CpuTicks | undefined;
   return (): RunnerHostStatus => {
     const sample: Record<string, unknown> = {};
-    const ticks = attempt(() => cpuTicks(readFileSync(join(proc, "stat"), "utf8")));
+    const stat = attempt(() => readFileSync(join(proc, "stat"), "utf8"));
+    const ticks = stat === undefined ? undefined : cpuTicks(stat);
     if (ticks && previous && ticks.total > previous.total) {
       const busy = 1 - (ticks.idle - previous.idle) / (ticks.total - previous.total);
       sample.cpuPercent = Math.round(Math.min(1, Math.max(0, busy)) * 1000) / 10;
     }
     if (ticks) previous = ticks;
+    if (stat !== undefined) sample.cpuCount = cpuCount(stat);
     Object.assign(
       sample,
       attempt(() => memory(readFileSync(join(proc, "meminfo"), "utf8"))),
@@ -70,6 +72,11 @@ export function cpuTicks(stat: string): CpuTicks | undefined {
     return undefined;
   // user nice system idle iowait irq softirq steal; guest time is already counted in user.
   return { idle: values[3]! + (values[4] ?? 0), total: values.reduce((sum, value) => sum + value) };
+}
+
+/** Online CPUs are the `cpuN` lines; undefined when there are none. */
+export function cpuCount(stat: string): number | undefined {
+  return stat.split("\n").filter((line) => /^cpu\d+\s/.test(line)).length || undefined;
 }
 
 export function memory(meminfo: string) {
