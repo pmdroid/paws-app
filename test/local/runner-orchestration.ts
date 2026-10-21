@@ -120,6 +120,7 @@ export async function probeRunnerOrchestration(
         "rebase",
         "rebase-failing",
         "rebase-unreachable",
+        "rebase-empty-report",
       ]) {
     const unavailable = scenario === "unavailable";
     const rebase = scenario.startsWith("rebase");
@@ -149,6 +150,7 @@ export async function probeRunnerOrchestration(
       reverifying: boolean;
       prompt: string;
       networkGit: boolean;
+      mainSha?: string;
     }[] = [];
     const checkedHeads: string[] = [];
     const witnessCalls = 0;
@@ -352,6 +354,7 @@ export async function probeRunnerOrchestration(
               reverifying,
               prompt: options.prompt,
               networkGit: !!options.networkGit,
+              mainSha: options.mainSha,
             });
             if (unavailable) throw new Error("fixture remote transport unavailable");
             if (checks) {
@@ -376,6 +379,16 @@ export async function probeRunnerOrchestration(
                 args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
                 env: { PATH: process.env.PATH!, HOME: home },
               });
+              if (scenario === "rebase-empty-report" && reverifying)
+                return {
+                  ...result,
+                  closeoutReport: JSON.stringify({
+                    required: [],
+                    pending: [],
+                    blocked: null,
+                    bypassed: false,
+                  }),
+                };
               const failing =
                 !reverifying ||
                 (scenario === "rebase-failing" &&
@@ -750,13 +763,20 @@ export async function probeRunnerOrchestration(
           const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
           const question = findOpenQuestion(db, "session");
           const rebased = checkedHeads.at(-1);
-          if (scenario === "rebase-unreachable") {
+          if (scenario === "rebase-unreachable" || scenario === "rebase-empty-report") {
             assert.equal(verified.state, "awaiting_input");
             assert.equal(reverifyChecks.length, 2);
             assert.equal(reviewRunId, "");
             assert(question);
             assert(question.body.includes("The Closeout checks could not run on the runner"));
-            assert(question.body.includes("fixture runner is offline"));
+            assert(
+              question.body.includes(
+                scenario === "rebase-unreachable"
+                  ? "fixture runner is offline"
+                  : "the runner's Closeout listed no checks",
+              ),
+              question.body,
+            );
             assert(!question.body.includes("Checks you can bypass"), question.body);
             assert(!question.body.includes("output is missing"), question.body);
           } else {
@@ -765,6 +785,7 @@ export async function probeRunnerOrchestration(
             assert(rebased && rebased !== accepted);
             await git(["-C", source, "merge-base", "--is-ancestor", movedMain, rebased]);
             assert.equal(reverifyChecks.length, 1);
+            assert.equal(reverifyChecks[0]!.mainSha, movedMain);
             assert.notEqual(reviewRunId, "");
             if (scenario === "rebase-failing") {
               const fixes = calls.filter(
