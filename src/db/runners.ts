@@ -86,6 +86,7 @@ export type RunnerHostSample = {
   load15?: number;
   diskTotalBytes?: number;
   diskFreeBytes?: number;
+  cpuCount?: number;
   osId?: string;
   osVersion?: string;
   runnerVersion?: string;
@@ -101,6 +102,7 @@ export type RunnerOverview = RunnerRecord & {
     load15: number | null;
     diskTotalBytes: number | null;
     diskFreeBytes: number | null;
+    cpuCount: number | null;
     reportedAt: number;
   } | null;
   os: { id: string | null; version: string | null } | null;
@@ -159,14 +161,15 @@ export function recordRunnerHostStatus(
 ): void {
   db.run(
     `INSERT INTO runner_host_status(runner_id,cpu_percent,memory_total_bytes,memory_available_bytes,
-    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,reported_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,reported_at,
+    cpu_count)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,
     memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
     load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
     disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
     os_id=excluded.os_id,os_version=excluded.os_version,runner_version=excluded.runner_version,
-    reported_at=excluded.reported_at`,
+    reported_at=excluded.reported_at,cpu_count=excluded.cpu_count`,
     [
       runnerId,
       sample.cpuPercent ?? null,
@@ -181,6 +184,7 @@ export function recordRunnerHostStatus(
       sample.osVersion ?? null,
       sample.runnerVersion ?? null,
       reportedAt,
+      sample.cpuCount ?? null,
     ],
   );
 }
@@ -200,6 +204,7 @@ export function listRunnerOverview(
     load15: number | null;
     diskTotalBytes: number | null;
     diskFreeBytes: number | null;
+    cpuCount: number | null;
     osId: string | null;
     osVersion: string | null;
     runnerVersion: string | null;
@@ -218,7 +223,7 @@ export function listRunnerOverview(
     h.cpu_percent AS cpuPercent,h.memory_total_bytes AS memoryTotalBytes,
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
-    h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
+    h.cpu_count AS cpuCount,h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
     h.reported_at AS reportedAt,
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
@@ -251,6 +256,7 @@ export function listRunnerOverview(
               load15: row.load15,
               diskTotalBytes: row.diskTotalBytes,
               diskFreeBytes: row.diskFreeBytes,
+              cpuCount: row.cpuCount,
               reportedAt: row.reportedAt,
             },
       os:

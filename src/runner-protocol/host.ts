@@ -22,6 +22,8 @@ export const RunnerHostStatusSchema = z.strictObject({
   load15: load.optional(),
   diskTotalBytes: bytes.optional(),
   diskFreeBytes: bytes.optional(),
+  /** Logical CPUs. Older runners omit it; load is then a number, not a gauge. */
+  cpuCount: z.number().int().min(1).max(1024).optional(),
   osId: osField.optional(),
   osVersion: osField.optional(),
   runnerVersion: releaseVersion.optional(),

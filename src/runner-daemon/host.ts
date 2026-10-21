@@ -22,12 +22,15 @@ export function createRunnerHostSampler(options: RunnerHostSamplerOptions) {
   let previous: CpuTicks | undefined;
   return (): RunnerHostStatus => {
     const sample: Record<string, unknown> = {};
-    const ticks = attempt(() => cpuTicks(readFileSync(join(proc, "stat"), "utf8")));
+    const stat = attempt(() => readFileSync(join(proc, "stat"), "utf8"));
+    const ticks = stat ? cpuTicks(stat) : undefined;
+    const cores = stat ? cpuCountFromStat(stat) : undefined;
     if (ticks && previous && ticks.total > previous.total) {
       const busy = 1 - (ticks.idle - previous.idle) / (ticks.total - previous.total);
       sample.cpuPercent = Math.round(Math.min(1, Math.max(0, busy)) * 1000) / 10;
     }
     if (ticks) previous = ticks;
+    if (cores) sample.cpuCount = cores;
     Object.assign(
       sample,
       attempt(() => memory(readFileSync(join(proc, "meminfo"), "utf8"))),
@@ -60,6 +63,12 @@ function attempt<T>(read: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Logical CPUs from `/proc/stat` lines `cpu0`, `cpu1`, … The aggregate `cpu` line is not a core. */
+export function cpuCountFromStat(stat: string): number | undefined {
+  const count = stat.split("\n").filter((line) => /^cpu\d+\s/.test(line)).length;
+  return count >= 1 && count <= 1024 ? count : undefined;
 }
 
 export function cpuTicks(stat: string): CpuTicks | undefined {
