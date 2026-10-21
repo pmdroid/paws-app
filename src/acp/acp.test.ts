@@ -1539,6 +1539,53 @@ test("ACP selects the advertised model and returns real session identity", async
   });
 });
 
+for (const offered of [true, false]) {
+  test(`a 1M profile ${offered ? "selects the [1m] entry" : "runs the standard model with one Linear line when the entry is missing"}`, async () => {
+    const layout = await layoutRepo();
+    const files = await writeScript(layout.root, {
+      model: "default",
+      modelOptions: [
+        { value: "default", name: "Default (recommended)" },
+        { value: "opus", name: "Opus 5.5" },
+        ...(offered ? [{ value: "opus[1m]", name: "Opus (1M context)" }] : []),
+      ],
+      steps: [{ type: "end" }],
+    });
+    const events: AcpEvent[] = [];
+    const result = await runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: "opus[1m]" },
+      itemId: "ENG-1",
+      runId: `long-context-${offered}`,
+      prompt: "implement",
+      worktreePath: layout.worktree,
+      pawsRoot: layout.pawsRoot,
+      command: process.execPath,
+      args: fakeAgentArgs(files),
+      checkpoint: false,
+      onEvent: (event) => void events.push(event),
+    });
+    const model = offered ? "opus[1m]" : "opus";
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.identity?.model).toBe(model);
+    expect((await readResult(files.resultPath)).modelSelection).toEqual({
+      sessionId: result.sessionId,
+      configId: "model",
+      value: model,
+    });
+    expect(events.filter((event) => event.type === "progress")).toEqual(
+      offered
+        ? []
+        : [
+            {
+              type: "progress",
+              text: "Opus 5.5 ran with the standard window: this runner's Claude account doesn't offer 1M.",
+            },
+          ],
+    );
+  });
+}
+
 for (const recommendation of ["Sonnet 5.5", "claude-sonnet-5-5"]) {
   test(`ACP confirms the concrete default model described as ${recommendation} before preflight`, async () => {
     const layout = await layoutRepo();

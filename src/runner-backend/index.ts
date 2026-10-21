@@ -598,8 +598,11 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "permission")
                 await emit({ type: "permission", ...event.permission });
-              if (event.type === "progress")
-                await input.postUpdate?.post(event.text).catch(() => undefined);
+              if (event.type === "progress") {
+                if (input.postUpdate)
+                  await input.postUpdate.post(event.text).catch(() => undefined);
+                else await emit({ type: "progress", text: event.text });
+              }
               if (event.type === "closeout_policy") {
                 const policy = input.closeoutPolicy
                   ? await input.closeoutPolicy().catch((error: unknown) => ({
