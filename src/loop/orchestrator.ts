@@ -3949,6 +3949,11 @@ export class Orchestrator {
     const prior =
       getRun(this.db, current.currentRunId)?.checkpoint?.commitPolicy ??
       getItemRunCommitPolicy(this.db, item.id);
+    if (prior) {
+      policyCoauthors(prior);
+      saveRunCommitPolicy(this.db, current.currentRunId, prior);
+      return prior;
+    }
     const resolved = await this.options.commitPolicyForItem(current);
     if (
       getWorkItem(this.db, item.id)?.currentRunId !== current.currentRunId ||
@@ -3956,16 +3961,9 @@ export class Orchestrator {
     )
       throw new Error("Attribution run changed while resolving identities");
     if (!resolved) throw new Error("Run attribution authority is unavailable");
-    if (prior && resolved && JSON.stringify(prior) !== JSON.stringify(resolved))
-      throw new Error(
-        "Run attribution authority changed; restore the snapshotted commit policy or start a new task.",
-      );
-    const policy = prior ?? resolved;
-    if (policy) {
-      policyCoauthors(policy);
-      saveRunCommitPolicy(this.db, current.currentRunId, policy);
-    }
-    return policy;
+    policyCoauthors(resolved);
+    saveRunCommitPolicy(this.db, current.currentRunId, resolved);
+    return resolved;
   }
 
   private agentDeps(item: WorkItemRecord): AcpAgentDeps {

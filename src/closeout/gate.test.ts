@@ -317,6 +317,34 @@ describe("closeout gate", () => {
     await repo.cleanup();
   });
 
+  test("a fixer that throws the same error twice stops instead of spending the budget", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
+    });
+    const attempts: number[] = [];
+    const result = await runCloseoutGate({
+      maxFixAttempts: 12,
+      worktree: repo.dir,
+      taskId: TASK,
+      base: repo.head,
+      head: repo.head,
+      candidate: candidate(),
+      home: repo.home,
+      pawsHome: repo.pawsHome,
+      reviewer: throwingReviewer(),
+      fixer: {
+        async applyFix(request) {
+          attempts.push(request.fixAttempt);
+          throw new Error("Run attribution authority changed");
+        },
+      },
+    });
+    expect(result.outcome).toBe("fix_failed");
+    expect(attempts).toEqual([1, 2]);
+    expect(result.summary).toContain("Run attribution authority changed");
+    await repo.cleanup();
+  });
+
   test("an explicit fix cap stops after two failed fixes", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([alwaysFail("test")], 5),
