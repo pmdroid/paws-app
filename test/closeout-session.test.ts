@@ -176,6 +176,33 @@ test("exhausted retries block another run", async () => {
   expect(readFileSync(mark, "utf8")).toBe("xx");
 });
 
+test("a failed check keeps its full output in an ignored log without staling other checks", async () => {
+  const root = initRepo();
+  writePolicy(root, [
+    'specVersion: "0.1"',
+    "items:",
+    command("quick", ["true"]),
+    command("noisy", [
+      process.execPath,
+      "-e",
+      'console.log("expected 1, received 2"); console.log("ok\\n".repeat(20000)); process.exit(1)',
+    ]),
+  ]);
+  writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");
+  const session = createCloseoutSession(root, local(root));
+  expect(await session.run("quick")).toBe("quick passed.");
+  const failed = await session.run("noisy");
+  expect(failed).not.toContain("expected 1, received 2");
+  expect(failed).toContain("Full output: .paws-closeout/noisy.log");
+  expect(readFileSync(join(root, ".paws-closeout", "noisy.log"), "utf8")).toStartWith(
+    "expected 1, received 2\n",
+  );
+  const report = JSON.parse(await session.report()) as Report;
+  expect(report.required.find((item) => item.id === "quick")?.status).toBe("passed");
+  const status = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" });
+  expect(status.stdout).not.toContain(".paws-closeout");
+});
+
 test("a denied command does not spawn and does not count as a failure", async () => {
   const root = initRepo();
   const mark = join(root, "ran.txt");
