@@ -44,6 +44,7 @@ import type { RunnerPlacement } from "../runner-placement";
 class RunnerUnavailableError extends Error {}
 
 const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
+const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
@@ -140,6 +141,7 @@ export function createRemoteAgentRunner(options: {
     runnerId?: string,
   ) {
     const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
+    const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
     for (;;) {
       const rejected: string[] = [];
       const selected = await place(itemId, placement, rejected, runnerId);
@@ -148,6 +150,14 @@ export function createRemoteAgentRunner(options: {
       const resetsAt = agent
         ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
+      if (
+        resetsAt === null &&
+        rejected.some((reason) => reason.endsWith(": no free capacity")) &&
+        performance.now() < capacityDeadline
+      ) {
+        await delay(interval, undefined, { signal: placement.signal });
+        continue;
+      }
       if (resetsAt === null)
         throw new RunnerUnavailableError(
           `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,

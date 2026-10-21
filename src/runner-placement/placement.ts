@@ -254,7 +254,7 @@ export function createRunnerPlacement(options: {
       const ranked = rows.flatMap((candidate) => {
         let runner = candidate;
         const hostOwnerId = runner.ownerId;
-        if (!runnerHasCapacity(db, runner.id, at)) return [];
+        if (input.purpose === "helper" && !runnerHasCapacity(db, runner.id, at)) return [];
         if (
           input.purpose === "helper" &&
           db
