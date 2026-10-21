@@ -41,6 +41,10 @@ export const RunnerRepositorySchema = z
     checkoutExclusions: RunnerCheckoutExclusionsSchema.optional(),
     remoteUrl: z.string().max(512),
     baseSha: z.string().regex(/^[a-f0-9]{40}$/),
+    mainSha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .optional(),
   })
   .refine(
     (repository) =>
@@ -103,6 +107,7 @@ export const RunnerCommandSchema = z
       skillsInputId: z.number().int().min(0).max(20).optional(),
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
+      checkpoint: z.literal(false).optional(),
     }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({

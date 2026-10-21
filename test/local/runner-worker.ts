@@ -680,6 +680,38 @@ export async function probeRunnerWorker(
     true,
     { agentStarted: false },
   );
+  const laterSha = (await invoke(["-C", repository, "rev-parse", "HEAD"])).trim();
+  const pinned = { ...job(7), executionId: "01J000000000000000000000PM" };
+  if (pinned.command.type !== "run") throw new Error("Expected run");
+  pinned.command.repository.baseSha = laterSha;
+  pinned.command.repository.mainSha = baseSha;
+  pinned.command.checkpoint = false;
+  const pinnedAgent = launch(40, [
+    { type: "terminal", command: "git", args: ["rev-parse", "refs/remotes/origin/main"] },
+    { type: "terminal", command: "sh", args: ["-c", "printf changed > base.txt"] },
+    { type: "end" },
+  ]);
+  const pinnedResult = await execute({
+    job: pinned,
+    repositoryBundle,
+    outputDirectory: output(40),
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: pinnedAgent.launch,
+  });
+  const pinnedTerminals = (
+    JSON.parse(readFileSync(pinnedAgent.result, "utf8")) as {
+      terminals: Array<{ output?: string }>;
+    }
+  ).terminals;
+  assert.equal(pinnedTerminals[0]?.output?.trim(), baseSha);
+  assert(pinnedResult.candidateSha === undefined || pinnedResult.candidateSha === laterSha);
+  observe(
+    "a run points origin/main at the task's main commit and keeps a checks-only run uncommitted",
+    true,
+    { mainSha: baseSha, checkout: laterSha, candidateSha: pinnedResult.candidateSha ?? null },
+  );
   const abort = new AbortController();
   const cancelledAgent = launch(4, [{ type: "hang" }]);
   const cancelOutput = output(4);

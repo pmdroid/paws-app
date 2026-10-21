@@ -30,6 +30,7 @@ import {
   type WorkItemRecord,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
+import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness } from "../../src/github";
 import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
@@ -116,8 +117,14 @@ export async function probeRunnerOrchestration(
         "resume-lease",
         "reverify-lease",
         "merge-lease",
+        "rebase",
+        "rebase-failing",
+        "rebase-unreachable",
+        "rebase-empty-report",
       ]) {
     const unavailable = scenario === "unavailable";
+    const rebase = scenario.startsWith("rebase");
+    const merging = scenario === "merge" || scenario === "merge-lease" || rebase;
     const home = join(root, scenario);
     mkdirSync(home, { mode: 0o700 });
     const db = openDatabase(join(home, "paws.db"));
@@ -136,7 +143,16 @@ export async function probeRunnerOrchestration(
     const clock = leaseScenario || mergeDependencyYield ? new FakeClock(Date.now()) : systemClock;
     const jobs = new JobLoop(db, clock, leaseScenario ? { leaseMs: 300 } : {});
     const outbox = new OutboxDispatcher(db, systemClock);
-    const calls: { role: string; prepare: boolean; prompt: string; networkGit: boolean }[] = [];
+    const calls: {
+      role: string;
+      prepare: boolean;
+      checks: boolean;
+      reverifying: boolean;
+      prompt: string;
+      networkGit: boolean;
+      mainSha?: string;
+    }[] = [];
+    const checkedHeads: string[] = [];
     const witnessCalls = 0;
     const appChecks: { currentRunId: string | null; checkpoint: unknown }[] = [];
     let implementationCount = 0;
@@ -252,7 +268,8 @@ export async function probeRunnerOrchestration(
             },
           }
         : {}),
-      ...(scenario === "merge" || scenario === "merge-lease"
+      remoteCloseoutRetry: { attempts: 2, delayMs: 0 },
+      ...(merging
         ? {
             github: {
               appId: "",
@@ -329,13 +346,79 @@ export async function probeRunnerOrchestration(
             if (reverifying) laterDispatches++;
             const item = getWorkItem(db, itemId)!;
             assert.equal(getRun(db, item.currentRunId!)?.status, "active");
+            const checks = options.runId.startsWith("checks-");
             calls.push({
               role: options.role,
               prepare: !!options.prepareOnly,
+              checks,
+              reverifying,
               prompt: options.prompt,
               networkGit: !!options.networkGit,
+              mainSha: options.mainSha,
             });
             if (unavailable) throw new Error("fixture remote transport unavailable");
+            if (checks) {
+              assert.equal(options.role, "implementer");
+              assert(options.closeoutPolicy);
+              if (scenario === "rebase-unreachable" && reverifying)
+                throw new Error("fixture runner is offline");
+              const head = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
+              checkedHeads.push(head);
+              const script = join(home, `agent-${calls.length}.json`);
+              writeFileSync(
+                script,
+                JSON.stringify({
+                  sessionId: `session-${calls.length}`,
+                  model: "fixture-implement-model",
+                  steps: [{ type: "end" }],
+                }),
+              );
+              const result = await runAgent({
+                ...options,
+                command: process.execPath,
+                args: [join(import.meta.dir, "../../src/acp/testing/fake-agent.ts"), "", script],
+                env: { PATH: process.env.PATH!, HOME: home },
+              });
+              if (scenario === "rebase-empty-report" && reverifying)
+                return {
+                  ...result,
+                  closeoutReport: JSON.stringify({
+                    required: [],
+                    pending: [],
+                    blocked: null,
+                    bypassed: false,
+                  }),
+                };
+              const failing =
+                !reverifying ||
+                (scenario === "rebase-failing" &&
+                  calls.filter((call) => call.checks && call.reverifying).length === 1);
+              return {
+                ...result,
+                closeoutReport: JSON.stringify({
+                  required: ["prepare", "check"].map((id) => ({
+                    id,
+                    status: failing && id === "check" ? "failed" : "passed",
+                    result: {
+                      argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
+                      head,
+                      exitCode: failing && id === "check" ? 1 : 0,
+                      timedOut: false,
+                      durationMs: 42,
+                      stdout:
+                        failing && id === "check"
+                          ? `RUNNER_CHECK_FAILED on ${head}\n`
+                          : `runner ${id} output\n`,
+                      stderr: "",
+                      truncated: false,
+                    },
+                  })),
+                  pending: [],
+                  blocked: null,
+                  bypassed: false,
+                }),
+              };
+            }
             if (initialLease && !options.prepareOnly && options.role === "implementer")
               await reclaim(options.signal);
             if (
@@ -383,10 +466,11 @@ export async function probeRunnerOrchestration(
               assert.notEqual(item.currentRunId, originalRunId);
               assert.equal(getRun(db, item.currentRunId!)?.kind, "review");
               reviewRunId = item.currentRunId!;
-              assert.deepEqual(
-                readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
-                originalProfile,
-              );
+              if (implementationCount === 2)
+                assert.deepEqual(
+                  readFileSync(join(home, "runs", reviewRunId, "agent-profile.json")),
+                  originalProfile,
+                );
               if (scenario === "reverify-lease" || scenario === "merge-lease")
                 await reclaim(options.signal);
               if (scenario === "error") throw new Error("fixture remote verification unavailable");
@@ -443,7 +527,10 @@ export async function probeRunnerOrchestration(
                         {
                           type: "fs_write",
                           path: join(options.worktreePath, "result.txt"),
-                          content: implementationCount === 1 ? "initial\n" : "fixed\n",
+                          content:
+                            implementationCount === 1
+                              ? `${scenario} initial\n`
+                              : `${scenario} fix ${implementationCount}\n`,
                         },
                         {
                           type: "update",
@@ -571,12 +658,14 @@ export async function probeRunnerOrchestration(
         assert.equal(implementationCount, 2);
         assert(calls.filter((call) => call.prepare).length === 2);
         assert(calls.some((call) => call.role === "reviewer" && !call.prepare));
-        const fix = calls.filter((call) => call.role === "implementer" && !call.prepare)[1]!;
+        const [implementation, fix] = calls.filter(
+          (call) => call.role === "implementer" && !call.prepare && !call.checks,
+        );
+        assert(implementation && fix);
         assert(fix.prompt.includes("PUBLIC_REMOTE_RESPONSE"));
         assert(fix.prompt.includes("Write output"));
-        const implementation = calls.filter(
-          (call) => call.role === "implementer" && !call.prepare,
-        )[0]!;
+        assert.equal(calls.filter((call) => call.checks).length, 1);
+        assert(fix.prompt.includes(`RUNNER_CHECK_FAILED on ${checkedHeads[0]}`), fix.prompt);
         assert.equal(fix.networkGit, implementation.networkGit);
         assert.equal(witnessCalls, 0);
       }
@@ -651,19 +740,70 @@ export async function probeRunnerOrchestration(
           clock.advance(30001);
         }
         reverifying = true;
-        const reverifyId =
-          scenario === "merge" || scenario === "merge-lease"
-            ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!
-                .id
-            : enqueueJob(db, {
-                queue: JOB_KIND.reverify,
-                priority: -100,
-                payload: { itemId: item.id },
-                now: clock.now(),
-              });
+        const accepted = item.checkpoint?.wipCommit;
+        let movedMain = "";
+        if (rebase) {
+          writeFileSync(join(source, "other.txt"), `Another task merged before ${scenario}\n`);
+          await git(["-C", source, "add", "other.txt"]);
+          await git(["-C", source, "commit", "-m", "Another task"]);
+          await git(["-C", source, "push", origin, "HEAD:main"]);
+          movedMain = await git(["-C", source, "rev-parse", "HEAD"]);
+        }
+        const reverifyId = merging
+          ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!.id
+          : enqueueJob(db, {
+              queue: JOB_KIND.reverify,
+              priority: -100,
+              payload: { itemId: item.id },
+              now: clock.now(),
+            });
         assert.equal((await jobs.tick())?.id, reverifyId);
         const verified = getWorkItem(db, item.id)!;
-        if (scenario === "reverify-lease" || scenario === "merge-lease") {
+        if (rebase) {
+          const reverifyChecks = calls.filter((call) => call.checks && call.reverifying);
+          const question = findOpenQuestion(db, "session");
+          const rebased = checkedHeads.at(-1);
+          if (scenario === "rebase-unreachable" || scenario === "rebase-empty-report") {
+            assert.equal(verified.state, "awaiting_input");
+            assert.equal(reverifyChecks.length, 2);
+            assert.equal(reviewRunId, "");
+            assert(question);
+            assert(question.body.includes("The Closeout checks could not run on the runner"));
+            assert(
+              question.body.includes(
+                scenario === "rebase-unreachable"
+                  ? "fixture runner is offline"
+                  : "the runner's Closeout listed no checks",
+              ),
+              question.body,
+            );
+            assert(!question.body.includes("Checks you can bypass"), question.body);
+            assert(!question.body.includes("output is missing"), question.body);
+          } else {
+            assert.equal(verified.state, "merged", question?.body ?? "no question");
+            assert.equal(question, null);
+            assert(rebased && rebased !== accepted);
+            await git(["-C", source, "merge-base", "--is-ancestor", movedMain, rebased]);
+            assert.equal(reverifyChecks.length, 1);
+            assert.equal(reverifyChecks[0]!.mainSha, movedMain);
+            assert.notEqual(reviewRunId, "");
+            if (scenario === "rebase-failing") {
+              const fixes = calls.filter(
+                (call) =>
+                  call.reverifying && call.role === "implementer" && !call.checks && !call.prepare,
+              );
+              assert.equal(fixes.length, 1);
+              assert(fixes[0]!.prompt.includes(`RUNNER_CHECK_FAILED on ${rebased}`));
+              assert.equal(implementationCount, 3);
+            } else assert.equal(implementationCount, 2);
+          }
+          observe(`remote rebase before merge runs the checks on the runner: ${scenario}`, true, {
+            accepted,
+            rebased,
+            state: verified.state,
+            checks: reverifyChecks.length,
+          });
+        } else if (scenario === "reverify-lease" || scenario === "merge-lease") {
           assert(leaseAborted);
           assert.equal(verified.currentRunId, replacementRunId);
           assert.equal(verified.state, "verifying");

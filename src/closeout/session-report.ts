@@ -57,15 +57,23 @@ export function readSessionCloseout(path: string): { head: string; report: strin
   return { head: record.head, report: record.report };
 }
 
-export function loggedSessionCloseout(
+export class CloseoutResultMissingError extends Error {
+  constructor(readonly checkId: string | undefined) {
+    super(
+      `Closeout checks could not run on this commit: no result for ${checkId ?? "a command check"}.`,
+    );
+    this.name = "CloseoutResultMissingError";
+  }
+}
+
+export function sessionCloseoutResult(
   report: string | undefined,
   request: LoggedCommandRequest,
-): CommandRunResult {
-  let result: SessionCommandResult | undefined;
+): SessionCommandResult | undefined {
   try {
     const parsed = JSON.parse(report ?? "null");
     const entries = Array.isArray(parsed?.required) ? parsed.required : [];
-    result = entries.find(
+    return entries.find(
       (entry: { id?: string; status?: string; result?: SessionCommandResult }) =>
         (!request.itemId || entry.id === request.itemId) &&
         entry.status !== "stale" &&
@@ -79,24 +87,31 @@ export function loggedSessionCloseout(
         typeof entry.result.timedOut === "boolean" &&
         typeof entry.result.truncated === "boolean",
     )?.result;
-  } catch {}
-  const stdout = result?.stdout ?? "";
-  const stderr =
-    result?.stderr ??
-    "Closeout command output is missing for this commit. Rerun the check on the candidate commit.\n";
+  } catch {
+    return undefined;
+  }
+}
+
+export function loggedSessionCloseout(
+  report: string | undefined,
+  request: LoggedCommandRequest,
+): CommandRunResult {
+  const result = sessionCloseoutResult(report, request);
+  if (!result) throw new CloseoutResultMissingError(request.itemId);
+  const { stdout, stderr } = result;
   const bytes = Buffer.from(`STDOUT\n${stdout}\nSTDERR\n${stderr}`, "utf8");
   mkdirSync(dirname(request.logFile), { recursive: true, mode: 0o700 });
   writeFileSync(request.logFile, bytes, { mode: 0o600 });
-  if (stdout) request.onOutput?.("stdout", stdout, result?.truncated ?? false);
-  if (stderr) request.onOutput?.("stderr", stderr, result?.truncated ?? false);
+  if (stdout) request.onOutput?.("stdout", stdout, result.truncated);
+  if (stderr) request.onOutput?.("stderr", stderr, result.truncated);
   return {
     argv: [...request.argv],
-    exitCode: result?.exitCode ?? 1,
-    timedOut: result?.timedOut ?? false,
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
     dirty: false,
     headMoved: false,
-    durationMs: result?.durationMs ?? 0,
-    truncated: result?.truncated ?? false,
+    durationMs: result.durationMs,
+    truncated: result.truncated,
     artifacts: [
       { path: request.artifactPath, sha256: createHash("sha256").update(bytes).digest("hex") },
     ],
