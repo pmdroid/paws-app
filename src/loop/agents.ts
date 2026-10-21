@@ -12,7 +12,7 @@ import type { AgentProfile } from "../config";
 import { git, runAgent } from "../acp";
 import type { Finding, FixRequest, FixResult, FixRunner, ReviewResult } from "../closeout";
 import type { CodexReviewer } from "../closeout";
-import { FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
+import { evidenceOnly, FINDING_FORMAT, parseFindings as parseReviewFindings } from "../closeout";
 
 export type AgentPurpose =
   | "implement"
@@ -212,7 +212,7 @@ export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
       if (!result.identity)
         return { ok: false, reason: "Fix agent did not report a concrete session model" };
       const head = (await git(["-C", request.worktree, "rev-parse", "HEAD"])).trim();
-      if (head === "" || head === request.head) {
+      if (head === "" || (head === request.head && !evidenceOnly(request.items))) {
         return { ok: false, reason: "fix did not move HEAD to a new commit" };
       }
       deps.onCandidate?.(result.identity);

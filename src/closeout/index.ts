@@ -9,7 +9,7 @@ export type { FixRequest, FixResult, FixRunner } from "./fixer";
 export type { VerdictRecorder } from "./report";
 export { writeVerdictReport } from "./report";
 export type { CodexReviewer, ReviewRequest, ReviewResult } from "./reviewer";
-export { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run";
+export { evaluateCandidate, evidenceOnly, runCloseoutGate, snapshotRetryBaseline } from "./run";
 export {
   CloseoutResultMissingError,
   loggedSessionCloseout,
@@ -27,6 +27,7 @@ export type {
   CloseoutProgressStep,
   CloseoutStepKind,
   CloseoutStepState,
+  PublishedEvidence,
 } from "../closeout-spec";
 export { formatEvidenceSummary, formatFixFeedback } from "./summary";
 export { MAX_FIX_ATTEMPTS } from "./types";

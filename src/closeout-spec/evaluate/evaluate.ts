@@ -19,7 +19,9 @@ import {
   type Finding,
   type Gate,
   type ItemState,
+  type PublishedEvidence,
   type ResolvedCommand,
+  type ResolvedEvidence,
   type ResolvedItem,
   type ResolvedPolicy,
   type ResolvedReview,
@@ -63,6 +65,10 @@ const BLOCKING: readonly ItemState[] = [
  *
  * `policyLoadError` blocks the decision with `policy.absent` false and null
  * path and digest. The policy argument is not consulted.
+ *
+ * `published` is the task's videos and screenshots at `head` or an ancestor
+ * of it. An `evidence` requirement counts them. Without it, that requirement
+ * fails.
  */
 export type EvaluateRequest = {
   base: string;
@@ -74,6 +80,7 @@ export type EvaluateRequest = {
   retryBaseline?: readonly string[];
   evidenceError?: string;
   policyLoadError?: string;
+  published?: readonly PublishedEvidence[];
 };
 
 export function decisionExit(decision: DecisionName): 0 | 1 | 3 {
@@ -209,6 +216,7 @@ function judgeItem(
   if (isUnsupported(item)) {
     return row(item, "unsupported", `kind ${item.kind} is not supported`);
   }
+  if (item.kind === "evidence") return judgeEvidence(item, request.published ?? []);
   const retry = policy.source === "none" ? undefined : policy.retry;
   const blocked = retryBlock(item, retry, policy.digest ?? "", records, request, trust);
   if (blocked) return blocked;
@@ -340,6 +348,46 @@ function judgeRecord(
     return judgeReview(item, record, request.candidate);
   }
   return row(item, "unsupported", `kind ${item.kind} is not supported`);
+}
+
+function judgeEvidence(
+  item: ResolvedEvidence,
+  published: readonly PublishedEvidence[],
+): DecisionItem {
+  const found = countEvidence(item, published);
+  if (found >= item.minimum)
+    return row(item, "passed", `${found} ${mediaNoun(item, found)} published`);
+  return row(
+    item,
+    "failed",
+    `${found} of ${item.minimum} ${mediaNoun(item, item.minimum)} published. ${evidenceRequest(item)}`,
+  );
+}
+
+/** Files published for this requirement in an allowed media kind. */
+export function countEvidence(
+  item: ResolvedEvidence,
+  published: readonly PublishedEvidence[],
+): number {
+  return published.filter((entry) => entry.checkId === item.id && item.media.includes(entry.media))
+    .length;
+}
+
+/** What the agent does to satisfy an evidence requirement. */
+export function evidenceRequest(item: ResolvedEvidence): string {
+  const call = `Call publish_artifact with checkId "${item.id}" for each file.`;
+  return item.hint === undefined ? call : `${item.hint} ${call}`;
+}
+
+function mediaNoun(item: ResolvedEvidence, count: number): string {
+  const one =
+    item.media.length === 1
+      ? item.media[0] === "video"
+        ? "video"
+        : "screenshot"
+      : "screenshot or video";
+  if (count === 1) return one;
+  return item.media.length === 1 ? `${one}s` : "screenshots or videos";
 }
 
 function judgeCommand(

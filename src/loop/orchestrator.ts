@@ -209,6 +209,7 @@ import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
   createLinearArtifactPublisher,
+  publishedEvidence,
   type EvidenceSink,
 } from "./artifacts";
 import { createLinearInputLoader } from "./input-files";
@@ -1836,6 +1837,7 @@ export class Orchestrator {
     const gate = createCloseoutGate({
       checkoutExclusions,
       candidate,
+      published: () => publishedEvidence(this.db, item.id),
       ...(commands ? { commandRunner: commands } : {}),
       reviewer: {
         async review(request) {
@@ -4206,7 +4208,12 @@ export class Orchestrator {
       return {};
     const { home, policyRoot } = this.closeoutHome(item);
     return {
-      closeoutPolicy: async () => trustedPolicyFiles(input.worktreePath, home, policyRoot),
+      closeoutPolicy: async () => {
+        const load = trustedPolicyFiles(input.worktreePath, home, policyRoot);
+        return load.ok && !load.absent
+          ? { ...load, published: publishedEvidence(this.db, item.id) }
+          : load;
+      },
     };
   }
 

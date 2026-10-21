@@ -8,7 +8,15 @@ import type { PolicyFilesLoad } from "./policy/load";
 import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
-import type { ResolvedItem, ResolvedRequirement, ResolvedSetup } from "./types";
+import { countEvidence, evidenceRequest } from "./evaluate/evaluate";
+import { publishedAtHead } from "./published";
+import type {
+  PublishedEvidence,
+  ResolvedEvidence,
+  ResolvedItem,
+  ResolvedRequirement,
+  ResolvedSetup,
+} from "./types";
 
 export type SessionCommandResult = {
   argv: string[];
@@ -94,12 +102,13 @@ type Listed = {
   paths?: string[];
   differentModel: boolean;
   matched: string[];
+  evidence?: ResolvedEvidence;
 };
 
 type Prepared =
   | { kind: "empty" }
   | { kind: "blocked"; message: string }
-  | { kind: "ready"; policy: TreePolicy; required: Listed[] };
+  | { kind: "ready"; policy: TreePolicy; required: Listed[]; published: PublishedEvidence[] };
 
 export function createCloseoutSession(
   workspace: string,
@@ -147,7 +156,10 @@ export function createCloseoutSession(
     }
     fingerprint = next;
     checkedHead = head;
-    return { kind: "ready", policy, required: select(policy, changes.paths) };
+    const published = source.published
+      ? await publishedAtHead(workspace, head, source.published, commandEnv())
+      : [];
+    return { kind: "ready", policy, required: select(policy, changes.paths), published };
   };
 
   return {
@@ -164,7 +176,7 @@ export function createCloseoutSession(
         const prepared = await prepare();
         if (prepared.kind === "blocked") return prepared.message;
         if (prepared.kind === "empty") return `No closeout check ${id}. Call get_closeout.`;
-        return runId(workspace, prepared.policy, prepared.required, memory, id, options);
+        return runId(workspace, prepared, memory, id, options);
       }),
   };
 }
@@ -227,6 +239,10 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
   }
   const max = prepared.policy.retry?.maxFailedAttemptsPerItem ?? null;
   const scope = prepared.policy.retry?.scope ?? null;
+  const status = (item: Listed) =>
+    item.evidence
+      ? evidenceStatus(item.evidence, prepared.published)
+      : statusOf(memory.get(item.id), max);
   const required = prepared.required.map((item) => {
     const state = memory.get(item.id);
     const failures = state?.failures ?? 0;
@@ -237,7 +253,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
       kind: item.kind,
       hint: item.hint,
       matched_paths: item.matched,
-      status: statusOf(state, max),
+      status: status(item),
       failed_attempts: failures,
       remaining_attempts:
         reviewCap !== undefined || max === null ? null : Math.max(0, max - failures),
@@ -255,7 +271,11 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     };
   });
   const pending = prepared.required
-    .filter((item) => item.kind !== "review" && runnable(memory.get(item.id), max))
+    .filter(
+      (item) =>
+        item.kind !== "review" &&
+        (item.evidence ? status(item) !== "passed" : runnable(memory.get(item.id), max)),
+    )
     .map((item) => item.id);
   const exhausted = prepared.required.filter(
     (item) => statusOf(memory.get(item.id), max) === "exhausted",
@@ -300,6 +320,10 @@ function statusOf(state: ItemMemory | undefined, max: number | null): string {
   return "missing";
 }
 
+function evidenceStatus(item: ResolvedEvidence, published: readonly PublishedEvidence[]): string {
+  return countEvidence(item, published) >= item.minimum ? "passed" : "missing";
+}
+
 function runnable(state: ItemMemory | undefined, max: number | null): boolean {
   const status = statusOf(state, max);
   return status !== "passed" && status !== "exhausted";
@@ -307,18 +331,23 @@ function runnable(state: ItemMemory | undefined, max: number | null): boolean {
 
 async function runId(
   workspace: string,
-  policy: TreePolicy,
-  required: readonly Listed[],
+  prepared: Extract<Prepared, { kind: "ready" }>,
   memory: Map<string, ItemMemory>,
   id: string,
   options: CloseoutSessionOptions,
 ): Promise<string> {
+  const { policy, required } = prepared;
   const known = [...policy.setup, ...policy.items].find((item) => item.id === id);
   if (known === undefined) return `No closeout check ${id}. Call get_closeout.`;
   const item = required.find((entry) => entry.id === id);
   if (item === undefined) return `Check ${id} is not required for the current changes.`;
   if (item.kind === "review") {
     return `Review ${id} requires a different model. An independent reviewer runs it after this turn.`;
+  }
+  if (item.evidence) {
+    const found = countEvidence(item.evidence, prepared.published);
+    if (found >= item.evidence.minimum) return `${id} passed. ${found} published.`;
+    return `${id} runs nothing. It needs ${item.evidence.minimum - found} more of: ${item.evidence.media.join(", ")}. ${evidenceRequest(item.evidence)}`;
   }
   const max = policy.retry?.maxFailedAttemptsPerItem ?? null;
   if (statusOf(memory.get(item.id), max) === "exhausted") {
@@ -460,6 +489,17 @@ function describeItem(item: ResolvedSetup | ResolvedRequirement, paths: readonly
       differentModel: false,
       ...(item.paths !== undefined ? { paths: item.paths } : {}),
       matched,
+    };
+  }
+  if (item.kind === "evidence") {
+    return {
+      id: item.id,
+      kind: item.kind,
+      hint: evidenceRequest(item),
+      differentModel: false,
+      ...(item.paths !== undefined ? { paths: item.paths } : {}),
+      matched,
+      evidence: item,
     };
   }
   if (item.kind === "review") {

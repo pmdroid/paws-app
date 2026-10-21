@@ -22,6 +22,7 @@ import {
   saveArtifact,
 } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
+import type { PublishedEvidence } from "../closeout";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
   return async (
@@ -44,6 +45,15 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
       throw new Error("Artifact snapshot integrity check failed");
     return { bytes, mimeType: artifact.mimeType, displayName: artifact.displayName };
   };
+}
+
+/** The item's Closeout videos and screenshots, for `evidence` checks. */
+export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
+  return listEvidence(db, itemId).map((row) => ({
+    checkId: row.checkId,
+    media: row.mediaType.startsWith("video/") ? "video" : "image",
+    commit: row.headCommit,
+  }));
 }
 
 /** Where Closeout videos and screenshots go. `src/index.ts` passes the evidence store. */
