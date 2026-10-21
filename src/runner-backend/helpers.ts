@@ -4,7 +4,7 @@ import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
 import type { RunnerHelpers } from "../runner-helpers";
 import type { RunnerPlacement } from "../runner-placement";
-import { UserFacingError } from "../core";
+import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { immediate, runnerHasCapacity } from "../db";
 import type { RunnerCommand } from "../runner-protocol";
 
@@ -87,12 +87,19 @@ export function createRemoteSessionAgentRunner(options: {
             } catch {}
           }
           if (command) break;
-          const slotBusy = options.db
+          const helperBusy = options.db
             .query(
               "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
             )
             .get(now());
-          if (!slotBusy || now() >= waitUntil)
+          const workFull = options.db
+            .query<{ id: string }, []>(
+              "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL",
+            )
+            .all()
+            .some((runner) => !runnerHasCapacity(options.db, runner.id, now()));
+          if (workFull && now() >= waitUntil) throw new RunnerSlotsBusyError();
+          if ((!helperBusy && !workFull) || now() >= waitUntil)
             throw new UserFacingError(
               `No paired runner can run ${profile.agent} for this issue right now. Check runner availability and usage limits, then retry.`,
             );
