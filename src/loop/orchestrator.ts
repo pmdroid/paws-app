@@ -1471,17 +1471,9 @@ export class Orchestrator {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
         markRunEnded(this.db, run.id, this.now());
-        this.post(
-          item,
-          "thought",
-          `Closeout: blocked\nreviewer failed: ${error instanceof Error ? error.message : String(error)}`,
-          `${run.id}:profile-preflight`,
-        );
-        await this.askCloseoutHelp(
-          item,
-          undefined,
-          `Closeout: blocked\nreviewer failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
+        this.post(item, "thought", summary, `${run.id}:profile-preflight`);
+        await this.askCloseoutHelp(item, undefined, summary);
         return;
       }
       const launched = this.launchAgent({
@@ -4053,19 +4045,27 @@ export class Orchestrator {
         checkpoint: false,
         prompt: "",
         signal,
+      }).catch((error: unknown) => {
+        throw new Error(
+          `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       });
       if (!result.agentExited) this.blockConversation(item.id);
       if (!result.identity || result.errorMessage)
-        throw new Error(result.errorMessage ?? `${role} did not report a concrete session model`);
+        throw new Error(
+          `${role} preparation failed: ${result.errorMessage ?? "it did not report a concrete session model"}`,
+        );
       identities.push(result.identity);
     }
     for (const check of requirements) {
       const [implementer, reviewer] = identities;
       if (check.independence.differentSession && implementer!.session === reviewer!.session)
-        throw new Error(`Closeout ${check.id} requires a different reviewer session`);
+        throw new Error(
+          `reviewer preparation failed: Closeout ${check.id} requires a different reviewer session`,
+        );
       if (check.independence.differentModel && implementer!.model === reviewer!.model)
         throw new Error(
-          `Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
+          `reviewer preparation failed: Closeout ${check.id} requires a different reviewer model; choose another reviewer profile`,
         );
     }
     profiles.implementer.model ??= identities[0]!.model;
