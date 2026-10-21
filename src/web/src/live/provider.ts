@@ -48,6 +48,7 @@ import {
   listOpenQuestions,
   listOutbox,
   listRuns,
+  runModelLabel,
   runRunnerName,
   listTaskBlockers,
   listWorkItemFacts,
@@ -298,6 +299,7 @@ function runsFor(
         ? runState(record, current.status)
         : "done",
       agent: agentName(current.agent),
+      model: runModelLabel(db, current.id),
       reviewer: runReviewer(pawsHome, current.id),
       runner: runRunnerName(db, current.id),
       startedAt: iso(first.createdAt, generatedAt),
