@@ -28,16 +28,19 @@ import {
   listJobs,
   listCloseoutRecoveries,
   listCloseoutRounds,
+  listCiRounds,
   listRuns,
   listArtifacts,
   listEvidence,
   listOutbox,
   migrate,
   openDatabase,
+  type CiRound,
 } from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
+  fakeActionsLogs,
   fakeMergeReadiness,
   fakeRequiredChecks,
   type GitHubClient,
@@ -2648,6 +2651,28 @@ test("a CI failure goes back to the agent and merges once the fix is green", asy
   expect(result.implementRuns).toBe(2);
   expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
   expect(result.questions).toEqual([]);
+  // The fix round's handoff carries the failing check's log tail, not just its name.
+  expect(result.prompts[1]).toContain("- test (https://ci.example/1)");
+  expect(result.prompts[1]).toContain("End of the log of test:");
+  expect(result.prompts[1]).toContain("error: expected 1, received 0\n 1 fail");
+  expect(result.prompts[1]).not.toContain("2026-10-21T10:04:50");
+  expect(
+    result.rounds.map((round) => [
+      round.checks.map((check) => `${check.name}:${check.state}`).join(" "),
+      round.next,
+      round.fixAttempt,
+      round.fixLimit,
+    ]),
+  ).toEqual([
+    ["lint:passed test:failed", "agent", 1, 3],
+    ["ci:passed", null, null, null],
+  ]);
+  expect(result.rounds[0]!.checks[1]!.log).toEqual({
+    source: "actions",
+    text: "bun test v1.4.2\nerror: expected 1, received 0\n 1 fail",
+  });
+  expect(result.rounds[0]!.pullNumber).toBe(1);
+  expect(result.rounds[0]!.runId).not.toBeNull();
 }, 120_000);
 
 test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {
@@ -2658,6 +2683,10 @@ test("when the CI fix attempts run out, Paws asks in Linear instead of failing",
   expect(result.questions).toHaveLength(1);
   expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
   expect(result.questions[0]).toContain("- test (https://ci.example/1)");
+  expect(result.rounds.map((round) => [round.next, round.fixAttempt, round.fixLimit])).toEqual([
+    ["agent", 1, 1],
+    ["asked", null, 1],
+  ]);
 }, 120_000);
 
 test("a reply with guidance after the last CI fix attempt starts one more fix round", async () => {
@@ -2703,6 +2732,7 @@ async function runCiFix(options: {
   lines: string[];
   questions: string[];
   prompts: string[];
+  rounds: CiRound[];
   detail: string;
 }> {
   const layout = await repoLayout();
@@ -2741,6 +2771,14 @@ async function runCiFix(options: {
       privateKeyPem: PRIVATE_KEY,
       client: {
         async request(req) {
+          const log = fakeActionsLogs(req, {
+            12: [
+              "2026-10-21T10:04:50.1000000Z bun test v1.4.2",
+              "2026-10-21T10:04:50.2000000Z error: expected 1, received 0",
+              "2026-10-21T10:04:51.0000000Z  1 fail",
+            ].join("\n"),
+          });
+          if (log) return log;
           if (req.path !== "/graphql") return client.request(req);
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
@@ -2748,7 +2786,13 @@ async function runCiFix(options: {
           const body = fakeMergeReadiness(head);
           body.data.repository.object.statusCheckRollup.contexts.nodes = [
             { name: "lint", conclusion: "SUCCESS", detailsUrl: "https://ci.example/0" },
-            { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
+            {
+              name: "test",
+              conclusion: "FAILURE",
+              detailsUrl: "https://ci.example/1",
+              databaseId: 12,
+              checkSuite: { app: { slug: "github-actions" } },
+            },
           ];
           return { status: 200, body };
         },
@@ -2814,6 +2858,10 @@ async function runCiFix(options: {
         .filter((body) => body.startsWith("CI: ")),
       questions: tracker.questions.map((question) => question.body),
       prompts,
+      rounds: listCiRounds(
+        db,
+        listWorkItems(db).map((item) => item.id),
+      ),
       detail: debug(layout, db),
     };
   } finally {

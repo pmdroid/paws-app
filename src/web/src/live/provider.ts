@@ -29,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AgentCloseoutEvent,
+  CiRound,
   Job,
   StoredRun,
   OpenQuestionRecord,
@@ -40,6 +41,7 @@ import {
   getLinearConversationSource,
   getRun,
   listAgentCloseout,
+  listCiRounds,
   listCloseoutProgress,
   listCloseoutRounds,
   listEvidence,
@@ -69,6 +71,7 @@ import {
   type StatusActivity,
   type StatusAgentCloseout,
   type StatusCheck,
+  type StatusCiRound,
   type StatusCloseoutAttempt,
   type StatusEvent,
   type StatusEvidence,
@@ -191,7 +194,84 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
+    ciRounds: ciRoundsFor(db, records, now.getTime(), env),
   };
+}
+
+/** CI rounds of the visible items. Log tails pass the same redaction as Closeout output. */
+function ciRoundsFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): StatusCiRound[] {
+  const byId = new Map(records.map((record) => [record.id, record]));
+  const rounds = new Map<string, number>();
+  return listCiRounds(db, [...byId.keys()]).map((round) => {
+    const record = byId.get(round.itemId)!;
+    const number = (rounds.get(round.itemId) ?? 0) + 1;
+    rounds.set(round.itemId, number);
+    const pullUrl = round.pullUrl === null ? null : httpUrl(round.pullUrl);
+    return {
+      itemId: publicId(record),
+      runId: round.runId,
+      round: number,
+      headSha: round.head,
+      pr:
+        round.pullNumber !== null && pullUrl !== null
+          ? { number: round.pullNumber, url: pullUrl }
+          : null,
+      outcome: ciOutcome(round),
+      next: round.next,
+      fixAttempt: round.fixAttempt,
+      fixLimit: round.fixLimit,
+      startedAt: new Date(round.startedAt).toISOString(),
+      updatedAt: new Date(round.updatedAt).toISOString(),
+      checks: round.checks.map((check) => {
+        const text = check.log ? redactCloseoutText(check.log.text, env) : null;
+        return {
+          name: check.name,
+          state: check.state,
+          url: check.url === null ? null : httpUrl(check.url),
+          startedAt: isoOrNull(check.startedAt),
+          completedAt: isoOrNull(check.completedAt),
+          durationMs: ciDuration(check, nowMs),
+          log:
+            check.log && text !== null
+              ? { source: check.log.source, text, lines: text.split("\n").length }
+              : null,
+        };
+      }),
+    };
+  });
+}
+
+function ciOutcome(round: CiRound): StatusCiRound["outcome"] {
+  if (round.checks.some((check) => check.state === "failed")) return "failed";
+  if (
+    round.checks.length === 0 ||
+    round.checks.some((check) => check.state === "running" || check.state === "pending")
+  )
+    return "waiting";
+  return "passed";
+}
+
+function ciDuration(check: CiRound["checks"][number], nowMs: number): number | null {
+  const started = check.startedAt === null ? Number.NaN : Date.parse(check.startedAt);
+  if (Number.isNaN(started)) return null;
+  const ended =
+    check.completedAt !== null
+      ? Date.parse(check.completedAt)
+      : check.state === "running"
+        ? nowMs
+        : Number.NaN;
+  return Number.isNaN(ended) || ended < started ? null : ended - started;
+}
+
+function isoOrNull(value: string | null): string | null {
+  if (value === null) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
 
 function agentCloseoutFor(

@@ -146,6 +146,8 @@ import {
   applyLinearCommand,
   listRepositoryCatalog,
   listRepositoryCandidates,
+  markCiRound,
+  recordCiChecks,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
@@ -2312,6 +2314,16 @@ export class Orchestrator {
         this.post(item, "thought", message, `${item.id}:merge-wait:${message}`);
         await this.flush();
       },
+      onChecks: (head, checks) =>
+        recordCiChecks(this.db, {
+          itemId: item.id,
+          head,
+          runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
+          pullNumber: published.pull.number,
+          pullUrl: published.pull.url,
+          checks,
+          now: this.now(),
+        }),
       reverify: async (input) => {
         const updated = acceptedHead !== null && input.head !== acceptedHead;
         if (updated && !this.closeoutAfterUpdate()) {
@@ -2407,13 +2419,28 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
+        const mark = (next: "agent" | "asked", fixAttempt: number | null) => {
+          if (merged.head)
+            markCiRound(this.db, {
+              itemId: item.id,
+              head: merged.head,
+              next,
+              fixAttempt,
+              fixLimit: limit,
+              now: this.now(),
+            });
+        };
         if (
           this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
             ciFixRoundLine(checks, attempt, limit),
           )
-        )
+        ) {
+          // The resume job just enqueued is this round's fix.
+          mark("agent", this.agentReturns(item.id, "ci-failed"));
           return;
+        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          mark("asked", null);
           await this.flush();
           return;
         }
