@@ -3,6 +3,7 @@ import type {
   AgentIdentity,
   PublishArtifactHook,
   RunAgentOptions,
+  AcpEvent,
   RunAgentResult,
   PostUpdateHook,
   PullRequestHook,
@@ -124,10 +125,12 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         prompt,
       });
       let text = "";
+      let refused: Extract<AcpEvent, { type: "permission" }> | undefined;
       let result: RunAgentResult;
       for (let attempt = 1; ; attempt++) {
         seq += 1;
         text = "";
+        refused = undefined;
         result = await (deps.agentRunner ?? runAgent)({
           repository: deps.repository,
           prepareInputFiles: deps.prepareInputFiles,
@@ -145,6 +148,10 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           ...(deps.signal ? { signal: deps.signal } : {}),
           ...spawnOf(launch),
           onEvent(event) {
+            if (event.type === "permission") {
+              refused = event.decision === "allow" ? undefined : event;
+              return;
+            }
             if (event.type !== "session_update") return;
             if (event.update.sessionUpdate !== "agent_message_chunk") return;
             if (event.update.content.type === "text") text += event.update.content.text ?? "";
@@ -152,6 +159,8 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         });
         if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
       }
+      if (result.cancelled && !result.timedOut && refused && !deps.signal?.aborted)
+        throw new Error(refusedToolMessage(refused));
       if (!result.agentExited) deps.onCleanupFailure?.();
       if (result.authRequired) {
         throw new Error(result.errorMessage ?? "Codex login is missing");
@@ -171,6 +180,13 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
       };
     },
   };
+}
+
+function refusedToolMessage(event: Extract<AcpEvent, { type: "permission" }>): string {
+  const tool = event.name?.trim() || event.title?.trim() || event.kind || "a tool";
+  return event.decision === "deny"
+    ? `The reviewer stopped after Paws refused the tool call \`${tool}\` (${event.reason}). Review did not complete: cancelled`
+    : `The reviewer's turn was cancelled while it waited for permission to run \`${tool}\`. Review did not complete: cancelled`;
 }
 
 export function createAcpFixRunner(deps: AcpAgentDeps): FixRunner {
