@@ -6,8 +6,12 @@ import { routeHref } from "./route";
 
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
-/** Runners heartbeat every 15 seconds; four missed beats mark a runner offline. */
-export const RUNNER_OFFLINE_MS = 60_000;
+/** Runners heartbeat this often. */
+export const RUNNER_HEARTBEAT_MS = 15_000;
+/** Four missed beats mark a runner offline. */
+export const RUNNER_OFFLINE_MS = 4 * RUNNER_HEARTBEAT_MS;
+/** Host metrics older than two heartbeats are shown as stale. */
+export const RUNNER_STALE_MS = 2 * RUNNER_HEARTBEAT_MS;
 
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
 export type AgentSignIn = {
@@ -23,6 +27,8 @@ export type Runner = {
   status: RunnerStatus;
   metrics: {
     cpuPercent: number | null;
+    /** Online CPUs; older runners do not report it. */
+    cpuCount?: number | null;
     memoryTotalBytes: number | null;
     memoryAvailableBytes: number | null;
     load1: number | null;
@@ -299,7 +305,120 @@ export function runnerConcurrencyMarkup(
   if (!state.manages || ceiling === null)
     return `${esc(String(value))} <span class="muted">${esc(reported)}</span>`;
   const disabled = state.busy ? " disabled" : "";
-  return `<form class="row" data-runner-concurrency="${id}"><input name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Concurrency, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
+  return `<form class="row" data-runner-concurrency="${id}"><input class="concurrency-input" name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Concurrency, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
+}
+
+/** "5 s ago", "3 min ago", "2 h ago", or the date for older values. */
+export function updatedLabel(at: number, now: number): string {
+  const seconds = Math.floor(Math.max(0, now - at) / 1000);
+  if (seconds < 60) return `${seconds} s ago`;
+  if (seconds < 60 * 60) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 24 * 60 * 60) return `${Math.floor(seconds / 3600)} h ago`;
+  return new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+type Gauge = { label: string; value: string; detail?: string; fill?: number; high: boolean };
+
+function gaugeMarkup(gauge: Gauge): string {
+  const level = gauge.high ? "high" : "normal";
+  const bar =
+    gauge.fill === undefined
+      ? ""
+      : `<span class="gauge" data-fill="${Math.round(Math.min(100, Math.max(0, gauge.fill)))}" data-level="${level}" aria-hidden="true"></span>`;
+  const value = gauge.high
+    ? `<span class="gauge-value high">${esc(gauge.value)}<span class="sr-only">, high</span></span>`
+    : `<span class="gauge-value">${esc(gauge.value)}</span>`;
+  return `<div class="runner-gauge" data-gauge="${esc(gauge.label.toLowerCase())}" data-level="${level}"><dt>${esc(gauge.label)}</dt><dd>${value}</dd>${bar ? `<dd class="gauge-bar">${bar}</dd>` : ""}${gauge.detail ? `<dd class="muted">${esc(gauge.detail)}</dd>` : ""}</div>`;
+}
+
+/** CPU, memory, disk and load from the latest heartbeat only, as bars that turn orange when high. */
+export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): string {
+  if (!metrics)
+    return '<section class="runner-host" aria-label="Host metrics"><p class="muted">This runner has not reported host metrics yet.</p></section>';
+  const stale = now - metrics.reportedAt > RUNNER_STALE_MS;
+  const missing = (label: string): Gauge => ({ label, value: "Not reported", high: false });
+  const share = (label: string, total: number | null, free: number | null, detail: string) => {
+    if (total === null || free === null || total <= 0) return missing(label);
+    const used = Math.min(100, Math.max(0, ((total - free) / total) * 100));
+    return { label, value: `${Math.round(used)}%`, detail, fill: used, high: used > 90 };
+  };
+  const { cpuPercent, cpuCount, load1, load5, load15 } = metrics;
+  const gauges: Gauge[] = [
+    cpuPercent === null
+      ? missing("CPU")
+      : {
+          label: "CPU",
+          value: `${Math.round(cpuPercent)}%`,
+          fill: cpuPercent,
+          high: cpuPercent > 90,
+        },
+    share(
+      "Memory",
+      metrics.memoryTotalBytes,
+      metrics.memoryAvailableBytes,
+      metrics.memoryTotalBytes !== null && metrics.memoryAvailableBytes !== null
+        ? `${bytes(metrics.memoryTotalBytes - metrics.memoryAvailableBytes)} of ${bytes(metrics.memoryTotalBytes)}`
+        : "",
+    ),
+    share(
+      "Disk",
+      metrics.diskTotalBytes,
+      metrics.diskFreeBytes,
+      metrics.diskTotalBytes !== null && metrics.diskFreeBytes !== null
+        ? `${bytes(metrics.diskFreeBytes)} free of ${bytes(metrics.diskTotalBytes)}`
+        : "",
+    ),
+    load1 === null
+      ? missing("Load")
+      : cpuCount
+        ? {
+            label: "Load",
+            value: load1.toFixed(2),
+            detail: `${cpuCount} ${cpuCount === 1 ? "core" : "cores"}`,
+            fill: (load1 / cpuCount) * 100,
+            high: load1 > cpuCount,
+          }
+        : {
+            label: "Load",
+            value: load1.toFixed(2),
+            detail: [
+              load5 === null ? "" : `5 min ${load5.toFixed(2)}`,
+              load15 === null ? "" : `15 min ${load15.toFixed(2)}`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            high: false,
+          },
+  ];
+  const updated = `<p class="runner-updated" title="${esc(new Date(metrics.reportedAt).toLocaleString())}">${stale ? '<span class="tag warn">Stale</span> ' : ""}Updated ${esc(updatedLabel(metrics.reportedAt, now))}</p>`;
+  return `<section class="runner-host" aria-label="Host metrics"${stale ? ' data-stale=""' : ""}>${updated}<dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
+}
+
+/** One segment per slot, filled when in use, with the concurrency control beside it. */
+function slotsMarkup(runner: Runner, concurrency: string): string {
+  const slots = runner.slots;
+  if (!slots && !concurrency) return "";
+  const full = slots !== undefined && slots.total > 0 && slots.used >= slots.total;
+  const segments = slots
+    ? `<span class="slots" aria-hidden="true">${Array.from(
+        { length: Math.min(slots.total, 16) },
+        (_, index) =>
+          `<span class="slot${index < slots.used ? ` used${full ? " high" : ""}` : ""}"></span>`,
+      ).join("")}</span>`
+    : "";
+  const summary = slots
+    ? `<span class="gauge-value${full ? " high" : ""}">${esc(`${slots.used} of ${slots.total} in use`)}${full ? '<span class="sr-only">, all slots busy</span>' : ""}</span>`
+    : "";
+  return `<dl class="runner-slots">${slots ? `<div class="runner-gauge" data-gauge="slots" data-level="${full ? "high" : "normal"}"><dt>Slots</dt><dd>${summary}</dd><dd class="gauge-bar">${segments}</dd></div>` : ""}${concurrency ? `<div class="runner-concurrency"><dt>Concurrency</dt><dd>${concurrency}</dd></div>` : ""}</dl>`;
+}
+
+function statusLine(runner: Runner, view: { now: number; serverVersion: string | null }): string {
+  const [tone, state] = availability(runner, view.now);
+  const notes = [
+    runner.status === "paused" ? "Paused" : runner.status === "draining" ? "Draining" : "",
+    updateAvailable(runner, view.serverVersion) ? "Update available" : "",
+  ].filter(Boolean);
+  return `<p class="runner-status"><span class="tag ${tone}">${esc(state)}</span>${notes.map((note) => `<span>${esc(note)}</span>`).join("")}</p>`;
 }
 
 export function runnerDetailMarkup(
@@ -316,73 +435,22 @@ export function runnerDetailMarkup(
   },
 ): string {
   const id = esc(runner.id);
-  const online = runnerOnline(runner, view.now);
   const metrics = runner.metrics;
-  const statusClass =
-    runner.status === "revoked"
-      ? "bad"
-      : runner.status === "draining"
-        ? "warn"
-        : runner.status === "paused"
-          ? "paused"
-          : "ok";
-  const tags = [
-    `<span class="tag ${statusClass}">${esc(runner.status[0]!.toUpperCase() + runner.status.slice(1))}</span>`,
-    online ? '<span class="tag ok">Online</span>' : '<span class="tag bad">Offline</span>',
-    online
-      ? runner.running?.length
-        ? `<span class="tag running">Running ${runner.running.length}</span>`
-        : runner.idle
-          ? '<span class="tag">Idle</span>'
-          : '<span class="tag running">Busy</span>'
-      : "",
-  ].join("");
-  const behind = updateAvailable(runner, view.serverVersion);
-  const known = (value: number | null | undefined, format: (value: number) => string) =>
-    value === null || value === undefined ? "Not reported" : esc(format(value));
-  const memory =
-    metrics?.memoryTotalBytes != null && metrics.memoryAvailableBytes != null
-      ? `${bytes(metrics.memoryTotalBytes - metrics.memoryAvailableBytes)} used of ${bytes(metrics.memoryTotalBytes)}`
-      : null;
-  const disk =
-    metrics?.diskTotalBytes != null && metrics.diskFreeBytes != null
-      ? `${bytes(metrics.diskFreeBytes)} free of ${bytes(metrics.diskTotalBytes)}`
-      : null;
-  const load =
-    metrics?.load1 != null
-      ? [metrics.load1, metrics.load5, metrics.load15]
-          .map((value) => (value === null ? "–" : value.toFixed(2)))
-          .join(" / ")
-      : null;
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
+  const meta = [
+    runner.version ? `Runner ${runner.version}` : "Version not reported",
+    os || "OS not reported",
+    metrics
+      ? `Last seen ${new Date(metrics.reportedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+      : "Never seen",
+  ]
+    .map((part) => `<span>${esc(part)}</span>`)
+    .join("");
   const concurrency = runnerConcurrencyMarkup(runner, {
     manages: view.role === "owner" || view.role === "admin",
     busy: view.busy,
     ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
   });
-  const facts = [
-    [
-      "Version",
-      `${runner.version ? esc(runner.version) : "Not reported"}${behind ? ` <span class="tag warn">Update available</span>` : ""}`,
-    ],
-    [
-      "Last seen",
-      metrics
-        ? `<span title="${esc(new Date(metrics.reportedAt).toLocaleString())}">${esc(seenLabel(metrics.reportedAt, view.now))}</span>`
-        : "Never",
-    ],
-    ...(runner.slots
-      ? [["Slots", esc(`${runner.slots.used} of ${runner.slots.total} in use`)]]
-      : []),
-    ...(concurrency ? [["Concurrency", concurrency]] : []),
-    ["OS", os ? esc(os) : "Not reported"],
-    ["CPU", known(metrics?.cpuPercent, (value) => `${Math.round(value)}%`)],
-    ["Memory", memory ? esc(memory) : "Not reported"],
-    ["Load", load ? esc(load) : "Not reported"],
-    ["Disk", disk ? esc(disk) : "Not reported"],
-  ]
-    .map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`)
-    .join("");
   const revoked = runner.status === "revoked";
   const owns =
     view.policy !== null &&
@@ -402,18 +470,18 @@ export function runnerDetailMarkup(
         entry.status === "usage_limit" && entry.resetsAt
           ? ` <span class="muted">Resets ${esc(new Date(entry.resetsAt).toLocaleString())}</span>`
           : "";
-      return `<li><div class="row"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</div></li>`;
+      return `<li class="runner-agent"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</li>`;
     })
     .join("");
   const signIn =
     revoked || view.role === null || view.role === "observer"
       ? ""
-      : `<div class="row"><button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button></div>`;
+      : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
   const sharing =
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
+  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta">${meta}</p></div><button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button></div>${runnerMetricsMarkup(metrics, view.now)}${slotsMarkup(runner, concurrency)}<div class="runner-agents-row"><h3 class="sr-only">Agents</h3><ul class="runner-agent-list" role="list" aria-label="Agent sign-in">${agents}</ul>${signIn}</div>${sharing}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
@@ -737,6 +805,23 @@ export function createRunners() {
           feedback = "Runner approved. The host can complete pairing.";
         }),
     );
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-copy]"))
+      button.addEventListener("click", () => {
+        const value = button.dataset.runnerCopy!;
+        // The clipboard API is missing outside secure contexts, so failures say the ID instead.
+        void Promise.resolve()
+          .then(() => navigator.clipboard.writeText(value))
+          .then(
+            () => {
+              error = "";
+              feedback = "Runner ID copied.";
+            },
+            () => {
+              error = `The runner ID could not be copied. It is ${value}.`;
+            },
+          )
+          .finally(paint);
+      });
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-signin]"))
       button.addEventListener("click", () => {
         const runner = runners.find((entry) => entry.id === button.dataset.runnerSignin);
