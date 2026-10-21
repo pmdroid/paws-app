@@ -125,12 +125,12 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         prompt,
       });
       let text = "";
-      let refused: Extract<AcpEvent, { type: "permission" }> | undefined;
+      const refusals: Extract<AcpEvent, { type: "permission" }>[] = [];
       let result: RunAgentResult;
       for (let attempt = 1; ; attempt++) {
         seq += 1;
         text = "";
-        refused = undefined;
+        refusals.length = 0;
         result = await (deps.agentRunner ?? runAgent)({
           repository: deps.repository,
           prepareInputFiles: deps.prepareInputFiles,
@@ -148,7 +148,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
           ...(deps.signal ? { signal: deps.signal } : {}),
           ...spawnOf(launch),
           onEvent(event) {
-            if (event.type === "permission" && event.decision === "deny") refused = event;
+            if (event.type === "permission" && event.decision === "deny") refusals.push(event);
             if (event.type !== "session_update") return;
             if (event.update.sessionUpdate !== "agent_message_chunk") return;
             if (event.update.content.type === "text") text += event.update.content.text ?? "";
@@ -157,6 +157,7 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
       }
       if (!result.agentExited) deps.onCleanupFailure?.();
+      const refused = refusals.at(-1);
       if (result.cancelled && !result.timedOut && refused && !deps.signal?.aborted) {
         const tool = refused.name || refused.title || refused.kind || "a tool";
         throw new Error(
