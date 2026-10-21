@@ -101,7 +101,7 @@ function mergingSection(closeoutAfterUpdate: boolean): string {
 }
 
 function checksSection(attempts: number): string {
-  return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their logs back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
+  return `<section class="settings-section"><div class="settings-label"><h2>Pull request checks</h2><p class="sub">When CI fails on a pull request, Paws sends the failing checks and their links back to the implementing agent. After the last attempt, Paws asks in the issue's Linear session.</p></div><div class="col">
       <label for="merge-ci-fix-attempts">CI fix attempts</label><input id="merge-ci-fix-attempts" name="merge-ci-fix-attempts" type="number" inputmode="numeric" min="0" max="${CI_FIX_ATTEMPTS_MAX}" step="1" required value="${Number.isFinite(attempts) ? attempts : ""}" aria-describedby="merge-ci-fix-attempts-help">
       <p class="sub" id="merge-ci-fix-attempts-help">From 0 to ${CI_FIX_ATTEMPTS_MAX}. With 0, Paws asks in Linear on the first failure.</p></div></section>`;
 }
