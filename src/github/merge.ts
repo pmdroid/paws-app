@@ -142,6 +142,31 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     if (input.isCancelled?.()) {
       return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
     }
+    // Checks can change while the base is fetched. Read them once more; the
+    // merge call also carries the head SHA so GitHub refuses a moved head.
+    const recheck = await waitForMergeReadiness({
+      ...input,
+      head: pushed.head,
+      token: async () => mergeToken,
+      releaseWhilePending: true,
+    });
+    if (recheck.outcome === "sha_moved") {
+      lastGuard = "sha";
+      continue;
+    }
+    if (recheck.outcome !== "ready") {
+      return {
+        merged: false,
+        outcome: recheck.outcome === "pending" ? "waiting" : recheck.outcome,
+        branch,
+        base: pushed.base,
+        head: pushed.head,
+        ...(recheck.outcome === "pending" ? { summary: verified.summary } : {}),
+        cycle,
+        message: recheck.message,
+        ...(recheck.failedChecks ? { failedChecks: recheck.failedChecks } : {}),
+      };
+    }
     const merged = await squash(input, mergeToken, pushed.head, verified.summary);
     if (merged.status === 409) {
       lastGuard = "http_409";

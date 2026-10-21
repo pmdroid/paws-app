@@ -15,6 +15,7 @@ import {
   checkGhPushPermission,
   createTokenProvider,
   fakeMergeReadiness,
+  fakeRequiredChecks,
   ghDoctorChecks,
   githubAuthMode,
   inferGitHubRepository,
@@ -558,18 +559,17 @@ describe("gh auth token provider", () => {
     const head = "a".repeat(40);
     const base = "b".repeat(40);
     const tokens: string[] = [];
+    const readinessTokens: string[] = [];
     const client: GitHubClient = {
       async request(req) {
         if (req.path.endsWith("/access_tokens")) throw new Error("app path");
-        if (req.path === "/graphql") {
-          expect(req.token).toBe("gho_fake_2");
-          return { status: 200, body: fakeMergeReadiness(head) };
-        }
         if (req.path.endsWith("/merge")) {
           expect(req.token).toBe("gho_fake_3");
           return { status: 200, body: { merged: true, sha: "c".repeat(40) } };
         }
-        return { status: 404, body: {} };
+        readinessTokens.push(req.token);
+        if (req.path === "/graphql") return { status: 200, body: fakeMergeReadiness(head) };
+        return fakeRequiredChecks(req) ?? { status: 404, body: {} };
       },
     };
     const gitExec: GitExec = async (args) => {
@@ -599,6 +599,11 @@ describe("gh auth token provider", () => {
     });
     expect(result.merged).toBe(true);
     expect(tokens).toEqual(["gho_fake_1", "gho_fake_3"]);
+    // Readiness reads use their own token; the re-read just before the merge uses the merge token.
+    expect(readinessTokens).toEqual([
+      ...Array(3).fill("gho_fake_2"),
+      ...Array(3).fill("gho_fake_3"),
+    ]);
     const log = await readFile(fake.log, "utf8");
     expect(log.split("\n").filter((line) => line === "auth token")).toHaveLength(3);
     await fake.cleanup();
