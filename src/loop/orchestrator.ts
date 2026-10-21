@@ -31,7 +31,12 @@ import {
   type RunAgentResult,
   prepareRepositorySnapshot,
 } from "../acp";
-import { loadConfigFile, resolveAgentProfiles, type AgentProfile } from "../config";
+import {
+  loadConfigFile,
+  readMergeSettings,
+  resolveAgentProfiles,
+  type AgentProfile,
+} from "../config";
 import {
   createCloseoutGate,
   reviewRequirements,
@@ -2280,6 +2285,7 @@ export class Orchestrator {
     await this.flush(live.controller.signal);
     let closeoutFailure: CloseoutVerdict | null = null;
     let verifying = item;
+    const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2305,6 +2311,20 @@ export class Orchestrator {
         await this.flush();
       },
       reverify: async (input) => {
+        const updated = acceptedHead !== null && input.head !== acceptedHead;
+        if (updated && !this.closeoutAfterUpdate()) {
+          publicationCandidate = { sha: input.head, baseSha: input.base };
+          this.postBranchUpdate(item, input.head, branchUpdatedMessage(input.base));
+          await this.flush();
+          const filesReady = artifactPublicationReady(this.db, item.id);
+          return {
+            accepted: filesReady,
+            outcome: filesReady ? "merged" : "blocked",
+            summary: filesReady ? summary : "A requested artifact has not been uploaded.",
+          };
+        }
+        if (updated)
+          this.postBranchUpdate(item, input.head, "Branch updated, running Closeout again.");
         await this.startCloseoutRound(verifying, input.head);
         const verdict = await this.runVerification(
           verifying,
@@ -2407,6 +2427,14 @@ export class Orchestrator {
         item.state === "merge_queue" &&
         (merged.outcome === "sha_moved" || merged.outcome === "rejected")
       ) {
+        if (!this.closeoutAfterUpdate()) {
+          // Back to the CI wait: the next pass updates the branch onto main again.
+          return {
+            message: "Main moved again before the merge. Updating the branch and waiting for CI.",
+            ...(merged.base === undefined ? {} : { base: merged.base }),
+            ...(merged.head === undefined ? {} : { head: merged.head }),
+          };
+        }
         applyWorkItemEvent(this.db, item.id, "main_moved");
         enqueueJobOnce(this.db, {
           queue: JOB_KIND.reverify,
@@ -2431,6 +2459,24 @@ export class Orchestrator {
     }).catch(() => undefined);
     this.pump();
     await this.flush();
+  }
+
+  /** Progress is quiet once the pull request is open, so this posts like the pull request note. */
+  private postBranchUpdate(item: WorkItemRecord, head: string, body: string): void {
+    this.post(
+      item,
+      this.options.channel === "comments" ? "thought" : "response",
+      body,
+      `${item.id}:branch-updated:${head}`,
+      {},
+      "ordered",
+    );
+  }
+
+  /** `[merge] closeout_after_update`, read when main moved. Missing means off. */
+  private closeoutAfterUpdate(): boolean {
+    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+      .closeoutAfterUpdate;
   }
 
   private returnToAgent(
@@ -4573,6 +4619,10 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
     state === "paused" ||
     state === "merge_queue"
   );
+}
+
+function branchUpdatedMessage(base: string): string {
+  return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
 }
 
 function readString(payload: unknown, key: string): string | null {
