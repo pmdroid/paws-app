@@ -464,10 +464,16 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     expect(delegationMerged(db), debug(layout, db)).toBe(true);
     expect(stateOf(db, "ENG-2"), debug(layout, db)).toBe("merged");
     expect(stateOf(db, "ENG-3"), debug(layout, db)).toBe("merged");
-    expect(github.opened.map((pull) => pull.head)).toEqual([
-      `paws/${taskPath(db, "ENG-2")}`,
-      `paws/${taskPath(db, "ENG-3")}`,
-    ]);
+    expect(github.opened.map((pull) => pull.head)).toEqual(
+      ["ENG-2", "ENG-3"].map(
+        (identifier) =>
+          db
+            .query<{ branch: string }, [string]>(
+              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
+            )
+            .get(identifier)!.branch,
+      ),
+    );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
       "Fixes ENG-3",
@@ -696,11 +702,16 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
       children.map((child) => stateOf(db, child.identifier)),
       debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
-    expect(github.opened.map((pull) => pull.head)).toEqual([
-      "paws/ENG-2",
-      "paws/ENG-3",
-      "paws/ENG-4",
-    ]);
+    expect(github.opened.map((pull) => pull.head)).toEqual(
+      ["ENG-2", "ENG-3", "ENG-4"].map(
+        (identifier) =>
+          db
+            .query<{ branch: string }, [string]>(
+              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
+            )
+            .get(identifier)!.branch,
+      ),
+    );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes ENG-2",
       "Fixes ENG-3",
