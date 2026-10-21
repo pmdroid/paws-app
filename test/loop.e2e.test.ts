@@ -2098,7 +2098,7 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
 }, 90_000);
 
 test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
-  const result = await runRebaseConflict("clean", undefined, false);
+  const result = await withGitIdentity(() => runRebaseConflict("clean", undefined, false));
   const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
   // One comparison so a failure shows every fact at once.
   expect(
@@ -2141,23 +2141,7 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
     },
   });
   host.account = { id: 7, login: "owner" };
-  const identity = {
-    GIT_AUTHOR_NAME: "Paws Test",
-    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
-    GIT_COMMITTER_NAME: "Paws Test",
-    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
-  };
-  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, identity);
-  let result: Awaited<ReturnType<typeof runRebaseConflict>>;
-  try {
-    result = await runRebaseConflict("clean", host, true);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+  const result = await withGitIdentity(() => runRebaseConflict("clean", host, true));
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
   expect(result.rounds, result.detail).toHaveLength(1);
@@ -2992,6 +2976,26 @@ function rebaseOntoMainSteps(): FakeScript["steps"] {
     },
     { type: "end", stopReason: "end_turn" },
   ];
+}
+
+/** A clean rebase commits, so it needs an identity even where git has none configured. */
+async function withGitIdentity<T>(run: () => Promise<T>): Promise<T> {
+  const identity = {
+    GIT_AUTHOR_NAME: "Paws Test",
+    GIT_AUTHOR_EMAIL: "paws-test@example.invalid",
+    GIT_COMMITTER_NAME: "Paws Test",
+    GIT_COMMITTER_EMAIL: "paws-test@example.invalid",
+  };
+  const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, identity);
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 async function isAncestor(bare: string, ancestor: string, head: string): Promise<boolean> {
