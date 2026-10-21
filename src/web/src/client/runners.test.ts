@@ -11,6 +11,7 @@ import {
   type Runner,
   type RunningSession,
   type Usage,
+  updatedLabel,
 } from "./runners";
 import { parseRoute, routeHref } from "./route";
 
@@ -39,6 +40,20 @@ const runner: Runner = {
     { agent: "codex", status: "unknown", checkedAt: null },
   ],
 };
+/** The single status line under the runner name. */
+function statusLine(html: string): string | undefined {
+  return /<p class="runner-status">(.*?)<\/p>/.exec(html)?.[1];
+}
+
+/** One gauge's markup, from its `data-gauge` wrapper to the closing tag. */
+function gauge(html: string, name: string): string {
+  return (
+    new RegExp(`<div class="runner-gauge" data-gauge="${name}"[^>]*>(?:(?!</div>).)*</div>`).exec(
+      html,
+    )?.[0] ?? ""
+  );
+}
+
 const view = {
   now,
   serverVersion: "1.2.0",
@@ -163,7 +178,7 @@ describe("what a runner is running now", () => {
       '<span class="tag ok">Idle</span>',
     );
     expect(runnerDetailMarkup({ ...runner, running: [] }, view)).toContain(
-      '<span class="tag">Idle</span>',
+      '<span class="tag ok">Idle</span>',
     );
   });
 
@@ -219,20 +234,18 @@ describe("runner details", () => {
   test("an idle runner shows its host metrics, sign-in, sharing and controls", () => {
     const html = runnerDetailMarkup(runner, view);
     expect(html).toContain("build-box");
-    expect(html).toContain("Active");
-    expect(html).toContain("Online");
-    expect(html).toContain("Idle");
+    expect(statusLine(html)).toBe('<span class="tag ok">Idle</span>');
     expect(html).not.toContain("Busy");
-    expect(html).toContain("1.2.0");
+    expect(html).toContain("<span>Runner 1.2.0</span><span>ubuntu 24.04</span><span>Last seen ");
     expect(html).not.toContain("Update available");
-    expect(html).toContain("Just now");
-    expect(html).toContain("ubuntu 24.04");
-    expect(html).toContain("42%");
-    expect(html).toContain("12 GB used of 16 GB");
-    expect(html).toContain("0.50 / 0.25 / 0.13");
+    expect(html).toContain("Updated 5 s ago");
+    expect(html).toContain(">42%<");
+    expect(html).toContain("12 GB of 16 GB");
+    expect(html).toContain(">0.50<");
+    expect(html).toContain("5 min 0.25 · 15 min 0.13");
     expect(html).toContain("40 GB free of 100 GB");
     expect(runnerDetailMarkup({ ...runner, slots: { used: 2, total: 10 } }, view)).toContain(
-      "<dt>Slots</dt><dd>2 of 10 in use</dd>",
+      '<dt>Slots</dt><dd><span class="gauge-value">2 of 10 in use</span></dd>',
     );
     expect(
       runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
@@ -261,17 +274,22 @@ describe("runner details", () => {
       { ...runner, idle: false, metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 } },
       view,
     );
-    expect(html).toContain('<span class="tag bad">Offline</span>');
-    expect(html).toContain("5m ago");
+    expect(statusLine(html)).toBe('<span class="tag bad">Offline</span>');
+    expect(html).toContain("Updated 5 min ago");
+    expect(html).toContain("Last seen ");
     expect(html).not.toContain("Busy");
     expect(html).not.toContain("Idle");
   });
 
   test("a runner that never reported is offline", () => {
     const html = runnerDetailMarkup({ ...runner, metrics: null, os: null, version: null }, view);
-    expect(html).toContain("Offline");
-    expect(html).toContain("<dt>Last seen</dt><dd>Never</dd>");
-    expect(html).toContain("<dt>CPU</dt><dd>Not reported</dd>");
+    expect(statusLine(html)).toBe('<span class="tag bad">Offline</span>');
+    expect(html).toContain(
+      "<span>Version not reported</span><span>OS not reported</span><span>Never seen</span>",
+    );
+    expect(html).toContain("This runner has not reported host metrics yet.");
+    expect(html).not.toContain('class="gauge"');
+    expect(html).not.toContain("Updated");
   });
 
   test("a signed-out agent and an older runner version are flagged", () => {
@@ -296,8 +314,7 @@ describe("runner details", () => {
 
   test("a revoked runner has no settings or controls", () => {
     const html = runnerDetailMarkup({ ...runner, status: "revoked" }, view);
-    expect(html).toContain("Revoked");
-    expect(html).toContain("Offline");
+    expect(statusLine(html)).toBe('<span class="tag bad">Revoked</span>');
     expect(html).not.toContain("data-runner-sharing");
     expect(html).not.toContain("data-runner-status");
     expect(html).not.toContain("data-runner-signin");
@@ -322,7 +339,9 @@ describe("runner details", () => {
     test("owners and admins edit it next to the slots, up to the host limit", () => {
       for (const role of ["owner", "admin"]) {
         const html = runnerDetailMarkup(tuned, { ...view, role });
-        expect(html).toContain("<dt>Slots</dt><dd>1 of 2 in use</dd><dt>Concurrency</dt>");
+        expect(html).toMatch(
+          /<dt>Slots<\/dt><dd><span class="gauge-value">1 of 2 in use<\/span><\/dd>.*<\/div><div class="runner-concurrency"><dt>Concurrency<\/dt>/,
+        );
         expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
         expect(html).toContain('aria-label="Concurrency, from 1 to 4" value="2"');
         expect(html).toContain("Host limit 4. Runner applied 2.");
@@ -355,6 +374,146 @@ describe("runner details", () => {
       );
     });
   });
+});
+
+describe("live host metrics", () => {
+  const metrics = { ...runner.metrics!, cpuCount: 4 };
+  const card = (patch: Partial<NonNullable<Runner["metrics"]>>, extra: Partial<Runner> = {}) =>
+    runnerDetailMarkup({ ...runner, ...extra, metrics: { ...metrics, ...patch } }, view);
+
+  test("CPU, memory, disk and load show as bars at normal values", () => {
+    const html = card({});
+    expect(gauge(html, "cpu")).toContain('data-level="normal"');
+    expect(gauge(html, "cpu")).toContain('<span class="gauge-value">42%</span>');
+    expect(gauge(html, "cpu")).toContain('data-fill="42"');
+    expect(gauge(html, "memory")).toContain('<span class="gauge-value">75%</span>');
+    expect(gauge(html, "memory")).toContain('data-fill="75"');
+    expect(gauge(html, "memory")).toContain("12 GB of 16 GB");
+    expect(gauge(html, "disk")).toContain('<span class="gauge-value">60%</span>');
+    expect(gauge(html, "disk")).toContain("40 GB free of 100 GB");
+    expect(gauge(html, "load")).toContain('<span class="gauge-value">0.50</span>');
+    expect(gauge(html, "load")).toContain('data-fill="13"');
+    expect(gauge(html, "load")).toContain("4 cores");
+    expect(html).not.toContain('data-level="high"');
+    expect(html).not.toContain(", high");
+  });
+
+  test("each metric turns orange above its limit", () => {
+    const high = card({
+      cpuPercent: 95,
+      memoryAvailableBytes: 1 * 1024 ** 3,
+      diskFreeBytes: 5 * 1024 ** 3,
+      load1: 4.5,
+    });
+    for (const name of ["cpu", "memory", "disk", "load"]) {
+      expect(gauge(high, name)).toContain('data-level="high"');
+      expect(gauge(high, name)).toContain('class="gauge-value high"');
+      expect(gauge(high, name)).toContain('<span class="sr-only">, high</span>');
+    }
+    expect(gauge(high, "load")).toContain('data-fill="100"');
+    const limits = card({
+      cpuPercent: 90,
+      memoryAvailableBytes: 1.6 * 1024 ** 3,
+      diskFreeBytes: 10 * 1024 ** 3,
+      load1: 4,
+    });
+    expect(limits).not.toContain('data-level="high"');
+  });
+
+  test("slots show one segment per slot and turn orange when all are in use", () => {
+    const some = runnerDetailMarkup({ ...runner, slots: { used: 1, total: 3 } }, view);
+    expect(gauge(some, "slots")).toContain(
+      '<span class="slots" aria-hidden="true"><span class="slot used"></span><span class="slot"></span><span class="slot"></span></span>',
+    );
+    expect(gauge(some, "slots")).toContain('data-level="normal"');
+    const full = runnerDetailMarkup({ ...runner, slots: { used: 3, total: 3 } }, view);
+    expect(gauge(full, "slots").match(/class="slot used high"/g)).toHaveLength(3);
+    expect(gauge(full, "slots")).toContain('class="gauge-value high"');
+    expect(gauge(full, "slots")).toContain("all slots busy");
+  });
+
+  test("metrics older than two heartbeats look stale", () => {
+    const fresh = card({ reportedAt: now - 30_000 });
+    expect(fresh).toContain("Updated 30 s ago");
+    expect(fresh).not.toContain("Stale");
+    expect(fresh).toContain('<dl class="runner-gauges">');
+    const stale = card({ reportedAt: now - 31_000 });
+    expect(stale).toContain('<span class="tag warn">Stale</span> Updated 31 s ago');
+    expect(stale).toContain('<dl class="runner-gauges stale">');
+    expect(stale).toContain('aria-label="Host metrics" data-stale=""');
+  });
+
+  test("a runner without metrics says so instead of drawing empty bars", () => {
+    const html = runnerDetailMarkup({ ...runner, metrics: null }, view);
+    expect(html).toContain("This runner has not reported host metrics yet.");
+    expect(html).not.toContain("runner-gauges");
+    const partial = card({ cpuPercent: null, diskTotalBytes: null });
+    expect(gauge(partial, "cpu")).toContain("Not reported");
+    expect(gauge(partial, "cpu")).not.toContain('class="gauge"');
+    expect(gauge(partial, "disk")).toContain("Not reported");
+  });
+
+  test("a runner without cpuCount shows load as a number", () => {
+    for (const cpuCount of [undefined, null]) {
+      const html = card({ cpuCount });
+      expect(gauge(html, "load")).toContain('<span class="gauge-value">0.50</span>');
+      expect(gauge(html, "load")).toContain("5 min 0.25 · 15 min 0.13");
+      expect(gauge(html, "load")).not.toContain('class="gauge"');
+      expect(gauge(html, "load")).toContain('data-level="normal"');
+    }
+    expect(gauge(card({ cpuCount: null, load1: 40 }), "load")).toContain('data-level="normal"');
+  });
+});
+
+describe("simpler runner card", () => {
+  test("one status line replaces the separate tags", () => {
+    const html = runnerDetailMarkup(
+      { ...runner, status: "draining", idle: false, version: "1.1.0" },
+      view,
+    );
+    expect(statusLine(html)).toBe(
+      '<span class="tag running">Busy</span><span>Draining</span><span>Update available</span>',
+    );
+    expect(html.match(/class="tag /g)?.length).toBe(
+      1 + (runner.agents?.length ?? 0), // the status and one per agent
+    );
+  });
+
+  test("the runner id sits behind a copy action instead of a chip", () => {
+    const html = runnerDetailMarkup(runner, view);
+    expect(html).toContain(
+      `<button class="btn" data-runner-copy="${runner.id}" data-focus="copy:${runner.id}" title="${runner.id}" aria-label="Copy runner ID ${runner.id}">Copy ID</button>`,
+    );
+    expect(html).not.toContain(`<code>${runner.id}</code>`);
+  });
+
+  test("agents share one row with their sign-in state and the sign-in action", () => {
+    const html = runnerDetailMarkup(runner, view);
+    expect(html).toContain(
+      '<ul class="runner-agent-list" role="list" aria-label="Agent sign-in"><li class="runner-agent"><b>Claude</b><span class="tag ok">Signed in</span></li><li class="runner-agent"><b>Codex</b><span class="tag ">Not checked</span></li></ul><button class="btn" data-runner-signin=',
+    );
+  });
+
+  test("heartbeats in a second render update the values in place", () => {
+    const first = runnerDetailMarkup(runner, view);
+    const next = runnerDetailMarkup(
+      { ...runner, metrics: { ...runner.metrics!, cpuPercent: 97, reportedAt: now + 10_000 } },
+      { ...view, now: now + 12_000 },
+    );
+    expect(first).toContain('data-fill="42"');
+    expect(next).toContain('data-fill="97"');
+    expect(next).toContain("Updated 2 s ago");
+    const gauges = (html: string) => [...html.matchAll(/data-gauge="([a-z]+)"/g)].map((m) => m[1]);
+    expect(gauges(next)).toEqual(["cpu", "memory", "disk", "load"]);
+    expect(gauges(next)).toEqual(gauges(first));
+  });
+});
+
+test("updated labels count seconds, then minutes and hours", () => {
+  expect(updatedLabel(now - 5_000, now)).toBe("5 s ago");
+  expect(updatedLabel(now + 2_000, now)).toBe("0 s ago");
+  expect(updatedLabel(now - 3 * 60_000, now)).toBe("3 min ago");
+  expect(updatedLabel(now - 2 * 3_600_000, now)).toBe("2 h ago");
 });
 
 test("runner actions share one row and resume a paused runner", () => {
