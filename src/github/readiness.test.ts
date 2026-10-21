@@ -60,7 +60,12 @@ async function readOnce(
   required?: { protection?: string[]; rulesets?: string[] },
 ) {
   const f = fixture(reply, required);
-  return waitForMergeReadiness({ ...f.input, releaseWhilePending: true });
+  // The verdict only; the head's check list has its own tests below.
+  const { checks: _checks, ...verdict } = await waitForMergeReadiness({
+    ...f.input,
+    releaseWhilePending: true,
+  });
+  return verdict;
 }
 
 test("waits for both check runs and legacy statuses on the exact candidate", async () => {
@@ -388,4 +393,146 @@ test("a failed read logs the error message with GitHub tokens redacted", async (
   }
   expect(logged[0]).toContain("The Linear publication was superseded.");
   expect(logged.join("\n")).not.toContain(token);
+});
+
+test("a CI failure lists every head check and reads the failed ones' log tails", async () => {
+  const requests: string[] = [];
+  const log = [
+    ...Array.from({ length: 80 }, (_, line) => `2026-10-21T10:00:00.0000000Z setup ${line}`),
+    "2026-10-21T10:00:01.0000000Z (fail) lists a draining runner's sessions",
+    "2026-10-21T10:00:01.0000000Z token ghs_abcdefghijklmnopqrstuvwxyz0123456789",
+  ].join("\n");
+  const f = fixture(() =>
+    withChecks([
+      {
+        name: "check / lint",
+        conclusion: "SUCCESS",
+        detailsUrl: "https://ci.example/lint",
+        startedAt: "2026-10-21T10:00:00Z",
+        completedAt: "2026-10-21T10:00:38Z",
+      },
+      {
+        name: "check / test",
+        conclusion: "FAILURE",
+        detailsUrl: "https://ci.example/test",
+        databaseId: 7,
+        checkSuite: { app: { slug: "github-actions" } },
+        startedAt: "2026-10-21T10:00:00Z",
+        completedAt: "2026-10-21T10:04:51Z",
+        summary: "not used: the job log wins",
+      },
+      {
+        name: "Cloudflare Pages",
+        conclusion: "FAILURE",
+        detailsUrl: "https://pages.example/1",
+        checkSuite: { app: { slug: "cloudflare-pages" } },
+        summary: "Build failed",
+        text: "exit 1",
+      },
+      { name: "CodeQL", conclusion: null, detailsUrl: null, startedAt: "2026-10-21T10:00:00Z" },
+      { context: "legacy", state: "ERROR", targetUrl: null, description: "deploy failed" },
+    ]),
+  );
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    client: {
+      async request(request) {
+        requests.push(request.path);
+        if (request.path === "/repos/owner/repo/actions/jobs/7/logs")
+          return { status: 200, body: { message: "non-json response" }, text: log };
+        return f.input.client.request(request);
+      },
+    },
+  });
+  expect(result.outcome).toBe("ci_failed");
+  expect(requests.filter((path) => path.includes("/actions/"))).toEqual([
+    "/repos/owner/repo/actions/jobs/7/logs",
+  ]);
+  const checks = result.checks ?? [];
+  expect(checks.map((check) => [check.name, check.state, check.logSource])).toEqual([
+    ["check / lint", "passed", null],
+    ["check / test", "failed", "actions"],
+    ["Cloudflare Pages", "failed", "summary"],
+    ["CodeQL", "running", null],
+    ["legacy", "failed", "summary"],
+  ]);
+  expect(checks[0]).toMatchObject({
+    url: "https://ci.example/lint",
+    startedAt: "2026-10-21T10:00:00Z",
+    completedAt: "2026-10-21T10:00:38Z",
+    logTail: null,
+  });
+  const tail = checks[1]?.logTail ?? "";
+  expect(tail.split("\n")).toHaveLength(60);
+  expect(tail).not.toContain("2026-10-21T");
+  expect(tail).toContain("(fail) lists a draining runner's sessions");
+  expect(tail).not.toContain("ghs_abcdefghij");
+  expect(checks[2]?.logTail).toBe("Build failed\n\nexit 1");
+  expect(checks[4]?.logTail).toBe("deploy failed");
+  expect(result.failedChecks?.[0]).toEqual({
+    name: "check / test",
+    url: "https://ci.example/test",
+    logTail: tail,
+  });
+});
+
+test("an unreadable job log falls back to the summary and still fails CI", async () => {
+  const f = fixture(() =>
+    withChecks([
+      {
+        name: "test",
+        conclusion: "FAILURE",
+        detailsUrl: null,
+        databaseId: 9,
+        checkSuite: { app: { slug: "github-actions" } },
+        summary: "1 failing test",
+      },
+      {
+        name: "build",
+        conclusion: "FAILURE",
+        detailsUrl: null,
+        databaseId: 10,
+        checkSuite: { app: { slug: "github-actions" } },
+      },
+    ]),
+  );
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    client: {
+      async request(request) {
+        if (request.path.endsWith("/jobs/9/logs")) return { status: 410, body: {} };
+        if (request.path.endsWith("/jobs/10/logs")) throw new Error("network down");
+        return f.input.client.request(request);
+      },
+    },
+  });
+  expect(result.outcome).toBe("ci_failed");
+  expect(result.checks?.map((check) => [check.logTail, check.logSource])).toEqual([
+    ["1 failing test", "summary"],
+    [null, null],
+  ]);
+});
+
+test("pending and green reads carry the head's checks without reading logs", async () => {
+  const pending = await waitForMergeReadiness({
+    ...fixture(() => withChecks([run("build", "SUCCESS"), run("e2e", null)])).input,
+    releaseWhilePending: true,
+  });
+  expect(pending.outcome).toBe("pending");
+  expect(pending.checks?.map((check) => check.state)).toEqual(["passed", "running"]);
+  const ready = await waitForMergeReadiness(
+    fixture(() => withChecks([run("build", "SUCCESS")])).input,
+  );
+  expect(ready.outcome).toBe("ready");
+  expect(ready.checks).toEqual([
+    {
+      name: "build",
+      state: "passed",
+      url: "https://ci.example/build",
+      startedAt: null,
+      completedAt: null,
+      logTail: null,
+      logSource: null,
+    },
+  ]);
 });

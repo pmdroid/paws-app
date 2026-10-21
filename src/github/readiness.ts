@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { readLogTail } from "./ci-logs";
 import { repoApiPath } from "./client";
-import type { GitHubClient } from "./types";
+import type { CiCheck, CiCheckState, GitHubClient } from "./types";
 
 const pageInfoSchema = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
 
@@ -14,9 +15,20 @@ const contextsSchema = z.object({
         name: z.string().optional(),
         conclusion: z.string().nullable().optional(),
         detailsUrl: z.string().nullable().optional(),
+        databaseId: z.number().nullable().optional(),
+        startedAt: z.string().nullable().optional(),
+        completedAt: z.string().nullable().optional(),
+        summary: z.string().nullable().optional(),
+        text: z.string().nullable().optional(),
+        checkSuite: z
+          .object({ app: z.object({ slug: z.string() }).nullable().optional() })
+          .nullable()
+          .optional(),
         context: z.string().optional(),
         state: z.string().optional(),
         targetUrl: z.string().nullable().optional(),
+        description: z.string().nullable().optional(),
+        createdAt: z.string().nullable().optional(),
       })
       .nullable(),
   ),
@@ -89,23 +101,34 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
 fragment Contexts on StatusCheckRollupContextConnection {
   pageInfo { hasNextPage endCursor }
   nodes {
-    ... on CheckRun { name conclusion detailsUrl }
-    ... on StatusContext { context state targetUrl }
+    ... on CheckRun { name conclusion detailsUrl databaseId startedAt completedAt summary text checkSuite { app { slug } } }
+    ... on StatusContext { context state targetUrl description createdAt }
   }
 }`;
 
-export type FailedCheck = { name: string; url: string | null };
+export type FailedCheck = { name: string; url: string | null; logTail?: string | null };
 
 export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
   failedChecks?: FailedCheck[];
+  /** Every check on the head, once the head's checks were read. */
+  checks?: CiCheck[];
 };
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
 
-type Check = { name: string; result: string | null; url: string | null };
+type Check = {
+  name: string;
+  result: string | null;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The Actions job id when the check run comes from GitHub Actions. */
+  actionsJob: number | null;
+  summary: string | null;
+};
 
 type ReadinessInput = {
   client: GitHubClient;
@@ -243,11 +266,34 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     }
     const required = await readRequiredChecks(input, token, baseBranch);
     if (required === null) return unreadable();
-    const ci = judgeChecks(checks, baseChecks, required);
+    const judged = judgeChecks(checks, baseChecks, required);
+    const read = await ciChecks(input, token, checks, judged.outcome);
+    const ci: Readiness = {
+      ...judged,
+      checks: read,
+      ...(judged.failedChecks === undefined
+        ? {}
+        : {
+            failedChecks: judged.failedChecks.map((failed) => {
+              const logTail = read.find(
+                (check) => check.name === failed.name && check.state === "failed",
+              )?.logTail;
+              return logTail ? { ...failed, logTail } : failed;
+            }),
+          }),
+    };
     if (ci.outcome !== "ready") return ci;
     return unresolved > 0
-      ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
-      : { outcome: "ready", message: "CI passed and all review threads are resolved" };
+      ? {
+          outcome: "pending",
+          message: `Waiting for ${unresolved} unresolved review thread(s).`,
+          checks: read,
+        }
+      : {
+          outcome: "ready",
+          message: "CI passed and all review threads are resolved",
+          checks: read,
+        };
   } catch (error) {
     console.error(
       `GitHub readiness read failed: ${
@@ -275,9 +321,54 @@ function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
         name,
         result: node.conclusion ?? node.state ?? null,
         url: node.detailsUrl ?? node.targetUrl ?? null,
+        startedAt: node.startedAt ?? node.createdAt ?? null,
+        completedAt: node.completedAt ?? null,
+        actionsJob:
+          node.checkSuite?.app?.slug === "github-actions" && node.databaseId != null
+            ? node.databaseId
+            : null,
+        summary:
+          [node.summary, node.text, node.description]
+            .map((part) => part?.trim() ?? "")
+            .filter(Boolean)
+            .join("\n\n") || null,
       },
     ];
   });
+}
+
+/** The head's checks for the run page. A CI failure also reads each failed check's log tail. */
+async function ciChecks(
+  input: ReadinessInput,
+  token: string,
+  checks: readonly Check[],
+  outcome: Readiness["outcome"],
+): Promise<CiCheck[]> {
+  return Promise.all(
+    checks.map(async (check) => {
+      const state = ciState(check.result);
+      const tail =
+        outcome === "ci_failed" && state === "failed"
+          ? await readLogTail({ ...input, token, ...check })
+          : { logTail: null, logSource: null };
+      return {
+        name: check.name,
+        state,
+        url: check.url,
+        startedAt: check.startedAt,
+        completedAt: check.completedAt,
+        ...tail,
+      };
+    }),
+  );
+}
+
+function ciState(result: string | null): CiCheckState {
+  if (result === "SUCCESS") return "passed";
+  if (FAILED.has(result ?? "")) return "failed";
+  if (result === "SKIPPED") return "skipped";
+  if (result === "NEUTRAL") return "neutral";
+  return "running";
 }
 
 function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>): Readiness {
