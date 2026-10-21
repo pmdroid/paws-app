@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { UserFacingError } from "../src/core";
+import { UserFacingError, RunnerSlotsBusyError } from "../src/core";
 import { FIRST_ACTIVITY_BODY, acknowledgeNewSession, createLinearTracker } from "../src/linear";
 import { createFakeTracker, type LinearClient } from "../src/linear";
 
@@ -193,6 +193,19 @@ describe("linear tracker", () => {
         "Paws did not start this work. Only active members of the Paws workspace can delegate issues to Paws, and an issue Paws is still working on in another session takes replies there instead.",
       ],
     ]);
+  });
+
+  test("a start that waits for a runner slot says it is queued, not an error", async () => {
+    const tracker = createFakeTracker();
+    await expect(
+      acknowledgeNewSession(tracker, created("webhook"), async () => {
+        throw new RunnerSlotsBusyError();
+      }),
+    ).rejects.toThrow();
+    expect(tracker.progress.at(-1)).toMatchObject({
+      kind: "thought",
+      body: "Queued: every runner slot is busy. Paws starts this issue when a slot frees.",
+    });
   });
 
   test("a start failure with a user-facing reason reports that reason", async () => {

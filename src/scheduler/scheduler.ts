@@ -10,6 +10,7 @@ import { enqueueJob, enqueueJobOnce, immediate, type JobLoop } from "../db";
 import { readyItems } from "../intake";
 
 const TICK = "scheduler.tick";
+const RUNNER_SEEN_MS = 60_000;
 const ACTIVE = new Set<string>(IN_FLIGHT_ITEM_STATES);
 type Item = {
   id: string;
@@ -137,6 +138,16 @@ function holdsExecution(item: Item): boolean {
   );
 }
 
+function taskSlots(db: Database, now: number): number | null {
+  const runners = db
+    .query<{ capacity: number }, [number]>(
+      `SELECT COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity
+       FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
+    )
+    .all(now - RUNNER_SEEN_MS);
+  return runners.length ? runners.reduce((total, runner) => total + runner.capacity, 0) : null;
+}
+
 function holdsSession(item: Item): boolean {
   return holdsExecution(item) || item.state === "awaiting_input" || item.state === "paused";
 }
@@ -258,9 +269,16 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
           a.createdAt - b.createdAt ||
           a.id.localeCompare(b.id),
       );
+    const slots = taskSlots(db, now);
+    const reserved = held.filter((entry) => {
+      const item = byId.get(entry.itemId);
+      return item?.state === "queued" && !holdsExecution(item);
+    }).length;
+    let free = slots === null ? Infinity : slots - items.filter(holdsExecution).length - reserved;
     const admitted: string[] = [];
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
+      if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       db.run(
@@ -281,6 +299,7 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       );
       held.push(next);
       admitted.push(item.id);
+      free -= 1;
     }
     return admitted;
   });

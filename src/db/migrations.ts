@@ -1922,4 +1922,15 @@ CREATE TABLE closeout_round (
 ) STRICT;
 `,
   },
+  {
+    id: "079_queue_wait",
+    sql: `
+CREATE TABLE queue_wait (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  version INTEGER NOT NULL,
+  since INTEGER NOT NULL,
+  PRIMARY KEY (item_id, version)
+) STRICT;
+`,
+  },
 ];

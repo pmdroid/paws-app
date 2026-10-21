@@ -31,6 +31,7 @@ type Edge<State extends string, Event extends string> = {
 export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "planning", event: "plan_approved", to: "queued" },
   { from: "queued", event: "dispatched", to: "running" },
+  { from: "queued", event: "start_timed_out", to: "failed" },
   { from: "running", event: "blocking_question", to: "awaiting_input" },
   { from: "verifying", event: "blocking_question", to: "awaiting_input" },
   { from: "merge_queue", event: "blocking_question", to: "awaiting_input" },

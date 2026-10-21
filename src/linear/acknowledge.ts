@@ -1,5 +1,5 @@
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
-import { UserFacingError } from "../core";
+import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import type { AcceptedLinearEvent } from "./events";
 
 /** Posted before intake so a slow Linear read still meets the 10 second first-activity rule. */
@@ -66,19 +66,20 @@ export async function acknowledgeNewSession(
       return false;
     }
     const message = error instanceof Error ? error.message : "follow-up failed";
+    const waiting =
+      error instanceof LinearIntakePendingError || error instanceof RunnerSlotsBusyError;
     console.error(`linear session follow-up failed: ${message}`);
     if (event.sessionId !== null && !(error instanceof UserFacingError && error.reported)) {
       try {
         await tracker.postProgress(
           {
             sessionId: event.sessionId,
-            kind: error instanceof LinearIntakePendingError ? "thought" : "error",
-            body:
-              error instanceof LinearIntakePendingError
-                ? error.message
-                : error instanceof UserFacingError
-                  ? `Paws could not start work on this issue: ${error.message}`
-                  : "Paws could not start work on this issue. Please retry.",
+            kind: waiting ? "thought" : "error",
+            body: waiting
+              ? error.message
+              : error instanceof UserFacingError
+                ? `Paws could not start work on this issue: ${error.message}`
+                : "Paws could not start work on this issue. Please retry.",
           },
           { signal: options.signal },
         );
