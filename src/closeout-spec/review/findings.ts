@@ -32,12 +32,12 @@ export function parseFindings(text: string): ParsedFindings {
     const whole = tryParse(trimmed);
     if (whole.ok) return validateParsed(whole.value);
   }
-  const slice = bracketSlice(text);
-  if (slice !== undefined) {
+  const slices = bracketSlices(text);
+  for (const slice of slices) {
     const inner = tryParse(slice);
     if (inner.ok) return validateParsed(inner.value);
-    return { ok: false, reason: "reply was not valid JSON" };
   }
+  if (slices.length > 0) return { ok: false, reason: "reply was not valid JSON" };
   return { ok: false, reason: "reply did not contain a JSON array" };
 }
 
@@ -111,11 +111,16 @@ function lastParsed(bodies: string[]): { sawJson: boolean; value: unknown } {
   return { sawJson: false, value: undefined };
 }
 
-function bracketSlice(text: string): string | undefined {
-  const start = text.indexOf("[");
+function bracketSlices(text: string): string[] {
   const end = text.lastIndexOf("]");
-  if (start === -1 || end <= start) return undefined;
-  return text.slice(start, end + 1);
+  const slices: string[] = [];
+  for (
+    let start = text.indexOf("[");
+    start !== -1 && start < end;
+    start = text.indexOf("[", start + 1)
+  )
+    slices.push(text.slice(start, end + 1));
+  return slices;
 }
 
 function tryParse(text: string): { ok: true; value: unknown } | { ok: false } {
