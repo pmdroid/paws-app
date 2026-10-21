@@ -1936,7 +1936,13 @@ CREATE TABLE usage_pause (
   paused_at INTEGER NOT NULL,
   resume_requested INTEGER NOT NULL DEFAULT 0 CHECK(resume_requested IN (0, 1))
 ) STRICT;
-ALTER TABLE runner_member_account ADD COLUMN resets_at INTEGER;
+CREATE TABLE runner_member_account_reset (
+  runner_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  resets_at INTEGER,
+  PRIMARY KEY (runner_id, user_id, agent)
+) STRICT;
 `,
   },
 ];
