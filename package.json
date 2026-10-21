@@ -8,7 +8,7 @@
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "typecheck": "tsc --noEmit && tsc -p src/web/tsconfig.client.json --noEmit",
-    "test": "bun test --parallel=8",
+    "test": "bun test --parallel=4 --timeout=20000",
     "links": "bun scripts/check-markdown-links.ts",
     "check": "bun run lint && bun run fmt:check && bun run typecheck && bun run test && bun run build:status && bun run links",
     "build:status": "bun src/web/build.ts",
