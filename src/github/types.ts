@@ -17,6 +17,8 @@ export type GitHubMethod = "GET" | "POST" | "PUT" | "PATCH";
 export type GitHubResponse = {
   status: number;
   body: unknown;
+  /** The raw body when it is not JSON, for example a job log. */
+  text?: string;
 };
 
 /**
@@ -103,7 +105,23 @@ export type SerialMergeResult = {
   summary?: string;
   cycle?: number;
   message?: string;
-  failedChecks?: { name: string; url: string | null }[];
+  failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
+  /** Every check on `head` at the last read, with log tails for the failed ones. */
+  checks?: CiCheck[];
+};
+
+export type CiCheckState = "passed" | "failed" | "running" | "skipped" | "neutral";
+
+/** One check run or commit status on a pull request head, as the run page shows it. */
+export type CiCheck = {
+  name: string;
+  state: CiCheckState;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The last lines of the GitHub Actions job log, or the check's summary text. Failed checks only. */
+  logTail: string | null;
+  logSource: "actions" | "summary" | null;
 };
 
 export type ReverifyInput = {

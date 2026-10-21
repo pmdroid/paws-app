@@ -65,6 +65,8 @@ export {
 } from "./types";
 export type {
   AppCredentials,
+  CiCheck,
+  CiCheckState,
   GitExec,
   GitHubClient,
   GitHubResponse,

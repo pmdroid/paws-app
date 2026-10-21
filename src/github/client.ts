@@ -27,7 +27,7 @@ export function createFetchGitHubClient(
         try {
           parsed = JSON.parse(text);
         } catch {
-          parsed = { message: "non-json response" };
+          return { status: response.status, body: { message: "non-json response" }, text };
         }
       }
       return { status: response.status, body: parsed };
