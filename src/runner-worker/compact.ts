@@ -9,6 +9,7 @@ function compactValue(value: unknown, stringLimit: number): unknown {
       : value;
   }
   if (value === null || typeof value !== "object") return value;
+  if (isByteArray(value)) return compactValue(Buffer.from(value).toString("utf8"), stringLimit);
   if (Array.isArray(value)) return value.map((entry) => compactValue(entry, stringLimit));
   const record = value as Record<string, unknown>;
   if (record.type === "image") {
@@ -18,6 +19,14 @@ function compactValue(value: unknown, stringLimit: number): unknown {
   }
   return Object.fromEntries(
     Object.entries(record).map(([key, entry]) => [key, compactValue(entry, stringLimit)]),
+  );
+}
+
+function isByteArray(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 16 &&
+    value.every((entry) => Number.isInteger(entry) && entry >= 0 && entry <= 255)
   );
 }
 

@@ -82,3 +82,24 @@ test("events with too many fields fall back to a bounded progress note", () => {
   expect(compacted.type).toBe("progress");
   expect(Buffer.byteLength(JSON.stringify(compacted))).toBeLessThan(200_000);
 });
+
+test("tool output sent as an array of bytes becomes text", () => {
+  const output = "src/db/queue-wait.ts:3:export function queueWaitSince\n".repeat(200);
+  const bytes = [...Buffer.from(output)];
+  const grep = {
+    type: "session_update",
+    sessionId: "session",
+    update: {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-grep",
+      status: "completed",
+      rawOutput: { type: "GrepSearch", stdout: bytes, stderr: [] },
+    },
+  } as AcpEvent;
+  const compacted = compactAcpEvent(grep);
+  if (compacted.type !== "session_update") throw new Error("event type changed");
+  expect(compacted.update).toMatchObject({ rawOutput: { stdout: output, stderr: [] } });
+  expect(Buffer.byteLength(JSON.stringify(compacted))).toBeLessThan(
+    Buffer.byteLength(JSON.stringify(grep)) / 3,
+  );
+});
