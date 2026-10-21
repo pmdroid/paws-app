@@ -87,11 +87,18 @@ export function createRemoteSessionAgentRunner(options: {
             } catch {}
           }
           if (command) break;
-          const slotBusy = options.db
-            .query(
-              "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
-            )
-            .get(now());
+          const slotBusy =
+            options.db
+              .query(
+                "SELECT 1 FROM runner_helper h JOIN runner r ON r.id=h.runner_id WHERE r.status='active' AND r.revoked_at IS NULL AND h.ended_at IS NULL AND h.expires_at>?",
+              )
+              .get(now()) ||
+            options.db
+              .query<{ id: string }, []>(
+                "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL",
+              )
+              .all()
+              .some((runner) => !runnerHasCapacity(options.db, runner.id, now()));
           if (!slotBusy || now() >= waitUntil)
             throw new UserFacingError(
               `No paired runner can run ${profile.agent} for this issue right now. Check runner availability and usage limits, then retry.`,
