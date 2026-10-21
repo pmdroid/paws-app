@@ -21,7 +21,7 @@ import {
   isOpen,
   parseCheckHash,
 } from "./closeout";
-import { followLog, captureLogs, restoreLogs } from "./log-scroll";
+import { captureLogs, restoreLogs } from "./log-scroll";
 import { agentCloseoutRun, agentVerdict, findAgentCloseout } from "./agent-closeout";
 import { render, type RenderModel } from "./render";
 import { matchRoute, needsSnapshot, parseRoute, routerBase, type Route } from "./route";
@@ -61,7 +61,6 @@ const painted = new Map<string, string>();
 let choice: SourceChoice = { kind: "auto" };
 let baked: string | null = null;
 const closeout = emptyCloseoutView();
-const activity: Record<string, boolean> = {};
 let linkedHash = "";
 let phase: RenderModel["phase"] = "loading";
 let snapshot: StatusSnapshot | null = null;
@@ -91,22 +90,6 @@ router.subscribe((state) => {
   window.scrollTo({ top: 0, behavior: "instant" });
   document.querySelector<HTMLElement>("#content")?.focus({ preventScroll: true });
 });
-// `toggle` does not bubble, so listen while it travels down.
-document.addEventListener(
-  "toggle",
-  (event) => {
-    const details = event.target;
-    if (!(details instanceof HTMLDetailsElement) || !details.isConnected) return;
-    const key = details.dataset.activity;
-    // A repaint opening the section as rendered is not the reader's choice.
-    if (key === undefined || String(details.open) === details.dataset.open) return;
-    details.dataset.open = String(details.open);
-    activity[key] = details.open;
-    const log = details.querySelector("[data-follow]");
-    if (details.open && log) followLog(log);
-  },
-  true,
-);
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (target instanceof HTMLInputElement && target.dataset.runFilter !== undefined) {
@@ -264,7 +247,6 @@ function paint(): void {
     error,
     engineUrl: currentEngine(),
     closeout,
-    activity,
     mediaInfo: evidence.info,
     search: router.state.location.search,
     conversations: canReadConversations(currentEngine(), source(), location.origin)

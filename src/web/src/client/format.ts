@@ -196,6 +196,18 @@ export function linkList(links: StatusLink[]): string {
   return rendered.join(' <span class="dim">·</span> ');
 }
 
+export function linkButtons(links: StatusLink[]): string {
+  return links
+    .flatMap((link) => {
+      const href = safeHref(link.href);
+      if (!href) return [];
+      return [
+        `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(link.label)}</a>`,
+      ];
+    })
+    .join("");
+}
+
 export function safeHref(href: string): string | null {
   try {
     const url = new URL(href);
