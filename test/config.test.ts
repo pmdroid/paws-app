@@ -41,9 +41,12 @@ describe("config", () => {
       closeoutProjects: { "acme/one": "policies/one" },
     });
     expect(parseConfigToml(text).githubRepos).toEqual(["acme/one", "acme/two"]);
-    writeFileSync(paths.configFile, text, { mode: 0o600 });
+    writeFileSync(paths.configFile, `${text}\n[merge]\ncloseout_after_update = true\n`, {
+      mode: 0o600,
+    });
     writeConfigFile(paths.configFile, { ...setup, maxTurns: 50 });
     expect(loadConfigFile(paths.configFile).githubRepos).toEqual(["acme/one", "acme/two"]);
+    expect(loadConfigFile(paths.configFile).closeoutAfterUpdate).toBe(true);
     expect(closeoutPolicyRoot(loadConfigFile(paths.configFile), paths.home, "Acme/One")).toBe(
       join(paths.home, "policies/one"),
     );
