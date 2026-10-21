@@ -69,7 +69,6 @@ export function closeoutPrompt(): string {
   ].join(" ");
 }
 
-/** Runs the command checks on a commit nobody checked yet, such as a rebased candidate. */
 export function closeoutChecksPrompt(head: string): string {
   return [
     `Run Paws Closeout on commit ${head}. Main moved or the commit is new, so its checks have not run yet.`,

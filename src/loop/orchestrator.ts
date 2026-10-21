@@ -284,7 +284,6 @@ export type OrchestratorOptions = {
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
   };
-  /** Runner Closeout checks for a head without an agent report. Defaults to 3 attempts, 30 s apart. */
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
   publicationReady?: (
     itemId: string,
@@ -1910,12 +1909,6 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Runs the command checks on the item's runner for a head without an agent Closeout report,
-   * such as a candidate rebased before merging, and saves that report for the head.
-   * Retries when the runner cannot run them. Throws when it still cannot, so Closeout blocks
-   * on "checks could not run" and no check is recorded as failed.
-   */
   private async runRunnerCloseout(
     item: WorkItemRecord,
     deps: AcpAgentDeps,
@@ -2293,7 +2286,6 @@ export class Orchestrator {
           input.head,
           candidate,
         );
-        // A fix during this verification moves the head, and the next cycle verifies again under the run it ended.
         verifying = getWorkItem(this.db, item.id) ?? verifying;
         if (verdict.decision === "accepted")
           publicationCandidate = { sha: input.head, baseSha: input.base };

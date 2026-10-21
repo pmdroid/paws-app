@@ -57,7 +57,6 @@ export function readSessionCloseout(path: string): { head: string; report: strin
   return { head: record.head, report: record.report };
 }
 
-/** No command result for this check on this commit. The check did not run; it did not fail. */
 export class CloseoutResultMissingError extends Error {
   constructor(readonly checkId: string | undefined) {
     super(
@@ -93,7 +92,6 @@ export function sessionCloseoutResult(
   }
 }
 
-/** Replays the saved result as the check's log. Throws {@link CloseoutResultMissingError} when there is none. */
 export function loggedSessionCloseout(
   report: string | undefined,
   request: LoggedCommandRequest,
