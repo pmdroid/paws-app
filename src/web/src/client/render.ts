@@ -2,6 +2,7 @@ import { SETTINGS_PAGES, renderSettingsPage } from "./settings-pages";
 import type {
   StatusAgentCloseout,
   StatusItem,
+  StatusLink,
   StatusQuestion,
   StatusRun,
   StatusSnapshot,
@@ -14,6 +15,7 @@ import {
   clock,
   esc,
   itemLabel,
+  linkButtons,
   linkList,
   runLabel,
   PHASE_NAMES,
@@ -38,8 +40,6 @@ export interface RenderModel {
   error: string | null;
   engineUrl: string | null;
   closeout?: CloseoutView;
-  /** Task activity sections the reader opened or closed, by `activityKey`. */
-  activity?: Record<string, boolean>;
   mediaInfo?: ReadonlyMap<string, MediaInfo>;
   search?: string;
 }
@@ -111,7 +111,6 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
         model.route.id,
         model.closeout ?? emptyCloseoutView(),
         model.engineUrl,
-        model.activity ?? {},
         model.search ?? "",
       );
     case "questions":
@@ -317,7 +316,6 @@ function viewRuns(
   id: string | null,
   closeout: CloseoutView,
   engineUrl: string | null,
-  activity: Record<string, boolean>,
   search: string,
 ): string {
   const runs = [...snapshot.runs].sort(
@@ -343,7 +341,6 @@ function viewRuns(
   const engine = engineUrl === null ? null : parseEngineUrl(engineUrl);
   const transcriptPath = `/status/runs/${encodeURIComponent(selected.id)}/transcript`;
   const transcriptHref = engine === null ? transcriptPath : new URL(transcriptPath, engine).href;
-  const open = activityOpen(activity, selected);
   return `<article class="run-page">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="${routeHref({ view: "runs", id: null })}">Runs</a><span>/</span>${itemLink(item)}<span>/</span><span class="mono">${esc(selected.id)}</span></nav>
     <header class="run-heading"><div class="row">${itemLink(item)}${phasePill(item, selected, verdict)}<span class="mono muted">${esc(snapshot.project.repo)}${item?.branch ? ` · ${esc(item.branch)}` : ""}</span></div>
@@ -362,25 +359,20 @@ function viewRuns(
     ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
     ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item?.state ?? "running")) : ""}
     ${evidenceSlot(snapshot, selected.id)}
-    <details class="run-activity" data-activity="${esc(activityKey(selected))}" data-open="${open}"${open ? ' open=""' : ""}><summary>Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</summary>
-      <p class="muted">${esc(selected.summary)}</p>
-      ${snapshot.source === "live" ? `<a href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>` : ""}
+    <section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</h2>
+      ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
       <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
-      <div class="row">${linkList(selected.links)}</div>
-    </details></article>`;
+    </section></article>`;
 }
 
-/**
- * The reader's choice is kept per phase, so the section the agent's work held
- * open folds back up once the run reaches Closeout.
- */
-export function activityKey(run: StatusRun): string {
-  return `${run.id}\n${run.state === "running" ? "implementing" : "after"}`;
-}
-
-/** The section starts open while the agent implements and closed afterwards. */
-function activityOpen(activity: Record<string, boolean>, run: StatusRun): boolean {
-  return activity[activityKey(run)] ?? run.state === "running";
+/** The transcript and the run's own links, as one row of buttons above the log. */
+function activityActions(transcriptHref: string | null, links: StatusLink[]): string {
+  const transcript =
+    transcriptHref === null
+      ? ""
+      : `<a class="btn" href="${esc(transcriptHref)}" target="_blank" rel="noopener">Open full agent transcript</a>`;
+  const buttons = transcript + linkButtons(links);
+  return buttons ? `<div class="row wrap">${buttons}</div>` : "";
 }
 
 function viewQuestions(snapshot: StatusSnapshot, id: string | null): string {

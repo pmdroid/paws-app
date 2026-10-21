@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { demoStatus } from "../demo";
-import { activityKey, render, type RenderModel } from "./render";
+import { render, type RenderModel } from "./render";
 import { parseRoute } from "./route";
 import { checkKey } from "./closeout";
+import { esc } from "./format";
 
 function model(patch: Partial<RenderModel> = {}): RenderModel {
   return {
@@ -213,42 +214,30 @@ describe("status views", () => {
     expect(html).not.toContain("/verdicts");
   });
 
-  test("task activity is open while the agent implements and collapsed from Closeout on", () => {
+  test("task activity is a plain section with its links as one row of buttons", () => {
     const snapshot = demoStatus();
     snapshot.source = "live";
     const run = snapshot.runs.find((entry) => entry.state === "running");
     if (!run) throw new Error("missing running run");
-    const section = () =>
-      activitySection(render(model({ snapshot, route: { view: "runs", id: run.id } })).content);
-    expect(section()).toContain(' open=""');
-    expect(section()).toContain("Open full agent transcript");
-    expect(section()).toContain("data-follow");
-    for (const state of ["verifying", "done"] as const) {
-      run.state = state;
-      expect(section()).not.toContain(' open=""');
-    }
-  });
-
-  test("a refresh keeps the reader's choice for the task activity section in each phase", () => {
-    const snapshot = demoStatus();
-    const run = snapshot.runs.find((entry) => entry.state === "running");
-    if (!run) throw new Error("missing running run");
-    const activity: Record<string, boolean> = {};
-    const section = () =>
-      activitySection(
-        render(model({ snapshot, activity, route: { view: "runs", id: run.id } })).content,
-      );
+    run.links = [{ label: "Linear issue", href: "https://linear.app/acme/issue/ENG-1" }];
     run.activity.push({ at: "2026-10-09T20:20:00.000Z", kind: "tool", text: "bun test" });
-    expect(section()).toContain(' open=""');
-    expect(section()).toContain("bun test");
-    activity[activityKey(run)] = false;
-    expect(section()).not.toContain(' open=""');
-    run.state = "verifying";
-    expect(section()).not.toContain(' open=""');
-    activity[activityKey(run)] = true;
-    run.activity.push({ at: "2026-10-09T20:21:00.000Z", kind: "ok", text: "Closeout started" });
-    expect(section()).toContain(' open=""');
-    expect(section()).toContain("Closeout started");
+    for (const state of ["running", "verifying", "done"] as const) {
+      run.state = state;
+      const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+      const section = activitySection(html);
+      expect(html).not.toContain('<details class="run-activity"');
+      expect(section).toContain("<h2");
+      expect(section).toContain("Task activity and agent transcript");
+      expect(section).not.toContain(esc(run.summary));
+      expect(section).toContain("bun test");
+      expect(section).toContain("data-follow");
+      const actions = section.slice(0, section.indexOf('class="log"'));
+      expect(actions).toContain('<div class="row wrap"><a class="btn" href="');
+      expect(actions).toContain(">Open full agent transcript</a>");
+      expect(actions).toContain(
+        '<a class="btn" href="https://linear.app/acme/issue/ENG-1" target="_blank" rel="noopener noreferrer">Linear issue</a>',
+      );
+    }
   });
 
   test("issues, runs, and questions each render", () => {
@@ -259,7 +248,7 @@ describe("status views", () => {
       "Admin export UI",
     );
     expect(render(model({ route: { view: "runs", id: "r-103" } })).content).toContain(
-      "Parked on Q-41",
+      "ask_team → Q-41",
     );
     expect(render(model({ route: { view: "questions", id: "Q-40" } })).content).toContain(
       "legal-hold",
@@ -339,7 +328,7 @@ function issueRow(html: string, id: string): string {
 }
 
 function activitySection(html: string): string {
-  const start = html.indexOf('<details class="run-activity"');
+  const start = html.indexOf('<section class="run-activity"');
   if (start < 0) throw new Error("missing task activity");
-  return html.slice(start, html.indexOf("</details>", start));
+  return html.slice(start, html.indexOf("</section>", start));
 }
