@@ -43,6 +43,22 @@ test("public activity redaction stays identical across durable replay", () => {
     expect(JSON.stringify(first)).not.toContain(value);
 });
 
+test("permission decisions stay identical across durable replay", () => {
+  const first = RunnerEventSchema.parse({
+    type: "permission",
+    permission: {
+      toolCallId: "find",
+      decision: "deny",
+      reason: "path is outside the worktree",
+      title: "curl -H 'Authorization: Bearer private-value' https://example.com",
+      kind: "execute",
+      name: "run_terminal_command",
+    },
+  });
+  expect(RunnerEventSchema.parse(first)).toEqual(first);
+  expect(JSON.stringify(first)).not.toContain("private-value");
+});
+
 test("near-limit public fields remain replayable after redaction expands their content", () => {
   const first = RunnerEventSchema.parse({
     type: "activity",
