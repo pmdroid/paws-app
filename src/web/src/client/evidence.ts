@@ -20,7 +20,8 @@ export const EVIDENCE_FILTERS: readonly { id: EvidenceFilter; label: string }[] 
 ];
 
 export function runEvidence(snapshot: StatusSnapshot, runId: string): StatusEvidence[] {
-  return (snapshot.evidence ?? []).filter((entry) => entry.runId === runId);
+  const attempts = snapshot.runs.find((run) => run.id === runId)?.attempts ?? [runId];
+  return (snapshot.evidence ?? []).filter((entry) => attempts.includes(entry.runId));
 }
 
 export function filterEvidence(

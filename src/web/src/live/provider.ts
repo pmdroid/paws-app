@@ -30,6 +30,7 @@ import { join } from "node:path";
 import type {
   AgentCloseoutEvent,
   Job,
+  StoredRun,
   OpenQuestionRecord,
   OutboxRow,
   WorkItemFact,
@@ -37,6 +38,7 @@ import type {
 } from "../../../db";
 import {
   getLinearConversationSource,
+  getRun,
   listAgentCloseout,
   listCloseoutProgress,
   listEvidence,
@@ -183,7 +185,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
-    evidence: evidenceFor(db, records, runs),
+    evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
   };
 }
@@ -211,11 +213,7 @@ function agentCloseoutFor(
 }
 
 /** Evidence of the visible items only, so a reader without the item's session sees none of it. */
-function evidenceFor(
-  db: Database,
-  records: readonly WorkItemRecord[],
-  runs: readonly StatusRun[],
-): StatusEvidence[] {
+function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEvidence[] {
   return records
     .flatMap((record) =>
       listEvidence(db, record.id).map((stored) => ({
@@ -230,7 +228,7 @@ function evidenceFor(
         sizeBytes: stored.sizeBytes,
         headCommit: stored.headCommit,
         publishedAt: new Date(stored.createdAt).toISOString(),
-        publisher: runs.find((run) => run.id === stored.runId)?.agent ?? "Paws",
+        publisher: agentName(getRun(db, stored.runId)?.agent ?? "paws"),
       })),
     )
     .sort(
@@ -277,21 +275,28 @@ function runsFor(
   pawsHome: string | undefined,
 ): StatusRun[] {
   const byItem = new Map(records.map((record) => [record.id, record]));
+  const attempts = new Map<string, StoredRun[]>();
+  for (const stored of listRuns(db))
+    if (byItem.has(stored.itemId))
+      attempts.set(stored.itemId, [...(attempts.get(stored.itemId) ?? []), stored]);
   const runs: StatusRun[] = [];
-  for (const stored of listRuns(db)) {
-    const record = byItem.get(stored.itemId);
-    if (record === undefined) continue;
-    const activity = activityFor(record, stored.id, rows);
+  for (const [itemId, stored] of attempts) {
+    const record = byItem.get(itemId)!;
+    const first = stored[0]!;
+    const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
+    const activity = activityFor(record, stored, rows, generatedAt);
     const recent = activity.at(-1);
-    const current = record.currentRunId === stored.id;
     runs.push({
-      id: stored.id,
+      id: first.id,
+      attempts: stored.map((run) => run.id),
       itemId: publicId(record),
-      state: current ? runState(record, stored.status) : "done",
-      agent: agentName(stored.agent),
-      reviewer: runReviewer(pawsHome, stored.id),
-      runner: runRunnerName(db, stored.id),
-      startedAt: iso(stored.createdAt, generatedAt),
+      state: stored.some((run) => run.id === record.currentRunId)
+        ? runState(record, current.status)
+        : "done",
+      agent: agentName(current.agent),
+      reviewer: runReviewer(pawsHome, current.id),
+      runner: runRunnerName(db, current.id),
+      startedAt: iso(first.createdAt, generatedAt),
       attempt: Math.max(record.turnCount, record.checkpoint?.turn ?? 0),
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
@@ -393,11 +398,10 @@ function questionsFor(
     seen.add(question.id);
     coveredItems.add(record.id);
     const parsed = parseQuestion(question.body);
-    const storedRun = question.runId !== null && runs.some((run) => run.id === question.runId);
     questions.push({
       id: question.id,
       itemId: publicId(record),
-      runId: storedRun ? question.runId : linkedRunId(record, runs),
+      runId: sessionRunId(question.runId, runs) ?? linkedRunId(record, runs),
       title: parsed.title || question.body,
       body: parsed.body || question.body,
       context: parsed.context,
@@ -829,20 +833,30 @@ function mergeSteps(job: Job | undefined): StatusMergeEntry["steps"] {
 
 function activityFor(
   record: WorkItemRecord,
-  runId: string,
+  stored: readonly StoredRun[],
   rows: readonly OutboxRow[],
+  generatedAt: string,
 ): StatusActivity[] {
-  const activity: StatusActivity[] = [];
+  const lines: Array<{ at: number; line: StatusActivity }> = [];
   for (const row of rows) {
-    if (!concerns(row, record, runId)) continue;
+    if (!stored.some((run) => concerns(row, record, run.id))) continue;
     const body = readString(row.payload, "body")?.trim() ?? "";
     if (!body) continue;
     const kind = activityKind(
       row.op === "elicitation" ? "elicitation" : readString(row.payload, "kind"),
     );
-    activity.push({ at: iso(row.createdAt), kind, text: body });
+    lines.push({ at: row.createdAt, line: { at: iso(row.createdAt), kind, text: body } });
   }
-  return activity;
+  for (const run of stored.slice(1))
+    lines.push({
+      at: run.createdAt,
+      line: {
+        at: iso(run.createdAt, generatedAt),
+        kind: "system",
+        text: `${run.kind === "review" ? "Review" : "Implementation"} started with ${agentName(run.agent)}.`,
+      },
+    });
+  return lines.sort((left, right) => left.at - right.at).map((entry) => entry.line);
 }
 
 function eventsFor(rows: readonly OutboxRow[]): StatusEvent[] {
@@ -973,8 +987,12 @@ function runState(record: WorkItemRecord, status: string): RunState {
 }
 
 function linkedRunId(record: WorkItemRecord, runs: readonly StatusRun[]): string | null {
-  if (record.currentRunId === null) return null;
-  return runs.some((run) => run.id === record.currentRunId) ? record.currentRunId : null;
+  return sessionRunId(record.currentRunId, runs);
+}
+
+function sessionRunId(runId: string | null, runs: readonly StatusRun[]): string | null {
+  if (runId === null) return null;
+  return runs.find((run) => run.id === runId || run.attempts?.includes(runId))?.id ?? null;
 }
 
 function publicId(record: WorkItemRecord): string {
