@@ -21,6 +21,7 @@ import {
   createCloseoutSession,
   workspacePolicyFiles,
   type CloseoutSession,
+  type CloseoutSessionEvent,
   type PolicyFilesLoad,
 } from "../closeout-spec";
 import { CLOSEOUT_FINISH_UNAVAILABLE, closeoutFinishLine } from "./closeout-hook";
@@ -58,6 +59,10 @@ export interface PullRequestDescription {
 
 export interface PullRequestHook {
   update(description: PullRequestDescription): Promise<void>;
+}
+
+export interface CloseoutProgressHook {
+  record(event: CloseoutSessionEvent): void | Promise<void>;
 }
 
 export const POST_UPDATE_TOOL_NAME = "post_update";
@@ -144,6 +149,7 @@ interface HostToolBridgeOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   publishArtifact?: PublishArtifactHook;
+  closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
   context: { itemId: string; runId: string; role: AgentRole; worktreePath?: string };
   closeout?: CloseoutSession;
@@ -179,6 +185,9 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
         allowCommand(argv) {
           authorizeCloseout(argv, worktreePath, options.commandGuard);
         },
+        ...(options.closeoutProgress
+          ? { onProgress: progressListener(options.closeoutProgress) }
+          : {}),
       })
     : undefined;
   const allowCloseoutRun = options.allowCloseoutRun !== false;
@@ -293,7 +302,7 @@ async function handleConnection(
       try {
         answer =
           parsed.tool === "get_closeout"
-            ? await options.closeout.report()
+            ? await options.closeout.report({ progress: true })
             : await options.closeout.run(
                 closeoutId(parsed.arguments ?? {}),
                 closeoutModel(parsed.arguments),
@@ -555,6 +564,14 @@ export function parsePostUpdate(value: { text?: unknown }): string {
   if (text.length < 1 || text.length > 500)
     throw new Error("post_update needs text of 1 to 500 characters");
   return text;
+}
+
+function progressListener(hook: CloseoutProgressHook): (event: CloseoutSessionEvent) => void {
+  return (event) => {
+    try {
+      void Promise.resolve(hook.record(event)).catch(() => undefined);
+    } catch {}
+  };
 }
 
 function authorizeCloseout(

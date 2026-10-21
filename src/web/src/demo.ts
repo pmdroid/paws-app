@@ -306,6 +306,7 @@ const DEMO: StatusSnapshot = {
       links: [{ label: "Linear", href: "https://linear.app/acme/issue/ENG-100" }],
     },
   ],
+  agentCloseout: [agentCloseout()],
   mergeQueue: [
     {
       position: 1,
@@ -334,6 +335,114 @@ const DEMO: StatusSnapshot = {
     { at: "2026-10-09T20:15:00.000Z", level: "ok", text: "ENG-99 merged (PR #474)." },
   ],
 };
+
+function agentCloseout(): NonNullable<StatusSnapshot["agentCloseout"]>[number] {
+  const passed = (
+    id: string,
+    kind: "setup" | "command",
+    command: string,
+    elapsedMs: number,
+    stdout: string,
+  ) =>
+    ran(check(id, kind, "passed", command, null), { attempt: 1, elapsedMs, exitCode: 0, stdout });
+  const setup = [
+    passed(
+      "install",
+      "setup",
+      "bun install --frozen-lockfile",
+      4_200,
+      "bun install v1.4.2\n\nChecked 230 installs across 241 packages (no changes) [412.00ms]\n",
+    ),
+    passed("lint", "command", "bun run lint", 6_100, "$ oxlint\nFound 0 warnings and 0 errors.\n"),
+    passed(
+      "format",
+      "command",
+      "bun run fmt:check",
+      2_300,
+      "$ oxfmt --check\nAll matched files use the correct format.\n",
+    ),
+    passed("typecheck", "command", "bun run typecheck", 31_000, "$ tsc --noEmit\n"),
+  ];
+  const later = [
+    check("build-status", "command", "pending", "bun run build:status", null),
+    check("links", "command", "pending", "bun run links", null),
+  ];
+  const failed = ran(check("test", "command", "failed", "bun test", null), {
+    attempt: 1,
+    elapsedMs: 72_400,
+    exitCode: 1,
+    stdout:
+      "bun test v1.4.2\n\npackages/audit/format/csv.test.ts:\n\u001b[32m✓\u001b[0m streams rows without buffering \u001b[2m[2.95ms]\u001b[0m\n\u001b[31m✗\u001b[0m escapes quotes inside quoted fields \u001b[2m[1.02ms]\u001b[0m\n\n \u001b[1m\u001b[32m211 pass\u001b[0m\n \u001b[1m\u001b[31m1 fail\u001b[0m\n",
+    stderr: `\u001b[1m\u001b[31merror\u001b[0m: expect(received).toBe(expected)\n\n  Expected: \u001b[32m'"a""b"'\u001b[0m\n  Received: \u001b[31m'"a"b"'\u001b[0m\n\n      at packages/audit/format/csv.test.ts:41:27\n`,
+  });
+  const running = {
+    ...check("test", "command", "running", "bun test", null),
+    attempt: 2,
+    elapsedMs: 74_000,
+    active: true,
+  };
+  return {
+    itemId: "ENG-102",
+    runId: "r-102",
+    maxAttempts: 3,
+    blocked: null,
+    updatedAt: "2026-10-09T22:13:46.000Z",
+    attempts: [
+      {
+        number: 1,
+        decision: "rejected",
+        startedAt: "2026-10-09T22:05:10.000Z",
+        baseSha: null,
+        headSha: "2c41f9a",
+        policyDigest: null,
+        checks: [...setup, failed, ...later],
+      },
+      {
+        number: 2,
+        decision: "running",
+        startedAt: "2026-10-09T22:13:46.000Z",
+        baseSha: null,
+        headSha: "4be81d0",
+        policyDigest: null,
+        checks: [...setup, running, ...later],
+      },
+    ],
+    steps: [
+      {
+        at: "2026-10-09T22:05:02.000Z",
+        tool: "get_closeout",
+        checkId: null,
+        state: "reported",
+        attempt: null,
+        headSha: "2c41f9a",
+      },
+      ...["install", "lint", "format", "typecheck"].map((checkId) => ({
+        at: "2026-10-09T22:06:00.000Z",
+        tool: "run_closeout" as const,
+        checkId,
+        state: "passed" as const,
+        attempt: 1,
+        headSha: "2c41f9a",
+      })),
+      {
+        at: "2026-10-09T22:07:20.000Z",
+        tool: "run_closeout",
+        checkId: "test",
+        state: "failed",
+        attempt: 1,
+        headSha: "2c41f9a",
+      },
+      {
+        at: "2026-10-09T22:13:46.000Z",
+        tool: "run_closeout",
+        checkId: "test",
+        state: "running",
+        attempt: 2,
+        headSha: "4be81d0",
+      },
+    ],
+  };
+}
 
 export function demoStatus(): StatusSnapshot {
   return structuredClone(DEMO);

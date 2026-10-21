@@ -350,6 +350,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         pullRequest: options.pullRequest,
         postUpdate: options.postUpdate,
         publishArtifact: options.publishArtifact,
+        ...(options.closeoutProgress ? { closeoutProgress: options.closeoutProgress } : {}),
         artifactLimits: options.artifactLimits,
         context: {
           itemId: options.itemId,

@@ -191,6 +191,37 @@ export interface StatusCloseoutAttempt {
   checks: StatusCheck[];
 }
 
+export interface StatusAgentCloseout {
+  itemId: string;
+  runId: string;
+  maxAttempts: number | null;
+  blocked: string | null;
+  updatedAt: string;
+  attempts: StatusCloseoutAttempt[];
+  steps: StatusAgentCloseoutStep[];
+}
+
+export const AGENT_CLOSEOUT_TOOLS = ["get_closeout", "run_closeout"] as const;
+export const AGENT_CLOSEOUT_STEP_STATES = [
+  "reported",
+  "running",
+  "passed",
+  "failed",
+  "exhausted",
+  "cancelled",
+] as const;
+export type AgentCloseoutTool = (typeof AGENT_CLOSEOUT_TOOLS)[number];
+export type AgentCloseoutStepState = (typeof AGENT_CLOSEOUT_STEP_STATES)[number];
+
+export interface StatusAgentCloseoutStep {
+  at: string;
+  tool: AgentCloseoutTool;
+  checkId: string | null;
+  state: AgentCloseoutStepState;
+  attempt: number | null;
+  headSha: string | null;
+}
+
 export interface StatusMergeStep {
   name: string;
   state: StepState;
@@ -230,6 +261,7 @@ export interface StatusSnapshot {
   events: StatusEvent[];
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
+  agentCloseout?: StatusAgentCloseout[];
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -354,6 +386,39 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readEvidence(entry, `evidence[${index}]`),
           ),
         }),
+    ...(body.agentCloseout === undefined
+      ? {}
+      : {
+          agentCloseout: array(body, "agentCloseout", "status").map((entry, index) =>
+            readAgentCloseout(entry, `agentCloseout[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readAgentCloseout(input: unknown, path: string): StatusAgentCloseout {
+  const body = object(input, path);
+  return {
+    itemId: text(body, "itemId", path),
+    runId: text(body, "runId", path),
+    maxAttempts: optionalCount(body, "maxAttempts", path),
+    blocked: optionalText(body, "blocked"),
+    updatedAt: dateString(body, "updatedAt", path),
+    attempts: array(body, "attempts", path).map((entry, attempt) =>
+      readAttempt(entry, `${path}.attempts[${attempt}]`),
+    ),
+    steps: array(body, "steps", path).map((entry, step) => {
+      const at = `${path}.steps[${step}]`;
+      const row = object(entry, at);
+      return {
+        at: dateString(row, "at", at),
+        tool: oneOf(string(row, "tool", at), AGENT_CLOSEOUT_TOOLS, `${at}.tool`),
+        checkId: optionalText(row, "checkId"),
+        state: oneOf(string(row, "state", at), AGENT_CLOSEOUT_STEP_STATES, `${at}.state`),
+        attempt: optionalCount(row, "attempt", at),
+        headSha: optionalText(row, "headSha"),
+      };
+    }),
   };
 }
 
