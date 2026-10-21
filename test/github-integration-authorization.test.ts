@@ -218,3 +218,77 @@ test("fresh onboarding checks attribution with the selected repository before bi
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const [later, outcome] of [
+  [60_000, "running"],
+  [11 * 60_000, "awaiting_input"],
+] as const) {
+  test(`a GitHub check that fails ${later / 60_000} min after it passed leaves the task ${outcome}`, async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const env = { GITHUB_AUTH: "app" };
+    const host = createLinearGitHubAuth({
+      runtime: loadRuntime(env),
+      env,
+      repositoryForItem: () => ({
+        owner: "acme",
+        repo: "widgets",
+        remoteUrl: "https://github.com/acme/widgets.git",
+      }),
+      actorForItem: () => "member",
+      authorizeItem: async () => true,
+    });
+    host.integration!.check = async () => true;
+    let now = 1_000;
+    const auth = new GitHubAuthQuestions(db, host, () => now);
+    insertQueuedItem(db, { id: "cached", sessionKey: "cached", title: "cached" });
+    beginImplementRun(db, "cached", now);
+    const signal = new AbortController().signal;
+    try {
+      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(true);
+      host.integration!.check = async () => {
+        throw new Error("GitHub API request failed with 502");
+      };
+      now += later;
+      expect(await auth.ensure(getWorkItem(db, "cached")!, "initial", signal)).toBe(
+        outcome === "running",
+      );
+      expect(getWorkItem(db, "cached")?.state).toBe(outcome);
+    } finally {
+      auth.close();
+      db.close();
+    }
+  });
+}
+
+test("a denied authorization right after a passed check still stops the task", async () => {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const env = { GITHUB_AUTH: "app" };
+  let allowed = true;
+  const host = createLinearGitHubAuth({
+    runtime: loadRuntime(env),
+    env,
+    repositoryForItem: () => ({
+      owner: "acme",
+      repo: "widgets",
+      remoteUrl: "https://github.com/acme/widgets.git",
+    }),
+    actorForItem: () => "member",
+    authorizeItem: async () => allowed,
+  });
+  host.integration!.check = async () => true;
+  const auth = new GitHubAuthQuestions(db, host, () => 1_000);
+  insertQueuedItem(db, { id: "revoked", sessionKey: "revoked", title: "revoked" });
+  beginImplementRun(db, "revoked", 1_000);
+  const signal = new AbortController().signal;
+  try {
+    expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(true);
+    allowed = false;
+    expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(false);
+    expect(getWorkItem(db, "revoked")?.state).not.toBe("running");
+  } finally {
+    auth.close();
+    db.close();
+  }
+});
