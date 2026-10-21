@@ -1922,4 +1922,20 @@ CREATE TABLE closeout_round (
 ) STRICT;
 `,
   },
+  {
+    id: "079_usage_pause",
+    sql: `
+CREATE TABLE usage_pause (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  role TEXT NOT NULL CHECK(role IN ('implementer', 'reviewer')),
+  agent TEXT NOT NULL,
+  runner_id TEXT,
+  account_user_id TEXT,
+  resets_at INTEGER,
+  resume_at INTEGER NOT NULL,
+  paused_at INTEGER NOT NULL,
+  resume_requested INTEGER NOT NULL DEFAULT 0 CHECK(resume_requested IN (0, 1))
+) STRICT;
+`,
+  },
 ];

@@ -11,6 +11,8 @@ export class RetryableRunnerError extends Error {
     message: string,
     readonly transcriptPath?: string,
     readonly publishedEffects = false,
+    /** The agent reached its usage limit. The runner stays eligible once the limit resets. */
+    readonly usageLimit = false,
   ) {
     super(message);
   }
@@ -23,8 +25,9 @@ export async function runWithFailover(
 ): Promise<RunAgentResult> {
   const excluded: string[] = [];
   let prompt = input.prompt;
-  let deadline = performance.now() + (input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
-  for (let index = 0; index < 3; index++) {
+  const timeout = input.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+  let deadline = performance.now() + timeout;
+  for (let index = 0; index < 3;) {
     input.signal?.throwIfAborted();
     try {
       const remaining = Math.floor(deadline - performance.now());
@@ -35,8 +38,12 @@ export async function runWithFailover(
       input.signal?.throwIfAborted();
       await settle(error);
       input.signal?.throwIfAborted();
-      if (index === 2 || performance.now() >= deadline) throw error;
-      excluded.push(error.runnerId);
+      if (error.usageLimit) deadline = performance.now() + timeout;
+      else {
+        index++;
+        if (index === 3 || performance.now() >= deadline) throw error;
+        excluded.push(error.runnerId);
+      }
       let approved = "";
       if (error.publishedEffects) {
         if (!input.askTeam)
@@ -70,8 +77,10 @@ export async function runWithFailover(
           )
         : [];
       prompt = [
-        prompt,
-        "Continue in a fresh agent session on another runner.",
+        error.usageLimit ? input.prompt : prompt,
+        error.usageLimit
+          ? "Continue the same task. The previous agent session stopped at its usage limit."
+          : "Continue in a fresh agent session on another runner.",
         error.message,
         history.length ? `Observed prior conversation:\n${JSON.stringify(history)}` : "",
         approved ? `Continuation instructions:\n${approved}` : "",

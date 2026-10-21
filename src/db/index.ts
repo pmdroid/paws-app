@@ -170,6 +170,13 @@ export {
 } from "./closeout-recovery";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
 export {
+  endUsagePause,
+  getUsagePause,
+  requestUsageResume,
+  saveUsagePause,
+  type UsagePause,
+} from "./usage-pauses";
+export {
   recordGitHubDelivery,
   listGitHubDeliveries,
   type IntegrationEvent,

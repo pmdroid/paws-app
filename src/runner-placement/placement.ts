@@ -530,7 +530,12 @@ export function createRunnerPlacement(options: {
             ],
           );
         }
-        return { retryable: retryable || modelConflict };
+        return {
+          retryable: retryable || modelConflict,
+          ...(quota?.state === "exhausted" && !result?.authRequired
+            ? { usageLimit: { resetsAt: quota.resetsAt } }
+            : {}),
+        };
       });
     },
   };

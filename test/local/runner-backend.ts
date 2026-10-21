@@ -18,6 +18,8 @@ import {
   saveCheckpoint,
   saveTaskMode,
   recordAgentCloseout,
+  getUsagePause,
+  requestUsageResume,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -27,7 +29,7 @@ import { createRunnerWork, createRunnerWorkHttp } from "../../src/runner-work";
 import { createRunnerHealth } from "../../src/runner-health";
 import { createRunnerResults } from "../../src/runner-results";
 import { createRunnerArtifactStore } from "../../src/runner-artifacts";
-import { createRemoteAgentRunner } from "../../src/runner-backend";
+import { createRemoteAgentRunner, USAGE_RESUME_MARGIN_MS } from "../../src/runner-backend";
 import { createRunnerInputStore } from "../../src/runner-inputs";
 import {
   verifyRunnerCommand,
@@ -41,6 +43,7 @@ import {
   runDir,
   type RunAgentOptions,
   type AcpEvent,
+  type UsageLimitPause,
 } from "../../src/acp";
 import {
   createRunnerTranscripts,
@@ -1670,6 +1673,8 @@ export async function probeRunnerBackend(
       generation: thirdAttempt.generation,
     });
     assert.match(thirdAttempt.prompt, /Retained work before heartbeat loss/);
+    assert.match(thirdAttempt.prompt, /stopped at its usage limit/);
+    assert.equal(getUsagePause(db, failoverItem.id), null);
     for (let eventSequence = 1; eventSequence <= 130; eventSequence++)
       work.event({
         runnerId: hostIds[2]!,
@@ -1992,14 +1997,80 @@ export async function probeRunnerBackend(
         placedOn,
       });
 
+      const pauses: UsageLimitPause[] = [];
+      const resumes: UsageLimitPause[] = [];
+      const usageLimit = {
+        paused: (pause: UsageLimitPause) => pauses.push(pause),
+        resumed: (pause: UsageLimitPause) => resumes.push(pause),
+      };
+      // Commands that expired while the clock jumped to the reset are never delivered.
+      const acknowledgeAll = () =>
+        db.run("UPDATE runner_command SET acknowledged_at=? WHERE acknowledged_at IS NULL", [now]);
+      const pausedFor = async (itemId: string) => {
+        for (let attempt = 0; attempt < 500 && !getUsagePause(db, itemId); attempt++)
+          await delay(2);
+        return getUsagePause(db, itemId);
+      };
       const exhausted = tracked();
-      coolDown(now + 3_600_000);
-      await assert.rejects(
-        placedBackend.forItem(exhausted.id)(input(exhausted)),
-        /codex reached its usage limit until /,
+      const reset = now + 20 * 60_000;
+      coolDown(reset);
+      const exhaustedAbort = new AbortController();
+      const limitedWait = placedBackend.forItem(exhausted.id)(
+        input(exhausted, { signal: exhaustedAbort.signal, usageLimit }),
       );
+      void limitedWait.catch(() => undefined);
+      assert.equal((await pausedFor(exhausted.id))?.resumeAt, reset + USAGE_RESUME_MARGIN_MS);
+      assert.equal(pauses.length, 1);
+      now = reset + 1;
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      await delay(60);
+      assert(hostIds.every((hostId) => work.commands(hostId).length === 0));
+      now = reset + USAGE_RESUME_MARGIN_MS;
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      assert(await dispatched());
+      assert.equal(resumes.length, 1);
+      assert.equal(getUsagePause(db, exhausted.id), null);
+      exhaustedAbort.abort();
+      await limitedWait.catch(() => undefined);
+      await delay(20);
+      observe(
+        "work that cannot start for a usage limit waits for the reset plus one minute",
+        true,
+        {
+          resumeAt: reset + USAGE_RESUME_MARGIN_MS,
+        },
+      );
+      acknowledgeAll();
+
+      const resumable = tracked();
+      coolDown(now + 3_600_000);
+      const resumableAbort = new AbortController();
+      const resuming = placedBackend.forItem(resumable.id)(
+        input(resumable, { signal: resumableAbort.signal, usageLimit }),
+      );
+      void resuming.catch(() => undefined);
+      assert(await pausedFor(resumable.id));
+      assert(requestUsageResume(db, resumable.id));
+      assert(await dispatched());
+      assert.equal(getUsagePause(db, resumable.id), null);
+      resumableAbort.abort();
+      await resuming.catch(() => undefined);
+      await delay(20);
+      acknowledgeAll();
+
+      const stoppedItem = tracked();
+      coolDown(now + 3_600_000);
+      const stopAbort = new AbortController();
+      const stopping = placedBackend.forItem(stoppedItem.id)(
+        input(stoppedItem, { signal: stopAbort.signal, usageLimit }),
+      );
+      assert(await pausedFor(stoppedItem.id));
+      stopAbort.abort();
+      await assert.rejects(stopping);
+      assert.equal(getUsagePause(db, stoppedItem.id), null);
+      assert.equal(resumes.length, 2);
       coolDown(0);
-      observe("a usage limit past the wait window names the agent and its reset", true, {});
+      observe("Resume now lifts the cooldown and Stop ends the wait", true, {});
       const reportVersion = (version: string) => {
         for (const hostId of hostIds)
           db.run(
@@ -2015,7 +2086,7 @@ export async function probeRunnerBackend(
         throw new Error("No dispatched runner command");
       };
       const drain = async () => {
-        for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
+        acknowledgeAll();
       };
       const sent = async (version: string) => {
         await drain();

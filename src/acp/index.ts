@@ -120,6 +120,8 @@ export {
   type ExecuteItemOptions,
   type ExecuteItemResult,
   type RunAgentOptions,
+  type UsageLimitHook,
+  type UsageLimitPause,
   type RunAgentResult,
   type RunOutcome,
 } from "./types";
