@@ -16,6 +16,7 @@ import { evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
 import { createEvidenceStore } from "./evidence/store";
 import { evidenceAttemptKey } from "./retry";
+import { publishedAtHead } from "./published";
 import { loadPolicy, loadPolicyFiles, treeFiles, type PolicyFilesLoad } from "./policy/load";
 import type { GitBlob, GitReader } from "./policy/git";
 import { loadHomePolicy, type TreePolicy } from "./policy/resolve";
@@ -32,6 +33,7 @@ import {
   type DecisionWarning,
   type Gate,
   type Independence,
+  type PublishedEvidence,
   type ResolvedPolicy,
   type ResolvedPolicyAbsent,
   type ResolvedReview,
@@ -84,6 +86,8 @@ export type DecisionInput = {
   retryBaseline?: readonly string[];
   trust?: EvaluateTrust;
   env?: NodeJS.ProcessEnv;
+  /** The task's videos and screenshots, for `evidence` requirements. */
+  published?: readonly PublishedEvidence[];
 };
 
 export type RunRequest = {
@@ -104,6 +108,7 @@ export type RunRequest = {
   env?: NodeJS.ProcessEnv;
   progress?: CloseoutProgress;
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
+  published?: readonly PublishedEvidence[];
 };
 
 export type ReviewIntake =
@@ -491,6 +496,10 @@ async function finish(
       input.trust,
     );
   }
+  const published =
+    input.published === undefined
+      ? undefined
+      : await publishedAtHead(input.repo, head, input.published, scrubCommandEnv(input.env));
   return evaluate(
     policy,
     snapshot.records,
@@ -498,6 +507,7 @@ async function finish(
       base,
       head,
       ...(paths.paths !== undefined ? { changedPaths: paths.paths } : {}),
+      ...(published !== undefined ? { published } : {}),
     }),
     input.trust,
   );
@@ -525,6 +535,7 @@ function requestOf(
   if (extra.changedPaths !== undefined) request.changedPaths = extra.changedPaths;
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;
+  if (extra.published !== undefined) request.published = extra.published;
   return request;
 }
 

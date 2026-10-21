@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import type {
   DecisionWarning,
   PolicyLoadResult,
+  PublishedEvidence,
   ResolvedPolicy,
   ResolvedPolicyPresent,
 } from "../types";
@@ -79,9 +80,16 @@ export function loadPolicy(input: LoadPolicyInput): PolicyLoadOutcome {
   return { ok: true, policy: present("repo", loaded.policy), warnings: [] };
 }
 
+/** `published` is the task's videos and screenshots, which Paws adds for the agent session. */
 export type PolicyFilesLoad =
   | { ok: true; absent: true }
-  | { ok: true; absent: false; digest: string; files: ReadonlyMap<string, Uint8Array> }
+  | {
+      ok: true;
+      absent: false;
+      digest: string;
+      files: ReadonlyMap<string, Uint8Array>;
+      published?: readonly PublishedEvidence[];
+    }
   | { ok: false; message: string };
 
 export function loadPolicyFiles(input: LoadPolicyInput): PolicyFilesLoad {

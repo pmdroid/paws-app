@@ -6,6 +6,7 @@ import { checkPathPatterns, isSlug, repoPath } from "./paths";
 import type {
   PolicyFile,
   ResolvedCommand,
+  ResolvedEvidence,
   ResolvedRequirement,
   ResolvedReview,
   ResolvedSetup,
@@ -168,6 +169,21 @@ function walk(
         exec: raw.exec,
         timeoutSeconds: raw.timeoutSeconds,
       };
+      if (paths.paths.length > 0) item.paths = paths.paths;
+      state.items.push(item);
+      continue;
+    }
+    if (raw.kind === "evidence") {
+      const paths = checkPathPatterns(raw.paths ?? []);
+      if (!paths.ok) return paths.message;
+      const item: ResolvedEvidence = {
+        id,
+        kind: "evidence",
+        gate: "beforePR",
+        media: raw.media ?? ["image", "video"],
+        minimum: raw.minimum ?? 1,
+      };
+      if (raw.hint !== undefined) item.hint = raw.hint;
       if (paths.paths.length > 0) item.paths = paths.paths;
       state.items.push(item);
       continue;

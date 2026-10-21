@@ -81,6 +81,19 @@ function requirementJson(item: ResolvedRequirement): Record<string, unknown> {
       item.paths,
     );
   }
+  if (item.kind === "evidence") {
+    return withPaths(
+      {
+        id: item.id,
+        kind: item.kind,
+        gate: item.gate,
+        media: item.media,
+        minimum: item.minimum,
+        ...(item.hint !== undefined ? { hint: item.hint } : {}),
+      },
+      item.paths,
+    );
+  }
   return withPaths(
     {
       id: item.id,
