@@ -1,4 +1,4 @@
-import type { GitCommitIdentity, GitCommitPolicy } from "../core";
+import type { GitCommitIdentity, GitCommitPolicy, ModelChoice } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import type { PolicyFilesLoad } from "../closeout-spec";
@@ -129,7 +129,7 @@ export interface RunAgentOptions {
 
 export interface RunAgentResult {
   identity?: AgentIdentity;
-  models?: Array<{ id: string; name: string }>;
+  models?: ModelChoice[];
   effort?: string | null;
   efforts?: Array<{ id: string; name: string }>;
   role: AgentRole;

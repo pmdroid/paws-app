@@ -41,7 +41,7 @@ import {
 import { startHostToolBridge, type AskTeamBridge, type AskTeamHook } from "./ask-team";
 import { installCloseoutStopHook } from "./closeout-hook";
 import { AUTH_REQUIRED_MESSAGE, isAuthRequired, summarizeAuth, type AuthCheckResult } from "./auth";
-import { sessionModel, selectSessionProfile, providerFor } from "./model";
+import { sessionModel, selectSessionProfile, providerFor, standardWindowNotice } from "./model";
 import { minimalAgentEnv } from "./env";
 import { TerminalRegistry, readGuarded, writeGuarded } from "./host-tools";
 import { decidePermission, decideReadOnlyPermission, type GuardContext } from "./permissions";
@@ -496,6 +496,8 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
           sessionId,
           cwd: options.worktreePath,
         });
+        if (model.standardWindow)
+          await emit({ type: "progress", text: standardWindowNotice(model.standardWindow.name) });
 
         assertRunning();
         if (options.prepareOnly)
