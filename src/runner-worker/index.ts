@@ -386,7 +386,10 @@ export async function executeRunnerCommand(
       );
       options.signal?.throwIfAborted();
       await invokeGit(["-C", worktree, "remote", "remove", "origin"]);
-      await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", base]);
+      const main = command.repository.mainSha ?? base;
+      if (main !== base)
+        await invokeGit(["-C", worktree, "merge-base", "--is-ancestor", main, base]);
+      await invokeGit(["-C", worktree, "update-ref", "refs/remotes/origin/main", main]);
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -479,7 +482,7 @@ export async function executeRunnerCommand(
         command.type === "login_check" ? { agent: command.agent, model: null } : command.profile,
       role: command.type === "review" ? "reviewer" : "implementer",
       readOnly: command.type === "task" ? command.purpose === "answer" : command.type !== "run",
-      checkpoint: command.type === "run",
+      checkpoint: command.type === "run" && command.checkpoint !== false,
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
