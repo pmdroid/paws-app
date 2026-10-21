@@ -312,6 +312,8 @@ function failureEvent(state: WorkItemState): WorkItemEvent | null {
       return "closeout_infra_failed";
     case "recovering":
       return "crash_budget_used";
+    case "queued":
+      return "start_timed_out";
     default:
       return null;
   }

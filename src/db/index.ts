@@ -340,3 +340,4 @@ export {
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
+export { queueWaitSince } from "./queue-wait";

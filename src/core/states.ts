@@ -58,6 +58,7 @@ export const WORK_ITEM_EVENTS = [
   "answer_completed",
   "artifact_completed",
   "cancel",
+  "start_timed_out",
 ] as const;
 
 export type WorkItemEvent = (typeof WORK_ITEM_EVENTS)[number];
