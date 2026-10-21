@@ -5,3 +5,21 @@ export class NotImplementedError extends Error {
     this.name = "NotImplementedError";
   }
 }
+
+/**
+ * The agent reached its usage limit and no runner with an available account can take the work.
+ * `prompt` carries the continuation built from the interrupted conversation, when there was one.
+ */
+export class UsageLimitError extends Error {
+  constructor(
+    readonly agent: string,
+    readonly resetsAt: number | null,
+    readonly runnerId: string | null = null,
+    readonly prompt?: string,
+  ) {
+    super(
+      `${agent} reached its usage limit${resetsAt === null ? "" : ` until ${new Date(resetsAt).toISOString()}`}`,
+    );
+    this.name = "UsageLimitError";
+  }
+}

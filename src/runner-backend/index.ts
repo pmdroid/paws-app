@@ -41,10 +41,10 @@ import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { RetryableRunnerError, runWithFailover } from "./failover";
 import type { RunnerPlacement } from "../runner-placement";
+import { UsageLimitError } from "../core";
 
 class RunnerUnavailableError extends Error {}
 
-const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
 const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
@@ -176,7 +176,6 @@ export function createRemoteAgentRunner(options: {
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     runnerId?: string,
   ) {
-    const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
     const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
     for (;;) {
       const rejected: string[] = [];
@@ -187,7 +186,6 @@ export function createRemoteAgentRunner(options: {
         ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
       if (
-        resetsAt === null &&
         rejected.some((reason) => reason.endsWith(": no free capacity")) &&
         performance.now() < capacityDeadline
       ) {
@@ -198,12 +196,8 @@ export function createRemoteAgentRunner(options: {
         throw new RunnerUnavailableError(
           `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
         );
-      const wait = resetsAt - now();
-      if (wait > deadline - performance.now())
-        throw new RunnerUnavailableError(
-          `${agent} reached its usage limit until ${new Date(resetsAt).toISOString()}`,
-        );
-      await delay(Math.min(wait, interval * 20), undefined, { signal: placement.signal });
+      // The orchestrator pauses the task until the reset instead of failing it.
+      throw new UsageLimitError(agent!, resetsAt);
     }
   }
   async function place(
@@ -287,6 +281,11 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Read-only remote work requires the reviewer role");
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
+        const usageLimit = (disposition?: { usageLimit?: { resetsAt: number | null } }) =>
+          disposition?.usageLimit && {
+            agent: profile.agent,
+            resetsAt: disposition.usageLimit.resetsAt,
+          };
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
@@ -383,6 +382,9 @@ export function createRemoteAgentRunner(options: {
                     result.authRequired
                       ? "The runner agent requires sign-in."
                       : "The runner agent exhausted its observed quota.",
+                    undefined,
+                    false,
+                    usageLimit(disposition),
                   );
                 return { ...result, role: input.role, transcriptPath: transcript };
               }
@@ -622,7 +624,7 @@ export function createRemoteAgentRunner(options: {
           command = assigned;
           let cursor = 0;
           let complete: RunnerResult | null = null;
-          let disposition: { retryable: boolean } | undefined;
+          let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           while (now() < deadline) {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
@@ -644,6 +646,7 @@ export function createRemoteAgentRunner(options: {
                 "The reviewer runner requires a fresh eligible agent.",
                 transcript,
                 publishedEffects,
+                usageLimit(disposition),
               );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
@@ -860,6 +863,7 @@ export function createRemoteAgentRunner(options: {
                 : "The runner agent exhausted its observed quota.",
               transcript,
               publishedEffects,
+              usageLimit(disposition),
             );
           if (complete.reviewText)
             await emit({

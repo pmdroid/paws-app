@@ -70,6 +70,7 @@ import {
   type RepositoryBinding,
   systemClock,
   parseLinearCommand,
+  UsageLimitError,
 } from "../core";
 import {
   getTaskMode,
@@ -119,6 +120,10 @@ import {
   savePullRequestDraft,
   recordAgentCloseout,
   immediate,
+  clearUsageLimitPause,
+  getUsageLimitPause,
+  resumeUsageLimitPauseNow,
+  saveUsageLimitPause,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -296,6 +301,8 @@ export type OrchestratorOptions = {
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
+  /** How often a task paused at a usage limit checks the clock and its pause row. */
+  usageLimitPollMs?: number;
   publicationReady?: (
     itemId: string,
     phase: "publish" | "merge",
@@ -3589,11 +3596,123 @@ export class Orchestrator {
     const runner = this.options.remoteExecution?.agentForItem(itemId);
     if (!runner) return undefined;
     return async (options: RunAgentOptions) => {
-      this.assertJobCurrent(itemId);
-      const result = await runner(options);
-      this.assertJobCurrent(itemId);
-      return result;
+      let input = options;
+      // A pause ends once the resumed agent reports activity, so a retry that hits the limit
+      // again keeps the same pause and does not post another pair of Linear lines.
+      const resumed = async () => {
+        if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, true);
+      };
+      try {
+        for (;;) {
+          this.assertJobCurrent(itemId);
+          try {
+            const result = await runner(input);
+            this.assertJobCurrent(itemId);
+            await resumed();
+            return result;
+          } catch (error) {
+            if (!(error instanceof UsageLimitError)) throw error;
+            await this.waitForUsageLimit(itemId, input, error);
+            input = {
+              ...input,
+              prompt: error.prompt ?? input.prompt,
+              onEvent: async (event) => {
+                await resumed();
+                await options.onEvent?.(event);
+              },
+            };
+          }
+        }
+      } finally {
+        if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, false);
+      }
     };
+  }
+
+  private readonly usageLimitWakers = new Map<string, () => void>();
+
+  private async waitForUsageLimit(
+    itemId: string,
+    input: RunAgentOptions,
+    error: UsageLimitError,
+  ): Promise<void> {
+    const item = getWorkItem(this.db, itemId);
+    if (!item) throw error;
+    const pausedAt = this.now();
+    const resumeAt =
+      error.resetsAt === null
+        ? pausedAt + USAGE_LIMIT_RETRY_MS
+        : Math.max(error.resetsAt, pausedAt) + 60_000;
+    const started = immediate(this.db, () =>
+      saveUsageLimitPause(this.db, {
+        itemId,
+        runId: item.currentRunId ?? input.runId,
+        agent: error.agent,
+        runnerId: error.runnerId,
+        resetsAt: error.resetsAt,
+        resumeAt,
+        pausedAt,
+      }),
+    );
+    if (started)
+      this.post(
+        item,
+        "thought",
+        `Paused: ${agentTitle(error.agent)} reached its usage limit. ${
+          error.resetsAt === null
+            ? "Paws tries again every 15 minutes."
+            : `Paws continues at ${usageLimitTime(error.resetsAt, pausedAt)}.`
+        }`,
+        `usage-limit-pause:${itemId}:${pausedAt}`,
+      );
+    const signal = input.signal ?? new AbortController().signal;
+    const poll = this.options.usageLimitPollMs ?? 30_000;
+    for (;;) {
+      signal.throwIfAborted();
+      this.assertJobCurrent(itemId);
+      const pause = getUsageLimitPause(this.db, itemId);
+      if (!pause || this.now() >= pause.resumeAt) return;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", done);
+          this.usageLimitWakers.delete(itemId);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.min(pause.resumeAt - this.now(), poll));
+        signal.addEventListener("abort", done, { once: true });
+        this.usageLimitWakers.set(itemId, done);
+      });
+    }
+  }
+
+  private endUsageLimitPause(itemId: string, announce: boolean): void {
+    const pause = getUsageLimitPause(this.db, itemId);
+    if (!pause) return;
+    clearUsageLimitPause(this.db, itemId);
+    const item = getWorkItem(this.db, itemId);
+    if (announce && item)
+      this.post(
+        item,
+        "thought",
+        `Continuing: ${agentTitle(pause.agent)} is available again. Paws continues the task.`,
+        `usage-limit-continue:${itemId}:${pause.pausedAt}`,
+      );
+  }
+
+  /** Ends a usage-limit wait early. The agent's cooldown is cleared so placement tries it now. */
+  async resumeUsageLimit(
+    itemId: string,
+    canAct: () => boolean = () => true,
+    onCommitted?: () => void,
+  ): Promise<boolean> {
+    const resumed = immediate(this.db, () => {
+      if (!canAct() || !resumeUsageLimitPauseNow(this.db, itemId, this.now())) return false;
+      onCommitted?.();
+      return true;
+    });
+    if (resumed) this.usageLimitWakers.get(itemId)?.();
+    return resumed;
   }
 
   private async runLeasedJob(
@@ -4732,4 +4851,16 @@ function listsChecks(report: string): boolean {
   } catch {
     return false;
   }
+}
+
+const USAGE_LIMIT_RETRY_MS = 15 * 60_000;
+
+function agentTitle(agent: string): string {
+  return agent.charAt(0).toUpperCase() + agent.slice(1);
+}
+
+/** "18:00 UTC" for a reset later today, with the date when the reset is on another day. */
+function usageLimitTime(at: number, now: number): string {
+  const iso = new Date(at).toISOString();
+  return `${iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${iso.slice(0, 10)} `}${iso.slice(11, 16)} UTC`;
 }
