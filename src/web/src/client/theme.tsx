@@ -216,7 +216,7 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "summary" && (has("btn") || inRow(node)))
     return styled(
       cn(
-        buttonVariants({ variant: "neutral", size: "default" }),
+        buttonVariants({ variant: has("on") ? "default" : "neutral", size: "default" }),
         "list-none [&::-webkit-details-marker]:hidden [&::marker]:content-none",
       ),
     );
@@ -331,13 +331,13 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "tr") return <TableRow {...props}>{children()}</TableRow>;
   if (name === "th")
     return (
-      <TableHead {...props} className={has("hide-phone") ? "hidden sm:table-cell" : undefined}>
+      <TableHead {...props} className={tableCell(has)}>
         {children()}
       </TableHead>
     );
   if (name === "td")
     return (
-      <TableCell {...props} className={has("hide-phone") ? "hidden sm:table-cell" : undefined}>
+      <TableCell {...props} className={tableCell(has)}>
         {children()}
       </TableCell>
     );
@@ -346,6 +346,17 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("grid grid-cols-2 gap-3 self-stretch sm:flex sm:shrink-0 sm:self-auto");
   if (has("issue-head")) return styled("space-y-3");
   if (has("issue-filters")) return styled("flex flex-wrap gap-2");
+  if (has("run-filters")) return styled("flex min-w-0 flex-wrap items-start gap-2");
+  if (has("run-filter"))
+    return styled("relative min-w-0 open:basis-full sm:open:basis-auto [&>summary]:w-full");
+  if (has("run-filter-menu"))
+    return styled(
+      "mt-2 flex min-w-0 flex-col gap-1 rounded-base border-2 border-border bg-secondary-background p-3 shadow-shadow sm:absolute sm:left-0 sm:top-full sm:z-20 sm:w-max sm:min-w-56 sm:max-w-80 [&>label]:min-h-control",
+    );
+  if (has("run-empty"))
+    return styled(
+      "flex flex-col items-start gap-3 rounded-base border-2 border-border bg-secondary-background p-4 text-sm",
+    );
   if (name === "ul" && has("issue-list", "issue-items"))
     return styled(
       "m-0 list-none divide-y-2 divide-border rounded-base border-2 border-border bg-secondary-background p-0 [&>li]:px-4 [&>li]:py-4",
@@ -489,6 +500,13 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "summary")
     return styled("cursor-pointer text-sm font-bold underline-offset-4 hover:underline");
   return createElement(name, props, children());
+}
+
+function tableCell(has: (...names: string[]) => boolean): string | undefined {
+  return (
+    cn(has("hide-phone") && "hidden sm:table-cell", has("run-cell") && "px-2 py-3 sm:p-4") ||
+    undefined
+  );
 }
 
 function inRow(node: Element): boolean {

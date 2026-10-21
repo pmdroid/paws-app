@@ -65,6 +65,10 @@ export function runLabel(state: RunState): string {
   return RUN_LABEL[state];
 }
 
+export const PHASE_NAMES = ["Implementation", "Closeout", "Waiting to merge", "Complete"] as const;
+
+export const RUN_STATES = Object.keys(RUN_LABEL) as RunState[];
+
 export function taskPhase(
   itemState: ItemState | null,
   runState: RunState,

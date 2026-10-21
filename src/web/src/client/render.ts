@@ -16,6 +16,7 @@ import {
   itemLabel,
   linkList,
   runLabel,
+  PHASE_NAMES,
   statePill,
   taskPhase,
 } from "./format";
@@ -26,6 +27,7 @@ import { agentProgress, findAgentCloseout, renderAgentCloseout } from "./agent-c
 import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
+import { renderRunsList } from "./runs-list";
 
 export interface RenderModel {
   conversations?: ConversationModel;
@@ -39,6 +41,7 @@ export interface RenderModel {
   /** Task activity sections the reader opened or closed, by `activityKey`. */
   activity?: Record<string, boolean>;
   mediaInfo?: ReadonlyMap<string, MediaInfo>;
+  search?: string;
 }
 
 export interface Rendered {
@@ -109,6 +112,7 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
         model.closeout ?? emptyCloseoutView(),
         model.engineUrl,
         model.activity ?? {},
+        model.search ?? "",
       );
     case "questions":
       return viewQuestions(snapshot, model.route.id);
@@ -314,12 +318,13 @@ function viewRuns(
   closeout: CloseoutView,
   engineUrl: string | null,
   activity: Record<string, boolean>,
+  search: string,
 ): string {
   const runs = [...snapshot.runs].sort(
     (a, b) => rankRun(a) - rankRun(b) || b.startedAt.localeCompare(a.startedAt),
   );
   if (id === null && runs.length)
-    return `${pageHeading("runs")}<ul class="issue-list">${runs.map((run) => `<li class="between"><a href="${routeHref({ view: "runs", id: run.id })}"><span class="mono">${esc(run.id)}</span> · ${esc(findItem(snapshot, run.itemId)?.title ?? run.itemId)}</a>${statePill(run.state, runLabel(run.state))}</li>`).join("")}</ul>`;
+    return `${pageHeading("runs")}${renderRunsList(snapshot, runs, search)}`;
   const selected = runs.find((run) => run.id === id);
   const picker = entityPicker(
     "Run",
@@ -425,14 +430,13 @@ function phaseStrip(
   agent?: StatusAgentCloseout,
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
-  const names = [
-    agent?.attempts.at(-1)?.checks.length
-      ? `Implementation · Agent Closeout ${agentProgress(agent)}`
-      : "Implementation",
-    `Closeout${verdict ? ` · ${verdict.attempt} of ${verdict.maxAttempts}` : ""}`,
-    "Waiting to merge",
-    "Complete",
-  ];
+  const names = PHASE_NAMES.map((name, index) =>
+    index === 0 && agent?.attempts.at(-1)?.checks.length
+      ? `${name} · Agent Closeout ${agentProgress(agent)}`
+      : index === 1 && verdict
+        ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
+        : name,
+  );
   const marks = names
     .map((name, index) => {
       const failed =
