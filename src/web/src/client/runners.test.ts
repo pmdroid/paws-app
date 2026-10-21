@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
+import { createElement, Fragment } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { themedMarkup } from "./theme";
 import {
   compareVersions,
   livePoll,
@@ -155,7 +159,7 @@ describe("what a runner is running now", () => {
       '<span class="tag ok">Idle</span>',
     );
     expect(runnerDetailMarkup({ ...runner, running: [] }, view)).toContain(
-      '<span class="tag">Idle</span>',
+      "Active · Online · Idle",
     );
   });
 
@@ -170,7 +174,7 @@ describe("what a runner is running now", () => {
     expect(html).not.toContain("<input");
     const busy = { ...runner, idle: false, running: [working] };
     expect(runnerRowMarkup(busy, row)).toContain('<span class="tag running">Running 1</span>');
-    expect(runnerDetailMarkup(busy, view)).toContain('<span class="tag running">Running 1</span>');
+    expect(runnerDetailMarkup(busy, view)).toContain("Active · Online · Running 1");
     expect(runnerDetailMarkup(busy, view)).not.toContain("Busy");
   });
 
@@ -217,14 +221,30 @@ describe("runner details", () => {
     expect(html).not.toContain("Busy");
     expect(html).toContain("1.2.0");
     expect(html).not.toContain("Update available");
-    expect(html).toContain("Just now");
+    expect(html).toContain("Seen just now");
+    expect(html).toContain("Updated 5 s ago");
+    expect(html).toContain('data-fresh="live"');
     expect(html).toContain("ubuntu 24.04");
     expect(html).toContain("42%");
+    expect(html).toContain('data-metric="cpu" data-level="ok"');
+    expect(html).toContain('data-fill="42"');
     expect(html).toContain("12 GB used of 16 GB");
-    expect(html).toContain("0.50 / 0.25 / 0.13");
-    expect(html).toContain("40 GB free of 100 GB");
+    expect(html).toContain('data-metric="memory"');
+    expect(html).toContain('data-fill="75"');
+    expect(html).toContain('data-metric="load"');
+    expect(html).toContain(">0.50<");
+    expect(html).not.toContain("0.50 / 0.25 / 0.13");
+    expect(html).toContain("60 GB used of 100 GB");
+    expect(html).toContain('data-runner-copy="');
+    expect(html).toContain(">Copy id<");
+    expect(html).not.toContain("<code>");
+    expect(html.match(/data-runner-state/g)).toHaveLength(1);
+    expect(html.match(/data-runner-status="/g)).toHaveLength(3);
     expect(runnerDetailMarkup({ ...runner, slots: { used: 2, total: 10 } }, view)).toContain(
-      "<dt>Slots</dt><dd>2 of 10 in use</dd>",
+      'data-metric="slots"',
+    );
+    expect(runnerDetailMarkup({ ...runner, slots: { used: 2, total: 10 } }, view)).toContain(
+      "2 of 10 in use",
     );
     expect(
       runnerRowMarkup({ ...runner, slots: { used: 2, total: 10 } }, { now, serverVersion: null }),
@@ -244,7 +264,7 @@ describe("runner details", () => {
 
   test("a busy runner says so", () => {
     const html = runnerDetailMarkup({ ...runner, idle: false }, view);
-    expect(html).toContain('<span class="tag running">Busy</span>');
+    expect(html).toContain("Active · Online · Busy");
     expect(html).not.toContain(">Idle<");
   });
 
@@ -253,8 +273,10 @@ describe("runner details", () => {
       { ...runner, idle: false, metrics: { ...runner.metrics!, reportedAt: now - 5 * 60_000 } },
       view,
     );
-    expect(html).toContain('<span class="tag bad">Offline</span>');
+    expect(html).toContain("Active · Offline");
     expect(html).toContain("5m ago");
+    expect(html).toContain('data-fresh="stale"');
+    expect(html).toContain("Stale · Updated 5 m ago");
     expect(html).not.toContain("Busy");
     expect(html).not.toContain("Idle");
   });
@@ -262,8 +284,11 @@ describe("runner details", () => {
   test("a runner that never reported is offline", () => {
     const html = runnerDetailMarkup({ ...runner, metrics: null, os: null, version: null }, view);
     expect(html).toContain("Offline");
-    expect(html).toContain("<dt>Last seen</dt><dd>Never</dd>");
-    expect(html).toContain("<dt>CPU</dt><dd>Not reported</dd>");
+    expect(html).toContain("Never seen");
+    expect(html).toContain('data-metric="cpu"');
+    expect(html).toContain("Not reported");
+    expect(html).not.toContain("data-fill");
+    expect(html).not.toContain("Updated");
   });
 
   test("a signed-out agent and an older runner version are flagged", () => {
@@ -314,7 +339,9 @@ describe("runner details", () => {
     test("owners and admins edit it next to the slots, up to the host limit", () => {
       for (const role of ["owner", "admin"]) {
         const html = runnerDetailMarkup(tuned, { ...view, role });
-        expect(html).toContain("<dt>Slots</dt><dd>1 of 2 in use</dd><dt>Concurrency</dt>");
+        expect(html).toContain('data-metric="slots"');
+        expect(html).toContain("1 of 2 in use");
+        expect(html.indexOf('data-metric="slots"')).toBeLessThan(html.indexOf(">Concurrency<"));
         expect(html).toContain(`data-runner-concurrency="${runner.id}"`);
         expect(html).toContain('aria-label="Concurrency, from 1 to 4" value="2"');
         expect(html).toContain("Host limit 4. Runner applied 2.");
@@ -328,9 +355,7 @@ describe("runner details", () => {
     test("members and observers see the value without a field", () => {
       for (const role of ["member", "observer"]) {
         const html = runnerDetailMarkup(tuned, { ...view, userId: role, role });
-        expect(html).toContain(
-          '<dt>Concurrency</dt><dd>2 <span class="muted">Host limit 4. Runner applied 2.</span></dd>',
-        );
+        expect(html).toContain('2 <span class="muted">Host limit 4. Runner applied 2.</span>');
         expect(html).not.toContain("data-runner-concurrency");
       }
     });
@@ -343,9 +368,184 @@ describe("runner details", () => {
       expect(html).toContain("Update the runner to change it here.");
       expect(html).not.toContain("data-runner-concurrency");
       expect(runnerDetailMarkup({ ...tuned, status: "revoked" }, view)).not.toContain(
-        "<dt>Concurrency</dt>",
+        "Concurrency",
       );
     });
+  });
+});
+
+function painted(html: string): string {
+  return renderToStaticMarkup(createElement(Fragment, null, themedMarkup(html)));
+}
+
+function metricSlice(html: string, metric: string): string {
+  const start = html.indexOf(`data-metric="${metric}"`);
+  if (start < 0) throw new Error(`missing ${metric}`);
+  const next = html.indexOf('data-metric="', start + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+function slotRow(html: string): string {
+  const row = /<div class="slot-row[\s\S]*?<\/div>/.exec(html)?.[0];
+  if (!row) throw new Error("missing slot row");
+  return row;
+}
+
+describe("host metric visuals", () => {
+  test("normal values stay quiet and high values warn", () => {
+    const calm = runnerDetailMarkup(
+      {
+        ...runner,
+        slots: { used: 1, total: 3 },
+        metrics: {
+          ...runner.metrics!,
+          cpuPercent: 90,
+          memoryTotalBytes: 100,
+          memoryAvailableBytes: 10,
+          diskTotalBytes: 100,
+          diskFreeBytes: 10,
+          load1: 8,
+          cpuCount: 8,
+        },
+      },
+      view,
+    );
+    expect(calm).toContain('data-metric="cpu" data-level="ok"');
+    expect(calm).toContain('data-metric="memory" data-level="ok"');
+    expect(calm).toContain('data-metric="disk" data-level="ok"');
+    expect(calm).toContain('data-metric="load" data-level="ok"');
+    expect(calm.match(/data-fill="90"/g)).toHaveLength(3);
+    expect(calm).toContain('data-fill="100"');
+    expect(calm).toContain("8.00 of 8");
+    expect(calm).toContain('data-metric="slots" data-level="ok"');
+    expect(calm.match(/data-used="true"/g)).toHaveLength(1);
+    expect(calm.match(/data-used="false"/g)).toHaveLength(2);
+    const calmPaint = painted(calm);
+    expect(metricSlice(calmPaint, "cpu")).toMatch(/width:\s*90%/);
+    expect(metricSlice(calmPaint, "cpu")).toMatch(/bg-foreground(?!\/)/);
+    expect(metricSlice(calmPaint, "cpu")).not.toContain("bg-main");
+    expect(metricSlice(calmPaint, "memory")).toMatch(/width:\s*90%/);
+    expect(metricSlice(calmPaint, "disk")).toMatch(/width:\s*90%/);
+    expect(metricSlice(calmPaint, "load")).toMatch(/width:\s*100%/);
+    expect(metricSlice(calmPaint, "load")).not.toContain("bg-main");
+    const calmSlots = slotRow(calmPaint);
+    expect(calmSlots).toContain("bg-foreground");
+    expect(calmSlots).toContain("bg-secondary-background");
+    expect(calmSlots).not.toContain("bg-main");
+
+    const hot = runnerDetailMarkup(
+      {
+        ...runner,
+        slots: { used: 3, total: 3 },
+        metrics: {
+          ...runner.metrics!,
+          cpuPercent: 91,
+          memoryTotalBytes: 100,
+          memoryAvailableBytes: 8,
+          diskTotalBytes: 100,
+          diskFreeBytes: 8,
+          load1: 8.5,
+          cpuCount: 8,
+        },
+      },
+      view,
+    );
+    for (const metric of ["cpu", "memory", "disk", "load", "slots"])
+      expect(hot).toContain(`data-metric="${metric}" data-level="warn"`);
+    expect(hot).toContain('data-fill="91"');
+    expect(hot.match(/data-fill="92"/g)).toHaveLength(2);
+    expect(hot).toContain('data-fill="100"');
+    expect(hot).toContain("8.50 of 8");
+    expect(hot.match(/data-used="true"/g)).toHaveLength(3);
+    expect(hot).not.toContain('data-used="false"');
+    const hotPaint = painted(hot);
+    for (const metric of ["cpu", "memory", "disk", "load"])
+      expect(metricSlice(hotPaint, metric)).toContain("bg-main");
+    expect(metricSlice(hotPaint, "cpu")).toMatch(/width:\s*91%/);
+    expect(metricSlice(hotPaint, "memory")).toMatch(/width:\s*92%/);
+    expect(metricSlice(hotPaint, "disk")).toMatch(/width:\s*92%/);
+    expect(metricSlice(hotPaint, "load")).toMatch(/width:\s*100%/);
+    const hotSlots = slotRow(hotPaint);
+    expect(hotSlots).toContain("bg-main");
+    expect(hotSlots).not.toContain("bg-secondary-background");
+  });
+
+  test("a runner without cpuCount shows load as a number", () => {
+    const html = runnerDetailMarkup(runner, view);
+    const load = html.slice(html.indexOf('data-metric="load"'));
+    const meter = load.slice(0, load.indexOf("</div></div>") + "</div></div>".length);
+    expect(meter).toContain(">0.50<");
+    expect(meter).not.toContain("meter-track");
+    expect(meter).not.toContain("of ");
+  });
+
+  test("a sample older than two heartbeats looks stale", () => {
+    const edge = runnerDetailMarkup(
+      { ...runner, metrics: { ...runner.metrics!, reportedAt: now - 30_000 } },
+      view,
+    );
+    expect(edge).toContain('data-fresh="live"');
+    expect(edge).not.toContain("Stale");
+    const stale = runnerDetailMarkup(
+      {
+        ...runner,
+        metrics: { ...runner.metrics!, cpuPercent: 99, reportedAt: now - 30_001 },
+      },
+      view,
+    );
+    expect(stale).toContain('data-metric="cpu" data-level="warn" data-fresh="stale"');
+    expect(stale).toContain("Stale · Updated 30 s ago");
+    expect(stale).not.toContain('data-fresh="live"');
+    const stalePaint = metricSlice(painted(stale), "cpu");
+    expect(stalePaint).toContain("bg-foreground/45");
+    expect(stalePaint).not.toMatch(/bg-foreground(?!\/)/);
+    expect(stalePaint).not.toContain("bg-main");
+    const staleSlots = runnerDetailMarkup(
+      {
+        ...runner,
+        slots: { used: 2, total: 2 },
+        metrics: { ...runner.metrics!, reportedAt: now - 30_001 },
+      },
+      view,
+    );
+    expect(staleSlots).toContain('data-metric="slots" data-level="warn" data-fresh="live"');
+    expect(metricSlice(painted(staleSlots), "cpu")).toContain("bg-foreground/45");
+    expect(metricSlice(painted(staleSlots), "slots")).toContain("bg-main");
+  });
+
+  test("the card does not scroll sideways at 390 px", () => {
+    const card = runnerDetailMarkup(
+      {
+        ...runner,
+        name: "build-box-with-a-very-long-host-name-that-must-wrap",
+        slots: { used: 16, total: 16 },
+        concurrency: { desired: 10, applied: 10, ceiling: 16 },
+      },
+      view,
+    );
+    const body = renderToStaticMarkup(createElement(Fragment, null, themedMarkup(card)));
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    expect(body).toContain('data-runner-card="');
+    expect(body).toContain("min-w-0");
+    expect(body).toContain("flex-wrap");
+    expect(body).toContain("[overflow-wrap:anywhere]");
+    expect(body).not.toMatch(/min-w-\[(?:[4-9]\d{2}|\d{4,})px\]/);
+    const nowrap = [...body.matchAll(/whitespace-nowrap[^>]*>([^<]*)</g)].map((match) =>
+      (match[1] ?? "").trim(),
+    );
+    expect(nowrap.length).toBeGreaterThan(0);
+    for (const label of nowrap) expect(label.length).toBeLessThan(24);
+    expect(css).toContain("overflow-wrap: anywhere");
+    expect(css).toContain("max-width: 100%");
+    const text = body.replace(/<[^>]+>/g, " ");
+    const widest = Math.max(
+      ...text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => word.length),
+    );
+    expect(widest).toBeGreaterThan(40);
+    expect(widest * 8).toBeGreaterThan(390);
   });
 });
 

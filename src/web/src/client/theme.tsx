@@ -365,6 +365,58 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
   if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
   if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
+  if (has("runner-heading")) return styled("flex min-w-0 flex-col gap-1");
+  if (has("runner-status")) return styled("m-0 text-sm font-semibold leading-snug");
+  if (has("runner-meta"))
+    return styled("text-sm leading-relaxed text-foreground/75 [overflow-wrap:anywhere]");
+  if (has("runner-metrics")) return styled("flex min-w-0 flex-col gap-3");
+  if (has("runner-capacity"))
+    return styled("flex min-w-0 flex-wrap items-end justify-between gap-x-6 gap-y-3");
+  if (has("runner-concurrency"))
+    return styled("flex min-w-0 basis-full flex-col gap-1 sm:basis-auto sm:max-w-md");
+  if (has("meter-name")) return styled("text-sm font-semibold");
+  if (has("meter")) return styled("flex min-w-0 flex-col gap-1.5");
+  if (has("meter-head"))
+    return styled(
+      "flex min-w-0 items-baseline justify-between gap-3 text-sm font-semibold tabular-nums [overflow-wrap:anywhere]",
+    );
+  if (has("meter-track"))
+    return styled("h-3 overflow-hidden rounded-base border-2 border-border bg-background");
+  if (has("meter-fill")) {
+    const raw = attribs["data-fill"] ?? "";
+    const percent = /^\d{1,3}$/.test(raw) ? Math.min(100, Number(raw)) : 0;
+    const tone = metricTone(node);
+    return createElement(
+      "span",
+      {
+        ...props,
+        className: cn(
+          attribs.class,
+          "block h-full max-w-full",
+          tone.stale ? "bg-foreground/45" : tone.warn ? "bg-main" : "bg-foreground",
+        ),
+        style: { width: `${percent}%` },
+      },
+      children(),
+    );
+  }
+  if (has("slot-row")) return styled("flex max-w-full flex-wrap gap-1");
+  if (has("slot")) {
+    const tone = metricTone(node);
+    const used = attribs["data-used"] === "true";
+    const fill = !used
+      ? "bg-secondary-background"
+      : tone.stale
+        ? "bg-foreground/45"
+        : tone.warn
+          ? "bg-main"
+          : "bg-foreground";
+    return styled(`inline-block size-4 shrink-0 rounded-base border-2 border-border ${fill}`);
+  }
+  if (name === "ul" && has("runner-agents"))
+    return styled("m-0 flex list-none flex-wrap gap-2 p-0");
+  if (has("runner-agent"))
+    return styled("flex min-w-0 flex-wrap items-center gap-1.5 py-0 text-sm");
   if (has("issue-row", "issue-title"))
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
@@ -507,6 +559,19 @@ function tableCell(has: (...names: string[]) => boolean): string | undefined {
     cn(has("hide-phone") && "hidden sm:table-cell", has("run-cell") && "px-2 py-3 sm:p-4") ||
     undefined
   );
+}
+
+function metricTone(node: Element): { warn: boolean; stale: boolean } {
+  let current: Element | null = node;
+  while (current) {
+    if ("data-level" in current.attribs || "data-fresh" in current.attribs)
+      return {
+        warn: current.attribs["data-level"] === "warn",
+        stale: current.attribs["data-fresh"] === "stale",
+      };
+    current = current.parent instanceof Element ? current.parent : null;
+  }
+  return { warn: false, stale: false };
 }
 
 function inRow(node: Element): boolean {
