@@ -39,6 +39,7 @@ import type {
 import {
   getLinearConversationSource,
   getRun,
+  getUsageLimitPause,
   listAgentCloseout,
   listCloseoutProgress,
   listCloseoutRounds,
@@ -305,9 +306,23 @@ function runsFor(
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
       links: [],
+      pause: runPause(db, record, generatedAt),
     });
   }
   return runs;
+}
+
+function runPause(db: Database, record: WorkItemRecord, generatedAt: string): StatusRun["pause"] {
+  if (["completed", "merged", "cancelled", "failed"].includes(record.state)) return null;
+  const pause = getUsageLimitPause(db, record.id);
+  if (!pause) return null;
+  return {
+    reason: "usage_limit",
+    agent: agentName(pause.agent),
+    resetsAt: pause.resetsAt === null ? null : iso(pause.resetsAt, generatedAt),
+    resumeAt: iso(pause.resumeAt, generatedAt),
+    runner: pause.runnerName ?? null,
+  };
 }
 
 function runReviewer(pawsHome: string | undefined, runId: string): string {

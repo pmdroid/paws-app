@@ -348,6 +348,7 @@ a.evidence-thumb:focus-visible {
 .run-activity,
 .check-list,
 .run-heading,
+.run-paused,
 .evidence-aside {
   display: flex;
   min-width: 0;
@@ -359,6 +360,23 @@ a.evidence-thumb:focus-visible {
 }
 .run-heading h1 {
   line-height: 1.15;
+}
+.paused-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.paused-head #execution-controls :is(p:empty, [role="status"]:empty) {
+  display: none;
+}
+.closeout-result.paused {
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+.closeout-result.paused h3 {
+  font-weight: 700;
 }
 .run-stepper {
   display: grid;

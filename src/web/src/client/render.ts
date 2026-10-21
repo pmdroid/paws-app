@@ -3,6 +3,7 @@ import type {
   StatusAgentCloseout,
   StatusItem,
   StatusLink,
+  StatusPause,
   StatusQuestion,
   StatusRun,
   StatusSnapshot,
@@ -348,7 +349,7 @@ function viewRuns(
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
-    <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${selected.pause ? pausedSection(selected.itemId, selected.pause) : `<div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>`}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
       .map(
@@ -363,6 +364,24 @@ function viewRuns(
       ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
       <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
     </section></article>`;
+}
+
+/** A run waiting for its agent's usage limit to reset, with Resume now and Stop beside it. */
+function pausedSection(itemId: string, pause: StatusPause): string {
+  const at = utcTime(pause.resetsAt ?? pause.resumeAt);
+  const when = pause.resetsAt
+    ? `Paws continues at ${at} UTC.`
+    : `Paws tries again at ${at} UTC, then every 15 minutes.`;
+  return `<section class="run-paused" aria-labelledby="paused-heading">
+    <div class="paused-head"><h2 id="paused-heading">Paused</h2><div id="execution-controls" data-item="${esc(itemId)}" hidden></div></div>
+    <div class="closeout-result paused"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><h3>${esc(pause.agent)} reached its usage limit. ${esc(when)}</h3>
+      <p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the same session${pause.runner ? ` on runner ${esc(pause.runner)}` : ""}.</p></div></div>
+  </section>`;
+}
+
+/** "18:00" in UTC, the zone the Linear line uses. */
+function utcTime(iso: string): string {
+  return new Date(iso).toISOString().slice(11, 16);
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */
@@ -423,11 +442,13 @@ function phaseStrip(
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
   const names = PHASE_NAMES.map((name, index) =>
-    index === 0 && agent?.attempts.at(-1)?.checks.length
-      ? `${name} · Agent Closeout ${agentProgress(agent)}`
-      : index === 1 && verdict
-        ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
-        : name,
+    run?.pause && index === phase.current
+      ? `${name} · paused until ${utcTime(run.pause.resetsAt ?? run.pause.resumeAt)}`
+      : index === 0 && agent?.attempts.at(-1)?.checks.length
+        ? `${name} · Agent Closeout ${agentProgress(agent)}`
+        : index === 1 && verdict
+          ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
+          : name,
   );
   const marks = names
     .map((name, index) => {
@@ -447,6 +468,7 @@ function phaseStrip(
 }
 
 function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: StatusVerdict): string {
+  if (run.pause) return statePill("running", "Paused · usage limit");
   const recheck =
     verdict?.decision === "running" &&
     item?.state !== "running" &&

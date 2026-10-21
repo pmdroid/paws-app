@@ -9,15 +9,19 @@ export type UsageLimitPause = {
   resetsAt: number | null;
   resumeAt: number;
   pausedAt: number;
+  /** The paused runner's display name, when the limit was observed on a runner. */
+  runnerName?: string | null;
 };
 
 const COLUMNS =
-  "item_id AS itemId,run_id AS runId,agent,runner_id AS runnerId,resets_at AS resetsAt,resume_at AS resumeAt,paused_at AS pausedAt";
+  "p.item_id AS itemId,p.run_id AS runId,p.agent,p.runner_id AS runnerId,p.resets_at AS resetsAt,p.resume_at AS resumeAt,p.paused_at AS pausedAt,r.name AS runnerName";
 
 export function getUsageLimitPause(db: Database, itemId: string): UsageLimitPause | null {
   return (
     db
-      .query<UsageLimitPause, [string]>(`SELECT ${COLUMNS} FROM usage_limit_pause WHERE item_id=?`)
+      .query<UsageLimitPause, [string]>(
+        `SELECT ${COLUMNS} FROM usage_limit_pause p LEFT JOIN runner r ON r.id=p.runner_id WHERE p.item_id=?`,
+      )
       .get(itemId) ?? null
   );
 }

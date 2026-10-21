@@ -125,6 +125,18 @@ export interface StatusRun {
   summary: string;
   activity: StatusActivity[];
   links: StatusLink[];
+  /** Set while the run waits for its agent's usage limit to reset. */
+  pause?: StatusPause | null;
+}
+
+export interface StatusPause {
+  reason: "usage_limit";
+  agent: string;
+  /** When the agent's limit resets, or null when the agent did not say. */
+  resetsAt: string | null;
+  /** When Paws continues the run on its own. */
+  resumeAt: string;
+  runner: string | null;
 }
 
 export interface StatusQuestion {
@@ -511,6 +523,20 @@ function readRun(input: unknown, index: number): StatusRun {
       readActivity(entry, `${path}.activity[${step}]`),
     ),
     links: readLinks(body.links, `${path}.links`),
+    ...(body.pause == null ? {} : { pause: readPause(body.pause, `${path}.pause`) }),
+  };
+}
+
+function readPause(input: unknown, path: string): StatusPause {
+  const body = object(input, path);
+  if (body.reason !== "usage_limit")
+    throw new StatusContractError(`${path}.reason must be usage_limit`);
+  return {
+    reason: "usage_limit",
+    agent: text(body, "agent", path),
+    resetsAt: body.resetsAt == null ? null : dateString(body, "resetsAt", path),
+    resumeAt: dateString(body, "resumeAt", path),
+    runner: optionalText(body, "runner"),
   };
 }
 

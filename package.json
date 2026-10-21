@@ -13,7 +13,7 @@
     "check": "bun run lint && bun run fmt:check && bun run typecheck && bun run test && bun run build:status && bun run links",
     "build:status": "bun src/web/build.ts",
     "verify:local": "bun --no-env-file scripts/verify-local.ts",
-    "verify:ui": "bun run build:status && bun --no-env-file scripts/verify-status-ui.ts"
+    "verify:ui": "bun run build:status && bun --no-env-file scripts/verify-status-ui.ts && bun --no-env-file scripts/verify-paused-run.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.88.0",
