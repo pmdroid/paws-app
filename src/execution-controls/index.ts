@@ -3,8 +3,10 @@ import { CommandBus, TERMINAL_WORK_ITEM_STATES } from "../core";
 import {
   auditWorkspaceAccess,
   getLinearSession,
+  getUsagePause,
   getWorkItem,
   getWorkspace,
+  requestUsageResume,
   submitCommand,
   workspaceMember,
   workspaceSessionIds,
@@ -117,10 +119,12 @@ export function createExecutionControls(input: {
       const port = input.getPort(principal.workspaceId);
       const actions = (TERMINAL_WORK_ITEM_STATES as readonly string[]).includes(item.state)
         ? []
-        : [
-            "stop",
-            ...(item.state === "running" ? ["pause"] : item.state === "paused" ? ["resume"] : []),
-          ];
+        : getUsagePause(input.db, item.id)
+          ? ["stop", "resume_now"]
+          : [
+              "stop",
+              ...(item.state === "running" ? ["pause"] : item.state === "paused" ? ["resume"] : []),
+            ];
       if (request.method === "GET")
         return Response.json(
           { available: port !== null, itemId, actions: port ? actions : [] },
@@ -173,7 +177,15 @@ export function createExecutionControls(input: {
             })
             .immediate();
           if (applied) await port.interruptItem(item.id);
-        } else
+        } else if (action === "resume_now")
+          applied = input.db
+            .transaction(() => {
+              if (!canAct() || !requestUsageResume(input.db, item.id)) return false;
+              onCommitted();
+              return true;
+            })
+            .immediate();
+        else
           applied = await port[action === "pause" ? "pauseItem" : "resumeItem"](
             item.id,
             canAct,

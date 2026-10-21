@@ -13,6 +13,7 @@ import type {
   PostUpdateHook,
   PullRequestHook,
   UpdatePlanHook,
+  UsageLimitHook,
 } from "../acp";
 import {
   executeItem,
@@ -226,6 +227,7 @@ import { sweepWorktrees } from "./worktree-sweep";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
+import { usagePausedText, usageResumedText } from "./usage-limit";
 import {
   interpretRepositoryAnswer,
   chooseRepository,
@@ -3545,9 +3547,25 @@ export class Orchestrator {
     if (!runner) return undefined;
     return async (options: RunAgentOptions) => {
       this.assertJobCurrent(itemId);
-      const result = await runner(options);
+      const result = await runner({ ...options, usageLimit: this.usageLimitHook(itemId) });
       this.assertJobCurrent(itemId);
       return result;
+    };
+  }
+
+  /** One Linear line when remote work pauses for a usage limit and one when it continues. */
+  private usageLimitHook(itemId: string): UsageLimitHook {
+    const report = (body: string, key: string) => {
+      const item = getWorkItem(this.db, itemId);
+      if (!item) return;
+      this.post(item, "thought", body, key);
+      void this.flush();
+    };
+    return {
+      paused: (pause) =>
+        report(usagePausedText(pause), `usage-limit:${itemId}:${pause.pausedAt}:paused`),
+      resumed: (pause) =>
+        report(usageResumedText(pause), `usage-limit:${itemId}:${pause.pausedAt}:resumed`),
     };
   }
 

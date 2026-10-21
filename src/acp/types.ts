@@ -125,6 +125,23 @@ export interface RunAgentOptions {
   checkpoint?: boolean;
   mainSha?: string;
   resume?: { sessionId: string; replayPrompt: string };
+  /** Told when remote work waits for the agent's usage limit to reset, and when it continues. */
+  usageLimit?: UsageLimitHook;
+}
+
+/** A wait for an agent usage limit. `resetsAt` is null when the agent gave no reset time. */
+export interface UsageLimitPause {
+  agent: string;
+  role: AgentRole;
+  resetsAt: number | null;
+  resumeAt: number;
+  pausedAt: number;
+  runnerId: string | null;
+}
+
+export interface UsageLimitHook {
+  paused(pause: UsageLimitPause): void;
+  resumed(pause: UsageLimitPause): void;
 }
 
 export interface RunAgentResult {

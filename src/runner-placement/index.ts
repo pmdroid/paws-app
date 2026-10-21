@@ -35,7 +35,11 @@ export type RunnerPlacement = {
     result?: RunnerResult | RunnerHelperResult;
     failure?: "heartbeat_lost";
     finishedAt: number;
-  }): { retryable: boolean };
+  }): {
+    retryable: boolean;
+    /** Set when the agent reached its usage limit. `resetsAt` is null without a reset time. */
+    usageLimit?: { resetsAt: number | null };
+  };
 };
 
 export { createRunnerPlacement } from "./placement";

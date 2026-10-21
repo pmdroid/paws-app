@@ -28,6 +28,7 @@ import {
   type AcpEvent,
   type RunAgentOptions,
   type RunAgentResult,
+  type UsageLimitHook,
   encodePolicyFiles,
 } from "../acp";
 import type { RunnerWork } from "../runner-work";
@@ -39,11 +40,11 @@ import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
 import { RetryableRunnerError, runWithFailover } from "./failover";
+import { placeOrWait, type UsageCooldown } from "./usage-pause";
 import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
 
-const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
@@ -118,53 +119,53 @@ export function createRemoteAgentRunner(options: {
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Map<string, string>();
-  function usageLimitReset(agent: string, sessionId: string | null): number | null {
+  // A wait for a usage limit lives in this process. One left by a previous process has no waiter.
+  db.run("DELETE FROM usage_pause");
+  function usageCooldown(agent: string, sessionId: string | null): UsageCooldown | null {
     const runnerInScope = `r.status='active' AND r.revoked_at IS NULL AND r.workspace_id IN
       (SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE s.session_id=?2)`;
     return (
       db
-        .query<{ resetsAt: number | null }, [string, string | null, number]>(
-          `SELECT MIN(resets_at) AS resetsAt FROM (
-         SELECT a.cooldown_until AS resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+        .query<UsageCooldown, [string, string | null, number]>(
+          `SELECT a.runner_id AS runnerId,a.user_id AS accountUserId,a.cooldown_until AS cooldownUntil
+         FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
          WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
          UNION ALL
-         SELECT p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
-         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})`,
+         SELECT p.runner_id,NULL,p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope}
+         ORDER BY cooldownUntil LIMIT 1`,
         )
-        .get(agent, sessionId, now())?.resetsAt ?? null
+        .get(agent, sessionId, now()) ?? null
     );
   }
-  async function select(
+  function select(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
-    runnerId?: string,
+    usage: { resetsAt?: number | null; hook?: UsageLimitHook },
   ) {
-    const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
-    for (;;) {
-      const rejected: string[] = [];
-      const selected = await place(itemId, placement, rejected, runnerId);
-      if (selected) return selected;
-      const agent = placement.profile?.agent;
-      const resetsAt = agent
-        ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
-        : null;
-      if (resetsAt === null)
-        throw new RunnerUnavailableError(
+    let rejected: string[] = [];
+    const agent = placement.profile?.agent;
+    return placeOrWait({
+      place: () => place(itemId, placement, (rejected = [])),
+      cooldown: () => usageCooldown(agent!, getWorkItem(db, itemId)?.sessionKey ?? null),
+      unavailable: () =>
+        new RunnerUnavailableError(
           `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
-        );
-      const wait = resetsAt - now();
-      if (wait > deadline - performance.now())
-        throw new RunnerUnavailableError(
-          `${agent} reached its usage limit until ${new Date(resetsAt).toISOString()}`,
-        );
-      await delay(Math.min(wait, interval * 20), undefined, { signal: placement.signal });
-    }
+        ),
+      db,
+      itemId,
+      role: placement.role,
+      agent,
+      usage,
+      now,
+      pollMs: interval * 20,
+      signal: placement.signal,
+    });
   }
   async function place(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: string[],
-    runnerId?: string,
   ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
@@ -182,7 +183,6 @@ export function createRemoteAgentRunner(options: {
     placement.signal?.throwIfAborted();
     for (const runner of candidates) {
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
-      if (runnerId && runner.id !== runnerId) continue;
       const reserved = [...reservations].filter(
         ([runId, hostId]) =>
           hostId === runner.id &&
@@ -224,6 +224,7 @@ export function createRemoteAgentRunner(options: {
       const attempt = async (
         input: RunAgentOptions,
         excluded: readonly string[],
+        usage: { resetsAt?: number | null; hook?: UsageLimitHook },
       ): Promise<RunAgentResult> => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
@@ -249,7 +250,7 @@ export function createRemoteAgentRunner(options: {
           excludeRunnerIds: excluded,
           signal: input.signal,
         };
-        const selected = await select(itemId, placementRequest);
+        const selected = await select(itemId, placementRequest, usage);
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -317,27 +318,34 @@ export function createRemoteAgentRunner(options: {
               else work.scope(selected.runId, selected.workspaceId);
               const result = health.read(selected.id, id);
               if (result) {
-                const disposition = immediate(db, () =>
-                  options.placement?.finished({
-                    commandId: id,
-                    runnerId: selected.id,
-                    profile,
-                    result,
-                    finishedAt: now(),
-                  }),
+                const disposition: ReturnType<RunnerPlacement["finished"]> | undefined = immediate(
+                  db,
+                  () =>
+                    options.placement?.finished({
+                      commandId: id,
+                      runnerId: selected.id,
+                      profile,
+                      result,
+                      finishedAt: now(),
+                    }),
                 );
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
                   !result.cancelled &&
                   !result.timedOut
-                )
+                ) {
+                  if (disposition.usageLimit) usage.resetsAt = disposition.usageLimit.resetsAt;
                   throw new RetryableRunnerError(
                     selected.id,
                     result.authRequired
                       ? "The runner agent requires sign-in."
                       : "The runner agent exhausted its observed quota.",
+                    undefined,
+                    false,
+                    Boolean(disposition.usageLimit),
                   );
+                }
                 return { ...result, role: input.role, transcriptPath: transcript };
               }
               await delay(interval, undefined, { signal });
@@ -536,7 +544,7 @@ export function createRemoteAgentRunner(options: {
           command = assigned;
           let cursor = 0;
           let complete: RunnerResult | null = null;
-          let disposition: { retryable: boolean } | undefined;
+          let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           while (now() < deadline) {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
@@ -552,13 +560,18 @@ export function createRemoteAgentRunner(options: {
                   finishedAt: now(),
                 }),
               );
-            if (complete && disposition?.retryable && input.role === "reviewer")
+            if (complete && disposition?.retryable && input.role === "reviewer") {
+              if (disposition.usageLimit) usage.resetsAt = disposition.usageLimit.resetsAt;
               throw new RetryableRunnerError(
                 selected.id,
-                "The reviewer runner requires a fresh eligible agent.",
+                disposition.usageLimit
+                  ? "The runner agent exhausted its observed quota."
+                  : "The reviewer runner requires a fresh eligible agent.",
                 transcript,
                 publishedEffects,
+                Boolean(disposition.usageLimit),
               );
+            }
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
               const event = row.event;
@@ -763,7 +776,8 @@ export function createRemoteAgentRunner(options: {
             !complete.cancelled &&
             !complete.timedOut &&
             !complete.candidateSha
-          )
+          ) {
+            if (disposition.usageLimit) usage.resetsAt = disposition.usageLimit.resetsAt;
             throw new RetryableRunnerError(
               selected.id,
               complete.authRequired
@@ -771,7 +785,9 @@ export function createRemoteAgentRunner(options: {
                 : "The runner agent exhausted its observed quota.",
               transcript,
               publishedEffects,
+              Boolean(disposition.usageLimit),
             );
+          }
           if (complete.reviewText)
             await emit({
               type: "session_update",
@@ -826,6 +842,21 @@ export function createRemoteAgentRunner(options: {
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
               });
+            if (
+              disposition?.usageLimit &&
+              complete.stopReason !== "end_turn" &&
+              !complete.cancelled &&
+              !complete.timedOut
+            ) {
+              usage.resetsAt = disposition.usageLimit.resetsAt;
+              throw new RetryableRunnerError(
+                selected.id,
+                "The runner agent exhausted its observed quota.",
+                transcript,
+                publishedEffects,
+                true,
+              );
+            }
           }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
@@ -884,8 +915,16 @@ export function createRemoteAgentRunner(options: {
           reservations.delete(selected.runId);
         }
       };
-      return (input: RunAgentOptions) =>
-        runWithFailover(input, attempt, async () => cancelItem(itemId, input.signal));
+      return (input: RunAgentOptions) => {
+        const usage: { resetsAt?: number | null; hook?: UsageLimitHook } = {
+          hook: input.usageLimit,
+        };
+        return runWithFailover(
+          input,
+          (next, excluded) => attempt(next, excluded, usage),
+          async () => cancelItem(itemId, input.signal),
+        );
+      };
     },
   };
 }
@@ -893,3 +932,7 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+
+export { RetryableRunnerError, runWithFailover } from "./failover";
+
+export { placeOrWait, USAGE_RESUME_MARGIN_MS, type UsageCooldown } from "./usage-pause";
