@@ -469,3 +469,10 @@ export function runRunnerName(db: Database, runId: string): string | null {
       .get(runId)?.name ?? null
   );
 }
+
+export function runnerName(db: Database, runnerId: string): string | null {
+  return (
+    db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runnerId)
+      ?.name ?? null
+  );
+}

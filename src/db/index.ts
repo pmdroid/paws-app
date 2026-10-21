@@ -127,6 +127,7 @@ export {
   findRunnerPairing,
   getRunner,
   runRunnerName,
+  runnerName,
   listRunners,
   listRunnerOverview,
   recordRunnerHostStatus,

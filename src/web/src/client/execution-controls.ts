@@ -2,6 +2,12 @@ import { renderMarkup } from "./theme";
 import { readCsrfToken } from "./github-auth";
 import { esc } from "./format";
 
+const LABELS: Record<string, [label: string, pending: string, done: string]> = {
+  pause: ["Pause item", "Pausing…", "Item paused."],
+  resume: ["Resume item", "Resuming…", "Item resumed."],
+  resume_now: ["Resume now", "Resuming…", "Resuming now."],
+};
+
 export function createExecutionControls(reload: () => Promise<void>) {
   let root: HTMLElement | null = null;
   let itemId = "";
@@ -18,11 +24,11 @@ export function createExecutionControls(reload: () => Promise<void>) {
       .filter((action) => action !== "stop")
       .map(
         (action) =>
-          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${pending === action ? `${action === "pause" ? "Pausing" : "Resuming"}…` : action === "pause" ? "Pause item" : "Resume item"}</button>`,
+          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${LABELS[action]![pending === action ? 1 : 0]}</button>`,
       )
       .join(
         "",
-      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">Stop this item</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
+      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">${actions.includes("resume_now") ? "Stop" : "Stop this item"}</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
     if (painted === html) return;
     painted = html;
     renderMarkup(root, html);
@@ -53,12 +59,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
             : "The action failed. Refresh and try again.",
         );
       if (acceptedGeneration === generation) {
-        message =
-          action === "stop"
-            ? "Item stopped."
-            : action === "pause"
-              ? "Item paused."
-              : "Item resumed.";
+        message = action === "stop" ? "Item stopped." : LABELS[action]![2];
         actions = [];
       }
       pending = "";
@@ -103,7 +104,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
             "actions" in body &&
             Array.isArray(body.actions)
               ? body.actions.filter((action): action is string =>
-                  ["stop", "pause", "resume"].includes(action),
+                  ["stop", ...Object.keys(LABELS)].includes(action),
                 )
               : [];
           paint();

@@ -303,6 +303,36 @@ describe("status views", () => {
     expect(view.content).not.toContain("Audit log export");
   });
 
+  test("a run paused at a usage limit shows the reset, Resume now and Stop controls", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102")!;
+    run.state = "paused";
+    run.pause = {
+      reason: "usage_limit",
+      agent: "Claude",
+      phase: "implementation",
+      resetsAt: "2026-10-09T18:00:00.000Z",
+      resumeAt: "2026-10-09T18:01:00.000Z",
+      runner: "agentbox",
+    };
+    snapshot.generatedAt = "2026-10-09T17:25:00.000Z";
+    const html = render(model({ snapshot, route: { view: "runs", id: "r-102" } })).content;
+    expect(html).toContain('<span class="st now">Paused · usage limit</span>');
+    expect(html).toContain(
+      '<li class="run-step now" aria-current="step">Implementation · paused until 18:00</li>',
+    );
+    expect(html).toContain('<h2 id="paused-heading">Paused</h2><div id="execution-controls"');
+    expect(html).toContain("Claude reached its usage limit. Paws continues at 18:00 UTC.");
+    expect(html).toContain("At 18:00 Paws continues the task on runner agentbox.");
+    expect(html.match(/id="execution-controls"/g)).toHaveLength(1);
+    run.pause = { ...run.pause, phase: "closeout", resetsAt: null };
+    const closeout = render(model({ snapshot, route: { view: "runs", id: "r-102" } })).content;
+    expect(closeout).toContain("Closeout · paused until 18:01");
+    expect(closeout).toContain("Paws tries again at 18:01 UTC.");
+    const overview = render(model({ snapshot })).content;
+    expect(overview).toContain("Paused for Claude&#39;s usage limit. Paws continues on its own.");
+  });
+
   test("retired hashes fall back to issues, the matching run, or overview", () => {
     const snapshot = demoStatus();
     expect(parseRoute("")).toEqual({ view: "overview" });
