@@ -30,6 +30,7 @@ import {
   listCloseoutRounds,
   listRuns,
   listArtifacts,
+  listEvidence,
   listOutbox,
   migrate,
   openDatabase,
@@ -52,6 +53,7 @@ import {
   type AcceptedLinearEvent,
   type SessionUpdate,
 } from "../src/linear";
+import { createEvidenceStore } from "../src/evidence";
 import { findOpenQuestion, getQuestion } from "../src/questions";
 import { handleStatusRequest, parseStatusSnapshot } from "../src/web";
 import {
@@ -262,6 +264,104 @@ test.each([false, true, "cap"] as const)(
   },
   20000,
 );
+
+test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
+  const layout = await repoLayout();
+  const seed = path.join(layout.root, "seed");
+  await writeFile(
+    path.join(seed, ".agents", "closeout.yaml"),
+    `${CLOSEOUT_POLICY}  - id: visual-proof
+    kind: evidence
+    gate: beforePR
+    paths: ["web/**"]
+    hint: Screenshot the changed page.
+`,
+  );
+  await exec("git", ["-C", seed, "commit", "-qam", "require visual proof"]);
+  await exec("git", ["-C", seed, "push", "-q", "origin", "HEAD:main"]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "page",
+      identifier: "ENG-303",
+      title: "Restyle the page",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const prompts = new Map<string, string>();
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    evidence: {
+      publicUrl: "https://paws.example",
+      store: createEvidenceStore({ db, root: path.join(layout.pawsRoot, "evidence") }),
+    },
+    launch(input) {
+      prompts.set(input.purpose, input.prompt);
+      const scriptPath = path.join(layout.root, `proof-${input.purpose}.json`);
+      const script: FakeScript = {
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps:
+          input.purpose === "review"
+            ? emptyReview().steps
+            : input.purpose === "fix"
+              ? [
+                  {
+                    type: "terminal",
+                    command: "bun",
+                    cwd: input.worktree,
+                    args: [
+                      "-e",
+                      "await Bun.write('shot.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]))",
+                    ],
+                  },
+                  { type: "publish_artifact", path: "shot.png", checkId: "visual-proof" },
+                  { type: "end" },
+                ]
+              : [
+                  writeOk(input.worktree),
+                  {
+                    type: "fs_write",
+                    path: path.join(input.worktree, "web", "page.html"),
+                    content: "<main>restyled</main>\n",
+                  },
+                  { type: "end" },
+                ],
+      };
+      writeFileSync(scriptPath, JSON.stringify(script));
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "page"));
+    await jobs.tick();
+    expect(stateOf(db, "ENG-303"), debug(layout, db)).toBe("merge_queue");
+    const fixes = tracker.progress.filter((update) => update.body.startsWith("Fixing Closeout"));
+    expect(fixes.map((update) => update.body)).toEqual([
+      "Fixing Closeout findings for ENG-303, fix attempt 1 of 8. Failed checks: visual-proof.",
+    ]);
+    expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
+    expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
+    const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-303")!;
+    expect(listEvidence(db, item.id)).toMatchObject([
+      { checkId: "visual-proof", mediaType: "image/png" },
+    ]);
+  } finally {
+    await orchestrator.shutdown();
+    db.close();
+    await layout.cleanup();
+  }
+}, 20000);
 
 test("a bound two-item delegation asks, verifies and merges in its repository after the default changes", async () => {
   const layout = await repoLayout();

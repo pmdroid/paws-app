@@ -10,7 +10,7 @@ import { evaluateCandidate, runCloseoutGate, snapshotRetryBaseline } from "./run
 import type { CodexReviewer } from "./reviewer";
 import { MAX_FIX_ATTEMPTS } from "./types";
 import { reviewRequirements } from "./index";
-import { addReview } from "../closeout-spec";
+import { addReview, type PublishedEvidence } from "../closeout-spec";
 
 const exec = promisify(execFile);
 const TASK = "ENG-123";
@@ -26,6 +26,46 @@ Report findings. An empty list means the change is fine.
 `;
 
 describe("closeout gate", () => {
+  test("a fix round that only publishes visual proof needs no new commit", async () => {
+    const repo = await originRepo({ "page.html": "<main></main>" });
+    const root = path.join(repo.root, "local-policy");
+    try {
+      await mkdir(path.join(root, ".agents"), { recursive: true });
+      await writeFile(
+        path.join(root, ".agents/closeout.yaml"),
+        policy([alwaysPass("lint"), { id: "visual-proof", kind: "evidence" }]),
+      );
+      const published: PublishedEvidence[] = [];
+      const summaries: string[] = [];
+      const result = await runCloseoutGate({
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        policyRoot: root,
+        reviewer: throwingReviewer(),
+        published: () => published,
+        fixer: {
+          async applyFix(request) {
+            summaries.push(request.summary);
+            published.push({ checkId: "visual-proof", media: "image", commit: request.head });
+            return { ok: true, head: request.head };
+          },
+        },
+      });
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(
+        "visual-proof (evidence): failed — 0 of 1 screenshot or video",
+      );
+      expect(result).toMatchObject({ outcome: "accepted", fixAttempts: 1, head: repo.head });
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("local policy runs candidate commands and trusted review skills without checkout edits", async () => {
     const repo = await originRepo({ "candidate.txt": "candidate content" });
     const root = path.join(repo.root, "local-policy");
