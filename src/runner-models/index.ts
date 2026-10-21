@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { immediate, workspaceMember } from "../db";
 import type { RunnerWork } from "../runner-work";
-import { RunnerHealthResultSchema } from "../runner-protocol";
+import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 
 type Agent = "claude" | "codex" | "grok";
 type Choice = { id: string; name: string };
@@ -25,7 +25,8 @@ type Pending = {
 };
 export type AgentModelCatalog = {
   agent: Agent;
-  models: Array<Choice & { efforts: Choice[] | null }>;
+  /** Labelled for people: a 1M entry is named "<model> · 1M context" and flagged. */
+  models: Array<Choice & { longContext: boolean; efforts: Choice[] | null }>;
   efforts: Choice[];
   updatedAt: number;
 };
@@ -198,13 +199,13 @@ export function createRunnerModels(options: {
         agent,
         updatedAt: header.updatedAt,
         efforts: result.efforts ?? [],
-        models: (result.models ?? [])
+        models: labelModels(result.models ?? [])
           .filter((model) => concrete(model.id))
-          .map((model) => ({
-            ...model,
-            efforts:
-              efforts(model.id) ??
-              (result.identity?.model === model.id ? (result.efforts ?? []) : null),
+          .map(({ id, name, longContext }) => ({
+            id,
+            name,
+            longContext,
+            efforts: efforts(id) ?? (result.identity?.model === id ? (result.efforts ?? []) : null),
           })),
       });
     }

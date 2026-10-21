@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { auditWorkspaceAccess, immediate, workspaceMember } from "../db";
+import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 import type { WorkspacePrincipal } from "../workspace";
 
 const policyInput = z.strictObject({
@@ -16,6 +17,21 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
     const current = workspaceMember(db, principal.workspaceId, principal.userId);
     if (!current?.active) throw new Error("Workspace access is unavailable.");
     return current;
+  }
+  /** The runner's label for a model it ran, such as "Opus 5.5 · 1M context". */
+  function modelLabel(runnerId: string, agent: string | null, model: string | null) {
+    if (!model) return null;
+    const row = db
+      .query<{ resultJson: string }, [string, string]>(
+        "SELECT result_json AS resultJson FROM agent_model_catalog WHERE runner_id=? AND agent=? AND model='' ORDER BY updated_at DESC LIMIT 1",
+      )
+      .get(runnerId, agent ?? "");
+    const parsed = row ? RunnerHealthResultSchema.safeParse(JSON.parse(row.resultJson)) : null;
+    const models = parsed?.success ? (parsed.data.models ?? []) : [];
+    const entries = models.some((entry) => entry.id === model)
+      ? models
+      : [...models, { id: model, name: model }];
+    return labelModels(entries).find((entry) => entry.id === model)!.name;
   }
   async function body(request: Request) {
     if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
@@ -55,14 +71,21 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         const host = new URL(request.url).searchParams.get("runner") ?? "";
         return json({
           usage: db
-            .query(`SELECT u.command_id AS commandId,u.runner_id AS runnerId,r.name AS runnerName,
+            .query<
+              { runnerId: string; agent: string | null; resolvedModel: string | null },
+              [string, number, string, string, string]
+            >(`SELECT u.command_id AS commandId,u.runner_id AS runnerId,r.name AS runnerName,
           u.owner_user_id AS ownerUserId,u.item_id AS itemId,u.run_id AS runId,u.agent,u.model,
           u.resolved_model AS resolvedModel,u.role,u.purpose,
           u.started_at AS startedAt,u.ended_at AS endedAt,u.outcome,u.output_bytes AS outputBytes
           FROM runner_execution_usage u JOIN runner r ON r.id=u.runner_id WHERE r.workspace_id=?
           AND (?=1 OR u.owner_user_id=?) AND (?='' OR u.runner_id=?)
           ORDER BY u.started_at DESC,u.rowid DESC LIMIT 100`)
-            .all(principal.workspaceId, all ? 1 : 0, principal.userId, host, host),
+            .all(principal.workspaceId, all ? 1 : 0, principal.userId, host, host)
+            .map((row) => ({
+              ...row,
+              modelLabel: modelLabel(row.runnerId, row.agent, row.resolvedModel),
+            })),
         });
       }
       const runnerId = match![1]!;
