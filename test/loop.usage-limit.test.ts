@@ -33,7 +33,12 @@ const LIMIT_WITH_RESET = `Claude usage limit reached. Your limit resets at ${new
 const LIMIT_WITHOUT_RESET = "insufficient_quota";
 
 type Outcome = { limit: string } | "hang";
-type FakeRunner = { id: string; cooldownUntil: number; outcomes: Outcome[] };
+type FakeRunner = {
+  id: string;
+  cooldownUntil: number;
+  resetsAt?: number | null;
+  outcomes: Outcome[];
+};
 
 async function until(predicate: () => boolean, message: string) {
   for (let attempt = 0; attempt < 1000; attempt++) {
@@ -82,12 +87,18 @@ async function fixture(runners: FakeRunner[]) {
       subIssues: [],
     },
   ]);
-  const attempts: { runner: string; prompt: string; role: string }[] = [];
+  const attempts: {
+    runner: string;
+    prompt: string;
+    role: string;
+    session: string;
+    resumedSession?: string;
+  }[] = [];
   const agentForItem = (itemId: string) => (options: RunAgentOptions) => {
     const usage: Parameters<typeof placeOrWait>[0]["usage"] = { hook: options.usageLimit };
     return runWithFailover(
       options,
-      async (input, excluded) => {
+      async (input, excluded, continuation) => {
         const runner = await placeOrWait({
           place: async () =>
             runners.find(
@@ -98,7 +109,12 @@ async function fixture(runners: FakeRunner[]) {
               .filter((entry) => entry.cooldownUntil > clock.now())
               .sort((left, right) => left.cooldownUntil - right.cooldownUntil)[0];
             return cooling
-              ? { runnerId: cooling.id, accountUserId: null, cooldownUntil: cooling.cooldownUntil }
+              ? {
+                  runnerId: cooling.id,
+                  accountUserId: null,
+                  cooldownUntil: cooling.cooldownUntil,
+                  resetsAt: cooling.resetsAt ?? null,
+                }
               : null;
           },
           unavailable: () => new Error("No available paired runner"),
@@ -111,7 +127,17 @@ async function fixture(runners: FakeRunner[]) {
           pollMs: 2,
           signal: input.signal,
         });
-        attempts.push({ runner: runner.id, prompt: input.prompt, role: input.role });
+        // The fake runner keeps a stopped session and loads it when the continuation names it.
+        const resumedSession =
+          continuation?.runnerId === runner.id ? continuation.sessionId : undefined;
+        const session = resumedSession ?? `${runner.id}-session-${attempts.length + 1}`;
+        attempts.push({
+          runner: runner.id,
+          prompt: input.prompt,
+          role: input.role,
+          session,
+          ...(resumedSession ? { resumedSession } : {}),
+        });
         const transcript = `${runDir(input.pawsRoot, input.runId)}/acp.jsonl`;
         mkdirSync(path.dirname(transcript), { recursive: true });
         appendFileSync(
@@ -139,6 +165,7 @@ async function fixture(runners: FakeRunner[]) {
           );
         const quota = quotaSignal(outcome.limit, clock.now())!;
         runner.cooldownUntil = quota.cooldownUntil;
+        runner.resetsAt = quota.resetsAt;
         usage.resetsAt = quota.resetsAt;
         throw new RetryableRunnerError(
           runner.id,
@@ -146,6 +173,7 @@ async function fixture(runners: FakeRunner[]) {
           transcript,
           false,
           true,
+          session,
         );
       },
       async () => {},
@@ -234,6 +262,7 @@ test("a usage limit mid-run pauses the task and continues at the reset on the sa
     advanceTo(run.clock, RESET + USAGE_RESUME_MARGIN_MS);
     await until(() => run.attempts.length === 2, "The task did not continue at the reset");
     expect(run.attempts.map((attempt) => attempt.runner)).toEqual(["agentbox", "agentbox"]);
+    expect(run.attempts[1]!.resumedSession).toBe(run.attempts[0]!.session);
     expect(run.attempts[1]!.prompt).toContain("stopped at its usage limit");
     expect(run.attempts[1]!.prompt).toContain("Work on agentbox, attempt 1.");
     await until(() => run.lines("Continuing:").length === 1, "The continue line was not posted");
@@ -277,7 +306,9 @@ test("without a reset time the task tries again every 15 minutes", async () => {
 }, 30_000);
 
 test("work that cannot start for a usage limit waits for the reset instead of failing", async () => {
-  const run = await fixture([{ id: "agentbox", cooldownUntil: RESET, outcomes: [] }]);
+  const run = await fixture([
+    { id: "agentbox", cooldownUntil: RESET, resetsAt: RESET, outcomes: [] },
+  ]);
   try {
     await run.start();
     await until(() => run.lines("Paused:").length === 1, "The waiting task was not paused");
@@ -285,6 +316,24 @@ test("work that cannot start for a usage limit waits for the reset instead of fa
     expect(getWorkItem(run.db, run.item().id)?.state).toBe("running");
     advanceTo(run.clock, RESET + USAGE_RESUME_MARGIN_MS);
     await until(() => run.attempts.length === 1, "The task did not start after the reset");
+    await run.stop();
+  } finally {
+    await run.close();
+  }
+}, 30_000);
+
+test("work that cannot start without a known reset time tries again after 15 minutes", async () => {
+  const run = await fixture([
+    { id: "agentbox", cooldownUntil: START + 15 * 60_000, resetsAt: null, outcomes: [] },
+  ]);
+  try {
+    await run.start();
+    await until(() => getUsagePause(run.db, run.item().id) !== null, "The task did not wait");
+    const pause = getUsagePause(run.db, run.item().id)!;
+    expect(pause.resetsAt).toBeNull();
+    expect(pause.resumeAt).toBe(START + 15 * 60_000);
+    advanceTo(run.clock, START + 15 * 60_000);
+    await until(() => run.attempts.length === 1, "The task did not try again after 15 minutes");
     await run.stop();
   } finally {
     await run.close();

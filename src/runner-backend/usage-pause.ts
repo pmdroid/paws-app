@@ -11,6 +11,8 @@ export type UsageCooldown = {
   runnerId: string;
   accountUserId: string | null;
   cooldownUntil: number;
+  /** The reset the agent reported, or null when the cooldown is the retry interval. */
+  resetsAt: number | null;
 };
 
 /**
@@ -69,7 +71,7 @@ export async function waitForUsageReset(input: {
   lifted?: () => boolean;
 }): Promise<void> {
   const { db, itemId, cooldown, now } = input;
-  const resetsAt = input.resetsAt === undefined ? cooldown.cooldownUntil : input.resetsAt;
+  const resetsAt = input.resetsAt === undefined ? cooldown.resetsAt : input.resetsAt;
   const resumeAt =
     resetsAt === null
       ? cooldown.cooldownUntil

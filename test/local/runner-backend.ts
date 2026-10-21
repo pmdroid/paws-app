@@ -1959,8 +1959,11 @@ export async function probeRunnerBackend(
       );
     }
     {
-      const coolDown = (until: number) =>
-        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex'", [until]);
+      const coolDown = (until: number, resetsAt: number | null = until || null) =>
+        db.run("UPDATE runner_agent_policy SET cooldown_until=?,resets_at=? WHERE agent='codex'", [
+          until,
+          resetsAt,
+        ]);
       const dispatched = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds) if (work.commands(hostId).length) return hostId;
@@ -2118,6 +2121,61 @@ export async function probeRunnerBackend(
         "only runners on 0.1.19 or later receive the task's main commit and checkpoint opt-out",
         true,
         { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
+      );
+
+      await drain();
+      reportVersion("0.1.21");
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const continued = tracked();
+      const stopContinued = new AbortController();
+      const continuedRun = placedBackend.forItem(continued.id)(
+        input(continued, { signal: stopContinued.signal, usageLimit }),
+      );
+      void continuedRun.catch(() => undefined);
+      const limitedCommand = await firstDispatch();
+      if (limitedCommand.type !== "run") throw new Error("Expected run command");
+      assert.equal(limitedCommand.resumeSessionId, undefined);
+      const host = limitedCommand.runnerId;
+      db.run(
+        "UPDATE runner_agent_policy SET cooldown_until=?,resets_at=? WHERE agent='codex' AND runner_id<>?",
+        [now + 86_400_000, now + 86_400_000, host],
+      );
+      const stoppedToken = work.issueGrant({
+        runnerId: host,
+        runId: limitedCommand.runId,
+        commandId: limitedCommand.id,
+        generation: limitedCommand.generation,
+      });
+      results.submit({
+        runnerId: host,
+        runId: limitedCommand.runId,
+        generation: limitedCommand.generation,
+        token: stoppedToken.token,
+        result: {
+          ...result(limitedCommand),
+          stopReason: "error",
+          errorMessage: "You've hit your session limit. Retry-After: 120",
+          sessionId: "agent-session-1",
+        },
+      });
+      assert.equal((await next(host, false)).type, "cancel");
+      acknowledgeAll();
+      assert.equal((await pausedFor(continued.id))?.runnerId, host);
+      acknowledgeAll();
+      now += 120_000 + USAGE_RESUME_MARGIN_MS;
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const resumedCommand = await next(host);
+      if (resumedCommand.type !== "run") throw new Error("Expected run command");
+      assert.equal(resumedCommand.resumeSessionId, "agent-session-1");
+      assert.match(resumedCommand.prompt, /stopped at its usage limit/);
+      stopContinued.abort();
+      await continuedRun.catch(() => undefined);
+      await drain();
+      coolDown(0);
+      observe(
+        "after a usage limit the same runner loads the stopped agent session on 0.1.21 or later",
+        true,
+        { host },
       );
     }
   } finally {

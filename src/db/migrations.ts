@@ -1936,6 +1936,7 @@ CREATE TABLE usage_pause (
   paused_at INTEGER NOT NULL,
   resume_requested INTEGER NOT NULL DEFAULT 0 CHECK(resume_requested IN (0, 1))
 ) STRICT;
+ALTER TABLE runner_member_account ADD COLUMN resets_at INTEGER;
 `,
   },
 ];
