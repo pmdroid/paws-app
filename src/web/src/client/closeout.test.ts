@@ -55,6 +55,25 @@ describe("closeout checks", () => {
     expect(earlier).toContain("Attempt 1<span");
   });
 
+  test("a rebased head's re-check starts its attempt tabs at 1 in a new round", () => {
+    const base = verdict("ENG-100");
+    const [first, second, third] = base.attempts!;
+    const rebased = {
+      ...base,
+      attempts: [
+        { ...first!, round: 1 },
+        { ...second!, round: 1 },
+        { ...third!, round: 2 },
+      ],
+    };
+    const html = renderCloseoutChecks(rebased, emptyCloseoutView(), null);
+    expect(html).toContain('<span class="attempt-round">Round 1</span>');
+    expect(html).toContain('<span class="attempt-round">Round 2 · rebased</span>');
+    expect(html).toMatch(/data-attempt="3" aria-pressed="true">.*?Attempt 1<span/);
+    expect(html).toContain("Exhausted after 1 of 3 attempts in round 2");
+    expect(renderCloseoutChecks(base, emptyCloseoutView(), null)).not.toContain("attempt-round");
+  });
+
   test("failed checks start open, passed checks closed, and expand all reflects the rows", () => {
     const failed = renderCloseoutChecks(verdict("ENG-100"), emptyCloseoutView(), null);
     expect(failed).toContain('data-check="unit" aria-expanded="true"');

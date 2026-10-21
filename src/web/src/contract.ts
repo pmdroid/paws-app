@@ -184,6 +184,8 @@ export interface StatusVerdict {
 /** One Closeout run of a candidate (head and policy), oldest first in `StatusVerdict.attempts`. */
 export interface StatusCloseoutAttempt {
   number: number;
+  /** Retry-budget round, 1-based. A rebased head re-checked before the merge starts the next one. */
+  round?: number;
   decision: VerdictDecision;
   startedAt: string;
   baseSha: string | null;
@@ -601,6 +603,7 @@ function readAttempt(input: unknown, path: string): StatusCloseoutAttempt {
   }
   return {
     number,
+    ...(body.round === undefined ? {} : { round: positiveInteger(body, "round", path) }),
     decision: oneOf(string(body, "decision", path), VERDICT_DECISIONS, `${path}.decision`),
     startedAt: dateString(body, "startedAt", path),
     baseSha: optionalText(body, "baseSha"),

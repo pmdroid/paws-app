@@ -109,12 +109,25 @@ export function renderCloseoutChecks(
   const attempts = attemptsOf(verdict);
   const attempt = shownAttempt(verdict, view);
   const item = esc(verdict.itemId);
-  const switcher = `<div class="attempt-tabs" role="group" aria-label="Closeout attempt">${attempts
-    .map((entry) => {
-      const on = entry.number === attempt.number;
-      return `<button type="button" class="btn sm${on ? " on" : ""}" data-action="closeout-attempt" data-item="${item}" data-attempt="${entry.number}" aria-pressed="${on}"><span class="attempt-dot ${esc(entry.decision)}" aria-hidden="true"></span>Attempt ${entry.number}<span class="sr-only"> · ${esc(attemptLabel(entry))}</span></button>`;
+  const rounds = [...new Set(attempts.map((entry) => entry.round ?? 1))];
+  const switcher = rounds
+    .map((round) => {
+      const label =
+        rounds.length > 1
+          ? `<span class="attempt-round">${round === 1 ? "Round 1" : `Round ${round} · rebased`}</span>`
+          : "";
+      const tabs = attempts
+        .filter((entry) => (entry.round ?? 1) === round)
+        .map((entry) => {
+          const on = entry.number === attempt.number;
+          return `<button type="button" class="btn sm${on ? " on" : ""}" data-action="closeout-attempt" data-item="${item}" data-attempt="${entry.number}" aria-pressed="${on}"><span class="attempt-dot ${esc(entry.decision)}" aria-hidden="true"></span>Attempt ${roundAttempt(attempts, entry)}<span class="sr-only"> · ${esc(attemptLabel(entry))}</span></button>`;
+        })
+        .join("");
+      return `${label}<div class="attempt-tabs" role="group" aria-label="${rounds.length > 1 ? `Closeout round ${round} attempt` : "Closeout attempt"}">${tabs}</div>`;
     })
-    .join("")}</div>`;
+    .join("");
+  const shown = roundAttempt(attempts, attempt);
+  const inRound = rounds.length > 1 ? ` in round ${attempt.round ?? 1}` : "";
   const allOpen =
     attempt.checks.length > 0 &&
     attempt.checks.every((check) => isOpen(view, verdict.itemId, attempt.number, check));
@@ -129,10 +142,10 @@ export function renderCloseoutChecks(
   const decision = attempt.decision;
   const accepted = decision === "accepted";
   const title = accepted
-    ? `Accepted on attempt ${attempt.number} of ${verdict.maxAttempts}`
+    ? `Accepted on attempt ${shown} of ${verdict.maxAttempts}${inRound}`
     : decision === "exhausted"
-      ? `Exhausted after ${attempt.number} of ${verdict.maxAttempts} attempts`
-      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${attempt.number} of ${verdict.maxAttempts}`;
+      ? `Exhausted after ${shown} of ${verdict.maxAttempts} attempts${inRound}`
+      : `${attemptLabel(attempt)[0]!.toUpperCase()}${attemptLabel(attempt).slice(1)} on attempt ${shown} of ${verdict.maxAttempts}${inRound}`;
   const head = attempt.headSha ? ` on head ${esc(attempt.headSha.slice(0, 7))}` : "";
   const description = accepted
     ? `All ${attempt.checks.length} checks passed${head}.${pr && itemState === "merge_queue" ? ` Pull request <a href="${esc(pr.url)}">#${pr.number}</a> is waiting to merge.` : itemState === "merged" ? " This change has merged." : itemState === "signoff" ? " Waiting for human sign-off." : ""}`
@@ -154,6 +167,16 @@ export function renderCloseoutChecks(
         ? "<span></span>"
         : `<h2>${esc(options.heading)}</h2>`;
   return `<div class="between closeout-toolbar">${heading}<div class="row">${switcher}${toggleAll}</div></div><div class="closeout-result ${esc(decision)}"><span class="result-icon" aria-hidden="true">${result.icon}</span><div><h3>${result.title}</h3><p>${result.description}</p></div></div><div class="check-list">${rows}</div>`;
+}
+
+/** The attempt's number within its retry-budget round. */
+export function roundAttempt(
+  attempts: readonly StatusCloseoutAttempt[],
+  attempt: StatusCloseoutAttempt,
+): number {
+  const round = attempt.round ?? 1;
+  return attempts.filter((entry) => (entry.round ?? 1) === round && entry.number <= attempt.number)
+    .length;
 }
 
 function attemptLabel(attempt: StatusCloseoutAttempt): string {
