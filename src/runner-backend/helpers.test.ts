@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   advanceLinearSessionGeneration,
+  beginImplementRun,
   consumeWorkspaceBootstrap,
+  insertQueuedItem,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -199,6 +201,32 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
       .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper WHERE ended_at IS NULL")
       .get()!.n,
   ).toBe(0);
+});
+
+test("a helper waits while task work fills the runner and starts once a slot frees", async () => {
+  const f = fixture();
+  insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
+  const { run } = beginImplementRun(f.db, "busy", Date.now());
+  f.db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,'busy',? FROM runner WHERE id='runner'",
+    [run.id, Date.now() + 3_600_000],
+  );
+  let settled = false;
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  void pending.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await Bun.sleep(30);
+  expect(settled).toBe(false);
+  f.db.run("UPDATE runner_work SET ended_at=? WHERE command_id='busy'", [Date.now()]);
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (settled || f.db.query("SELECT 1 FROM runner_helper").get()) break;
+    await Bun.sleep(2);
+  }
+  expect(f.current().runnerId).toBe("runner");
+  f.advance(60_000);
+  await expect(pending).rejects.toThrow(/timed out/);
 });
 
 test("session helpers reject executable-work and file/tool contracts before dispatch", async () => {
