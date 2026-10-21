@@ -51,6 +51,7 @@ export type EvaluateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  reviewRetryDelaysMs?: readonly number[];
 };
 
 export type Evaluation = {
@@ -83,6 +84,7 @@ export type GateInput = {
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
+  reviewRetryDelaysMs?: readonly number[];
 };
 
 /**
@@ -410,6 +412,23 @@ async function repairFeedback(input: GateInput, evaluation: Evaluation): Promise
   return parts.join("\n\n");
 }
 
+const REVIEW_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];
+const TRANSIENT_REVIEW_ERROR =
+  /rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|temporarily unavailable/i;
+
+async function reviewWithRetries<T>(input: EvaluateInput, review: () => Promise<T>): Promise<T> {
+  const delays = input.reviewRetryDelaysMs ?? REVIEW_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await review();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt >= delays.length || !TRANSIENT_REVIEW_ERROR.test(message)) throw error;
+      await new Promise((resume) => setTimeout(resume, delays[attempt]));
+    }
+  }
+}
+
 async function addReviewEvidence(
   input: EvaluateInput,
   items: CloseoutItem[],
@@ -437,29 +456,31 @@ async function addReviewEvidence(
         ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
         reviewer: {
           async review(request) {
-            const result = await input.reviewer.review({
-              worktree: request.worktree,
-              prompt: renderReviewPrompt(
-                await loadReviewMaterial({
-                  repo: request.worktree,
-                  skill: request.item.skill,
-                  skillFiles: request.skillFiles,
-                  base: request.base,
-                  head: request.head,
-                }),
-                request.base,
-                request.head,
-              ),
-              taskId: input.taskId,
-              itemId: request.item.id,
-              base: request.base,
-              head: request.head,
-              candidate: {
-                session: request.candidate.session,
-                model: request.candidate.model,
-                provider: request.candidate.provider,
-              },
-            });
+            const result = await reviewWithRetries(input, async () =>
+              input.reviewer.review({
+                worktree: request.worktree,
+                prompt: renderReviewPrompt(
+                  await loadReviewMaterial({
+                    repo: request.worktree,
+                    skill: request.item.skill,
+                    skillFiles: request.skillFiles,
+                    base: request.base,
+                    head: request.head,
+                  }),
+                  request.base,
+                  request.head,
+                ),
+                taskId: input.taskId,
+                itemId: request.item.id,
+                base: request.base,
+                head: request.head,
+                candidate: {
+                  session: request.candidate.session,
+                  model: request.candidate.model,
+                  provider: request.candidate.provider,
+                },
+              }),
+            );
             return {
               producer: {
                 session: result.session,
