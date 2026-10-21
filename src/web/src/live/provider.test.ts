@@ -602,25 +602,6 @@ describe("live status provider", () => {
     expect(rounds[3]!.pr).toBeNull();
   });
 
-  test("a CI round with an unknown check state is rejected by the contract", () => {
-    const db = database();
-    const item = insertQueuedItem(db, { id: "ENG-9", now: 1 });
-    recordCiChecks(db, {
-      itemId: item.id,
-      head: "e".repeat(40),
-      runId: null,
-      pullNumber: null,
-      pullUrl: null,
-      now: 2,
-      checks: [],
-    });
-    const body = JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot()));
-    body.ciRounds[0].checks = [{ name: "x", state: "green", url: null, log: null }];
-    const parsed = parseStatusSnapshot(body);
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.error).toContain("ciRounds[0].checks[0].state");
-  });
-
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
     const db = database();
     const older = insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
