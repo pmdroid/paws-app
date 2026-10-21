@@ -2608,7 +2608,7 @@ test.each([false, true])(
       while (Date.now() < deadline && !["merged", "failed"].includes(stateOf(db, "ENG-91") ?? "")) {
         if (findOpenQuestion(db, "ses_1")) {
           expect(tracker.questions.at(-1)?.body).toContain("Which CI fix should I use?");
-          expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
+          expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(2);
           await orchestrator.onLinearEvent(
             linearEvent("prompted", "Use the compatible fix", null, "ci-fail"),
           );
@@ -2618,11 +2618,11 @@ test.each([false, true])(
       expect(stateOf(db, "ENG-91"), debug(layout, db)).toBe("merged");
       expect(implementRuns).toBe(ask ? 3 : 2);
       expect(prompts[1]).toContain("- test (https://ci.example/1)");
-      expect(tracker.progress.map((update) => update.body)).not.toContain(
-        "CI failed (test). Sent it back to the agent to fix.",
+      expect(tracker.progress.map((update) => update.body)).toContain(
+        "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
       );
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
-        ask ? 2 : 1,
+        ask ? 3 : 2,
       );
       if (ask) expect(prompts[2]).toContain("Use the compatible fix");
     } finally {
@@ -2633,6 +2633,195 @@ test.each([false, true])(
   },
   120_000,
 );
+
+test("CI green on the first round merges without a fix round", async () => {
+  const result = await runCiFix({ failRounds: 0 });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns).toBe(1);
+  expect(result.lines).toEqual([]);
+  expect(result.questions).toEqual([]);
+}, 120_000);
+
+test("a CI failure goes back to the agent and merges once the fix is green", async () => {
+  const result = await runCiFix({ attempts: 3, failRounds: 1 });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns).toBe(2);
+  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
+  expect(result.questions).toEqual([]);
+}, 120_000);
+
+test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {
+  const result = await runCiFix({ attempts: 1, failRounds: 99 });
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implementRuns).toBe(2);
+  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 1."]);
+  expect(result.questions).toHaveLength(1);
+  expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
+  expect(result.questions[0]).toContain("- test (https://ci.example/1)");
+}, 120_000);
+
+test("a reply with guidance after the last CI fix attempt starts one more fix round", async () => {
+  const result = await runCiFix({
+    attempts: 1,
+    failRounds: 2,
+    answer: "Pin the clock in the test.",
+  });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.implementRuns).toBe(3);
+  expect(result.questions).toHaveLength(1);
+  expect(result.prompts[2]).toContain("Pin the clock in the test.");
+  expect(result.prompts[2]).toContain("- test (https://ci.example/1)");
+}, 120_000);
+
+test("with CI fix attempts set to 0, Paws asks on the first failure", async () => {
+  const result = await runCiFix({ attempts: 0, failRounds: 99 });
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implementRuns).toBe(1);
+  expect(result.lines).toEqual([]);
+  expect(result.questions).toHaveLength(1);
+  expect(result.questions[0]).toContain("CI fix attempts are set to 0");
+}, 120_000);
+
+test("a changed CI fix setting applies to the next CI round of a running task", async () => {
+  const result = await runCiFix({ attempts: 3, failRounds: 99, attemptsAfterFirstFix: 1 });
+  expect(result.state, result.detail).toBe("awaiting_input");
+  expect(result.implementRuns).toBe(2);
+  expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
+  expect(result.questions).toHaveLength(1);
+  expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
+}, 120_000);
+
+async function runCiFix(options: {
+  attempts?: number;
+  /** How many distinct head commits report a failing `test` check, in order. */
+  failRounds: number;
+  answer?: string;
+  attemptsAfterFirstFix?: number;
+}): Promise<{
+  state: string | null;
+  implementRuns: number;
+  lines: string[];
+  questions: string[];
+  prompts: string[];
+  detail: string;
+}> {
+  const layout = await repoLayout();
+  const configPath = path.join(layout.pawsRoot, "config.toml");
+  if (options.attempts !== undefined)
+    await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "ci-rounds",
+      identifier: "ENG-94",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const client = githubClient(layout.bare, createFakeGitHub());
+  const heads: string[] = [];
+  const prompts: string[] = [];
+  let sequence = 0;
+  let implementRuns = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          if (req.path !== "/graphql") return client.request(req);
+          const head = (req.body as { variables: { head: string } }).variables.head;
+          if (!heads.includes(head)) heads.push(head);
+          if (heads.indexOf(head) >= options.failRounds) return client.request(req);
+          const body = fakeMergeReadiness(head);
+          body.data.repository.object.statusCheckRollup.contexts.nodes = [
+            { name: "lint", conclusion: "SUCCESS", detailsUrl: "https://ci.example/0" },
+            { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
+          ];
+          return { status: 200, body };
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `ci-rounds-${sequence}.json`);
+      const resultPath =
+        input.purpose === "implement"
+          ? path.join(layout.root, `ci-rounds-result-${sequence}.json`)
+          : "";
+      if (input.purpose === "implement") {
+        implementRuns += 1;
+        prompts.push(input.prompt);
+        if (implementRuns === 2 && options.attemptsAfterFirstFix !== undefined)
+          writeFileSync(
+            configPath,
+            `[merge]\nci_fix_attempts = ${options.attemptsAfterFirstFix}\n`,
+          );
+      }
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [writeOk(input.worktree, `ok-${implementRuns}\n`), { type: "end" }]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return {
+        command: process.execPath,
+        args: [fakeAgent, resultPath, scriptPath],
+        env: process.env,
+      };
+    },
+  });
+  let answered = false;
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "ci-rounds"));
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      const state = stateOf(db, "ENG-94") ?? "";
+      if (["merged", "failed"].includes(state)) break;
+      if (state === "awaiting_input" && findOpenQuestion(db, "ses_1")) {
+        while (outbox.tick().length > 0) await outbox.idle();
+        if (options.answer === undefined || answered) break;
+        answered = true;
+        await orchestrator.onLinearEvent(
+          linearEvent("prompted", options.answer, null, "ci-rounds"),
+        );
+      }
+      if ((await jobs.tick()) === null) await Bun.sleep(25);
+    }
+    while (outbox.tick().length > 0) await outbox.idle();
+    return {
+      state: stateOf(db, "ENG-94"),
+      implementRuns,
+      lines: tracker.progress
+        .map((update) => update.body)
+        .filter((body) => body.startsWith("CI: ")),
+      questions: tracker.questions.map((question) => question.body),
+      prompts,
+      detail: debug(layout, db),
+    };
+  } finally {
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}
 
 test("a reverify after a pushed rebase uses the new main as its base", async () => {
   const identity = {
