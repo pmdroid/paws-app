@@ -44,6 +44,18 @@ import type { RunnerPlacement } from "../runner-placement";
 class RunnerUnavailableError extends Error {}
 
 const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
+const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
+
+function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
+  const parts = version
+    ?.match(/^(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1)
+    .map(Number);
+  if (!parts) return false;
+  for (const [index, part] of parts.entries())
+    if (part !== minimum[index]) return part > minimum[index]!;
+  return true;
+}
 
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 
@@ -385,6 +397,33 @@ export function createRemoteAgentRunner(options: {
             : (await git(["-C", input.worktreePath, "rev-parse", "HEAD"])).trim();
           if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
             saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
+          const acceptsMainCommit = versionAtLeast(
+            db
+              .query<{ version: string | null }, [string]>(
+                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+              )
+              .get(selected.id)?.version,
+            MAIN_COMMIT_RUNNER_VERSION,
+          );
+          const mainCandidate = input.mainSha ?? getWorkItem(db, itemId)?.checkpoint?.baseSha;
+          const mainSha =
+            !taskScope &&
+            acceptsMainCommit &&
+            baseSha &&
+            mainCandidate &&
+            mainCandidate !== baseSha &&
+            (await git([
+              "-C",
+              input.worktreePath,
+              "merge-base",
+              "--is-ancestor",
+              mainCandidate,
+              baseSha,
+            ])
+              .then(() => true)
+              .catch(() => false))
+              ? mainCandidate
+              : undefined;
           const generation =
             (db
               .query<{ generation: number }, [string]>(
@@ -464,7 +503,15 @@ export function createRemoteAgentRunner(options: {
               : {
                   type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                   ...(skillsInputId !== undefined ? { skillsInputId } : {}),
-                  repository: { ...scoped.repository!, baseSha: baseSha!, checkoutExclusions },
+                  repository: {
+                    ...scoped.repository!,
+                    baseSha: baseSha!,
+                    checkoutExclusions,
+                    ...(mainSha ? { mainSha } : {}),
+                  },
+                  ...(acceptsMainCommit && input.role !== "reviewer" && input.checkpoint === false
+                    ? { checkpoint: false as const }
+                    : {}),
                   ...(checkpointBot ? { checkpointBot } : {}),
                   ...(input.commitPolicy
                     ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }

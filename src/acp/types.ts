@@ -123,6 +123,7 @@ export interface RunAgentOptions {
   artifactLimits?: ArtifactLimits;
   /** When false, a dirty worktree is left uncommitted. Defaults to committing. */
   checkpoint?: boolean;
+  mainSha?: string;
   resume?: { sessionId: string; replayPrompt: string };
 }
 
