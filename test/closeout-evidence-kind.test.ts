@@ -75,6 +75,34 @@ test("one screenshot from an earlier commit of the same task passes", async () =
   expect(await f.judge([wrongCheck])).toEqual({ decision: "rejected", state: "failed" });
 });
 
+test("a screenshot survives a rebase that leaves the checked files alone", async () => {
+  const f = fixture(VISUAL_PROOF);
+  const shot: PublishedEvidence = {
+    checkId: "visual-proof",
+    media: "image",
+    commit: f.commit("src/web/page.ts", "export {};\n"),
+  };
+  f.rebaseOnto("src/core/state.ts");
+  expect((await f.report([shot])).required.find((item) => item.id === "visual-proof")?.status).toBe(
+    "passed",
+  );
+  expect(await f.judge([shot])).toEqual({ decision: "accepted", state: "passed" });
+});
+
+test("a rebase that changes the checked files drops the screenshot", async () => {
+  const f = fixture(VISUAL_PROOF);
+  const shot: PublishedEvidence = {
+    checkId: "visual-proof",
+    media: "image",
+    commit: f.commit("src/web/page.ts", "export {};\n"),
+  };
+  f.rebaseOnto("src/web/theme.ts");
+  expect((await f.report([shot])).required.find((item) => item.id === "visual-proof")?.status).toBe(
+    "missing",
+  );
+  expect(await f.judge([shot])).toEqual({ decision: "rejected", state: "failed" });
+});
+
 test("a video counts only when media allows it", async () => {
   const videos = fixture([...VISUAL_PROOF, "    media: [video]"]);
   const head = videos.commit("landing/index.html", "<p>hi</p>\n");
@@ -165,6 +193,15 @@ function fixture(evidence: string[]) {
       git(root, ["checkout", "-q", "main"]);
       expect(headOf(root)).toBe(tip);
       return side;
+    },
+    /** Rebase the task onto a new main commit that changes `path`. */
+    rebaseOnto(path: string): void {
+      const tip = headOf(root);
+      git(root, ["checkout", "-q", "-b", "upstream", base]);
+      f.commit(path, "export const upstream = true;\n");
+      git(root, ["checkout", "-q", "main"]);
+      git(root, ["rebase", "-q", "upstream"]);
+      expect(headOf(root)).not.toBe(tip);
     },
     session(published: PublishedEvidence[]) {
       return createCloseoutSession(root, {
