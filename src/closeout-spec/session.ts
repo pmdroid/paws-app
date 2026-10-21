@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { anyPathMatches, pathsMatch } from "./policy/paths";
 import { loadMemoryPolicy, type TreePolicy } from "./policy/resolve";
@@ -84,6 +84,8 @@ export type CloseoutSessionEvent =
     };
 
 const PROGRESS_OUTPUT_CHARS = 16_000;
+const LOG_DIR = ".paws-closeout";
+const MAX_LOG_CHARS = 16_000_000;
 
 type ItemMemory = {
   failures: number;
@@ -457,11 +459,10 @@ async function execute(
   memory.set(item.id, state);
   finished(max !== null && state.failures >= max ? "exhausted" : "failed");
   const why = result.timedOut ? "timed out" : `exit ${result.code}`;
+  const log = writeLog(workspace, item.id, scrubText(result.full, credentialSecrets()));
+  const failed = `${item.id} failed (${why}).${log ? ` Full output: ${log}` : ""}`;
   const tail = result.output.trim();
-  return {
-    ok: false,
-    text: tail.length > 0 ? `${item.id} failed (${why}).\n${tail}` : `${item.id} failed (${why}).`,
-  };
+  return { ok: false, text: tail.length > 0 ? `${failed}\n${tail}` : failed };
 }
 
 function select(policy: TreePolicy, paths: readonly string[]): Listed[] {
@@ -598,6 +599,18 @@ function fileMark(workspace: string, path: string): Buffer | string {
   }
 }
 
+function writeLog(workspace: string, id: string, output: string): string | undefined {
+  const name = `${id.replace(/[^\w.-]/g, "_")}.log`;
+  try {
+    mkdirSync(join(workspace, LOG_DIR), { recursive: true });
+    writeFileSync(join(workspace, LOG_DIR, ".gitignore"), "*\n");
+    writeFileSync(join(workspace, LOG_DIR, name), output);
+    return `${LOG_DIR}/${name}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function killCommand(pid: number | undefined): void {
   if (pid === undefined) return;
   try {
@@ -630,6 +643,7 @@ function runCommand(
   timedOut: boolean;
   cancelled: boolean;
   output: string;
+  full: string;
   stdout: string;
   stderr: string;
   truncated: boolean;
@@ -640,6 +654,7 @@ function runCommand(
       timedOut: false,
       cancelled: true,
       output: "",
+      full: "",
       stdout: "",
       stderr: "",
       truncated: false,
@@ -652,6 +667,7 @@ function runCommand(
       timedOut: false,
       cancelled: false,
       output: "",
+      full: "",
       stdout: "",
       stderr: "",
       truncated: false,
@@ -665,6 +681,7 @@ function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
+    let full = "";
     let stdout = "";
     let stderr = "";
     let truncated = false;
@@ -674,6 +691,7 @@ function runCommand(
       if (stream === "stdout") stdout = text.slice(-24_000);
       else stderr = text.slice(-24_000);
       output += chunk.toString("utf8");
+      if (full.length < MAX_LOG_CHARS) full += chunk.toString("utf8");
       if (output.length > 12_000) output = output.slice(-6_000);
     };
     child.stdout.on("data", (chunk: Buffer) => take("stdout", chunk));
@@ -696,7 +714,7 @@ function runCommand(
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      resolve({ ...result, stdout, stderr, truncated });
+      resolve({ ...result, full, stdout, stderr, truncated });
     };
     signal?.addEventListener("abort", onAbort);
     timer = setTimeout(() => {
