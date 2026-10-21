@@ -12,12 +12,16 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
-import { createFakeLinearIssueLifecycle } from "../src/linear";
+import { createFakeLinearIssueLifecycle, type LinearIssueOwnership } from "../src/linear";
 import { createRunnerPlacement } from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
-async function placeItem(project: boolean, bindTask = true) {
+async function placeItem(
+  project: boolean,
+  bindTask = true,
+  duringSelection?: (issue: LinearIssueOwnership) => void,
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-placement-owner-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -91,18 +95,20 @@ async function placeItem(project: boolean, bindTask = true) {
     db.run("INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?)", [id, sharing]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id]);
   }
+  const lifecycle = createFakeLinearIssueLifecycle({
+    id: item.linearIssueId,
+    teamId: "team",
+    assigneeId: "colleague",
+    delegateId: "app",
+    stateType: "started",
+    projectId: "project",
+  });
   const placement = createRunnerPlacement({
     db,
-    lifecycle: createFakeLinearIssueLifecycle({
-      id: item.linearIssueId,
-      teamId: "team",
-      assigneeId: "colleague",
-      delegateId: "app",
-      stateType: "started",
-      projectId: "project",
-    }),
+    lifecycle,
     tracker: {
       async listProjectMembers() {
+        duringSelection?.(lifecycle.issue);
         return ["colleague", "pool"];
       },
     },
@@ -177,6 +183,30 @@ test("a member's own signed-in account runs their work", async () => {
       [owner, Date.now()],
     );
     expect(await placed.ids()).toEqual(["own"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a state change during selection keeps the issue's runners", async () => {
+  const placed = await placeItem(true, true, (issue) => {
+    issue.stateType = "unstarted";
+  });
+  try {
+    expect(await placed.ids()).toEqual(["own", "api", "shared"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a new delegate during selection still stops placement", async () => {
+  const placed = await placeItem(true, true, (issue) => {
+    issue.delegateId = "other-app";
+  });
+  try {
+    await expect(placed.ids()).rejects.toThrow("Runner issue ownership changed during selection");
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
