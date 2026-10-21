@@ -400,6 +400,18 @@ a.evidence-thumb:focus-visible {
   padding: 1rem;
   background: var(--secondary-background);
 }
+.run-paused {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+.run-paused .closeout-result {
+  align-items: start;
+}
+.pause-headline {
+  font-weight: 700;
+}
 .result-icon {
   padding: 0.5rem 0.75rem;
   border: 2px solid var(--border);

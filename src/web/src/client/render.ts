@@ -5,6 +5,7 @@ import type {
   StatusLink,
   StatusQuestion,
   StatusRun,
+  StatusRunPause,
   StatusSnapshot,
   StatusVerdict,
 } from "../contract";
@@ -161,9 +162,11 @@ function viewOverview(snapshot: StatusSnapshot): string {
             ? "Work is blocked and needs a person."
             : item.state === "awaiting_input" || run?.state === "awaiting_input"
               ? "Waiting for your input."
-              : run?.state === "paused"
-                ? "This run is paused."
-                : null;
+              : run?.pause
+                ? `Paused for ${run.pause.agent}'s usage limit. Paws continues on its own.`
+                : run?.state === "paused"
+                  ? "This run is paused."
+                  : null;
     return reason
       ? [
           {
@@ -347,8 +350,12 @@ function viewRuns(
       <h1>${esc(title)}</h1>
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
     </header>
-    ${phaseStrip(item, selected, verdict, agent)}
-    <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${phaseStrip(item, selected, verdict, agent, snapshot.generatedAt)}
+    ${
+      selected.pause
+        ? pausedSection(selected.pause, selected.itemId, snapshot.generatedAt)
+        : `<div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>`
+    }
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
       .map(
@@ -415,19 +422,50 @@ function questionCard(
     </div></article>`;
 }
 
+/** "18:00", with the date when the time is not within the next day of `now`. */
+function utcClock(at: string, now: string): string {
+  const time = new Date(at).toISOString().slice(11, 16);
+  return Date.parse(at) - Date.parse(now) < 86_400_000
+    ? time
+    : `${new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}, ${time}`;
+}
+
+/** The wait for an agent usage limit, with Resume now and Stop. */
+function pausedSection(pause: StatusRunPause, itemId: string, now: string): string {
+  const at = utcClock(pause.resetsAt ?? pause.resumeAt, now);
+  const headline =
+    pause.resetsAt === null
+      ? `${pause.agent} reached its usage limit. Paws tries again at ${at} UTC.`
+      : `${pause.agent} reached its usage limit. Paws continues at ${at} UTC.`;
+  const runner = pause.runner ? ` on runner ${pause.runner}` : "";
+  return `<section class="run-paused" aria-labelledby="paused-heading">
+    <div class="between"><h2 id="paused-heading">Paused</h2><div id="execution-controls" data-item="${esc(itemId)}" hidden></div></div>
+    <div class="closeout-result paused"><span class="result-icon" aria-hidden="true">II</span><div><p class="pause-headline">${esc(headline)}</p><p>${esc(`The work so far is kept: branch, worktree and the agent conversation. At ${at} Paws continues the task${runner}.`)}</p></div></div>
+  </section>`;
+}
+
 function phaseStrip(
   item: StatusItem | undefined,
   run: StatusRun | undefined,
   verdict?: StatusVerdict,
   agent?: StatusAgentCloseout,
+  now = new Date().toISOString(),
 ): string {
-  const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
+  const pause = run?.pause;
+  const phase = pause
+    ? {
+        current: pause.phase === "closeout" ? 1 : 0,
+        detail: `Paused until ${utcClock(pause.resetsAt ?? pause.resumeAt, now)} UTC for the agent's usage limit. The task is not complete.`,
+      }
+    : taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
   const names = PHASE_NAMES.map((name, index) =>
-    index === 0 && agent?.attempts.at(-1)?.checks.length
-      ? `${name} · Agent Closeout ${agentProgress(agent)}`
-      : index === 1 && verdict
-        ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
-        : name,
+    pause && index === phase.current
+      ? `${name} · paused until ${utcClock(pause.resetsAt ?? pause.resumeAt, now)}`
+      : index === 0 && agent?.attempts.at(-1)?.checks.length
+        ? `${name} · Agent Closeout ${agentProgress(agent)}`
+        : index === 1 && verdict
+          ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
+          : name,
   );
   const marks = names
     .map((name, index) => {
@@ -455,6 +493,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
     item?.state !== "awaiting_input";
   if (item?.state === "completed") return statePill("completed", "Complete");
   if (item?.state === "merged") return statePill("merged", "Complete");
+  if (run.pause) return statePill("now", "Paused · usage limit");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
   if (verdict?.decision === "exhausted" || item?.state === "exhausted")

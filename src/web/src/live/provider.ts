@@ -49,6 +49,8 @@ import {
   listOutbox,
   listRuns,
   runRunnerName,
+  runnerName,
+  getUsagePause,
   listTaskBlockers,
   listWorkItemFacts,
   listWorkItemsByStates,
@@ -290,13 +292,13 @@ function runsFor(
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
     const activity = activityFor(db, record, stored, rows, generatedAt);
     const recent = activity.at(-1);
+    const isCurrent = stored.some((run) => run.id === record.currentRunId);
+    const pause = isCurrent ? getUsagePause(db, record.id) : null;
     runs.push({
       id: first.id,
       attempts: stored.map((run) => run.id),
       itemId: publicId(record),
-      state: stored.some((run) => run.id === record.currentRunId)
-        ? runState(record, current.status)
-        : "done",
+      state: pause ? "paused" : isCurrent ? runState(record, current.status) : "done",
       agent: agentName(current.agent),
       reviewer: runReviewer(pawsHome, current.id),
       runner: runRunnerName(db, current.id),
@@ -305,6 +307,21 @@ function runsFor(
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
       links: [],
+      ...(pause
+        ? {
+            pause: {
+              reason: "usage_limit" as const,
+              agent: agentName(pause.agent),
+              phase:
+                pause.role === "reviewer" || record.state === "verifying"
+                  ? ("closeout" as const)
+                  : ("implementation" as const),
+              resetsAt: pause.resetsAt === null ? null : iso(pause.resetsAt, generatedAt),
+              resumeAt: iso(pause.resumeAt, generatedAt),
+              runner: pause.runnerId ? runnerName(db, pause.runnerId) : null,
+            },
+          }
+        : {}),
     });
   }
   return runs;
