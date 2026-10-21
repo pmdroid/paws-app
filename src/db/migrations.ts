@@ -1922,4 +1922,23 @@ CREATE TABLE closeout_round (
 ) STRICT;
 `,
   },
+  {
+    id: "079_ci_round",
+    sql: `
+CREATE TABLE ci_round (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  head TEXT NOT NULL,
+  run_id TEXT,
+  pull_number INTEGER,
+  pull_url TEXT,
+  checks TEXT NOT NULL CHECK (json_valid(checks)),
+  next_step TEXT CHECK (next_step IS NULL OR next_step IN ('agent', 'asked')),
+  fix_attempt INTEGER,
+  fix_limit INTEGER,
+  started_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, head)
+) STRICT;
+`,
+  },
 ];

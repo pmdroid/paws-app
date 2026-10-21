@@ -66,6 +66,10 @@ export const ACTIVITY_KINDS = [
   "prompt",
 ] as const;
 export const EVENT_LEVELS = ["info", "ok", "warn", "err"] as const;
+export const CI_CHECK_STATES = ["passed", "failed", "running", "pending", "skipped"] as const;
+export const CI_LOG_SOURCES = ["actions", "summary"] as const;
+export const CI_ROUND_OUTCOMES = ["waiting", "passed", "failed"] as const;
+export const CI_NEXT_STEPS = ["agent", "asked"] as const;
 export const SOURCES = ["demo", "live"] as const;
 
 export type ItemState = (typeof ITEM_STATES)[number];
@@ -79,6 +83,10 @@ export type StepState = (typeof STEP_STATES)[number];
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 export type EventLevel = (typeof EVENT_LEVELS)[number];
 export type StatusSource = (typeof SOURCES)[number];
+export type CiCheckState = (typeof CI_CHECK_STATES)[number];
+export type CiLogSource = (typeof CI_LOG_SOURCES)[number];
+export type CiRoundOutcome = (typeof CI_ROUND_OUTCOMES)[number];
+export type CiNextStep = (typeof CI_NEXT_STEPS)[number];
 
 export interface StatusLink {
   label: string;
@@ -265,6 +273,43 @@ export interface StatusSnapshot {
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
   agentCloseout?: StatusAgentCloseout[];
+  /** The pull request's checks, one round per pushed head, oldest first. */
+  ciRounds?: StatusCiRound[];
+}
+
+/** The checks Paws read on one pushed head. `round` counts from 1 per item. */
+export interface StatusCiRound {
+  itemId: string;
+  runId: string | null;
+  round: number;
+  headSha: string;
+  pr: StatusPullRequest | null;
+  outcome: CiRoundOutcome;
+  /** After a failure: sent back to the agent (fix `fixAttempt` of `fixLimit`) or asked in Linear. */
+  next: CiNextStep | null;
+  fixAttempt: number | null;
+  fixLimit: number | null;
+  startedAt: string;
+  updatedAt: string;
+  checks: StatusCiCheck[];
+}
+
+export interface StatusCiCheck {
+  name: string;
+  state: CiCheckState;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** Finished checks: completed minus started. Running checks: until the snapshot. */
+  durationMs: number | null;
+  /** The tail of a failing check's output: the Actions job log, or the check's summary. */
+  log: StatusCiLog | null;
+}
+
+export interface StatusCiLog {
+  source: CiLogSource;
+  text: string;
+  lines: number;
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -347,6 +392,9 @@ export function statusIntegrity(snapshot: StatusSnapshot): string[] {
     if (seenVerdicts.has(verdict.itemId)) problems.push(`duplicate verdict for ${verdict.itemId}`);
     seenVerdicts.add(verdict.itemId);
   }
+  for (const round of snapshot.ciRounds ?? []) {
+    if (!items.has(round.itemId)) problems.push(`CI round item ${round.itemId} is missing`);
+  }
   const positions = new Set<number>();
   for (const entry of snapshot.mergeQueue) {
     if (!items.has(entry.itemId)) problems.push(`queue item ${entry.itemId} is missing`);
@@ -396,6 +444,56 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readAgentCloseout(entry, `agentCloseout[${index}]`),
           ),
         }),
+    ...(body.ciRounds === undefined
+      ? {}
+      : {
+          ciRounds: array(body, "ciRounds", "status").map((entry, index) =>
+            readCiRound(entry, `ciRounds[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readCiRound(input: unknown, path: string): StatusCiRound {
+  const body = object(input, path);
+  return {
+    itemId: text(body, "itemId", path),
+    runId: optionalText(body, "runId"),
+    round: positiveInteger(body, "round", path),
+    headSha: text(body, "headSha", path),
+    pr: readPr(body.pr ?? null, `${path}.pr`),
+    outcome: oneOf(string(body, "outcome", path), CI_ROUND_OUTCOMES, `${path}.outcome`),
+    next:
+      body.next === null || body.next === undefined
+        ? null
+        : oneOf(string(body, "next", path), CI_NEXT_STEPS, `${path}.next`),
+    fixAttempt: optionalCount(body, "fixAttempt", path),
+    fixLimit: optionalCount(body, "fixLimit", path),
+    startedAt: dateString(body, "startedAt", path),
+    updatedAt: dateString(body, "updatedAt", path),
+    checks: array(body, "checks", path).map((entry, index) => {
+      const at = `${path}.checks[${index}]`;
+      const check = object(entry, at);
+      return {
+        name: text(check, "name", at),
+        state: oneOf(string(check, "state", at), CI_CHECK_STATES, `${at}.state`),
+        url: optionalText(check, "url"),
+        startedAt: optionalText(check, "startedAt"),
+        completedAt: optionalText(check, "completedAt"),
+        durationMs: optionalCount(check, "durationMs", at),
+        log: readCiLog(check.log, `${at}.log`),
+      };
+    }),
+  };
+}
+
+function readCiLog(input: unknown, path: string): StatusCiLog | null {
+  if (input === null || input === undefined) return null;
+  const body = object(input, path);
+  return {
+    source: oneOf(string(body, "source", path), CI_LOG_SOURCES, `${path}.source`),
+    text: string(body, "text", path),
+    lines: count(body, "lines", path),
   };
 }
 

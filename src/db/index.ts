@@ -170,6 +170,14 @@ export {
 } from "./closeout-recovery";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
 export {
+  listCiRounds,
+  markCiRound,
+  recordCiChecks,
+  type CiRound,
+  type CiRoundCheck,
+  type CiRoundNext,
+} from "./ci-rounds";
+export {
   recordGitHubDelivery,
   listGitHubDeliveries,
   type IntegrationEvent,

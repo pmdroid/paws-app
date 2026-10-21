@@ -11,8 +11,10 @@ import {
   enterMergeQueue,
   finishCloseoutProgress,
   insertQueuedItem,
+  markCiRound,
   migrate,
   openDatabase,
+  recordCiChecks,
   saveTaskBlocks,
   startCloseoutRound,
   upsertCloseoutStep,
@@ -468,6 +470,155 @@ describe("live status provider", () => {
     ]);
     const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
     expect(parsed.ok).toBe(true);
+  });
+
+  test("CI rounds carry each check's state, duration, link and log tail, numbered per item", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-7", title: "Formatters", now: 1 });
+    const other = insertQueuedItem(db, { id: "ENG-8", title: "Other", now: 1 });
+    const now = Date.parse("2026-10-21T10:10:00Z");
+    const pull = { pullNumber: 653, pullUrl: "https://github.com/acme/platform/pull/653" };
+    recordCiChecks(db, {
+      itemId: item.id,
+      head: "462e94f".padEnd(40, "0"),
+      runId: "run-1",
+      ...pull,
+      now: now - 60_000,
+      checks: [
+        {
+          name: "check / lint",
+          state: "passed",
+          url: "https://github.com/acme/platform/actions/runs/1/job/11",
+          startedAt: "2026-10-21T10:00:00Z",
+          completedAt: "2026-10-21T10:00:38Z",
+          log: null,
+        },
+        {
+          name: "check / test",
+          state: "failed",
+          url: "https://github.com/acme/platform/actions/runs/1/job/12",
+          startedAt: "2026-10-21T10:00:00Z",
+          completedAt: "2026-10-21T10:04:51Z",
+          log: { source: "actions", text: "bun test v1.4.2\nleaked synthetic-secret\n 1 fail" },
+        },
+        {
+          name: "Cloudflare Pages",
+          state: "failed",
+          url: "javascript:alert(1)",
+          startedAt: null,
+          completedAt: null,
+          log: { source: "summary", text: "Build failed" },
+        },
+        {
+          name: "CodeQL / analyze",
+          state: "running",
+          url: null,
+          startedAt: "2026-10-21T10:06:20Z",
+          completedAt: null,
+          log: null,
+        },
+      ],
+    });
+    markCiRound(db, {
+      itemId: item.id,
+      head: "462e94f".padEnd(40, "0"),
+      next: "agent",
+      fixAttempt: 1,
+      fixLimit: 3,
+      now: now - 30_000,
+    });
+    const passed = {
+      name: "check / test",
+      state: "passed" as const,
+      url: null,
+      startedAt: null,
+      completedAt: null,
+      log: null,
+    };
+    recordCiChecks(db, {
+      itemId: item.id,
+      head: "b".repeat(40),
+      runId: "run-1",
+      ...pull,
+      now: now - 10_000,
+      checks: [passed, { ...passed, name: "e2e", state: "pending" }],
+    });
+    recordCiChecks(db, {
+      itemId: item.id,
+      head: "c".repeat(40),
+      runId: "run-1",
+      ...pull,
+      now: now - 5_000,
+      checks: [passed],
+    });
+    recordCiChecks(db, {
+      itemId: other.id,
+      head: "d".repeat(40),
+      runId: null,
+      pullNumber: null,
+      pullUrl: null,
+      now,
+      checks: [],
+    });
+
+    const snapshot = createLiveStatusProvider(db, {
+      now: () => new Date(now),
+      env: { GITHUB_TOKEN: "synthetic-secret" },
+    }).snapshot();
+    const parsed = parseStatusSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    const rounds = parsed.snapshot.ciRounds ?? [];
+    expect(rounds.map((round) => [round.itemId, round.round, round.outcome, round.next])).toEqual([
+      ["ENG-7", 1, "failed", "agent"],
+      ["ENG-7", 2, "waiting", null],
+      ["ENG-7", 3, "passed", null],
+      ["ENG-8", 1, "waiting", null],
+    ]);
+    const first = rounds[0]!;
+    expect(first).toMatchObject({
+      runId: "run-1",
+      headSha: "462e94f".padEnd(40, "0"),
+      pr: { number: 653, url: "https://github.com/acme/platform/pull/653" },
+      fixAttempt: 1,
+      fixLimit: 3,
+      startedAt: new Date(now - 60_000).toISOString(),
+      updatedAt: new Date(now - 30_000).toISOString(),
+    });
+    expect(
+      first.checks.map((check) => [check.name, check.state, check.durationMs, check.url]),
+    ).toEqual([
+      ["check / lint", "passed", 38_000, "https://github.com/acme/platform/actions/runs/1/job/11"],
+      ["check / test", "failed", 291_000, "https://github.com/acme/platform/actions/runs/1/job/12"],
+      ["Cloudflare Pages", "failed", null, null],
+      ["CodeQL / analyze", "running", 220_000, null],
+    ]);
+    expect(first.checks[1]!.log?.source).toBe("actions");
+    expect(first.checks[1]!.log?.lines).toBe(3);
+    expect(first.checks[1]!.log?.text).not.toContain("synthetic-secret");
+    expect(first.checks[2]!.log).toEqual({ source: "summary", text: "Build failed", lines: 1 });
+    expect(first.checks[0]!.log).toBeNull();
+    expect(rounds[3]!.pr).toBeNull();
+  });
+
+  test("a CI round with an unknown check state is rejected by the contract", () => {
+    const db = database();
+    const item = insertQueuedItem(db, { id: "ENG-9", now: 1 });
+    recordCiChecks(db, {
+      itemId: item.id,
+      head: "e".repeat(40),
+      runId: null,
+      pullNumber: null,
+      pullUrl: null,
+      now: 2,
+      checks: [],
+    });
+    const body = JSON.parse(JSON.stringify(createLiveStatusProvider(db).snapshot()));
+    body.ciRounds[0].checks = [{ name: "x", state: "green", url: null, log: null }];
+    const parsed = parseStatusSnapshot(body);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.error).toContain("ciRounds[0].checks[0].state");
   });
 
   test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
