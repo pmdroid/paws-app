@@ -241,16 +241,16 @@ export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
            finished_at = NULL,
            last_error = NULL,
            fire_count = fire_count + 1
-       WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-      [now + job.recurringEveryMs, job.id, job.lockedBy, now],
+       WHERE id = ? AND status = 'running' AND locked_by = ?`,
+      [now + job.recurringEveryMs, job.id, job.lockedBy],
     );
     return result.changes > 0;
   }
   const result = db.run(
     `UPDATE job
      SET status = 'done', finished_at = ?, locked_by = NULL, locked_until = NULL
-     WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [now, job.id, job.lockedBy, now],
+     WHERE id = ? AND status = 'running' AND locked_by = ?`,
+    [now, job.id, job.lockedBy],
   );
   return result.changes > 0;
 }
@@ -273,8 +273,8 @@ export function failJob(
            locked_until = NULL,
            finished_at = NULL,
            last_error = ?
-       WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-      [now + job.recurringEveryMs, message, job.id, job.lockedBy, now],
+       WHERE id = ? AND status = 'running' AND locked_by = ?`,
+      [now + job.recurringEveryMs, message, job.id, job.lockedBy],
     );
     return result.changes > 0 ? getJob(db, job.id) : null;
   }
@@ -287,33 +287,29 @@ export function failJob(
     const result = db.run(
       `UPDATE job
        SET status = 'pending', run_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?
-       WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-      [now + delay, message, job.id, job.lockedBy, now],
+       WHERE id = ? AND status = 'running' AND locked_by = ?`,
+      [now + delay, message, job.id, job.lockedBy],
     );
     return result.changes > 0 ? getJob(db, job.id) : null;
   }
   const result = db.run(
     `UPDATE job
      SET status = 'dead', finished_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?
-     WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [now, message, job.id, job.lockedBy, now],
+     WHERE id = ? AND status = 'running' AND locked_by = ?`,
+    [now, message, job.id, job.lockedBy],
   );
   return result.changes > 0 ? getJob(db, job.id) : null;
 }
 
-export function isJobCurrent(db: Database, job: Job, now: number): boolean {
+export function isJobCurrent(db: Database, job: Job): boolean {
   const current = getJob(db, job.id);
-  return (
-    current?.status === "running" &&
-    current.lockedBy === job.lockedBy &&
-    (current.lockedUntil ?? 0) > now
-  );
+  return current?.status === "running" && current.lockedBy === job.lockedBy;
 }
 
 export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
   const result = db.run(
-    `UPDATE job SET locked_until = ? WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [now + leaseMs, job.id, job.lockedBy, now],
+    `UPDATE job SET locked_until = ? WHERE id = ? AND status = 'running' AND locked_by = ?`,
+    [now + leaseMs, job.id, job.lockedBy],
   );
   return result.changes > 0;
 }
