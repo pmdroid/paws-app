@@ -60,7 +60,7 @@ describe("local agent settings API", () => {
         { repo: "pmdroid/library" },
         { repo: "pmdroid/barkvisor" },
       ],
-      merge: { closeoutAfterUpdate: false },
+      merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
     });
     expect(JSON.stringify(body)).not.toContain("/secret/bin");
   });
@@ -70,7 +70,10 @@ describe("local agent settings API", () => {
     writeFileSync(options.configPath, "[caps]\nmax_turns = 31\n");
     const response = await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
     expect(response?.status).toBe(200);
-    expect(await response!.json()).toEqual({ ...settings, merge: { closeoutAfterUpdate: false } });
+    expect(await response!.json()).toEqual({
+      ...settings,
+      merge: { closeoutAfterUpdate: false, ciFixAttempts: 3 },
+    });
     expect(readAgentSettings(loadConfigFile(options.configPath))).toEqual(settings);
     expect(readFileSync(options.configPath, "utf8")).toContain("max_turns = 31");
   });
@@ -81,28 +84,31 @@ describe("local agent settings API", () => {
     const read = async () =>
       ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
         .merge;
-    expect(await read()).toEqual({ closeoutAfterUpdate: false });
+    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
 
     const on = await handleAgentSettingsRequest(
       request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: true } }),
       options,
     );
     expect(on?.status).toBe(200);
-    expect(((await on!.json()) as { merge: unknown }).merge).toEqual({ closeoutAfterUpdate: true });
+    expect(((await on!.json()) as { merge: unknown }).merge).toEqual({
+      closeoutAfterUpdate: true,
+      ciFixAttempts: 3,
+    });
     expect(readFileSync(options.configPath, "utf8")).toContain(
       "[merge]\ncloseout_after_update = true",
     );
-    expect(await read()).toEqual({ closeoutAfterUpdate: true });
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
 
     // Saving profiles without the switch keeps the stored value.
     await handleAgentSettingsRequest(request(undefined, "PUT", settings), options);
-    expect(await read()).toEqual({ closeoutAfterUpdate: true });
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
 
     await handleAgentSettingsRequest(
       request(undefined, "PUT", { ...settings, merge: { closeoutAfterUpdate: false } }),
       options,
     );
-    expect(await read()).toEqual({ closeoutAfterUpdate: false });
+    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
     const text = readFileSync(options.configPath, "utf8");
     expect(text.match(/\[merge\]/g)).toHaveLength(1);
     expect(text).toContain("max_turns = 31");
@@ -115,7 +121,43 @@ describe("local agent settings API", () => {
       );
       expect(rejected?.status).toBe(400);
     }
-    expect(await read()).toEqual({ closeoutAfterUpdate: false });
+    expect(await read()).toEqual({ closeoutAfterUpdate: false, ciFixAttempts: 3 });
+  });
+
+  test("reads and writes CI fix attempts from 0 to 10 and audits each change", async () => {
+    const { options } = fixture();
+    const audits: [string, string][] = [];
+    options.audit = (action, subject) => audits.push([action, subject]);
+    writeFileSync(options.configPath, "[merge]\ncloseout_after_update = true\n");
+    const read = async () =>
+      ((await (await handleAgentSettingsRequest(request(), options))!.json()) as { merge: unknown })
+        .merge;
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 3 });
+
+    const put = (merge: unknown) =>
+      handleAgentSettingsRequest(request(undefined, "PUT", { ...settings, merge }), options);
+    expect((await put({ ciFixAttempts: 5 }))?.status).toBe(200);
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 5 });
+    expect(readFileSync(options.configPath, "utf8")).toContain(
+      "[merge]\ncloseout_after_update = true\nci_fix_attempts = 5",
+    );
+    expect((await put({ closeoutAfterUpdate: true, ciFixAttempts: 0 }))?.status).toBe(200);
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
+    // Saving the same value, or only the switch, is not a change.
+    await put({ closeoutAfterUpdate: false, ciFixAttempts: 0 });
+    await put({ closeoutAfterUpdate: true });
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
+    expect(audits).toEqual([
+      ["settings.ci-fix-attempts", "CI fix attempts 3 → 5"],
+      ["settings.ci-fix-attempts", "CI fix attempts 5 → 0"],
+    ]);
+
+    for (const ciFixAttempts of [-1, 11, 2.5, "3", null]) {
+      const rejected = await put({ ciFixAttempts });
+      expect(rejected?.status).toBe(400);
+    }
+    expect(await read()).toEqual({ closeoutAfterUpdate: true, ciFixAttempts: 0 });
+    expect(audits).toHaveLength(2);
   });
 
   test("PUT repairs malformed saved profile sections without changing unrelated config", async () => {
