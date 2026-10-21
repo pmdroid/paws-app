@@ -2000,6 +2000,44 @@ export async function probeRunnerBackend(
       );
       coolDown(0);
       observe("a usage limit past the wait window names the agent and its reset", true, {});
+      const occupied = hostIds.map((hostId) => {
+        const busy = tracked();
+        db.run(
+          "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+          [
+            getWorkItem(db, busy.id)!.currentRunId!,
+            hostId,
+            workspace.id,
+            `busy-${hostId}`,
+            Date.now() + 3_600_000,
+          ],
+        );
+        return `busy-${hostId}`;
+      });
+      const queued = tracked();
+      const waitAbort = new AbortController();
+      const waitingRun = placedBackend.forItem(queued.id)(
+        input(queued, { signal: waitAbort.signal }),
+      );
+      let waitSettled = false;
+      void waitingRun.then(
+        () => (waitSettled = true),
+        () => (waitSettled = true),
+      );
+      await delay(60);
+      assert.equal(waitSettled, false);
+      db.run("UPDATE runner_work SET ended_at=? WHERE command_id=?", [Date.now(), occupied[0]!]);
+      const placedWhenFree = await dispatched();
+      assert.equal(placedWhenFree, hostIds[0]);
+      waitAbort.abort();
+      await waitingRun.catch(() => undefined);
+      db.run(
+        `UPDATE runner_work SET ended_at=? WHERE command_id IN (${occupied.map(() => "?").join(",")})`,
+        [Date.now(), ...occupied],
+      );
+      observe("a full runner makes placement wait for a free slot instead of failing", true, {
+        placedWhenFree,
+      });
       const reportVersion = (version: string) => {
         for (const hostId of hostIds)
           db.run(
