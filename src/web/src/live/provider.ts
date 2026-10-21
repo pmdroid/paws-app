@@ -41,6 +41,7 @@ import {
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
+  listCloseoutRounds,
   listEvidence,
   listJobs,
   listLinearTurnsForItem,
@@ -52,6 +53,7 @@ import {
   listWorkItemFacts,
   listWorkItemsByStates,
   type CloseoutProgressRecord,
+  type CloseoutRound,
   type CloseoutStepRecord,
 } from "../../../db";
 import { redactCloseoutText } from "../server/artifact";
@@ -173,6 +175,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts),
   );
   const progress = listCloseoutProgress(db);
+  const rounds = listCloseoutRounds(db);
   return {
     version: STATUS_API_VERSION,
     source: "live",
@@ -182,7 +185,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     runs,
     questions: questionsFor(db, records, rows, runs, openQuestions),
     verdicts: records.flatMap((record) =>
-      verdictFor(record, rows, jobs, progress, now.getTime(), env),
+      verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env),
     ),
     mergeQueue: mergeQueueFor(records, jobs, generatedAt),
     events: eventsFor(rows),
@@ -481,6 +484,7 @@ function verdictFor(
   rows: readonly OutboxRow[],
   jobs: readonly Job[],
   progress: readonly CloseoutProgressRecord[],
+  rounds: readonly CloseoutRound[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
 ): StatusVerdict[] {
@@ -493,12 +497,15 @@ function verdictFor(
   if (base === null) return [];
   if (!live) return [base];
   const verdict = withProgress(base, live, nowMs, env);
-  return [{ ...verdict, attempts: attemptsFor(record, progress, live, verdict, nowMs, env) }];
+  return [
+    { ...verdict, attempts: attemptsFor(record, progress, rounds, live, verdict, nowMs, env) },
+  ];
 }
 
 function attemptsFor(
   record: WorkItemRecord,
   progress: readonly CloseoutProgressRecord[],
+  rounds: readonly CloseoutRound[],
   live: CloseoutProgressRecord,
   verdict: StatusVerdict,
   nowMs: number,
@@ -507,8 +514,14 @@ function attemptsFor(
   const mine = progress
     .filter((row) => row.itemId === record.id && row.id !== live.id)
     .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
+  const starts = rounds
+    .filter((round) => round.itemId === record.id)
+    .map((round) => round.startedAt);
   return [...mine, live].map((row, index) => ({
     number: index + 1,
+    ...(starts.length === 0
+      ? {}
+      : { round: 1 + starts.filter((start) => start <= row.startedAt).length }),
     decision:
       row === live
         ? verdict.decision

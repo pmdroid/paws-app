@@ -27,6 +27,7 @@ import {
   recoverOnStartup,
   listJobs,
   listCloseoutRecoveries,
+  listCloseoutRounds,
   listRuns,
   listArtifacts,
   listOutbox,
@@ -1953,6 +1954,7 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
   }
   expect(result.state, result.detail).toBe("merged");
   expect(result.merged, result.detail).toBe(1);
+  expect(result.rounds, result.detail).toHaveLength(1);
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
 
@@ -2600,6 +2602,7 @@ async function runRebaseConflict(
   handoffs: string[];
   returnPhases: (string | null)[];
   merged: number;
+  rounds: string[];
   detail: string;
 }> {
   const layout = await repoLayout();
@@ -2710,6 +2713,7 @@ async function runRebaseConflict(
         .map((job) => (job.payload as { handoff?: string }).handoff ?? ""),
       returnPhases,
       merged: github.merged.length,
+      rounds: listCloseoutRounds(db).map((round) => round.head),
       detail: debug(layout, db),
     };
   } finally {
