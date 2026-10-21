@@ -214,6 +214,7 @@ function checkBody(
   engineUrl: string | null,
   options: CloseoutChecksOptions,
 ): string {
+  if (check.kind === "evidence") return `<p class="check-command">${esc(check.command)}</p>`;
   const key = checkKey(verdict.itemId, attempt.number, check.id);
   const shown =
     options.checkAttempts !== undefined && typeof check.attempt === "number"

@@ -53,7 +53,7 @@ export const CHECK_STATES = [
   "blocked",
   "exhausted",
 ] as const;
-export const CHECK_KINDS = ["setup", "command", "review"] as const;
+export const CHECK_KINDS = ["setup", "command", "review", "evidence"] as const;
 export const STEP_STATES = ["done", "run", "wait"] as const;
 export const ACTIVITY_KINDS = [
   "thought",
