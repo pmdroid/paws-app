@@ -18,6 +18,38 @@ function model(patch: Partial<RenderModel> = {}): RenderModel {
 }
 
 describe("status views", () => {
+  test("a run paused at a usage limit shows the reset time with Resume now and Stop", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs[0];
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "running";
+    snapshot.verdicts = snapshot.verdicts.filter((verdict) => verdict.itemId !== item.id);
+    run.state = "running";
+    run.pause = {
+      reason: "usage_limit",
+      agent: "Claude",
+      resetsAt: "2026-10-21T18:00:00.000Z",
+      resumeAt: "2026-10-21T18:01:00.000Z",
+      runner: "agentbox",
+    };
+    const html = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(html).toContain('<span class="st running">Paused · usage limit</span>');
+    expect(html).toContain('aria-current="step">Implementation · paused until 18:00</li>');
+    expect(html).toContain('<h2 id="paused-heading">Paused</h2><div id="execution-controls"');
+    expect(html).toContain("Claude reached its usage limit. Paws continues at 18:00 UTC.");
+    expect(html).toContain("Paws continues the same session on runner agentbox.");
+    expect(html.match(/id="execution-controls"/g)).toHaveLength(1);
+    run.pause = { ...run.pause, resetsAt: null, runner: null };
+    const retry = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(retry).toContain("Paws tries again at 18:01 UTC, then every 15 minutes.");
+    expect(retry).toContain("continues the same session.</p>");
+    run.pause = null;
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
+      "Paused · usage limit",
+    );
+  });
+
   test("overview follows only the current run after recovery and summarizes queued work", () => {
     const snapshot = demoStatus();
     const run = snapshot.runs[0];
