@@ -10,7 +10,7 @@ import {
   delegatedLinearUserId,
   workspaceMember,
 } from "../db";
-import type { LinearIssueLifecycle, TrackerAdapter } from "../linear";
+import type { LinearIssueLifecycle, LinearIssueOwnership, TrackerAdapter } from "../linear";
 import type { PlacementRequest, RunnerPlacement } from "./index";
 import { quotaSignal } from "./quota";
 
@@ -171,13 +171,13 @@ export function createRunnerPlacement(options: {
           : [];
       const verified = await options.lifecycle.inspect(before.issueId, { signal: input.signal });
       input.signal?.throwIfAborted();
-      if (JSON.stringify(verified) !== JSON.stringify(issue))
+      if (JSON.stringify(owners(verified)) !== JSON.stringify(owners(issue)))
         throw new Error("Runner issue ownership changed during selection");
       const current = scope(input);
       if (
         authority(current) !== binding ||
         issue.id !== current.issueId ||
-        ["canceled", "completed"].includes(issue.stateType)
+        ["canceled", "completed"].includes(verified.stateType)
       )
         throw new Error("Runner issue authority changed");
       const sessionTeam = db
@@ -534,4 +534,8 @@ export function createRunnerPlacement(options: {
       });
     },
   };
+}
+
+function owners({ stateType: _, ...rest }: LinearIssueOwnership) {
+  return rest;
 }
