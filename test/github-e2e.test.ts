@@ -149,11 +149,16 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
       ["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id)),
       debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
-    expect(github.opened.map((pull) => pull.head)).toEqual([
-      "paws/DEMO-2",
-      "paws/DEMO-3",
-      "paws/DEMO-4",
-    ]);
+    expect(github.opened.map((pull) => pull.head)).toEqual(
+      ["DEMO-2", "DEMO-3", "DEMO-4"].map(
+        (identifier) =>
+          db
+            .query<{ branch: string }, [string]>(
+              "SELECT branch_name AS branch FROM work_item WHERE linear_identifier=?",
+            )
+            .get(identifier)!.branch,
+      ),
+    );
     expect(github.opened.map((pull) => pull.body.split("\n")[0])).toEqual([
       "Fixes DEMO-2",
       "Fixes DEMO-3",
