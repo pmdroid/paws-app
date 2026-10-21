@@ -127,6 +127,14 @@ describe("runner execution history", () => {
     expect(html).toContain('<span class="tag running">Running</span>');
   });
 
+  test("the model line shows the entry's label", () => {
+    const html = runnerHistoryMarkup([
+      { ...entry, resolvedModel: "opus[1m]", modelLabel: "Opus 5.5 · 1M context" },
+    ]);
+    expect(html).toContain('<p class="muted">Opus 5.5 · 1M context</p>');
+    expect(html).not.toContain("opus[1m]");
+  });
+
   test("an unused runner has an empty history", () => {
     expect(runnerHistoryMarkup([])).toContain("has not executed any work yet");
   });

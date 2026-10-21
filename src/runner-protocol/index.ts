@@ -62,3 +62,5 @@ export {
 export { RunnerActivitySchema, RunnerPermissionSchema } from "./activity";
 
 export { RunnerHostStatusSchema, releaseVersionFromPath, type RunnerHostStatus } from "./host";
+
+export { labelModels, longContextModel } from "./models";

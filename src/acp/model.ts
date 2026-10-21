@@ -6,7 +6,8 @@ import {
 } from "@agentclientprotocol/sdk";
 import type { AgentProfile, ImplementerName } from "../config";
 
-type ModelSelection = { model: string | null; models: Array<{ id: string; name: string }> };
+export type SessionModelChoice = { id: string; name: string; description?: string };
+type ModelSelection = { model: string | null; models: SessionModelChoice[] };
 
 function concreteModel(model: string): boolean {
   return !["default", "auto", "claude", "codex", "grok"].includes(model.toLowerCase());
@@ -27,7 +28,11 @@ export function sessionModel(session: Pick<NewSessionResponse, "configOptions">)
     : null;
   return {
     model: model && concreteModel(model) ? model : null,
-    models: options.map(({ value, name }) => ({ id: value, name })),
+    models: options.map(({ value, name, description }) => ({
+      id: value,
+      name,
+      ...(description?.trim() ? { description: description.trim().slice(0, 512) } : {}),
+    })),
   };
 }
 
@@ -45,11 +50,25 @@ export async function selectSessionProfile(
   session: NewSessionResponse,
   profile: AgentProfile,
 ): Promise<
-  ModelSelection & { effort: string | null; efforts: Array<{ id: string; name: string }> }
+  ModelSelection & {
+    effort: string | null;
+    efforts: Array<{ id: string; name: string }>;
+    /** Set when the profile's 1M entry was missing and its standard model ran instead. */
+    standardWindow?: { requested: string; name: string };
+  }
 > {
   let configuration = session;
   const modelConfig = modelOption(configuration.configOptions);
   let selectedModel = profile.model;
+  let standardWindow: { requested: string; name: string } | undefined;
+  if (selectedModel !== null && /\[1m\]$/i.test(selectedModel)) {
+    const advertised = sessionModel(session).models;
+    const standard = advertised.find((model) => model.id === selectedModel!.slice(0, -4));
+    if (standard && !advertised.some((model) => model.id === selectedModel)) {
+      standardWindow = { requested: selectedModel, name: standard.name };
+      selectedModel = standard.id;
+    }
+  }
   if (
     selectedModel === null &&
     sessionModel(session).model === null &&
@@ -104,7 +123,17 @@ export async function selectSessionProfile(
     if (sessionModel(response).model !== model.model)
       throw new Error("Agent changed model while selecting effort");
   }
-  return { ...model, effort: option?.type === "select" ? option.currentValue : null, efforts };
+  return {
+    ...model,
+    effort: option?.type === "select" ? option.currentValue : null,
+    efforts,
+    ...(standardWindow ? { standardWindow } : {}),
+  };
+}
+
+/** The Linear line for a run whose 1M entry this runner's account does not offer. */
+export function standardWindowNotice(name: string): string {
+  return `${name} ran with the standard window: this runner's Claude account doesn't offer 1M.`;
 }
 
 export function providerFor(agent: ImplementerName): string {

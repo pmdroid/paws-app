@@ -129,7 +129,7 @@ export interface RunAgentOptions {
 
 export interface RunAgentResult {
   identity?: AgentIdentity;
-  models?: Array<{ id: string; name: string }>;
+  models?: Array<{ id: string; name: string; description?: string }>;
   effort?: string | null;
   efforts?: Array<{ id: string; name: string }>;
   role: AgentRole;
