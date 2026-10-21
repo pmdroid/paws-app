@@ -237,6 +237,12 @@ describe("runner details", () => {
     expect(html).toContain("60 GB used of 100 GB");
     expect(html).toContain('data-runner-copy="');
     expect(html).toContain(">Copy id<");
+    expect(html).toContain('class="runner-menu"');
+    expect(html).toContain(">Actions<");
+    expect(html.indexOf(">Actions<")).toBeLessThan(html.indexOf(">Copy id<"));
+    expect(html.indexOf(">Copy id<")).toBeLessThan(html.indexOf(">Sign in to agents<"));
+    expect(html.indexOf(">Sign in to agents<")).toBeLessThan(html.indexOf(">Pause<"));
+    expect(html.indexOf(">Pause<")).toBeLessThan(html.indexOf('data-metric="cpu"'));
     expect(html).not.toContain("<code>");
     expect(html.match(/data-runner-state/g)).toHaveLength(1);
     expect(html.match(/data-runner-status="/g)).toHaveLength(3);
@@ -309,6 +315,8 @@ describe("runner details", () => {
     expect(html).toMatch(/data-runner-sharing="[^"]+"[^>]* disabled/);
     expect(html).toContain("The host owner controls its sharing settings.");
     expect(html).not.toContain(">Pause<");
+    expect(html).toContain(">Actions<");
+    expect(html).toContain(">Sign in to agents<");
   });
 
   test("a revoked runner has no settings or controls", () => {
@@ -318,15 +326,18 @@ describe("runner details", () => {
     expect(html).not.toContain("data-runner-sharing");
     expect(html).not.toContain("data-runner-status");
     expect(html).not.toContain("data-runner-signin");
+    expect(html).not.toContain("runner-menu");
+    expect(html).toContain(">Copy id<");
   });
 
   test("members sign in to the agents from the runner card, observers cannot", () => {
     expect(runnerDetailMarkup(runner, { ...view, userId: "member", role: "member" })).toContain(
       `data-runner-signin="${runner.id}"`,
     );
-    expect(
-      runnerDetailMarkup(runner, { ...view, userId: "guest", role: "observer" }),
-    ).not.toContain("data-runner-signin");
+    const observer = runnerDetailMarkup(runner, { ...view, userId: "guest", role: "observer" });
+    expect(observer).not.toContain("data-runner-signin");
+    expect(observer).not.toContain("runner-menu");
+    expect(observer).toContain(">Copy id<");
   });
 
   describe("concurrency", () => {
@@ -537,6 +548,8 @@ describe("host metric visuals", () => {
     for (const label of nowrap) expect(label.length).toBeLessThan(24);
     expect(css).toContain("overflow-wrap: anywhere");
     expect(css).toContain("max-width: 100%");
+    expect(body).toContain("open:basis-full");
+    expect(body).toContain("sm:absolute");
     const text = body.replace(/<[^>]+>/g, " ");
     const widest = Math.max(
       ...text
@@ -549,14 +562,16 @@ describe("host metric visuals", () => {
   });
 });
 
-test("runner actions share one row and resume a paused runner", () => {
+test("runner actions resume a paused runner and stay out of a button row", () => {
   const html = runnerActionsMarkup(
     { id: "runner-1", status: "paused" },
     { manages: true, busy: false },
   );
-  expect(html.startsWith('<div class="row">')).toBe(true);
+  expect(html).not.toContain('class="row"');
   expect(html).toContain(">Resume<");
+  expect(html).not.toContain(">Pause<");
   expect(html.indexOf("Resume")).toBeLessThan(html.indexOf("Revoke access"));
+  expect(html).toContain('data-details="revoke:runner-1"');
   expect(
     runnerActionsMarkup({ id: "runner-1", status: "active" }, { manages: true, busy: true }),
   ).toContain(" disabled");
