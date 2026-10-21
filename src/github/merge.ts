@@ -167,6 +167,10 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
         ...(recheck.failedChecks ? { failedChecks: recheck.failedChecks } : {}),
       };
     }
+    // A stop or withdrawn publication during the recheck must still win.
+    if (input.isCancelled?.()) {
+      return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
+    }
     const merged = await squash(input, mergeToken, pushed.head, verified.summary);
     if (merged.status === 409) {
       lastGuard = "http_409";
