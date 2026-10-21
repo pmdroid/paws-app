@@ -622,7 +622,8 @@ export async function probeRunnerWorker(
   const oversizedAgent = launch(8, [
     { type: "update", update: chunk },
     { type: "update", update: chunk },
-    { type: "end", updatesAfterResponse: [chunk] },
+    { type: "update", update: chunk },
+    { type: "end" },
   ]);
   const oversizedOutput = output(8);
   await assert.rejects(
@@ -638,27 +639,32 @@ export async function probeRunnerWorker(
     /Runner response exceeds size limit/,
   );
   assert.throws(() => readFileSync(join(oversizedOutput, "result.json")));
-  const journalLimitAgent = launch(9, [
+  // The prompt response ends the turn, so an update sent after it is ignored
+  // rather than racing teardown into the review text and the journal.
+  const lateAgent = launch(9, [
     { type: "update", update: chunk },
     {
       type: "end",
       updatesAfterResponse: [{ ...chunk, content: { type: "text", text: "x".repeat(400_000) } }],
     },
   ]);
-  const journalLimitOutput = output(9);
-  await assert.rejects(
-    execute({
-      job: job(9, "review"),
-      repositoryBundle,
-      outputDirectory: journalLimitOutput,
-      workRoot: join(root, "work"),
-      home,
-      resultsGid: process.getgid!(),
-      launch: journalLimitAgent.launch,
-    }),
-    /Runner (response|event journal) exceeds size limit/,
+  const lateOutput = output(9);
+  const late = await execute({
+    job: job(9, "review"),
+    repositoryBundle,
+    outputDirectory: lateOutput,
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: lateAgent.launch,
+  });
+  assert.equal(late.run.stopReason, "end_turn");
+  assert.equal(
+    readFileSync(join(lateOutput, "events.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"agent_message_chunk"')).length,
+    1,
   );
-  assert.throws(() => readFileSync(join(journalLimitOutput, "result.json")));
   const missing = job(3);
   if (missing.command.type !== "run") throw new Error("Expected run");
   missing.command.repository.baseSha = "f".repeat(40);
