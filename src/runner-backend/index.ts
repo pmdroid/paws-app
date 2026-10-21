@@ -130,8 +130,10 @@ export function createRemoteAgentRunner(options: {
       db
         .query<UsageCooldown, [string, string | null, number]>(
           `SELECT a.runner_id AS runnerId,a.user_id AS accountUserId,a.cooldown_until AS cooldownUntil,
-         a.resets_at AS resetsAt
+         x.resets_at AS resetsAt
          FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+         LEFT JOIN runner_member_account_reset x
+           ON x.runner_id=a.runner_id AND x.user_id=a.user_id AND x.agent=a.agent
          WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
          UNION ALL
          SELECT p.runner_id,NULL,p.cooldown_until,p.resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
