@@ -7,7 +7,10 @@ import { routeHref } from "./route";
 /** The runner list refreshes this often while the page is visible. */
 export const RUNNER_POLL_MS = 10_000;
 /** Runners heartbeat every 15 seconds; four missed beats mark a runner offline. */
-export const RUNNER_OFFLINE_MS = 60_000;
+export const RUNNER_HEARTBEAT_MS = 15_000;
+export const RUNNER_OFFLINE_MS = RUNNER_HEARTBEAT_MS * 4;
+/** A host sample older than two heartbeats is shown as stale, not live. */
+export const RUNNER_METRICS_STALE_MS = RUNNER_HEARTBEAT_MS * 2;
 
 type RunnerStatus = "active" | "paused" | "draining" | "revoked";
 export type AgentSignIn = {
@@ -30,6 +33,8 @@ export type Runner = {
     load15: number | null;
     diskTotalBytes: number | null;
     diskFreeBytes: number | null;
+    /** Absent until a runner release reports logical CPUs. Load is then a number. */
+    cpuCount?: number | null;
     reportedAt: number;
   } | null;
   os: { id: string | null; version: string | null } | null;
@@ -143,6 +148,22 @@ function seenLabel(at: number, now: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
   return new Date(at).toLocaleString();
+}
+
+export function metricsAreStale(reportedAt: number, now: number): boolean {
+  return now - reportedAt > RUNNER_METRICS_STALE_MS;
+}
+
+/** Latest sample only, for example "Updated 5 s ago". */
+export function metricsUpdatedLabel(at: number, now: number): string {
+  const seconds = Math.floor(Math.max(0, now - at) / 1000);
+  if (seconds < 5) return "Updated just now";
+  if (seconds < 60) return `Updated ${seconds} s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Updated ${minutes} m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Updated ${hours} h ago`;
+  return `Updated ${new Date(at).toLocaleString()}`;
 }
 
 function updateAvailable(runner: Runner, serverVersion: string | null): boolean {
@@ -300,6 +321,139 @@ export function runnerConcurrencyMarkup(
   return `<form class="row" data-runner-concurrency="${id}"><input name="concurrency" inputmode="numeric" pattern="[0-9]*" maxlength="2" size="3" required aria-label="Concurrency, from 1 to ${ceiling}" value="${esc(state.draft ?? String(value))}" data-focus="concurrency:${id}"${disabled}><button class="btn" type="submit" data-focus="concurrency:${id}:save"${disabled}>Save</button><span class="muted">${esc(reported)}</span></form>`;
 }
 
+const HIGH_RATIO = 90;
+
+function meterTrack(label: string, value: string, percent: number): string {
+  const fill = Math.max(0, Math.min(100, Math.round(percent)));
+  return `<div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${fill}" aria-label="${esc(`${label} ${value}`)}"><span class="meter-fill" data-fill="${fill}"></span></div>`;
+}
+
+function meter(input: {
+  metric: string;
+  label: string;
+  value: string;
+  /** Null keeps the value and draws no bar. */
+  percent: number | null;
+  warn: boolean;
+  fresh: "live" | "stale" | "none";
+}): string {
+  const bar = input.percent === null ? "" : meterTrack(input.label, input.value, input.percent);
+  return `<div class="meter" data-metric="${input.metric}" data-level="${input.warn ? "warn" : "ok"}" data-fresh="${input.fresh}"><div class="meter-head"><span>${esc(input.label)}</span><span>${esc(input.value)}</span></div>${bar}</div>`;
+}
+
+function missingMeter(metric: string, label: string, fresh: "live" | "stale" | "none"): string {
+  return meter({ metric, label, value: "Not reported", percent: null, warn: false, fresh });
+}
+
+function ratioMeter(
+  metric: string,
+  label: string,
+  used: number | null,
+  total: number | null,
+  fresh: "live" | "stale" | "none",
+): string {
+  if (used === null || total === null) return missingMeter(metric, label, fresh);
+  const safeUsed = Math.max(0, used);
+  const percent = total > 0 ? (safeUsed / total) * 100 : 0;
+  return meter({
+    metric,
+    label,
+    value: `${bytes(safeUsed)} used of ${bytes(total)}`,
+    percent,
+    warn: percent > HIGH_RATIO,
+    fresh,
+  });
+}
+
+function loadMeter(metrics: NonNullable<Runner["metrics"]>, fresh: "live" | "stale"): string {
+  if (metrics.load1 === null) return missingMeter("load", "Load", fresh);
+  const cores = metrics.cpuCount;
+  if (cores == null || cores < 1)
+    return meter({
+      metric: "load",
+      label: "Load",
+      value: metrics.load1.toFixed(2),
+      percent: null,
+      warn: false,
+      fresh,
+    });
+  return meter({
+    metric: "load",
+    label: "Load",
+    value: `${metrics.load1.toFixed(2)} of ${cores}`,
+    percent: (metrics.load1 / cores) * 100,
+    warn: metrics.load1 > cores,
+    fresh,
+  });
+}
+
+function slotsMeter(slots: { used: number; total: number }): string {
+  const warn = slots.total > 0 && slots.used >= slots.total;
+  const value = `${slots.used} of ${slots.total} in use`;
+  const cells = Array.from({ length: Math.max(0, slots.total) }, (_, index) => {
+    const used = index < slots.used ? "true" : "false";
+    return `<span class="slot" data-used="${used}" aria-hidden="true"></span>`;
+  }).join("");
+  return `<div class="meter" data-metric="slots" data-level="${warn ? "warn" : "ok"}" data-fresh="live"><div class="meter-head"><span>Slots</span><span>${esc(value)}</span></div><div class="slot-row" role="img" aria-label="${esc(value)}">${cells}</div></div>`;
+}
+
+function runnerStatus(runner: Runner, now: number): { tone: string; text: string } {
+  if (runner.status === "revoked") return { tone: "bad", text: "Revoked · Offline" };
+  const name =
+    runner.status === "paused" ? "Paused" : runner.status === "draining" ? "Draining" : "Active";
+  if (!runnerOnline(runner, now)) return { tone: "bad", text: `${name} · Offline` };
+  const running = runner.running?.length ?? 0;
+  if (running) return { tone: "running", text: `${name} · Online · Running ${running}` };
+  if (!runner.idle) return { tone: "running", text: `${name} · Online · Busy` };
+  return { tone: runner.status === "active" ? "ok" : "warn", text: `${name} · Online · Idle` };
+}
+
+function metadataLine(runner: Runner, view: { now: number; serverVersion: string | null }): string {
+  const behind = updateAvailable(runner, view.serverVersion);
+  const version = runner.version
+    ? behind
+      ? `${runner.version} · Update available`
+      : runner.version
+    : "Version not reported";
+  const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ") || "OS not reported";
+  const seen = runner.metrics
+    ? `Seen ${seenLabel(runner.metrics.reportedAt, view.now).replace(/^Just now$/, "just now")}`
+    : "Never seen";
+  const title = runner.metrics
+    ? ` title="${esc(new Date(runner.metrics.reportedAt).toLocaleString())}"`
+    : "";
+  return `<p class="muted runner-meta"${title}>${[version, os, seen].map(esc).join(" · ")}</p>`;
+}
+
+function hostMeters(runner: Runner, now: number): string {
+  const metrics = runner.metrics;
+  if (!metrics) {
+    return `<div class="runner-metrics" data-fresh="none"><p class="muted" data-metrics-updated>Not reported</p>${missingMeter("cpu", "CPU", "none")}${missingMeter("memory", "Memory", "none")}${missingMeter("disk", "Disk", "none")}${missingMeter("load", "Load", "none")}</div>`;
+  }
+  const fresh = metricsAreStale(metrics.reportedAt, now) ? "stale" : "live";
+  const updated = metricsUpdatedLabel(metrics.reportedAt, now);
+  const cpu =
+    metrics.cpuPercent === null
+      ? missingMeter("cpu", "CPU", fresh)
+      : meter({
+          metric: "cpu",
+          label: "CPU",
+          value: `${Math.round(metrics.cpuPercent)}%`,
+          percent: metrics.cpuPercent,
+          warn: metrics.cpuPercent > HIGH_RATIO,
+          fresh,
+        });
+  const memoryUsed =
+    metrics.memoryTotalBytes != null && metrics.memoryAvailableBytes != null
+      ? metrics.memoryTotalBytes - metrics.memoryAvailableBytes
+      : null;
+  const diskUsed =
+    metrics.diskTotalBytes != null && metrics.diskFreeBytes != null
+      ? metrics.diskTotalBytes - metrics.diskFreeBytes
+      : null;
+  return `<div class="runner-metrics" data-fresh="${fresh}"><p class="muted" data-metrics-updated>${esc(fresh === "stale" ? `Stale · ${updated}` : updated)}</p>${cpu}${ratioMeter("memory", "Memory", memoryUsed, metrics.memoryTotalBytes, fresh)}${ratioMeter("disk", "Disk", diskUsed, metrics.diskTotalBytes, fresh)}${loadMeter(metrics, fresh)}</div>`;
+}
+
 export function runnerDetailMarkup(
   runner: Runner,
   view: {
@@ -314,73 +468,17 @@ export function runnerDetailMarkup(
   },
 ): string {
   const id = esc(runner.id);
-  const online = runnerOnline(runner, view.now);
-  const metrics = runner.metrics;
-  const statusClass =
-    runner.status === "revoked"
-      ? "bad"
-      : runner.status === "draining"
-        ? "warn"
-        : runner.status === "paused"
-          ? "paused"
-          : "ok";
-  const tags = [
-    `<span class="tag ${statusClass}">${esc(runner.status[0]!.toUpperCase() + runner.status.slice(1))}</span>`,
-    online ? '<span class="tag ok">Online</span>' : '<span class="tag bad">Offline</span>',
-    online
-      ? runner.running?.length
-        ? `<span class="tag running">Running ${runner.running.length}</span>`
-        : runner.idle
-          ? '<span class="tag">Idle</span>'
-          : '<span class="tag running">Busy</span>'
-      : "",
-  ].join("");
-  const behind = updateAvailable(runner, view.serverVersion);
-  const known = (value: number | null | undefined, format: (value: number) => string) =>
-    value === null || value === undefined ? "Not reported" : esc(format(value));
-  const memory =
-    metrics?.memoryTotalBytes != null && metrics.memoryAvailableBytes != null
-      ? `${bytes(metrics.memoryTotalBytes - metrics.memoryAvailableBytes)} used of ${bytes(metrics.memoryTotalBytes)}`
-      : null;
-  const disk =
-    metrics?.diskTotalBytes != null && metrics.diskFreeBytes != null
-      ? `${bytes(metrics.diskFreeBytes)} free of ${bytes(metrics.diskTotalBytes)}`
-      : null;
-  const load =
-    metrics?.load1 != null
-      ? [metrics.load1, metrics.load5, metrics.load15]
-          .map((value) => (value === null ? "–" : value.toFixed(2)))
-          .join(" / ")
-      : null;
-  const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
+  const status = runnerStatus(runner, view.now);
   const concurrency = runnerConcurrencyMarkup(runner, {
     manages: view.role === "owner" || view.role === "admin",
     busy: view.busy,
     ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
   });
-  const facts = [
-    [
-      "Version",
-      `${runner.version ? esc(runner.version) : "Not reported"}${behind ? ` <span class="tag warn">Update available</span>` : ""}`,
-    ],
-    [
-      "Last seen",
-      metrics
-        ? `<span title="${esc(new Date(metrics.reportedAt).toLocaleString())}">${esc(seenLabel(metrics.reportedAt, view.now))}</span>`
-        : "Never",
-    ],
-    ...(runner.slots
-      ? [["Slots", esc(`${runner.slots.used} of ${runner.slots.total} in use`)]]
-      : []),
-    ...(concurrency ? [["Concurrency", concurrency]] : []),
-    ["OS", os ? esc(os) : "Not reported"],
-    ["CPU", known(metrics?.cpuPercent, (value) => `${Math.round(value)}%`)],
-    ["Memory", memory ? esc(memory) : "Not reported"],
-    ["Load", load ? esc(load) : "Not reported"],
-    ["Disk", disk ? esc(disk) : "Not reported"],
-  ]
-    .map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`)
-    .join("");
+  const slots = runner.slots ? slotsMeter(runner.slots) : "";
+  const capacity =
+    slots || concurrency
+      ? `<div class="runner-capacity">${slots}${concurrency ? `<div class="runner-concurrency"><span class="meter-name">Concurrency</span>${concurrency}</div>` : ""}</div>`
+      : "";
   const revoked = runner.status === "revoked";
   const owns =
     view.policy !== null &&
@@ -400,7 +498,7 @@ export function runnerDetailMarkup(
         entry.status === "usage_limit" && entry.resetsAt
           ? ` <span class="muted">Resets ${esc(new Date(entry.resetsAt).toLocaleString())}</span>`
           : "";
-      return `<li><div class="row"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</div></li>`;
+      return `<li class="runner-agent"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</li>`;
     })
     .join("");
   const signIn =
@@ -411,7 +509,7 @@ export function runnerDetailMarkup(
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><div class="row">${tags}</div></div><p class="muted"><code>${id}</code></p><dl class="kv">${facts}</dl><h3>Agents</h3><ul class="runner-agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
+  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="between"><div class="runner-heading"><h2 id="runner-${id}-name">${esc(runner.name)}</h2><p class="runner-status" data-runner-state data-tone="${status.tone}">${esc(status.text)}</p></div><button type="button" class="btn" data-runner-copy="${id}" data-focus="copy:${id}" aria-label="Copy runner id ${id}">Copy id</button></div>${metadataLine(runner, view)}${hostMeters(runner, view.now)}${capacity}<ul class="runner-agents" aria-label="Agents">${agents}</ul>${signIn}${sharing}${runnerActionsMarkup(
     runner,
     {
       manages: view.role === "owner" || view.role === "admin",
@@ -735,6 +833,27 @@ export function createRunners() {
           feedback = "Runner approved. The host can complete pairing.";
         }),
     );
+    for (const button of root!.querySelectorAll<HTMLButtonElement>("[data-runner-copy]"))
+      button.addEventListener("click", () => {
+        const value = button.dataset.runnerCopy ?? "";
+        const label = button.textContent ?? "Copy id";
+        const write = navigator.clipboard?.writeText(value);
+        if (!write) {
+          button.textContent = "Copy failed";
+          return;
+        }
+        void write.then(
+          () => {
+            button.textContent = "Copied";
+            window.setTimeout(() => {
+              if (button.isConnected && button.textContent === "Copied") button.textContent = label;
+            }, 1_500);
+          },
+          () => {
+            button.textContent = "Copy failed";
+          },
+        );
+      });
     for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-signin]"))
       button.addEventListener("click", () => {
         const runner = runners.find((entry) => entry.id === button.dataset.runnerSignin);
@@ -768,17 +887,19 @@ export function createRunners() {
         });
       });
     }
-    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]"))
+    for (const button of root!.querySelectorAll<HTMLElement>("[data-runner-status]")) {
+      const runnerId = button.dataset.runner;
+      const status = button.dataset.runnerStatus;
+      if (!runnerId || !status) continue;
       button.addEventListener(
         "click",
         () =>
           void change(async () => {
-            await api(`/api/runners/${encodeURIComponent(button.dataset.runner!)}/status`, {
-              status: button.dataset.runnerStatus,
-            });
+            await api(`/api/runners/${encodeURIComponent(runnerId)}/status`, { status });
             feedback = "Runner status updated.";
           }),
       );
+    }
   }
   function poll() {
     if (!root?.isConnected) {

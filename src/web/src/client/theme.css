@@ -107,6 +107,12 @@ html.dark {
 html.light :where(button, input, select, textarea, summary) {
   color-scheme: light;
 }
+
+[data-runner-card] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 html.dark :where(button, input, select, textarea, summary) {
   color-scheme: dark;
 }
