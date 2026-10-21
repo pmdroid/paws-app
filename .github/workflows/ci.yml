@@ -21,5 +21,5 @@ jobs:
       - run: bun run lint
       - run: bun run fmt:check
       - run: bun run typecheck
-      - run: bun test --parallel=4
+      - run: bun test
       - run: bun run build:status

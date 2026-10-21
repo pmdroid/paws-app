@@ -15,7 +15,7 @@ bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=8`). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with `--parallel=4` on its 4-core runners.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000`). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests one file at a time (`bun test`); Closeout's `test` check does the same.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
