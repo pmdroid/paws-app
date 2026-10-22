@@ -61,7 +61,11 @@ async function readOnce(
 ) {
   const f = fixture(reply, required);
   // The verdict only; the head's check list has its own tests below.
-  const { checks: _checks, ...verdict } = await waitForMergeReadiness({
+  const {
+    checks: _checks,
+    ciOutcome: _ciOutcome,
+    ...verdict
+  } = await waitForMergeReadiness({
     ...f.input,
     releaseWhilePending: true,
   });
@@ -535,4 +539,56 @@ test("pending and green reads carry the head's checks without reading logs", asy
       logSource: null,
     },
   ]);
+});
+
+test("failed checks with the same name each keep their own log tail", async () => {
+  const failing = (url: string, summary: string): FakeCheckContext => ({
+    name: "test",
+    conclusion: "FAILURE",
+    detailsUrl: url,
+    summary,
+  });
+  const result = await waitForMergeReadiness(
+    fixture(() =>
+      withChecks([
+        failing("https://ci.example/a", "first failure"),
+        failing("https://ci.example/b", "second failure"),
+      ]),
+    ).input,
+  );
+  expect(result.failedChecks).toEqual([
+    { name: "test", url: "https://ci.example/a", logTail: "first failure" },
+    { name: "test", url: "https://ci.example/b", logTail: "second failure" },
+  ]);
+});
+
+test("CI stays running while a required check has not reported, even if the rest passed", async () => {
+  const waiting = await waitForMergeReadiness({
+    ...fixture(() => withChecks([run("build", "SUCCESS")]), { protection: ["deploy preview"] })
+      .input,
+    releaseWhilePending: true,
+  });
+  expect(waiting.outcome).toBe("pending");
+  expect(waiting.ciOutcome).toBe("running");
+  const failed = await waitForMergeReadiness(
+    fixture(() => withChecks([run("build", "FAILURE")])).input,
+  );
+  expect(failed.ciOutcome).toBe("failed");
+  const green = await waitForMergeReadiness(
+    fixture(() => withChecks([run("build", "SUCCESS")])).input,
+  );
+  expect(green.ciOutcome).toBe("passed");
+});
+
+test("CI is passed while the merge still waits on review threads", async () => {
+  const result = await waitForMergeReadiness({
+    ...fixture(() => {
+      const reply = withChecks([run("build", "SUCCESS")]);
+      reply.body.data.repository.pullRequest.reviewThreads.nodes = [{ isResolved: false }];
+      return reply;
+    }).input,
+    releaseWhilePending: true,
+  });
+  expect(result.outcome).toBe("pending");
+  expect(result.ciOutcome).toBe("passed");
 });

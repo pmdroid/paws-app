@@ -67,6 +67,7 @@ export type {
   AppCredentials,
   CiCheck,
   CiCheckState,
+  CiOutcome,
   GitExec,
   GitHubClient,
   GitHubResponse,

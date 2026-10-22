@@ -489,12 +489,14 @@ describe("live status provider", () => {
     recordCiRound(db, {
       itemId: item.id,
       head: "a".repeat(40),
+      outcome: "running",
       checks: [check("lint", "running"), check("test", "running")],
       now,
     });
     recordCiRound(db, {
       itemId: item.id,
       head: "a".repeat(40),
+      outcome: "failed",
       checks: [
         check("lint", "passed"),
         check("test", "failed", "1 fail\ntoken ghp_abcdefghijklmnopqrstuvwxyz0123"),
@@ -512,12 +514,14 @@ describe("live status provider", () => {
     recordCiRound(db, {
       itemId: item.id,
       head: "b".repeat(40),
+      outcome: "passed",
       checks: [check("lint", "passed"), check("test", "passed")],
       now: now + 2,
     });
     recordCiRound(db, {
       itemId: "ENG-8",
       head: "c".repeat(40),
+      outcome: "passed",
       checks: [check("lint", "passed")],
       now,
     });

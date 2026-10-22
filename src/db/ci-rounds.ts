@@ -38,16 +38,22 @@ type RoundRow = {
   updated_at: number;
 };
 
-/** Records the latest checks on `head`. A later read of the same head replaces the checks. */
+/**
+ * Records the latest checks on `head`. A later read of the same head replaces them.
+ * `outcome` is merge readiness's CI verdict, so a required check that has not
+ * reported yet keeps the round running even when every reported check passed.
+ */
 export function recordCiRound(
   db: Database,
-  input: { itemId: string; head: string; checks: readonly CiRoundCheck[]; now: number },
+  input: {
+    itemId: string;
+    head: string;
+    outcome: CiRound["outcome"];
+    checks: readonly CiRoundCheck[];
+    now: number;
+  },
 ): void {
-  const outcome = input.checks.some((check) => check.state === "failed")
-    ? "failed"
-    : input.checks.some((check) => check.state === "running")
-      ? "running"
-      : "passed";
+  const outcome = input.outcome;
   db.run(
     `INSERT INTO ci_round (item_id, head, outcome, checks, started_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)

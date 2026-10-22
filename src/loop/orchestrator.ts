@@ -2360,10 +2360,16 @@ export class Orchestrator {
         };
       },
     });
-    if (merged.head !== undefined && merged.checks !== undefined && merged.checks.length > 0)
+    if (
+      merged.head !== undefined &&
+      merged.checks !== undefined &&
+      merged.ciOutcome !== undefined &&
+      merged.checks.length > 0
+    )
       recordCiRound(this.db, {
         itemId: item.id,
         head: merged.head,
+        outcome: merged.ciOutcome,
         checks: merged.checks,
         now: this.now(),
       });
