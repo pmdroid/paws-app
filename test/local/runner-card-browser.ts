@@ -40,8 +40,21 @@ function runners() {
       slots: { used: 3, total: 3 },
       concurrency: { desired: 3, applied: 3, ceiling: 10 },
       agents: [
-        { agent: "claude", status: "signed_in", checkedAt: now - 60_000 },
-        { agent: "codex", status: "signed_in", checkedAt: now - 60_000 },
+        {
+          agent: "claude",
+          status: "signed_in",
+          checkedAt: now - 60_000,
+          limits: [
+            { window: "5-hour", usedPercent: 7, resetsAt: now + 3 * 3_600_000 },
+            { window: "Weekly", usedPercent: 2, resetsAt: now + 4 * 86_400_000 },
+          ],
+        },
+        {
+          agent: "codex",
+          status: "usage_limit",
+          checkedAt: now - 60_000,
+          limits: [{ window: "Weekly", usedPercent: 100, resetsAt: now + 6 * 86_400_000 }],
+        },
         { agent: "grok", status: "signed_out", checkedAt: now - 60_000 },
       ],
       running: [
@@ -61,7 +74,7 @@ function runners() {
         },
         {
           runId: "run-3",
-          identifier: "PAS-433",
+          identifier: "PAS-1207",
           title: "Show queued work on Overview",
           phase: "fixing",
           startedAt: now - 75 * 60_000,
