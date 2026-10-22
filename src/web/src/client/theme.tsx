@@ -469,6 +469,17 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-3 py-4");
   if (has("overview-copy")) return styled("min-w-0 flex-1 basis-72 space-y-1 break-words");
   if (has("overview-summary")) return styled("text-sm font-semibold leading-relaxed");
+  if (has("update-banner")) return styled("flex min-w-0 flex-col gap-4");
+  if (has("update-card"))
+    return styled(
+      "flex min-w-0 items-start gap-4 rounded-base border-2 border-border bg-secondary-background p-4 sm:p-6",
+    );
+  if (has("update-count"))
+    return styled(
+      "grid h-12 w-10 shrink-0 place-items-center rounded-base border-2 border-border font-bold",
+    );
+  if (has("update-copy")) return styled("min-w-0 flex-1 space-y-1 break-words");
+  if (has("update-title")) return styled("font-bold leading-snug");
   if (has("split", "conversation-layout"))
     return styled(
       "grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)] [&>*]:min-w-0 [&>div:first-child]:space-y-4",

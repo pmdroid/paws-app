@@ -30,6 +30,7 @@ import { renderConversations, type ConversationModel } from "./conversations";
 import { evidenceSlot, renderEvidencePage, type MediaInfo } from "./evidence";
 import { PAGES } from "./navigation";
 import { renderRunsList } from "./runs-list";
+import { updateBanner } from "./paws-update";
 
 export interface RenderModel {
   conversations?: ConversationModel;
@@ -134,8 +135,9 @@ function renderView(snapshot: StatusSnapshot, model: RenderModel): string {
 }
 
 function viewOverview(snapshot: StatusSnapshot): string {
+  const update = updateBanner(snapshot.update);
   if (!snapshot.items.length && !snapshot.questions.length)
-    return `${pageHeading("overview")}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
+    return `${pageHeading("overview")}${update}<div class="empty">${esc(EMPTY_ISSUES)}</div>`;
   const runs = new Map(snapshot.runs.map((run) => [run.id, run]));
   const attention = snapshot.items.flatMap((item) => {
     const run = item.runId ? runs.get(item.runId) : undefined;
@@ -204,7 +206,7 @@ function viewOverview(snapshot: StatusSnapshot): string {
     ...(queued ? [`${queued} queued`] : []),
     ...(merging ? [`${merging} waiting to merge`] : []),
   ].join(" · ");
-  return `${pageHeading("overview")}
+  return `${pageHeading("overview")}${update}
     <div class="between"><p class="overview-summary">${esc(summary)}</p><a href="${routeHref({ view: "issues", id: null })}">All issues</a></div>
     <section class="overview-section" aria-labelledby="attention-heading"><h2 id="attention-heading">Needs you</h2>
       ${attention.length ? `<ul class="overview-work" role="list">${attention.map((entry) => `<li class="overview-row"><div class="overview-copy"><div><span class="lin-id">${esc(entry.itemId)}</span> <b>${esc(entry.title)}</b></div><p class="muted">${esc(entry.reason)}</p></div><a href="${entry.href}" aria-label="${esc(`${entry.action}: ${entry.itemId}`)}">${esc(entry.action)}</a></li>`).join("")}</ul>` : '<p class="muted">Nothing needs your attention.</p>'}

@@ -21,6 +21,7 @@ import {
   handlePawsUpdateRequest,
   UpdateStepError,
 } from "../src/self-update";
+import { createLiveStatusProvider } from "../src/web";
 
 function harness(options: { automatic?: boolean } = {}) {
   const clock = new FakeClock(1_000);
@@ -175,6 +176,28 @@ describe("Paws update", () => {
       status: "failed",
       error: "Paws restarted before the update finished.",
     });
+  });
+});
+
+test("the live status snapshot shows the waiting update and the work it waits for", async () => {
+  const { db, clock, checkout, updater } = harness();
+  const item = insertQueuedItem(db, {
+    id: "eng-102",
+    title: "CSV / JSON formatters",
+    now: clock.now(),
+  });
+  beginImplementRun(db, item.id, clock.now());
+  applyWorkItemEvent(db, item.id, "turn_ended");
+  checkout.main = "b8395a6f";
+  await updater.check("automatic");
+  expect(createLiveStatusProvider(db).snapshot().update).toEqual({
+    target: "b8395a6f",
+    current: "a1",
+    status: "waiting",
+    nowRequested: false,
+    error: null,
+    waitingFor: 1,
+    holding: [{ id: "eng-102", title: "CSV / JSON formatters", phase: "closeout" }],
   });
 });
 
