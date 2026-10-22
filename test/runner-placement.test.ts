@@ -6,6 +6,7 @@ import {
   bindLinearSessionTask,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
+  insertRun,
   migrate,
   openDatabase,
   putWorkspaceUser,
@@ -13,7 +14,11 @@ import {
   syncWorkspaceMember,
 } from "../src/db";
 import { createFakeLinearIssueLifecycle, type LinearIssueOwnership } from "../src/linear";
-import { createRunnerPlacement } from "../src/runner-placement";
+import {
+  createRunnerPlacement,
+  SESSION_GRACE_MS,
+  type PlacementRequest,
+} from "../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { probeRunnerPlacement } from "./local/runner-placement";
 
@@ -26,6 +31,7 @@ async function placeItem(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = Date.now();
+  let clock = now;
   const owner = putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
@@ -112,18 +118,24 @@ async function placeItem(
         return ["colleague", "pool"];
       },
     },
-    now: () => now,
+    now: () => clock,
   });
   return {
     root,
     db,
-    async ids() {
+    workspaceId: workspace.id,
+    tick(ms: number) {
+      clock += ms;
+      db.run("UPDATE runner SET last_seen_at=?", [clock]);
+    },
+    async ids(request: Partial<PlacementRequest> = {}) {
       return (
         await placement.candidates({
           itemId: item.id,
           profile: { agent: "codex", model: "implementation-model" },
           role: "implementer" as const,
           purpose: "work" as const,
+          ...request,
         })
       ).map((row) => row.id);
     },
@@ -207,6 +219,49 @@ test("a new delegate during selection still stops placement", async () => {
   });
   try {
     await expect(placed.ids()).rejects.toThrow("Runner issue ownership changed during selection");
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a continuing task lands on the runner of its last session, or elsewhere after the grace period", async () => {
+  const placed = await placeItem(true);
+  try {
+    const session = { session: { runnerId: "shared" } };
+    expect(await placed.ids()).toEqual(["own", "api", "shared"]);
+    expect(await placed.ids(session)).toEqual(["shared", "own", "api"]);
+
+    const run = insertRun(placed.db, { itemId: "item", now: Date.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'shared',?,1,0,'busy',?,0)",
+      [run.id, placed.workspaceId, Date.now() + 60 * 60_000],
+    );
+    expect(await placed.ids(session)).toEqual(["shared"]);
+    for (let waited = 0; waited < SESSION_GRACE_MS; waited += 30_000) {
+      expect(await placed.ids(session)).toEqual(["shared"]);
+      placed.tick(30_000);
+    }
+    expect(await placed.ids(session)).toEqual(["own", "api", "shared"]);
+
+    placed.db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [Date.now(), run.id]);
+    expect(await placed.ids(session)).toEqual(["shared", "own", "api"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});
+
+test("a continuing task does not wait for an offline session runner or another account's session", async () => {
+  const placed = await placeItem(true);
+  try {
+    placed.db.run("UPDATE runner SET last_seen_at=0 WHERE id='shared'");
+    expect(await placed.ids({ session: { runnerId: "shared" } })).toEqual(["own", "api"]);
+    expect(await placed.ids({ session: { runnerId: "api", memberId: "other" } })).toEqual([
+      "own",
+      "api",
+    ]);
+    expect(await placed.ids({ session: { runnerId: "api" } })).toEqual(["api", "own"]);
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
