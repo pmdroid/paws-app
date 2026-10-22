@@ -199,8 +199,11 @@ export function startCatchUpPoller(options: {
     for (const session of sighting.sessions)
       if (!session.stoppedAtMs && !session.endedAtMs)
         sessionByIssue.set(session.issueId, session.id);
+    const sessionHasTask = (sessionId: string) =>
+      options.db?.query("SELECT 1 FROM work_item WHERE session_key=? LIMIT 1").get(sessionId) !=
+      null;
     const issueEvents = sighting.issues
-      .map((issue) => issueEvent(issue, sessionByIssue, options.store))
+      .map((issue) => issueEvent(issue, sessionByIssue, options.store, sessionHasTask))
       .filter((event): event is AcceptedLinearEvent => event !== null);
     const events = [
       ...issueEvents,
@@ -379,20 +382,33 @@ export function persistStopCommand(db: Database, command: LinearCommand): void {
   }
 }
 
+const REDELEGATION_MARGIN_MS = 5_000;
+
 function issueEvent(
   issue: PolledIssue,
   sessionByIssue: ReadonlyMap<string, string>,
   store: InboxStore,
+  sessionHasTask: (sessionId: string) => boolean,
 ): AcceptedLinearEvent | null {
   const sessionId = sessionByIssue.get(issue.id) ?? null;
   if (issue.labeled || issue.delegated) {
     const prior = store.get(`issue:${issue.id}:intake`);
     const mode = issue.labeled && issue.delegated ? "both" : issue.labeled ? "label" : "delegate";
+    const delegatedAt = store.getCursor(`delegated:${issue.id}`);
+    const redelegated =
+      prior !== null &&
+      sessionId !== null &&
+      issue.delegated &&
+      delegatedAt !== null &&
+      delegatedAt > prior.updatedAtMs + REDELEGATION_MARGIN_MS &&
+      !sessionHasTask(sessionId);
     return inboxEvent({
       dedupeKey:
         prior !== null && sessionId !== null && prior.sessionId !== sessionId
           ? `session:${sessionId}:created`
-          : `issue:${issue.id}:intake`,
+          : redelegated
+            ? `issue:${issue.id}:intake:${delegatedAt}`
+            : `issue:${issue.id}:intake`,
       action: "created",
       sessionId,
       issueId: issue.id,
