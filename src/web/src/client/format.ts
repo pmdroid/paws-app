@@ -265,3 +265,8 @@ export function queueLine(queue: StatusQueuePosition): string {
   const slots = queue.totalSlots === 1 ? "runner slot" : "runner slots";
   return `Queued, ${queue.position}${suffix} in line. ${queue.busySlots} of ${queue.totalSlots} ${slots} ${queue.busySlots === 1 ? "is" : "are"} busy.`;
 }
+
+/** A commit pin reads as its short hash, like the skill settings show it. */
+export function skillVersionLabel(version: string): string {
+  return /^[0-9a-f]{40}$/.test(version) ? version.slice(0, 7) : version;
+}

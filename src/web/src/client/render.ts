@@ -5,6 +5,7 @@ import type {
   StatusLink,
   StatusQuestion,
   StatusRun,
+  StatusRunSetup,
   StatusSnapshot,
   StatusUsagePause,
   StatusVerdict,
@@ -21,6 +22,7 @@ import {
   mergeQueueLine,
   queueLine,
   runLabel,
+  skillVersionLabel,
   PHASE_NAMES,
   statePill,
   taskPhase,
@@ -367,10 +369,34 @@ function viewRuns(
     ${closeoutSection(snapshot, selected.itemId, closeout, engineUrl)}
     ${agent ? renderAgentCloseout(agent, closeout, engineUrl, verdict !== undefined && !IMPLEMENTING.has(item?.state ?? "running")) : ""}
     ${evidenceSlot(snapshot, selected.id)}
+    ${selected.setup ? runSetupSection(selected.setup) : ""}
     <section class="run-activity" aria-labelledby="activity-heading"><h2 id="activity-heading">Task activity${snapshot.source === "live" ? " and agent transcript" : ""}</h2>
       ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
       <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
     </section></article>`;
+}
+
+const HOOK_EVENTS: Record<string, string> = { stop: "When the agent stops" };
+
+/** The skill versions and hooks the run started with. */
+export function runSetupSection(setup: StatusRunSetup): string {
+  const skills = setup.skills.length
+    ? `<ul class="run-setup-list" role="list" aria-label="Skills">${setup.skills
+        .map(
+          (skill) =>
+            `<li class="run-setup-item"><b>${esc(skill.name)}</b><span class="mono" title="${esc(skill.version)}">${esc(skillVersionLabel(skill.version))}</span>${skill.installing ? '<span class="tag running">Was installing</span><span class="muted">The run may have had the earlier version.</span>' : ""}</li>`,
+        )
+        .join("")}</ul>`
+    : '<p class="muted">No registered skills.</p>';
+  const hooks = setup.hooks.length
+    ? `<ul class="run-setup-list" role="list" aria-label="Hooks">${setup.hooks
+        .map(
+          (hook) =>
+            `<li class="run-setup-item"><b>${esc(hook.name)}</b><span class="muted">${esc(HOOK_EVENTS[hook.event] ?? hook.event)}</span></li>`,
+        )
+        .join("")}</ul>`
+    : '<p class="muted">No hooks.</p>';
+  return `<section class="run-setup" aria-labelledby="setup-heading"><h2 id="setup-heading">Skills and hooks</h2><h3>Skills</h3>${skills}<h3>Hooks</h3>${hooks}</section>`;
 }
 
 function executionControls(run: StatusRun): string {
