@@ -19,6 +19,7 @@ import {
   linkList,
   runLabel,
   PHASE_NAMES,
+  queueText,
   statePill,
   taskPhase,
 } from "./format";
@@ -269,6 +270,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
       <div class="issue-facts">${issueMeta(item)}</div>
       <div class="row">${linkList(item.links)}</div>
     </div>
+    ${queueNotice(item)}
     <h3>Runs</h3>
     ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
@@ -284,7 +286,15 @@ function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
 
 function issueMeta(item: StatusItem): string {
   const facts = [item.owner, item.project?.name ?? "Solo"].filter(Boolean);
-  return `<span class="muted">${esc(facts.join(" · "))}</span>`;
+  const queue = item.state === "queued" && item.queue ? queueText(item.queue) : null;
+  return `<span class="muted">${esc(facts.join(" · "))}</span>${queue ? `<span class="muted">${esc(`${queue.place} ${queue.slots}`)}</span>` : ""}`;
+}
+
+/** A queued task's place in line and how busy the runner slots are. */
+function queueNotice(item: StatusItem | undefined): string {
+  if (item?.state !== "queued" || !item.queue) return "";
+  const { place, slots } = queueText(item.queue);
+  return `<section class="closeout-result queue-position" aria-label="Queue"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h2>${esc(place)}</h2><p>${esc(slots)} Paws starts this task when a slot frees.</p></div></section>`;
 }
 
 function issueBucket(item: StatusItem): "needs" | "done" | "active" {
@@ -349,6 +359,7 @@ function viewRuns(
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
     <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${queueNotice(item)}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
       .map(
@@ -453,6 +464,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
     item?.state !== "queued" &&
     item?.state !== "planning" &&
     item?.state !== "awaiting_input";
+  if (item?.state === "queued" && item.queue) return statePill("queued", "Queued");
   if (item?.state === "completed") return statePill("completed", "Complete");
   if (item?.state === "merged") return statePill("merged", "Complete");
   if (recheck) return statePill("verifying", "Closeout");

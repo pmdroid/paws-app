@@ -104,6 +104,14 @@ export interface StatusItem {
   runId: string | null;
   pr: StatusPullRequest | null;
   links: StatusLink[];
+  /** Set while a queued item waits for a runner slot. Position 1 starts next. */
+  queue?: StatusQueuePosition;
+}
+
+export interface StatusQueuePosition {
+  position: number;
+  busySlots: number;
+  totalSlots: number;
 }
 
 export interface StatusActivity {
@@ -490,6 +498,20 @@ function readItem(input: unknown, index: number): StatusItem {
     runId,
     pr: readPr(body.pr, `${path}.pr`),
     links: readLinks(body.links, `${path}.links`),
+    ...(body.queue === undefined || body.queue === null
+      ? {}
+      : { queue: readQueuePosition(body.queue, `${path}.queue`) }),
+  };
+}
+
+function readQueuePosition(input: unknown, path: string): StatusQueuePosition {
+  const body = object(input, path);
+  const position = count(body, "position", path);
+  if (position < 1) throw new StatusContractError(`${path}.position must be an integer >= 1`);
+  return {
+    position,
+    busySlots: count(body, "busySlots", path),
+    totalSlots: count(body, "totalSlots", path),
   };
 }
 

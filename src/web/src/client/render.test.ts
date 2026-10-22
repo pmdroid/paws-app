@@ -48,6 +48,35 @@ describe("status views", () => {
     expect(queued).not.toContain("Working now</h2>\n      <ul");
   });
 
+  test("a queued task shows its place in line on the run page and the issue page", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102");
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "queued";
+    item.queue = { position: 2, busySlots: 4, totalSlots: 4 };
+    snapshot.verdicts = snapshot.verdicts.filter((verdict) => verdict.itemId !== item.id);
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(page).toContain('<span class="st queued">Queued</span>');
+    expect(page).toContain("<h2>Queued, 2nd in line.</h2>");
+    expect(page).toContain(
+      "4 of 4 runner slots are busy. Paws starts this task when a slot frees.",
+    );
+    const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(issue).toContain("<h2>Queued, 2nd in line.</h2>");
+    const list = render(model({ snapshot, route: { view: "issues", id: null } })).content;
+    expect(list).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
+
+    item.queue = { position: 1, busySlots: 1, totalSlots: 1 };
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).toContain(
+      "1 of 1 runner slot is busy.",
+    );
+    item.state = "running";
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
+      "in line.",
+    );
+  });
+
   test("terminal closeout outcomes override a stale verifying run in both views", () => {
     for (const [decision, detail] of [
       ["blocked", "Closeout blocked"],
