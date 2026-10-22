@@ -155,6 +155,9 @@ export function createLinearSessionProgress(
       const summary = `${identifier}: ${status}`.slice(0, 255);
       publish("linear.session.summary", { sessionId, summary }, next === "completed");
     },
+    status(text: string) {
+      publish("linear.session.summary", { sessionId, summary: text.slice(0, 255) }, true);
+    },
     link(label: string, url: string) {
       // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.
       enqueueOutboxOnce(db, {
