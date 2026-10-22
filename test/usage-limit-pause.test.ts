@@ -39,7 +39,7 @@ type FakeRunner = {
   /** The account's cooldown. Placement skips the runner until then. */
   cooldownUntil: number;
   /** What the next prompt on this runner does. */
-  next: Array<{ limit: number | null; published?: boolean } | "ok">;
+  next: Array<{ limit: number | null; published?: boolean; chatter?: boolean } | "ok">;
 };
 
 /**
@@ -77,6 +77,16 @@ function fakeRemote(clock: FakeClock, runners: FakeRunner[]) {
         });
         const step = runner.next.shift() ?? "ok";
         if (step !== "ok") {
+          // The agent can print its usage-limit error as message text before the run fails.
+          if (step.chatter)
+            await attempt.onEvent?.({
+              type: "session_update",
+              sessionId: "s",
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "You've hit your usage limit." },
+              },
+            });
           runner.cooldownUntil = step.limit ?? clock.now() + 15 * 60_000;
           throw new RetryableRunnerError(
             runner.id,
@@ -287,7 +297,11 @@ test("a shutdown keeps the wait so the next start continues it", async () => {
   await orchestrator.shutdown();
   controller.abort(new Error("cancelled"));
   await result.catch(() => undefined);
-  expect(getUsageLimitPause(db, item.id)).not.toBeNull();
+  expect(getUsageLimitPause(db, item.id)).toMatchObject({
+    role: "implementer",
+    prompt: expect.stringContaining("The agent stopped at its usage limit."),
+    session: { runnerId: "agentbox", sessionId: "agentbox-session-1" },
+  });
   prepareShutdown(db, START + 1000);
   recoverOnStartup(db, START + 2000);
   expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
@@ -402,5 +416,58 @@ test("Resume now lifts cooldowns only on runners the task can use", () => {
   expect(cooldowns).toEqual([
     { id: "ours", until: 0 },
     { id: "theirs", until: RESET },
+  ]);
+});
+
+test("after a restart the task still waits for its resume time and continues the saved conversation and session", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [] };
+  const { db, clock, item, run, remote, prompt } = setup([runner]);
+  saveUsageLimitPause(db, {
+    itemId: item.id,
+    runId: run.id,
+    agent: "claude",
+    runnerId: "agentbox",
+    resetsAt: RESET,
+    resumeAt: RESET + 60_000,
+    pausedAt: START,
+    role: "implementer",
+    prompt: "Implement PAS-431\n\nObserved prior conversation: WORKING ON IT",
+    session: { runnerId: "agentbox", sessionId: "earlier-session" },
+  });
+  clock.advance(RESET - START);
+  const result = prompt("Resume after the restart");
+  await Bun.sleep(20);
+  expect(remote.calls).toHaveLength(0);
+  clock.advance(60_000);
+  await result;
+  expect(remote.calls).toHaveLength(1);
+  expect(remote.calls[0]!.at).toBe(RESET + 60_000);
+  expect(remote.calls[0]!.prompt).toContain("WORKING ON IT");
+  expect(remote.calls[0]!.prompt).toEndWith("Resume after the restart");
+  expect(remote.calls[0]!.session).toEqual({ runnerId: "agentbox", sessionId: "earlier-session" });
+  expect(getUsageLimitPause(db, item.id)).toBeNull();
+});
+
+test("usage-limit text from a retry that hits the limit again does not end the pause", async () => {
+  const later = RESET + 3_600_000;
+  const runner = {
+    id: "agentbox",
+    cooldownUntil: 0,
+    next: [{ limit: RESET }, { limit: later, chatter: true }],
+  };
+  const { db, clock, item, remote, prompt } = setup([runner]);
+  const result = prompt();
+  await until(() => getUsageLimitPause(db, item.id) !== null);
+  clock.advance(RESET + 60_000 - START);
+  await until(() => remote.calls.length === 2);
+  await until(() => getUsageLimitPause(db, item.id)?.resetsAt === later);
+  expect(linearLines(db)).toEqual([
+    "Paused: Claude reached its usage limit. Paws continues at 18:00 UTC.",
+  ]);
+  clock.advance(later - RESET);
+  await result;
+  expect(linearLines(db)).toEqual([
+    "Paused: Claude reached its usage limit. Paws continues at 18:00 UTC.",
+    "Continuing: Claude is available again. Paws continues the task.",
   ]);
 });

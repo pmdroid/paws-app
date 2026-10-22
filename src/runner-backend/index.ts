@@ -157,21 +157,28 @@ export function createRemoteAgentRunner(options: {
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Map<string, string>();
-  function usageLimitReset(agent: string, sessionId: string | null): number | null {
+  /**
+   * The earliest usage-limit cooldown among the task's runners. `known` is false when the agent
+   * gave no reset time and the cooldown is only the fallback retry interval.
+   */
+  function earliestUsageLimit(
+    agent: string,
+    sessionId: string | null,
+  ): { until: number; known: boolean } | null {
     const runnerInScope = `r.status='active' AND r.revoked_at IS NULL AND r.workspace_id IN
       (SELECT w.id FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE s.session_id=?2)`;
-    return (
-      db
-        .query<{ resetsAt: number | null }, [string, string | null, number]>(
-          `SELECT MIN(resets_at) AS resetsAt FROM (
-         SELECT a.cooldown_until AS resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
+    const row = db
+      .query<{ until: number; resetsAt: number | null }, [string, string | null, number]>(
+        `SELECT until,resets_at AS resetsAt FROM (
+         SELECT a.cooldown_until AS until,a.resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
          WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
          UNION ALL
-         SELECT p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
-         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})`,
-        )
-        .get(agent, sessionId, now())?.resetsAt ?? null
-    );
+         SELECT p.cooldown_until,p.resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+         WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})
+         ORDER BY until LIMIT 1`,
+      )
+      .get(agent, sessionId, now());
+    return row ? { until: row.until, known: row.resetsAt !== null } : null;
   }
   async function select(
     itemId: string,
@@ -184,25 +191,26 @@ export function createRemoteAgentRunner(options: {
       const selected = await place(itemId, placement, rejected, runnerId);
       if (selected) return selected;
       const agent = placement.profile?.agent;
-      const resetsAt = agent
-        ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
+      const limit = agent
+        ? earliestUsageLimit(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
       // A known usage limit pauses the task now, so the wait is announced and not counted as awake
       // time. The pause retries at the reset, when a busy runner may also have a free slot.
       if (
-        resetsAt === null &&
+        limit === null &&
         rejected.some((reason) => reason.endsWith(": no free capacity")) &&
         performance.now() < capacityDeadline
       ) {
         await delay(interval, undefined, { signal: placement.signal });
         continue;
       }
-      if (resetsAt === null)
+      if (limit === null)
         throw new RunnerUnavailableError(
           `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
         );
       // The orchestrator pauses the task until the reset instead of failing it.
-      throw new UsageLimitError(agent!, resetsAt);
+      // A fallback cooldown is not a reset time: the pause retries on its 15-minute schedule.
+      throw new UsageLimitError(agent!, limit.known ? limit.until : null);
     }
   }
   async function place(

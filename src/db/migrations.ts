@@ -1949,8 +1949,13 @@ CREATE TABLE usage_limit_pause (
   runner_id TEXT,
   resets_at INTEGER,
   resume_at INTEGER NOT NULL,
-  paused_at INTEGER NOT NULL
+  paused_at INTEGER NOT NULL,
+  role TEXT,
+  prompt TEXT,
+  session_runner_id TEXT,
+  session_id TEXT
 ) STRICT;
+ALTER TABLE runner_member_account ADD COLUMN resets_at INTEGER;
 `,
   },
 ];
