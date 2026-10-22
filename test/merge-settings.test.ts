@@ -267,14 +267,18 @@ describe("Merging settings API", () => {
         signal,
         token: async () => "ghs_test",
       });
-    const body = await (await handleMergeSettingsRequest(request(), options))!.json();
+    const body = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+      githubQueue: unknown;
+    };
     expect(body.githubQueue).toEqual({ repositories: ["acme/platform"] });
   });
 
   test("a workspace whose repositories have no GitHub merge queue cannot choose it", async () => {
     const { options, audits } = fixture();
     options.githubQueues = async () => [];
-    const body = await (await handleMergeSettingsRequest(request(), options))!.json();
+    const body = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+      githubQueue: unknown;
+    };
     expect(body.githubQueue).toEqual({ repositories: [] });
     const choice = {
       default: { order: "github-queue", mainMoved: "ci" },
