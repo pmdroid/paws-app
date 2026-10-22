@@ -72,10 +72,17 @@ test.each([
       ),
       result.detail,
     ).toBe(true);
-    expect(result.runs, result.detail).toEqual(["implement:ended", "implement:ended"]);
+    expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
   },
   60_000,
 );
+
+test("a deferred remote run is lost, holds no runner slot, and its retry is a new run", async () => {
+  const result = await runRemoteFault("fenced");
+  expect(result.runs, result.detail).toEqual(["implement:lost", "implement:ended"]);
+  expect(new Set(result.runIds).size, result.detail).toBe(2);
+  expect(result.heldSlots, result.detail).toBe(0);
+}, 60_000);
 
 test("a usage limit is waited out inside failover and the task reaches Closeout after the reset", async () => {
   const result = await runRemoteFault("usage-limit");
@@ -211,6 +218,7 @@ async function runRemoteFault(fault: Fault) {
     stopped: false,
     faultedAttempts: 0,
     deferredState: null as string | null,
+    heldSlots: null as number | null,
   };
   const backend = createRemoteAgentRunner({
     db,
@@ -314,6 +322,11 @@ async function runRemoteFault(fault: Fault) {
     if (fault === "unpaired") runner.faultedAttempts++;
     runner.faulty = false;
     runner.deferredState = getWorkItem(db, (deferred.payload as { itemId: string }).itemId)!.state;
+    runner.heldSlots = db
+      .query<{ held: number }, [number]>(
+        "SELECT count(*) AS held FROM runner_work WHERE ended_at IS NULL AND lease_until>?",
+      )
+      .get(Date.now())!.held;
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   }
   const handled = new Set<string>();
@@ -445,8 +458,10 @@ async function runRemoteFault(fault: Fault) {
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
       runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
+      runIds: listRuns(db).map((run) => run.id),
       faultedAttempts: runner.faultedAttempts,
       deferredState: runner.deferredState,
+      heldSlots: runner.heldSlots,
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
         runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
