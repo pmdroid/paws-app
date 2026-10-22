@@ -239,7 +239,9 @@ function applyReverify(db: Database, item: WorkItemRecord, now: number, stamp?: 
   }
   if (item.state === "merge_queue") applyWorkItemEvent(db, item.id, "lease_expired");
   const refreshed = getWorkItem(db, item.id) ?? item;
-  const key = stamp ? `reverify:${item.id}:${stamp.fromWall}` : `reverify:startup:${item.id}`;
+  const key = stamp
+    ? `reverify:${item.id}:${stamp.fromWall}`
+    : `reverify:startup:${item.id}:${now}`;
   enqueueJobOnce(db, {
     queue: JOB_KIND.reverify,
     jobKey: key,
