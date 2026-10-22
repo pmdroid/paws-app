@@ -31,6 +31,7 @@ import {
   type CloseoutProgress,
   type PawsCommandRunner,
   type CloseoutProgressIdentity,
+  type CloseoutProgressStep,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
   type EvidenceApproval,
@@ -104,17 +105,42 @@ export type GateInput = {
  */
 const liveIdentity = new WeakMap<CloseoutProgress, CloseoutProgressIdentity>();
 
+type RunningSteps = Map<string, { identity: CloseoutProgressIdentity; step: CloseoutProgressStep }>;
+
 export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluation> {
   if (input.progress) liveIdentity.delete(input.progress);
-  const native = await evaluateUnsealed(
-    input.progress === undefined ? input : { ...input, progress: observe(input.progress) },
-  );
+  const running: RunningSteps = new Map();
+  let native: Evaluation;
+  try {
+    native = await evaluateUnsealed(
+      input.progress === undefined
+        ? input
+        : { ...input, progress: observe(input.progress, running) },
+    );
+  } catch (error) {
+    stopRunning(input.progress, running, error);
+    seal(input.progress, "blocked");
+    throw error;
+  }
   const evaluation = applyBypasses(native, input.bypasses ?? []);
   seal(input.progress, evaluation.outcome);
   return evaluation;
 }
 
-function observe(progress: CloseoutProgress): CloseoutProgress {
+function stopRunning(
+  progress: CloseoutProgress | undefined,
+  running: RunningSteps,
+  error: unknown,
+): void {
+  if (progress === undefined) return;
+  const message = error instanceof Error ? error.message : String(error);
+  const detail = `Stopped: ${scrub(message)}`;
+  for (const { identity, step } of running.values()) {
+    progress.step(identity, { ...step, state: "blocked", detail, finishedAt: Date.now() });
+  }
+}
+
+function observe(progress: CloseoutProgress, running: RunningSteps): CloseoutProgress {
   const secrets = credentialSecrets();
   const text = (value: string): string => scrubText(value, secrets);
   const optional = (value: string | null): string | null => (value === null ? null : text(value));
@@ -125,13 +151,16 @@ function observe(progress: CloseoutProgress): CloseoutProgress {
     },
     step(identity, step) {
       liveIdentity.set(progress, identity);
-      progress.step(identity, {
+      const scrubbed = {
         ...step,
         command: text(step.command),
         detail: optional(step.detail),
         timeoutReason: optional(step.timeoutReason),
         findings: optional(step.findings),
-      });
+      };
+      if (scrubbed.state === "running") running.set(step.id, { identity, step: scrubbed });
+      else running.delete(step.id);
+      progress.step(identity, scrubbed);
     },
     output(identity, stepId, stream, chunk, truncated) {
       progress.output(identity, stepId, stream, text(chunk), truncated);
