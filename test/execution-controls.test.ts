@@ -9,7 +9,7 @@ test("Workspace execution controls reach canonical Stop, Pause and Resume with c
   const root = mkdtempSync(join(tmpdir(), "paws-controls-"));
   try {
     const observations = await probeExecutionControls(root);
-    assert.equal(observations.length, 9);
+    assert.equal(observations.length, 10);
     assert(observations.every((entry) => entry.passed));
   } finally {
     rmSync(root, { recursive: true, force: true });

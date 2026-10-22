@@ -125,6 +125,13 @@ export interface StatusRun {
   summary: string;
   activity: StatusActivity[];
   links: StatusLink[];
+  /** Present while the run waits for its agent's usage limit to reset. */
+  usagePause?: StatusUsagePause;
+}
+
+export interface StatusUsagePause {
+  agent: string;
+  resumeAt: string;
 }
 
 export interface StatusQuestion {
@@ -550,7 +557,15 @@ function readRun(input: unknown, index: number): StatusRun {
       readActivity(entry, `${path}.activity[${step}]`),
     ),
     links: readLinks(body.links, `${path}.links`),
+    ...(body.usagePause === undefined || body.usagePause === null
+      ? {}
+      : { usagePause: readUsagePause(body.usagePause, `${path}.usagePause`) }),
   };
+}
+
+function readUsagePause(input: unknown, path: string): StatusUsagePause {
+  const body = object(input, path);
+  return { agent: text(body, "agent", path), resumeAt: dateString(body, "resumeAt", path) };
 }
 
 function readQuestion(input: unknown, index: number): StatusQuestion {
