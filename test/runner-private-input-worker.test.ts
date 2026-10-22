@@ -19,7 +19,7 @@ test("worker restores protected inputs and excludes them from real candidate che
       executeRunnerCommand,
       true,
     );
-    assert.equal(observations.length, 16);
+    assert.equal(observations.length, 17);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
