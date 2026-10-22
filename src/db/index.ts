@@ -358,3 +358,11 @@ export {
   schedulePawsUpdate,
   type PawsUpdate,
 } from "./paws-update";
+export {
+  clearUsagePauses,
+  endUsagePause,
+  resumeUsagePauseNow,
+  startUsagePause,
+  usagePause,
+} from "./usage-pause";
+export type { UsagePause } from "./usage-pause";

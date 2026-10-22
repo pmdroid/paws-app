@@ -16,7 +16,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getTaskMode, getWorkItem, immediate, runnerHasCapacity, saveCheckpoint } from "../db";
+import {
+  endUsagePause,
+  getTaskMode,
+  getWorkItem,
+  immediate,
+  runnerHasCapacity,
+  saveCheckpoint,
+  startUsagePause,
+  usagePause,
+} from "../db";
 import {
   ArtifactRejectedError,
   assertDescendsFromAny,
@@ -28,7 +37,6 @@ import {
   runDir,
   type AcpEvent,
   type RunAgentOptions,
-  type RunAgentResult,
   encodePolicyFiles,
 } from "../acp";
 import type { RunnerWork } from "../runner-work";
@@ -39,13 +47,20 @@ import type { RunnerCommand, RunnerResult } from "../runner-protocol";
 import type { RunnerTranscripts } from "../runner-transcripts";
 import type { RunnerInputStore } from "../runner-inputs";
 import { createRemoteCancellation } from "./cancel";
-import { RetryableRunnerError, runWithFailover } from "./failover";
+import {
+  RetryableRunnerError,
+  runWithFailover,
+  USAGE_LIMIT_RESUME_SLACK_MS,
+  UsageLimitPause,
+  type FailoverAttempt,
+  type UsageLimit,
+  type UsageLimitWait,
+} from "./failover";
 import { PawsShutdown } from "../core";
 import type { RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {}
 
-const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
 const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
@@ -175,13 +190,12 @@ export function createRemoteAgentRunner(options: {
   async function select(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
-    runnerId?: string,
+    limit?: UsageLimit,
   ) {
-    const deadline = performance.now() + USAGE_LIMIT_WAIT_MS;
     const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
     for (;;) {
       const rejected: string[] = [];
-      const selected = await place(itemId, placement, rejected, runnerId);
+      const selected = await place(itemId, placement, rejected);
       if (selected) return selected;
       const agent = placement.profile?.agent;
       const resetsAt = agent
@@ -195,23 +209,19 @@ export function createRemoteAgentRunner(options: {
         await delay(interval, undefined, { signal: placement.signal });
         continue;
       }
-      if (resetsAt === null)
+      if (agent && limit && limit.resumeAt > now())
+        throw new UsageLimitPause(agent, limit.resumeAt, limit.resetsAt, limit.runnerId);
+      if (!agent || resetsAt === null)
         throw new RunnerUnavailableError(
           `No available paired runner can access this Linear task repository${rejected.length ? ` (${rejected.join("; ")})` : ""}`,
         );
-      const wait = resetsAt - now();
-      if (wait > deadline - performance.now())
-        throw new RunnerUnavailableError(
-          `${agent} reached its usage limit until ${new Date(resetsAt).toISOString()}`,
-        );
-      await delay(Math.min(wait, interval * 20), undefined, { signal: placement.signal });
+      throw new UsageLimitPause(agent, resetsAt + USAGE_LIMIT_RESUME_SLACK_MS, resetsAt, null);
     }
   }
   async function place(
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: string[],
-    runnerId?: string,
   ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
@@ -229,7 +239,6 @@ export function createRemoteAgentRunner(options: {
     placement.signal?.throwIfAborted();
     for (const runner of candidates) {
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
-      if (runnerId && runner.id !== runnerId) continue;
       const reserved = [...reservations].filter(
         ([runId, hostId]) =>
           hostId === runner.id &&
@@ -300,13 +309,48 @@ export function createRemoteAgentRunner(options: {
     };
   }
   const cancelItem = createRemoteCancellation(options);
+  function usageLimitWait(itemId: string, input: RunAgentOptions): UsageLimitWait {
+    return {
+      now,
+      async pause(limit) {
+        const runId = getWorkItem(db, itemId)?.currentRunId;
+        if (!runId) throw limit;
+        const agent = agentName(limit.agent);
+        startUsagePause(db, {
+          runId,
+          itemId,
+          agent: limit.agent,
+          runnerId: limit.runnerId,
+          resetsAt: limit.resetsAt,
+          resumeAt: limit.resumeAt,
+          pausedAt: now(),
+        });
+        try {
+          await input.onEvent?.({
+            type: "progress",
+            text: `Paused: ${agent} reached its usage limit. Paws continues at ${clockTime(limit.resumeAt, now())}.`,
+          });
+          // Resume now moves resume_at forward; Stop aborts the signal.
+          for (;;) {
+            const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
+            if (wait <= 0) break;
+            await delay(Math.min(wait, interval * 20), undefined, { signal: input.signal });
+          }
+        } finally {
+          endUsagePause(db, runId);
+        }
+        input.signal?.throwIfAborted();
+        await input.onEvent?.({
+          type: "progress",
+          text: `Continuing: Paws is trying ${agent} again after its usage limit.`,
+        });
+      },
+    };
+  }
   return {
     cancelItem,
     forItem(itemId: string) {
-      const attempt = async (
-        input: RunAgentOptions,
-        excluded: readonly string[],
-      ): Promise<RunAgentResult> => {
+      const attempt: FailoverAttempt = async (input, excluded, limit) => {
         input.signal?.throwIfAborted();
         if (!input.profile) throw new Error("Remote agent profile is required");
         const mode = getTaskMode(db, itemId);
@@ -333,7 +377,7 @@ export function createRemoteAgentRunner(options: {
         };
         const attached =
           !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
-        const selected = attached?.selected ?? (await select(itemId, placementRequest));
+        const selected = attached?.selected ?? (await select(itemId, placementRequest, limit));
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -421,6 +465,9 @@ export function createRemoteAgentRunner(options: {
                     result.authRequired
                       ? "The runner agent requires sign-in."
                       : "The runner agent exhausted its observed quota.",
+                    undefined,
+                    false,
+                    disposition.usageLimit,
                   );
                 return { ...result, role: input.role, transcriptPath: transcript };
               }
@@ -674,7 +721,7 @@ export function createRemoteAgentRunner(options: {
           command = assigned;
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
-          let disposition: { retryable: boolean } | undefined;
+          let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           while (now() < deadline) {
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
@@ -693,9 +740,12 @@ export function createRemoteAgentRunner(options: {
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
                 selected.id,
-                "The reviewer runner requires a fresh eligible agent.",
+                disposition.usageLimit
+                  ? "The reviewer agent reached its usage limit."
+                  : "The reviewer runner requires a fresh eligible agent.",
                 transcript,
                 publishedEffects,
+                disposition.usageLimit,
               );
             const pendingEvents = results.events(assigned.runId, assigned.generation, cursor);
             for (const row of pendingEvents) {
@@ -917,6 +967,7 @@ export function createRemoteAgentRunner(options: {
                 : "The runner agent exhausted its observed quota.",
               transcript,
               publishedEffects,
+              disposition.usageLimit,
             );
           if (complete.reviewText)
             await emit({
@@ -970,6 +1021,20 @@ export function createRemoteAgentRunner(options: {
                 baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
                 wipCommit: complete.candidateSha,
               });
+            // The checkpoint keeps the work so far; the task waits for the reset.
+            if (
+              disposition?.usageLimit &&
+              complete.stopReason !== "end_turn" &&
+              !complete.cancelled &&
+              !complete.timedOut
+            )
+              throw new RetryableRunnerError(
+                selected.id,
+                "The runner agent reached its usage limit.",
+                transcript,
+                publishedEffects,
+                disposition.usageLimit,
+              );
           }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
@@ -1035,7 +1100,12 @@ export function createRemoteAgentRunner(options: {
         }
       };
       return (input: RunAgentOptions) =>
-        runWithFailover(input, attempt, async () => cancelItem(itemId, input.signal));
+        runWithFailover(
+          input,
+          attempt,
+          async () => cancelItem(itemId, input.signal),
+          usageLimitWait(itemId, input),
+        );
     },
   };
 }
@@ -1043,3 +1113,14 @@ export function createRemoteAgentRunner(options: {
 export { createRemoteSessionAgentRunner } from "./helpers";
 
 export { fetchRunnerCandidate } from "./candidate";
+
+function agentName(agent: string): string {
+  return agent.charAt(0).toUpperCase() + agent.slice(1);
+}
+
+function clockTime(at: number, now: number): string {
+  const time = new Date(at).toISOString();
+  const day =
+    time.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${time.slice(0, 10)} `;
+  return `${day}${time.slice(11, 16)} UTC`;
+}

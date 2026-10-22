@@ -6,6 +6,7 @@ import type {
   StatusQuestion,
   StatusRun,
   StatusSnapshot,
+  StatusUsagePause,
   StatusVerdict,
 } from "../contract";
 import {
@@ -21,6 +22,7 @@ import {
   PHASE_NAMES,
   statePill,
   taskPhase,
+  utcClock,
 } from "./format";
 import { needsSnapshot, routeHref, type Route } from "./route";
 import { parseEngineUrl } from "../endpoint";
@@ -350,7 +352,7 @@ function viewRuns(
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
-    <div id="execution-controls" data-item="${esc(selected.itemId)}" hidden></div>
+    ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
       .map(
@@ -365,6 +367,19 @@ function viewRuns(
       ${activityActions(snapshot.source === "live" ? transcriptHref : null, selected.links)}
       <div class="log" data-log="activity-${esc(selected.id)}" data-follow="">${selected.activity.map((line) => `<div class="ln ${esc(line.kind)}"><span class="ts">${esc(clock(line.at))}</span><span class="ty">${esc(line.kind)}</span><span class="tx">${esc(line.text)}</span></div>`).join("")}</div>
     </section></article>`;
+}
+
+function executionControls(run: StatusRun): string {
+  return `<div id="execution-controls" data-item="${esc(run.itemId)}" hidden></div>`;
+}
+
+/** The run waits for its agent's usage limit to reset. Resume now and Stop sit beside the heading. */
+function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
+  const at = utcClock(pause.resumeAt);
+  return `<section class="usage-pause" aria-labelledby="usage-pause-heading">
+    <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(run)}</div>
+    <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the task${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
+  </section>`;
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */
@@ -424,12 +439,15 @@ function phaseStrip(
   agent?: StatusAgentCloseout,
 ): string {
   const phase = taskPhase(item?.state ?? null, run?.state ?? "running", verdict?.decision);
+  const paused = run?.usagePause ? `paused until ${utcClock(run.usagePause.resumeAt)}` : "";
   const names = PHASE_NAMES.map((name, index) =>
-    index === 0 && agent?.attempts.at(-1)?.checks.length
-      ? `${name} · Agent Closeout ${agentProgress(agent)}`
-      : index === 1 && verdict
-        ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
-        : name,
+    paused && index === phase.current
+      ? `${name} · ${paused}`
+      : index === 0 && agent?.attempts.at(-1)?.checks.length
+        ? `${name} · Agent Closeout ${agentProgress(agent)}`
+        : index === 1 && verdict
+          ? `${name} · ${verdict.attempt} of ${verdict.maxAttempts}`
+          : name,
   );
   const marks = names
     .map((name, index) => {
@@ -457,6 +475,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
     item?.state !== "awaiting_input";
   if (item?.state === "completed") return statePill("completed", "Complete");
   if (item?.state === "merged") return statePill("merged", "Complete");
+  if (run.usagePause) return statePill("running usage-limit", "Paused · usage limit");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
   if (verdict?.decision === "exhausted" || item?.state === "exhausted")

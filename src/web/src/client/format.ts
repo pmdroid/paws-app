@@ -174,6 +174,12 @@ export function clock(iso: string): string {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+/** Hours and minutes in UTC, as the Linear pause line shows them. */
+export function utcClock(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(11, 16);
+}
+
 export function ago(iso: string, now: string): string {
   const delta = Date.parse(now) - Date.parse(iso);
   if (Number.isNaN(delta)) return "";
