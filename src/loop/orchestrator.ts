@@ -163,6 +163,10 @@ import {
   type OutboxDispatcher,
   type WorkItemRecord,
   getTaskMergeSettings,
+  getTaskLinearRead,
+  keepTaskLinearRead,
+  linearActivitiesListedAt,
+  markLinearActivitiesListed,
   keepTaskMergeSettings,
   type TaskMergeSettings,
   joinMergeQueue,
@@ -192,6 +196,7 @@ import type {
   TrackerRequestOptions,
   LinearActivitySnapshot,
   LinearFileTransfer,
+  RepositoryHints,
   RepositorySuggestion,
   LinearMergeContext,
 } from "../linear";
@@ -404,7 +409,6 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
-  private readonly projectOverviews = new Map<string, string>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -4403,6 +4407,8 @@ export class Orchestrator {
       );
     }
     if (!this.tracker?.listSessionActivities) return;
+    const generation = getLinearSessionGeneration(this.db, sessionId);
+    if (linearActivitiesListedAt(this.db, sessionId) === generation) return;
     const activities = await this.tracker.listSessionActivities(sessionId, { signal });
     signal.throwIfAborted();
     immediate(this.db, () => {
@@ -4413,18 +4419,27 @@ export class Orchestrator {
           createdAt: activity.createdAt,
           snapshot: JSON.stringify(activity),
         });
+      markLinearActivitiesListed(this.db, sessionId, generation);
     });
   }
 
   private async loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void> {
     const item = getWorkItem(this.db, itemId);
     const tracker = this.options.tracker;
-    if (!item || this.projectOverviews.has(itemId) || !tracker?.projectOverview) return;
+    if (
+      !item ||
+      getTaskLinearRead(this.db, itemId, "project_overview") !== undefined ||
+      !tracker?.projectOverview
+    )
+      return;
     try {
       const overview = await tracker.projectOverview(item.linearIssueId, { signal });
-      this.projectOverviews.set(
+      keepTaskLinearRead(
+        this.db,
         itemId,
+        "project_overview",
         overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+        this.now(),
       );
     } catch {
       signal.throwIfAborted();
@@ -4441,7 +4456,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
-      this.projectOverviews.get(item.id) ?? "",
+      (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
       ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
       classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
@@ -4965,12 +4980,17 @@ export class Orchestrator {
       let hinted: ReturnType<typeof hintedRepository> = null;
       if (this.tracker?.issueRepositoryHints) {
         try {
-          hinted = hintedRepository(
-            candidates,
-            await this.tracker.issueRepositoryHints(item.linearIssueId, {
+          const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
+            | RepositoryHints
+            | undefined;
+          const hints =
+            kept ??
+            (await this.tracker.issueRepositoryHints(item.linearIssueId, {
               signal: controller.signal,
-            }),
-          );
+            }));
+          if (kept === undefined)
+            keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+          hinted = hintedRepository(candidates, hints);
         } catch (error) {
           controller.signal.throwIfAborted();
           console.error(
@@ -4982,8 +5002,25 @@ export class Orchestrator {
       }
       const best = new Map<string, RepositorySuggestion>();
       const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const poolNames = pool.map((candidate) =>
+        `${candidate.owner}/${candidate.repo}`.toLowerCase(),
+      );
+      const keptSuggestions = getTaskLinearRead(this.db, item.id, "repository_suggestions") as
+        | { pool: string[]; suggestions: RepositorySuggestion[] }
+        | undefined;
+      const reuseSuggestions =
+        keptSuggestions !== undefined &&
+        poolNames.every((name) => keptSuggestions.pool.includes(name));
+      if (reuseSuggestions)
+        for (const suggestion of keptSuggestions.suggestions)
+          best.set(suggestion.repositoryFullName.toLowerCase(), suggestion);
       const attempts =
-        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+        !reuseSuggestions &&
+        !(hinted && "bind" in hinted) &&
+        this.tracker?.issueRepositorySuggestions
+          ? 3
+          : 0;
+      let suggested = false;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
           const read = await this.tracker!.issueRepositorySuggestions!(
@@ -4996,6 +5033,7 @@ export class Orchestrator {
             },
             { signal: controller.signal },
           );
+          suggested = true;
           for (const suggestion of read) {
             const key = suggestion.repositoryFullName.toLowerCase();
             if ((best.get(key)?.confidence ?? -1) < suggestion.confidence)
@@ -5011,6 +5049,14 @@ export class Orchestrator {
           if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
         }
       }
+      if (suggested)
+        keepTaskLinearRead(
+          this.db,
+          item.id,
+          "repository_suggestions",
+          { pool: poolNames, suggestions: [...best.values()] },
+          this.now(),
+        );
       if (this.stopped(item.id)) return false;
       const choice =
         hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);
