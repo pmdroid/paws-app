@@ -32,6 +32,7 @@ import {
   listJobs,
   listMergeQueues,
   listCloseoutRecoveries,
+  listCiRounds,
   listCloseoutRounds,
   listRuns,
   listArtifacts,
@@ -39,6 +40,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  type CiRound,
 } from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
@@ -271,6 +273,90 @@ test.each([false, true, "cap"] as const)(
   },
   20000,
 );
+
+test("a task retried after failing moves its Linear issue to started again", async () => {
+  const layout = await repoLayout();
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "retry",
+      identifier: "ENG-303",
+      title: "Retry after a cap",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  let launches = 0;
+  const entered = (launch: number) => path.join(layout.root, `entered-${launch}`);
+  const release = path.join(layout.root, "release");
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    caps: { maxTurns: 80, maxAwakeMs: 3 * 60 * 60 * 1000 },
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    launch(input) {
+      const launch = input.purpose === "implement" ? ++launches : 0;
+      const scriptPath = path.join(layout.root, `retry-${input.purpose}-${launch}.json`);
+      const script: FakeScript = {
+        model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+        steps:
+          input.purpose === "review"
+            ? emptyReview().steps
+            : [
+                {
+                  type: "terminal",
+                  command: "bun",
+                  args: [
+                    "-e",
+                    `await Bun.write(${JSON.stringify(entered(launch))}, "ready"); while (!(await Bun.file(${JSON.stringify(release)}).exists())) await Bun.sleep(10);`,
+                  ],
+                },
+                writeOk(input.worktree),
+                { type: "end" },
+              ],
+      };
+      writeFileSync(scriptPath, JSON.stringify(script));
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  const started = () => tracker.statuses.filter((update) => update.stateType === "started");
+  const waitFor = async (file: string) => {
+    for (let i = 0; i < 1_000 && !existsSync(file); i++) await Bun.sleep(10);
+    expect(existsSync(file), debug(layout, db)).toBe(true);
+  };
+  let running: Promise<unknown> | undefined;
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "retry"));
+    running = jobs.tick();
+    await waitFor(entered(1));
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(started()).toHaveLength(1);
+    const item = listWorkItems(db)[0]!;
+    configureWorkItem(db, item.id, { maxAwakeMs: 1_000 });
+    accrueAwake(db, item.id, 0);
+    accrueAwake(db, item.id, 1_000);
+    expect(getWorkItem(db, item.id)?.state).toBe("failed");
+    await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
+    await running;
+    running = jobs.tick();
+    await waitFor(entered(2));
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(started(), debug(layout, db)).toHaveLength(2);
+  } finally {
+    writeFileSync(release, "go");
+    await running;
+    await orchestrator.shutdown();
+    db.close();
+    await layout.cleanup();
+  }
+}, 30_000);
 
 test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
   const layout = await repoLayout();
@@ -2997,6 +3083,12 @@ test("a Linear rate limit during a run waits for the reset and merges instead of
   expect(result.implementRuns, result.detail).toBe(1);
 }, 120_000);
 
+test("a Closeout policy without a review check never starts the reviewer", async () => {
+  const result = await runCiFix({ failRounds: 0, withoutReview: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.reviewerLaunches, result.detail).toBe(0);
+}, 120_000);
+
 test("CI green on the first round merges without a fix round", async () => {
   const result = await runCiFix({ failRounds: 0 });
   expect(result.state, result.detail).toBe("merged");
@@ -3011,6 +3103,22 @@ test("a CI failure goes back to the agent and merges once the fix is green", asy
   expect(result.implementRuns).toBe(2);
   expect(result.lines).toEqual(["CI: `test` failed. Sent back to the agent, fix 1 of 3."]);
   expect(result.questions).toEqual([]);
+  expect(result.prompts[1]).toContain(
+    "End of the `test` log:\n```\nbun test v1.4.2\n✗ formats an empty list\n 1 fail\n```",
+  );
+  expect(result.rounds).toHaveLength(1);
+  expect(result.rounds[0]).toMatchObject({ next: "agent", fix: 1, fixLimit: 3 });
+  expect(result.rounds[0]?.runId).not.toBeNull();
+  expect(result.rounds[0]?.checks.map((check) => [check.name, check.state])).toEqual([
+    ["lint", "passed"],
+    ["test", "failed"],
+    ["e2e", "running"],
+  ]);
+  expect(result.rounds[0]?.checks[1]).toMatchObject({
+    url: "https://ci.example/1",
+    logSource: "actions",
+    logTail: "bun test v1.4.2\n✗ formats an empty list\n 1 fail",
+  });
 }, 120_000);
 
 test("when the CI fix attempts run out, Paws asks in Linear instead of failing", async () => {
@@ -3021,6 +3129,11 @@ test("when the CI fix attempts run out, Paws asks in Linear instead of failing",
   expect(result.questions).toHaveLength(1);
   expect(result.questions[0]).toContain("The agent used all 1 CI fix attempt.");
   expect(result.questions[0]).toContain("- test (https://ci.example/1)");
+  expect(result.rounds.map((round) => [round.next, round.fix, round.fixLimit])).toEqual([
+    ["agent", 1, 1],
+    ["asked", null, 1],
+  ]);
+  expect(new Set(result.rounds.map((round) => round.head)).size).toBe(2);
 }, 120_000);
 
 test("a reply with guidance after the last CI fix attempt starts one more fix round", async () => {
@@ -3061,16 +3174,23 @@ async function runCiFix(options: {
   answer?: string;
   attemptsAfterFirstFix?: number;
   rateLimitFirstLaunch?: boolean;
+  withoutReview?: boolean;
 }): Promise<{
   state: string | null;
   implementRuns: number;
+  reviewerLaunches: number;
   lines: string[];
   questions: string[];
   prompts: string[];
+  rounds: CiRound[];
   detail: string;
 }> {
   const layout = await repoLayout();
   const configPath = path.join(layout.pawsRoot, "config.toml");
+  if (options.withoutReview)
+    await withGitIdentity(() =>
+      commitOnMain(layout.bare, CLOSEOUT_POLICY_WITHOUT_REVIEW, ".agents/closeout.yaml"),
+    );
   if (options.attempts !== undefined)
     await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
   const tracker = createFakeTracker([
@@ -3092,6 +3212,7 @@ async function runCiFix(options: {
   let sequence = 0;
   let implementRuns = 0;
   let launches = 0;
+  let reviewerLaunches = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -3106,6 +3227,8 @@ async function runCiFix(options: {
       privateKeyPem: PRIVATE_KEY,
       client: {
         async request(req) {
+          if (req.path.endsWith("/actions/jobs/77/logs"))
+            return { status: 200, body: "bun test v1.4.2\n✗ formats an empty list\n 1 fail\n" };
           if (!isMergeReadiness(req)) return client.request(req);
           const head = (req.body as { variables: { head: string } }).variables.head;
           if (!heads.includes(head)) heads.push(head);
@@ -3113,13 +3236,21 @@ async function runCiFix(options: {
           const body = fakeMergeReadiness(head);
           body.data.repository.object.statusCheckRollup.contexts.nodes = [
             { name: "lint", conclusion: "SUCCESS", detailsUrl: "https://ci.example/0" },
-            { name: "test", conclusion: "FAILURE", detailsUrl: "https://ci.example/1" },
+            {
+              name: "test",
+              conclusion: "FAILURE",
+              detailsUrl: "https://ci.example/1",
+              databaseId: 77,
+              checkSuite: { app: { slug: "github-actions" } },
+            },
+            { name: "e2e", conclusion: null, detailsUrl: "https://ci.example/2" },
           ];
           return { status: 200, body };
         },
       },
     },
     launch(input) {
+      if (input.role === "reviewer") reviewerLaunches += 1;
       if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
         throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
@@ -3176,11 +3307,13 @@ async function runCiFix(options: {
     return {
       state: stateOf(db, "ENG-94"),
       implementRuns,
+      reviewerLaunches,
       lines: tracker.progress
         .map((update) => update.body)
         .filter((body) => body.startsWith("CI: ")),
       questions: tracker.questions.map((question) => question.body),
       prompts,
+      rounds: listCiRounds(db),
       detail: debug(layout, db),
     };
   } finally {
@@ -4174,6 +4307,18 @@ items:
       differentSession: true
       differentModel: true
     failOn: P1
+`;
+
+const CLOSEOUT_POLICY_WITHOUT_REVIEW = `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test", "check.test.ts"]
+    timeoutSeconds: 60
 `;
 
 const REVIEW_SKILL = `---

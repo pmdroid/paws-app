@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { openDatabase } from "../../src/db";

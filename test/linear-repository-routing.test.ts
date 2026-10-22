@@ -573,6 +573,37 @@ test("a failed Linear suggestion read is retried before asking", async () => {
   }
 });
 
+test("a retried repository selection reuses the hints and suggestions it already read", async () => {
+  const f = fixture({ confidence: 0.95 });
+  try {
+    const readHints = f.tracker.issueRepositoryHints!.bind(f.tracker);
+    let hintReads = 0;
+    f.tracker.issueRepositoryHints = async (issueId, options) => {
+      hintReads += 1;
+      return readHints(issueId, options);
+    };
+    const readSuggestions = f.tracker.issueRepositorySuggestions.bind(f.tracker);
+    let suggestionReads = 0;
+    f.tracker.issueRepositorySuggestions = async (input, options) => {
+      suggestionReads += 1;
+      if (suggestionReads === 3) f.unavailable.add("two");
+      return readSuggestions(input, options);
+    };
+    await f.attach().onLinearEvent(event());
+    await f.jobs.tick();
+    const itemId = (f.db.query("SELECT id FROM work_item").get() as { id: string }).id;
+    expect(getWorkItemRepository(f.db, itemId)).toBeNull();
+    expect([hintReads, suggestionReads]).toEqual([1, 3]);
+    f.unavailable.clear();
+    f.clock.advance(10_000);
+    await f.jobs.tick();
+    expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
+    expect([hintReads, suggestionReads]).toEqual([1, 3]);
+  } finally {
+    f.db.close();
+  }
+});
+
 test("noisy Linear suggestions are sampled and the best clear leader binds", async () => {
   const f = fixture();
   try {

@@ -5,11 +5,13 @@ import {
   DEFAULT_BACKOFF_CAP_MS,
   DEFAULT_LEASE_MS,
   IN_FLIGHT_ITEM_STATES,
+  isMergeWork,
   JOB_KIND,
   MERGE_LANE,
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
+import { journal } from "./journal";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -253,7 +255,9 @@ export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
      WHERE id = ? AND status = 'running' AND locked_by = ?`,
     [now, job.id, job.lockedBy],
   );
-  return result.changes > 0;
+  if (result.changes === 0) return false;
+  journalOutcome({ ...job, status: "done" });
+  return true;
 }
 
 export function failJob(
@@ -302,7 +306,9 @@ export function failJob(
      WHERE id = ? AND status = 'running' AND locked_by = ?`,
     [now, message, job.id, job.lockedBy],
   );
-  return result.changes > 0 ? getJob(db, job.id) : null;
+  if (result.changes === 0) return null;
+  journalOutcome({ ...job, status: "dead", lastError: message });
+  return getJob(db, job.id);
 }
 
 export function isJobCurrent(db: Database, job: Job): boolean {
@@ -341,8 +347,9 @@ export function cancelOpenJobs(
   const merge = input.mergeLane === true ? 1 : 0;
   const exceptId = input.exceptId ?? null;
   if (itemId === null && merge === 0) return 0;
-  const result = db.run(
-    `UPDATE job
+  const rows = db
+    .query<JobRow, Array<string | number | null>>(
+      `UPDATE job
      SET status = 'cancelled',
          last_error = ?,
          locked_by = NULL,
@@ -354,10 +361,26 @@ export function cancelOpenJobs(
        AND (
          (? IS NOT NULL AND json_extract(payload, '$.itemId') = ?)
          OR (? = 1 AND (queue = 'github.merge' OR lane = 'merge' OR queue LIKE 'github.merge.%'))
-       )`,
-    [input.reason, now, exceptId, exceptId, itemId, itemId, merge],
+       )
+     RETURNING *`,
+    )
+    .all(input.reason, now, exceptId, exceptId, itemId, itemId, merge);
+  for (const row of rows) journalOutcome(mapJob(row));
+  return rows.length;
+}
+
+function journalOutcome(job: Job): void {
+  if (
+    !(EXCLUSIVE_QUEUES as readonly string[]).includes(job.queue) &&
+    !isMergeWork(job.queue, job.lane)
+  )
+    return;
+  const payload = job.payload as { itemId?: unknown } | null;
+  const error =
+    job.lastError === null ? "" : ` error=${job.lastError.replace(/\s+/g, " ").slice(0, 200)}`;
+  journal(
+    `job ${job.id} ${job.queue} ${job.status} item=${String(payload?.itemId ?? "-")} attempts=${job.attempts}/${job.maxAttempts}${error}`,
   );
-  return result.changes;
 }
 
 function findByKey(db: Database, jobKey: string): { id: number } | null {
