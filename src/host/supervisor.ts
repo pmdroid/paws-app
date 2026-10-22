@@ -4,6 +4,7 @@ import {
   cancelOpenJobs,
   enqueueOutboxOnce,
   failWorkItem,
+  getUsageLimitPause,
   markRun,
   applyDecision,
   enqueueJobOnce,
@@ -82,6 +83,9 @@ export class HostSupervisor {
 
       const stamp = { fromWall: sample.fromWall, toWall: sample.toWall, sleptMs };
       for (const item of listInFlightItems(this.db)) {
+        // A task waiting for a usage limit to reset keeps waiting on the wall clock. Sleep does
+        // not interrupt it, and restarting from main would drop its checkpoint and conversation.
+        if (getUsageLimitPause(this.db, item.id)) continue;
         const decision = decideWake({
           sleptMs,
           itemState: item.state,

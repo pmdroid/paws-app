@@ -2021,6 +2021,38 @@ export async function probeRunnerBackend(
         coolDown(0);
         observe(name, true, { until });
       }
+      {
+        const busyHosts = hostIds.slice(1).map((hostId) => {
+          db.run(
+            "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
+            [
+              getWorkItem(db, tracked().id)!.currentRunId!,
+              hostId,
+              workspace.id,
+              `full-${hostId}`,
+              Date.now() + 3_600_000,
+            ],
+          );
+          return `full-${hostId}`;
+        });
+        db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=?", [
+          now + 120_000,
+          hostIds[0]!,
+        ]);
+        const limited = tracked();
+        const startedAt = performance.now();
+        await assert.rejects(
+          placedBackend.forItem(limited.id)(input(limited)),
+          (error: unknown) => error instanceof UsageLimitError && error.resetsAt === now + 120_000,
+        );
+        assert(performance.now() - startedAt < 1000);
+        coolDown(0);
+        db.run(
+          `UPDATE runner_work SET ended_at=? WHERE command_id IN (${busyHosts.map(() => "?").join(",")})`,
+          [Date.now(), ...busyHosts],
+        );
+        observe("a usage limit pauses at once even when the other runners are full", true, {});
+      }
       const occupied = hostIds.map((hostId) => {
         const busy = tracked();
         db.run(

@@ -12,6 +12,7 @@ import {
   insertQueuedItem,
   JobLoop,
   listJobs,
+  prepareShutdown,
   recoverOnStartup,
   resumeUsageLimitPauseNow,
   saveCheckpoint,
@@ -274,6 +275,23 @@ test("Stop ends the wait", async () => {
   expect(remote.calls).toHaveLength(1);
   expect(getUsageLimitPause(db, item.id)).toBeNull();
   expect(linearLines(db)).toHaveLength(1);
+});
+
+test("a shutdown keeps the wait so the next start continues it", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [{ limit: RESET }] };
+  const { db, orchestrator, item, controller, prompt } = setup([runner]);
+  saveCheckpoint(db, item.id, { phase: "running", baseSha: "a".repeat(40) });
+  setRecoveryAttempts(db, item.id, 1);
+  const result = prompt();
+  await until(() => getUsageLimitPause(db, item.id) !== null);
+  await orchestrator.shutdown();
+  controller.abort(new Error("cancelled"));
+  await result.catch(() => undefined);
+  expect(getUsageLimitPause(db, item.id)).not.toBeNull();
+  prepareShutdown(db, START + 1000);
+  recoverOnStartup(db, START + 2000);
+  expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+  expect(getUsageLimitPause(db, item.id)).toMatchObject({ resetsAt: RESET });
 });
 
 test("Resume now ends the wait early", async () => {

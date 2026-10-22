@@ -187,7 +187,10 @@ export function createRemoteAgentRunner(options: {
       const resetsAt = agent
         ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
+      // A known usage limit pauses the task now, so the wait is announced and not counted as awake
+      // time. The pause retries at the reset, when a busy runner may also have a free slot.
       if (
+        resetsAt === null &&
         rejected.some((reason) => reason.endsWith(": no free capacity")) &&
         performance.now() < capacityDeadline
       ) {
