@@ -133,6 +133,21 @@ describe("restart recovery", () => {
     expect(listOutbox(db)).toHaveLength(0);
   });
 
+  test("a restart long after the earlier resume resumes the task again", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { id: "eng-later", sessionKey: "ses", now: clock.now() });
+    beginImplementRun(db, item.id, clock.now(), checkpoint);
+    recoverOnStartup(db, clock.now());
+    clock.advance(45 * 60_000);
+
+    expect(recoverOnStartup(db, clock.now())).toEqual([
+      { type: "resume", freshSession: true, checkpoint },
+    ]);
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+    expect(listOutbox(db)).toHaveLength(0);
+    expect(recoverOnStartup(db, clock.now())).toEqual([{ type: "ask_restart" }]);
+  });
+
   test("restarts keep a task running while its runner still holds the work", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
