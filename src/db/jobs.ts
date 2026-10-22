@@ -99,10 +99,6 @@ const IN_FLIGHT_SQL = IN_FLIGHT_ITEM_STATES.map(sqlLiteral).join(", ");
  * those jobs still holds a lease. The in-flight item can still resume, reverify,
  * and merge. Other queues, including `core.command` and `linear.catchup`, are not held up.
  */
-/** A waiting Paws update drains: no new item starts until it applies or is cancelled. */
-const PAWS_UPDATE_DRAINING_SQL =
-  "EXISTS (SELECT 1 FROM paws_update WHERE status IN ('waiting','applying'))";
-
 export function claimJobSql(queueCount: number): string {
   const queueFilter =
     queueCount > 0
@@ -141,7 +137,6 @@ export function claimJobSql(queueCount: number): string {
     "WHERE id = (" +
     "SELECT candidate.id FROM job AS candidate WHERE candidate.run_at <= ?" +
     queueFilter +
-    ` AND NOT (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND ${PAWS_UPDATE_DRAINING_SQL})` +
     ` AND NOT (candidate.queue = ${sqlLiteral(JOB_KIND.start)} AND ${reservation} AND NOT EXISTS
       (SELECT 1 FROM work_item mine WHERE mine.id = ${itemId} AND mine.state = 'queued' AND mine.cancel_requested = 0
       AND NOT EXISTS (SELECT 1 FROM run live WHERE live.item_id=mine.id AND live.status IN ('active','provisioning'))))` +
