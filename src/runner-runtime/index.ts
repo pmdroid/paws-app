@@ -133,6 +133,9 @@ export async function openRunnerRuntime(options: {
       await fail(previous, "the runner restarted while it was running");
       journal.phase(previous.id, "interrupted");
     }
+    const leftover = (await broker.sweep?.()) ?? 0;
+    if (leftover)
+      report(new Error(`Runner stopped ${leftover} processes left by earlier executions`));
   } catch (error) {
     journal.close();
     throw error;

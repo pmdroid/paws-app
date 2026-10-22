@@ -90,6 +90,16 @@ export type RunnerHostSample = {
   osId?: string;
   osVersion?: string;
   runnerVersion?: string;
+  /** Absent when the runner does not report them. */
+  strayProcesses?: RunnerStrayProcess[];
+};
+
+/** A process of the runner user outside the runner's process tree, as last reported. */
+export type RunnerStrayProcess = {
+  pid: number;
+  name: string;
+  ageSeconds: number;
+  cpuPercent: number;
 };
 
 export type RunnerOverview = RunnerRecord & {
@@ -103,6 +113,8 @@ export type RunnerOverview = RunnerRecord & {
     load15: number | null;
     diskTotalBytes: number | null;
     diskFreeBytes: number | null;
+    /** Null when the runner release does not report them. */
+    strayProcesses: RunnerStrayProcess[] | null;
     reportedAt: number;
   } | null;
   os: { id: string | null; version: string | null } | null;
@@ -161,14 +173,15 @@ export function recordRunnerHostStatus(
 ): void {
   db.run(
     `INSERT INTO runner_host_status(runner_id,cpu_percent,cpu_count,memory_total_bytes,memory_available_bytes,
-    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,reported_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    load_1,load_5,load_15,disk_total_bytes,disk_free_bytes,os_id,os_version,runner_version,stray_processes,
+    reported_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(runner_id) DO UPDATE SET cpu_percent=excluded.cpu_percent,cpu_count=excluded.cpu_count,
     memory_total_bytes=excluded.memory_total_bytes,memory_available_bytes=excluded.memory_available_bytes,
     load_1=excluded.load_1,load_5=excluded.load_5,load_15=excluded.load_15,
     disk_total_bytes=excluded.disk_total_bytes,disk_free_bytes=excluded.disk_free_bytes,
     os_id=excluded.os_id,os_version=excluded.os_version,runner_version=excluded.runner_version,
-    reported_at=excluded.reported_at`,
+    stray_processes=excluded.stray_processes,reported_at=excluded.reported_at`,
     [
       runnerId,
       sample.cpuPercent ?? null,
@@ -183,6 +196,7 @@ export function recordRunnerHostStatus(
       sample.osId ?? null,
       sample.osVersion ?? null,
       sample.runnerVersion ?? null,
+      sample.strayProcesses ? JSON.stringify(sample.strayProcesses) : null,
       reportedAt,
     ],
   );
@@ -241,6 +255,7 @@ export function listRunnerOverview(
     osId: string | null;
     osVersion: string | null;
     runnerVersion: string | null;
+    strayProcesses: string | null;
     reportedAt: number | null;
     busy: number;
     used: number;
@@ -257,7 +272,7 @@ export function listRunnerOverview(
     h.memory_available_bytes AS memoryAvailableBytes,h.load_1 AS load1,h.load_5 AS load5,
     h.load_15 AS load15,h.disk_total_bytes AS diskTotalBytes,h.disk_free_bytes AS diskFreeBytes,
     h.os_id AS osId,h.os_version AS osVersion,h.runner_version AS runnerVersion,
-    h.reported_at AS reportedAt,
+    h.stray_processes AS strayProcesses,h.reported_at AS reportedAt,
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id AND w.ended_at IS NULL)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id
        AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
@@ -290,6 +305,10 @@ export function listRunnerOverview(
               load15: row.load15,
               diskTotalBytes: row.diskTotalBytes,
               diskFreeBytes: row.diskFreeBytes,
+              strayProcesses:
+                row.strayProcesses === null
+                  ? null
+                  : (JSON.parse(row.strayProcesses) as RunnerStrayProcess[]),
               reportedAt: row.reportedAt,
             },
       os:

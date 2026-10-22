@@ -7,6 +7,8 @@ export interface RunnerBrokerClient {
   alive?(executionId: string): boolean;
   log?(executionId: string): string;
   resume?(executionId: string): Promise<void>;
+  /** Stops processes of executions that have no running worker. Returns how many it found. */
+  sweep?(): Promise<number>;
 }
 
 function createBrokerRequest(options: { socketPath?: string } = {}) {

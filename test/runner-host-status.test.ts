@@ -307,3 +307,62 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
   expect((await runner.fetch("/v1/skills/gone/1.0.0"))!.status).toBe(403);
   expect((await runner.fetch("/v1/skills/..%2Fimpeccable/2.4.1"))!.status).toBe(403);
 });
+
+test("the host sampler reports processes of the runner user outside the runner's tree", () => {
+  const root = temporary();
+  const proc = join(root, "proc");
+  mkdirSync(proc);
+  // pid (comm) state ppid ... utime(14) stime(15) ... starttime(22), in clock ticks.
+  const entry = (pid: number, name: string, parent: number, cpu: number, started: number) => {
+    mkdirSync(join(proc, String(pid)), { recursive: true });
+    const fields = ["S", parent, ...Array(9).fill(0), cpu, 0, ...Array(6).fill(0), started];
+    writeFileSync(join(proc, String(pid), "stat"), `${pid} (${name}) ${fields.join(" ")} 0 0\n`);
+  };
+  writeFileSync(join(proc, "uptime"), "1000.00 4000.00\n");
+  entry(100, "paws-runner", 1, 500, 10_000);
+  entry(101, "bun", 100, 9_000, 50_000);
+  entry(102, "codex-sandbox", 101, 100, 60_000);
+  entry(200, "bun", 1, 40_000, 20_000);
+  entry(201, "bg.sh", 1, 0, 80_000);
+  const sampleHost = createRunnerHostSampler({
+    workRoot: root,
+    procRoot: proc,
+    rootPid: 100,
+    uid: process.getuid!(),
+  });
+  // On first sight, CPU is the average over the process lifetime: 400 s of 800 s.
+  expect(sampleHost().strayProcesses).toEqual([
+    { pid: 200, name: "bun", ageSeconds: 800, cpuPercent: 50 },
+    { pid: 201, name: "bg.sh", ageSeconds: 200, cpuPercent: 0 },
+  ]);
+  writeFileSync(join(proc, "uptime"), "1010.00 4000.00\n");
+  entry(200, "bun", 1, 41_600, 20_000);
+  expect(sampleHost().strayProcesses?.[0]).toEqual({
+    pid: 200,
+    name: "bun",
+    ageSeconds: 810,
+    cpuPercent: 160,
+  });
+  const otherUser = createRunnerHostSampler({
+    workRoot: root,
+    procRoot: proc,
+    rootPid: 100,
+    uid: process.getuid!() + 1,
+  });
+  expect(otherUser().strayProcesses).toEqual([]);
+});
+
+test("stray processes are stored with the heartbeat and listed with the metrics", async () => {
+  const runner = await fixture();
+  const strayProcesses = [{ pid: 4242, name: "bun", ageSeconds: 18_000, cpuPercent: 160 }];
+  expect((await runner.heartbeat({ ...sample, strayProcesses }))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.metrics).toMatchObject({ strayProcesses });
+  expect((await runner.heartbeat(sample))!.status).toBe(200);
+  expect((await runner.list()).runners[0]!.metrics).toMatchObject({ strayProcesses: null });
+  for (const stray of [
+    { ...strayProcesses[0], name: "bun\u0000x" },
+    { ...strayProcesses[0], pid: 1 },
+    { ...strayProcesses[0], cmdline: "secret" },
+  ])
+    expect((await runner.heartbeat({ strayProcesses: [stray] }))!.status).toBe(403);
+});

@@ -2139,4 +2139,8 @@ CREATE TABLE delegation_reconciliation (
 UPDATE job SET recurring_every_ms=1800000 WHERE job_key='linear.epics.reconcile';
 `,
   },
+  {
+    id: "097_runner_stray_processes",
+    sql: `ALTER TABLE runner_host_status ADD COLUMN stray_processes TEXT;`,
+  },
 ];

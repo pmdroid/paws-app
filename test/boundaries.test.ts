@@ -147,7 +147,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-protocol": [],
   "runner-login": ["db", "workspace", "runner-work", "runner-protocol"],
   "runner-login-worker": ["acp", "install", "runner-protocol"],
-  "runner-execution": ["runner-protocol"],
+  "runner-execution": ["runner-protocol", "process"],
   "runner-repositories": ["github", "runner-protocol", "core"],
   process: [],
   "runner-cli": [
