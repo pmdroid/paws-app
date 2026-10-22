@@ -22,6 +22,7 @@ export {
   applyWorkItemEvent,
   clearProgress,
   configureWorkItem,
+  deferWorkItem,
   failWorkItem,
   getWorkItem,
   listInFlightItems,
