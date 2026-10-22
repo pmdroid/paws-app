@@ -112,7 +112,9 @@ import {
 } from "./github";
 import { startHost } from "./host";
 import {
+  checkRedelegation,
   createInboxStore,
+  REDELEGATION_CHECK_DELAY_MS,
   createIntakePollSource,
   createLinearTracker,
   openLinear,
@@ -475,8 +477,19 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   await linearTaskAccess.revalidateSessions(sessionIds);
                 },
                 reconcile: async (notification) => {
-                  if (notification.action === "issueAssignedToYou")
+                  if (notification.action === "issueAssignedToYou") {
                     inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
+                    enqueueJobOnce(db, {
+                      queue: "linear.redelegation",
+                      jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
+                      payload: {
+                        issueId: notification.issueId,
+                        delegatedAtMs: notification.createdAtMs,
+                      },
+                      runAt: Date.now() + REDELEGATION_CHECK_DELAY_MS,
+                      now: Date.now(),
+                    });
+                  }
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
                   if (reconciler)
                     await reconciler.issueChanged({
@@ -1151,6 +1164,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               now: Date.now(),
             });
         };
+        created.jobs.register("linear.redelegation", async (job) => {
+          const lifecycle = linear?.issueLifecycle;
+          const onEvent = linear?.webhook.onEvent;
+          if (!lifecycle || !onEvent) return;
+          await checkRedelegation(
+            {
+              db,
+              store: inbox,
+              appUserId: runtime.linearViewerId,
+              inspect: (issueId) => lifecycle.inspect(issueId, { signal: abort.signal }),
+              onEvent,
+            },
+            job.payload as { issueId: string; delegatedAtMs: number },
+          );
+        });
         created.jobs.register("linear.item.reconcile", async (job) => {
           const target = job.payload as { itemId: string; workspaceId: string };
           await reconciler?.reconcile({ ...target, signal: abort.signal });
