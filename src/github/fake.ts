@@ -21,6 +21,11 @@ export type FakeCheckContext = {
   name?: string;
   conclusion?: string | null;
   detailsUrl?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  databaseId?: number | null;
+  summary?: string | null;
+  checkSuite?: { app: { slug: string } | null } | null;
   context?: string;
   state?: string;
   targetUrl?: string | null;
