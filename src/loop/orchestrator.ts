@@ -205,6 +205,7 @@ import {
   LinearIntakePendingError,
   LinearRateLimitError,
   linearCaller,
+  linearItem,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -986,8 +987,20 @@ export class Orchestrator {
     return this.options.db;
   }
 
+  private forItem<T>(payload: unknown, run: () => T): T {
+    const itemId = readString(payload, "itemId");
+    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    return item ? linearItem(item.linearIdentifier, run) : run();
+  }
+
   private register(): void {
-    const jobs = this.options.jobs;
+    const loop = this.options.jobs;
+    const jobs: Pick<typeof loop, "register"> = {
+      register: (queue, handler) =>
+        loop.register(queue, (job, context) =>
+          this.forItem(job.payload, () => handler(job, context)),
+        ),
+    };
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
@@ -1080,7 +1093,7 @@ export class Orchestrator {
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
         "outbox",
-        () => this.deliverLinearMessage(message, context),
+        () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
         message.op === "elicitation" ||
           message.delivery === "critical" ||
           message.delivery === "stop" ||
