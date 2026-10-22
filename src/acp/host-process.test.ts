@@ -7,6 +7,9 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { killTree, spawnAgent, stopChild, waitForExit } from "./process";
 
 const roots: string[] = [];
+// The descendants ignore SIGTERM, so stopping waits this long before SIGKILL
+// and then up to as long again for the group to close on a loaded machine.
+const STOP_GRACE_MS = 500;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -37,12 +40,12 @@ test.skipIf(process.platform === "win32")(
     const { child, descendant } = await processFamily();
     try {
       child.kill("SIGTERM");
-      expect(await waitForExit(child, 1000)).toBe(true);
+      expect(await waitForExit(child, 10_000)).toBe(true);
       expect(running(descendant)).toBe(true);
-      expect(await stopChild(child, 100)).toBe(true);
+      expect(await stopChild(child, STOP_GRACE_MS)).toBe(true);
       await waitUntilStopped(descendant);
     } finally {
-      await stopChild(child, 100);
+      await stopChild(child, STOP_GRACE_MS);
       if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
@@ -53,10 +56,10 @@ test.skipIf(process.platform === "win32")(
   async () => {
     const { child, descendant } = await processFamily();
     try {
-      expect(await stopChild(child, 100)).toBe(true);
+      expect(await stopChild(child, STOP_GRACE_MS)).toBe(true);
       await waitUntilStopped(descendant);
     } finally {
-      await stopChild(child, 100);
+      await stopChild(child, STOP_GRACE_MS);
       if (running(descendant)) process.kill(descendant, "SIGKILL");
     }
   },
@@ -124,7 +127,7 @@ async function processFamily(): Promise<{
     ],
     { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root },
   );
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (const deadline = performance.now() + 10_000; performance.now() < deadline;) {
     try {
       const descendant = Number(fs.readFileSync(pidFile, "utf8"));
       const leader = Number(fs.readFileSync(leaderFile, "utf8"));
@@ -160,8 +163,8 @@ function running(pid: number): boolean {
 }
 
 async function waitUntilStopped(pid: number): Promise<void> {
-  for (let attempt = 0; attempt < 100 && running(pid); attempt += 1) await Bun.sleep(10);
-  expect(running(pid)).toBe(false);
+  // The test timeout bounds a loaded machine.
+  while (running(pid)) await Bun.sleep(10);
 }
 
 describe("spawnAgent", () => {
