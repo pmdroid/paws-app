@@ -20,6 +20,14 @@ export type FakeStep =
   | { type: "fs_read"; path: string }
   | { type: "fs_write"; path: string; content: string }
   | { type: "terminal"; command: string; args?: string[]; cwd?: string }
+  /** The agent itself starts a process, like a sandbox; `detached` moves it to its own session. */
+  | {
+      type: "spawn";
+      command: string;
+      args?: string[];
+      detached?: boolean;
+      env?: Record<string, string>;
+    }
   | { type: "ask_team"; question: string; options?: readonly AskTeamOption[]; context?: string }
   | { type: "update_plan"; steps: readonly { content: string; status: string }[] }
   | { type: "open_pull_request"; title: string; body: string }

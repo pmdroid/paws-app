@@ -477,6 +477,14 @@ async function runSteps(steps: FakeStep[], prompt: number | string | null): Prom
       persist();
       continue;
     }
+    if (step.type === "spawn") {
+      spawn(step.command, step.args ?? [], {
+        detached: step.detached === true,
+        stdio: "ignore",
+        env: step.env ?? process.env,
+      }).unref();
+      continue;
+    }
     if (step.type === "hang") {
       if (script.ignoreCancel) await new Promise(() => undefined);
       await new Promise<void>((resolve) => {

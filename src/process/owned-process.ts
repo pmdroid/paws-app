@@ -3,6 +3,12 @@ import { EventEmitter } from "node:events";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+/**
+ * Names the runner execution a process belongs to. The runner sets it on each worker, and
+ * every owned process inherits it, so the runner can find what an execution left behind.
+ */
+export const EXECUTION_TAG_ENV = "PAWS_EXECUTION";
+
 export class OwnedProcess extends EventEmitter {
   readonly pid: number | undefined;
   readonly stdin: Writable | null;
@@ -23,6 +29,8 @@ export class OwnedProcess extends EventEmitter {
     super();
     if (process.platform === "win32") throw new Error("Owned ACP process groups require POSIX");
     const packaged = !process.execPath.endsWith("/bun");
+    const tag = process.env[EXECUTION_TAG_ENV];
+    if (tag) env = { ...env, [EXECUTION_TAG_ENV]: tag };
     this.anchor = spawn(
       packaged ? "/opt/paws-runner/bin/bun" : process.execPath,
       [
