@@ -475,6 +475,18 @@ export async function probeRunnerPlacement(
       }),
     });
     assert(!(await ids()).includes("own"));
+    db.run(
+      "UPDATE runner_member_account SET cooldown_until=? WHERE runner_id='own' AND user_id=?",
+      [now + 5 * 60_000, colleague],
+    );
+    const ownLimit = await placement.usageLimit!(request);
+    assert.deepEqual(ownLimit, { until: now + 30 * 60_000, known: true });
+    db.run("UPDATE runner_member_account SET cooldown_until=0 WHERE user_id=?", [colleague]);
+    observe(
+      "A usage limit reports the reset of the task's own account, not another member's",
+      true,
+      ownLimit,
+    );
     db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='own'");
     assert(!(await ids()).includes("own"));
     db.run(

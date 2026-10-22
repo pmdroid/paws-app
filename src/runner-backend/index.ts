@@ -158,10 +158,19 @@ export function createRemoteAgentRunner(options: {
   const interval = options.pollIntervalMs ?? 250;
   const reservations = new Map<string, string>();
   /**
-   * The earliest usage-limit cooldown among the task's runners. `known` is false when the agent
-   * gave no reset time and the cooldown is only the fallback retry interval.
+   * The earliest usage-limit cooldown among the runners and accounts placement would give this
+   * request. `known` is false when the cooldown is only the fallback retry interval.
    */
-  function earliestUsageLimit(
+  async function earliestUsageLimit(
+    placement: Parameters<RunnerPlacement["candidates"]>[0],
+    agent: string,
+    sessionId: string | null,
+  ): Promise<{ until: number; known: boolean } | null> {
+    if (options.placement?.usageLimit) return options.placement.usageLimit(placement);
+    return workspaceUsageLimit(agent, sessionId);
+  }
+  /** Without placement, every connected account in the task's workspace can take the work. */
+  function workspaceUsageLimit(
     agent: string,
     sessionId: string | null,
   ): { until: number; known: boolean } | null {
@@ -193,7 +202,7 @@ export function createRemoteAgentRunner(options: {
       if (selected) return selected;
       const agent = placement.profile?.agent;
       const limit = agent
-        ? earliestUsageLimit(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
+        ? await earliestUsageLimit(placement, agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
       // A known usage limit pauses the task now, so the wait is announced and not counted as awake
       // time. The pause retries at the reset, when a busy runner may also have a free slot.

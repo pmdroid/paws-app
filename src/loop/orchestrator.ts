@@ -120,7 +120,10 @@ import {
   savePullRequestDraft,
   recordAgentCloseout,
   immediate,
+  clearUsageLimitContinuation,
   clearUsageLimitPause,
+  getUsageLimitContinuation,
+  saveUsageLimitContinuation,
   getUsageLimitPause,
   resumeUsageLimitPauseNow,
   saveUsageLimitPause,
@@ -3599,8 +3602,16 @@ export class Orchestrator {
       // A pause ends once the resumed agent does real work: it calls a tool, sets a plan or the
       // run succeeds. Message text alone may be the agent repeating its usage-limit error, and a
       // retry that hits the limit again keeps the same pause and posts no new Linear lines.
+      // Only the interrupted call continues its saved conversation. Preflight probes and other
+      // phases end the wait but leave the continuation for that call.
+      const runKey = usageLimitRunKey(options);
+      let owner = false;
       const resumed = async () => {
         if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, true);
+        if (owner && runKey) {
+          clearUsageLimitContinuation(this.db, itemId, runKey);
+          owner = false;
+        }
       };
       const watched: RunAgentOptions["onEvent"] = async (event) => {
         if (
@@ -3611,26 +3622,28 @@ export class Orchestrator {
           await resumed();
         await options.onEvent?.(event);
       };
-      let input = options;
-      // A pause that survived a restart still waits for its resume time, then continues the
-      // interrupted conversation and agent session it saved.
-      const saved = getUsageLimitPause(this.db, itemId);
-      if (saved) {
-        await this.waitForResume(itemId, options.signal);
-        const same = saved.runId === options.runId && saved.role === options.role;
+      let input: RunAgentOptions = { ...options, onEvent: watched };
+      // A pause that survived a restart still waits for its resume time.
+      if (getUsageLimitPause(this.db, itemId)) await this.waitForResume(itemId, options.signal);
+      // The same call continues the interrupted conversation and agent session it saved. A review
+      // continues only for the same request, so a review of a newer commit starts fresh.
+      const saved = runKey ? getUsageLimitContinuation(this.db, itemId) : null;
+      if (
+        saved &&
+        saved.runKey === runKey &&
+        (options.role !== "reviewer" || saved.prompt.startsWith(options.prompt))
+      ) {
+        owner = true;
         input = {
-          ...options,
-          ...(same && saved.prompt
-            ? {
-                prompt: [
-                  saved.prompt,
-                  "Paws restarted while the task waited for the usage limit to reset. The latest instructions follow.",
-                  options.prompt,
-                ].join("\n\n"),
-              }
-            : {}),
-          ...(same && saved.session ? { runnerSession: saved.session } : {}),
-          onEvent: watched,
+          ...input,
+          prompt: saved.prompt.startsWith(options.prompt)
+            ? saved.prompt
+            : [
+                saved.prompt,
+                "Paws restarted while the task waited for the usage limit to reset. The latest instructions follow.",
+                options.prompt,
+              ].join("\n\n"),
+          ...(saved.session ? { runnerSession: saved.session } : {}),
         };
       }
       try {
@@ -3640,9 +3653,26 @@ export class Orchestrator {
             const result = await runner(input);
             this.assertJobCurrent(itemId);
             await resumed();
+            // A finished call of the same role supersedes an older interrupted one. Another role's
+            // continuation stays, so a review interrupted before a restart continues after it.
+            if (
+              runKey &&
+              result.stopReason === "end_turn" &&
+              getUsageLimitContinuation(this.db, itemId)?.runKey.startsWith(`${options.role}:`)
+            )
+              clearUsageLimitContinuation(this.db, itemId);
             return result;
           } catch (error) {
             if (!(error instanceof UsageLimitError)) throw error;
+            if (runKey) {
+              saveUsageLimitContinuation(this.db, {
+                itemId,
+                runKey,
+                prompt: error.prompt ?? input.prompt,
+                session: error.session ?? input.runnerSession ?? null,
+              });
+              owner = true;
+            }
             await this.waitForUsageLimit(itemId, input, error);
             input = {
               ...input,
@@ -3655,8 +3685,10 @@ export class Orchestrator {
       } finally {
         // A shutdown keeps the pause, so startup recovery continues the wait instead of treating
         // the task as interrupted.
-        if (!this.shuttingDown && getUsageLimitPause(this.db, itemId))
-          this.endUsageLimitPause(itemId, false);
+        if (!this.shuttingDown) {
+          if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, false);
+          if (owner && runKey) clearUsageLimitContinuation(this.db, itemId, runKey);
+        }
       }
     };
   }
@@ -3684,9 +3716,6 @@ export class Orchestrator {
         resetsAt: error.resetsAt,
         resumeAt,
         pausedAt,
-        role: input.role,
-        prompt: error.prompt ?? input.prompt,
-        session: error.session ?? null,
       }),
     );
     if (started)
@@ -4894,6 +4923,15 @@ function listsChecks(report: string): boolean {
 }
 
 const USAGE_LIMIT_RETRY_MS = 15 * 60_000;
+
+/**
+ * Identifies an agent call across restarts: its role and run ID, without the attempt counter a
+ * reviewer adds. Preparation probes carry no conversation, so they have none.
+ */
+function usageLimitRunKey(options: RunAgentOptions): string | null {
+  if (options.prepareOnly) return null;
+  return `${options.role}:${options.runId.replace(/^(rev-.+)-\d+$/, "$1")}`;
+}
 
 function agentTitle(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);

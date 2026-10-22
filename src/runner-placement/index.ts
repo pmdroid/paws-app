@@ -17,6 +17,11 @@ export type RunnerPlacement = {
   candidates(
     input: PlacementRequest,
   ): Promise<readonly { id: string; workspaceId: string; memberId?: string }[]>;
+  /**
+   * The earliest usage-limit cooldown among the runners this request could otherwise use, and
+   * whether the agent reported that reset or it is only the fallback retry interval.
+   */
+  usageLimit?(input: PlacementRequest): Promise<{ until: number; known: boolean } | null>;
   started(input: {
     commandId: string;
     runnerId: string;
