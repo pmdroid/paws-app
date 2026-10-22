@@ -2038,4 +2038,17 @@ CREATE TABLE work_item_merge_settings (
 ) STRICT;
 `,
   },
+  {
+    id: "090_merge_queue_entry",
+    sql: `
+CREATE TABLE merge_queue_entry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id TEXT NOT NULL UNIQUE REFERENCES work_item(id),
+  repository TEXT NOT NULL,
+  ready_at INTEGER NOT NULL,
+  notified_position INTEGER
+) STRICT;
+CREATE INDEX merge_queue_entry_repository ON merge_queue_entry(repository, ready_at, id);
+`,
+  },
 ];

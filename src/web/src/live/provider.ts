@@ -49,6 +49,7 @@ import {
   listLinearTurnsForItem,
   listOpenQuestions,
   listOutbox,
+  listMergeQueues,
   listQueuePositions,
   listRuns,
   runRunnerName,
@@ -79,6 +80,7 @@ import {
   type StatusEvent,
   type StatusEvidence,
   type StatusItem,
+  type StatusMergeQueue,
   type StatusMergeEntry,
   type StatusProject,
   type StatusPullRequest,
@@ -180,8 +182,23 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
   const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
+  const recordsById = new Map(records.map((record) => [record.id, record]));
+  const merging = new Map<string, StatusMergeQueue>(
+    listMergeQueues(db).map((entry) => {
+      const ahead = entry.aheadItemId ? recordsById.get(entry.aheadItemId) : undefined;
+      return [
+        entry.itemId,
+        {
+          repository: entry.repository,
+          position: entry.position,
+          total: entry.total,
+          ahead: ahead ? publicId(ahead) : null,
+        },
+      ];
+    }),
+  );
   const items = records.map((record) =>
-    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts, queue),
+    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts, queue, merging),
   );
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -290,12 +307,14 @@ function toItem(
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
   facts: ReadonlyMap<string, WorkItemFact>,
   queue: ReadonlyMap<string, QueuePosition>,
+  merging: ReadonlyMap<string, StatusMergeQueue>,
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
   const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
+  const mergeQueue = record.state === "merge_queue" ? merging.get(record.id) : undefined;
   return {
     id,
     title: textOr(record.title, id),
@@ -319,6 +338,7 @@ function toItem(
           },
         }
       : {}),
+    ...(mergeQueue ? { mergeQueue } : {}),
   };
 }
 

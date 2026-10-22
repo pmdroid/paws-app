@@ -227,6 +227,29 @@ describe("status views", () => {
     );
   });
 
+  test("a task in the merge queue shows its place on the run and issue pages", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102");
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "merge_queue";
+    const before = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(before).not.toContain("queue</h3>");
+    item.mergeQueue = { repository: "acme/platform", position: 2, total: 3, ahead: "ENG-101" };
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(page).toContain("Second in the acme/platform queue");
+    expect(page).toContain("Waiting to merge · #2 in queue");
+    expect(page).toContain("ENG-101 merges first.");
+    item.mergeQueue = { repository: "acme/platform", position: 1, total: 1, ahead: null };
+    const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(issue).toContain("First in the acme/platform queue");
+    expect(issue).toContain("This pull request moves now");
+    item.state = "running";
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
+      "acme/platform queue",
+    );
+  });
+
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
     expect(html).toContain("<h2>Closeout</h2>");
