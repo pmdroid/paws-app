@@ -33,7 +33,6 @@ import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src
 import { migratedDatabase } from "./helpers";
 
 type Fault = "fenced" | "busy" | "unpaired" | "usage-limit" | "preparation-usage-limit";
-type Agent = Extract<RunnerCommand, { type: "run" }>["profile"]["agent"];
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
 const fakeAgent = join(import.meta.dir, "../src/acp/testing/fake-agent.ts");
@@ -214,7 +213,7 @@ async function runRemoteFault(fault: Fault) {
   });
   const runner = {
     faulty: true,
-    stale: null as Agent | null,
+    stale: false,
     stopped: false,
     faultedAttempts: 0,
     deferredState: null as string | null,
@@ -343,8 +342,7 @@ async function runRemoteFault(fault: Fault) {
         work.acknowledge(runnerId, command.id);
         if (command.type === "cancel" && runner.stale) {
           work.heartbeat(runnerId);
-          health.request(owner, runnerId, { type: "login_check", agent: runner.stale });
-          runner.stale = null;
+          runner.stale = false;
         }
         if (command.type === "login_check")
           health.submit(runnerId, {
@@ -366,7 +364,7 @@ async function runRemoteFault(fault: Fault) {
         if (command.type !== "run") continue;
         if (fault === "fenced" && runner.faulty) {
           runner.faultedAttempts++;
-          runner.stale = command.profile.agent;
+          runner.stale = true;
           db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now() - 60_001, runnerId]);
           db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
             Date.now() - 1,
