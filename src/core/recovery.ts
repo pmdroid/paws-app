@@ -15,7 +15,6 @@ export const IN_FLIGHT_ITEM_STATES = [
 export const AWAKE_ITEM_STATES = [
   "running",
   "verifying",
-  "merge_queue",
   "recovering",
 ] as const satisfies readonly WorkItemState[];
 
