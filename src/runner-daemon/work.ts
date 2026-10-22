@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { RunnerEventSchema, RunnerResultSchema } from "../runner-protocol";
+import {
+  RunnerEventSchema,
+  RunnerResultSchema,
+  RunnerSkillManifestSchema,
+} from "../runner-protocol";
 import { identifier } from "./state";
 
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -11,6 +15,8 @@ export const RunnerHeartbeatSchema = z.strictObject({
   fenced: z.array(assignment),
   /** Concurrency chosen in Paws, sent only to runners that report a ceiling. */
   concurrency: z.number().int().min(1).max(16).optional(),
+  /** Registered skills, sent only to runners that report the skills they have installed. */
+  skills: RunnerSkillManifestSchema.optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });
 export const RunnerGrantTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
