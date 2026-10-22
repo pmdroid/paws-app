@@ -17,6 +17,8 @@ export type GitHubQueueWatch = {
   queued: boolean;
   position?: number | null;
   state?: string;
+  /** For example "Second in the acme/platform GitHub merge queue, waiting for checks." */
+  line?: string;
 };
 
 export type CiWaitVerification = {
@@ -118,6 +120,7 @@ export function githubQueueWatch(payload: unknown): GitHubQueueWatch | undefined
       ? { position: record.position as number | null }
       : {}),
     ...(typeof record.state === "string" ? { state: record.state } : {}),
+    ...(typeof record.line === "string" ? { line: record.line } : {}),
   };
 }
 

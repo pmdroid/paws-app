@@ -3242,6 +3242,7 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
         "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
       ),
       rebaseOrRecheck: result.lines.some((line) => line.startsWith("Branch updated")),
+      dashboard: result.dashboard,
     },
     result.detail,
   ).toEqual({
@@ -3252,6 +3253,10 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
     added: true,
     moved: true,
     rebaseOrRecheck: false,
+    dashboard: [
+      "Second in the pmdroid/paws-demo GitHub merge queue, queued.",
+      "First in the pmdroid/paws-demo GitHub merge queue, waiting for checks.",
+    ],
   });
 }, 120_000);
 
@@ -3305,10 +3310,13 @@ async function runGitHubQueue(
   lines: string[];
   questions: string[];
   prompts: string[];
+  /** The dashboard's GitHub merge queue line for the item, each time GitHub acted. */
+  dashboard: (string | null)[];
   detail: string;
 }> {
   const layout = await repoLayout();
   await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
+  const dashboard: (string | null)[] = [];
   const tracker = createFakeTracker([
     {
       linearIssueId: "gh-queue",
@@ -3425,6 +3433,14 @@ async function runGitHubQueue(
       if ((await jobs.tick()) !== null) continue;
       const pull = [...pulls.values()][0] ?? 0;
       if (pull > 0 && queue.isQueued(pull)) {
+        const response = await handleStatusRequest(new Request("http://localhost/api/status"), {
+          db,
+        });
+        const parsed = parseStatusSnapshot(await response!.json());
+        if (!parsed.ok) throw new Error("Invalid status snapshot");
+        dashboard.push(
+          parsed.snapshot.items.find((entry) => entry.id === "ENG-95")?.githubQueue?.line ?? null,
+        );
         // The pull request waits in GitHub's queue: act as GitHub, then let the parked merge job
         // read it again now instead of after its poll interval.
         onQueued(queue, pull, rounds, queue.enqueued.length);
@@ -3445,6 +3461,7 @@ async function runGitHubQueue(
       lines: tracker.progress.map((update) => update.body),
       questions: tracker.questions.map((question) => question.body),
       prompts,
+      dashboard,
       detail: debug(layout, db),
     };
   } finally {

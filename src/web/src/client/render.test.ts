@@ -250,6 +250,32 @@ describe("status views", () => {
     );
   });
 
+  test("a task in the GitHub merge queue shows GitHub's position and state", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102");
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "merge_queue";
+    item.githubQueue = {
+      position: 2,
+      state: "AWAITING_CHECKS",
+      line: "Second in the acme/platform GitHub merge queue, waiting for checks.",
+    };
+    for (const route of [
+      { view: "runs", id: run.id },
+      { view: "issues", id: item.id },
+    ] as const) {
+      const page = render(model({ snapshot, route })).content;
+      expect(page).toContain("Second in the acme/platform GitHub merge queue, waiting for checks.");
+      expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
+      expect(page).toContain("Paws does not rebase it or run Closeout again.");
+    }
+    delete item.githubQueue;
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
+      "GitHub merge queue",
+    );
+  });
+
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
     expect(html).toContain("<h2>Closeout</h2>");

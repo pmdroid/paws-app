@@ -3061,7 +3061,7 @@ export class Orchestrator {
           message: line,
           head: input.head,
           reason: (result.position ?? 1) > 1 ? "ahead" : "ci",
-          githubQueue: { queued: true, position: result.position, state: result.state },
+          githubQueue: { queued: true, position: result.position, state: result.state, line },
         };
       }
       case "merged":
