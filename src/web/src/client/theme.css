@@ -44,6 +44,7 @@
   --color-border: var(--border);
   --color-ring: var(--ring);
   --color-overlay: var(--overlay);
+  --color-gauge: #c0b4f1;
   --spacing-control: 2.75rem;
   --spacing-sidebar: 16rem;
   --spacing-boxShadowX: 4px;

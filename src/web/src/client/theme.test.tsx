@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { themedMarkup } from "./theme";
 import { render } from "./render";
 import { renderConversations, type ConversationModel } from "./conversations";
 import { identityLinkMarkup } from "./workspace-identities";
 import { linearConnectionMarkup } from "./workspace";
+import { runnerDetailMarkup, type Runner } from "./runners";
 import { demoStatus } from "../demo";
 
 function markup(html: string) {
@@ -218,4 +219,99 @@ test("issues list shows blockers without positioned CSS", () => {
   expect(rendered.content).toContain("Blocked by");
   expect(rendered.content).not.toContain("style=");
   expect(markup(rendered.content)).toContain("divide-y-2");
+});
+
+describe("runner card", () => {
+  const now = 1_000_000_000;
+  const GB = 1024 ** 3;
+  const runner: Runner = {
+    id: "01JRUNNER0000000000000000A",
+    name: "a-runner-with-a-rather-long-host-name-for-a-phone",
+    ownerUserId: "owner",
+    status: "active",
+    metrics: {
+      cpuPercent: 97,
+      cpuCount: 16,
+      memoryTotalBytes: 28 * GB,
+      memoryAvailableBytes: 16 * GB,
+      load1: 24.86,
+      load5: 10.59,
+      load15: 5.98,
+      diskTotalBytes: 953 * GB,
+      diskFreeBytes: 223 * GB,
+      reportedAt: now - 5_000,
+    },
+    os: { id: "ubuntu", version: "24.04" },
+    version: "1.4.0",
+    idle: false,
+    slots: { used: 3, total: 16 },
+    concurrency: { desired: 3, applied: 3, ceiling: 16 },
+    agents: [{ agent: "claude", status: "signed_in", checkedAt: now }],
+  };
+  const card = (patch: Partial<Runner> = {}) =>
+    markup(
+      runnerDetailMarkup(
+        { ...runner, ...patch },
+        {
+          now,
+          serverVersion: "1.4.0",
+          policy: { ownerUserId: "owner", sharing: 1 },
+          userId: "owner",
+          role: "owner",
+          busy: false,
+        },
+      ),
+    );
+
+  test("gauges fill to their value, lavender when normal and orange when high", () => {
+    const html = card();
+    expect(html).toContain('style="width:97%"');
+    expect(html).toContain('style="width:43%"');
+    const fills = [...html.matchAll(/<span class="([^"]*)" style="width:(\d+)%"/g)];
+    expect(fills.map((match) => [match[2], match[1]!.includes("bg-main")])).toEqual([
+      ["97", true],
+      ["43", false],
+      ["77", false],
+      ["100", true],
+    ]);
+    expect(html.match(/class="slot used h-full[^"]*bg-gauge/g)).toHaveLength(3);
+    expect(html.match(/class="slot h-full[^"]*bg-secondary-background/g)).toHaveLength(13);
+    const css = readFileSync(new URL("./theme.css", import.meta.url), "utf8");
+    expect(css).toContain("--color-gauge:");
+  });
+
+  test("stale gauges fade and lose their color", () => {
+    const html = card({ metrics: { ...runner.metrics!, reportedAt: now - 60_000 } });
+    expect(classNames(html, "runner-gauges")[0]).toContain("grayscale");
+    expect(classNames(html, "runner-gauges")[0]).toContain("opacity-60");
+    expect(classNames(card(), "runner-gauges")[0]).not.toContain("grayscale");
+  });
+
+  test("the card fits a 390 px phone without horizontal scroll", () => {
+    const html = card();
+    // Two gauge columns on phones, four from lg; slots and concurrency stack until sm.
+    const gauges = classNames(html, "runner-gauges")[0]!;
+    expect(gauges).toContain("grid-cols-2");
+    expect(gauges).toContain("lg:grid-cols-4");
+    expect(gauges).toContain("min-w-0");
+    const slots = classNames(html, "runner-slots")[0]!;
+    expect(slots).toContain("grid-cols-1");
+    expect(slots).toContain("sm:grid-cols-2");
+    // Labels never shrink below their text; values and details take the remaining column.
+    for (const value of classNames(html, "runner-gauge")) {
+      expect(value).toContain("grid-cols-[auto_minmax(0,1fr)]");
+      expect(value).toContain("min-w-0");
+    }
+    // Rows wrap rather than widen the page.
+    for (const name of ["runner-meta", "runner-status", "runner-agent-list", "runner-agents-row"])
+      expect(classNames(html, name)[0]).toContain("flex-wrap");
+    expect(classNames(html, "runner-title")[0]).toContain("min-w-0");
+    expect(classNames(html, "runner-head")[0]).toContain("min-w-0");
+    // The bar and slot track take the column width, and the concurrency field stays compact.
+    expect(html).toContain("flex h-4 w-full overflow-hidden");
+    expect(classNames(html, "slots")[0]).toContain("w-full");
+    expect(classNames(html, "concurrency-input")[0]).toContain("w-16");
+    expect(classNames(html, "concurrency-input")[0]).not.toContain("w-full");
+    expect(html).not.toMatch(/(?:^|[\s"])(?:min-)?w-\[\d/);
+  });
 });
