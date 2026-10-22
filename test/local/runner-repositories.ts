@@ -359,6 +359,54 @@ export async function probeRunnerRepositories(
     updatedSha,
     sameMirror: true,
   });
+  const rebase = {
+    ...command,
+    id: randomUUID(),
+    repository: { ...command.repository, baseSha: sha, mainSha: updatedSha },
+  };
+  const rebaseSnapshot = await repositories.prepare(rebase);
+  const rebaseTree = join(root, "rebase-checkout");
+  await invoke(["clone", "--no-checkout", rebaseSnapshot.bundle, rebaseTree]);
+  await invoke(["-C", rebaseTree, "checkout", "-b", "candidate", sha]);
+  await invoke(["-C", rebaseTree, "rebase", updatedSha]);
+  const rebasedSha = (await invoke(["-C", rebaseTree, "rev-parse", "HEAD"])).trim();
+  const rebasedBundle = join(root, "rebased.bundle");
+  await invoke([
+    "-C",
+    rebaseTree,
+    "bundle",
+    "create",
+    rebasedBundle,
+    "HEAD",
+    `^${sha}`,
+    `^${updatedSha}`,
+  ]);
+  const rebasedCandidate = {
+    bundle: readFileSync(rebasedBundle),
+    sha: rebasedSha,
+    branch: candidate.branch,
+  };
+  await repositories.publish(rebase, rebasedCandidate);
+  await repositories.publish(rebase, rebasedCandidate);
+  const rebasedRemote = (
+    await invoke(["--git-dir", origin, "rev-parse", `refs/heads/${candidate.branch}`])
+  ).trim();
+  await invoke(["-C", rebaseTree, "commit", "--amend", "-m", "candidate again"]);
+  const staleSha = (await invoke(["-C", rebaseTree, "rev-parse", "HEAD"])).trim();
+  const staleBundle = join(root, "stale.bundle");
+  await invoke(["-C", rebaseTree, "bundle", "create", staleBundle, "HEAD", `^${updatedSha}`]);
+  await assert.rejects(
+    repositories.publish(rebase, {
+      bundle: readFileSync(staleBundle),
+      sha: staleSha,
+      branch: candidate.branch,
+    }),
+  );
+  observe(
+    "a candidate rebased onto the assigned main replaces only the branch head it was based on",
+    rebasedRemote === rebasedSha,
+    { baseSha: sha, mainSha: updatedSha, rebasedSha },
+  );
   await assert.rejects(
     repositories.prepare({
       ...command,

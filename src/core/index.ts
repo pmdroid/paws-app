@@ -82,6 +82,7 @@ export {
   policyCoauthors,
   policyPullRequestCredit,
   validateCommitAttribution,
+  assertDescendsFromAny,
   type GitCommitPolicy,
   type VerifiedGitHubCoauthor,
 } from "./commit-policy";

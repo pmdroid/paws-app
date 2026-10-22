@@ -53,6 +53,12 @@ export async function probeRunnerWorker(
   await invoke(["-C", repository, "add", "."]);
   await invoke(["-C", repository, "commit", "-m", "base"]);
   const baseSha = (await invoke(["-C", repository, "rev-parse", "HEAD"])).trim();
+  await invoke(["-C", repository, "checkout", "-q", "-b", "feature"]);
+  writeFileSync(join(repository, "feature.txt"), "branch work\n");
+  await invoke(["-C", repository, "add", "."]);
+  await invoke(["-C", repository, "commit", "-m", "feature"]);
+  const featureSha = (await invoke(["-C", repository, "rev-parse", "HEAD"])).trim();
+  await invoke(["-C", repository, "checkout", "-q", "main"]);
   writeFileSync(join(repository, "later.txt"), "must not enter assigned checkout\n");
   await invoke(["-C", repository, "add", "."]);
   await invoke(["-C", repository, "commit", "-m", "later"]);
@@ -745,6 +751,35 @@ export async function probeRunnerWorker(
     true,
     { mainSha: baseSha, checkout: laterSha, candidateSha: pinnedResult.candidateSha ?? null },
   );
+  const rebase = { ...job(7), executionId: "01J000000000000000000000RB" };
+  if (rebase.command.type !== "run") throw new Error("Expected run");
+  rebase.command.repository.baseSha = featureSha;
+  rebase.command.repository.mainSha = laterSha;
+  const rebaseAgent = launch(41, [
+    { type: "terminal", command: "git", args: ["rebase", "refs/remotes/origin/main"] },
+    { type: "end" },
+  ]);
+  const rebased = await execute({
+    job: rebase,
+    repositoryBundle,
+    outputDirectory: output(41),
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: rebaseAgent.launch,
+  });
+  const rebasedHeads = await invoke([
+    "bundle",
+    "list-heads",
+    join(root, "output-41", "candidate.bundle"),
+  ]);
+  assert(rebased.candidateSha && rebased.candidateSha !== featureSha);
+  assert(rebasedHeads.startsWith(rebased.candidateSha));
+  observe("a run rebased onto a newer main returns the rebased candidate", true, {
+    baseSha: featureSha,
+    mainSha: laterSha,
+    candidateSha: rebased.candidateSha,
+  });
   const abort = new AbortController();
   const cancelledAgent = launch(4, [{ type: "hang" }]);
   const cancelOutput = output(4);

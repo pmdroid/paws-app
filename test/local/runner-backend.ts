@@ -2075,7 +2075,21 @@ export async function probeRunnerBackend(
       await git(["-C", source, "reset", "--hard", head]);
       const legacy = await sent("0.1.18");
       const current = await sent("0.1.19");
+      const moved = (
+        await git(["-C", source, "commit-tree", `${base}^{tree}`, "-p", base, "-m", "moved main"])
+      ).trim();
+      await git(["-C", source, "update-ref", "refs/paws/upstream-main", moved]);
+      const beforeRebase = await sent("0.1.22");
+      const rebasing = await sent("0.1.23");
+      await git(["-C", source, "update-ref", "-d", "refs/paws/upstream-main"]);
       await git(["-C", source, "reset", "--hard", base]);
+      if (beforeRebase.type !== "run" || rebasing.type !== "run")
+        throw new Error("Expected run commands");
+      observe(
+        "runners on 0.1.23 or later receive the main Paws last fetched, even past the run's base",
+        beforeRebase.repository.mainSha === base && rebasing.repository.mainSha === moved,
+        { before: beforeRebase.repository.mainSha, rebasing: rebasing.repository.mainSha, moved },
+      );
       if (legacy.type !== "run" || current.type !== "run") throw new Error("Expected run commands");
       assert.equal(legacy.repository.mainSha, undefined);
       assert.equal(legacy.checkpoint, undefined);
