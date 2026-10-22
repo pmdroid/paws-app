@@ -12,6 +12,7 @@ The engine cannot run on Vercel. This directory is a static site plus the local 
 - `source` is `"demo"` for the sample stub and `"live"` when the engine built the body from its own state.
 - `questions` lists open questions only. The page does not answer them.
 - Unknown fields are ignored. The parser rejects a body that does not match.
+- `mergeQueue` lists every task Closeout accepted that waits to merge. Each entry carries its `repository`, its `position` in that repository's queue (`null` while it holds no place, such as when it waits for a review or the repository merges each pull request when green), `waitingFor` (`ahead`, `ci`, `review`, `branch_update` or `closeout`), `acceptedAt`, and the merge `settings` it resolved. `mergeHistory` lists what merged in the last 24 hours and what went back to the agent after CI failed or a branch update conflicted. The Merge queue page at `/status/merge-queue` renders both.
 
 Example:
 

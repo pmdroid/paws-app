@@ -114,9 +114,9 @@ try {
     await expect(page.getByText("Back with the agent")).toBeVisible();
     await expect(page.getByText("Waiting for review")).toBeVisible();
     if (width > 768) {
-      const entry = page.getByRole("link", { name: /Merge queue/ });
-      await expect(entry).toHaveAttribute("aria-current", "page");
-      await expect(entry.getByLabel("5 waiting")).toHaveText("5");
+      const navigation = page.getByRole("link", { name: /Merge queue/ });
+      await expect(navigation).toHaveAttribute("aria-current", "page");
+      await expect(navigation.getByLabel("5 waiting")).toHaveText("5");
       await expect(page.getByRole("columnheader", { name: "Detail" }).first()).toBeVisible();
     } else {
       await expect(page.getByRole("columnheader", { name: "Detail" }).first()).toBeHidden();
