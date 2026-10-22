@@ -3,12 +3,14 @@ import {
   decideStartup,
   handoffNote,
   JOB_KIND,
+  OUTBOX_ACTIVITY,
   type StartupDecision,
   type WorkItemState,
 } from "../core";
 import { applyDecision } from "./decisions";
 import { enqueueJobOnce } from "./jobs";
-import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
+import { enqueueOutboxOnce } from "./outbox";
+import { applyWorkItemEvent, getWorkItem, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
 import { markRun, releaseRunCapacity } from "./runs";
 import { getTaskMode } from "./tasks";
@@ -146,4 +148,56 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
       .query("SELECT 1 FROM runner_work WHERE run_id=? AND ended_at IS NULL AND lease_until>?")
       .get(item.currentRunId, now) !== null
   );
+}
+
+const ORPHAN_GRACE_MS = 5 * 60_000;
+
+export function requeueOrphanedWork(db: Database, now: number): string[] {
+  const orphans = db
+    .query<{ id: string }, [number, number]>(
+      `SELECT i.id FROM work_item i
+       WHERE i.state IN ('running','verifying','recovering') AND i.cancel_requested = 0
+       AND NOT EXISTS (SELECT 1 FROM job j WHERE j.status IN ('pending','running')
+         AND json_extract(j.payload,'$.itemId') = i.id)
+       AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
+         AND w.ended_at IS NULL AND w.lease_until > ?1)
+       AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id) < ?2`,
+    )
+    .all(now, now - ORPHAN_GRACE_MS);
+  const requeued: string[] = [];
+  for (const { id } of orphans) {
+    const item = getWorkItem(db, id);
+    if (!item) continue;
+    const key = `orphan:${item.id}:${now}`;
+    enqueueJobOnce(db, {
+      queue: item.state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume,
+      jobKey: key,
+      payload:
+        item.state === "verifying"
+          ? { itemId: item.id, runId: item.currentRunId, recheckHead: true, failClosed: true }
+          : {
+              itemId: item.id,
+              runId: item.currentRunId,
+              freshSession: true,
+              checkpoint: item.checkpoint,
+              reason: "orphaned",
+            },
+      now,
+    });
+    if (item.sessionKey !== null)
+      enqueueOutboxOnce(db, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: item.sessionKey,
+        idempotencyKey: key,
+        payload: {
+          sessionId: item.sessionKey,
+          kind: "thought",
+          body: `Nothing was moving ${item.linearIdentifier} forward, so Paws picked it up again.`,
+        },
+        now,
+      });
+    requeued.push(item.id);
+  }
+  return requeued;
 }
