@@ -1,4 +1,13 @@
-import { budgetFromHeaders, rateLimitFrom, rememberLinearBudget } from "./budget";
+import {
+  budgetFromHeaders,
+  createLinearLedger,
+  currentLinearCaller,
+  linearCaller,
+  linearLedger,
+  rateLimitFrom,
+  useLinearLedger,
+  type LinearLedger,
+} from "./budget";
 import type { FetchLike, LinearAuth } from "./oauth";
 
 const GRAPHQL_URL = "https://api.linear.app/graphql";
@@ -11,8 +20,13 @@ export type LinearClient = {
   ): Promise<unknown>;
 };
 
-export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLike }): LinearClient {
+export function createLinearClient(options: {
+  auth: LinearAuth;
+  fetch?: FetchLike;
+  ledger?: LinearLedger;
+}): LinearClient {
   const fetchImpl = options.fetch ?? fetch;
+  const ledger = options.ledger ?? createLinearLedger();
   const client: LinearClient = {
     async query(query, variables, { signal, isCurrent } = {}) {
       const current = () => {
@@ -20,6 +34,9 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
         if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
       };
       current();
+      const caller = currentLinearCaller();
+      const held = ledger.admit(caller);
+      if (held !== null) throw held;
       const run = async (token: string) => {
         current();
         options.auth.assertAuthorized?.();
@@ -40,15 +57,15 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
         response = await run(token);
       }
       const budget = budgetFromHeaders(response.headers);
-      rememberLinearBudget(client, budget);
+      ledger.observe(caller, budget);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
         return null;
       });
       current();
-      const limited = rateLimitFrom(response, json, budget);
-      if (limited !== null) throw limited;
+      const limited = rateLimitFrom(response, json, budget, ledger.now());
+      if (limited !== null) throw ledger.limited(caller, limited);
       const errors = isRecord(json) ? json["errors"] : undefined;
       let message: string | null = null;
       if (Array.isArray(errors) && errors.length > 0) {
@@ -70,7 +87,17 @@ export function createLinearClient(options: { auth: LinearAuth; fetch?: FetchLik
       return json["data"];
     },
   };
+  useLinearLedger(client, ledger);
   return client;
+}
+
+export function callerClient(client: LinearClient, caller: string): LinearClient {
+  const labelled: LinearClient = {
+    query: (...args) => linearCaller(caller, () => client.query(...args)),
+  };
+  const ledger = linearLedger(client);
+  if (ledger !== null) useLinearLedger(labelled, ledger);
+  return labelled;
 }
 
 async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
