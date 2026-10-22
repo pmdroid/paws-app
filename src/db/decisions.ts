@@ -42,7 +42,7 @@ export function applyDecision(
     case "continue":
       return;
     case "resume":
-      applyResume(db, item, decision.checkpoint, now);
+      applyResume(db, item, decision.checkpoint, now, decision.reattach === true);
       return;
     case "restart_session":
       applyRestartSession(db, item, decision.checkpoint, now, stamp);
@@ -91,11 +91,12 @@ function applyResume(
   item: WorkItemRecord,
   checkpoint: Checkpoint | null,
   now: number,
+  reattach = false,
 ): void {
-  if (item.state === "running" || item.state === "verifying") {
+  if (!reattach && (item.state === "running" || item.state === "verifying")) {
     applyWorkItemEvent(db, item.id, "lease_expired");
   }
-  setRecoveryAttempts(db, item.id, 1);
+  if (!reattach) setRecoveryAttempts(db, item.id, 1);
   const current = getWorkItem(db, item.id) ?? item;
   if (current.currentRunId !== null) {
     const run = getRun(db, current.currentRunId);

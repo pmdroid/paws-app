@@ -37,7 +37,7 @@ export function isAwakeItemState(state: WorkItemState): boolean {
 
 export type StartupDecision =
   | { type: "none" }
-  | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null }
+  | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null; reattach?: true }
   | { type: "fail"; reason: "resume_already_attempted" | "no_checkpoint" }
   | { type: "reverify" };
 
@@ -62,9 +62,12 @@ export function decideStartup(input: {
   recoveryAttempts: number;
   checkpoint: Checkpoint | null;
   taskMode?: TaskMode | null;
+  runnerHoldsWork?: boolean;
 }): StartupDecision {
   if (!RESUMABLE.has(input.itemState)) return { type: "none" };
   if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
+  if (input.runnerHoldsWork)
+    return { type: "resume", freshSession: true, checkpoint: input.checkpoint, reattach: true };
   if (input.recoveryAttempts >= 1) return { type: "fail", reason: "resume_already_attempted" };
   if (!input.checkpoint && input.taskMode !== "answer" && input.taskMode !== "artifact")
     return { type: "fail", reason: "no_checkpoint" };

@@ -49,6 +49,7 @@ import {
 } from "../../src/runner-transcripts";
 import { openQuestion, answerQuestion } from "../../src/questions";
 import { applyWorkItemEvent } from "../../src/db";
+import { PawsShutdown } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
 import { createFakeLinearIssueLifecycle } from "../../src/linear";
 
@@ -534,6 +535,90 @@ export async function probeRunnerBackend(
       "a later run resumes the agent session of the item's last run unless that run errored",
       continued.ended === "first-session" && continued.errored === null,
       continued,
+    );
+    await git(["-C", source, "reset", "--hard", base]);
+    const detached = item();
+    const shutdown = new AbortController();
+    const beforeEvents: string[] = [];
+    const beforeRestart = backend.forItem(detached.id)(
+      input(detached, {
+        signal: shutdown.signal,
+        onEvent: (event) => {
+          if (event.type === "progress") beforeEvents.push(event.text);
+        },
+      }),
+    );
+    void beforeRestart.catch(() => undefined);
+    const detachedCommand = await next();
+    if (detachedCommand.type !== "run") throw new Error("Expected an implementation run");
+    const detachedGrant = work.issueGrant({
+      runnerId,
+      runId: detachedCommand.runId,
+      commandId: detachedCommand.id,
+      generation: detachedCommand.generation,
+    });
+    work.event({
+      runnerId,
+      runId: detachedCommand.runId,
+      generation: detachedCommand.generation,
+      token: detachedGrant.token,
+      sequence: 1,
+      event: { type: "progress", text: "Before restart" },
+    });
+    for (let attempt = 0; attempt < 500 && beforeEvents.length === 0; attempt++) await delay(2);
+    shutdown.abort(new PawsShutdown());
+    await beforeRestart.catch(() => undefined);
+    const leftLive =
+      db
+        .query<{ ended: number | null }, [string]>(
+          "SELECT ended_at AS ended FROM runner_work WHERE run_id=?",
+        )
+        .get(detachedCommand.runId)?.ended === null;
+    const cancelSent = work.commands(runnerId).length > 0;
+    const afterEvents: string[] = [];
+    const afterRestart = backend.forItem(detached.id)(
+      input(detached, {
+        onEvent: (event) => {
+          if (event.type === "progress") afterEvents.push(event.text);
+        },
+      }),
+    );
+    work.event({
+      runnerId,
+      runId: detachedCommand.runId,
+      generation: detachedCommand.generation,
+      token: detachedGrant.token,
+      sequence: 2,
+      event: { type: "progress", text: "After restart" },
+    });
+    for (let attempt = 0; attempt < 500 && afterEvents.length === 0; attempt++) await delay(2);
+    results.submit({
+      runnerId,
+      runId: detachedCommand.runId,
+      generation: detachedCommand.generation,
+      token: detachedGrant.token,
+      result: { ...result(detachedCommand), candidateSha: head },
+    });
+    const fetchedBeforeRestart = fetched;
+    const reattached = await afterRestart;
+    fetched = fetchedBeforeRestart;
+    const redispatched = work.commands(runnerId).length > 0;
+    observe(
+      "a Paws restart leaves a runner's work running and the next call picks up its later events and result",
+      leftLive &&
+        !cancelSent &&
+        !redispatched &&
+        reattached.stopReason === "end_turn" &&
+        JSON.stringify(beforeEvents) === JSON.stringify(["Before restart"]) &&
+        JSON.stringify(afterEvents) === JSON.stringify(["After restart"]),
+      {
+        leftLive,
+        cancelSent,
+        redispatched,
+        stopReason: reattached.stopReason,
+        beforeEvents,
+        afterEvents,
+      },
     );
     const reviewer = item();
     let text = "";
