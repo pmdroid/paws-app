@@ -333,6 +333,14 @@ export async function probeRunnerPlacement(
       result: result(authCommand, "other", { authRequired: true, stopReason: "error" }),
     });
     assert(!(await ids()).includes("shared"));
+    const fencedSignedOut = await start("shared", "prepare");
+    placement.finished({
+      commandId: fencedSignedOut,
+      runnerId: "shared",
+      finishedAt: now,
+      failure: "heartbeat_lost",
+    });
+    assert(!(await ids()).includes("shared"));
     const login = await start("shared", "prepare");
     placement.finished({
       commandId: login,
@@ -341,9 +349,19 @@ export async function probeRunnerPlacement(
       result: result(login, "other"),
     });
     assert((await ids()).includes("shared"));
+    const fencedSignedIn = await start("shared");
+    placement.finished({
+      commandId: fencedSignedIn,
+      runnerId: "shared",
+      finishedAt: now,
+      failure: "heartbeat_lost",
+    });
+    assert((await ids()).includes("shared"));
     observe("Expired authentication holds work until successful readiness verification", true, {
       held: true,
+      heldAfterFence: true,
       recovered: true,
+      readyAfterFence: true,
     });
     const implemented = await start("own");
     placement.finished({
