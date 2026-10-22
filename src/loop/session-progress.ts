@@ -14,7 +14,7 @@ type Phase =
   | "completed";
 
 /** At most one plan and one summary per session go to Linear in this window. */
-const METADATA_INTERVAL_MS = 30_000;
+const METADATA_INTERVAL_MS = 120_000;
 
 const HOST_STEPS = ["Verify changes", "Open pull request", "Merge verified changes"];
 
@@ -61,6 +61,22 @@ export function createLinearSessionProgress(
           ORDER BY id DESC LIMIT 1`,
         )
         .get(sessionId, generation, op, at);
+      const delivered = db
+        .query<{ payload: string }, [string, number, string, number]>(
+          `SELECT payload FROM outbox WHERE target = 'linear' AND ordering_key = ? AND delivery_generation = ?
+            AND op = ? AND (status = 'sent' OR (status = 'pending' AND locked_until > ?))
+          ORDER BY id DESC LIMIT 1`,
+        )
+        .get(sessionId, generation, op, at)?.payload;
+      if (delivered === payload) {
+        if (pending)
+          db.run(
+            `UPDATE outbox SET status = 'dropped', error = 'Matches the session metadata already sent.'
+            WHERE id = ?`,
+            [pending.id],
+          );
+        return;
+      }
       if (pending) {
         db.run(
           `UPDATE outbox SET payload = ?, not_before = CASE WHEN ? THEN 0 ELSE not_before END
