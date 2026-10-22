@@ -1810,8 +1810,8 @@ export class Orchestrator {
         if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
           itemId: current.id,
-          kind: "review",
-          agent: snapshot.profiles.reviewer.agent,
+          kind: "recheck",
+          agent: prior.agent,
           status: "active",
           freshSession: true,
           now: this.now(),
