@@ -249,6 +249,11 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
       : { outcome: "ready", message: "CI passed and all review threads are resolved" };
   } catch (error) {
+    if (error instanceof Error && LINEAR_WAIT.test(error.message))
+      return {
+        outcome: "pending",
+        message: "Waiting for Linear's rate limit to reset before reading GitHub.",
+      };
     console.error(
       `GitHub readiness read failed: ${
         error instanceof Error
@@ -261,6 +266,8 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     return unreadable();
   }
 }
+
+const LINEAR_WAIT = /Linear GraphQL: RATELIMITED|Linear publication freshness is pending/;
 
 function unreadable(): Readiness {
   return { outcome: "blocked", message: "could not read GitHub CI and review threads" };
