@@ -222,7 +222,8 @@ function shareEvents(
       return acknowledgeNewSession(
         acknowledger,
         event,
-        (accepted) => followUp?.(accepted, tracker) ?? Promise.resolve(),
+        (accepted) =>
+          linearCaller("intake", () => followUp?.(accepted, tracker) ?? Promise.resolve()),
         request,
         { acknowledged, signal },
       );

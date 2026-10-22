@@ -7,6 +7,7 @@ import {
   rateLimitFrom,
   useLinearLedger,
   type LinearLedger,
+  type LinearPriority,
 } from "./budget";
 import type { FetchLike, LinearAuth } from "./oauth";
 
@@ -34,8 +35,8 @@ export function createLinearClient(options: {
         if (isCurrent && !isCurrent()) throw new Error("Linear request was superseded.");
       };
       current();
-      const caller = currentLinearCaller();
-      const held = ledger.admit(caller);
+      const { caller, priority } = currentLinearCaller();
+      const held = ledger.admit(caller, priority);
       if (held !== null) throw held;
       const run = async (token: string) => {
         current();
@@ -91,9 +92,13 @@ export function createLinearClient(options: {
   return client;
 }
 
-export function callerClient(client: LinearClient, caller: string): LinearClient {
+export function callerClient(
+  client: LinearClient,
+  caller: string,
+  priority?: LinearPriority,
+): LinearClient {
   const labelled: LinearClient = {
-    query: (...args) => linearCaller(caller, () => client.query(...args)),
+    query: (...args) => linearCaller(caller, () => client.query(...args), priority),
   };
   const ledger = linearLedger(client);
   if (ledger !== null) useLinearLedger(labelled, ledger);
