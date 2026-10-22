@@ -13,6 +13,7 @@ import {
   OutboxDispatcher,
   getWorkItem,
   listJobs,
+  listOutbox,
   listRuns,
   migrate,
   openDatabase,
@@ -222,7 +223,12 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
         await Bun.sleep(25);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    const drainBy = Date.now() + 10_000;
+    while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
+      outbox.tick();
+      await outbox.idle();
+      await Bun.sleep(10);
+    }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
