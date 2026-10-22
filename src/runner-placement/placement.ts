@@ -446,7 +446,7 @@ export function createRunnerPlacement(options: {
             cooldown_until=CASE WHEN ? IS NOT NULL THEN ? WHEN ? THEN 0 ELSE cooldown_until END,
             resolved_model=COALESCE(?,resolved_model) WHERE runner_id=? AND agent=?`,
             [
-              result?.authRequired || input.failure ? 1 : 0,
+              result?.authRequired ? 1 : 0,
               success ? 1 : 0,
               result?.authRequired ? 1 : 0,
               success ? 1 : 0,
