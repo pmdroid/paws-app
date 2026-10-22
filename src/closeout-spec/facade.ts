@@ -36,6 +36,7 @@ import {
   type EvidenceApproval,
   type PublishedEvidence,
   type ResolvedPolicy,
+  type ResolvedEvidence,
   type ResolvedPolicyAbsent,
   type ResolvedReview,
   type ReviewRecord,
@@ -224,6 +225,23 @@ export function reviewRequirements(
     items: loaded.policy.items
       .filter((item): item is ResolvedReview => item.kind === "review")
       .map(({ id, gate, independence }) => ({ id, gate, independence })),
+  };
+}
+
+/** Evidence requirements with `approval: human`, from the same trusted policy as Closeout. */
+export function visualReviewRequirements(
+  repo: string,
+  home?: string,
+  policyRoot?: string,
+): { ok: true; items: ResolvedEvidence[] } | { ok: false; message: string } {
+  const loaded = loadOrigin(repo, home, policyRoot);
+  if (!loaded.ok) return { ok: false, message: loaded.message };
+  return {
+    ok: true,
+    items: loaded.policy.items.filter(
+      (item): item is ResolvedEvidence =>
+        item.kind === "evidence" && (item as ResolvedEvidence).approval === "human",
+    ),
   };
 }
 
