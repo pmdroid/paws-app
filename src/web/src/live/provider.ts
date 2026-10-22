@@ -33,6 +33,7 @@ import type {
   StoredRun,
   OpenQuestionRecord,
   OutboxRow,
+  QueuePosition,
   WorkItemFact,
   WorkItemRecord,
 } from "../../../db";
@@ -48,6 +49,7 @@ import {
   listLinearTurnsForItem,
   listOpenQuestions,
   listOutbox,
+  listQueuePositions,
   listRuns,
   runRunnerName,
   usagePause,
@@ -177,8 +179,9 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
+  const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
   const items = records.map((record) =>
-    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts),
+    toItem(db, record, rows, runs, options.project?.repo, itemsByIssue, facts, queue),
   );
   const progress = listCloseoutProgress(db);
   const rounds = listCloseoutRounds(db);
@@ -286,11 +289,13 @@ function toItem(
   repo: string | undefined,
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
   facts: ReadonlyMap<string, WorkItemFact>,
+  queue: ReadonlyMap<string, QueuePosition>,
 ): StatusItem {
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
   const fact = facts.get(record.id);
+  const waiting = record.state === "queued" ? queue.get(record.id) : undefined;
   return {
     id,
     title: textOr(record.title, id),
@@ -305,6 +310,15 @@ function toItem(
     runId,
     pr,
     links: pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }],
+    ...(waiting
+      ? {
+          queue: {
+            position: waiting.position,
+            busySlots: waiting.busySlots,
+            totalSlots: waiting.totalSlots,
+          },
+        }
+      : {}),
   };
 }
 

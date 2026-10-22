@@ -48,6 +48,14 @@ export {
 } from "./merge";
 export type { MergeSettings } from "./merge";
 
+export {
+  DEFAULT_QUEUE_START_TIMEOUT_HOURS,
+  MAX_QUEUE_START_TIMEOUT_HOURS,
+  parseQueueSettings,
+  readQueueSettings,
+} from "./queue";
+export type { QueueSettings } from "./queue";
+
 export { loadRunnerControl } from "./runner-control";
 
 export { projectSkillsRoot } from "./skills";

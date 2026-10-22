@@ -6,7 +6,7 @@ import {
   type RepositoryBinding,
   type WorkBrief,
 } from "../core";
-import { enqueueJob, enqueueJobOnce, immediate, type JobLoop } from "../db";
+import { enqueueJob, enqueueJobOnce, immediate, saveQueuePositions, type JobLoop } from "../db";
 import { readyItems } from "../intake";
 
 const TICK = "scheduler.tick";
@@ -316,6 +316,14 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       admitted.push(item.id);
       free -= 1;
     }
+    saveQueuePositions(
+      db,
+      candidates
+        .filter((item) => !held.some((entry) => entry.itemId === item.id))
+        .map((item) => item.id),
+      slots ? { busy: Math.min(slots, slots - Math.max(free, 0)), total: slots } : null,
+      now,
+    );
     return admitted;
   });
 }
