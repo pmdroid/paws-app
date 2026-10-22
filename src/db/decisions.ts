@@ -39,7 +39,7 @@ export function applyDecision(
   item: WorkItemRecord,
   decision: Decision,
   now: number,
-  stamp?: WakeStamp,
+  { stamp, runAt = now }: { stamp?: WakeStamp; runAt?: number } = {},
 ): void {
   switch (decision.type) {
     case "ignore":
@@ -47,7 +47,7 @@ export function applyDecision(
     case "continue":
       return;
     case "resume":
-      applyResume(db, item, decision.checkpoint, now, decision.reattach === true);
+      applyResume(db, item, decision.checkpoint, now, runAt, decision.reattach === true);
       return;
     case "restart_session":
       applyRestartSession(db, item, decision.checkpoint, now, stamp);
@@ -99,7 +99,8 @@ function applyResume(
   item: WorkItemRecord,
   checkpoint: Checkpoint | null,
   now: number,
-  reattach = false,
+  runAt: number,
+  reattach: boolean,
 ): void {
   if (!reattach && (item.state === "running" || item.state === "verifying")) {
     applyWorkItemEvent(db, item.id, "lease_expired");
@@ -125,6 +126,7 @@ function applyResume(
       ...(restart === null ? {} : { handoff: restart }),
       reason: "process_restart",
     },
+    runAt,
     now,
   });
 }
