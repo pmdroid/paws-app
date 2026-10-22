@@ -12,4 +12,6 @@ export type MergeSettings = {
 export type MergeSettingsView = MergeSettings & {
   choices?: { projects: { id: string; name: string }[]; labels: string[] } | null;
   choicesError?: string;
+  /** Repositories where GitHub requires branches to be up to date, as merges last read it. */
+  upToDateRule?: string[];
 };

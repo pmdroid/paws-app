@@ -40,3 +40,27 @@ export function getTaskMergeSettings(db: Database, itemId: string): TaskMergeSet
         resolved: JSON.parse(row.resolved_json),
       };
 }
+
+/** What a merge last read of GitHub's "Require branches to be up to date" rule (PAS-394). */
+export function recordUpToDateRule(
+  db: Database,
+  repository: string,
+  required: boolean,
+  now: number,
+): void {
+  db.run(
+    `INSERT INTO repository_up_to_date_rule(repository,required,checked_at) VALUES(?,?,?)
+     ON CONFLICT(repository) DO UPDATE SET required=excluded.required, checked_at=excluded.checked_at`,
+    [repository.toLowerCase(), required ? 1 : 0, now],
+  );
+}
+
+/** Repositories whose base branch requires branches to be up to date, as last read. */
+export function listUpToDateRuleRepositories(db: Database): string[] {
+  return db
+    .query<{ repository: string }, []>(
+      "SELECT repository FROM repository_up_to_date_rule WHERE required=1 ORDER BY repository",
+    )
+    .all()
+    .map((row) => row.repository);
+}

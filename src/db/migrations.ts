@@ -2038,4 +2038,14 @@ CREATE TABLE work_item_merge_settings (
 ) STRICT;
 `,
   },
+  {
+    id: "090_repository_up_to_date_rule",
+    sql: `
+CREATE TABLE repository_up_to_date_rule (
+  repository TEXT PRIMARY KEY CHECK(length(repository) BETWEEN 3 AND 200),
+  required INTEGER NOT NULL CHECK(required IN (0,1)),
+  checked_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

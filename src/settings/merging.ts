@@ -25,6 +25,8 @@ export type MergeSettingsOptions = {
   /** Records each change in the audit history. */
   audit?: (action: string, subject: string) => void;
   choices?: (signal: AbortSignal) => Promise<MergeChoices>;
+  /** Repositories where GitHub requires branches to be up to date (PAS-394). */
+  upToDateRule?: () => string[];
 };
 
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
@@ -64,7 +66,16 @@ export async function handleMergeSettingsRequest(
         choicesError = "Linear projects and labels could not be loaded.";
       }
     }
-    return json({ ...view(policy), choices, ...(choicesError ? { choicesError } : {}) });
+    let upToDateRule: string[] = [];
+    try {
+      upToDateRule = options.upToDateRule?.() ?? [];
+    } catch {}
+    return json({
+      ...view(policy),
+      choices,
+      ...(choicesError ? { choicesError } : {}),
+      ...(upToDateRule.length ? { upToDateRule } : {}),
+    });
   }
   if (request.method !== "PUT") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))

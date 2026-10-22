@@ -75,6 +75,8 @@ export type ServerOptions = {
   agentSettings?: Omit<AgentSettingsOptions, "csrfToken"> & {
     /** Linear projects and labels for Settings → Merging. */
     mergeChoices?: (signal: AbortSignal) => Promise<MergeChoices>;
+    /** Repositories where GitHub requires branches to be up to date, as merges last read it. */
+    upToDateRule?: () => string[];
   };
   /** Registered agent skills: bundles under `root` (`~/.paws/skills`), pins in `db`. */
   skillSettings?: { root: string; resolver: SkillResolver; limit?: number };
@@ -369,7 +371,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     }))!;
   }
   if (secrets.agentSettings) {
-    const { mergeChoices, ...agentSettings } = secrets.agentSettings;
+    const { mergeChoices, upToDateRule, ...agentSettings } = secrets.agentSettings;
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -392,6 +394,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       (await handleMergeSettingsRequest(request, {
         ...shared,
         ...(mergeChoices ? { choices: mergeChoices } : {}),
+        ...(upToDateRule ? { upToDateRule } : {}),
       }));
     if (settings !== null) return settings;
   }
