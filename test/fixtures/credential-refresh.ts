@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../../src/db";
 import { refreshCredential } from "../../src/credentials";
