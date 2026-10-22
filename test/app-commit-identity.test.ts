@@ -61,6 +61,7 @@ test("App authority rejects wrong Apps and non-bot accounts and re-resolves curr
             pull_requests: "write",
             checks: "write",
             issues: "write",
+            actions: "read",
             metadata: "read",
           },
         },

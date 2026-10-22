@@ -46,6 +46,7 @@ for (const operation of ["token", "botIdentity", "runner", "installation"] as co
               pull_requests: "write",
               checks: "write",
               issues: "write",
+              actions: "read",
             },
           },
           { status: 201 },
