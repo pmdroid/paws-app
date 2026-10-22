@@ -83,7 +83,7 @@ describe("agent settings", () => {
     const html = renderAgentSettings(view());
     expect(html).toContain("<h2>Queue</h2>");
     expect(html).toContain(
-      '<label for="queue-start-timeout">Fail a task that has not started after</label>',
+      '<label for="queue-start-timeout">Fail a task that has not started after, in hours</label>',
     );
     expect(html).toMatch(
       /name="queue-start-timeout" type="number"[^>]*min="1" max="720"[^>]*value="24"/,
