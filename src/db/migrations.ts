@@ -1939,4 +1939,17 @@ CREATE TABLE queue_wait (
 ALTER TABLE runner_host_status ADD COLUMN cpu_count INTEGER CHECK(cpu_count>=1);
 `,
   },
+  {
+    id: "081_runner_agent_usage",
+    sql: `
+CREATE TABLE runner_agent_usage (
+  runner_id TEXT NOT NULL REFERENCES runner(id) ON DELETE CASCADE,
+  member_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, member_id, agent)
+) STRICT;
+`,
+  },
 ];
