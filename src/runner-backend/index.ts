@@ -48,6 +48,40 @@ const USAGE_LIMIT_WAIT_MS = 10 * 60_000;
 const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
+const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
+
+function earlierSession(
+  db: Database,
+  itemId: string,
+  runnerId: string,
+  agent: string,
+): string | undefined {
+  const rows = db
+    .query<{ envelope: string; payload: string }, [string]>(
+      `SELECT c.envelope, rr.payload FROM runner_result rr
+       JOIN runner_command c ON c.id=rr.command_id
+       JOIN run ON run.id=rr.run_id
+       WHERE run.item_id=? AND c.kind='run'
+       ORDER BY rr.received_at DESC, rr.generation DESC`,
+    )
+    .all(itemId);
+  for (const row of rows) {
+    const command = JSON.parse(
+      Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
+        "utf8",
+      ),
+    ) as { runnerId?: string; checkpoint?: boolean; profile?: { agent?: string } };
+    if (command.checkpoint === false) continue;
+    const result = JSON.parse(row.payload) as { stopReason?: string; sessionId?: string };
+    return command.runnerId === runnerId &&
+      command.profile?.agent === agent &&
+      result.stopReason !== "error" &&
+      result.sessionId
+      ? result.sessionId
+      : undefined;
+  }
+  return undefined;
+}
 
 function versionAtLeast(version: string | null | undefined, minimum: number[]): boolean {
   const parts = version
@@ -504,6 +538,20 @@ export function createRemoteAgentRunner(options: {
                   `${boundRepository.owner}/${boundRepository.repo}`.toLowerCase()
                 ]?.exclude
               : undefined;
+          const resumeSessionId =
+            !taskScope &&
+            input.role === "implementer" &&
+            input.checkpoint !== false &&
+            versionAtLeast(
+              db
+                .query<{ version: string | null }, [string]>(
+                  "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
+                )
+                .get(selected.id)?.version,
+              SESSION_RESUME_RUNNER_VERSION,
+            )
+              ? earlierSession(db, itemId, selected.id, profile.agent)
+              : undefined;
           const assigned: WorkCommand = {
             id: commandId,
             runnerId: selected.id,
@@ -549,6 +597,7 @@ export function createRemoteAgentRunner(options: {
                   ...(acceptsMainCommit && input.role !== "reviewer" && input.checkpoint === false
                     ? { checkpoint: false as const }
                     : {}),
+                  ...(resumeSessionId ? { resumeSessionId } : {}),
                   ...(checkpointBot ? { checkpointBot } : {}),
                   ...(input.commitPolicy
                     ? { commitPolicy: input.commitPolicy, checkpointBot: input.commitPolicy.bot }

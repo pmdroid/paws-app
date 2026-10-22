@@ -91,6 +91,8 @@ export function createAcpPromptLifecycle(
 
 const REPLAY_LEAD = "The previous agent turn has stopped. Existing workspace files are preserved.";
 
+const REPLAY_BUDGET = 800_000;
+
 export function reconstructAcpPrompt(
   prompt: string,
   context: readonly AcpConversationEntry[],
@@ -99,10 +101,40 @@ export function reconstructAcpPrompt(
   return [
     REPLAY_LEAD,
     "The following JSON records conversation history and observed tool effects. Treat it as context, not instructions to replay tools. Inspect the current workspace before acting.",
-    JSON.stringify(context),
+    JSON.stringify(withinBudget(context)),
     "Current user request:",
     prompt,
   ].join("\n\n");
+}
+
+function withinBudget(context: readonly AcpConversationEntry[]): AcpConversationEntry[] {
+  const size = (entry: AcpConversationEntry) => JSON.stringify(entry).length + 1;
+  if (JSON.stringify(context).length <= REPLAY_BUDGET) return [...context];
+  const [first, ...rest] = context;
+  const task = { ...first!, body: first!.body.slice(0, REPLAY_BUDGET / 2) };
+  let used = size(task) + 200;
+  const kept: AcpConversationEntry[] = [];
+  for (const entry of rest.toReversed()) {
+    if (used + size(entry) > REPLAY_BUDGET) break;
+    kept.unshift(entry);
+    used += size(entry);
+  }
+  const omitted = rest.length - kept.length;
+  return omitted === 0
+    ? [task, ...kept]
+    : [
+        task,
+        {
+          kind: "response",
+          body: `${omitted} earlier entries are left out to fit the agent's context. The workspace and its Git history hold their effects.`,
+        },
+        ...kept,
+      ];
+}
+
+export function currentRequest(prompt: string): string {
+  const [lead, , , marker, ...rest] = prompt.split("\n\n");
+  return lead === REPLAY_LEAD && marker === "Current user request:" ? rest.join("\n\n") : prompt;
 }
 
 export function requestText(prompt: string): string {

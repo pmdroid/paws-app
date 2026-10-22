@@ -82,6 +82,7 @@ export {
   createAcpPromptLifecycle,
   reconstructAcpPrompt,
   requestText,
+  currentRequest,
   type AcpConversationEntry,
   type AcpPromptLifecycle,
 } from "./lifecycle";

@@ -444,7 +444,7 @@ export async function probeRunnerBackend(
       runId: assigned.runId,
       generation: assigned.generation,
       token: grant.token,
-      result: { ...result(assigned), candidateSha: head },
+      result: { ...result(assigned), candidateSha: head, sessionId: "first-session" },
     });
     const completed = await running;
     assert.equal(completed.stopReason, "end_turn");
@@ -510,6 +510,31 @@ export async function probeRunnerBackend(
     observe("an early-stopped remote run keeps its work for the next run of the item", true, {
       wipCommit: head,
     });
+    db.run(
+      "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+      [runnerId, "0.1.24", Date.now()],
+    );
+    const continued: Record<string, string | null> = {};
+    for (const [name, record] of [
+      ["ended", first],
+      ["errored", stopped],
+    ] as const) {
+      const stop = new AbortController();
+      const again = backend.forItem(record.id)(input(record, { signal: stop.signal }));
+      void again.catch(() => undefined);
+      let command = await next();
+      while (command.type !== "run" || command.itemId !== record.id) command = await next();
+      stop.abort();
+      await again.catch(() => undefined);
+      continued[name] = command.resumeSessionId ?? null;
+    }
+    while (work.commands(runnerId).length) await next();
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    observe(
+      "a later run resumes the agent session of the item's last run unless that run errored",
+      continued.ended === "first-session" && continued.errored === null,
+      continued,
+    );
     const reviewer = item();
     let text = "";
     const reviewed = backend.forItem(reviewer.id)(
