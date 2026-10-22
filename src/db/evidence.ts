@@ -19,11 +19,13 @@ export type StoredEvidence = {
   displayName: string;
   headCommit: string;
   createdAt: number;
+  /** The Linear upload of this file, once Paws has put it there. */
+  assetUrl?: string | null;
 };
 
 const COLUMNS = `id, item_id AS itemId, run_id AS runId, check_id AS checkId, attempt,
   media_type AS mediaType, size_bytes AS sizeBytes, sha256, display_name AS displayName,
-  head_commit AS headCommit, created_at AS createdAt`;
+  head_commit AS headCommit, created_at AS createdAt, asset_url AS assetUrl`;
 
 export function saveEvidence(db: Database, evidence: StoredEvidence): void {
   db.query(`INSERT INTO evidence
@@ -53,4 +55,8 @@ export function listEvidence(db: Database, itemId: string): StoredEvidence[] {
       `SELECT ${COLUMNS} FROM evidence WHERE item_id = ? ORDER BY created_at, id`,
     )
     .all(itemId);
+}
+
+export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string): void {
+  db.query("UPDATE evidence SET asset_url = ? WHERE id = ?").run(assetUrl, id);
 }

@@ -272,8 +272,11 @@ export type OrchestratorOptions = {
   githubAuth?: HostGitHubAuth;
   files?: LinearFileTransfer | null;
   secretsDir?: string;
-  /** Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. */
-  evidence?: { store: EvidenceSink; publicUrl: string } | null;
+  /**
+   * Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. With `root` and
+   * `files`, the files are also uploaded to Linear and shown inline.
+   */
+  evidence?: { store: EvidenceSink; publicUrl: string; root?: string } | null;
   catchUp?: () => Promise<void>;
   repository?: RepositoryBinding | null;
   repositories?: readonly RepositoryBinding[];
@@ -1064,7 +1067,16 @@ export class Orchestrator {
           isCurrent: context.isCurrent,
         });
       }
-      await deliverLinearOutbox(message, tracker, () => this.catchUpFn(), context, this.db);
+      const files = this.options.files;
+      const root = this.options.evidence?.root;
+      await deliverLinearOutbox(
+        message,
+        tracker,
+        () => this.catchUpFn(),
+        context,
+        this.db,
+        files && root ? { files, root } : undefined,
+      );
     });
   }
 
@@ -4094,6 +4106,7 @@ export class Orchestrator {
       publicUrl: evidence.publicUrl,
       itemId: item.id,
       sessionId,
+      uploads: Boolean(this.options.files && evidence.root),
       ...(linear ? { linear } : {}),
       now: () => this.now(),
     });
