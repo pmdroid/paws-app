@@ -30,14 +30,9 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
       return clip("thought", event.text);
     case "session_update":
       return null;
-    case "error":
-      return clip("error", event.message);
     case "permission":
       if (event.decision !== "deny") return null;
       return clip("action", event.title?.trim() || event.reason);
-    case "cancelled":
-      if (event.reason === "follow_up") return null;
-      return clip("error", event.reason === "timeout" ? "Run timed out." : "Run cancelled.");
     case "ask_team":
       return null;
     default:
