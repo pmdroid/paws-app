@@ -2140,7 +2140,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
 }
 
 const REBASE_INSTRUCTION =
-  "The pull request no longer rebases cleanly onto main. Fetch the latest main, rebase this branch onto it, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_THOUGHT = "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
 
 test("a conflicting rebase sends the item back to the agent and then merges", async () => {
