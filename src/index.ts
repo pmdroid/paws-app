@@ -74,7 +74,6 @@ import {
   taskRequiresRepository,
   listWorkItemsByStates,
   listWorkItems,
-  listUpdateHolders,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -232,16 +231,10 @@ async function updateCommand(args: string[]): Promise<number> {
       automatic: () => true,
       restart: () => undefined,
     }).check("manual");
-    if (update === null) {
-      console.log("Paws already runs the latest main.");
-      return 0;
-    }
-    const holders = listUpdateHolders(db).length;
-    const target = update.target.slice(0, 7);
     console.log(
-      holders === 0
-        ? `Paws updates to ${target} within a minute.`
-        : `Paws updates to ${target} when ${holders} task${holders === 1 ? " finishes" : "s finish"}. New work waits until then.`,
+      update === null
+        ? "Paws already runs the latest main."
+        : `Paws updates to ${update.target.slice(0, 7)} once running work finishes. New work waits until then.`,
     );
     return 0;
   } finally {

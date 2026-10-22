@@ -18,7 +18,7 @@ const waiting: StatusPawsUpdate = {
 
 function overview(snapshot: StatusSnapshot): string {
   return render({
-    route: { view: "overview", id: null },
+    route: { view: "overview" },
     phase: "ready",
     snapshot,
     via: "engine",
@@ -52,12 +52,10 @@ describe("Paws update banner", () => {
     expect(html).toContain('data-action="paws-update-cancel"');
     // The banner leads the overview, above the summary and Needs you.
     expect(html.indexOf("update-banner")).toBeLessThan(html.indexOf("overview-summary"));
-  });
-
-  test("counts tasks the viewer cannot see without naming them", () => {
-    const html = overview({ ...demoStatus(), update: { ...waiting, waitingFor: 3 } });
-    expect(text(html)).toContain("when 3 tasks finish");
-    expect(text(html)).toContain("2 more running elsewhere.");
+    // Tasks the viewer cannot see are counted, not named.
+    const hidden = text(overview({ ...demoStatus(), update: { ...waiting, waitingFor: 3 } }));
+    expect(hidden).toContain("when 3 tasks finish");
+    expect(hidden).toContain("2 more running elsewhere.");
   });
 
   test("shows an update that applies now, and one that failed with its reason", () => {

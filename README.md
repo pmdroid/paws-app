@@ -41,9 +41,7 @@ Paws applies these exclusions before checking out files, including in detached C
 
 ## Updates
 
-When Paws runs from a git checkout, such as `~/.local/share/paws/app`, it compares its commit with `origin/main` every 10 minutes. When `main` is ahead it schedules an update: new work waits, running work finishes, and tasks waiting for an answer, for CI or in the merge queue do not hold it. Then Paws fast-forwards the checkout, runs `bun install --frozen-lockfile` and `bun run build:status`, and exits with code 75 so `systemd` (`Restart=on-failure`) starts the new code. A failed step returns to the old commit and the overview says why.
-
-`bun run paws update` schedules an update by hand. The overview shows **Paws update waiting** with **Update now** and **Cancel** for owners and admins. To turn the automatic check off:
+When Paws runs from a git checkout, such as `~/.local/share/paws/app`, it compares its commit with `origin/main` every 10 minutes. When `main` is ahead it schedules an update: new work waits, running work finishes, and tasks waiting for an answer, for CI or in the merge queue do not hold it. Then Paws fast-forwards the checkout, runs `bun install --frozen-lockfile` and `bun run build:status`, and exits with code 75 so `systemd` (`Restart=on-failure`) starts the new code. A failed step returns to the old commit and the overview says why. `bun run paws update` schedules an update by hand. The overview shows **Paws update waiting** with **Update now** and **Cancel** for owners and admins. To turn the automatic check off:
 
 ```toml
 [update]

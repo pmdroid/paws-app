@@ -12,7 +12,6 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
-  requestPawsUpdateNow,
 } from "../src/db";
 import {
   createPawsUpdater,
@@ -29,21 +28,14 @@ function harness(options: { automatic?: boolean } = {}) {
   migrate(db);
   const checkout = new FakeCheckout("a1", "a1", ["a1"]);
   let restarts = 0;
-  const updater = createPawsUpdater({
-    db,
-    checkout,
-    now: () => clock.now(),
-    automatic: () => options.automatic ?? true,
-    restart: () => {
-      restarts += 1;
-    },
-  });
+  const automatic = () => options.automatic ?? true;
+  const restart = () => void (restarts += 1);
+  const updater = createPawsUpdater({ db, checkout, now: () => clock.now(), automatic, restart });
   return { clock, db, checkout, updater, restarts: () => restarts };
 }
 
-function startJob(db: ReturnType<typeof openDatabase>, itemId: string, now: number) {
-  return enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId }, now });
-}
+const startJob = (db: ReturnType<typeof openDatabase>, itemId: string, now: number) =>
+  enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId }, now });
 
 describe("Paws update", () => {
   test("a new main commit schedules an update, and no new item.start job is claimed while it waits", async () => {
@@ -78,13 +70,10 @@ describe("Paws update", () => {
     checkout.main = "b2";
     expect(await updater.check("automatic")).toBeNull();
     expect(await updater.check("manual")).toMatchObject({ target: "b2", source: "manual" });
-  });
-
-  test("main that does not contain the running commit is not an update", async () => {
-    const { checkout, updater } = harness();
-    checkout.history.splice(0, checkout.history.length, "b2", "a1");
-    checkout.main = "b2";
-    expect(await updater.check("automatic")).toBeNull();
+    // A main that does not contain the running commit is not an update.
+    checkout.history.splice(0, checkout.history.length, "c3", "a1");
+    checkout.main = "c3";
+    expect(await updater.check("manual")).toBeNull();
   });
 
   test("running work finishes before the restart; questions and the merge queue do not hold it", async () => {
@@ -165,11 +154,9 @@ describe("Paws update", () => {
   });
 
   test("a restart that did not reach the new commit marks the update failed", async () => {
-    const { db, clock, checkout, updater } = harness();
+    const { db, checkout, updater } = harness();
     checkout.main = "b2";
     await updater.check("manual");
-    requestPawsUpdateNow(db, clock.now());
-    checkout.failStep = "checkout";
     db.run("UPDATE paws_update SET status = 'applying'");
     await updater.startup();
     expect(getPawsUpdate(db)).toMatchObject({
@@ -229,9 +216,11 @@ describe("git checkout", () => {
     return { origin, app, next: git(origin, "rev-parse", "HEAD") };
   }
 
-  /** Real git, fake bun: `failing` names the bun script that exits 1. */
-  function checkoutWith(app: string, failing: string | null) {
-    return gitCheckout(app, {
+  test("fetches main, returns to the old commit when install fails, then fast-forwards", async () => {
+    const { app, next } = repos();
+    let failing: string | null = "install";
+    // Real git, fake bun: `failing` names the bun step that exits 1.
+    const checkout = gitCheckout(app, {
       bun: "bun",
       run: async (argv, cwd) => {
         if (argv[0] === "bun")
@@ -239,38 +228,21 @@ describe("git checkout", () => {
             ? { code: 1, output: `error: ${failing} broke` }
             : { code: 0, output: "" };
         const result = Bun.spawnSync(argv, { cwd, stdout: "pipe", stderr: "pipe" });
-        return {
-          code: result.exitCode,
-          output: `${result.stdout.toString()}${result.stderr.toString()}`.trim(),
-        };
+        return { code: result.exitCode, output: `${result.stdout}${result.stderr}`.trim() };
       },
     })!;
-  }
-
-  test("fetches main, fast-forwards, installs and builds", async () => {
-    const { app, next } = repos();
-    const checkout = checkoutWith(app, null);
     const before = await checkout.head();
     expect(await checkout.fetchMain()).toBe(next);
     expect(await checkout.contains(next, before)).toBe(true);
-    await checkout.apply(next);
-    expect(await checkout.head()).toBe(next);
-  });
 
-  test("a failed install returns to the previous commit", async () => {
-    const { app, next } = repos();
-    const checkout = checkoutWith(app, "install");
-    const before = await checkout.head();
-    await checkout.fetchMain();
     const failure = await checkout.apply(next).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(UpdateStepError);
     expect((failure as UpdateStepError).step).toBe("install");
     expect(await checkout.head()).toBe(before);
-  });
 
-  test("a directory that is not a git checkout cannot update itself", () => {
-    const dir = mkdtempSync(join(tmpdir(), "paws-update-none-"));
-    dirs.push(dir);
-    expect(gitCheckout(dir)).toBeNull();
+    failing = null;
+    await checkout.apply(next);
+    expect(await checkout.head()).toBe(next);
+    expect(gitCheckout(tmpdir())).toBeNull();
   });
 });

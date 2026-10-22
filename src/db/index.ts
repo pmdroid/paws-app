@@ -353,7 +353,5 @@ export {
   markPawsUpdate,
   requestPawsUpdateNow,
   schedulePawsUpdate,
-  UPDATE_HOLDING_STATES,
   type PawsUpdate,
-  type PawsUpdateStatus,
 } from "./paws-update";
