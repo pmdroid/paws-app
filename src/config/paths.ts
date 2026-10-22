@@ -12,6 +12,8 @@ export type PawsPaths = {
   runsDir: string;
   logsDir: string;
   evidenceDir: string;
+  /** Registered agent skill bundles, `skills/<name>/<version>/`. */
+  skillsDir: string;
 };
 
 export function pawsPaths(home: string): PawsPaths {
@@ -25,6 +27,7 @@ export function pawsPaths(home: string): PawsPaths {
     runsDir: join(home, "runs"),
     logsDir: join(home, "logs"),
     evidenceDir: join(home, "evidence"),
+    skillsDir: join(home, "skills"),
   };
 }
 
@@ -38,6 +41,7 @@ export function ensureLayout(paths: PawsPaths): void {
     paths.runsDir,
     paths.logsDir,
     paths.evidenceDir,
+    paths.skillsDir,
   ];
   for (const dir of dirs) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });

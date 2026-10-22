@@ -29,6 +29,7 @@ import type { SettingsPage } from "./settings-pages";
 import { RUN_FILTER_KEYS, runFilterSearch, type RunFilters } from "./runs-list";
 
 import { createAgentSettings } from "./agent-settings";
+import { createSkillSettings } from "./skills";
 import { canReadConversations, loadConversations, type ConversationModel } from "./conversations";
 import { createSessionStart } from "./session-start";
 import { createRunners } from "./runners";
@@ -46,6 +47,7 @@ const shell = mountShell();
 const router = shell.router;
 
 const settings = createAgentSettings(() => paint());
+const skillSettings = createSkillSettings();
 const sessionStart = createSessionStart(reload);
 const runners = createRunners();
 const projects = createProjects();
@@ -298,6 +300,8 @@ function paint(): void {
 
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
+  const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
+  if (skillsRoot) skillSettings.mount(skillsRoot, currentEngine());
   const sessionRoot = document.querySelector<HTMLElement>("#linear-session-start");
   if (sessionRoot)
     sessionStart.mount(sessionRoot, currentEngine(), source(), model.route.view === "sessions");

@@ -17,6 +17,7 @@ import {
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
+import { fakeSkillResolver } from "../../src/skills";
 import {
   createWorkspaceAccess,
   issueWorkspaceBootstrap,
@@ -166,6 +167,7 @@ export async function probeWorkspaceAuthorization(
     agentSettings: {
       configPath: join(root, "config.toml"),
     },
+    skillSettings: { root: join(root, "skills"), resolver: fakeSkillResolver() },
     readLinearArtifact: async (id) => {
       reads.push(id);
       return {
@@ -355,6 +357,52 @@ export async function probeWorkspaceAuthorization(
       "members cannot read owner settings or invoke host credential probes",
       settings.status === 403 && probe.status === 403,
       { settings: settings.status, probe: probe.status },
+    );
+    const skills = (session: typeof owner, body?: unknown) =>
+      fetch(`${origin}/api/settings/skills`, {
+        headers: headers(session),
+        ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
+      });
+    const impeccable = { kind: "npm", package: "impeccable" };
+    const skillStatuses = [
+      (await skills(member)).status,
+      (await skills(member, { action: "add", source: impeccable })).status,
+      (await skills(admin, { action: "add", source: impeccable, name: "impeccable" })).status,
+      (await skills(admin, { action: "update", name: "impeccable" })).status,
+      (await skills(owner, { action: "remove", name: "impeccable" })).status,
+      (await fetch(`${origin}/api/settings/agents`, { headers: headers(admin) })).status,
+    ];
+    const skillAudit = db
+      .query<{ userId: string; action: string; subject: string }, [string]>(
+        `SELECT user_id AS userId, action, subject FROM workspace_access_audit
+         WHERE workspace_id = ? AND (action LIKE 'settings.skill.%' OR subject = '/api/settings/skills')
+         ORDER BY id`,
+      )
+      .all(workspace.id);
+    observe(
+      "only owners and admins change skills, and every skill change is audited",
+      JSON.stringify(skillStatuses) === JSON.stringify([403, 403, 200, 200, 200, 403]) &&
+        JSON.stringify(skillAudit) ===
+          JSON.stringify([
+            { userId: memberId, action: "access.denied", subject: "/api/settings/skills" },
+            { userId: memberId, action: "access.denied", subject: "/api/settings/skills" },
+            {
+              userId: adminId,
+              action: "settings.skill.add",
+              subject: "Added skill impeccable 1.0.0 from npm impeccable for Claude, Codex, Grok",
+            },
+            {
+              userId: adminId,
+              action: "settings.skill.update",
+              subject: "Updated skill impeccable 1.0.0 → 1.1.0",
+            },
+            {
+              userId: ownerId,
+              action: "settings.skill.remove",
+              subject: "Removed skill impeccable 1.1.0",
+            },
+          ]),
+      { skillStatuses, skillAudit },
     );
     const stale = await fetch(`${origin}/api/workspaces/members`, {
       method: "PUT",

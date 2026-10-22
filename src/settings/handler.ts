@@ -98,7 +98,7 @@ export async function handleAgentSettingsRequest(
   return json({ ...settings, merge: saved });
 }
 
-function localRequest(request: Request, trustedOrigin?: string): boolean {
+export function localRequest(request: Request, trustedOrigin?: string): boolean {
   const url = new URL(request.url);
   if (
     trustedOrigin === undefined
@@ -113,14 +113,14 @@ function localRequest(request: Request, trustedOrigin?: string): boolean {
   return request.headers.get("sec-fetch-site") !== "cross-site";
 }
 
-function sameToken(token: string | null, expected: string): boolean {
+export function sameToken(token: string | null, expected: string): boolean {
   if (token === null) return false;
   const actual = Buffer.from(token);
   const correct = Buffer.from(expected);
   return actual.length === correct.length && timingSafeEqual(actual, correct);
 }
 
-async function readJson(request: Request): Promise<unknown> {
+export async function readJson(request: Request): Promise<unknown> {
   if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json")
     throw new Error("Expected JSON");
   const reader = request.body?.getReader();
@@ -144,11 +144,11 @@ async function readJson(request: Request): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function json(body: unknown, status = 200): Response {
+export function json(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
     headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },

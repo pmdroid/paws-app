@@ -156,6 +156,7 @@ import { delegationSnapshotsComplete, saveExternalBlockerPolicies } from "./inta
 import { registerScheduler, saveSchedulingContext } from "./scheduler";
 import { createRunnerPlacement, createRunnerPlacementBrowser } from "./runner-placement";
 import { startServer } from "./server";
+import { createSkillResolver } from "./skills";
 import { findOpenQuestion } from "./questions";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./deployment";
 import {
@@ -764,6 +765,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       evidenceDir: paths.evidenceDir,
       readLinearArtifact: createLinearArtifactReader({ db, secretsDir: paths.secretsDir }),
       ...(linear?.startSession ? { startLinearSession: linear.startSession } : {}),
+      skillSettings: { root: paths.skillsDir, resolver: createSkillResolver() },
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
