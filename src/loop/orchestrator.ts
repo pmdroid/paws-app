@@ -1,6 +1,6 @@
 import { confirmDecision, suggestDecisions } from "../decisions";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -160,6 +160,7 @@ import {
 import {
   publishAccepted,
   closeStoppedPull,
+  fetchUpstreamMain,
   mergedPullHeads,
   serialMerge,
   UPSTREAM_MAIN_REF,
@@ -182,6 +183,7 @@ import type {
 import {
   FIRST_ACTIVITY_BODY,
   LinearIntakePendingError,
+  isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
 } from "../linear";
@@ -3748,6 +3750,19 @@ export class Orchestrator {
     );
   }
 
+  /** The item opened a pull request in some generation of its session. A new turn starts a new generation. */
+  private hasOpenedPullRequest(itemId: string): boolean {
+    const prefix = `pull-request-ready:${itemId}:`;
+    return Boolean(
+      this.db
+        .query(
+          `SELECT 1 FROM outbox WHERE target='linear' AND substr(idempotency_key, 1, length(?)) = ?
+           AND status!='dropped' LIMIT 1`,
+        )
+        .get(prefix, prefix),
+    );
+  }
+
   private postStatus(
     item: WorkItemRecord,
     stateType: "started" | "completed" | "canceled",
@@ -3993,6 +4008,14 @@ export class Orchestrator {
       throw new Error(
         "Prior ACP process cleanup could not be verified; user update remains pending",
       );
+    // Linear's "Fix merge conflicts" on the open pull request is a rebase-conflict return.
+    const rebase =
+      item.id === routed?.id &&
+      this.hasOpenedPullRequest(item.id) &&
+      turns.some((turn) => isMergeConflictRequest(turn.body)) &&
+      this.agentReturns(item.id, "rebase-conflict") < MAX_REBASE_RETURNS &&
+      (await this.fetchUpstreamMain(item));
+    const handoff = turns.map((turn) => turn.body).join("\n\n");
     const jobKey = `linear-turn:${sessionId}:${getLinearSessionGeneration(this.db, sessionId)}`;
     immediate(this.db, () => {
       if (item!.cancelRequested || item!.state === "failed" || item!.state === "exhausted") {
@@ -4013,11 +4036,34 @@ export class Orchestrator {
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.resume,
         jobKey,
-        payload: { itemId: item!.id, handoff: turns.map((turn) => turn.body).join("\n\n") },
+        payload: rebase
+          ? {
+              itemId: item!.id,
+              handoff: `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}`,
+              reason: "rebase-conflict",
+            }
+          : { itemId: item!.id, handoff },
         now: this.now(),
       });
     });
     await this.flush();
+  }
+
+  /** Fetch main into the item's worktree, as a merge pass does before a rebase-conflict return. */
+  private async fetchUpstreamMain(item: WorkItemRecord): Promise<boolean> {
+    const repository = this.repositoryForItem(item);
+    const github = repository ? this.githubForRepository(repository) : null;
+    const worktree = worktreePath(this.options.pawsRoot, itemPathId(item));
+    if (!repository || !github || !existsSync(worktree)) return false;
+    await fetchUpstreamMain({
+      worktree,
+      owner: repository.owner,
+      repo: repository.repo,
+      client: github.client,
+      remoteUrl: repository.remoteUrl,
+      ...this.gitHubCredentials(github),
+    });
+    return true;
   }
 
   private async forwardFollowUp(
