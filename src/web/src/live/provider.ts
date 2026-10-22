@@ -921,7 +921,10 @@ function activityFor(
       line: {
         at: iso(run.createdAt, generatedAt),
         kind: "system",
-        text: `${run.kind === "review" ? "Review" : "Implementation"} started with ${agentName(run.agent)}.`,
+        text:
+          run.kind === "recheck"
+            ? "Closeout re-check started."
+            : `${run.kind === "review" ? "Review" : "Implementation"} started with ${agentName(run.agent)}.`,
       },
     });
   return lines.sort((left, right) => left.at - right.at).map((entry) => entry.line);
