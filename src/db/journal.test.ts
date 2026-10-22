@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { JOB_KIND, MERGE_LANE } from "../core";
 import {
+  accrueAwake,
   applyWorkItemEvent,
   beginImplementRun,
   cancelOpenJobs,
@@ -64,6 +65,18 @@ describe("journal", () => {
     failWorkItem(db, item, "start_timeout", "secret prompt text", 2_000);
     expect(lines).toContain("item PAS-2 failed: start_timeout");
     expect(lines.join("\n")).not.toContain("secret prompt text");
+  });
+
+  test("writes one line when a work item hits its time cap", () => {
+    const db = database();
+    insertQueuedItem(db, { id: "PAS-3", sessionKey: "s", maxAwakeMs: 1_000 });
+    beginImplementRun(db, "PAS-3", 1_000);
+    accrueAwake(db, "PAS-3", 0, 1_000);
+    lines = [];
+    accrueAwake(db, "PAS-3", 1_000, 2_000);
+    expect(lines.filter((line) => line.startsWith("item "))).toEqual([
+      "item PAS-3 failed: cap:time",
+    ]);
   });
 
   test("writes done, dead and cancelled outcomes for item jobs", () => {
