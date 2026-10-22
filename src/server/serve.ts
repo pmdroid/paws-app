@@ -36,6 +36,8 @@ export type ServerOptions = {
   runnerEnrollment?: (request: Request) => Promise<Response>;
   runnerControl?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   projects?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
+  /** `POST /api/paws-update`: **Update now** and **Cancel** on the overview. */
+  pawsUpdate?: (request: Request, principal: WorkspacePrincipal) => Promise<Response | null>;
   executionControls?: (
     request: Request,
     principal: WorkspacePrincipal,
@@ -111,6 +113,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(options.runnerEnrollment ? { runnerEnrollment: options.runnerEnrollment } : {}),
           ...(options.runnerControl ? { runnerControl: options.runnerControl } : {}),
           ...(options.projects ? { projects: options.projects } : {}),
+          ...(options.pawsUpdate ? { pawsUpdate: options.pawsUpdate } : {}),
           ...(options.executionControls ? { executionControls: options.executionControls } : {}),
           ...(options.readLinearArtifact ? { readLinearArtifact: options.readLinearArtifact } : {}),
           ...(options.startLinearSession ? { startLinearSession: options.startLinearSession } : {}),
@@ -143,6 +146,7 @@ type Secrets = {
   runnerEnrollment?: ServerOptions["runnerEnrollment"];
   runnerControl?: ServerOptions["runnerControl"];
   projects?: ServerOptions["projects"];
+  pawsUpdate?: ServerOptions["pawsUpdate"];
   executionControls?: ServerOptions["executionControls"];
   slackSigningSecret: string | null;
   linearWebhookSecret: string | null;
@@ -294,6 +298,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       );
       if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
+        if (response !== null) return response;
+      }
+      if (path === "/api/paws-update" && secrets.pawsUpdate !== undefined) {
+        const response = await secrets.pawsUpdate(request, access.principal);
         if (response !== null) return response;
       }
       if (path === "/api/projects" && secrets.projects !== undefined) {
