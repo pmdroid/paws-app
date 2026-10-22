@@ -324,7 +324,6 @@ function failForCap(
   now: number,
 ): void {
   const version = moveToFailed(db, item);
-  journal(`item ${item.linearIdentifier} failed: ${reason}`);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   journal(`item ${item.linearIdentifier} failed: cap:${reason}`);
