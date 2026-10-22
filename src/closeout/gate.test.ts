@@ -532,6 +532,8 @@ describe("closeout gate", () => {
     });
   }
 
+  // Twelve review rounds and eleven committed fixes take about 3.4 s on an
+  // idle machine, so bun's 5 s default overran under parallel load.
   test("progress-aware reviews pass the old host cap and preserve task evidence between gate calls", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("review")]).replace(
@@ -617,7 +619,7 @@ describe("closeout gate", () => {
     } finally {
       await repo.cleanup();
     }
-  });
+  }, 30_000);
 
   test("an exhausted command still collects review evidence needed for bypass recovery", async () => {
     const repo = await originRepo({
