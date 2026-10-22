@@ -100,6 +100,7 @@ export {
   TRANSIENT_RETRY_BASE_MS,
   isTransientFailure,
   retryNote,
+  retryAfterMs,
   transientRetryDelayMs,
 } from "./failure";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";

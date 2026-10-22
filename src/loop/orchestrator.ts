@@ -136,6 +136,9 @@ import {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   listCloseoutRounds,
+  recordCiRound,
+  type CiRound,
+  type CiRoundCheck,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
@@ -171,6 +174,10 @@ import {
   type WorkItemRecord,
   deferWorkItem,
   getTaskMergeSettings,
+  getTaskLinearRead,
+  keepTaskLinearRead,
+  linearActivitiesListedAt,
+  markLinearActivitiesListed,
   keepTaskMergeSettings,
   type TaskMergeSettings,
   joinMergeQueue,
@@ -200,6 +207,7 @@ import type {
   TrackerRequestOptions,
   LinearActivitySnapshot,
   LinearFileTransfer,
+  RepositoryHints,
   RepositorySuggestion,
   LinearMergeContext,
 } from "../linear";
@@ -208,6 +216,7 @@ import {
   LinearIntakePendingError,
   LinearRateLimitError,
   linearCaller,
+  linearItem,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -414,7 +423,6 @@ export class Orchestrator {
     (options: RunAgentOptions) => Promise<RunAgentResult>
   >();
   private readonly jobContexts = new Map<string, JobContext>();
-  private readonly projectOverviews = new Map<string, string>();
   private shuttingDown = false;
   private activitySeq = 0;
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -990,8 +998,20 @@ export class Orchestrator {
     return this.options.db;
   }
 
+  private forItem<T>(payload: unknown, run: () => T): T {
+    const itemId = readString(payload, "itemId");
+    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    return item ? linearItem(item.linearIdentifier, run) : run();
+  }
+
   private register(): void {
-    const jobs = this.options.jobs;
+    const loop = this.options.jobs;
+    const jobs: Pick<typeof loop, "register"> = {
+      register: (queue, handler) =>
+        loop.register(queue, (job, context) =>
+          this.forItem(job.payload, () => handler(job, context)),
+        ),
+    };
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
@@ -1018,36 +1038,40 @@ export class Orchestrator {
       this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.reverify, (job, context) =>
-      this.runLeasedJob(job.payload, context, () =>
-        this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+      this.failOnLastAttempt(job, context, "reverify", () =>
+        this.runLeasedJob(job.payload, context, () =>
+          this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+        ),
       ),
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
       let waiting: MergeWait | undefined;
-      await this.runLeasedJob(job.payload, context, async () => {
-        try {
-          await this.runOwnedJob(job.payload, async () => {
-            waiting = await this.merge(job.payload, job.id);
-          });
-        } catch (error) {
-          if (!(error instanceof LinearReconciliationPendingError)) throw error;
-          immediate(this.db, () => {
-            if (!context.isCurrent()) throw context.signal.reason;
-            enqueueJobOnce(this.db, {
-              queue:
-                getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
-                  ? JOB_KIND.reverify
-                  : job.queue,
-              lane: job.lane,
-              priority: job.priority,
-              payload: job.payload,
-              jobKey: `merge-reconciliation:${job.id}`,
-              now: this.now(),
-              runAt: this.now() + 30000,
+      await this.failOnLastAttempt(job, context, "merge", () =>
+        this.runLeasedJob(job.payload, context, async () => {
+          try {
+            await this.runOwnedJob(job.payload, async () => {
+              waiting = await this.merge(job.payload, job.id);
             });
-          });
-        }
-      });
+          } catch (error) {
+            if (!(error instanceof LinearReconciliationPendingError)) throw error;
+            immediate(this.db, () => {
+              if (!context.isCurrent()) throw context.signal.reason;
+              enqueueJobOnce(this.db, {
+                queue:
+                  getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
+                    ? JOB_KIND.reverify
+                    : job.queue,
+                lane: job.lane,
+                priority: job.priority,
+                payload: job.payload,
+                jobKey: `merge-reconciliation:${job.id}`,
+                now: this.now(),
+                runAt: this.now() + 30000,
+              });
+            });
+          }
+        }),
+      );
       if (waiting === undefined) return;
       if (
         parkMergeForCi(
@@ -1084,7 +1108,7 @@ export class Orchestrator {
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
         "outbox",
-        () => this.deliverLinearMessage(message, context),
+        () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
         message.op === "elicitation" ||
           message.delivery === "critical" ||
           message.delivery === "stop" ||
@@ -1186,6 +1210,33 @@ export class Orchestrator {
       }
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      throw error;
+    }
+  }
+
+  private async failOnLastAttempt(
+    job: Job,
+    context: JobContext,
+    reason: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (
+        job.attempts >= job.maxAttempts &&
+        item &&
+        !this.shuttingDown &&
+        context.isCurrent() &&
+        !this.jobContexts.has(item.id) &&
+        !item.cancelRequested &&
+        (item.state === "verifying" || item.state === "merge_queue")
+      ) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.fail(item, reason, `Stopped after ${job.attempts} attempts. ${message}`, error);
+      }
       throw error;
     }
   }
@@ -1869,8 +1920,8 @@ export class Orchestrator {
         if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
           itemId: current.id,
-          kind: "review",
-          agent: snapshot.profiles.reviewer.agent,
+          kind: "recheck",
+          agent: prior.agent,
           status: "active",
           freshSession: true,
           now: this.now(),
@@ -2434,8 +2485,9 @@ export class Orchestrator {
         base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
       }
     } catch (error) {
+      if (isTransientFailure(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      this.fail(item, "reverify", message);
+      this.fail(item, "reverify", message, error);
       return;
     }
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
@@ -2519,6 +2571,7 @@ export class Orchestrator {
     const priorVerification = ciWaitVerification(payload);
     if (priorVerification)
       publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
+    const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -2540,7 +2593,9 @@ export class Orchestrator {
           live.controller.signal,
           publicationCandidate,
         );
-        await this.taskAccess()?.assert(current, live.controller.signal);
+        const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
+        await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
+        if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
@@ -2685,8 +2740,11 @@ export class Orchestrator {
     });
     // The first task keeps its place while it waits for CI or runs Closeout again after main moved.
     // Any other outcome takes it out of the queue; after a fix it rejoins at the end.
+    const unreadable =
+      merged.outcome === "blocked" && merged.message?.startsWith("could not read") === true;
     if (
       queued &&
+      !unreadable &&
       merged.outcome !== "waiting" &&
       !(
         closeoutAfterUpdate &&
@@ -2728,6 +2786,7 @@ export class Orchestrator {
       );
     if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!merged.merged) {
+      if (unreadable) throw new Error(merged.message);
       if (closeoutFailure !== null) {
         const failure = closeoutFailure as CloseoutVerdict;
         await this.askCloseoutHelp(item, failure.result, failure.summary);
@@ -2748,16 +2807,22 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
+        const round = (next: CiRound["next"]) =>
+          this.recordCiRound(item, merged.head, merged.checks, next, limit);
         if (
           this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
             ciFixRoundLine(checks, attempt, limit),
           )
-        )
+        ) {
+          round("agent");
           return;
+        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          round("asked");
           await this.flush();
           return;
         }
+        round("failed");
       }
       this.post(
         item,
@@ -2989,6 +3054,27 @@ export class Orchestrator {
       if (reason === "ci-failed") this.postAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
       return true;
+    });
+  }
+
+  /** The checks of a failed CI read and what Paws did next, for the run page. */
+  private recordCiRound(
+    item: WorkItemRecord,
+    head: string | undefined,
+    checks: readonly CiRoundCheck[] | undefined,
+    next: CiRound["next"],
+    limit: number,
+  ): void {
+    if (!head) return;
+    recordCiRound(this.db, {
+      itemId: item.id,
+      head,
+      runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
+      next,
+      fix: next === "agent" ? this.agentReturns(item.id, "ci-failed") : null,
+      fixLimit: limit,
+      checks: [...(checks ?? [])],
+      recordedAt: this.now(),
     });
   }
 
@@ -3336,6 +3422,7 @@ export class Orchestrator {
 
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
+    this.taskAccess()?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
@@ -4062,7 +4149,7 @@ export class Orchestrator {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
-      idempotencyKey: `status:${item.id}:${issueId}:${stateType}`,
+      idempotencyKey: `status:${item.id}:${issueId}:${stateType}:${item.version}`,
       payload: { itemId: item.id, linearIssueId: issueId, stateType },
       now: this.now(),
     });
@@ -4507,6 +4594,8 @@ export class Orchestrator {
     }
     const tracker = this.tracker;
     if (!tracker?.listSessionActivities) return;
+    const generation = getLinearSessionGeneration(this.db, sessionId);
+    if (linearActivitiesListedAt(this.db, sessionId) === generation) return;
     let activities;
     try {
       activities = await linearCaller("context", () =>
@@ -4530,18 +4619,27 @@ export class Orchestrator {
           createdAt: activity.createdAt,
           snapshot: JSON.stringify(activity),
         });
+      markLinearActivitiesListed(this.db, sessionId, generation);
     });
   }
 
   private async loadProjectOverview(itemId: string, signal: AbortSignal): Promise<void> {
     const item = getWorkItem(this.db, itemId);
     const tracker = this.options.tracker;
-    if (!item || this.projectOverviews.has(itemId) || !tracker?.projectOverview) return;
+    if (
+      !item ||
+      getTaskLinearRead(this.db, itemId, "project_overview") !== undefined ||
+      !tracker?.projectOverview
+    )
+      return;
     try {
       const overview = await tracker.projectOverview(item.linearIssueId, { signal });
-      this.projectOverviews.set(
+      keepTaskLinearRead(
+        this.db,
         itemId,
+        "project_overview",
         overview ? `Project overview: ${overview.name}\n\n${overview.content}` : "",
+        this.now(),
       );
     } catch {
       signal.throwIfAborted();
@@ -4558,7 +4656,7 @@ export class Orchestrator {
       : [];
     return [
       renderWorkBrief(item.brief),
-      this.projectOverviews.get(item.id) ?? "",
+      (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
       ...listLinearTurnsForItem(this.db, item.id).map((turn) => `User update:\n${turn.body}`),
       classification?.mode !== "clarify" ? (classification?.context ?? "") : "",
       item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
@@ -5083,14 +5181,19 @@ export class Orchestrator {
       let hinted: ReturnType<typeof hintedRepository> = null;
       if (this.tracker?.issueRepositoryHints) {
         try {
-          hinted = hintedRepository(
-            candidates,
-            await linearCaller("repository-hints", () =>
+          const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
+            | RepositoryHints
+            | undefined;
+          const hints =
+            kept ??
+            (await linearCaller("repository-hints", () =>
               this.tracker!.issueRepositoryHints!(item.linearIssueId, {
                 signal: controller.signal,
               }),
-            ),
-          );
+            ));
+          if (kept === undefined)
+            keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+          hinted = hintedRepository(candidates, hints);
         } catch (error) {
           controller.signal.throwIfAborted();
           console.error(
@@ -5102,8 +5205,25 @@ export class Orchestrator {
       }
       const best = new Map<string, RepositorySuggestion>();
       const pool = hinted && "ask" in hinted ? hinted.ask : candidates;
+      const poolNames = pool.map((candidate) =>
+        `${candidate.owner}/${candidate.repo}`.toLowerCase(),
+      );
+      const keptSuggestions = getTaskLinearRead(this.db, item.id, "repository_suggestions") as
+        | { pool: string[]; suggestions: RepositorySuggestion[] }
+        | undefined;
+      const reuseSuggestions =
+        keptSuggestions !== undefined &&
+        poolNames.every((name) => keptSuggestions.pool.includes(name));
+      if (reuseSuggestions)
+        for (const suggestion of keptSuggestions.suggestions)
+          best.set(suggestion.repositoryFullName.toLowerCase(), suggestion);
       const attempts =
-        !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
+        !reuseSuggestions &&
+        !(hinted && "bind" in hinted) &&
+        this.tracker?.issueRepositorySuggestions
+          ? 3
+          : 0;
+      let suggested = false;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
           const read = await linearCaller("repository-hints", () =>
@@ -5118,6 +5238,7 @@ export class Orchestrator {
               { signal: controller.signal },
             ),
           );
+          suggested = true;
           for (const suggestion of read) {
             const key = suggestion.repositoryFullName.toLowerCase();
             if ((best.get(key)?.confidence ?? -1) < suggestion.confidence)
@@ -5133,6 +5254,14 @@ export class Orchestrator {
           if (attempt < 3) await delay(attempt * 500, undefined, { signal: controller.signal });
         }
       }
+      if (suggested)
+        keepTaskLinearRead(
+          this.db,
+          item.id,
+          "repository_suggestions",
+          { pool: poolNames, suggestions: [...best.values()] },
+          this.now(),
+        );
       if (this.stopped(item.id)) return false;
       const choice =
         hinted && "bind" in hinted ? hinted : chooseRepository(pool, [...best.values()]);

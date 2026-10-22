@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
 import { startPaws } from "../../src/index";
