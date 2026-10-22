@@ -77,6 +77,10 @@ import {
   mergeQueueLine,
   systemClock,
   parseLinearCommand,
+  isTransientFailure,
+  MAX_TRANSIENT_RETRIES,
+  retryNote,
+  transientRetryDelayMs,
 } from "../core";
 import {
   getTaskMode,
@@ -161,12 +165,14 @@ import {
   applyLinearCommand,
   listRepositoryCatalog,
   listRepositoryCandidates,
+  type Job,
   type JobLoop,
   type JobContext,
   type OutboxDeliveryContext,
   type OutboxDispatcher,
   type OutboxRow,
   type WorkItemRecord,
+  deferWorkItem,
   getTaskMergeSettings,
   getTaskLinearRead,
   keepTaskLinearRead,
@@ -210,6 +216,7 @@ import {
   LinearIntakePendingError,
   LinearRateLimitError,
   linearCaller,
+  linearItem,
   isMergeConflictRequest,
   parseLinearSessionContext,
   renderLinearSessionContext,
@@ -354,6 +361,7 @@ export type OrchestratorOptions = {
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
+  retryBaseMs?: number;
 };
 
 export type ExecutionChanges = {
@@ -990,8 +998,20 @@ export class Orchestrator {
     return this.options.db;
   }
 
+  private forItem<T>(payload: unknown, run: () => T): T {
+    const itemId = readString(payload, "itemId");
+    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    return item ? linearItem(item.linearIdentifier, run) : run();
+  }
+
   private register(): void {
-    const jobs = this.options.jobs;
+    const loop = this.options.jobs;
+    const jobs: Pick<typeof loop, "register"> = {
+      register: (queue, handler) =>
+        loop.register(queue, (job, context) =>
+          this.forItem(job.payload, () => handler(job, context)),
+        ),
+    };
     jobs.register(JOB_KIND.command, async (job, context) => {
       if (!context.isCurrent()) return;
       const command = parseLinearCommand(job.payload);
@@ -1012,10 +1032,10 @@ export class Orchestrator {
       });
     });
     jobs.register(JOB_KIND.start, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
+      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.resume, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
+      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.reverify, (job, context) =>
       this.runLeasedJob(job.payload, context, () =>
@@ -1084,7 +1104,7 @@ export class Orchestrator {
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
         "outbox",
-        () => this.deliverLinearMessage(message, context),
+        () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
         message.op === "elicitation" ||
           message.delivery === "critical" ||
           message.delivery === "stop" ||
@@ -1142,6 +1162,52 @@ export class Orchestrator {
       this.db,
       files && root ? { files, root } : undefined,
     );
+  }
+
+  private async executeRetried(job: Job, context: JobContext): Promise<void> {
+    try {
+      await this.executeQueued(job.payload);
+    } catch (error) {
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (
+        this.shuttingDown ||
+        !item ||
+        !context.isCurrent() ||
+        item.cancelRequested ||
+        (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
+      )
+        throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (isTransientFailure(error)) {
+        const retry = retryCount(job.payload) + 1;
+        if (retry > MAX_TRANSIENT_RETRIES) {
+          this.fail(
+            item,
+            "run_error",
+            `Stopped after ${MAX_TRANSIENT_RETRIES} retries. ${message}`,
+            error,
+          );
+          return;
+        }
+        const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
+        console.error(
+          `${item.linearIdentifier} retry ${retry} of ${MAX_TRANSIENT_RETRIES} in ${delayMs} ms: ${message}`,
+          error,
+        );
+        deferWorkItem(this.db, item, {
+          retry,
+          delayMs,
+          handoff: readString(job.payload, "handoff"),
+          message: retryNote(message, delayMs),
+          now: this.now(),
+        });
+        return;
+      }
+      if (job.attempts >= job.maxAttempts)
+        this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      throw error;
+    }
   }
 
   private async executeQueued(payload: unknown): Promise<void> {
@@ -1509,8 +1575,15 @@ export class Orchestrator {
         !this.stopped(item.id) &&
         !controller.signal.aborted &&
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
-      )
-        this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
+      ) {
+        if (isTransientFailure(error)) throw error;
+        this.fail(
+          item,
+          "answer_error",
+          error instanceof Error ? error.message : String(error),
+          error,
+        );
+      }
     } finally {
       clearInterval(keepAlive);
       this.releaseAskedRun(run.id);
@@ -1706,7 +1779,8 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else this.fail(current, "run_error", message);
+        else if (isTransientFailure(error)) throw error;
+        else this.fail(current, "run_error", message, error);
       }
     } finally {
       activity.flush();
@@ -1814,8 +1888,8 @@ export class Orchestrator {
         if (enteredFromQueue) applyWorkItemEvent(this.db, current.id, "reverify_requested");
         const run = insertRun(this.db, {
           itemId: current.id,
-          kind: "review",
-          agent: snapshot.profiles.reviewer.agent,
+          kind: "recheck",
+          agent: prior.agent,
           status: "active",
           freshSession: true,
           now: this.now(),
@@ -2464,6 +2538,7 @@ export class Orchestrator {
     const priorVerification = ciWaitVerification(payload);
     if (priorVerification)
       publicationCandidate = { sha: priorVerification.head, baseSha: priorVerification.base };
+    const freshReads = new Set<string>();
     const github = guardGitHubPublication({
       github: configuredGitHub,
       repository,
@@ -2485,7 +2560,9 @@ export class Orchestrator {
           live.controller.signal,
           publicationCandidate,
         );
-        await this.taskAccess()?.assert(current, live.controller.signal);
+        const fresh = (purpose === "pr" || purpose === "merge") && !freshReads.has(purpose);
+        await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
+        if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
         if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
           throw new Error("GitHub sign-in is required before publication.");
@@ -3308,6 +3385,7 @@ export class Orchestrator {
 
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
+    this.taskAccess()?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
@@ -3877,9 +3955,13 @@ export class Orchestrator {
     );
   }
 
-  private fail(item: WorkItemRecord, reason: string, text: string): void {
+  private fail(item: WorkItemRecord, reason: string, text: string, cause?: unknown): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id) ?? item;
+    console.error(
+      `${current.linearIdentifier} failed (${reason}): ${text}`,
+      ...(cause === undefined ? [] : [cause]),
+    );
     if (
       current.state === "running" ||
       current.state === "verifying" ||
@@ -4030,7 +4112,7 @@ export class Orchestrator {
       target: "linear",
       op: "status",
       orderingKey: sessionId,
-      idempotencyKey: `status:${item.id}:${issueId}:${stateType}`,
+      idempotencyKey: `status:${item.id}:${issueId}:${stateType}:${item.version}`,
       payload: { itemId: item.id, linearIssueId: issueId, stateType },
       now: this.now(),
     });
@@ -5276,6 +5358,11 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 
 function branchUpdatedMessage(base: string): string {
   return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+}
+
+function retryCount(payload: unknown): number {
+  const retry = (payload as { retry?: unknown } | null)?.retry;
+  return typeof retry === "number" ? retry : 0;
 }
 
 function readString(payload: unknown, key: string): string | null {

@@ -95,4 +95,11 @@ export {
 } from "./delegation";
 
 export { PawsShutdown, RunnerSlotsBusyError, UserFacingError } from "./user-facing-error";
+export {
+  MAX_TRANSIENT_RETRIES,
+  TRANSIENT_RETRY_BASE_MS,
+  isTransientFailure,
+  retryNote,
+  transientRetryDelayMs,
+} from "./failure";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";

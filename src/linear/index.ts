@@ -11,10 +11,13 @@ export {
   linearBudget,
   linearCaller,
   linearCallerFor,
+  linearDefaultCallers,
+  linearItem,
   LinearRateLimitError,
 } from "./budget";
 export type {
   LinearCallerUsage,
+  LinearItemUsage,
   LinearLedger,
   LinearPriority,
   LinearRateBudget,

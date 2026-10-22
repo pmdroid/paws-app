@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createTokenStore } from "../../src/auth";
