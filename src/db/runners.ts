@@ -516,3 +516,22 @@ export function runRunnerName(db: Database, runId: string): string | null {
       .get(runId)?.name ?? null
   );
 }
+
+export type RunnerAvailability = {
+  id: string;
+  name: string;
+  status: RunnerRecord["status"];
+  revoked: boolean;
+  lastSeenAt: number | null;
+};
+
+/** The runner that holds a run's remote work, as last reported. */
+export function runRunnerAvailability(db: Database, runId: string): RunnerAvailability | null {
+  const row = db
+    .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>(
+      `SELECT r.id,r.name,r.status,r.revoked_at IS NOT NULL AS revoked,r.last_seen_at AS lastSeenAt
+       FROM runner_work w JOIN runner r ON r.id=w.runner_id WHERE w.run_id=?`,
+    )
+    .get(runId);
+  return row ? { ...row, revoked: row.revoked === 1 } : null;
+}
