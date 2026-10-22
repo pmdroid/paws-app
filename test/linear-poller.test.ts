@@ -200,7 +200,7 @@ describe("linear intake poll", () => {
       });
       await waitFor(() => created.length > 0);
       await poller.pollNow();
-      store.setCursor("delegated:iss_back", NOW + 60_000);
+      store.setCursor("delegated:iss_back", NOW + 120_000);
       await poller.pollNow();
       await poller.pollNow();
       await poller.stop();
