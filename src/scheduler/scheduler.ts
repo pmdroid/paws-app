@@ -6,7 +6,14 @@ import {
   type RepositoryBinding,
   type WorkBrief,
 } from "../core";
-import { enqueueJob, enqueueJobOnce, immediate, saveQueuePositions, type JobLoop } from "../db";
+import {
+  enqueueJob,
+  enqueueJobOnce,
+  immediate,
+  requeueOrphanedWork,
+  saveQueuePositions,
+  type JobLoop,
+} from "../db";
 import { readyItems } from "../intake";
 
 const TICK = "scheduler.tick";
@@ -202,6 +209,7 @@ function depths(db: Database, items: Item[]): Map<string, number> {
 export function dispatchReadyItems(db: Database, options: SchedulerOptions = {}): string[] {
   const now = options.now ?? Date.now();
   return immediate(db, () => {
+    requeueOrphanedWork(db, now);
     const items = allItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
     const ready = new Set<string>();

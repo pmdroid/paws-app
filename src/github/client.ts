@@ -7,8 +7,9 @@ export function createFetchGitHubClient(
   baseUrl = "https://api.github.com",
 ): GitHubClient {
   return {
-    async request({ method, path, token, body, signal }): Promise<GitHubResponse> {
+    async request({ method, path, token, body, signal, accept }): Promise<GitHubResponse> {
       signal?.throwIfAborted();
+      if (accept === "text") return requestText(fetchImpl, `${baseUrl}${path}`, token, signal);
       const response = await fetchImpl(`${baseUrl}${path}`, {
         method,
         headers: {
@@ -33,6 +34,35 @@ export function createFetchGitHubClient(
       return { status: response.status, body: parsed };
     },
   };
+}
+
+/**
+ * A GET whose body is text. A redirect (Actions log downloads go to signed storage URLs) is
+ * followed by hand so the token is not sent to the other host.
+ */
+async function requestText(
+  fetchImpl: FetchLike,
+  url: string,
+  token: string,
+  signal: AbortSignal | undefined,
+): Promise<GitHubResponse> {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "paws",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+    redirect: "manual",
+    signal,
+  });
+  const location = response.headers.get("location");
+  if (response.status >= 300 && response.status < 400 && location) {
+    await response.body?.cancel();
+    const target = await fetchImpl(location, { method: "GET", signal });
+    return { status: target.status, body: await target.text() };
+  }
+  return { status: response.status, body: await response.text() };
 }
 
 export function repoApiPath(owner: string, repo: string, suffix: string): string {

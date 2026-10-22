@@ -339,3 +339,33 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
     db.close();
   }
 });
+
+test("work stuck in flight with no job is queued again and doesn't block other starts", () => {
+  const db = tempDb();
+  try {
+    insertQueuedItem(db, { id: "stuck", now: 0, sessionKey: "stuck-session" });
+    bindWorkItemRepository(db, "stuck", repository);
+    applyWorkItemEvent(db, "stuck", "dispatched");
+    applyWorkItemEvent(db, "stuck", "turn_ended");
+    const finished = enqueueJob(db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: "stuck" },
+      now: 0,
+    });
+    db.run("UPDATE job SET status='done', finished_at=0 WHERE id=?", [finished]);
+    insertQueuedItem(db, { id: "next", now: 1 });
+    bindWorkItemRepository(db, "next", repository);
+    const now = 10 * 60_000;
+    assert.deepEqual(dispatchReadyItems(db, { now, legacyReadyItemIds: ["next"] }), ["next"]);
+    const claimed = [claimNextJob(db, { now }), claimNextJob(db, { now })].map(
+      (job) => `${job?.queue}:${(job?.payload as { itemId?: string } | undefined)?.itemId}`,
+    );
+    assert.deepEqual(claimed.sort(), [`${JOB_KIND.start}:next`, `${JOB_KIND.reverify}:stuck`]);
+    assert.equal(
+      db.query("SELECT 1 FROM outbox WHERE ordering_key='stuck-session'").get() !== null,
+      true,
+    );
+  } finally {
+    db.close();
+  }
+});

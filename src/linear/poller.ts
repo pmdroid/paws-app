@@ -26,7 +26,7 @@ export const POLL_INTERVAL_WEBHOOK_MS = 60_000;
 export const POLL_INTERVAL_LOW_BUDGET_MS = 5 * 60_000;
 
 /** A verified webhook this recent means webhooks are healthy. */
-export const WEBHOOK_HEALTHY_MS = 10 * 60_000;
+export const WEBHOOK_HEALTHY_MS = 60 * 60_000;
 
 export const LOW_BUDGET_FRACTION = 0.2;
 

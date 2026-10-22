@@ -99,7 +99,7 @@ export {
   type OutboxStatus,
   type OutboxTarget,
 } from "./outbox";
-export { prepareShutdown, recoverOnStartup } from "./recovery";
+export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,
@@ -175,6 +175,7 @@ export {
   type CloseoutRecovery,
 } from "./closeout-recovery";
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
+export { listCiRounds, recordCiRound, type CiRound, type CiRoundCheck } from "./ci-rounds";
 export {
   recordGitHubDelivery,
   listGitHubDeliveries,

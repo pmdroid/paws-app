@@ -2082,7 +2082,23 @@ ALTER TABLE runner_agent_usage_owner RENAME TO runner_agent_usage;
     sql: `DROP TABLE paws_update;`,
   },
   {
-    id: "093_task_linear_reads",
+    id: "093_ci_round",
+    sql: `
+CREATE TABLE ci_round (
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  head TEXT NOT NULL,
+  run_id TEXT,
+  next TEXT NOT NULL CHECK(next IN ('agent','asked','failed')),
+  fix INTEGER CHECK(fix IS NULL OR fix >= 1),
+  fix_limit INTEGER NOT NULL CHECK(fix_limit >= 0),
+  checks TEXT NOT NULL CHECK(json_valid(checks)),
+  recorded_at INTEGER NOT NULL,
+  PRIMARY KEY (item_id, head)
+) STRICT;
+`,
+  },
+  {
+    id: "094_task_linear_reads",
     sql: `
 CREATE TABLE work_item_linear_read (
   item_id TEXT NOT NULL REFERENCES work_item(id),
