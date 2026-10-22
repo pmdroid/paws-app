@@ -49,15 +49,10 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
       if (!pause) return false;
       db.run("UPDATE usage_pause SET resume_at=? WHERE run_id=?", [now, runId]);
       const runner = pause.runnerId === null ? "" : " AND runner_id=?";
-      const args =
-        pause.runnerId === null ? [now, pause.agent] : [now, pause.agent, pause.runnerId];
-      db.run(
-        `UPDATE runner_member_account SET cooldown_until=0,updated_at=? WHERE agent=? AND cooldown_until>0${runner}`,
-        args,
-      );
+      const args = pause.runnerId === null ? [pause.agent] : [pause.agent, pause.runnerId];
       db.run(
         `UPDATE runner_agent_policy SET cooldown_until=0 WHERE agent=? AND cooldown_until>0${runner}`,
-        args.slice(1),
+        args,
       );
       return true;
     })

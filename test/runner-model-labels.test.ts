@@ -32,10 +32,7 @@ function fixture() {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     [runnerId, workspace, userId, "Labels host", now, now],
   );
-  db.run(
-    "INSERT INTO runner_member_account(runner_id,user_id,agent,connected,updated_at) VALUES(?,?,'claude',1,?)",
-    [runnerId, userId, now],
-  );
+  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   db.run("INSERT INTO agent_model_catalog VALUES(?,?,'claude','',?,?)", [
     runnerId,
     userId,

@@ -82,7 +82,6 @@ export async function probeRunnerUserAccess(root: string) {
         type: "task",
         runnerId: "runner",
         workspaceId: "workspace",
-        memberId: "member",
         runId: "run-" + index,
         itemId: "item-" + index,
         generation: 1,

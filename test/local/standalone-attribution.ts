@@ -204,7 +204,6 @@ export async function probeStandaloneAttribution(root: string) {
         id: "command",
         runnerId: "runner",
         workspaceId: "workspace",
-        memberId: "steerer",
         issuedAt: now,
         expiresAt: now + 60_000,
         type: "run",
