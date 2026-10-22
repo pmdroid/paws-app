@@ -68,6 +68,7 @@ import {
   type Clock,
   type LinearCommand,
   type RepositoryBinding,
+  PawsShutdown,
   RunnerSlotsBusyError,
   systemClock,
   parseLinearCommand,
@@ -525,7 +526,7 @@ export class Orchestrator {
     this.authRecoveryController.abort();
     this.githubAuth?.close();
     const owned = [...this.live.values()];
-    for (const live of owned) live.controller.abort();
+    for (const live of owned) live.controller.abort(new PawsShutdown());
     const joined = await Promise.allSettled([
       this.authRecovery,
       this.stopTaskPlanning(),
@@ -1625,7 +1626,11 @@ export class Orchestrator {
       clearTimeout(first);
       clearInterval(keepAlive);
       this.releaseAskedRun(run.id);
-      if (this.options.remoteExecution && (this.jobContexts.get(item.id)?.isCurrent() ?? true))
+      if (
+        this.options.remoteExecution &&
+        !this.shuttingDown &&
+        (this.jobContexts.get(item.id)?.isCurrent() ?? true)
+      )
         markRunEnded(this.db, run.id, this.now());
       this.conversations.delete(item.id);
       try {

@@ -539,12 +539,12 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const detached = item();
     const shutdown = new AbortController();
-    const before: string[] = [];
+    const beforeEvents: string[] = [];
     const beforeRestart = backend.forItem(detached.id)(
       input(detached, {
         signal: shutdown.signal,
         onEvent: (event) => {
-          if (event.type === "progress") before.push(event.text);
+          if (event.type === "progress") beforeEvents.push(event.text);
         },
       }),
     );
@@ -565,7 +565,7 @@ export async function probeRunnerBackend(
       sequence: 1,
       event: { type: "progress", text: "Before restart" },
     });
-    for (let attempt = 0; attempt < 500 && before.length === 0; attempt++) await delay(2);
+    for (let attempt = 0; attempt < 500 && beforeEvents.length === 0; attempt++) await delay(2);
     shutdown.abort(new PawsShutdown());
     await beforeRestart.catch(() => undefined);
     const leftLive =
@@ -575,11 +575,11 @@ export async function probeRunnerBackend(
         )
         .get(detachedCommand.runId)?.ended === null;
     const cancelSent = work.commands(runnerId).length > 0;
-    const after: string[] = [];
+    const afterEvents: string[] = [];
     const afterRestart = backend.forItem(detached.id)(
       input(detached, {
         onEvent: (event) => {
-          if (event.type === "progress") after.push(event.text);
+          if (event.type === "progress") afterEvents.push(event.text);
         },
       }),
     );
@@ -591,7 +591,7 @@ export async function probeRunnerBackend(
       sequence: 2,
       event: { type: "progress", text: "After restart" },
     });
-    for (let attempt = 0; attempt < 500 && after.length === 0; attempt++) await delay(2);
+    for (let attempt = 0; attempt < 500 && afterEvents.length === 0; attempt++) await delay(2);
     results.submit({
       runnerId,
       runId: detachedCommand.runId,
@@ -609,9 +609,16 @@ export async function probeRunnerBackend(
         !cancelSent &&
         !redispatched &&
         reattached.stopReason === "end_turn" &&
-        JSON.stringify(before) === JSON.stringify(["Before restart"]) &&
-        JSON.stringify(after) === JSON.stringify(["After restart"]),
-      { leftLive, cancelSent, redispatched, stopReason: reattached.stopReason, before, after },
+        JSON.stringify(beforeEvents) === JSON.stringify(["Before restart"]) &&
+        JSON.stringify(afterEvents) === JSON.stringify(["After restart"]),
+      {
+        leftLive,
+        cancelSent,
+        redispatched,
+        stopReason: reattached.stopReason,
+        beforeEvents,
+        afterEvents,
+      },
     );
     const reviewer = item();
     let text = "";

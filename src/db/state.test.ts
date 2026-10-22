@@ -74,6 +74,25 @@ describe("restart recovery", () => {
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
   });
 
+  test("restarts keep a task running while its runner still holds the work", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+      [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 60_000],
+    );
+    for (let restart = 0; restart < 3; restart++) {
+      prepareShutdown(db, clock.now());
+      recoverOnStartup(db, clock.now());
+    }
+    expect({
+      item: getWorkItem(db, item.id),
+      run: getRun(db, run.id)?.status,
+    }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
+  });
+
   test("shutdown leaves the run recoverable and the next start can resume it once", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
