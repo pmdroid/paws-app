@@ -212,7 +212,7 @@ export function startCatchUpPoller(options: {
           (session) =>
             session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id),
         )
-        .map((session) => sessionEvent(session, since, options.store)),
+        .map((session) => sessionEvent(session, since, options.store, sessionHasTask)),
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),
     ].filter((event): event is AcceptedLinearEvent => event !== null);
@@ -332,6 +332,7 @@ function sessionEvent(
   session: PolledSession,
   since: number,
   store: InboxStore,
+  sessionHasTask: (sessionId: string) => boolean,
 ): AcceptedLinearEvent | null {
   const prior = store.get(`issue:${session.issueId}:intake`);
   if (session.stoppedAtMs != null) {
@@ -348,10 +349,17 @@ function sessionEvent(
     });
   }
   if (session.endedAtMs != null) return null;
-  if (prior?.sessionId === session.id) return null;
-  if (prior === null && session.updatedAtMs < since) return null;
+  const delegatedAt = store.getCursor(`delegated:${session.issueId}`);
+  const redelegated =
+    delegatedAt !== null &&
+    delegatedAt > session.createdAtMs + REDELEGATION_MARGIN_MS &&
+    !sessionHasTask(session.id);
+  if (!redelegated && prior?.sessionId === session.id) return null;
+  if (!redelegated && prior === null && session.updatedAtMs < since) return null;
   return inboxEvent({
-    dedupeKey: `session:${session.id}:created`,
+    dedupeKey: redelegated
+      ? `session:${session.id}:created:${delegatedAt}`
+      : `session:${session.id}:created`,
     action: "created",
     sessionId: session.id,
     issueId: session.issueId,
@@ -382,7 +390,7 @@ export function persistStopCommand(db: Database, command: LinearCommand): void {
   }
 }
 
-const REDELEGATION_MARGIN_MS = 5_000;
+const REDELEGATION_MARGIN_MS = 60_000;
 
 function issueEvent(
   issue: PolledIssue,
