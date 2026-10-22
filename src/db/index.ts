@@ -357,6 +357,14 @@ export type { QueuePosition } from "./queue-wait";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
+  joinMergeQueue,
+  leaveMergeQueue,
+  listMergeQueues,
+  markMergeQueueNotified,
+  mergeQueuePosition,
+} from "./merge-queue";
+export type { MergeQueuePosition } from "./merge-queue";
+export {
   cancelPawsUpdate,
   clearPawsUpdate,
   getPawsUpdate,

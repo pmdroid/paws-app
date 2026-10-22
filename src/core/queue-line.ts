@@ -14,3 +14,22 @@ export function ordinal(value: number): string {
   const suffix = tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][value % 10] ?? "th");
   return `${value}${suffix}`;
 }
+
+const PLACES = [
+  "First",
+  "Second",
+  "Third",
+  "Fourth",
+  "Fifth",
+  "Sixth",
+  "Seventh",
+  "Eighth",
+  "Ninth",
+  "Tenth",
+];
+
+/** "Second in the acme/platform queue." */
+export function mergeQueueLine(entry: { position: number; repository: string }): string {
+  const place = PLACES[entry.position - 1] ?? ordinal(entry.position);
+  return `${place} in the ${entry.repository} queue`;
+}
