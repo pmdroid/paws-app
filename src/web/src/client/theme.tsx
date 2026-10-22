@@ -127,7 +127,12 @@ function replace(node: DOMNode): ReactElement | undefined {
       });
     }
     if (attribs.type === "hidden") return createElement("input", props);
-    return <Input {...props} />;
+    return (
+      <Input
+        {...props}
+        className={cn(props.className as string | undefined, has("concurrency-input") && "w-16")}
+      />
+    );
   }
   if (name === "select") {
     const choices = node.children.filter(
@@ -365,6 +370,73 @@ function replace(node: DOMNode): ReactElement | undefined {
     return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
   if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
   if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
+  if (has("runner-head")) return styled("flex min-w-0 items-start justify-between gap-3");
+  if (has("runner-title")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("runner-status"))
+    return styled(
+      "flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-semibold [&>span:not(.tag,:last-child)]:after:ml-3 [&>span:not(.tag,:last-child)]:after:content-['·']",
+    );
+  if (has("runner-meta"))
+    return styled(
+      "flex flex-wrap gap-x-2 text-sm leading-relaxed [&>span]:whitespace-nowrap [&>span:not(:last-child)]:after:ml-2 [&>span:not(:last-child)]:after:content-['·']",
+    );
+  if (has("runner-host")) return styled("flex min-w-0 flex-col gap-3");
+  if (has("runner-updated")) return styled("flex flex-wrap items-center gap-2 text-sm");
+  if (has("runner-gauges", "runner-slots"))
+    return styled(
+      cn(
+        "m-0 grid min-w-0 grid-cols-2 gap-x-6 gap-y-5",
+        has("runner-gauges") ? "lg:grid-cols-4" : "grid-cols-1 sm:grid-cols-2",
+        has("stale") && "opacity-60 grayscale",
+      ),
+    );
+  if (has("runner-gauge"))
+    return styled(
+      "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1.5 [&>dd]:m-0 [&>dd:nth-child(2)]:justify-self-end [&>dd:nth-child(n+3)]:col-span-full [&>dt]:text-sm [&>dt]:leading-6 [&>dt]:font-semibold [&>dt]:whitespace-nowrap",
+    );
+  if (has("runner-concurrency"))
+    return styled(
+      "flex min-w-0 flex-col gap-1.5 [&>dd]:m-0 [&>dt]:text-sm [&>dt]:leading-6 [&>dt]:font-semibold",
+    );
+  if (has("gauge-value"))
+    return styled(
+      cn(
+        "font-heading tabular-nums [overflow-wrap:normal]",
+        has("high") &&
+          "rounded-base border-2 border-border bg-main px-1.5 text-sm text-main-foreground",
+      ),
+    );
+  if (has("gauge")) {
+    const fill = Math.min(100, Math.max(0, Number(attribs["data-fill"]) || 0));
+    return (
+      <span
+        {...props}
+        className="flex h-4 w-full overflow-hidden rounded-base border-2 border-border bg-secondary-background"
+      >
+        <span
+          className={cn(
+            "h-full shrink-0",
+            attribs["data-level"] === "high" ? "bg-main" : "bg-gauge",
+            fill > 0 && fill < 100 && "border-r-2 border-border",
+          )}
+          style={{ width: `${fill}%` }}
+        />
+      </span>
+    );
+  }
+  if (has("slots")) return styled("flex h-4 w-full gap-1");
+  if (has("slot"))
+    return styled(
+      cn(
+        "h-full min-w-0 flex-1 rounded-base border-2 border-border",
+        has("used") ? (has("high") ? "bg-main" : "bg-gauge") : "bg-secondary-background",
+      ),
+    );
+  if (has("runner-agents-row"))
+    return styled("flex min-w-0 flex-wrap items-center gap-x-6 gap-y-3");
+  if (name === "ul" && has("runner-agent-list"))
+    return styled("m-0 flex min-w-0 list-none flex-wrap items-center gap-x-5 gap-y-2 p-0");
+  if (has("runner-agent")) return styled("flex flex-wrap items-center gap-2 text-sm");
   if (has("issue-row", "issue-title"))
     return styled(
       "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 gap-y-2 [&>.st]:mt-0.5 [&>.st]:justify-self-end [&>.issue-facts]:col-span-full",
