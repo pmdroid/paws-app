@@ -18,6 +18,7 @@ import {
   createFakeLinearIssueLifecycle,
   createFakeTracker,
   createLinearIssueLifecycle,
+  LinearRateLimitError,
   parseAgentEvent,
 } from "../src/linear";
 import { LinearTaskAccess } from "../src/loop";
@@ -298,5 +299,18 @@ test("transient notification reads remain retryable and unrelated issues do not 
     throw new Error("Temporary offline read");
   };
   await expect(f.gate.reconcile("parent")).rejects.toThrow("Temporary offline");
+  expect(f.stopped).toEqual([]);
+});
+
+test("a Linear rate limit while checking task access waits for the reset instead of failing", async () => {
+  const f = await fixture();
+  const inspect = f.lifecycle.inspect.bind(f.lifecycle);
+  let reads = 0;
+  f.lifecycle.inspect = async (...args) => {
+    if (++reads === 1) throw new LinearRateLimitError(0, {} as never);
+    return inspect(...args);
+  };
+  await f.gate.assert(f.item, new AbortController().signal);
+  expect(reads).toBeGreaterThan(1);
   expect(f.stopped).toEqual([]);
 });
