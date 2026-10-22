@@ -124,64 +124,82 @@ export function createAcpCodexReviewer(deps: AcpAgentDeps): CodexReviewer {
         worktree: request.worktree,
         prompt,
       });
-      let text = "";
-      const refusals: Extract<AcpEvent, { type: "permission" }>[] = [];
-      let result: RunAgentResult;
-      for (let attempt = 1; ; attempt++) {
-        seq += 1;
-        text = "";
-        refusals.length = 0;
-        result = await (deps.agentRunner ?? runAgent)({
-          repository: deps.repository,
-          prepareInputFiles: deps.prepareInputFiles,
-          role: "reviewer",
-          profile: deps.profiles?.reviewer,
-          itemId: request.taskId,
-          runId: `rev-${request.taskId}-${seq}`,
-          prompt,
-          worktreePath: request.worktree,
-          pawsRoot: deps.pawsRoot,
-          checkpoint: false,
-          readOnly: true,
-          ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
-          ...(deps.home ? { home: deps.home } : {}),
-          ...(deps.signal ? { signal: deps.signal } : {}),
-          ...spawnOf(launch),
-          onEvent(event) {
-            if (event.type === "permission" && event.decision === "deny") refusals.push(event);
-            if (event.type === "progress" && !event.messageChunk)
-              void deps.postUpdate?.post(event.text).catch(() => undefined);
-            if (event.type !== "session_update") return;
-            if (event.update.sessionUpdate !== "agent_message_chunk") return;
-            if (event.update.content.type === "text") text += event.update.content.text ?? "";
-          },
-        });
-        if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
-      }
-      if (!result.agentExited) deps.onCleanupFailure?.();
-      const refused = refusals.at(-1);
-      if (result.cancelled && !result.timedOut && refused && !deps.signal?.aborted) {
-        const tool = refused.name || refused.title || refused.kind || "a tool";
-        throw new Error(
-          `The reviewer stopped after Paws refused its tool call \`${tool}\` (${refused.reason}), so the change was not reviewed.`,
-        );
-      }
-      if (result.authRequired) {
-        throw new Error(result.errorMessage ?? "Codex login is missing");
-      }
-      if (
-        result.cancelled ||
-        result.timedOut ||
-        result.errorMessage !== undefined ||
-        result.stopReason !== "end_turn"
-      ) {
-        throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
-      }
-      if (!result.identity) throw new Error("Reviewer did not report a concrete session model");
-      return {
-        ...result.identity,
-        findings: parseFindings(text),
+      const turn = async (
+        turnPrompt: string,
+        resume?: RunAgentOptions["resume"],
+      ): Promise<{ identity: AgentIdentity; sessionId: string; text: string }> => {
+        let text = "";
+        const refusals: Extract<AcpEvent, { type: "permission" }>[] = [];
+        let result: RunAgentResult;
+        for (let attempt = 1; ; attempt++) {
+          seq += 1;
+          text = "";
+          refusals.length = 0;
+          result = await (deps.agentRunner ?? runAgent)({
+            repository: deps.repository,
+            prepareInputFiles: deps.prepareInputFiles,
+            role: "reviewer",
+            profile: deps.profiles?.reviewer,
+            itemId: request.taskId,
+            runId: `rev-${request.taskId}-${seq}`,
+            prompt: turnPrompt,
+            worktreePath: request.worktree,
+            pawsRoot: deps.pawsRoot,
+            checkpoint: false,
+            readOnly: true,
+            ...(resume ? { resume } : {}),
+            ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+            ...(deps.home ? { home: deps.home } : {}),
+            ...(deps.signal ? { signal: deps.signal } : {}),
+            ...spawnOf(launch),
+            onEvent(event) {
+              if (event.type === "permission" && event.decision === "deny") refusals.push(event);
+              if (event.type === "progress" && !event.messageChunk)
+                void deps.postUpdate?.post(event.text).catch(() => undefined);
+              if (event.type !== "session_update") return;
+              if (event.update.sessionUpdate !== "agent_message_chunk") return;
+              if (event.update.content.type === "text") text += event.update.content.text ?? "";
+            },
+          });
+          if (attempt > 1 || !result.cancelled || deps.signal?.aborted) break;
+        }
+        if (!result.agentExited) deps.onCleanupFailure?.();
+        const refused = refusals.at(-1);
+        if (result.cancelled && !result.timedOut && refused && !deps.signal?.aborted) {
+          const tool = refused.name || refused.title || refused.kind || "a tool";
+          throw new Error(
+            `The reviewer stopped after Paws refused its tool call \`${tool}\` (${refused.reason}), so the change was not reviewed.`,
+          );
+        }
+        if (result.authRequired) {
+          throw new Error(result.errorMessage ?? "Codex login is missing");
+        }
+        if (
+          result.cancelled ||
+          result.timedOut ||
+          result.errorMessage !== undefined ||
+          result.stopReason !== "end_turn"
+        ) {
+          throw new Error(result.errorMessage ?? `Review did not complete: ${result.stopReason}`);
+        }
+        if (!result.identity) throw new Error("Reviewer did not report a concrete session model");
+        return {
+          identity: result.identity,
+          sessionId: result.sessionId ?? result.identity.session,
+          text,
+        };
       };
+      const first = await turn(prompt);
+      const parsed = parseReviewFindings(first.text);
+      if (parsed.ok) return { ...first.identity, findings: parsed.findings };
+      // One follow-up in the same reviewer session. A runner that cannot load the
+      // session replays the review prompt and the earlier reply instead.
+      const followUp = findingsFollowUp(parsed.reason);
+      const second = await turn(followUp, {
+        sessionId: first.sessionId,
+        replayPrompt: [prompt, "Your earlier reply:", first.text, followUp].join("\n\n"),
+      });
+      return { ...second.identity, findings: parseFindings(second.text) };
     },
   };
 }
@@ -248,6 +266,10 @@ export function fixPrompt(request: FixRequest, brief?: string): string {
     `This is fix attempt ${request.fixAttempt} of ${request.maxFixAttempts}.`,
     request.summary,
   ].join("\n\n");
+}
+
+function findingsFollowUp(reason: string): string {
+  return `Your findings were not valid JSON: ${reason}. Send only the findings array.`;
 }
 
 export function parseFindings(text: string): Finding[] {
