@@ -11,8 +11,8 @@ import { enqueueJobOnce } from "./jobs";
 import { applyWorkItemEvent, listInFlightItems, listWorkItemsByStates } from "./items";
 import type { WorkItemRecord } from "./items";
 import { markRun, releaseRunCapacity } from "./runs";
-import { immediate } from "./tx";
 import { getTaskMode } from "./tasks";
+import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
 export type ShutdownWipCommit = (item: WorkItemRecord) => void;
@@ -24,7 +24,7 @@ const STARTUP_STATES = [
   "merge_queue",
 ] as const satisfies readonly WorkItemState[];
 
-/** On process start, resume a live run once or fail it. Merges fail closed. */
+/** On process start, resume a live run once or ask whether to start it again. Merges fail closed. */
 export function recoverOnStartup(db: Database, now = Date.now()): StartupDecision[] {
   return immediate(db, () => {
     const items = listWorkItemsByStates(db, STARTUP_STATES);
@@ -35,7 +35,6 @@ export function recoverOnStartup(db: Database, now = Date.now()): StartupDecisio
         itemState: item.state,
         recoveryAttempts: item.recoveryAttempts,
         checkpoint: item.checkpoint,
-        taskMode: getTaskMode(db, item.id),
         runnerHoldsWork: runnerHoldsWork(db, item, now),
       });
       applyDecision(db, item, decision, now);

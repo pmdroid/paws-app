@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   formatPauseNote,
@@ -20,6 +21,10 @@ import {
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
 import { enqueueOutboxOnce } from "./outbox";
 import { getRun, insertRun, markRun } from "./runs";
+import { getTaskMode } from "./tasks";
+
+const RESTART_QUESTION =
+  "Paws restarted twice while this task was running. Start it again from its branch in a fresh session? Stop the session to leave it.";
 
 export type WakeStamp = { fromWall: number; toWall: number; sleptMs: number };
 
@@ -52,6 +57,9 @@ export function applyDecision(
       return;
     case "reverify":
       applyReverify(db, item, now, stamp);
+      return;
+    case "ask_restart":
+      applyAskRestart(db, item, now);
       return;
     case "fail":
       applyFail(db, item, decision.reason, now);
@@ -102,6 +110,10 @@ function applyResume(
     const run = getRun(db, current.currentRunId);
     if (run && run.status === "lost") markRun(db, run.id, "active", now);
   }
+  const restart =
+    !reattach && checkpoint === null && getTaskMode(db, item.id) === "code"
+      ? `Paws restarted before this task saved a checkpoint, and the earlier session is gone. Start again${item.branchName ? ` from the branch ${item.branchName}` : ""}: keep any work already on it and finish the issue.`
+      : null;
   enqueueJobOnce(db, {
     queue: JOB_KIND.resume,
     jobKey: `resume:${item.id}:${current.version}`,
@@ -110,8 +122,57 @@ function applyResume(
       runId: current.currentRunId,
       freshSession: true,
       checkpoint,
+      ...(restart === null ? {} : { handoff: restart }),
       reason: "process_restart",
     },
+    now,
+  });
+}
+
+/** Already resumed once: ask in Linear. Any answer starts the task again through the answer resume. */
+function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void {
+  const sessionId = item.sessionKey;
+  const open =
+    sessionId !== null &&
+    db
+      .query(
+        "SELECT 1 FROM question WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL",
+      )
+      .get(sessionId) !== null;
+  if (sessionId === null || open) {
+    failWorkItem(
+      db,
+      item,
+      "resume_already_attempted",
+      "Stopped after a restart because this run was already resumed once.",
+      now,
+    );
+    return;
+  }
+  cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
+  applyWorkItemEvent(db, item.id, "blocking_question");
+  if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "awaiting_input" });
+  const questionId = randomUUID();
+  const options = ["Start again"];
+  db.run(
+    `INSERT INTO question (id, item_id, run_id, session_id, body, options, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+    [
+      questionId,
+      item.id,
+      item.currentRunId,
+      sessionId,
+      RESTART_QUESTION,
+      JSON.stringify(options),
+      now,
+    ],
+  );
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "elicitation",
+    orderingKey: sessionId,
+    idempotencyKey: `restart-ask:${questionId}`,
+    payload: { sessionId, questionId, body: RESTART_QUESTION, options },
     now,
   });
 }
@@ -192,15 +253,12 @@ function applyReverify(db: Database, item: WorkItemRecord, now: number, stamp?: 
   });
 }
 
-function applyFail(
-  db: Database,
-  item: WorkItemRecord,
-  reason: "resume_already_attempted" | "no_checkpoint",
-  now: number,
-): void {
-  const text =
-    reason === "resume_already_attempted"
-      ? "Stopped after a restart because this run was already resumed once."
-      : "Stopped after a restart because there is no checkpoint to resume from.";
-  failWorkItem(db, item, reason, text, now);
+function applyFail(db: Database, item: WorkItemRecord, reason: "no_checkpoint", now: number): void {
+  failWorkItem(
+    db,
+    item,
+    reason,
+    "Stopped after waking because there is no checkpoint to resume from.",
+    now,
+  );
 }
