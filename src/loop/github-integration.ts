@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, sleep } from "../core";
 import {
   applyWorkItemEvent,
   applyLinearCommand,
@@ -20,6 +20,7 @@ export type GitHubIntegration = {
   recoveryUrl: string;
   identity(item: WorkItemRecord): string;
   current?(item: WorkItemRecord): boolean;
+  unavailableRetryMs?: readonly number[];
 };
 
 type Hold = {
@@ -166,7 +167,7 @@ export class GitHubIntegrationHolds {
         continue;
       }
       const item = getWorkItem(this.db, hold.item_id)!;
-      const result = await this.probe(item, signal);
+      const result = await this.probe(item, signal, []);
       if (this.closed || signal.aborted) return;
       if (result === "denied") {
         if (this.current(hold)) this.deny(item.id);
@@ -240,6 +241,7 @@ export class GitHubIntegrationHolds {
   private async probe(
     item: WorkItemRecord,
     signal: AbortSignal,
+    retryMs: readonly number[] = this.integration.unavailableRetryMs ?? [],
   ): Promise<"ready" | "installation" | "unavailable" | "denied" | "attribution"> {
     try {
       const result = await this.check(item, signal);
@@ -248,6 +250,11 @@ export class GitHubIntegrationHolds {
       else this.lastReady.delete(item.id);
       return result;
     } catch (error) {
+      const [delay, ...rest] = retryMs;
+      if (delay !== undefined && !this.closed && !signal.aborted) {
+        await sleep(delay, signal);
+        if (!this.closed && !signal.aborted) return this.probe(item, signal, rest);
+      }
       const last = this.lastReady.get(item.id);
       const message = error instanceof Error ? error.message : String(error);
       return TRANSIENT_CHECK_ERROR.test(message) &&
