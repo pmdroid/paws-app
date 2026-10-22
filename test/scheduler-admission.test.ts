@@ -8,7 +8,9 @@ import {
   consumeWorkspaceBootstrap,
   enqueueJob,
   ensureLinearSession,
+  getQueuePosition,
   insertQueuedItem,
+  listQueuePositions,
   putWorkspaceUser,
   recordLinearInstallation,
 } from "../src/db";
@@ -219,28 +221,90 @@ test("task_block depth stays on the active item when a merged row shares its iss
   }
 });
 
+function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): void {
+  const userId = putWorkspaceUser(db, {
+    id: workspaceId(),
+    linearUserId: "owner",
+    name: "Owner",
+    email: "owner@example.invalid",
+  });
+  const workspace = consumeWorkspaceBootstrap(db, {
+    id: workspaceId(),
+    organizationId: "org",
+    name: "Fixture",
+    userId,
+    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", 0)),
+    now: 0,
+  });
+  db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'runner','active',0,1000)",
+    [workspace.id, userId],
+  );
+  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',?)", [capacity]);
+}
+
+test("a waiting item's place in line moves up as items ahead start or leave", () => {
+  const db = tempDb();
+  try {
+    runnerWithSlots(db, 2);
+    for (const id of ["busy-1", "busy-2"]) {
+      insertQueuedItem(db, { id, now: 0 });
+      applyWorkItemEvent(db, id, "dispatched");
+    }
+    const ready = ["a", "b", "c", "d"];
+    for (const [index, id] of ready.entries()) insertQueuedItem(db, { id, now: index + 1 });
+    const line = () =>
+      listQueuePositions(db).map(({ itemId, position, busySlots, totalSlots }) => [
+        itemId,
+        position,
+        `${busySlots}/${totalSlots}`,
+      ]);
+
+    assert.deepEqual(dispatchReadyItems(db, { now: 1000, legacyReadyItemIds: ready }), []);
+    assert.deepEqual(line(), [
+      ["a", 1, "2/2"],
+      ["b", 2, "2/2"],
+      ["c", 3, "2/2"],
+      ["d", 4, "2/2"],
+    ]);
+    assert.deepEqual(getQueuePosition(db, "c"), {
+      itemId: "c",
+      position: 3,
+      busySlots: 2,
+      totalSlots: 2,
+    });
+
+    // A slot frees and the first item starts: everyone behind it moves up.
+    applyWorkItemEvent(db, "busy-1", "blocking_question");
+    assert.deepEqual(dispatchReadyItems(db, { now: 1001, legacyReadyItemIds: ready }), ["a"]);
+    assert.deepEqual(line(), [
+      ["b", 1, "2/2"],
+      ["c", 2, "2/2"],
+      ["d", 3, "2/2"],
+    ]);
+
+    // An item ahead leaves the queue.
+    db.run("UPDATE work_item SET cancel_requested=1 WHERE id='b'");
+    dispatchReadyItems(db, { now: 1002, legacyReadyItemIds: ready });
+    assert.deepEqual(line(), [
+      ["c", 1, "2/2"],
+      ["d", 2, "2/2"],
+    ]);
+    assert.equal(getQueuePosition(db, "b"), null);
+
+    // With no runner online, admission is unlimited as in local execution, and there is no line.
+    db.run("UPDATE runner SET last_seen_at=0");
+    dispatchReadyItems(db, { now: 120_000, legacyReadyItemIds: ready });
+    assert.deepEqual(line(), []);
+  } finally {
+    db.close();
+  }
+});
+
 test("queued items wait for a free runner slot, and work in flight keeps its slot", () => {
   const db = tempDb();
   try {
-    const userId = putWorkspaceUser(db, {
-      id: workspaceId(),
-      linearUserId: "owner",
-      name: "Owner",
-      email: "owner@example.invalid",
-    });
-    const workspace = consumeWorkspaceBootstrap(db, {
-      id: workspaceId(),
-      organizationId: "org",
-      name: "Fixture",
-      userId,
-      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", 0)),
-      now: 0,
-    });
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner',?,?,'runner','active',0,1000)",
-      [workspace.id, userId],
-    );
-    db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
+    runnerWithSlots(db, 2);
     insertQueuedItem(db, { id: "busy", now: 0 });
     applyWorkItemEvent(db, "busy", "dispatched");
     for (const [index, id] of ["a", "b", "c"].entries())

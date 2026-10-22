@@ -204,6 +204,29 @@ describe("status views", () => {
     expect(detail).toContain('href="/issues/ENG-104"');
   });
 
+  test("a queued task shows its place in line on the run and issue pages", () => {
+    const snapshot = demoStatus();
+    const run = snapshot.runs.find((entry) => entry.id === "r-102");
+    const item = snapshot.items.find((entry) => entry.id === run?.itemId);
+    if (!run || !item) throw new Error("missing fixture");
+    item.state = "queued";
+    const before = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(before).not.toContain("in line");
+    item.queue = { position: 2, busySlots: 4, totalSlots: 4 };
+    const page = render(model({ snapshot, route: { view: "runs", id: run.id } })).content;
+    expect(page).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
+    expect(page).toContain('<span class="result-icon" aria-hidden="true">2</span>');
+    expect(page).toContain(`Paws starts ${item.id} when a slot frees.`);
+    expect(page).toContain('<span class="st queued">Queued</span>');
+    item.queue = { position: 11, busySlots: 1, totalSlots: 1 };
+    const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
+    expect(issue).toContain("Queued, 11th in line. 1 of 1 runner slot is busy.");
+    item.state = "running";
+    expect(render(model({ snapshot, route: { view: "runs", id: run.id } })).content).not.toContain(
+      "in line",
+    );
+  });
+
   test("a run detail renders the verification section", () => {
     const html = render(model({ route: { view: "runs", id: "r-100" } })).content;
     expect(html).toContain("<h2>Closeout</h2>");

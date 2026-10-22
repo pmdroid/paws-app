@@ -18,6 +18,7 @@ import {
   itemLabel,
   linkButtons,
   linkList,
+  queueLine,
   runLabel,
   PHASE_NAMES,
   statePill,
@@ -273,6 +274,7 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
       <div class="issue-facts">${issueMeta(item)}</div>
       <div class="row">${linkList(item.links)}</div>
     </div>
+    ${queueNotice(item)}
     <h3>Runs</h3>
     ${runs.length ? `<ul class="issue-items" role="list">${runs.map((run) => `<li><div class="between"><a href="${routeHref({ view: "runs", id: run.id })}">${esc(run.id)}</a>${statePill(run.state, runLabel(run.state))}</div></li>`).join("")}</ul>` : `<p class="muted">No runs yet.</p>`}
     <h3>Blocked by</h3>
@@ -352,6 +354,7 @@ function viewRuns(
       <p class="muted">Run ${esc(selected.id)} · ${esc(selected.agent)}${selected.runner ? ` on runner ${esc(selected.runner)}` : ""} · started ${esc(ago(selected.startedAt, snapshot.generatedAt))}</p>
     </header>
     ${phaseStrip(item, selected, verdict, agent)}
+    ${item ? queueNotice(item) : ""}
     ${selected.usagePause ? usagePauseSection(selected, selected.usagePause) : executionControls(selected)}
     ${snapshot.questions
       .filter((question) => question.itemId === selected.itemId)
@@ -380,6 +383,12 @@ function usagePauseSection(run: StatusRun, pause: StatusUsagePause): string {
     <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(run)}</div>
     <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the task${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
   </section>`;
+}
+
+/** Where a queued task stands while every runner slot is busy. */
+function queueNotice(item: StatusItem): string {
+  if (item.state !== "queued" || !item.queue) return "";
+  return `<section class="closeout-result queue-notice" aria-labelledby="queue-${esc(item.id)}"><span class="result-icon" aria-hidden="true">${item.queue.position}</span><div><h3 id="queue-${esc(item.id)}">${esc(queueLine(item.queue))}</h3><p>Paws starts ${esc(item.id)} when a slot frees. It holds no runner slot while it waits.</p></div></section>`;
 }
 
 /** The transcript and the run's own links, as one row of buttons above the log. */
@@ -476,6 +485,7 @@ function phasePill(item: StatusItem | undefined, run: StatusRun, verdict?: Statu
   if (item?.state === "completed") return statePill("completed", "Complete");
   if (item?.state === "merged") return statePill("merged", "Complete");
   if (run.usagePause) return statePill("running usage-limit", "Paused · usage limit");
+  if (item?.state === "queued") return statePill("queued", "Queued");
   if (recheck) return statePill("verifying", "Closeout");
   if (verdict?.decision === "blocked") return statePill("needs_human", "Closeout blocked");
   if (verdict?.decision === "exhausted" || item?.state === "exhausted")

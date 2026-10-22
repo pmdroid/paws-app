@@ -2014,4 +2014,16 @@ CREATE TABLE agent_skill (
 ) STRICT;
 `,
   },
+  {
+    id: "088_queue_position",
+    sql: `
+CREATE TABLE queue_position (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  position INTEGER NOT NULL CHECK (position >= 1),
+  busy_slots INTEGER NOT NULL CHECK (busy_slots >= 0),
+  total_slots INTEGER NOT NULL CHECK (total_slots >= 1),
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
