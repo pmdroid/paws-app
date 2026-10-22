@@ -127,6 +127,7 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
         cycle,
         message: readiness.message,
         ...(readiness.failedChecks ? { failedChecks: readiness.failedChecks } : {}),
+        ...(readiness.checks ? { checks: readiness.checks } : {}),
       };
     }
     const mergeToken = await operationToken(input, "merge");
@@ -165,6 +166,7 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
         cycle,
         message: recheck.message,
         ...(recheck.failedChecks ? { failedChecks: recheck.failedChecks } : {}),
+        ...(recheck.checks ? { checks: recheck.checks } : {}),
       };
     }
     // A stop or withdrawn publication during the recheck must still win.

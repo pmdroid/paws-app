@@ -1,3 +1,4 @@
+import { linearDefaultCallers } from "./budget";
 import type { TrackerRequestOptions } from "./adapter";
 import type { LinearClient } from "./graphql";
 import { isRecord, readNumber, readString } from "./read";
@@ -53,6 +54,13 @@ const UPDATE = `mutation StartDelegatedIssue($id: String!, $input: IssueUpdateIn
 }`;
 
 export function createLinearIssueLifecycle(client: LinearClient): LinearIssueLifecycle {
+  return linearDefaultCallers(createUnlabelledLifecycle(client), {
+    inspect: "issue-inspect",
+    startCodeIssue: "issue-start",
+  });
+}
+
+function createUnlabelledLifecycle(client: LinearClient): LinearIssueLifecycle {
   async function inspect(issueId: string, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     const data = await client.query(ISSUE, { id: issueId }, options);
