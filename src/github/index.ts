@@ -75,6 +75,8 @@ export type {
   ReverifyInput,
   ReverifyResult,
   SerialMergeResult,
+  CiCheck,
+  CiCheckState,
 } from "./types";
 export type { GitHubWebhook } from "./webhook";
 export { defaultGitExec } from "./git";

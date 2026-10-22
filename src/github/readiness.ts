@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { repoApiPath } from "./client";
-import type { GitHubClient } from "./types";
+import type { CiCheck, CiCheckState, GitHubClient } from "./types";
 
 const pageInfoSchema = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
 
@@ -14,9 +14,19 @@ const contextsSchema = z.object({
         name: z.string().optional(),
         conclusion: z.string().nullable().optional(),
         detailsUrl: z.string().nullable().optional(),
+        startedAt: z.string().nullable().optional(),
+        completedAt: z.string().nullable().optional(),
+        databaseId: z.number().nullable().optional(),
+        summary: z.string().nullable().optional(),
+        checkSuite: z
+          .object({ app: z.object({ slug: z.string() }).nullable().optional() })
+          .nullable()
+          .optional(),
         context: z.string().optional(),
         state: z.string().optional(),
         targetUrl: z.string().nullable().optional(),
+        createdAt: z.string().nullable().optional(),
+        description: z.string().nullable().optional(),
       })
       .nullable(),
   ),
@@ -89,23 +99,38 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
 fragment Contexts on StatusCheckRollupContextConnection {
   pageInfo { hasNextPage endCursor }
   nodes {
-    ... on CheckRun { name conclusion detailsUrl }
-    ... on StatusContext { context state targetUrl }
+    ... on CheckRun { name conclusion detailsUrl startedAt completedAt databaseId summary checkSuite { app { slug } } }
+    ... on StatusContext { context state targetUrl createdAt description }
   }
 }`;
 
-export type FailedCheck = { name: string; url: string | null };
+export type FailedCheck = { name: string; url: string | null; logTail?: string | null };
 
 export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
   failedChecks?: FailedCheck[];
+  /** Every check on the head, set when CI failed. */
+  checks?: CiCheck[];
 };
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]);
 
-type Check = { name: string; result: string | null; url: string | null };
+type Check = {
+  name: string;
+  result: string | null;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The Actions job id, when GitHub Actions ran the check. */
+  actionsJob: number | null;
+  summary: string | null;
+};
+
+/** Lines and characters of a failing check's log that Paws keeps and hands to the agent. */
+export const LOG_TAIL_LINES = 60;
+export const LOG_TAIL_CHARS = 6000;
 
 type ReadinessInput = {
   client: GitHubClient;
@@ -244,6 +269,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     const required = await readRequiredChecks(input, token, baseBranch);
     if (required === null) return unreadable();
     const ci = judgeChecks(checks, baseChecks, required);
+    if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
     return unresolved > 0
       ? { outcome: "pending", message: `Waiting for ${unresolved} unresolved review thread(s).` }
@@ -282,6 +308,13 @@ function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
         name,
         result: node.conclusion ?? node.state ?? null,
         url: node.detailsUrl ?? node.targetUrl ?? null,
+        startedAt: node.startedAt ?? node.createdAt ?? null,
+        completedAt: node.completedAt ?? null,
+        actionsJob:
+          node.checkSuite?.app?.slug === "github-actions" && typeof node.databaseId === "number"
+            ? node.databaseId
+            : null,
+        summary: node.summary ?? node.description ?? null,
       },
     ];
   });
@@ -317,6 +350,96 @@ function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>
     };
   }
   return { outcome: "ready", message: "CI passed" };
+}
+
+function ciState(result: string | null): CiCheckState {
+  if (result === "SUCCESS") return "passed";
+  if (FAILED.has(result ?? "")) return "failed";
+  if (result === "SKIPPED" || result === "NEUTRAL") return "skipped";
+  return "running";
+}
+
+/** Every check on the head, with the log tail of each failing one. A log that can't be read is left out. */
+async function withLogTails(
+  input: ReadinessInput,
+  token: string,
+  ci: Readiness,
+  checks: Check[],
+): Promise<Readiness> {
+  const read: CiCheck[] = [];
+  for (const check of checks) {
+    const state = ciState(check.result);
+    const log = state === "failed" ? await readLogTail(input, token, check) : null;
+    read.push({
+      name: check.name,
+      state,
+      url: check.url,
+      startedAt: check.startedAt,
+      completedAt: check.completedAt,
+      logTail: log?.tail ?? null,
+      logSource: log?.source ?? null,
+    });
+  }
+  const tails = new Map(read.map((check) => [check.name, check.logTail]));
+  return {
+    ...ci,
+    failedChecks: (ci.failedChecks ?? []).map((check) => ({
+      ...check,
+      logTail: tails.get(check.name) ?? null,
+    })),
+    checks: read,
+  };
+}
+
+/** The job log for GitHub Actions, otherwise the check's summary text. */
+async function readLogTail(
+  input: ReadinessInput,
+  token: string,
+  check: Check,
+): Promise<{ tail: string; source: "actions" | "summary" } | null> {
+  if (check.actionsJob !== null) {
+    try {
+      const response = await input.client.request({
+        method: "GET",
+        path: repoApiPath(input.owner, input.repo, `/actions/jobs/${check.actionsJob}/logs`),
+        token,
+        accept: "text",
+        signal: AbortSignal.timeout(30_000),
+      });
+      const tail =
+        response.status === 200 && typeof response.body === "string" ? logTail(response.body) : "";
+      if (tail !== "") return { tail, source: "actions" };
+      console.error(`GitHub Actions log read for ${check.name} failed: status ${response.status}`);
+    } catch (error) {
+      console.error(
+        `GitHub Actions log read for ${check.name} failed: ${
+          error instanceof Error ? error.name : "unknown error"
+        }`,
+      );
+    }
+  }
+  const summary = logTail(check.summary ?? "");
+  return summary === "" ? null : { tail: summary, source: "summary" };
+}
+
+/**
+ * The end of a log, up to the last `##[error]` line when there is one, so post-job cleanup
+ * does not push the failure out. Timestamps, colour codes and group markers are removed.
+ */
+export function logTail(log: string): string {
+  const lines = log
+    // oxlint-disable-next-line no-control-regex -- ANSI colour codes
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/, ""))
+    .filter((line) => !/^##\[(?:end)?group\]/.test(line));
+  const lastError = lines.findLastIndex((line) => line.startsWith("##[error]"));
+  const kept = (lastError === -1 ? lines : lines.slice(0, lastError + 1)).slice(-LOG_TAIL_LINES);
+  const tail = kept
+    .join("\n")
+    .replace(/^(?:[ \t]*\n)+/, "")
+    .trimEnd();
+  return tail.length > LOG_TAIL_CHARS ? tail.slice(tail.length - LOG_TAIL_CHARS) : tail;
 }
 
 const protectionSchema = z.object({

@@ -132,6 +132,9 @@ import {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   listCloseoutRounds,
+  recordCiRound,
+  type CiRound,
+  type CiRoundCheck,
   runRunnerAvailability,
   setRunningCloseoutStepDetail,
   startCloseoutRound,
@@ -2686,16 +2689,22 @@ export class Orchestrator {
         const checks = merged.failedChecks ?? [];
         // Read on every round, so a changed setting applies to the next round of a running task.
         const limit = this.ciFixAttempts();
+        const round = (next: CiRound["next"]) =>
+          this.recordCiRound(item, merged.head, merged.checks, next, limit);
         if (
           this.returnToAgent(item, "ci-failed", limit, ciFixHandoff(checks), (attempt) =>
             ciFixRoundLine(checks, attempt, limit),
           )
-        )
+        ) {
+          round("agent");
           return;
+        }
         if (this.askCiHelp(item, ciFixQuestion(checks, limit, published.pull.url))) {
+          round("asked");
           await this.flush();
           return;
         }
+        round("failed");
       }
       this.post(
         item,
@@ -2927,6 +2936,27 @@ export class Orchestrator {
       if (reason === "ci-failed") this.postAfterPullRequest(running, thought(returns + 1), key);
       else this.post(running, "thought", thought(returns + 1), key);
       return true;
+    });
+  }
+
+  /** The checks of a failed CI read and what Paws did next, for the run page. */
+  private recordCiRound(
+    item: WorkItemRecord,
+    head: string | undefined,
+    checks: readonly CiRoundCheck[] | undefined,
+    next: CiRound["next"],
+    limit: number,
+  ): void {
+    if (!head) return;
+    recordCiRound(this.db, {
+      itemId: item.id,
+      head,
+      runId: getWorkItem(this.db, item.id)?.currentRunId ?? item.currentRunId,
+      next,
+      fix: next === "agent" ? this.agentReturns(item.id, "ci-failed") : null,
+      fixLimit: limit,
+      checks: [...(checks ?? [])],
+      recordedAt: this.now(),
     });
   }
 
