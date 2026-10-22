@@ -1,5 +1,6 @@
 import {
   listSkills,
+  recordRunAgentSetup,
   recordRunnerCapacity,
   recordRunnerSkills,
   teamRepositoryAllowedSql,
@@ -368,6 +369,14 @@ export function createRunnerWork(options: {
           ],
         );
         db.run("DELETE FROM runner_work_grant WHERE run_id=?", [command.runId]);
+        recordRunAgentSetup(db, {
+          runId: command.runId,
+          runnerId: command.runnerId,
+          agent: command.profile.agent,
+          // Implementation runs get Paws's Closeout Stop hook; reviews and tasks run read-only.
+          hooks: command.type === "run" ? [{ name: "Paws Closeout", event: "stop" }] : [],
+          at,
+        });
         return { envelope, leaseUntil };
       });
     },

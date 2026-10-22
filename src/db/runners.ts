@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
+import { listSkills, runnerSkillStates, type RunnerSkillView } from "./skills";
 
 export type RunnerRecord = {
   id: string;
@@ -125,6 +126,8 @@ export type RunnerOverview = RunnerRecord & {
   concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
   /** Sessions holding a live work lease on this runner, oldest first. */
   running: RunnerSession[];
+  /** Every registered skill as this runner last reported it. */
+  skills: RunnerSkillView[];
 };
 
 export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
@@ -265,6 +268,7 @@ export function listRunnerOverview(
     desired: number | null;
   };
   const sessions = listRunnerSessions(db, workspaceId, now);
+  const pins = listSkills(db);
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
@@ -323,6 +327,7 @@ export function listRunnerOverview(
           ? null
           : { desired: row.desired, applied: row.applied, ceiling: row.ceiling },
       running: sessions.get(row.id) ?? [],
+      skills: runnerSkillStates(db, row.id, pins),
     }));
 }
 

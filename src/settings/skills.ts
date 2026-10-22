@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { listSkills, SKILL_AGENTS, type SkillPin, type SkillSource } from "../db";
+import { listSkills, SKILL_AGENTS, skillRollouts, type SkillPin, type SkillSource } from "../db";
 import {
   addSkill,
   addUploadedSkill,
@@ -45,13 +45,16 @@ export async function handleSkillSettingsRequest(
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !["owner", "admin"].includes(options.role))
     return json({ error: "Only workspace owners and admins can change skills." }, 403);
-  const listing = (notice?: string) =>
-    json({
-      skills: listSkills(options.db),
+  const listing = (notice?: string) => {
+    const skills = listSkills(options.db);
+    return json({
+      skills,
+      rollouts: skillRollouts(options.db, skills),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),
     });
+  };
   if (request.method === "GET") return listing();
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
