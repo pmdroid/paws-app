@@ -137,6 +137,27 @@ describe("closeout checks", () => {
     expect(running).not.toContain("/api/closeout-artifact");
   });
 
+  test("a check held for an unavailable runner shows why it is waiting", () => {
+    const entry = verdict("ENG-100");
+    const attempt = entry.attempts!.at(-1)!;
+    attempt.decision = "running";
+    const install = attempt.checks[0]!;
+    install.state = "running";
+    install.stdout = "";
+    install.stderr = "";
+    install.detail = "Waiting: runner goldbox is paused. Resume it on the Runners page.";
+    const html = renderCloseoutChecks(
+      entry,
+      { ...emptyCloseoutView(), open: { [checkKey("ENG-100", attempt.number, install.id)]: true } },
+      null,
+    );
+    expect(html).toContain(`<h3>${install.id} is waiting</h3>`);
+    expect(html).toContain(
+      "<p>Waiting: runner goldbox is paused. Resume it on the Runners page.</p>",
+    );
+    expect(html).not.toContain("Waiting for output.");
+  });
+
   test("a run without Closeout has no Closeout section", () => {
     const snapshot = demoStatus();
     snapshot.verdicts = snapshot.verdicts.filter((entry) => entry.itemId !== "ENG-100");
