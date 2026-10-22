@@ -21,7 +21,7 @@ export function httpsOrigin(value: string): string {
   return url.origin;
 }
 
-export function requestJson(input: {
+type RunnerRequest = {
   origin: string;
   path: string;
   method: "GET" | "POST";
@@ -29,7 +29,24 @@ export function requestJson(input: {
   serverCa?: string;
   identity?: { key: string; certificate: string };
   runGrant?: string;
-}): Promise<unknown> {
+};
+
+export async function requestJson(input: RunnerRequest): Promise<unknown> {
+  const bytes = await requestBytes(input, "application/json", 16 * 1024 * 1024);
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("Runner response is not valid JSON.");
+  }
+}
+
+/** The raw response body, refused once it passes `limit` bytes. */
+export function requestBytes(
+  input: RunnerRequest,
+  accept: string,
+  limit: number,
+  timeoutMs = 30_000,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const body = input.body === undefined ? undefined : Buffer.from(JSON.stringify(input.body));
     const req = request(
@@ -42,7 +59,7 @@ export function requestJson(input: {
         ...(input.serverCa ? { ca: input.serverCa } : {}),
         ...(input.identity ? { key: input.identity.key, cert: input.identity.certificate } : {}),
         headers: {
-          accept: "application/json",
+          accept,
           ...(input.runGrant ? { authorization: `Bearer ${input.runGrant}` } : {}),
           ...(body ? { "content-type": "application/json", "content-length": body.length } : {}),
         },
@@ -52,7 +69,7 @@ export function requestJson(input: {
         let length = 0;
         response.on("data", (chunk: Buffer) => {
           length += chunk.length;
-          if (length > 16 * 1024 * 1024) {
+          if (length > limit) {
             req.destroy(new Error("Runner response exceeds the allowed size."));
             return;
           }
@@ -64,15 +81,11 @@ export function requestJson(input: {
             reject(new RunnerRequestError(response.statusCode ?? 0));
             return;
           }
-          try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-          } catch {
-            reject(new Error("Runner response is not valid JSON."));
-          }
+          resolve(Buffer.concat(chunks));
         });
       },
     );
-    const timer = setTimeout(() => req.destroy(new Error("Runner request timed out.")), 30_000);
+    const timer = setTimeout(() => req.destroy(new Error("Runner request timed out.")), timeoutMs);
     req.on("close", () => clearTimeout(timer));
     req.on("error", () => reject(new Error("Runner HTTPS request failed.")));
     req.end(body);

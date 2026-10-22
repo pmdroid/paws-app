@@ -384,9 +384,11 @@ export type { UsagePause } from "./usage-pause";
 export {
   SKILL_AGENTS,
   getSkill,
+  listRunnerSkills,
   listSkills,
   markSkillRemoved,
+  recordRunnerSkills,
   saveSkill,
   setSkillAgents,
 } from "./skills";
-export type { SkillAgent, SkillPin, SkillSource } from "./skills";
+export type { RunnerSkillStatus, SkillAgent, SkillPin, SkillSource } from "./skills";

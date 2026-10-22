@@ -31,9 +31,17 @@ export function createFetchGitHubClient(
           parsed = { message: "non-json response" };
         }
       }
-      return { status: response.status, body: parsed };
+      const retryAfterMs = retryAfterHeaderMs(response.headers.get("retry-after"));
+      return retryAfterMs === undefined
+        ? { status: response.status, body: parsed }
+        : { status: response.status, body: parsed, retryAfterMs };
     },
   };
+}
+
+function retryAfterHeaderMs(header: string | null): number | undefined {
+  const seconds = header?.trim() ?? "";
+  return /^\d+$/.test(seconds) ? Number(seconds) * 1000 : undefined;
 }
 
 /**
