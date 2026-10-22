@@ -438,18 +438,20 @@ export async function probeRunnerRepositories(
   const blocked = { ...command, id: randomUUID() };
   const blockedHash = createHash("sha256").update(blocked.id).digest("hex");
   const blockedRef = `paws-snapshot-${blockedHash}`;
-  const lock = join(prepared.mirror, "refs", "heads", `${blockedRef}.lock`);
+  const lock = join(prepared.mirror, "packed-refs.lock");
   const blockedSnapshot = join(options.root, `snapshot-${blockedHash}.bundle`);
-  const lockWatcher = watch(options.root, (_event, filename) => {
-    if (filename === `snapshot-${blockedHash}.bundle` && !existsSync(lock))
-      writeFileSync(lock, "fixture lock", { flag: "wx", mode: 0o600 });
+  const snapshotWritten = Promise.withResolvers<void>();
+  const snapshotWatcher = watch(options.root, (_event, filename) => {
+    if (filename === `snapshot-${blockedHash}.bundle`) snapshotWritten.resolve();
   });
+  writeFileSync(lock, "fixture lock", { flag: "wx", mode: 0o600 });
   try {
     await assert.rejects(repositories.prepare(blocked));
+    await snapshotWritten.promise;
     assert(existsSync(lock));
     assert.equal(existsSync(blockedSnapshot), false);
   } finally {
-    lockWatcher.close();
+    snapshotWatcher.close();
     rmSync(lock, { force: true });
     await invoke(["--git-dir", prepared.mirror, "update-ref", "-d", `refs/heads/${blockedRef}`]);
   }

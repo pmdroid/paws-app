@@ -2127,4 +2127,16 @@ CREATE TABLE runner_skill (
 ) STRICT;
 `,
   },
+  {
+    id: "096_delegation_reconciliation",
+    sql: `
+CREATE TABLE delegation_reconciliation (
+  delegation_id TEXT PRIMARY KEY,
+  changes INTEGER NOT NULL DEFAULT 0,
+  reconciled_changes INTEGER NOT NULL DEFAULT 0,
+  reconciled_at INTEGER
+) STRICT;
+UPDATE job SET recurring_every_ms=1800000 WHERE job_key='linear.epics.reconcile';
+`,
+  },
 ];

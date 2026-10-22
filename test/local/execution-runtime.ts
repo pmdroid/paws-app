@@ -14,7 +14,12 @@ import {
   saveCheckpoint,
   saveTaskMode,
 } from "../../src/db";
-import { hasPendingDelegationChanges, intakeDelegatedIssue, readyItems } from "../../src/intake";
+import {
+  hasPendingDelegationChanges,
+  intakeDelegatedIssue,
+  readyItems,
+  SWEEP_FULL_REFRESH_MS,
+} from "../../src/intake";
 import { createFakeTracker, createInboxStore } from "../../src/linear";
 import { runtimeLinear } from "../fixtures/workspace-runtime-linear";
 
@@ -46,7 +51,7 @@ export async function probeExecutionRuntime(input: {
     timers().map(({ queue, interval }) => ({ queue, interval })),
     [
       { queue: "execution.reconcile", interval: 30_000 },
-      { queue: "linear.epics.reconcile", interval: 300_000 },
+      { queue: "linear.epics.reconcile", interval: 1_800_000 },
       { queue: "scheduler.tick", interval: 30_000 },
     ],
   );
@@ -292,7 +297,7 @@ export async function probeExecutionRuntime(input: {
   );
   const beforeSweep = timers().find((row) => row.queue === "linear.epics.reconcile")!.fires;
   const beforeGeneration = generation();
-  input.advance(300_001);
+  input.advance(SWEEP_FULL_REFRESH_MS + 1);
   await until(
     () =>
       timers().find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
@@ -302,7 +307,7 @@ export async function probeExecutionRuntime(input: {
   assert.equal(spec()!.revision, 2);
   assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);
   observe(
-    "The actual five-minute durable runtime sweep refreshes active epics without changing unchanged criteria or bypassing blockers",
+    "The actual durable runtime sweep refreshes active epics without changing unchanged criteria or bypassing blockers",
     {
       previousGeneration: beforeGeneration,
       generation: generation(),

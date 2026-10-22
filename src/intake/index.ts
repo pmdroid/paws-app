@@ -12,7 +12,7 @@ export {
   delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness } from "./dependencies";
-export { createItemReconciler } from "./reconciliation";
+export { createItemReconciler, SWEEP_FULL_REFRESH_MS } from "./reconciliation";
 export type { ItemChanges } from "./reconciliation";
 export { createPublicationReadiness } from "./publication";
 export type { PublicationCandidate, PublicationPhase } from "./publication";

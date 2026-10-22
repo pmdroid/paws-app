@@ -12,6 +12,8 @@ import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import type { InspectBlockerMerge } from "./blocker-policy";
 
+export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
+
 export type ItemChanges = {
   delegationId: string;
   workspaceId: string;
@@ -119,7 +121,6 @@ export function createItemReconciler(input: {
 }) {
   const { db, tracker, lifecycle } = input;
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
-  let lastSweep: number | null = null;
   let sweepFlight: Promise<void> | null = null;
   const now = input.now ?? Date.now;
   const shutdown = new AbortController();
@@ -129,6 +130,13 @@ export function createItemReconciler(input: {
     target.signal?.throwIfAborted();
     const initial = authority(db, target);
     const captured = requestsFor(db, initial.delegationId);
+    const startedAt = now();
+    const seenChanges =
+      db
+        .query<{ changes: number }, [string]>(
+          "SELECT changes FROM delegation_reconciliation WHERE delegation_id=?",
+        )
+        .get(initial.delegationId)?.changes ?? 0;
     const loaded = await tracker.loadEpic(initial.identity.issueId);
     const snapshot = input.scopeSnapshot
       ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
@@ -304,6 +312,12 @@ export function createItemReconciler(input: {
         });
     }
     db.transaction(() => {
+      db.run(
+        `INSERT INTO delegation_reconciliation(delegation_id,reconciled_changes,reconciled_at)
+         VALUES(?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET
+         reconciled_changes=excluded.reconciled_changes,reconciled_at=excluded.reconciled_at`,
+        [initial.delegationId, seenChanges, startedAt],
+      );
       for (const request of captured)
         db.run(
           "DELETE FROM item_reconciliation_request WHERE item_id=? AND workspace_id=? AND token=?",
@@ -420,22 +434,43 @@ export function createItemReconciler(input: {
     if (!issue.issueId || !issue.organizationId)
       throw new Error("Missing Linear issue event identity");
     const targets = activeTargets(issue);
+    db.transaction(() => {
+      for (const target of targets)
+        db.run(
+          `INSERT INTO delegation_reconciliation(delegation_id,changes)
+           SELECT delegation_id,1 FROM work_item WHERE id=?
+           ON CONFLICT(delegation_id) DO UPDATE SET changes=changes+1`,
+          [target.itemId],
+        );
+    }).immediate();
     await Promise.all(targets.map(reconcile));
     return targets;
+  }
+
+  function due(target: Target, time: number): boolean {
+    return (
+      db
+        .query<{ itemId: string }, [string, number]>(
+          `SELECT i.id AS itemId FROM work_item i
+           LEFT JOIN delegation_reconciliation r ON r.delegation_id=i.delegation_id
+           WHERE i.id=? AND (r.reconciled_at IS NULL OR r.changes>r.reconciled_changes
+            OR r.reconciled_at<=?)`,
+        )
+        .get(target.itemId, time - SWEEP_FULL_REFRESH_MS) !== null
+    );
   }
 
   function sweep(options: { now?: number; signal?: AbortSignal } = {}): Promise<void> {
     if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
     if (sweepFlight) return sweepFlight;
     const time = options.now ?? now();
-    if (lastSweep !== null && time >= lastSweep && time - lastSweep < 300_000)
-      return Promise.resolve();
     sweepFlight = (async () => {
       try {
         await Promise.all(
-          activeTargets().map((target) => reconcile({ ...target, signal: options.signal })),
+          activeTargets()
+            .filter((target) => due(target, time))
+            .map((target) => reconcile({ ...target, signal: options.signal })),
         );
-        lastSweep = time;
       } finally {
         sweepFlight = null;
       }

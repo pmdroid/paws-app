@@ -1448,7 +1448,7 @@ export class Orchestrator {
         now: this.now(),
       });
       applyWorkItemEvent(this.db, item.id, "blocking_question");
-      markRunEnded(this.db, runId, this.now());
+      closeActiveRun(this.db, runId, this.now());
       enqueueOutboxOnce(this.db, {
         target: "linear",
         op: "elicitation",
@@ -1684,6 +1684,7 @@ export class Orchestrator {
           sessionProgress?.plan(steps);
       },
     );
+    let deferred = false;
 
     try {
       await this.taskAccess()?.assert(item, controller.signal);
@@ -1711,7 +1712,7 @@ export class Orchestrator {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
         if (isTransientFailure(error)) throw error;
-        markRunEnded(this.db, run.id, this.now());
+        closeActiveRun(this.db, run.id, this.now());
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
         this.post(item, "thought", summary, `${run.id}:profile-preflight`);
         await this.askCloseoutHelp(item, undefined, summary);
@@ -1791,7 +1792,7 @@ export class Orchestrator {
           head,
           executed.run.closeoutReport,
         );
-      else markRunEnded(this.db, run.id, this.now());
+      else closeActiveRun(this.db, run.id, this.now());
       await this.verify(finished, executed.worktreePath, base, head, this.candidateFor(run.id));
     } catch (error) {
       const current = getWorkItem(this.db, item.id);
@@ -1812,8 +1813,10 @@ export class Orchestrator {
             current,
             error instanceof LinearRateLimitError ? error.retryAfterMs : 0,
           );
-        else if (isTransientFailure(error)) throw error;
-        else this.fail(current, "run_error", message, error);
+        else if (isTransientFailure(error)) {
+          deferred = true;
+          throw error;
+        } else this.fail(current, "run_error", message, error);
       }
     } finally {
       activity.flush();
@@ -1825,7 +1828,7 @@ export class Orchestrator {
         !this.shuttingDown &&
         (this.jobContexts.get(item.id)?.isCurrent() ?? true)
       )
-        markRunEnded(this.db, run.id, this.now());
+        closeActiveRun(this.db, run.id, this.now(), deferred ? "lost" : "ended");
       this.conversations.delete(item.id);
       try {
         await this.flush();
@@ -1968,7 +1971,7 @@ export class Orchestrator {
         applyWorkItemEvent(this.db, item.id, "closeout_accepted");
       return verdict;
     } finally {
-      if (ownedRunId) markRunEnded(this.db, ownedRunId, this.now());
+      if (ownedRunId) closeActiveRun(this.db, ownedRunId, this.now());
     }
   }
 
@@ -4839,7 +4842,7 @@ export class Orchestrator {
       return this.candidateFor(runId);
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
-      markRunEnded(this.db, runId, this.now());
+      closeActiveRun(this.db, runId, this.now());
       this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
       await this.askCloseoutHelp(item, undefined, summary);
       return null;
@@ -5382,9 +5385,14 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
 }
 
-function markRunEnded(db: Database, runId: string, now: number): void {
+function closeActiveRun(
+  db: Database,
+  runId: string,
+  now: number,
+  status: "ended" | "lost" = "ended",
+): void {
   const run = getRun(db, runId);
-  if (run && run.status === "active") markRun(db, runId, "ended", now);
+  if (run && run.status === "active") markRun(db, runId, status, now);
 }
 
 function inFlight(state: WorkItemRecord["state"]): boolean {
