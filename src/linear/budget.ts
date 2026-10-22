@@ -1,10 +1,24 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const ledgers = new WeakMap<object, LinearLedger>();
-const callers = new AsyncLocalStorage<string>();
+const callers = new AsyncLocalStorage<LinearCallerContext>();
 
 export const LINEAR_USAGE_WINDOW_MS = 60 * 60_000;
 export const DEFAULT_LINEAR_CALLER = "tracker";
+export const BACKGROUND_BUDGET_FRACTION = 0.2;
+export const NORMAL_BUDGET_FRACTION = 0.05;
+const UNKNOWN_RESET_WAIT_MS = 60_000;
+
+export type LinearPriority = "critical" | "normal" | "background";
+
+type LinearCallerContext = { caller: string; priority: LinearPriority };
+
+const CALLER_PRIORITY: Record<string, LinearPriority> = {
+  poller: "background",
+  "repository-hints": "background",
+  context: "background",
+  events: "critical",
+};
 
 /** Latest Linear rate-limit headers seen for a client. Complexity and request budget. */
 export type LinearRateBudget = {
@@ -44,7 +58,7 @@ export type LinearUsage = {
 };
 
 export type LinearLedger = {
-  admit(caller: string): LinearRateLimitError | null;
+  admit(caller: string, priority?: LinearPriority): LinearRateLimitError | null;
   observe(caller: string, budget: LinearRateBudget): void;
   limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
   usage(): LinearUsage;
@@ -53,22 +67,27 @@ export type LinearLedger = {
 
 type LedgerEntry = { at: number; caller: string } & LinearCallerUsage;
 
-export function linearCaller<T>(caller: string, run: () => T): T {
-  return callers.run(caller, run);
+export function linearCaller<T>(caller: string, run: () => T, priority?: LinearPriority): T {
+  return callers.run({ caller, priority: priority ?? CALLER_PRIORITY[caller] ?? "normal" }, run);
 }
 
-export function linearCallerFor<T extends object>(target: T, caller: string): T {
+export function linearCallerFor<T extends object>(
+  target: T,
+  caller: string,
+  priority?: LinearPriority,
+): T {
   return new Proxy(target, {
     get(object, key) {
       const value: unknown = Reflect.get(object, key);
       if (typeof value !== "function") return value;
-      return (...args: unknown[]) => linearCaller(caller, () => value.apply(object, args));
+      return (...args: unknown[]) =>
+        linearCaller(caller, () => value.apply(object, args), priority);
     },
   });
 }
 
-export function currentLinearCaller(): string {
-  return callers.getStore() ?? DEFAULT_LINEAR_CALLER;
+export function currentLinearCaller(): LinearCallerContext {
+  return callers.getStore() ?? { caller: DEFAULT_LINEAR_CALLER, priority: "normal" };
 }
 
 export function createLinearLedger(
@@ -125,8 +144,8 @@ export function createLinearLedger(
     return { budget, holdUntilMs, windowMs: LINEAR_USAGE_WINDOW_MS, callers: totals };
   };
   return {
-    admit(caller) {
-      const left = holdMs();
+    admit(caller, priority = "normal") {
+      const left = Math.max(holdMs(), reserveMs(budget, priority, now()));
       if (left === 0) return null;
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
@@ -158,6 +177,21 @@ export function linearLedger(client: object): LinearLedger | null {
 
 export function linearBudget(client: object): LinearRateBudget | null {
   return ledgers.get(client)?.usage().budget ?? null;
+}
+
+function reserveMs(budget: LinearRateBudget | null, priority: LinearPriority, now: number): number {
+  if (budget === null || priority === "critical") return 0;
+  const floor = priority === "background" ? BACKGROUND_BUDGET_FRACTION : NORMAL_BUDGET_FRACTION;
+  let wait = 0;
+  for (const [remaining, limit, reset] of [
+    [budget.requestsRemaining, budget.requestsLimit, budget.requestsResetMs],
+    [budget.complexityRemaining, budget.complexityLimit, budget.complexityResetMs],
+  ] as const) {
+    if (remaining === null || limit === null || limit <= 0 || remaining / limit >= floor) continue;
+    if (reset !== null && reset <= now) continue;
+    wait = Math.max(wait, reset === null ? UNKNOWN_RESET_WAIT_MS : reset - now);
+  }
+  return wait;
 }
 
 function rateLimitLine(

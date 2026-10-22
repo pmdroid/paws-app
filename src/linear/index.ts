@@ -13,7 +13,13 @@ export {
   linearCallerFor,
   LinearRateLimitError,
 } from "./budget";
-export type { LinearCallerUsage, LinearLedger, LinearRateBudget, LinearUsage } from "./budget";
+export type {
+  LinearCallerUsage,
+  LinearLedger,
+  LinearPriority,
+  LinearRateBudget,
+  LinearUsage,
+} from "./budget";
 export { createIntakePollSource } from "./catchup";
 export type {
   IntakePollSource,
