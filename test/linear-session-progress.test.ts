@@ -123,6 +123,51 @@ test("ten plan updates in ten seconds send one request carrying the last plan", 
   db.close();
 });
 
+test("a session flapping between phases sends one plan and summary every two minutes", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  const phases = ["verifying", "publishing", "merging"] as const;
+  for (let tick = 0; tick < 40; tick++) {
+    progress.phase(phases[tick % phases.length]!);
+    await flush(dispatcher);
+    clock.advance(30_000);
+  }
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(10);
+  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(10);
+  db.close();
+});
+
+test("a summary equal to the last one sent is not sent again", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  progress.phase("merging");
+  await flush(dispatcher);
+  clock.advance(1_000);
+  progress.phase("publishing");
+  progress.phase("merging");
+  clock.advance(120_000);
+  await flush(dispatcher);
+  progress.phase("merging");
+  clock.advance(120_000);
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(1);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
+  db.close();
+});
+
 test("a summary waiting on the interval takes the newest text in place", async () => {
   const db = tempDb();
   const clock = new FakeClock(1_000);
