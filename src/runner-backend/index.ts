@@ -755,7 +755,14 @@ export function createRemoteAgentRunner(options: {
               };
               immediate(db, () => {
                 if (!runnerHasCapacity(db, selected.id, now()))
-                  throw new Error("Runner became busy before assignment");
+                  throw new RetryableRunnerError(
+                    selected.id,
+                    "Runner became busy before assignment",
+                    undefined,
+                    false,
+                    undefined,
+                    true,
+                  );
                 work.assign(assigned);
                 options.placement?.started({
                   commandId: assigned.id,
