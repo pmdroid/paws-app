@@ -540,6 +540,47 @@ describe("simpler runner card", () => {
     expect(gauge(html, "weekly")).toContain('data-level="high"');
     expect(gauge(html, "weekly")).not.toContain("Resets");
     expect(html.match(/data-gauge="weekly"/g)).toHaveLength(1);
+    expect(html).not.toContain("As of");
+  });
+
+  test("stored usage says how old it is and drops windows that have reset since", () => {
+    const html = runnerDetailMarkup(
+      {
+        ...runner,
+        agents: [
+          {
+            agent: "claude",
+            status: "signed_in",
+            checkedAt: now,
+            limitsAt: now - 12 * 60_000,
+            limits: [
+              { window: "5-hour", usedPercent: 80, resetsAt: now - 1 },
+              { window: "Weekly", usedPercent: 30, resetsAt: now + 86_400_000 },
+            ],
+          },
+        ],
+      },
+      view,
+    );
+    expect(html).toContain('<p class="muted">As of 12 min ago</p>');
+    expect(gauge(html, "5-hour")).toBe("");
+    expect(gauge(html, "weekly")).toContain("30% used");
+    const reset = runnerDetailMarkup(
+      {
+        ...runner,
+        agents: [
+          {
+            agent: "claude",
+            status: "signed_in",
+            checkedAt: now,
+            limitsAt: now - 60_000,
+            limits: [{ window: "5-hour", usedPercent: 80, resetsAt: now - 1 }],
+          },
+        ],
+      },
+      view,
+    );
+    expect(reset).toContain("Usage not reported");
   });
 
   test("heartbeats in a second render update the values in place", () => {

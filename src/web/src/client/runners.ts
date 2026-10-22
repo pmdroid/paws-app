@@ -20,6 +20,7 @@ export type AgentSignIn = {
   checkedAt: number | null;
   resetsAt?: number | null;
   limits?: AgentLimit[];
+  limitsAt?: number;
 };
 export type AgentLimit = { window: string; usedPercent: number; resetsAt: number | null };
 export type Runner = {
@@ -426,19 +427,26 @@ function resetLabel(at: number, now: number): string {
 function agentMarkup(entry: AgentSignIn, now: number): string {
   const label = AGENT_LABELS[entry.agent] ?? entry.agent;
   const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-  const limits = entry.status === "signed_out" ? [] : (entry.limits ?? []);
+  const limits =
+    entry.status === "signed_out"
+      ? []
+      : (entry.limits ?? []).filter((limit) => !limit.resetsAt || limit.resetsAt > now);
+  const gauges = limits
+    .map((limit) =>
+      gaugeMarkup({
+        label: limit.window,
+        value: `${Math.round(limit.usedPercent)}% used`,
+        fill: limit.usedPercent,
+        high: limit.usedPercent >= 90,
+        ...(limit.resetsAt ? { detail: resetLabel(limit.resetsAt, now) } : {}),
+      }),
+    )
+    .join("");
+  const observed = entry.limitsAt
+    ? `<p class="muted">As of ${esc(updatedLabel(entry.limitsAt, now))}</p>`
+    : "";
   const usage = limits.length
-    ? `<dl class="agent-limits">${limits
-        .map((limit) =>
-          gaugeMarkup({
-            label: limit.window,
-            value: `${Math.round(limit.usedPercent)}% used`,
-            fill: limit.usedPercent,
-            high: limit.usedPercent >= 90,
-            ...(limit.resetsAt ? { detail: resetLabel(limit.resetsAt, now) } : {}),
-          }),
-        )
-        .join("")}</dl>`
+    ? `<div class="agent-usage"><dl class="agent-limits">${gauges}</dl>${observed}</div>`
     : entry.status === "usage_limit" && entry.resetsAt
       ? `<p class="muted">${esc(resetLabel(entry.resetsAt, now))}</p>`
       : entry.status === "signed_in"
