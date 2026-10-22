@@ -210,6 +210,39 @@ describe("linear intake poll", () => {
     },
   );
 
+  test.each([false, true])(
+    "a reused session delegated again starts work unless it already has a task (task=%s)",
+    async (withTask) => {
+      const db = tempDb();
+      const store = createInboxStore(db);
+      if (withTask) insertQueuedItem(db, { sessionKey: "session-again" });
+      const created: string[] = [];
+      const { client } = scripted(() => ({
+        ...page([]),
+        agentSessions: { nodes: [session("session-again", "iss_again", NOW - 60_000)] },
+      }));
+      const poller = startCatchUpPoller({
+        source: createIntakePollSource(client, { teamId: TEAM }),
+        store,
+        db,
+        onEvent: (event) => {
+          if (event.action === "created" && event.sessionId === "session-again")
+            created.push(event.dedupeKey);
+        },
+        sleeper: blockedSleeper(),
+        now: () => NOW,
+      });
+      await waitFor(() => created.length > 0);
+      store.setCursor("delegated:iss_again", NOW + 60_000);
+      await poller.pollNow();
+      await poller.pollNow();
+      await poller.stop();
+      await poller.settled;
+      db.close();
+      expect(created.length).toBe(withTask ? 1 : 2);
+    },
+  );
+
   test.each([true, false])(
     "attaches a late session once with issue present=%s",
     async (issuePresent) => {
