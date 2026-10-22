@@ -23,6 +23,8 @@ import {
   getConfirmedRemoteMerge,
   enqueueJob,
   enqueueJobOnce,
+  enqueueOutboxOnce,
+  getLinearSessionGeneration,
   saveCheckpoint,
   recoverOnStartup,
   listJobs,
@@ -2160,6 +2162,20 @@ test("a conflicting rebase sends the item back to the agent and then merges", as
   expect(result.requeuedBases, result.detail).toEqual([result.movedMain]);
 }, 90_000);
 
+test("Linear's Fix merge conflicts request on a conflicting pull request is a rebase-conflict return", async () => {
+  const result = await runRebaseConflict("linear");
+  expect(result.linearRequest, result.detail).toEqual({
+    jobs: [{ reason: "rebase-conflict", handoff: `${REBASE_INSTRUCTION}\n\nFix merge conflicts` }],
+    upstreamMain: result.movedMain,
+  });
+  expect(
+    result.prompts.filter((prompt) => prompt.includes(REBASE_INSTRUCTION)),
+    result.detail,
+  ).toHaveLength(1);
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.mergedOnMovedMain, result.detail).toBe(true);
+}, 90_000);
+
 test("with the switch off, a branch update waits for CI and merges without running Closeout again", async () => {
   const result = await withGitIdentity(() => runRebaseConflict("clean", undefined, false));
   const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
@@ -3037,7 +3053,7 @@ test("a rebase_failed merge fails the item", async () => {
 }, 60_000);
 
 async function runRebaseConflict(
-  mode: "resolve" | "repeat" | "rebase-failed" | "clean",
+  mode: "resolve" | "repeat" | "rebase-failed" | "clean" | "linear",
   githubAuth?: FakeHostGitHubAuth,
   closeoutAfterUpdate?: boolean,
 ): Promise<{
@@ -3056,6 +3072,7 @@ async function runRebaseConflict(
   requeuedBases: (string | null)[];
   merged: number;
   rounds: string[];
+  linearRequest?: { jobs: { reason?: string; handoff?: string }[]; upstreamMain: string };
   detail: string;
 }> {
   const layout = await repoLayout();
@@ -3066,7 +3083,9 @@ async function runRebaseConflict(
         ? "ENG-71"
         : mode === "clean"
           ? "ENG-73"
-          : "ENG-72";
+          : mode === "linear"
+            ? "ENG-74"
+            : "ENG-72";
   const tracker = createFakeTracker([
     {
       linearIssueId: `rebase-${mode}`,
@@ -3115,7 +3134,8 @@ async function runRebaseConflict(
       if (resultPath) implementResults.push(resultPath);
       let steps: FakeScript["steps"];
       if (input.purpose === "review" || input.purpose === "prepare") steps = emptyReview().steps;
-      else if (mode === "resolve" && implementTurns > 0) steps = rebaseOntoMainSteps();
+      else if ((mode === "resolve" || mode === "linear") && implementTurns > 0)
+        steps = rebaseOntoMainSteps();
       else steps = [writeOk(input.worktree, `agent-${implementTurns}\n`), { type: "end" }];
       if (input.purpose === "implement") implementTurns += 1;
       if (input.purpose === "review") reviews += 1;
@@ -3154,6 +3174,40 @@ async function runRebaseConflict(
     const movedMain = (
       await exec("git", ["--git-dir", layout.bare, "rev-parse", "main"])
     ).stdout.trim();
+    let linearRequest:
+      | { jobs: { reason?: string; handoff?: string }[]; upstreamMain: string }
+      | undefined;
+    if (mode === "linear") {
+      // The pull request is open, and Linear's review page sends "Fix merge conflicts".
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "ses_1",
+        delivery: "ordered",
+        idempotencyKey: `pull-request-ready:${listWorkItems(db).find((item) => item.linearIdentifier === identifier)!.id}:${getLinearSessionGeneration(db, "ses_1")}`,
+        payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
+      });
+      while (outbox.tick().length > 0) await outbox.idle();
+      await orchestrator.onLinearEvent(
+        linearEvent("prompted", "Fix merge conflicts", null, `rebase-${mode}`),
+      );
+      linearRequest = {
+        jobs: listJobs(db)
+          .filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
+          .map((job) => {
+            const payload = job.payload as { reason?: string; handoff?: string };
+            return { reason: payload.reason, handoff: payload.handoff };
+          }),
+        upstreamMain: (
+          await exec("git", [
+            "-C",
+            worktreePath(layout.pawsRoot, taskPath(db, identifier)),
+            "rev-parse",
+            "refs/paws/upstream-main",
+          ])
+        ).stdout.trim(),
+      };
+    }
     const returnPhases: (string | null)[] = [];
     const requeuedBases: (string | null)[] = [];
     let idle = 0;
@@ -3199,6 +3253,7 @@ async function runRebaseConflict(
       requeuedBases,
       merged: github.merged.length,
       rounds: listCloseoutRounds(db).map((round) => round.head),
+      ...(linearRequest ? { linearRequest } : {}),
       detail: debug(layout, db),
     };
   } finally {
