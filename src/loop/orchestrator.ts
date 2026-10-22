@@ -3625,7 +3625,10 @@ export class Orchestrator {
           }
         }
       } finally {
-        if (getUsageLimitPause(this.db, itemId)) this.endUsageLimitPause(itemId, false);
+        // A shutdown keeps the pause, so startup recovery continues the wait instead of treating
+        // the task as interrupted.
+        if (!this.shuttingDown && getUsageLimitPause(this.db, itemId))
+          this.endUsageLimitPause(itemId, false);
       }
     };
   }

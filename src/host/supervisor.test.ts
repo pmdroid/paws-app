@@ -21,6 +21,7 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
+  saveUsageLimitPause,
 } from "../db";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
@@ -155,6 +156,26 @@ describe("laptop sleep and wake", () => {
       kind: "thought",
       body: "Paused for 120 min (laptop asleep). Restarting from fresh main.",
     });
+  });
+
+  test("a long sleep keeps a task waiting for its usage limit to reset", () => {
+    const { clock, db, host } = boot(() => true);
+    const { run } = startRun(db, clock);
+    saveUsageLimitPause(db, {
+      itemId: "eng-9",
+      runId: run.id,
+      agent: "claude",
+      runnerId: null,
+      resetsAt: clock.now() + 8 * 3_600_000,
+      resumeAt: clock.now() + 8 * 3_600_000 + 60_000,
+      pausedAt: clock.now(),
+    });
+    host.tick();
+    clock.sleep(3 * 3_600_000);
+    host.tick();
+    expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "running", checkpoint });
+    expect(getRun(db, run.id)?.status).toBe("active");
+    expect(listJobs(db).some((job) => job.queue === "item.start")).toBe(false);
   });
 
   test("exactly two hours resumes instead of starting over", () => {
