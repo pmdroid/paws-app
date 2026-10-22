@@ -2995,6 +2995,12 @@ test("a Linear rate limit during a run waits for the reset and merges instead of
   expect(result.implementRuns, result.detail).toBe(1);
 }, 120_000);
 
+test("a Closeout policy without a review check never starts the reviewer", async () => {
+  const result = await runCiFix({ failRounds: 0, withoutReview: true });
+  expect(result.state, result.detail).toBe("merged");
+  expect(result.reviewerLaunches, result.detail).toBe(0);
+}, 120_000);
+
 test("CI green on the first round merges without a fix round", async () => {
   const result = await runCiFix({ failRounds: 0 });
   expect(result.state, result.detail).toBe("merged");
@@ -3059,9 +3065,11 @@ async function runCiFix(options: {
   answer?: string;
   attemptsAfterFirstFix?: number;
   rateLimitFirstLaunch?: boolean;
+  withoutReview?: boolean;
 }): Promise<{
   state: string | null;
   implementRuns: number;
+  reviewerLaunches: number;
   lines: string[];
   questions: string[];
   prompts: string[];
@@ -3069,6 +3077,10 @@ async function runCiFix(options: {
 }> {
   const layout = await repoLayout();
   const configPath = path.join(layout.pawsRoot, "config.toml");
+  if (options.withoutReview)
+    await withGitIdentity(() =>
+      commitOnMain(layout.bare, CLOSEOUT_POLICY_WITHOUT_REVIEW, ".agents/closeout.yaml"),
+    );
   if (options.attempts !== undefined)
     await writeFile(configPath, `[merge]\nci_fix_attempts = ${options.attempts}\n`);
   const tracker = createFakeTracker([
@@ -3090,6 +3102,7 @@ async function runCiFix(options: {
   let sequence = 0;
   let implementRuns = 0;
   let launches = 0;
+  let reviewerLaunches = 0;
   const orchestrator = attachOrchestrator({
     db,
     jobs,
@@ -3118,6 +3131,7 @@ async function runCiFix(options: {
       },
     },
     launch(input) {
+      if (input.role === "reviewer") reviewerLaunches += 1;
       if (input.purpose === "implement" && ++launches === 1 && options.rateLimitFirstLaunch)
         throw new LinearRateLimitError(0, {} as never);
       sequence += 1;
@@ -3174,6 +3188,7 @@ async function runCiFix(options: {
     return {
       state: stateOf(db, "ENG-94"),
       implementRuns,
+      reviewerLaunches,
       lines: tracker.progress
         .map((update) => update.body)
         .filter((body) => body.startsWith("CI: ")),
@@ -3980,6 +3995,18 @@ items:
       differentSession: true
       differentModel: true
     failOn: P1
+`;
+
+const CLOSEOUT_POLICY_WITHOUT_REVIEW = `specVersion: "0.1"
+retry:
+  maxFailedAttemptsPerItem: 3
+  scope: task
+items:
+  - id: test
+    kind: command
+    gate: beforePR
+    exec: ["bun", "test", "check.test.ts"]
+    timeoutSeconds: 60
 `;
 
 const REVIEW_SKILL = `---
