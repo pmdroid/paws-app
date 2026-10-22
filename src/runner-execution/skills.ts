@@ -1,0 +1,309 @@
+import { createHash, randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  lchownSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  RUNNER_SKILL_BUNDLE_LIMIT,
+  RUNNER_SKILL_FOLDERS,
+  RunnerSkillManifestSchema,
+  runnerSkillPath,
+  type RunnerInstalledSkill,
+  type RunnerSkill,
+  type RunnerSkillAgent,
+} from "../runner-protocol";
+
+type Installed = { version: string; sha256: string; agents: RunnerSkillAgent[] };
+type Refused = { name: string; version: string; sha256: string; at: number };
+type State = {
+  /** Skills every idle home should have. A refused update keeps the previous version here. */
+  desired: RunnerSkill[];
+  refused: Refused[];
+  /** What Paws installed in each home, so removals only touch skills Paws put there. */
+  homes: Record<string, Record<string, Installed>>;
+};
+
+/** A refused bundle is not downloaded again for this long unless Paws pins another one. */
+const REFUSED_RETRY_MS = 10 * 60_000;
+
+export type RunnerSkillInstallerOptions = {
+  /** Private runner state: verified bundles and what each home has installed. */
+  root: string;
+  /** Homes agents run from. Every run uses the runner's one agent home today. */
+  homes?: readonly string[];
+  /** Owner of every installed file: the agent user, as the agent home is. */
+  owner: { uid: number; gid: number };
+  download(skill: RunnerSkill): Promise<Uint8Array>;
+  onError?(error: Error): void;
+  now?: () => number;
+};
+
+/**
+ * Installs the registered skills into every agent home. A home with a run in progress keeps the
+ * versions its runs started with; it updates once no run is using it.
+ */
+export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions) {
+  const agentHomes = options.homes ?? ["/var/lib/paws-agent"];
+  const now = options.now ?? Date.now;
+  const bundles = join(options.root, "bundles");
+  const statePath = join(options.root, "state.json");
+  mkdirSync(bundles, { recursive: true, mode: 0o700 });
+  let state = readState();
+  const holds = new Map<string, string>();
+  let syncing: Promise<void> | undefined;
+  let queued: readonly RunnerSkill[] | undefined;
+
+  function report(error: unknown) {
+    options.onError?.(error instanceof Error ? error : new Error("Runner skill install failed."));
+  }
+  function readState(): State {
+    try {
+      return JSON.parse(readFileSync(statePath, "utf8")) as State;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") report(error);
+      return { desired: [], refused: [], homes: {} };
+    }
+  }
+  function saveState() {
+    const partial = `${statePath}.${randomUUID()}.partial`;
+    writeFileSync(partial, JSON.stringify(state), { mode: 0o600 });
+    renameSync(partial, statePath);
+  }
+  const bundlePath = (sha256: string) => join(bundles, sha256);
+
+  /** Check the bytes against the manifest and keep the unpacked files under `bundles/<sha256>/`. */
+  async function fetchBundle(skill: RunnerSkill) {
+    if (existsSync(bundlePath(skill.sha256))) return;
+    const bytes = await options.download(skill);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.byteLength !== skill.sizeBytes || sha256 !== skill.sha256)
+      throw new Error(
+        `Skill ${skill.name} ${skill.version} failed its checksum and was not installed.`,
+      );
+    const files = await new Bun.Archive(bytes).files();
+    const partial = join(bundles, `${skill.sha256}.${randomUUID()}.partial`);
+    try {
+      let size = 0;
+      for (const [path, file] of files) {
+        const safe = runnerSkillPath(path);
+        if (safe === null) throw new Error(`Skill ${skill.name} has a file outside its folder.`);
+        size += file.size;
+        if (size > RUNNER_SKILL_BUNDLE_LIMIT)
+          throw new Error(`Skill ${skill.name} is over the bundle limit.`);
+        mkdirSync(dirname(join(partial, safe)), { recursive: true, mode: 0o700 });
+        writeFileSync(join(partial, safe), new Uint8Array(await file.arrayBuffer()), {
+          mode: 0o600,
+          flag: "wx",
+        });
+      }
+      if (!existsSync(join(partial, "SKILL.md")))
+        throw new Error(`Skill ${skill.name} has no SKILL.md.`);
+      renameSync(partial, bundlePath(skill.sha256));
+    } catch (error) {
+      rmSync(partial, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  /** A directory under `home` that is ours to write: created for the owner, never a symlink. */
+  function ownedDirectory(home: string, relative: string): string {
+    let path = home;
+    for (const part of relative.split("/")) {
+      path = join(path, part);
+      try {
+        mkdirSync(path, { mode: 0o700 });
+        lchownSync(path, options.owner.uid, options.owner.gid);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+      if (!lstatSync(path).isDirectory()) throw new Error(`${path} is not a directory.`);
+    }
+    return path;
+  }
+  function copyTree(from: string, to: string) {
+    mkdirSync(to, { mode: 0o755 });
+    chmodSync(to, 0o755);
+    lchownSync(to, options.owner.uid, options.owner.gid);
+    for (const entry of readdirSync(from)) {
+      const source = join(from, entry);
+      const target = join(to, entry);
+      if (lstatSync(source).isDirectory()) copyTree(source, target);
+      else {
+        copyFileSync(source, target, constants.COPYFILE_EXCL);
+        chmodSync(target, 0o644);
+        lchownSync(target, options.owner.uid, options.owner.gid);
+      }
+    }
+  }
+  /**
+   * Stage the full skill inside the home, then rename it into place, so the skill folder is
+   * never partly written. Homes with a run in progress are not touched at all.
+   */
+  function installFolder(home: string, agent: RunnerSkillAgent, skill: RunnerSkill) {
+    const staging = ownedDirectory(home, ".paws-skills");
+    const folder = ownedDirectory(home, RUNNER_SKILL_FOLDERS[agent]);
+    const staged = join(staging, `${skill.name}.${randomUUID()}`);
+    try {
+      copyTree(bundlePath(skill.sha256), staged);
+      removeFolder(home, agent, skill.name);
+      renameSync(staged, join(folder, skill.name));
+    } finally {
+      rmSync(staged, { recursive: true, force: true });
+    }
+  }
+  function removeFolder(home: string, agent: RunnerSkillAgent, name: string) {
+    const target = join(home, RUNNER_SKILL_FOLDERS[agent], name);
+    try {
+      lstatSync(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const retired = join(ownedDirectory(home, ".paws-skills"), `${name}.${randomUUID()}.old`);
+    renameSync(target, retired);
+    rmSync(retired, { recursive: true, force: true });
+  }
+
+  /** Bring one home to the desired skills, unless a run in progress is pinned to what it has. */
+  function applyHome(home: string): void {
+    if ([...holds.values()].includes(home)) return;
+    if (!lstatSync(home, { throwIfNoEntry: false })?.isDirectory()) return;
+    const current = state.homes[home] ?? {};
+    const next: Record<string, Installed> = {};
+    for (const skill of state.desired) {
+      const have = current[skill.name];
+      try {
+        for (const agent of have?.agents ?? [])
+          if (!skill.agents.includes(agent)) removeFolder(home, agent, skill.name);
+        for (const agent of skill.agents)
+          if (have?.sha256 !== skill.sha256 || !have.agents.includes(agent))
+            installFolder(home, agent, skill);
+        next[skill.name] = { version: skill.version, sha256: skill.sha256, agents: skill.agents };
+      } catch (error) {
+        report(error);
+        if (have) next[skill.name] = have;
+      }
+    }
+    for (const [name, have] of Object.entries(current)) {
+      if (state.desired.some((skill) => skill.name === name)) continue;
+      try {
+        for (const agent of have.agents) removeFolder(home, agent, name);
+      } catch (error) {
+        report(error);
+        next[name] = have;
+      }
+    }
+    state.homes[home] = next;
+    saveState();
+  }
+  function homes(): string[] {
+    return agentHomes.filter((home) => existsSync(home));
+  }
+
+  async function apply(manifest: readonly RunnerSkill[]) {
+    const desired: RunnerSkill[] = [];
+    const refused: Refused[] = [];
+    for (const skill of RunnerSkillManifestSchema.parse(manifest)) {
+      const earlier = state.refused.find(
+        (entry) => entry.name === skill.name && entry.sha256 === skill.sha256,
+      );
+      const previous = state.desired.find((entry) => entry.name === skill.name);
+      const keepPrevious = () => {
+        if (previous && existsSync(bundlePath(previous.sha256))) desired.push(previous);
+      };
+      if (earlier && earlier.at + REFUSED_RETRY_MS > now()) {
+        refused.push(earlier);
+        keepPrevious();
+        continue;
+      }
+      try {
+        await fetchBundle(skill);
+        desired.push(skill);
+      } catch (error) {
+        report(error);
+        refused.push({ name: skill.name, version: skill.version, sha256: skill.sha256, at: now() });
+        keepPrevious();
+      }
+    }
+    state.desired = desired;
+    state.refused = refused;
+    saveState();
+    for (const home of Object.keys(state.homes)) if (!existsSync(home)) delete state.homes[home];
+    for (const home of homes()) applyHome(home);
+    const keep = new Set(desired.map((skill) => skill.sha256));
+    for (const entry of readdirSync(bundles))
+      if (!keep.has(entry)) rmSync(join(bundles, entry), { recursive: true, force: true });
+    saveState();
+  }
+
+  return {
+    /** Install `manifest` everywhere it can. Calls made while a sync runs apply the latest one after it. */
+    sync(manifest: readonly RunnerSkill[]): Promise<void> {
+      if (syncing) {
+        queued = manifest;
+        return syncing;
+      }
+      syncing = (async () => {
+        let next: readonly RunnerSkill[] | undefined = manifest;
+        while (next) {
+          queued = undefined;
+          await apply(next);
+          next = queued;
+        }
+      })().finally(() => {
+        syncing = undefined;
+      });
+      return syncing;
+    },
+    /** Called before a worker starts in `home`, so a new home has the skills before its first run. */
+    prepareHome(home: string): void {
+      try {
+        applyHome(home);
+      } catch (error) {
+        report(error);
+      }
+    },
+    /** Pin `home` to its installed skills while `executionId` runs there. */
+    hold(home: string, executionId: string): void {
+      holds.set(executionId, home);
+    },
+    release(executionId: string): void {
+      holds.delete(executionId);
+    },
+    /** What the runner reports in its heartbeat. */
+    installed(): RunnerInstalledSkill[] {
+      const reported: RunnerInstalledSkill[] = state.refused.map(({ name, version, sha256 }) => ({
+        name,
+        version,
+        sha256,
+        status: "refused",
+      }));
+      for (const skill of state.desired) {
+        if (reported.some((entry) => entry.name === skill.name)) continue;
+        const behind = Object.values(state.homes).some(
+          (home) => home[skill.name]?.sha256 !== skill.sha256,
+        );
+        reported.push({
+          name: skill.name,
+          version: skill.version,
+          sha256: skill.sha256,
+          status: behind ? "pending" : "installed",
+        });
+      }
+      return reported;
+    },
+  };
+}
+
+export type RunnerSkillInstaller = ReturnType<typeof createRunnerSkillInstaller>;

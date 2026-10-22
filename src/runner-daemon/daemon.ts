@@ -20,7 +20,12 @@ import {
   type RunnerHealthResult,
   type RunnerHelperResult,
   type RunnerHostStatus,
+  type RunnerInstalledSkill,
   type RunnerResult,
+  type RunnerSkill,
+  RUNNER_SKILL_BUNDLE_LIMIT,
+  RunnerInstalledSkillsSchema,
+  RunnerSkillSchema,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -46,7 +51,7 @@ import {
   type PairedState,
 } from "./state";
 import { downloadRunnerInputs } from "./inputs";
-import { httpsOrigin, requestJson, RunnerRequestError } from "./transport";
+import { httpsOrigin, requestBytes, requestJson, RunnerRequestError } from "./transport";
 import {
   RunnerAnswersRequestSchema,
   RunnerAnswersSchema,
@@ -369,16 +374,50 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       recovery = null;
       return status();
     },
-    async heartbeat() {
-      const response = RunnerHeartbeatSchema.parse(
-        await authenticated("/v1/heartbeat", "POST", {
-          ...options.sampleHost?.(),
-          ...(options.concurrency === undefined ? {} : { capacity: applied, ceiling }),
-        }),
-      );
+    /** `skills` is what this runner has installed; sending it asks Paws for the skill manifest. */
+    async heartbeat(skills?: readonly RunnerInstalledSkill[]) {
+      const body = {
+        ...options.sampleHost?.(),
+        ...(options.concurrency === undefined ? {} : { capacity: applied, ceiling }),
+      };
+      let reply: unknown;
+      try {
+        reply = await authenticated(
+          "/v1/heartbeat",
+          "POST",
+          skills === undefined
+            ? body
+            : { ...body, skills: RunnerInstalledSkillsSchema.parse(skills) },
+        );
+      } catch (error) {
+        // A Paws release without skills refuses the unknown field; renew the leases without it.
+        if (skills === undefined || !(error instanceof RunnerRequestError) || error.status !== 403)
+          throw error;
+        reply = await authenticated("/v1/heartbeat", "POST", body);
+      }
+      const response = RunnerHeartbeatSchema.parse(reply);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
       return response;
+    },
+    /** The bundle bytes as Paws sent them. The caller checks size and checksum before using them. */
+    async downloadSkill(skill: RunnerSkill): Promise<Uint8Array> {
+      const { name, version, sizeBytes } = RunnerSkillSchema.parse(skill);
+      const identity = paired();
+      const bytes = await requestBytes(
+        {
+          origin: origins.runnerApiUrl,
+          path: `/v1/skills/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+          method: "GET",
+          serverCa: options.serverCa,
+          identity: { certificate: identity.certificate, key: localKey(options.root) },
+        },
+        "application/gzip",
+        Math.min(sizeBytes, RUNNER_SKILL_BUNDLE_LIMIT),
+        5 * 60_000,
+      );
+      unchangedIdentity(identity);
+      return bytes;
     },
     async exchangeLogin(id: string, update: RunnerLoginUpdate) {
       z.uuid().parse(id);

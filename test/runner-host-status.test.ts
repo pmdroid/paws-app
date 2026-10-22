@@ -3,7 +3,15 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, migrate, openDatabase, putWorkspaceUser } from "../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  listRunnerSkills,
+  markSkillRemoved,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  saveSkill,
+} from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -71,11 +79,14 @@ async function fixture() {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
   });
-  const http = createRunnerWorkHttp(work);
+  const skillsRoot = join(root, "skills");
+  const http = createRunnerWorkHttp(work, { skillsRoot });
   const browser = createRunnerHttp(control);
   return {
     db,
     runnerId,
+    skillsRoot,
+    fetch: (path: string) => http(new Request(`https://runner.invalid${path}`), runnerId),
     heartbeat: (body: unknown) =>
       http(
         new Request("https://runner.invalid/v1/heartbeat", {
@@ -247,4 +258,52 @@ test("release versions come only from a releases/<semver> path", () => {
   expect(releaseVersionFromPath("/opt/paws/releases/10.0.2")).toBe("10.0.2");
   expect(releaseVersionFromPath("/home/dev/paws/src/runner-control")).toBeNull();
   expect(releaseVersionFromPath("/opt/paws/releases/1.4/bin")).toBeNull();
+});
+
+test("a heartbeat that reports installed skills gets the manifest and can download pinned bundles", async () => {
+  const runner = await fixture();
+  const bundle = new Uint8Array([1, 2, 3, 4]);
+  mkdirSync(join(runner.skillsRoot, "impeccable", "2.4.1"), { recursive: true });
+  writeFileSync(join(runner.skillsRoot, "impeccable", "2.4.1", "skill.tar.gz"), bundle);
+  const pin = {
+    name: "impeccable",
+    source: { kind: "npm" as const, package: "impeccable" },
+    version: "2.4.1",
+    sha256: "a".repeat(64),
+    sizeBytes: 4,
+    agents: ["claude" as const, "codex" as const],
+    updatedAt: runner.now(),
+  };
+  saveSkill(runner.db, pin);
+  saveSkill(runner.db, { ...pin, name: "gone", version: "1.0.0" });
+  markSkillRemoved(runner.db, "gone", runner.now());
+
+  const older = (await (await runner.heartbeat({}))!.json()) as Record<string, unknown>;
+  expect(older.skills).toBeUndefined();
+
+  const installed = [
+    { name: "gone", version: "1.0.0", sha256: "a".repeat(64), status: "installed" },
+  ];
+  const reply = (await (await runner.heartbeat({ skills: installed }))!.json()) as {
+    skills: unknown;
+  };
+  expect(reply.skills).toEqual([
+    {
+      name: "impeccable",
+      version: "2.4.1",
+      sha256: "a".repeat(64),
+      sizeBytes: 4,
+      agents: ["claude", "codex"],
+    },
+  ]);
+  expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
+    { ...installed[0]!, status: "installed", reportedAt: runner.now() },
+  ]);
+
+  const download = (await runner.fetch("/v1/skills/impeccable/2.4.1"))!;
+  expect(download.status).toBe(200);
+  expect(new Uint8Array(await download.arrayBuffer())).toEqual(bundle);
+  expect((await runner.fetch("/v1/skills/impeccable/2.4.0"))!.status).toBe(403);
+  expect((await runner.fetch("/v1/skills/gone/1.0.0"))!.status).toBe(403);
+  expect((await runner.fetch("/v1/skills/..%2Fimpeccable/2.4.1"))!.status).toBe(403);
 });

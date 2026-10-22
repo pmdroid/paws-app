@@ -1,9 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -14,6 +16,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import {
   createDirectWorkerSupervisor,
+  createRunnerSkillInstaller,
   publishRunnerJob,
   type RunnerJob,
 } from "../src/runner-execution";
@@ -188,4 +191,65 @@ test("a symlinked result directory is not retargeted", async () => {
   await expect(supervisor.start(id)).rejects.toThrow();
   expect(statSync(secret).mode & 0o777).toBe(0o600);
   expect(lstatSync(join(results.root, id)).isSymbolicLink()).toBe(true);
+});
+
+test("a new agent home has the current skills when its first worker starts, pinned until stop", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-supervisor-"));
+  roots.push(root);
+  const { spool, results } = prepared(root);
+  publishRunnerJob(spool, {
+    executionId: "01K00000000000000000000001",
+    command: { ...probe.command, id: "cmd-home" },
+  });
+  const bytes = await new Bun.Archive({ "SKILL.md": "impeccable" }, { compress: "gzip" }).bytes();
+  const agentHome = join(root, "agent");
+  const skills = createRunnerSkillInstaller({
+    root: join(root, "skills"),
+    homes: [agentHome],
+    owner: { uid: process.getuid!(), gid: process.getgid!() },
+    download: async () => bytes,
+  });
+  await skills.sync([
+    {
+      name: "impeccable",
+      version: "2.4.1",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      sizeBytes: bytes.byteLength,
+      agents: ["claude"],
+    },
+  ]);
+  // The home did not exist when the skills arrived, as on a freshly installed runner.
+  mkdirSync(agentHome);
+  const holds: string[] = [];
+  let seen = "";
+  const supervisor = createDirectWorkerSupervisor({
+    stateRoot: join(root, "workers"),
+    spool,
+    results,
+    agentHome,
+    skills: {
+      prepareHome: (home) => skills.prepareHome(home),
+      hold: (home, executionId) => {
+        holds.push(`hold ${executionId}`);
+        skills.hold(home, executionId);
+      },
+      release: (executionId) => {
+        holds.push(`release ${executionId}`);
+        skills.release(executionId);
+      },
+    },
+    launch(_executionId, home) {
+      seen = readFileSync(join(home, ".claude/skills/impeccable/SKILL.md"), "utf8");
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      remember(child.pid);
+      return child;
+    },
+  });
+  await supervisor.start("01K00000000000000000000001");
+  expect(seen).toBe("impeccable");
+  await supervisor.stop("01K00000000000000000000001");
+  expect(holds).toEqual(["hold 01K00000000000000000000001", "release 01K00000000000000000000001"]);
 });
