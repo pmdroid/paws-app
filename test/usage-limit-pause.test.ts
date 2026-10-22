@@ -7,8 +7,10 @@ import type { RunAgentOptions, RunAgentResult } from "../src/acp";
 import { FakeClock, UsageLimitError } from "../src/core";
 import {
   beginImplementRun,
+  getUsageLimitContinuation,
   getUsageLimitPause,
   getWorkItem,
+  saveUsageLimitContinuation,
   insertQueuedItem,
   JobLoop,
   listJobs,
@@ -156,7 +158,7 @@ function setup(runners: FakeRunner[]) {
       pawsRoot: root,
       signal: controller.signal,
     });
-  return { db, clock, orchestrator, item, run, remote, controller, prompt };
+  return { db, clock, orchestrator, item, run, remote, controller, prompt, agent, root };
 }
 
 function linearLines(db: Database): string[] {
@@ -297,8 +299,9 @@ test("a shutdown keeps the wait so the next start continues it", async () => {
   await orchestrator.shutdown();
   controller.abort(new Error("cancelled"));
   await result.catch(() => undefined);
-  expect(getUsageLimitPause(db, item.id)).toMatchObject({
-    role: "implementer",
+  expect(getUsageLimitPause(db, item.id)).not.toBeNull();
+  expect(getUsageLimitContinuation(db, item.id)).toMatchObject({
+    runKey: expect.stringMatching(/^implementer:/),
     prompt: expect.stringContaining("The agent stopped at its usage limit."),
     session: { runnerId: "agentbox", sessionId: "agentbox-session-1" },
   });
@@ -430,7 +433,10 @@ test("after a restart the task still waits for its resume time and continues the
     resetsAt: RESET,
     resumeAt: RESET + 60_000,
     pausedAt: START,
-    role: "implementer",
+  });
+  saveUsageLimitContinuation(db, {
+    itemId: item.id,
+    runKey: `implementer:${run.id}`,
     prompt: "Implement PAS-431\n\nObserved prior conversation: WORKING ON IT",
     session: { runnerId: "agentbox", sessionId: "earlier-session" },
   });
@@ -446,6 +452,77 @@ test("after a restart the task still waits for its resume time and continues the
   expect(remote.calls[0]!.prompt).toEndWith("Resume after the restart");
   expect(remote.calls[0]!.session).toEqual({ runnerId: "agentbox", sessionId: "earlier-session" });
   expect(getUsageLimitPause(db, item.id)).toBeNull();
+  expect(getUsageLimitContinuation(db, item.id)).toBeNull();
+});
+
+test("a preflight probe after a restart ends the wait but leaves the implementation's continuation", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [] };
+  const { db, clock, item, run, remote, prompt, agent, root, controller } = setup([runner]);
+  saveUsageLimitPause(db, {
+    itemId: item.id,
+    runId: run.id,
+    agent: "claude",
+    runnerId: "agentbox",
+    resetsAt: RESET,
+    resumeAt: RESET + 60_000,
+    pausedAt: START,
+  });
+  saveUsageLimitContinuation(db, {
+    itemId: item.id,
+    runKey: `implementer:${run.id}`,
+    prompt: "Implement PAS-431\n\nObserved prior conversation: WORKING ON IT",
+    session: { runnerId: "agentbox", sessionId: "earlier-session" },
+  });
+  clock.advance(RESET + 60_000 - START);
+  await agent({
+    role: "implementer",
+    itemId: item.id,
+    runId: `${run.id}-preflight-implementer`,
+    prompt: "",
+    prepareOnly: true,
+    worktreePath: root,
+    pawsRoot: root,
+    signal: controller.signal,
+  });
+  expect(getUsageLimitPause(db, item.id)).toBeNull();
+  expect(getUsageLimitContinuation(db, item.id)).not.toBeNull();
+  await prompt("Resume after the restart");
+  expect(remote.calls.at(-1)!.prompt).toContain("WORKING ON IT");
+  expect(remote.calls.at(-1)!.session).toEqual({
+    runnerId: "agentbox",
+    sessionId: "earlier-session",
+  });
+});
+
+test("a reviewer retried after a restart continues its saved review, a new review does not", async () => {
+  const runner = { id: "agentbox", cooldownUntil: 0, next: [] };
+  const { db, item, remote, agent, root, controller } = setup([runner]);
+  const review = (runId: string, text: string) =>
+    agent({
+      role: "reviewer",
+      itemId: item.id,
+      runId,
+      prompt: text,
+      readOnly: true,
+      worktreePath: root,
+      pawsRoot: root,
+      signal: controller.signal,
+    });
+  const saved = {
+    itemId: item.id,
+    runKey: `reviewer:rev-${item.id}`,
+    prompt: "Review head abc\n\nObserved prior conversation: HALF THE REVIEW",
+    session: { runnerId: "agentbox", sessionId: "review-session" },
+  };
+  saveUsageLimitContinuation(db, saved);
+  await review(`rev-${item.id}-1`, "Review head def");
+  expect(remote.calls.at(-1)!.prompt).toBe("Review head def");
+  expect(remote.calls.at(-1)!.session).toBeUndefined();
+  saveUsageLimitContinuation(db, saved);
+  await review(`rev-${item.id}-1`, "Review head abc");
+  expect(remote.calls.at(-1)!.prompt).toBe(saved.prompt);
+  expect(remote.calls.at(-1)!.session).toEqual(saved.session);
+  expect(getUsageLimitContinuation(db, item.id)).toBeNull();
 });
 
 test("usage-limit text from a retry that hits the limit again does not end the pause", async () => {
