@@ -1,7 +1,6 @@
 import { LONG_SLEEP_MS } from "./limits";
 import type { WorkItemState } from "./states";
 import type { Checkpoint } from "./types";
-import type { TaskMode } from "./task";
 
 export const IN_FLIGHT_ITEM_STATES = [
   "running",
@@ -38,7 +37,7 @@ export function isAwakeItemState(state: WorkItemState): boolean {
 export type StartupDecision =
   | { type: "none" }
   | { type: "resume"; freshSession: true; checkpoint: Checkpoint | null; reattach?: true }
-  | { type: "fail"; reason: "resume_already_attempted" | "no_checkpoint" }
+  | { type: "ask_restart" }
   | { type: "reverify" };
 
 export type WakeDecision =
@@ -54,23 +53,21 @@ function mergeWasInProgress(state: WorkItemState, checkpoint: Checkpoint | null)
 }
 
 /**
- * Process start. A running or verifying item is resumed once from its checkpoint.
- * The next start, still unfinished, fails it. A merge never continues.
+ * Process start. A running or verifying item is resumed once in a fresh session,
+ * from its checkpoint or, without one, from its branch. The next start, still
+ * unfinished, asks in Linear whether to start it again. A merge never continues.
  */
 export function decideStartup(input: {
   itemState: WorkItemState;
   recoveryAttempts: number;
   checkpoint: Checkpoint | null;
-  taskMode?: TaskMode | null;
   runnerHoldsWork?: boolean;
 }): StartupDecision {
   if (!RESUMABLE.has(input.itemState)) return { type: "none" };
   if (mergeWasInProgress(input.itemState, input.checkpoint)) return { type: "reverify" };
   if (input.runnerHoldsWork)
     return { type: "resume", freshSession: true, checkpoint: input.checkpoint, reattach: true };
-  if (input.recoveryAttempts >= 1) return { type: "fail", reason: "resume_already_attempted" };
-  if (!input.checkpoint && input.taskMode !== "answer" && input.taskMode !== "artifact")
-    return { type: "fail", reason: "no_checkpoint" };
+  if (input.recoveryAttempts >= 1) return { type: "ask_restart" };
   return { type: "resume", freshSession: true, checkpoint: input.checkpoint };
 }
 

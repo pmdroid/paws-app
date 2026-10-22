@@ -1,6 +1,15 @@
 import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
+import {
+  createPawsUpdater,
+  gitCheckout,
+  handlePawsUpdateRequest,
+  UPDATE_CHECK_MS,
+  UPDATE_RESTART_EXIT,
+  UPDATE_TICK_MS,
+  type PawsCheckout,
+} from "./self-update";
 import { join } from "node:path";
 import { createSlackIdentityReads, loginSlack, readSlackApp } from "./slack";
 import { readSecretFile } from "./credentials";
@@ -22,6 +31,7 @@ import {
 import {
   closeoutPolicyRoot,
   ensureLayout,
+  loadConfigFile,
   loadRuntime,
   loadEnv,
   loadRunnerControl,
@@ -192,9 +202,45 @@ export type StartOptions = {
   runnerRepositoryAccess?: RunnerRepositoryAccessOptions;
   runnerTranscriptObjects?: RunnerTranscriptObjects;
   refreshRepositories?: boolean;
+  /** Update this checkout when `origin/main` moves; `restart` exits so systemd starts the new code. */
+  selfUpdate?: { checkout: PawsCheckout; restart: () => void };
 };
 
 const LOOPBACK = "127.0.0.1";
+/** The checkout Paws runs from, such as `~/.local/share/paws/app`. */
+const APP_DIR = join(import.meta.dir, "..");
+
+/** `paws update`: fetch `origin/main` and schedule an update; the running Paws applies it once idle. */
+async function updateCommand(args: string[]): Promise<number> {
+  if (args.length > 0) {
+    console.error("usage: paws update");
+    return 1;
+  }
+  const checkout = gitCheckout(APP_DIR);
+  if (checkout === null) {
+    console.error(`${APP_DIR} is not a git checkout, so Paws cannot update itself.`);
+    return 1;
+  }
+  const db = openDatabase(pawsPaths(loadEnv(process.env).home).db);
+  try {
+    migrate(db);
+    const update = await createPawsUpdater({
+      db,
+      checkout,
+      now: Date.now,
+      automatic: () => true,
+      restart: () => undefined,
+    }).check("manual");
+    console.log(
+      update === null
+        ? "Paws already runs the latest main."
+        : `Paws updates to ${update.target.slice(0, 7)} once running work finishes. New work waits until then.`,
+    );
+    return 0;
+  } finally {
+    db.close();
+  }
+}
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
@@ -281,6 +327,29 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   recoverOnStartup(db);
   const abort = new AbortController();
+  const updater = options?.selfUpdate
+    ? createPawsUpdater({
+        db,
+        checkout: options.selfUpdate.checkout,
+        now: Date.now,
+        automatic: () => {
+          try {
+            return loadConfigFile(paths.configFile).updateAutomatic !== false;
+          } catch {
+            return true;
+          }
+        },
+        restart: options.selfUpdate.restart,
+        log: (message) => console.error(message),
+      })
+    : null;
+  const updateTimers = updater
+    ? [
+        setInterval(() => void updater.check("automatic").catch(() => undefined), UPDATE_CHECK_MS),
+        setInterval(() => void updater.tick().catch(() => undefined), UPDATE_TICK_MS),
+      ]
+    : [];
+  void updater?.startup().catch(() => undefined);
   let orchestrator: Orchestrator | null = null;
   let reconciler: ReturnType<typeof createItemReconciler> | null = null;
   let publication: ReturnType<typeof createPublicationReadiness> | null = null;
@@ -653,6 +722,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       projects: async (...args) =>
         projectHttp?.(...args) ??
         Response.json({ error: "Project delivery is starting." }, { status: 503 }),
+      pawsUpdate: (request, principal) =>
+        handlePawsUpdateRequest(request, principal.role, db, Date.now),
       ...(tls ? { tls } : {}),
       ...(workspace
         ? {
@@ -697,6 +768,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       },
     });
   } catch (error) {
+    for (const timer of updateTimers) clearInterval(timer);
     abort.abort();
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
@@ -1234,6 +1306,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     stop() {
       stopping ??= (async () => {
         runnerStopping = true;
+        for (const timer of updateTimers) clearInterval(timer);
         abort.abort();
         host.stop();
         const linearStopped = running.stop();
@@ -1696,6 +1769,9 @@ if (import.meta.main) {
   if (command === "doctor") {
     process.exit(await doctorMain());
   }
+  if (command === "update") {
+    process.exit(await updateCommand(argv.slice(1)));
+  }
   if (command === "login" && argv[1] === "github") {
     process.exit(await loginGitHubCommand(argv.slice(2)));
   }
@@ -1729,9 +1805,11 @@ if (import.meta.main) {
     console.error(`Unknown option ${unknown}.`);
     process.exit(1);
   }
+  const checkout = gitCheckout(APP_DIR);
   const paws = startPaws(process.env, {
     refreshRepositories: true,
     noTunnel: argv.includes("--no-tunnel"),
+    ...(checkout ? { selfUpdate: { checkout, restart: () => shutdown(UPDATE_RESTART_EXIT) } } : {}),
   });
   let exiting = false;
   const shutdown = (exitCode = 0) => {

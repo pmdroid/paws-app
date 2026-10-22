@@ -345,3 +345,13 @@ export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-att
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
 export { queueWaitSince } from "./queue-wait";
+export {
+  cancelPawsUpdate,
+  clearPawsUpdate,
+  getPawsUpdate,
+  listUpdateHolders,
+  markPawsUpdate,
+  requestPawsUpdateNow,
+  schedulePawsUpdate,
+  type PawsUpdate,
+} from "./paws-update";

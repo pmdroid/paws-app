@@ -37,60 +37,28 @@ describe("startup recovery", () => {
     });
   });
 
-  test("fails the item when it was already resumed", () => {
+  test("asks whether to start again when the item was already resumed", () => {
     expect(
       decideStartup({
         itemState: "recovering",
         recoveryAttempts: 1,
         checkpoint: checkpoint("verifying"),
       }),
-    ).toEqual({ type: "fail", reason: "resume_already_attempted" });
+    ).toEqual({ type: "ask_restart" });
   });
 
-  test("fails the item when there is no checkpoint", () => {
+  test("starts the item again without a checkpoint, once", () => {
     expect(decideStartup({ itemState: "running", recoveryAttempts: 0, checkpoint: null })).toEqual({
-      type: "fail",
-      reason: "no_checkpoint",
+      type: "resume",
+      freshSession: true,
+      checkpoint: null,
     });
-  });
-
-  test.each(["answer", "artifact"] as const)(
-    "resumes %s without a Git checkpoint once",
-    (taskMode) => {
-      expect(
-        decideStartup({ itemState: "recovering", recoveryAttempts: 0, checkpoint: null, taskMode }),
-      ).toEqual({ type: "resume", freshSession: true, checkpoint: null });
-      expect(
-        decideStartup({ itemState: "recovering", recoveryAttempts: 1, checkpoint: null, taskMode }),
-      ).toEqual({ type: "fail", reason: "resume_already_attempted" });
-      expect(
-        decideStartup({
-          itemState: "awaiting_input",
-          recoveryAttempts: 0,
-          checkpoint: null,
-          taskMode,
-        }),
-      ).toEqual({ type: "none" });
-      expect(
-        decideStartup({
-          itemState: "merge_queue",
-          recoveryAttempts: 0,
-          checkpoint: null,
-          taskMode,
-        }),
-      ).toEqual({ type: "reverify" });
-    },
-  );
-
-  test("code tasks still require a checkpoint", () => {
     expect(
-      decideStartup({
-        itemState: "running",
-        recoveryAttempts: 0,
-        checkpoint: null,
-        taskMode: "code",
-      }),
-    ).toEqual({ type: "fail", reason: "no_checkpoint" });
+      decideStartup({ itemState: "recovering", recoveryAttempts: 1, checkpoint: null }),
+    ).toEqual({ type: "ask_restart" });
+    expect(
+      decideStartup({ itemState: "merge_queue", recoveryAttempts: 0, checkpoint: null }),
+    ).toEqual({ type: "reverify" });
   });
 
   test("fails a merge closed instead of continuing it", () => {
