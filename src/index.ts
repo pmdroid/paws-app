@@ -157,6 +157,7 @@ import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "./dep
 import {
   issueVerifiedWorkspaceBootstrap,
   startWorkspaceAccess,
+  IssueAttributionCache,
   createCommitPolicyForItem,
   createWorkspaceAssignments,
   type WorkspacePrincipal,
@@ -371,6 +372,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
+  let issueAttribution: IssueAttributionCache | null = null;
+  const invalidateAuthorization = (scope: { sessionId?: string; issueId?: string } = {}): void => {
+    linearTaskAccess?.invalidate(scope);
+    orchestrator?.invalidateGitHubAuthorization(scope);
+    if (scope.sessionId === undefined) issueAttribution?.invalidate(scope.issueId);
+  };
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
   const stopLinearSession = (sessionId: string): void => {
@@ -393,7 +400,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             }),
           beforeEvent: async (event, request) => {
             const issueEvent = acceptedIssueChange(event);
-            if (issueEvent) linearTaskAccess?.invalidate({ issueId: issueEvent.issueId });
+            if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
             if (issueEvent && reconciler) {
               const targets = await reconciler.issueChanged(issueEvent);
               if (targets.length > 0) orchestrator?.reconcileExecution();
@@ -409,6 +416,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 },
                 revalidate: async (sessionIds) => {
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
+                  for (const sessionId of sessionIds) invalidateAuthorization({ sessionId });
                   await linearTaskAccess.revalidateSessions(sessionIds);
                 },
                 reconcile: (notification) =>
@@ -435,6 +443,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                         issueId: notification.issueId,
                         organizationId: notification.organizationId,
                       });
+                    invalidateAuthorization({ issueId: notification.issueId });
                     await linearTaskAccess.reconcile(notification.issueId);
                     orchestrator?.reconcileExecution();
                     await refreshLinearNotificationContext(
@@ -451,7 +460,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ) {
               const administration = parseLinearAdministration(event);
               if (administration?.kind === "revoked" || administration?.kind === "teams")
-                linearTaskAccess?.invalidate();
+                invalidateAuthorization();
               if (
                 workspace !== undefined &&
                 administration?.kind === "teams" &&
@@ -542,6 +551,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       throw error;
     }
   }
+  if (linear?.tracker?.getIssueAttribution)
+    issueAttribution = new IssueAttributionCache({
+      getIssueAttribution: linear.tracker.getIssueAttribution.bind(linear.tracker),
+    });
   const commitPolicyForItem = async (
     item: WorkItemRecord,
     selected = getWorkItemRepository(db, item.id) ?? repository,
@@ -551,14 +564,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : linear?.tracker?.getIssueAttribution && linear.memberships && runtime.linearClientId
+      : issueAttribution && linear?.memberships && runtime.linearClientId
         ? await createCommitPolicyForItem({
             db,
             bot,
             clientId: runtime.linearClientId,
-            tracker: {
-              getIssueAttribution: linear.tracker.getIssueAttribution.bind(linear.tracker),
-            },
+            tracker: issueAttribution.tracker(item),
             memberships: linear.memberships,
           })(item)
         : undefined;
