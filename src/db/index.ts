@@ -100,7 +100,7 @@ export {
   type OutboxStatus,
   type OutboxTarget,
 } from "./outbox";
-export { prepareShutdown, recoverOnStartup } from "./recovery";
+export { prepareShutdown, recoverOnStartup, requeueOrphanedWork } from "./recovery";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
   getRun,

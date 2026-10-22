@@ -30,7 +30,7 @@ import {
   saveCheckpoint,
   type WorkItemRecord,
 } from "../../src/db";
-import { createFakeTracker } from "../../src/linear";
+import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
 import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
@@ -56,6 +56,7 @@ export const RUNNER_ORCHESTRATION_SCENARIOS = [
   "rebase-failing",
   "rebase-unreachable",
   "rebase-empty-report",
+  "rebase-rate-limited",
 ] as const;
 
 export async function probeRunnerOrchestration(
@@ -127,6 +128,7 @@ export async function probeRunnerOrchestration(
   for (const scenario of mergeDependencyYield ? ["merge"] : scenarios) {
     const unavailable = scenario === "unavailable";
     const rebase = scenario.startsWith("rebase");
+    let rateLimited = 0;
     const merging = scenario === "merge" || scenario === "merge-lease" || rebase;
     const home = join(root, scenario);
     mkdirSync(home, { mode: 0o700 });
@@ -469,6 +471,18 @@ export async function probeRunnerOrchestration(
               assert(options.closeoutPolicy);
               if (scenario === "rebase-unreachable" && reverifying)
                 throw new Error("fixture runner is offline");
+              if (scenario === "rebase-rate-limited" && reverifying && rateLimited < 2) {
+                rateLimited += 1;
+                throw new LinearRateLimitError(0, {
+                  requestsRemaining: 0,
+                  requestsLimit: 5000,
+                  requestsResetMs: null,
+                  complexityRemaining: null,
+                  complexityLimit: null,
+                  complexityResetMs: null,
+                  complexity: null,
+                });
+              }
               const head = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
               checkedHeads.push(head);
               const script = join(home, `agent-${calls.length}.json`);
@@ -910,8 +924,8 @@ export async function probeRunnerOrchestration(
             assert.equal(question, null);
             assert(rebased && rebased !== accepted);
             await git(["-C", source, "merge-base", "--is-ancestor", movedMain, rebased]);
-            assert.equal(reverifyChecks.length, 1);
-            assert.equal(reverifyChecks[0]!.mainSha, movedMain);
+            assert.equal(reverifyChecks.length, scenario === "rebase-rate-limited" ? 3 : 1);
+            assert.equal(reverifyChecks.at(-1)!.mainSha, movedMain);
             assert.notEqual(reviewRunId, "");
             if (scenario === "rebase-failing") {
               const fixes = calls.filter(
