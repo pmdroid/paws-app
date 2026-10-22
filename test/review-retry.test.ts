@@ -95,3 +95,63 @@ test("a refused tool call does not fail a review that finishes", async () => {
   expect((await review.review(request)).findings).toEqual([]);
   expect(runs).toHaveLength(1);
 });
+
+function answering(replies: string[]) {
+  const runs: RunAgentOptions[] = [];
+  const review = createAcpCodexReviewer({
+    pawsRoot: "/tmp/unused",
+    launch: () => ({}),
+    async agentRunner(options: RunAgentOptions) {
+      runs.push(options);
+      await options.onEvent?.({
+        type: "session_update",
+        sessionId: "review-session",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: replies[runs.length - 1]! },
+        },
+      });
+      return { ...finished, sessionId: "review-session" };
+    },
+  });
+  return { review, runs };
+}
+
+const prose = "The change looks fine to me, nothing to report.";
+const finding = {
+  severity: "P2" as const,
+  location: "src/loop/agents.ts",
+  explanation: "The follow-up is sent once.",
+  evidence: "The second reply parsed.",
+};
+
+test("a reviewer that answers with prose and then with findings passes", async () => {
+  const { review, runs } = answering([prose, JSON.stringify([finding])]);
+  const result = await review.review(request);
+  expect(result.findings).toEqual([finding]);
+  expect(result.session).toBe("review-session");
+  expect(runs).toHaveLength(2);
+  const followUp = runs[1]!;
+  expect(followUp.prompt).toBe(
+    "Your findings were not valid JSON: reply did not contain a JSON array. Send only the findings array.",
+  );
+  expect(followUp.resume?.sessionId).toBe("review-session");
+  expect(followUp.resume?.replayPrompt).toContain(runs[0]!.prompt);
+  expect(followUp.resume?.replayPrompt).toContain(prose);
+  expect(followUp.resume?.replayPrompt).toEndWith(followUp.prompt);
+  expect(runs[0]!.resume).toBeUndefined();
+});
+
+test("a reviewer that answers with prose twice fails with the parse error", async () => {
+  const { review, runs } = answering([prose, prose]);
+  await expect(review.review(request)).rejects.toThrow(
+    "Invalid review findings: reply did not contain a JSON array",
+  );
+  expect(runs).toHaveLength(2);
+});
+
+test("a reviewer whose first findings parse is not asked again", async () => {
+  const { review, runs } = answering(["[]"]);
+  expect((await review.review(request)).findings).toEqual([]);
+  expect(runs).toHaveLength(1);
+});
