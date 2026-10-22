@@ -66,23 +66,19 @@ const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
 
-type SessionHolder = { runnerId: string; memberId?: string; agent: string; sessionId: string };
+type SessionHolder = { runnerId: string; agent: string; sessionId: string };
 
 function earlierSession(
   db: Database,
   itemId: string,
-  runner: { id: string; memberId?: string },
+  runnerId: string,
   agent: string,
 ): string | undefined {
   const holder = sessionHolder(db, itemId);
-  return holder?.runnerId === runner.id &&
-    holder.memberId === runner.memberId &&
-    holder.agent === agent
-    ? holder.sessionId
-    : undefined;
+  return holder?.runnerId === runnerId && holder.agent === agent ? holder.sessionId : undefined;
 }
 
-/** The runner, member account and agent that hold the item's last resumable agent session. */
+/** The runner and agent that hold the item's last resumable agent session. */
 function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
   const rows = db
     .query<{ envelope: string; payload: string }, [string]>(
@@ -100,7 +96,6 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       ),
     ) as {
       runnerId?: string;
-      memberId?: string;
       checkpoint?: boolean;
       profile?: { agent?: string };
     };
@@ -112,7 +107,6 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       result.sessionId
       ? {
           runnerId: command.runnerId,
-          ...(command.memberId ? { memberId: command.memberId } : {}),
           agent: command.profile.agent,
           sessionId: result.sessionId,
         }
@@ -200,10 +194,7 @@ export function createRemoteAgentRunner(options: {
       db
         .query<{ resetsAt: number | null }, [string, string | null, number]>(
           `SELECT MIN(resets_at) AS resetsAt FROM (
-         SELECT a.cooldown_until AS resets_at FROM runner_member_account a JOIN runner r ON r.id=a.runner_id
-         WHERE a.agent=?1 AND a.connected=1 AND a.cooldown_until>?3 AND ${runnerInScope}
-         UNION ALL
-         SELECT p.cooldown_until FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
+         SELECT p.cooldown_until AS resets_at FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
          WHERE p.agent=?1 AND p.cooldown_until>?3 AND ${runnerInScope})`,
         )
         .get(agent, sessionId, now())?.resetsAt ?? null
@@ -261,7 +252,7 @@ export function createRemoteAgentRunner(options: {
     const candidates = options.placement
       ? await options.placement.candidates(placement)
       : db
-          .query<{ id: string; workspaceId: string; memberId?: string }, []>(
+          .query<{ id: string; workspaceId: string }, []>(
             `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
        WHERE r.status='active' AND r.revoked_at IS NULL AND m.active=1
@@ -293,11 +284,7 @@ export function createRemoteAgentRunner(options: {
       try {
         const mode = getTaskMode(db, itemId);
         if (mode === "answer" || mode === "artifact")
-          work.scopeTask(
-            item.currentRunId,
-            runner.workspaceId,
-            runner.memberId ?? work.identity(runner.id).userId,
-          );
+          work.scopeTask(item.currentRunId, runner.workspaceId, work.identity(runner.id).userId);
         else work.scope(item.currentRunId, runner.workspaceId);
         reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
@@ -332,7 +319,6 @@ export function createRemoteAgentRunner(options: {
       selected: {
         id: row.runnerId,
         workspaceId: row.workspaceId,
-        ...(command.memberId ? { memberId: command.memberId } : {}),
         runId,
       },
       assigned: command,
@@ -408,13 +394,7 @@ export function createRemoteAgentRunner(options: {
           input.checkpoint !== false
             ? sessionHolder(db, itemId)
             : undefined;
-        const session =
-          holder?.agent === profile.agent
-            ? {
-                runnerId: holder.runnerId,
-                ...(holder.memberId ? { memberId: holder.memberId } : {}),
-              }
-            : undefined;
+        const session = holder?.agent === profile.agent ? { runnerId: holder.runnerId } : undefined;
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
@@ -456,7 +436,7 @@ export function createRemoteAgentRunner(options: {
             ? work.scopeTask(
                 selected.runId,
                 selected.workspaceId,
-                selected.memberId ?? work.identity(selected.id).userId,
+                work.identity(selected.id).userId,
               )
             : undefined;
           mkdirSync(runDir(input.pawsRoot, input.runId), { recursive: true, mode: 0o700 });
@@ -471,7 +451,6 @@ export function createRemoteAgentRunner(options: {
                 id,
                 runnerId: selected.id,
                 workspaceId: selected.workspaceId,
-                ...(selected.memberId ? { memberId: selected.memberId } : {}),
                 issuedAt,
                 expiresAt: issuedAt + 120_000,
                 type: "probe",
@@ -494,7 +473,7 @@ export function createRemoteAgentRunner(options: {
                 work.scopeTask(
                   selected.runId,
                   selected.workspaceId,
-                  selected.memberId ?? work.identity(selected.id).userId,
+                  work.identity(selected.id).userId,
                 );
               else work.scope(selected.runId, selected.workspaceId);
               const result = health.read(selected.id, id);
@@ -664,9 +643,7 @@ export function createRemoteAgentRunner(options: {
               if (options.placement) {
                 const admitted = (await options.placement.candidates(placementRequest)).some(
                   (runner) =>
-                    runner.id === selected.id &&
-                    runner.workspaceId === selected.workspaceId &&
-                    runner.memberId === selected.memberId,
+                    runner.id === selected.id && runner.workspaceId === selected.workspaceId,
                 );
                 if (!admitted)
                   throw new RunnerUnavailableError(
@@ -694,13 +671,12 @@ export function createRemoteAgentRunner(options: {
                     .get(selected.id)?.version,
                   SESSION_RESUME_RUNNER_VERSION,
                 )
-                  ? earlierSession(db, itemId, selected, profile.agent)
+                  ? earlierSession(db, itemId, selected.id, profile.agent)
                   : undefined;
               const assigned: WorkCommand = {
                 id: commandId,
                 runnerId: selected.id,
                 workspaceId: selected.workspaceId,
-                ...(selected.memberId ? { memberId: selected.memberId } : {}),
                 issuedAt,
                 expiresAt: deadline,
                 runId: selected.runId,
@@ -784,7 +760,7 @@ export function createRemoteAgentRunner(options: {
                   text: resumeSessionId
                     ? `Continuing the agent's session on ${name(selected.id)}.\n`
                     : selected.id === session.runnerId
-                      ? `Starting a new session on ${name(selected.id)}; ${selected.memberId === session.memberId ? "this runner version can't resume the earlier session" : "the earlier session belongs to another account"}.\n`
+                      ? `Starting a new session on ${name(selected.id)}; this runner version can't resume the earlier session.\n`
                       : `Starting a new session on ${name(selected.id)}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
                 });
               }
@@ -1181,7 +1157,6 @@ export function createRemoteAgentRunner(options: {
                 id: randomUUID(),
                 runnerId: selected.id,
                 workspaceId: selected.workspaceId,
-                ...(selected.memberId ? { memberId: selected.memberId } : {}),
                 issuedAt,
                 expiresAt: issuedAt + 60_000,
                 type: "cancel",

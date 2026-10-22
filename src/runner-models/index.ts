@@ -11,7 +11,6 @@ type Source = {
   workspaceId: string;
   userId: string;
   agent: Agent;
-  memberAccount: number;
 };
 type Cached = Source & { model: string; resultJson: string; updatedAt: number };
 type Pending = {
@@ -34,19 +33,11 @@ const refreshMs = 6 * 60 * 60_000;
 const retryMs = 10 * 60_000;
 const concrete = (id: string) =>
   !["default", "auto", "claude", "codex", "grok"].includes(id.toLowerCase());
-const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,a.user_id AS userId,a.agent,a.memberAccount
- FROM runner r JOIN (
- SELECT runner_id,user_id,agent,connected,cooldown_until,1 AS memberAccount FROM runner_member_account
- UNION ALL
- SELECT p.runner_id,r.owner_user_id,p.agent,p.ready,p.cooldown_until,0 FROM runner_agent_policy p JOIN runner r ON r.id=p.runner_id
- WHERE p.auth_expired=0 AND NOT EXISTS(SELECT 1 FROM runner_member_account a WHERE a.runner_id=r.id)
- ) a ON a.runner_id=r.id
- JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=a.user_id
+const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,r.owner_user_id AS userId,p.agent
+ FROM runner r JOIN runner_agent_policy p ON p.runner_id=r.id
  JOIN workspace_member owner ON owner.workspace_id=r.workspace_id AND owner.user_id=r.owner_user_id
- LEFT JOIN runner_policy policy ON policy.runner_id=r.id
- WHERE r.status<>'revoked' AND r.revoked_at IS NULL AND a.connected=1 AND a.cooldown_until<=?
- AND m.active=1 AND m.role<>'observer' AND owner.active=1
- AND (a.user_id=r.owner_user_id OR policy.sharing=1)`;
+ WHERE r.status<>'revoked' AND r.revoked_at IS NULL AND p.ready=1 AND p.auth_expired=0 AND p.cooldown_until<=?
+ AND owner.active=1 AND owner.role<>'observer'`;
 
 export function createRunnerModels(options: {
   db: Database;
@@ -148,7 +139,6 @@ export function createRunnerModels(options: {
           id: commandId,
           runnerId,
           workspaceId: source.workspaceId,
-          ...(source.memberAccount ? { memberId: userId } : {}),
           type: "probe",
           profile: { agent, model: due || null },
           issuedAt: now(),

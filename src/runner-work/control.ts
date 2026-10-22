@@ -1,5 +1,4 @@
 import { recordRunnerCapacity, teamRepositoryAllowedSql } from "../db";
-import { authorizeRunnerAccount } from "../runner-accounts";
 import type { KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
@@ -188,12 +187,7 @@ export function createRunnerWork(options: {
     if (command.type === "task") {
       bindTask(
         command,
-        responseTask(
-          runId,
-          work.workspaceId,
-          allowPendingQuestion,
-          command.memberId ?? identity.userId,
-        ),
+        responseTask(runId, work.workspaceId, allowPendingQuestion, identity.userId),
       );
       return work;
     }
@@ -224,7 +218,6 @@ export function createRunnerWork(options: {
       command.generation !== work.generation
     )
       throw new Error("Run command binding changed.");
-    authorizeRunnerAccount(db, command, true);
     return command;
   }
   function authorized(
@@ -247,7 +240,6 @@ export function createRunnerWork(options: {
     return work;
   }
   function queue(command: RunnerCommand) {
-    authorizeRunnerAccount(db, command);
     const envelope = signRunnerCommand({
       keyId: options.keyId,
       privateKey: options.privateKey,
@@ -310,12 +302,7 @@ export function createRunnerWork(options: {
         if (command.type === "task")
           bindTask(
             command,
-            responseTask(
-              command.runId,
-              command.workspaceId,
-              false,
-              command.memberId ?? accepting.userId,
-            ),
+            responseTask(command.runId, command.workspaceId, false, accepting.userId),
           );
         else {
           const { item, repository } = task(command.runId, command.workspaceId);

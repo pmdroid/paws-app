@@ -2051,4 +2051,30 @@ CREATE TABLE merge_queue_entry (
 CREATE INDEX merge_queue_entry_repository ON merge_queue_entry(repository, ready_at, id);
 `,
   },
+  {
+    id: "091_runner_owner_accounts",
+    foreignKeys: false,
+    sql: `
+UPDATE runner_agent_policy SET ready=0,auth_expired=1
+WHERE runner_id IN (SELECT runner_id FROM runner_member_account);
+DROP TABLE runner_member_account;
+UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL
+WHERE state IN ('starting','waiting');
+DELETE FROM agent_model_probe
+WHERE user_id<>(SELECT owner_user_id FROM runner WHERE id=agent_model_probe.runner_id);
+DELETE FROM agent_model_catalog
+WHERE user_id<>(SELECT owner_user_id FROM runner WHERE id=agent_model_catalog.runner_id);
+CREATE TABLE runner_agent_usage_owner (
+  runner_id TEXT NOT NULL REFERENCES runner(id) ON DELETE CASCADE,
+  agent TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  PRIMARY KEY (runner_id, agent)
+) STRICT;
+INSERT INTO runner_agent_usage_owner
+SELECT runner_id,agent,limits_json,observed_at FROM runner_agent_usage WHERE member_id='';
+DROP TABLE runner_agent_usage;
+ALTER TABLE runner_agent_usage_owner RENAME TO runner_agent_usage;
+`,
+  },
 ];

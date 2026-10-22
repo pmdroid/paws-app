@@ -98,9 +98,9 @@ export async function openRunnerCoordinator(options: {
     db: options.db,
     work,
     now: options.now,
-    onSignedIn: ({ runnerId, memberId, agent }) => {
+    onSignedIn: ({ runnerId, agent }) => {
       try {
-        health.afterSignIn(runnerId, memberId, agent);
+        health.afterSignIn(runnerId, agent);
       } catch (error) {
         options.onError(error);
       }

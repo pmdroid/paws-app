@@ -35,7 +35,6 @@ ReadWritePaths=/var/lib/paws-runner-spool
 ReadWritePaths=/var/lib/paws-agent
 ReadWritePaths=/var/lib/paws-agent-results
 ReadWritePaths=/var/lib/paws-agent-tasks
-ReadWritePaths=/var/lib/paws-runner-members
 
 [Install]
 WantedBy=multi-user.target

@@ -11,14 +11,12 @@ export type PlacementRequest = {
   role: "implementer" | "reviewer";
   purpose: PlacementPurpose;
   excludeRunnerIds?: readonly string[];
-  /** The runner and member account holding the item's last agent session, for implementer work. */
-  session?: { runnerId: string; memberId?: string };
+  /** The runner holding the item's last agent session, for implementer work. */
+  session?: { runnerId: string };
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {
-  candidates(
-    input: PlacementRequest,
-  ): Promise<readonly { id: string; workspaceId: string; memberId?: string }[]>;
+  candidates(input: PlacementRequest): Promise<readonly { id: string; workspaceId: string }[]>;
   started(input: {
     commandId: string;
     runnerId: string;

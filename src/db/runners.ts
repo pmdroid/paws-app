@@ -194,37 +194,29 @@ export function recordRunnerAgentUsage(
   db: Database,
   usage: {
     runnerId: string;
-    memberId: string | undefined;
     agent: string;
     limits: RunnerAgentLimit[];
     observedAt: number;
   },
 ): void {
   db.run(
-    `INSERT INTO runner_agent_usage(runner_id,member_id,agent,limits_json,observed_at) VALUES(?,?,?,?,?)
-    ON CONFLICT(runner_id,member_id,agent) DO UPDATE SET limits_json=excluded.limits_json,
+    `INSERT INTO runner_agent_usage(runner_id,agent,limits_json,observed_at) VALUES(?,?,?,?)
+    ON CONFLICT(runner_id,agent) DO UPDATE SET limits_json=excluded.limits_json,
     observed_at=excluded.observed_at WHERE excluded.observed_at>=runner_agent_usage.observed_at`,
-    [
-      usage.runnerId,
-      usage.memberId ?? "",
-      usage.agent,
-      JSON.stringify(usage.limits),
-      usage.observedAt,
-    ],
+    [usage.runnerId, usage.agent, JSON.stringify(usage.limits), usage.observedAt],
   );
 }
 
 export function runnerAgentUsage(
   db: Database,
   runnerId: string,
-  memberId: string | undefined,
   agent: string,
 ): { limits: RunnerAgentLimit[]; observedAt: number } | null {
   const row = db
-    .query<{ limits: string; observedAt: number }, [string, string, string]>(
-      "SELECT limits_json AS limits,observed_at AS observedAt FROM runner_agent_usage WHERE runner_id=? AND member_id=? AND agent=?",
+    .query<{ limits: string; observedAt: number }, [string, string]>(
+      "SELECT limits_json AS limits,observed_at AS observedAt FROM runner_agent_usage WHERE runner_id=? AND agent=?",
     )
-    .get(runnerId, memberId ?? "", agent);
+    .get(runnerId, agent);
   return row
     ? { limits: JSON.parse(row.limits) as RunnerAgentLimit[], observedAt: row.observedAt }
     : null;

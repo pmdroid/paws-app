@@ -1,4 +1,3 @@
-import { authorizeRunnerAccount } from "../runner-accounts";
 import { randomUUID, type KeyObject } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -42,7 +41,7 @@ export function createRunnerHelpers(options: {
     if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
     return row;
   }
-  function scope(runnerId: string, sessionId: string, generation: number, memberId?: string) {
+  function scope(runnerId: string, sessionId: string, generation: number) {
     const runner = identity(runnerId);
     const session = getLinearSession(db, sessionId);
     const installation = db
@@ -55,12 +54,9 @@ export function createRunnerHelpers(options: {
       session.stoppedAt !== null ||
       session.generation !== generation ||
       !installation?.clientId ||
-      !workspaceSessionIds(
-        db,
-        runner.workspaceId,
-        memberId ?? runner.userId,
-        installation.clientId,
-      ).includes(sessionId)
+      !workspaceSessionIds(db, runner.workspaceId, runner.userId, installation.clientId).includes(
+        sessionId,
+      )
     )
       throw new HelperFencedError("Linear helper session authority changed");
     return runner;
@@ -86,13 +82,7 @@ export function createRunnerHelpers(options: {
       command.expiresAt <= now()
     )
       throw new HelperFencedError("Runner helper command is obsolete");
-    authorizeRunnerAccount(db, command);
-    const runner = scope(
-      row.runnerId,
-      command.sessionId,
-      command.sessionGeneration,
-      command.memberId,
-    );
+    const runner = scope(row.runnerId, command.sessionId, command.sessionGeneration);
     if (runner.fence !== row.runnerFence || runner.workspaceId !== row.workspaceId)
       throw new HelperFencedError("Runner helper identity changed");
     return { row, command, envelope };
@@ -100,7 +90,6 @@ export function createRunnerHelpers(options: {
   const api = {
     dispatch(input: {
       runnerId: string;
-      memberId?: string;
       sessionId: string;
       purpose: HelperCommand["purpose"];
       profile: RunnerProfile;
@@ -109,7 +98,7 @@ export function createRunnerHelpers(options: {
       return immediate(db, () => {
         const session = getLinearSession(db, input.sessionId);
         if (!session) throw new HelperFencedError("Linear helper session is unavailable");
-        const runner = scope(input.runnerId, input.sessionId, session.generation, input.memberId);
+        const runner = scope(input.runnerId, input.sessionId, session.generation);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         if (
           db
@@ -138,7 +127,6 @@ export function createRunnerHelpers(options: {
           issuedAt: at,
           expiresAt: at + 60_000,
         }) as HelperCommand;
-        authorizeRunnerAccount(db, command);
         const envelope = signRunnerCommand({
           keyId: options.keyId,
           privateKey: options.privateKey,

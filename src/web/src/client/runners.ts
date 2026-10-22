@@ -504,10 +504,9 @@ export function runnerDetailMarkup(
   const signIns = runner.agents?.length
     ? runner.agents
     : AGENTS.map((agent): AgentSignIn => ({ agent, status: "unknown", checkedAt: null }));
-  const signIn =
-    revoked || view.role === null || view.role === "observer"
-      ? ""
-      : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
+  const signIn = !owns
+    ? ""
+    : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
   const slots = runner.slots;
   const capacity = slots
     ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} in use`)}</span>`

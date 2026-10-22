@@ -14,7 +14,6 @@ type Login = {
 type Account = {
   agent: Agent;
   connected: boolean;
-  updatedAt: number | null;
   session: Login | null;
 };
 type RunnerSignIns = { id: string; agents?: { agent: string; status: string }[] };
@@ -42,7 +41,7 @@ export function openAgentAccounts(runner: { id: string; name: string }, onClose:
   document.body.append(host);
   renderMarkup(
     host,
-    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude, Codex, and Grok on this runner. Each member signs in separately.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
+    `<dialog id="agent-accounts" aria-labelledby="agent-accounts-heading"><div class="dialog-body"><div class="between"><h2 id="agent-accounts-heading">Sign in on ${esc(runner.name)}</h2><button class="btn" type="button" data-account-close>Close</button></div><p class="sub">Connect Claude, Codex, and Grok on this runner.</p><p data-account-feedback role="alert"></p><div data-account-list class="flex min-w-0 flex-col gap-6"></div><button class="btn" type="button" data-account-refresh>Refresh accounts</button></div></dialog>`,
   );
   const dialog = host.querySelector<HTMLDialogElement>("dialog")!;
   const feedback = dialog.querySelector<HTMLElement>("[data-account-feedback]")!;

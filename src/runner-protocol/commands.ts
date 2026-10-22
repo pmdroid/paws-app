@@ -138,12 +138,7 @@ export const RunnerCommandSchema = z
     }),
     z.strictObject({ ...common, type: z.literal("probe"), profile: RunnerProfileSchema }),
     z.strictObject({ ...common, type: z.literal("login_check"), agent }),
-    z.strictObject({
-      ...common,
-      type: z.literal("login"),
-      memberId: id,
-      agent,
-    }),
+    z.strictObject({ ...common, type: z.literal("login"), agent }),
     z.strictObject({ ...common, type: z.literal("cancel"), runId: id, generation }),
     z.strictObject({
       ...common,

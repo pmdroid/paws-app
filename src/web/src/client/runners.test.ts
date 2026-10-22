@@ -338,13 +338,15 @@ describe("runner details", () => {
     expect(html).not.toContain("data-runner-signin");
   });
 
-  test("members sign in to the agents from the runner card, observers cannot", () => {
-    expect(runnerDetailMarkup(runner, { ...view, userId: "member", role: "member" })).toContain(
-      `data-runner-signin="${runner.id}"`,
+  test("only the host owner signs in to the agents from the runner card", () => {
+    expect(runnerDetailMarkup(runner, view)).toContain(`data-runner-signin="${runner.id}"`);
+    for (const role of ["admin", "member"])
+      expect(runnerDetailMarkup(runner, { ...view, userId: "someone", role })).not.toContain(
+        "data-runner-signin",
+      );
+    expect(runnerDetailMarkup(runner, { ...view, role: "observer" })).not.toContain(
+      "data-runner-signin",
     );
-    expect(
-      runnerDetailMarkup(runner, { ...view, userId: "guest", role: "observer" }),
-    ).not.toContain("data-runner-signin");
   });
 
   describe("concurrency", () => {
