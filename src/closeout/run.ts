@@ -118,8 +118,9 @@ export async function evaluateCandidate(input: EvaluateInput): Promise<Evaluatio
         : { ...input, progress: observe(input.progress, running) },
     );
   } catch (error) {
-    stopRunning(input.progress, running, error);
-    seal(input.progress, "blocked");
+    const retrying = isTransientFailure(error);
+    stopRunning(input.progress, running, error, retrying);
+    seal(input.progress, retrying ? "running" : "blocked");
     throw error;
   }
   const evaluation = applyBypasses(native, input.bypasses ?? []);
@@ -131,12 +132,17 @@ function stopRunning(
   progress: CloseoutProgress | undefined,
   running: RunningSteps,
   error: unknown,
+  retrying: boolean,
 ): void {
   if (progress === undefined) return;
-  const message = error instanceof Error ? error.message : String(error);
-  const detail = `Stopped: ${scrub(message)}`;
+  const message = scrub(error instanceof Error ? error.message : String(error));
   for (const { identity, step } of running.values()) {
-    progress.step(identity, { ...step, state: "blocked", detail, finishedAt: Date.now() });
+    progress.step(
+      identity,
+      retrying
+        ? { ...step, state: "pending", detail: `Retrying: ${message}` }
+        : { ...step, state: "blocked", detail: `Stopped: ${message}`, finishedAt: Date.now() },
+    );
   }
 }
 
