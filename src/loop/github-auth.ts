@@ -58,6 +58,10 @@ export class GitHubAuthQuestions {
       : null;
   }
 
+  invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
+    this.integration?.invalidate(scope);
+  }
+
   owns(questionId: string): boolean {
     return !this.closed && (this.integration?.owns(questionId) || this.read(questionId) !== null);
   }
@@ -66,9 +70,10 @@ export class GitHubAuthQuestions {
     item: WorkItemRecord,
     phase: GitHubAuthPhase,
     signal: AbortSignal,
+    options: { fresh?: boolean } = {},
   ): Promise<boolean> {
     if (this.closed) return false;
-    if (this.integration) return this.integration.ensure(item, phase, signal);
+    if (this.integration) return this.integration.ensure(item, phase, signal, options);
     const sessionGeneration = item.sessionKey
       ? getLinearSessionGeneration(this.db, item.sessionKey)
       : 0;

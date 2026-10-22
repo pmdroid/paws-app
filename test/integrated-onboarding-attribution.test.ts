@@ -394,7 +394,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     clock.advance(1);
     await expect(policy()).rejects.toThrow("membership");
     expect(dbApi.workspaceLinearMember(db, "workspace", "creator")!.active).toBe(false);
-    expect(await auth.ensure(current(), "publication", signal)).toBe(false);
+    expect(await auth.ensure(current(), "publication", signal, { fresh: true })).toBe(false);
     await auth.recover();
     expect(current().state).toBe("awaiting_input");
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.reverify")).toHaveLength(0);

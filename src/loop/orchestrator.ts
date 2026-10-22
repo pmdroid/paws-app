@@ -2596,7 +2596,7 @@ export class Orchestrator {
         await this.taskAccess()?.assert(current, live.controller.signal, { fresh });
         if (fresh) freshReads.add(purpose);
         const auth = this.authorization(current);
-        if (auth && !(await auth.ensure(current, "publication", live.controller.signal)))
+        if (auth && !(await auth.ensure(current, "publication", live.controller.signal, { fresh })))
           throw new Error("GitHub sign-in is required before publication.");
       },
     });
@@ -3433,6 +3433,7 @@ export class Orchestrator {
   private async stopSession(sessionId: string | null, eventKey: string, at: number): Promise<void> {
     if (sessionId === null) return;
     this.taskAccess()?.invalidate({ sessionId });
+    this.githubAuth?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const agentSession = this.options.channel !== "comments";
     const commands: LinearCommand[] = [];
@@ -3691,6 +3692,10 @@ export class Orchestrator {
       throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
+  }
+
+  invalidateGitHubAuthorization(scope: { sessionId?: string; issueId?: string } = {}): void {
+    this.githubAuth?.invalidate(scope);
   }
 
   reconcileExecution(): void {

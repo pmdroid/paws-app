@@ -16,16 +16,45 @@ import type {
   TrackerRequestOptions,
 } from "../linear";
 
+type IssueAttributionReads = {
+  getIssueAttribution(
+    issueId: string,
+    options?: TrackerRequestOptions,
+  ): Promise<LinearAttributionContext>;
+};
+
+export class IssueAttributionCache {
+  private readonly entries = new Map<
+    string,
+    { runId: string; context: LinearAttributionContext }
+  >();
+
+  constructor(private readonly reads: IssueAttributionReads) {}
+
+  tracker(item: Pick<WorkItemRecord, "currentRunId">): IssueAttributionReads {
+    const runId = item.currentRunId;
+    return {
+      getIssueAttribution: async (issueId, options) => {
+        const cached = this.entries.get(issueId);
+        if (runId !== null && cached?.runId === runId) return cached.context;
+        const context = await this.reads.getIssueAttribution(issueId, options);
+        if (runId !== null) this.entries.set(issueId, { runId, context });
+        return context;
+      },
+    };
+  }
+
+  invalidate(issueId?: string): void {
+    if (issueId === undefined) this.entries.clear();
+    else this.entries.delete(issueId);
+  }
+}
+
 export function createCommitPolicyForItem<Bot>(options: {
   db: Database;
   bot: Bot;
   clientId: string;
-  tracker: {
-    getIssueAttribution(
-      issueId: string,
-      options?: TrackerRequestOptions,
-    ): Promise<LinearAttributionContext>;
-  };
+  tracker: IssueAttributionReads;
   memberships: LinearMembershipReads;
   now?: () => number;
 }) {

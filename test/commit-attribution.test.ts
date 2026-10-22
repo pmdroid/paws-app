@@ -20,7 +20,11 @@ import {
   createLinearClient,
   type LinearAttributionContext,
 } from "../src/linear";
-import { createCommitPolicyForItem, issueWorkspaceSession } from "../src/workspace";
+import {
+  IssueAttributionCache,
+  createCommitPolicyForItem,
+  issueWorkspaceSession,
+} from "../src/workspace";
 
 function fixture() {
   const db = openDatabase(":memory:");
@@ -336,4 +340,37 @@ test("production Linear client reads canonical issue project lead across real HT
   } finally {
     await server.stop(true);
   }
+});
+
+test("issue attribution is read once per task run until the issue changes", async () => {
+  const reads: string[] = [];
+  let failing = false;
+  const cache = new IssueAttributionCache({
+    async getIssueAttribution(issueId) {
+      reads.push(issueId);
+      if (failing) throw new Error("Scripted Linear outage");
+      return { issueId, organizationId: "org", teamId: "team", projectId: null, leadId: null };
+    },
+  });
+  const run = (runId: string | null) => cache.tracker({ currentRunId: runId });
+  for (let i = 0; i < 10; i++) await run("run-1").getIssueAttribution("issue");
+  expect(reads).toEqual(["issue"]);
+  await run("run-2").getIssueAttribution("issue");
+  expect(reads).toHaveLength(2);
+  cache.invalidate("another-issue");
+  await run("run-2").getIssueAttribution("issue");
+  expect(reads).toHaveLength(2);
+  cache.invalidate("issue");
+  await run("run-2").getIssueAttribution("issue");
+  expect(reads).toHaveLength(3);
+  cache.invalidate();
+  failing = true;
+  await expect(run("run-2").getIssueAttribution("issue")).rejects.toThrow("outage");
+  failing = false;
+  await run("run-2").getIssueAttribution("issue");
+  await run("run-2").getIssueAttribution("issue");
+  expect(reads).toHaveLength(5);
+  await run(null).getIssueAttribution("issue");
+  await run(null).getIssueAttribution("issue");
+  expect(reads).toHaveLength(7);
 });
