@@ -25,7 +25,7 @@ import {
 } from "../runner-protocol";
 
 type Installed = { version: string; sha256: string; agents: RunnerSkillAgent[] };
-type Refused = { name: string; version: string; sha256: string; at: number };
+type Refused = { name: string; version: string; sha256: string; at: number; error?: string };
 type State = {
   /** Skills every idle home should have. A refused update keeps the previous version here. */
   desired: RunnerSkill[];
@@ -232,7 +232,13 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
         desired.push(skill);
       } catch (error) {
         report(error);
-        refused.push({ name: skill.name, version: skill.version, sha256: skill.sha256, at: now() });
+        refused.push({
+          name: skill.name,
+          version: skill.version,
+          sha256: skill.sha256,
+          at: now(),
+          error: installError(error),
+        });
         keepPrevious();
       }
     }
@@ -283,12 +289,15 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
     },
     /** What the runner reports in its heartbeat. */
     installed(): RunnerInstalledSkill[] {
-      const reported: RunnerInstalledSkill[] = state.refused.map(({ name, version, sha256 }) => ({
-        name,
-        version,
-        sha256,
-        status: "refused",
-      }));
+      const reported: RunnerInstalledSkill[] = state.refused.map(
+        ({ name, version, sha256, error }) => ({
+          name,
+          version,
+          sha256,
+          status: "refused",
+          ...(error ? { error } : {}),
+        }),
+      );
       for (const skill of state.desired) {
         if (reported.some((entry) => entry.name === skill.name)) continue;
         const behind = Object.values(state.homes).some(
@@ -304,6 +313,14 @@ export function createRunnerSkillInstaller(options: RunnerSkillInstallerOptions)
       return reported;
     },
   };
+}
+
+/** The message Paws shows for a refused skill. Paths stay on the runner. */
+function installError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (!message || /(?:^|\s)\/\S/.test(message))
+    return "The skill could not be downloaded or unpacked.";
+  return message.slice(0, 500);
 }
 
 export type RunnerSkillInstaller = ReturnType<typeof createRunnerSkillInstaller>;
