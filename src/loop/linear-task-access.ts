@@ -31,7 +31,18 @@ import {
 
 export class LinearAccessRemovedError extends Error {}
 
+export const TASK_ACCESS_TTL_MS = 5 * 60_000;
+
+type AccessVerdict = {
+  sessionId: string;
+  access: LinearSessionInstallation;
+  issues: LinearIssueOwnership[];
+  expiresAt: number;
+};
+
 export class LinearTaskAccess {
+  private readonly verdicts = new Map<string, AccessVerdict>();
+
   constructor(
     private readonly db: Database,
     private readonly options: {
@@ -96,7 +107,17 @@ export class LinearTaskAccess {
     return this.allowed(event.sessionId);
   }
 
+  invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
+    for (const [key, verdict] of this.verdicts)
+      if (
+        (scope.sessionId === undefined || verdict.sessionId === scope.sessionId) &&
+        (scope.issueId === undefined || verdict.issues.some((issue) => issue.id === scope.issueId))
+      )
+        this.verdicts.delete(key);
+  }
+
   async reconcile(issueId: string): Promise<void> {
+    this.invalidate({ issueId });
     await this.reconcileItems(
       (item, sessionId) =>
         item.linearIssueId === issueId || getLinearSession(this.db, sessionId)?.issueId === issueId,
@@ -105,6 +126,7 @@ export class LinearTaskAccess {
 
   async revalidateSessions(sessionIds: readonly string[]): Promise<void> {
     const affected = new Set(sessionIds);
+    for (const sessionId of affected) this.invalidate({ sessionId });
     const active = new Set(
       listWorkItems(this.db)
         .filter(
@@ -159,7 +181,7 @@ export class LinearTaskAccess {
       const sessionId = item.sessionKey;
       if (sessionId === null || !accept(item, sessionId)) continue;
       try {
-        await this.assert(item, AbortSignal.timeout(10_000));
+        await this.assert(item, AbortSignal.timeout(10_000), { fresh: true });
       } catch (error) {
         if (
           error instanceof LinearAccessRemovedError ||
@@ -172,16 +194,17 @@ export class LinearTaskAccess {
   }
 
   async prepare(item: WorkItemRecord, signal: AbortSignal): Promise<readonly string[]> {
+    if (item.sessionKey !== null) this.invalidate({ sessionId: item.sessionKey });
     return outlastRateLimits(signal, () => this.check(item, signal, true));
   }
 
   async assert(
     item: WorkItemRecord,
     signal: AbortSignal,
-    options: { allowTerminalIssue?: boolean } = {},
+    options: { allowTerminalIssue?: boolean; fresh?: boolean } = {},
   ): Promise<void> {
     await outlastRateLimits(signal, () =>
-      this.check(item, signal, false, options.allowTerminalIssue ?? false),
+      this.check(item, signal, false, options.allowTerminalIssue ?? false, options.fresh ?? false),
     );
   }
 
@@ -240,6 +263,7 @@ export class LinearTaskAccess {
     signal: AbortSignal,
     prepare: boolean,
     allowTerminalIssue = false,
+    fresh = false,
   ): Promise<readonly string[]> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
@@ -263,6 +287,17 @@ export class LinearTaskAccess {
         throw new LinearAccessRemovedError("Linear installation access is unavailable.");
     };
     current(true);
+    const key = JSON.stringify([item.id, sessionId, generation, item.linearIssueId]);
+    const cached = this.verdicts.get(key);
+    const now = (this.options.now ?? Date.now)();
+    if (!prepare && !fresh && cached !== undefined && cached.expiresAt > now) {
+      current();
+      if (
+        cached.issues.every((issue) => this.permits(item, cached.access, issue, allowTerminalIssue))
+      )
+        return [];
+    }
+    this.verdicts.delete(key);
     const access = await this.options.access.session(sessionId, { signal });
     current(true);
     this.record(access);
@@ -274,6 +309,7 @@ export class LinearTaskAccess {
       if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
       this.ownership(item, sessionId, access, issue, allowTerminalIssue);
       if (!(await this.options.access.team(issue.teamId, { signal }))) {
+        this.invalidate({ sessionId });
         this.options.stopSession(sessionId);
         throw new LinearAccessRemovedError("Linear task team access was removed.");
       }
@@ -281,7 +317,15 @@ export class LinearTaskAccess {
       issues.push(issue);
     }
     const eligible: string[] = [];
-    if (!prepare) return eligible;
+    if (!prepare) {
+      this.verdicts.set(key, {
+        sessionId,
+        access,
+        issues,
+        expiresAt: (this.options.now ?? Date.now)() + TASK_ACCESS_TTL_MS,
+      });
+      return eligible;
+    }
     for (const issue of issues.reverse()) {
       current();
       const actorId = delegatedLinearUserId(this.db, item.id);
@@ -316,14 +360,8 @@ export class LinearTaskAccess {
     issue: LinearIssueOwnership,
     allowTerminalIssue = false,
   ): void {
-    const required = getLinearTaskDelegation(this.db, item.id, issue.id);
-    if (
-      getLinearTeamAccess(this.db, { ...access, teamId: issue.teamId }) === "removed" ||
-      (!allowTerminalIssue && ["completed", "canceled", "duplicate"].includes(issue.stateType)) ||
-      (issue.delegateId !== null && issue.delegateId !== access.appUserId) ||
-      (required !== null &&
-        (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
-    ) {
+    if (!this.permits(item, access, issue, allowTerminalIssue)) {
+      this.invalidate({ sessionId });
       this.options.stopSession(sessionId);
       throw new LinearAccessRemovedError("Linear task delegation or workflow access was removed.");
     }
@@ -334,6 +372,22 @@ export class LinearTaskAccess {
         teamId: issue.teamId,
         appUserId: access.appUserId,
       });
+  }
+
+  private permits(
+    item: WorkItemRecord,
+    access: LinearSessionInstallation,
+    issue: LinearIssueOwnership,
+    allowTerminalIssue: boolean,
+  ): boolean {
+    const required = getLinearTaskDelegation(this.db, item.id, issue.id);
+    return !(
+      getLinearTeamAccess(this.db, { ...access, teamId: issue.teamId }) === "removed" ||
+      (!allowTerminalIssue && ["completed", "canceled", "duplicate"].includes(issue.stateType)) ||
+      (issue.delegateId !== null && issue.delegateId !== access.appUserId) ||
+      (required !== null &&
+        (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
+    );
   }
 
   private allowed(sessionId: string): boolean {

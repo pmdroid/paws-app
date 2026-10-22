@@ -1,3 +1,4 @@
+import "../quiet-journal";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadRuntime } from "../../src/config";

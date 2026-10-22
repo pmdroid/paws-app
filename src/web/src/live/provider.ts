@@ -42,6 +42,7 @@ import {
   getRun,
   listAgentCloseout,
   listCloseoutProgress,
+  listCiRounds,
   listCloseoutRounds,
   listEvidence,
   listJobs,
@@ -72,6 +73,7 @@ import {
   type RunState,
   type StatusActivity,
   type StatusAgentCloseout,
+  type StatusCiRound,
   type StatusCheck,
   type StatusCloseoutAttempt,
   type StatusEvent,
@@ -212,6 +214,7 @@ function readLiveSnapshot(db: Database, options: LiveStatusOptions): StatusSnaps
     events: eventsFor(rows),
     evidence: evidenceFor(db, records),
     agentCloseout: agentCloseoutFor(db, items, now.getTime(), env),
+    ciRounds: ciRoundsFor(db, records, env),
   };
 }
 
@@ -235,6 +238,30 @@ function agentCloseoutFor(
     const folded = agentCloseoutOf(itemId, runId, byRun.get(runId) ?? [], nowMs, env);
     return folded ? [folded] : [];
   });
+}
+
+/** CI rounds of the visible items, numbered per item. Log tails are redacted like Closeout output. */
+function ciRoundsFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+  env: NodeJS.ProcessEnv,
+): StatusCiRound[] {
+  return records.flatMap((record) =>
+    listCiRounds(db, record.id).map((round, index) => ({
+      itemId: publicId(record),
+      runId: round.runId,
+      round: index + 1,
+      head: round.head,
+      next: round.next,
+      fix: round.fix,
+      fixLimit: round.fixLimit,
+      recordedAt: new Date(round.recordedAt).toISOString(),
+      checks: round.checks.map((check) => ({
+        ...check,
+        logTail: check.logTail === null ? null : redactCloseoutText(check.logTail, env),
+      })),
+    })),
+  );
 }
 
 /** Evidence of the visible items only, so a reader without the item's session sees none of it. */
@@ -921,7 +948,10 @@ function activityFor(
       line: {
         at: iso(run.createdAt, generatedAt),
         kind: "system",
-        text: `${run.kind === "review" ? "Review" : "Implementation"} started with ${agentName(run.agent)}.`,
+        text:
+          run.kind === "recheck"
+            ? "Closeout re-check started."
+            : `${run.kind === "review" ? "Review" : "Implementation"} started with ${agentName(run.agent)}.`,
       },
     });
   return lines.sort((left, right) => left.at - right.at).map((entry) => entry.line);
