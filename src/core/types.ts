@@ -5,7 +5,7 @@ export type ItemId = string;
 export type DelegationId = string;
 export type RunId = string;
 
-export type RunKind = "plan" | "implement" | "fix" | "rebase" | "review";
+export type RunKind = "plan" | "implement" | "fix" | "rebase" | "review" | "recheck";
 
 export type RunStatus = "provisioning" | "active" | "ended" | "lost";
 
