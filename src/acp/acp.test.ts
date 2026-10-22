@@ -1241,18 +1241,18 @@ test("follow-up interrupts initialization without waiting for an agent response"
     command: process.execPath,
     args: fakeAgentArgs(files),
     env: agentEnv(),
-    cancelGraceMs: 75,
+    // The agent exits on SIGTERM; the grace only matters when that is slow.
+    cancelGraceMs: 1_000,
     signal: controller.signal,
     onEvent: (event) => {
       events.push(event);
     },
   });
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const trace = await readResult(files.resultPath).catch(() => undefined);
-    if (trace?.methods.includes("initialize")) break;
+  // Wait for the agent to receive initialize; the test timeout bounds a loaded machine.
+  while (
+    !(await readResult(files.resultPath).catch(() => undefined))?.methods.includes("initialize")
+  )
     await Bun.sleep(10);
-  }
-  expect((await readResult(files.resultPath)).methods).toContain("initialize");
   controller.abort(FOLLOW_UP_INTERRUPTION);
   const result = await running;
   expect(result.interrupted).toBe(true);

@@ -11,12 +11,11 @@ import {
   getWorkItem,
   insertQueuedItem,
   JobLoop,
-  migrate,
-  openDatabase,
   OutboxDispatcher,
   saveTaskMode,
 } from "../../src/db";
 import { FakeHostGitHubAuth, Orchestrator } from "../../src/loop";
+import { migratedDatabase } from "../helpers";
 
 export async function probeCurrentRunStartup(root: string) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -24,8 +23,7 @@ export async function probeCurrentRunStartup(root: string) {
   for (const mode of ["code", "artifact", "clarified-artifact"] as const) {
     const home = join(root, mode);
     mkdirSync(home, { mode: 0o700 });
-    const db = openDatabase(join(home, "paws.db"));
-    migrate(db);
+    const db = migratedDatabase(join(home, "paws.db"));
     const clock = new FakeClock(1000);
     const jobs = new JobLoop(db, clock);
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });

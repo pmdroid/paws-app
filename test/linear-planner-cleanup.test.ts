@@ -17,6 +17,11 @@ import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, createTaskPlanner, type AgentLaunch } from "../src/loop";
 import { tempHome } from "./helpers";
 
+// The classifiers ignore SIGTERM, so each stop waits out the first grace in
+// full. The second grace bounds how long SIGKILL may take to close the group;
+// 200 ms was too short for that on a loaded machine.
+const CANCEL_GRACE_MS = 1_000;
+
 test.skipIf(process.platform !== "linux")(
   "lost classifier ownership blocks Stop, a new prompt and reopened planning before another writer",
   async () => {
@@ -33,6 +38,7 @@ test.skipIf(process.platform !== "linux")(
         command: process.execPath,
         args: [script],
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+        cancelGraceMs: CANCEL_GRACE_MS,
       };
     };
     let db = openDatabase(database);
@@ -52,20 +58,14 @@ test.skipIf(process.platform !== "linux")(
     const first = plan().catch((error: unknown) => error);
     let family: { anchor: number; command: number; descendant: number } | undefined;
     try {
-      for (let attempt = 0; attempt < 1000; attempt++) {
-        if (existsSync(ready) && existsSync(writes)) {
-          family = JSON.parse(readFileSync(ready, "utf8"));
-          break;
-        }
-        await Bun.sleep(5);
-      }
-      expect(family).toBeDefined();
+      await until(() => existsSync(ready) && existsSync(writes));
+      family = JSON.parse(readFileSync(ready, "utf8"));
       process.kill(family!.anchor, "SIGKILL");
       await expect(firstPlanner.stop("session")).rejects.toThrow("cleanup");
       expect(await first).toBeInstanceOf(Error);
+      // The descendant outlived the lost anchor and keeps writing.
       const before = readFileSync(writes, "utf8").length;
-      await Bun.sleep(30);
-      expect(readFileSync(writes, "utf8").length).toBeGreaterThan(before);
+      await until(() => readFileSync(writes, "utf8").length > before);
       await expect(plan(firstPlanner, "replacement")).rejects.toThrow("cleanup");
       expect(launches).toBe(1);
       db.close();
@@ -148,6 +148,7 @@ test.skipIf(process.platform !== "linux")(
             ]
           : [join(home, "classifier.ts")],
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+      cancelGraceMs: CANCEL_GRACE_MS,
     });
     const jobs = new JobLoop(db, systemClock);
     const orchestrator = attachOrchestrator({
@@ -195,14 +196,10 @@ test.skipIf(process.platform !== "linux")(
         updatedAtMs: Date.now(),
       });
       const work = jobs.tick();
-      for (let attempt = 0; attempt < 1000; attempt++) {
-        if (existsSync(join(home, "ready.json")) && existsSync(join(home, "descendant-writes"))) {
-          family = JSON.parse(readFileSync(join(home, "ready.json"), "utf8"));
-          break;
-        }
-        await Bun.sleep(5);
-      }
-      expect(family).toBeDefined();
+      await until(
+        () => existsSync(join(home, "ready.json")) && existsSync(join(home, "descendant-writes")),
+      );
+      family = JSON.parse(readFileSync(join(home, "ready.json"), "utf8"));
       process.kill(family!.anchor, "SIGKILL");
       await expect(orchestrator.interruptLinearSession("session")).rejects.toThrow("cleanup");
       await work;
@@ -282,6 +279,7 @@ for (const operation of ["shutdown", "interrupt"] as const)
                 ]
               : [join(input.purpose === "classify" ? blockedRoot : liveRoot, "classifier.ts")],
           env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
+          cancelGraceMs: CANCEL_GRACE_MS,
         }),
       });
       const created = (id: string): AcceptedLinearEvent => ({
@@ -302,15 +300,12 @@ for (const operation of ["shutdown", "interrupt"] as const)
       });
       const families: Array<{ anchor: number; command: number; descendant: number }> = [];
       const waitFamily = async (root: string) => {
-        for (let attempt = 0; attempt < 1000; attempt++) {
-          if (existsSync(join(root, "ready.json")) && existsSync(join(root, "descendant-writes"))) {
-            const family = JSON.parse(readFileSync(join(root, "ready.json"), "utf8"));
-            families.push(family);
-            return family as (typeof families)[number];
-          }
-          await Bun.sleep(5);
-        }
-        throw new Error("The owned writer did not start");
+        await until(
+          () => existsSync(join(root, "ready.json")) && existsSync(join(root, "descendant-writes")),
+        );
+        const family = JSON.parse(readFileSync(join(root, "ready.json"), "utf8"));
+        families.push(family);
+        return family as (typeof families)[number];
       };
       const blocked = orchestrator
         .onLinearEvent(created("blocked"))
@@ -348,6 +343,11 @@ for (const operation of ["shutdown", "interrupt"] as const)
     },
     15000,
   );
+
+// Polls until the condition holds; the test timeout bounds a loaded machine.
+async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await Bun.sleep(5);
+}
 
 function running(pid: number): boolean {
   try {

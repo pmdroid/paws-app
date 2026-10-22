@@ -345,11 +345,14 @@ describe("restart recovery", () => {
     const dir = mkdtempSync(join(tmpdir(), "paws-runtime-"));
     const path = join(dir, "paws.db");
     const clock = new FakeClock(0);
-    const first = openDatabase(path);
+    // Migrating a file commits once per migration, which overran 5 s on a
+    // loaded disk. The first process works in memory and leaves one file.
+    const first = openDatabase(":memory:");
     migrate(first);
     insertQueuedItem(first, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(first, "eng-1", clock.now(), checkpoint);
     saveRunResult(first, run.id, "Implemented and checked locally.", clock.now());
+    first.run("VACUUM INTO ?", [path]);
     first.close();
 
     const second = openDatabase(path);

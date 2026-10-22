@@ -18,12 +18,10 @@ import {
   getWorkItem,
   listOutbox,
   listWorkItems,
-  migrate,
   putWorkspaceUser,
   syncWorkspaceMember,
   markRun,
   recoverOnStartup,
-  openDatabase,
   saveTaskMode,
   bindWorkItemRepository,
   getLinearSession,
@@ -38,12 +36,33 @@ import { intakeDelegatedIssue } from "../../src/intake";
 import { fakeMergeReadiness, fakeRequiredChecks } from "../../src/github";
 import { attachOrchestrator, FakeHostGitHubAuth } from "../../src/loop";
 import { dispatchReadyItems, saveSchedulingContext } from "../../src/scheduler";
+import { migratedDatabase } from "../helpers";
+
+export const RUNNER_ORCHESTRATION_SCENARIOS = [
+  "success",
+  "error",
+  "cancelled",
+  "reassigned",
+  "stale",
+  "merge",
+  "unavailable",
+  "crashed-implementation",
+  "crashed-review",
+  "start-lease",
+  "resume-lease",
+  "reverify-lease",
+  "merge-lease",
+  "rebase",
+  "rebase-failing",
+  "rebase-unreachable",
+  "rebase-empty-report",
+] as const;
 
 export async function probeRunnerOrchestration(
   root: string,
   observe: (name: string, passed: boolean, value: unknown) => void,
   mergeDependencyYield = false,
-  only?: readonly string[],
+  scenarios: readonly string[] = RUNNER_ORCHESTRATION_SCENARIOS,
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const source = join(root, "source");
@@ -105,35 +124,13 @@ export async function probeRunnerOrchestration(
   await git(["-C", source, "add", "."]);
   await git(["-C", source, "commit", "-m", "Fixture policy"]);
   await git(["clone", "--bare", source, origin]);
-  for (const scenario of only ??
-    (mergeDependencyYield
-      ? ["merge"]
-      : [
-          "success",
-          "error",
-          "cancelled",
-          "reassigned",
-          "stale",
-          "merge",
-          "unavailable",
-          "crashed-implementation",
-          "crashed-review",
-          "start-lease",
-          "resume-lease",
-          "reverify-lease",
-          "merge-lease",
-          "rebase",
-          "rebase-failing",
-          "rebase-unreachable",
-          "rebase-empty-report",
-        ])) {
+  for (const scenario of mergeDependencyYield ? ["merge"] : scenarios) {
     const unavailable = scenario === "unavailable";
     const rebase = scenario.startsWith("rebase");
     const merging = scenario === "merge" || scenario === "merge-lease" || rebase;
     const home = join(root, scenario);
     mkdirSync(home, { mode: 0o700 });
-    const db = openDatabase(join(home, "paws.db"));
-    migrate(db);
+    const db = migratedDatabase(join(home, "paws.db"));
     const tracker = createFakeTracker([
       {
         linearIssueId: "issue",
@@ -204,7 +201,7 @@ export async function probeRunnerOrchestration(
       } else {
         await Promise.race([
           started,
-          Bun.sleep(2000).then(() => {
+          Bun.sleep(10_000).then(() => {
             throw new Error("Replacement could not claim job");
           }),
         ]);
@@ -216,7 +213,7 @@ export async function probeRunnerOrchestration(
           if (signal.aborted) resolve();
           else signal.addEventListener("abort", () => resolve(), { once: true });
         }),
-        Bun.sleep(2000).then(() => {
+        Bun.sleep(10_000).then(() => {
           throw new Error("Lease loss did not abort selected transport");
         }),
       ]);

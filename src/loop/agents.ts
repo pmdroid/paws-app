@@ -32,7 +32,13 @@ export type AgentLaunch = (input: {
   itemId: string;
   worktree: string;
   prompt: string;
-}) => { command?: string; args?: string[]; env?: NodeJS.ProcessEnv };
+}) => {
+  command?: string;
+  args?: string[];
+  env?: NodeJS.ProcessEnv;
+  // How long the command gets to exit after SIGTERM before SIGKILL.
+  cancelGraceMs?: number;
+};
 
 export type AcpAgentDeps = {
   repository?: string;
@@ -282,9 +288,11 @@ function spawnOf(launch: ReturnType<AgentLaunch>): {
   command?: string;
   args?: string[];
   env?: NodeJS.ProcessEnv;
+  cancelGraceMs?: number;
 } {
   return {
     ...(launch.command ? { command: launch.command, args: launch.args ?? [] } : {}),
     ...(launch.env ? { env: launch.env } : {}),
+    ...(launch.cancelGraceMs !== undefined ? { cancelGraceMs: launch.cancelGraceMs } : {}),
   };
 }
