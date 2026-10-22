@@ -64,6 +64,7 @@ describe("status views", () => {
     );
     const issue = render(model({ snapshot, route: { view: "issues", id: item.id } })).content;
     expect(issue).toContain("<h2>Queued, 2nd in line.</h2>");
+    expect(issue.match(/2nd in line/g)).toHaveLength(1);
     const list = render(model({ snapshot, route: { view: "issues", id: null } })).content;
     expect(list).toContain("Queued, 2nd in line. 4 of 4 runner slots are busy.");
 

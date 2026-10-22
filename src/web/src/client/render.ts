@@ -281,13 +281,18 @@ function issueDetail(snapshot: StatusSnapshot, item: StatusItem): string {
 
 function issueRow(snapshot: StatusSnapshot, item: StatusItem): string {
   const blockers = unmergedBlockers(snapshot, item);
-  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${blockers.length ? `<span class="muted">Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
+  return `<li class="issue-row" data-issue-state="${issueBucket(item)}" data-issue-id="${esc(item.id)}"><a class="work-title" href="${routeHref({ view: "issues", id: item.id })}"><span class="lin-id">${esc(item.id)}</span> <b>${esc(item.title)}</b></a>${statePill(item.state, itemLabel(item.state))}<div class="issue-facts">${issueMeta(item)}${queuePlace(item)}${blockers.length ? `<span class="muted">Blocked by ${esc(blockers.join(", "))}</span>` : ""}</div></li>`;
 }
 
 function issueMeta(item: StatusItem): string {
   const facts = [item.owner, item.project?.name ?? "Solo"].filter(Boolean);
-  const queue = item.state === "queued" && item.queue ? queueText(item.queue) : null;
-  return `<span class="muted">${esc(facts.join(" · "))}</span>${queue ? `<span class="muted">${esc(`${queue.place} ${queue.slots}`)}</span>` : ""}`;
+  return `<span class="muted">${esc(facts.join(" · "))}</span>`;
+}
+
+function queuePlace(item: StatusItem): string {
+  if (item.state !== "queued" || !item.queue) return "";
+  const { place, slots } = queueText(item.queue);
+  return `<span class="muted">${esc(`${place} ${slots}`)}</span>`;
 }
 
 /** A queued task's place in line and how busy the runner slots are. */

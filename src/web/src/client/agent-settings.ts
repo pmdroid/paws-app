@@ -116,7 +116,7 @@ function queueSection(hours: number): string {
   const days = Number.isInteger(hours) && hours >= 48 && hours % 24 === 0;
   const amount = Number.isFinite(hours) ? (days ? hours / 24 : hours) : "";
   return `<section class="settings-section"><div class="settings-label"><h2>Queue</h2><p class="sub">When every runner slot is busy, a delegated issue waits in line and starts when a slot frees.</p></div><div class="col">
-      <label for="queue-start-timeout">Fail a task that has not started after</label><div class="row"><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${days ? QUEUE_TIMEOUT_MAX_HOURS / 24 : QUEUE_TIMEOUT_MAX_HOURS}" step="1" required value="${amount}" aria-describedby="queue-start-timeout-help"><select id="queue-start-timeout-unit" name="queue-start-timeout-unit" aria-label="Unit"><option value="hours" ${days ? "" : "selected"}>hours</option><option value="days" ${days ? "selected" : ""}>days</option></select></div>
+      <label for="queue-start-timeout">Fail a task that has not started after</label><div class="settings-duration"><input id="queue-start-timeout" name="queue-start-timeout" type="number" inputmode="numeric" min="1" max="${days ? QUEUE_TIMEOUT_MAX_HOURS / 24 : QUEUE_TIMEOUT_MAX_HOURS}" step="1" required value="${amount}" aria-describedby="queue-start-timeout-help"><select id="queue-start-timeout-unit" name="queue-start-timeout-unit" aria-label="Unit"><option value="hours" ${days ? "" : "selected"}>hours</option><option value="days" ${days ? "selected" : ""}>days</option></select></div>
       <p class="sub" id="queue-start-timeout-help">Up to 30 days. Paws fails the task in Linear with a note to delegate it again.</p></div></section>`;
 }
 
