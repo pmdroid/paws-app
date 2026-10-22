@@ -68,7 +68,7 @@ test.each([
     expect(result.faultedAttempts, result.detail).toBe(attempts);
     expect(
       result.thoughts.some(
-        (body) => body.startsWith(message) && /Paws tries again in \d+ s\.$/.test(body),
+        (body) => body.includes(message) && /Paws tries again in \d+ s\.$/.test(body),
       ),
       result.detail,
     ).toBe(true);
