@@ -30,8 +30,25 @@ export interface GitHubClient {
     token: string;
     body?: unknown;
     signal?: AbortSignal;
+    /** `"text"` returns the body as a string and follows a redirect without the token (log downloads). */
+    accept?: "text";
   }): Promise<GitHubResponse>;
 }
+
+export type CiCheckState = "passed" | "failed" | "running" | "skipped";
+
+/** One check on a pull request's head commit, as Paws shows it and hands it to the agent. */
+export type CiCheck = {
+  name: string;
+  state: CiCheckState;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The end of a failing check's log, or null when it passed or nothing was readable. */
+  logTail: string | null;
+  /** `actions` for a GitHub Actions job log, `summary` for the check's summary text. */
+  logSource: "actions" | "summary" | null;
+};
 
 export type GitExec = (
   args: string[],
@@ -103,7 +120,9 @@ export type SerialMergeResult = {
   summary?: string;
   cycle?: number;
   message?: string;
-  failedChecks?: { name: string; url: string | null }[];
+  failedChecks?: { name: string; url: string | null; logTail?: string | null }[];
+  /** Every check on the head when CI failed, with the failing checks' log tails. */
+  checks?: CiCheck[];
 };
 
 export type ReverifyInput = {

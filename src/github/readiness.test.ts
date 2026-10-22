@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { fakeMergeReadiness, fakeRequiredChecks, type FakeCheckContext } from "./fake";
-import { waitForMergeReadiness } from "./readiness";
-import type { GitHubResponse } from "./types";
+import { createFetchGitHubClient } from "./client";
+import { logTail, waitForMergeReadiness } from "./readiness";
+import type { CiCheckState, GitHubResponse } from "./types";
 
 const head = "a".repeat(40);
 
@@ -185,7 +186,10 @@ test("reads every check context page past the first 100 on the head and the base
     return { status: 200, body };
   });
   expect(result.outcome).toBe("ci_failed");
-  expect(result.failedChecks).toEqual([{ name: "check-100", url: "https://ci.example/check-100" }]);
+  expect(result.failedChecks).toEqual([
+    { name: "check-100", url: "https://ci.example/check-100", logTail: null },
+  ]);
+  expect(result.checks).toHaveLength(101);
   expect(seen.map((v) => [v.checksCursor, v.baseChecksCursor, v.readThreads])).toEqual([
     [null, null, true],
     ["checks-2", "base-2", false],
@@ -216,16 +220,28 @@ test("a failing check fails CI with its name, even while others still run", asyn
         { context: "legacy", state: "SUCCESS", targetUrl: null },
       ]),
     );
+    const ci = (name: string, state: CiCheckState) => ({
+      name,
+      state,
+      url: name === "legacy" ? null : `https://ci.example/${name}`,
+      startedAt: null,
+      completedAt: null,
+      logTail: null,
+      logSource: null,
+    });
     expect(result).toEqual({
       outcome: "ci_failed",
       message: "CI failed on the candidate commit",
-      failedChecks: [{ name: "build", url: "https://ci.example/build" }],
+      failedChecks: [{ name: "build", url: "https://ci.example/build", logTail: null }],
+      checks: [ci("build", "failed"), ci("lint", "running"), ci("legacy", "passed")],
     });
   }
   const status = await readOnce(() =>
     withChecks([{ context: "legacy", state: "ERROR", targetUrl: "https://ci.example/legacy" }]),
   );
-  expect(status.failedChecks).toEqual([{ name: "legacy", url: "https://ci.example/legacy" }]);
+  expect(status.failedChecks).toEqual([
+    { name: "legacy", url: "https://ci.example/legacy", logTail: null },
+  ]);
 });
 
 test("unreadable required checks block instead of merging", async () => {
@@ -406,4 +422,155 @@ test("a Linear rate limit while minting the token waits instead of blocking the 
   });
   expect(result.outcome).toBe("ready");
   expect(waits).toEqual(["Waiting for Linear's rate limit to reset before reading GitHub."]);
+});
+
+const ACTIONS_LOG = [
+  "2026-10-22T10:00:00.0000000Z ##[group]Run bun test",
+  "2026-10-22T10:00:01.0000000Z bun test v1.4.2",
+  "2026-10-22T10:00:01.1000000Z ##[endgroup]",
+  "2026-10-22T10:00:02.0000000Z \u001b[31m✗\u001b[0m lists a draining runner's sessions",
+  "2026-10-22T10:00:02.1000000Z  1 fail",
+  "2026-10-22T10:00:03.0000000Z ##[error]Process completed with exit code 1.",
+  "2026-10-22T10:00:04.0000000Z Post job cleanup.",
+  "",
+].join("\n");
+
+test("a failing Actions check carries the tail of its job log; another falls back to its summary", async () => {
+  const logReads: { path: string; token: string; accept?: string }[] = [];
+  const f = fixture(() =>
+    withChecks([
+      {
+        ...run("check / test", "FAILURE"),
+        startedAt: "2026-10-22T10:00:00Z",
+        completedAt: "2026-10-22T10:04:51Z",
+        databaseId: 4242,
+        checkSuite: { app: { slug: "github-actions" } },
+      },
+      {
+        ...run("external", "FAILURE"),
+        summary: "Deploy preview failed: build exited 1",
+        checkSuite: { app: { slug: "cloudflare-pages" } },
+      },
+      {
+        ...run("check / lint", "SUCCESS"),
+        databaseId: 7,
+        checkSuite: { app: { slug: "github-actions" } },
+      },
+      run("CodeQL", null),
+    ]),
+  );
+  const client = f.input.client;
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    client: {
+      async request(request) {
+        if (request.path.includes("/actions/jobs/")) {
+          logReads.push({ path: request.path, token: request.token, accept: request.accept });
+          return { status: 200, body: ACTIONS_LOG };
+        }
+        return client.request(request);
+      },
+    },
+  });
+  expect(logReads).toEqual([
+    {
+      path: "/repos/owner/repo/actions/jobs/4242/logs",
+      token: "synthetic-token-1",
+      accept: "text",
+    },
+  ]);
+  expect(result.outcome).toBe("ci_failed");
+  const tail = [
+    "bun test v1.4.2",
+    "✗ lists a draining runner's sessions",
+    " 1 fail",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  expect(result.failedChecks).toEqual([
+    { name: "check / test", url: "https://ci.example/check / test", logTail: tail },
+    {
+      name: "external",
+      url: "https://ci.example/external",
+      logTail: "Deploy preview failed: build exited 1",
+    },
+  ]);
+  expect(result.checks?.map((check) => [check.name, check.state, check.logSource])).toEqual([
+    ["check / test", "failed", "actions"],
+    ["external", "failed", "summary"],
+    ["check / lint", "passed", null],
+    ["CodeQL", "running", null],
+  ]);
+  expect(result.checks?.[0]).toMatchObject({
+    startedAt: "2026-10-22T10:00:00Z",
+    completedAt: "2026-10-22T10:04:51Z",
+  });
+});
+
+test("an unreadable Actions log falls back to the check's summary, or none", async () => {
+  for (const [summary, expected] of [
+    ["Tests failed", "Tests failed"],
+    [null, null],
+  ] as const) {
+    const f = fixture(() =>
+      withChecks([
+        {
+          ...run("test", "FAILURE"),
+          databaseId: 1,
+          summary,
+          checkSuite: { app: { slug: "github-actions" } },
+        },
+      ]),
+    );
+    const client = f.input.client;
+    const result = await waitForMergeReadiness({
+      ...f.input,
+      client: {
+        async request(request) {
+          if (request.path.includes("/actions/jobs/")) return { status: 403, body: "" };
+          return client.request(request);
+        },
+      },
+    });
+    expect(result.failedChecks?.[0]?.logTail).toBe(expected);
+    expect(result.checks?.[0]?.logSource).toBe(expected === null ? null : "summary");
+  }
+});
+
+test("a log tail keeps the last lines up to the last error", () => {
+  const long = Array.from({ length: 200 }, (_, index) => `line ${index}`).join("\n");
+  const tail = logTail(long).split("\n");
+  expect(tail).toHaveLength(60);
+  expect(tail.at(-1)).toBe("line 199");
+  expect(logTail("\n\n  \nonly\n\n")).toBe("only");
+  expect(logTail("x".repeat(10_000))).toHaveLength(6000);
+});
+
+test("a text read follows the log redirect without sending the token to the other host", async () => {
+  const calls: { url: string; auth: string | null; redirect?: string }[] = [];
+  const client = createFetchGitHubClient(async (input, init) => {
+    const url = String(input);
+    calls.push({
+      url,
+      auth: new Headers(init?.headers).get("authorization"),
+      ...(init?.redirect ? { redirect: init.redirect } : {}),
+    });
+    return url.startsWith("https://api.github.test")
+      ? new Response(null, { status: 302, headers: { location: "https://logs.example/job?sig=1" } })
+      : new Response("log text", { status: 200 });
+  }, "https://api.github.test");
+  const response = await client.request({
+    method: "GET",
+    path: "/repos/o/r/actions/jobs/1/logs",
+    token: "synthetic",
+    accept: "text",
+  });
+  expect(response).toEqual({ status: 200, body: "log text" });
+  expect(calls).toEqual([
+    {
+      url: "https://api.github.test/repos/o/r/actions/jobs/1/logs",
+      auth: "Bearer synthetic",
+      redirect: "manual",
+    },
+    { url: "https://logs.example/job?sig=1", auth: null },
+  ]);
 });
