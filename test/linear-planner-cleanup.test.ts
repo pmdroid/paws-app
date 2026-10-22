@@ -17,8 +17,10 @@ import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator, createTaskPlanner, type AgentLaunch } from "../src/loop";
 import { tempHome } from "./helpers";
 
-// The classifiers ignore SIGTERM, so each stop waits out the grace twice.
-const CANCEL_GRACE_MS = 200;
+// The classifiers ignore SIGTERM, so each stop waits out the first grace in
+// full. The second grace bounds how long SIGKILL may take to close the group;
+// 200 ms was too short for that on a loaded machine.
+const CANCEL_GRACE_MS = 1_000;
 
 test.skipIf(process.platform !== "linux")(
   "lost classifier ownership blocks Stop, a new prompt and reopened planning before another writer",
