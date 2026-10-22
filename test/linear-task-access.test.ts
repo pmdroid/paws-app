@@ -314,3 +314,49 @@ test("a Linear rate limit while checking task access waits for the reset instead
   expect(reads).toBeGreaterThan(1);
   expect(f.stopped).toEqual([]);
 });
+
+test("a resumed task check makes no session or team read the first check already made", async () => {
+  const f = await fixture();
+  let now = 10;
+  const gate = new LinearTaskAccess(f.db, {
+    access: f.access.adapter,
+    lifecycle: f.lifecycle,
+    oauthClientId: "client",
+    appUserId: null,
+    stopSession: () => {},
+    now: () => now,
+  });
+  const signal = new AbortController().signal;
+  await gate.assert(f.item, signal);
+  const first = [...f.access.calls];
+  expect(first).toEqual([
+    { method: "session", id: "session" },
+    { method: "team", id: "parent-team" },
+  ]);
+  await gate.prepare(f.item, signal);
+  await gate.assert(f.item, signal);
+  expect(f.access.calls).toEqual(first);
+
+  advanceLinearSessionGeneration(f.db, "session");
+  await gate.assert(f.item, signal);
+  expect(f.access.calls).toEqual([...first, ...first]);
+
+  now += 5 * 60_000;
+  await gate.assert(f.item, signal);
+  expect(f.access.calls).toEqual([...first, ...first, ...first]);
+
+  await gate.revalidateSessions(["session"]);
+  expect(f.access.calls).toEqual([...first, ...first, ...first, ...first]);
+  await gate.assert(f.item, signal);
+  expect(f.access.calls).toHaveLength(8);
+});
+
+test("a cached task check fails once a revalidation finds the team access removed", async () => {
+  const f = await fixture();
+  const signal = new AbortController().signal;
+  await f.gate.assert(f.item, signal);
+  f.access.state.teams.delete("parent-team");
+  await f.gate.revalidateSessions(["session"]);
+  expect(f.stopped).toEqual(["session"]);
+  await expect(f.gate.assert(f.item, signal)).rejects.toThrow("team access was removed");
+});
