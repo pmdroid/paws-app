@@ -82,8 +82,6 @@ With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visu
 
 Paws Closeout judges the check from an approval record: the task, the check id, the ids of the files the reviewer saw, who approved, and when. The check passes when an approval for this task and check names every file the check counts at the candidate commit. A file published after the review, for example after the reviewer asked for changes, is not covered, so the old approval no longer counts. Without a matching approval the check is `missing`: the decision is blocked, not rejected, so no fix round starts. Too few files still fail as above.
 
-This repository does not set `approval: human` yet. It is turned on for `visual-proof` once Paws asks for the review in Linear and records the answer.
-
 ## Paws Closeout
 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:
