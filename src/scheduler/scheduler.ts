@@ -257,8 +257,23 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       db.run("DELETE FROM scheduler_admission WHERE item_id=?", [row.itemId]);
     }
     for (const item of items)
-      if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id))
-        held.push(footprint(item, options));
+      if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id)) {
+        const entry = footprint(item, options);
+        const job = db
+          .query<{ id: number }, [string]>(
+            `SELECT id FROM job WHERE status IN ('pending','running')
+            AND queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')
+            AND json_extract(payload,'$.itemId')=? ORDER BY id DESC LIMIT 1`,
+          )
+          .get(item.id);
+        if (job)
+          db.run(
+            `INSERT OR IGNORE INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
+            VALUES(?,?,?,?,?,?,?,?)`,
+            [item.id, job.id, "*", entry.repositoryKey, entry.sessionId, "[]", 0, now],
+          );
+        held.push(entry);
+      }
     const depth = depths(db, items);
     const candidates = items
       .filter((item) => ready.has(item.id))
