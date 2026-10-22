@@ -18,6 +18,8 @@ import {
   saveCheckpoint,
   saveTaskMode,
   recordAgentCloseout,
+  resumeUsagePauseNow,
+  usagePause,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/web/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -2082,36 +2084,69 @@ export async function probeRunnerBackend(
         placementLifecycle.issues.set(issueId, { ...placementLifecycle.issue, id: issueId });
         return record;
       };
+      const paused = async (runId: string) => {
+        for (let attempt = 0; attempt < 500 && !usagePause(db, runId); attempt++) await delay(2);
+        return usagePause(db, runId);
+      };
       const limited = tracked();
       const limitAbort = new AbortController();
+      const lines: string[] = [];
       coolDown(now + 120_000);
       const limitedRun = placedBackend.forItem(limited.id)(
-        input(limited, { signal: limitAbort.signal }),
+        input(limited, {
+          signal: limitAbort.signal,
+          onEvent: (event) => {
+            if (event.type === "progress") lines.push(event.text);
+          },
+        }),
       );
       let settled = false;
       void limitedRun.then(
         () => (settled = true),
         () => (settled = true),
       );
-      await delay(60);
+      const limitedPause = await paused(getWorkItem(db, limited.id)!.currentRunId!);
+      assert.equal(limitedPause?.resumeAt, now + 180_000);
+      await delay(20);
       assert.equal(settled, false);
-      coolDown(0);
+      assert.deepEqual(lines, [
+        `Paused: Codex reached its usage limit. Paws continues at ${new Date(now + 180_000).toISOString().slice(11, 16)} UTC.`,
+      ]);
+      now += 180_000;
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
       const placedOn = await dispatched();
       assert(placedOn);
+      assert.equal(usagePause(db, limitedPause!.runId), null);
+      assert.equal(lines.length, 2);
       limitAbort.abort();
       await limitedRun.catch(() => undefined);
-      observe("an agent usage limit waits for its reset instead of failing placement", true, {
-        placedOn,
-      });
+      observe(
+        "work that cannot start for a usage limit waits for its reset instead of failing",
+        true,
+        {
+          placedOn,
+        },
+      );
 
       const exhausted = tracked();
+      const exhaustedAbort = new AbortController();
       coolDown(now + 3_600_000);
-      await assert.rejects(
-        placedBackend.forItem(exhausted.id)(input(exhausted)),
-        /codex reached its usage limit until /,
+      const exhaustedRun = placedBackend.forItem(exhausted.id)(
+        input(exhausted, { signal: exhaustedAbort.signal }),
       );
+      void exhaustedRun.catch(() => undefined);
+      const exhaustedRunId = getWorkItem(db, exhausted.id)!.currentRunId!;
+      assert(await paused(exhaustedRunId));
+      for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
+      await delay(20);
+      assert(hostIds.every((hostId) => work.commands(hostId).length === 0));
+      assert.equal(resumeUsagePauseNow(db, exhaustedRunId, now), true);
+      assert(await dispatched());
+      exhaustedAbort.abort();
+      await exhaustedRun.catch(() => undefined);
       coolDown(0);
-      observe("a usage limit past the wait window names the agent and its reset", true, {});
+      observe("Resume now ends a usage-limit wait and lifts the agent cooldown", true, {});
       const occupied = hostIds.map((hostId) => {
         const busy = tracked();
         db.run(

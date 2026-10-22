@@ -74,6 +74,7 @@ import {
   taskRequiresRepository,
   listWorkItemsByStates,
   listWorkItems,
+  clearUsagePauses,
   migrate,
   openDatabase,
   prepareShutdown,
@@ -286,6 +287,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   ensureLayout(paths);
   const db = openDatabase(paths.db);
   migrate(db);
+  clearUsagePauses(db);
   const linearRevoked = () =>
     isLinearAppRevoked(db, {
       oauthClientId: runtime.linearClientId,

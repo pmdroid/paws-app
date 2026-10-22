@@ -1984,4 +1984,18 @@ CREATE TABLE paws_update (
     id: "085_work_item_resumed_at",
     sql: `ALTER TABLE work_item ADD COLUMN resumed_at INTEGER;`,
   },
+  {
+    id: "086_usage_pause",
+    sql: `
+CREATE TABLE usage_pause (
+  run_id TEXT PRIMARY KEY REFERENCES run(id),
+  item_id TEXT NOT NULL REFERENCES work_item(id),
+  agent TEXT NOT NULL,
+  runner_id TEXT,
+  resets_at INTEGER,
+  resume_at INTEGER NOT NULL,
+  paused_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];
