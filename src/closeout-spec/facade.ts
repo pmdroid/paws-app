@@ -33,6 +33,7 @@ import {
   type DecisionWarning,
   type Gate,
   type Independence,
+  type EvidenceApproval,
   type PublishedEvidence,
   type ResolvedPolicy,
   type ResolvedPolicyAbsent,
@@ -88,6 +89,8 @@ export type DecisionInput = {
   env?: NodeJS.ProcessEnv;
   /** The task's videos and screenshots, for `evidence` requirements. */
   published?: readonly PublishedEvidence[];
+  /** Visual reviews of those files, for `approval: human` requirements. */
+  approvals?: readonly EvidenceApproval[];
 };
 
 export type RunRequest = {
@@ -109,6 +112,7 @@ export type RunRequest = {
   progress?: CloseoutProgress;
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   published?: readonly PublishedEvidence[];
+  approvals?: readonly EvidenceApproval[];
 };
 
 export type ReviewIntake =
@@ -514,6 +518,7 @@ async function finish(
       head,
       ...(paths.paths !== undefined ? { changedPaths: paths.paths } : {}),
       ...(published !== undefined ? { published } : {}),
+      ...(input.approvals !== undefined ? { approvals: input.approvals } : {}),
     }),
     input.trust,
   );
@@ -542,6 +547,7 @@ function requestOf(
   if (extra.evidenceError !== undefined) request.evidenceError = extra.evidenceError;
   if (extra.policyLoadError !== undefined) request.policyLoadError = extra.policyLoadError;
   if (extra.published !== undefined) request.published = extra.published;
+  if (extra.approvals !== undefined) request.approvals = extra.approvals;
   return request;
 }
 

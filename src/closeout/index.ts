@@ -27,6 +27,7 @@ export type {
   CloseoutProgressStep,
   CloseoutStepKind,
   CloseoutStepState,
+  EvidenceApproval,
   PublishedEvidence,
 } from "../closeout-spec";
 export { formatEvidenceSummary, formatFixFeedback } from "./summary";

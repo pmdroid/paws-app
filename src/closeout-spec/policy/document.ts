@@ -4,6 +4,7 @@ import { parse, YAMLParseError } from "yaml";
 import policySchema from "../schema/policy.schema.json" with { type: "json" };
 import type {
   PolicyCommand,
+  EvidenceApprovalMode,
   EvidenceMedia,
   PolicyDocument,
   PolicyEvidence,
@@ -209,9 +210,15 @@ function decodeItem(value: unknown): PolicyItem {
     if (value.media !== undefined) item.media = expectStrings(value.media).map(expectMedia);
     if (value.minimum !== undefined) item.minimum = expectInt(value.minimum);
     if (value.hint !== undefined) item.hint = expectString(value.hint);
+    if (value.approval !== undefined) item.approval = expectApproval(value.approval);
     if (paths !== undefined) item.paths = paths;
     return item;
   }
+  throw new Error("document does not match the schema");
+}
+
+function expectApproval(value: unknown): EvidenceApprovalMode {
+  if (value === "human") return value;
   throw new Error("document does not match the schema");
 }
 

@@ -41,7 +41,13 @@ export function encodePolicyFiles(load: PolicyFilesLoad): string {
       path,
       data: Buffer.from(bytes).toString("base64"),
     })),
-    ...(load.published ? { published: load.published.slice(-MAX_PUBLISHED) } : {}),
+    ...(load.published
+      ? {
+          published: load.published
+            .slice(-MAX_PUBLISHED)
+            .map(({ checkId, media, commit }) => ({ checkId, media, commit })),
+        }
+      : {}),
   });
 }
 

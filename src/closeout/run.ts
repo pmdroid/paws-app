@@ -32,6 +32,7 @@ import {
   type CloseoutProgressIdentity,
   type CloseoutStepState,
   type DecisionDocument as SpecDecision,
+  type EvidenceApproval,
   type PublishedEvidence,
 } from "../closeout-spec";
 
@@ -55,6 +56,8 @@ export type EvaluateInput = {
   reviewRetryDelaysMs?: readonly number[];
   /** The task's videos and screenshots, read again for each evaluation. */
   published?: () => readonly PublishedEvidence[];
+  /** Visual reviews of those files, read again for each evaluation. */
+  approvals?: () => readonly EvidenceApproval[];
 };
 
 export type Evaluation = {
@@ -89,6 +92,7 @@ export type GateInput = {
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
   published?: () => readonly PublishedEvidence[];
+  approvals?: () => readonly EvidenceApproval[];
 };
 
 /**
@@ -388,9 +392,13 @@ export function evidenceOnly(items: readonly CloseoutItem[]): boolean {
   return failed.length > 0 && failed.every((item) => item.kind === "evidence");
 }
 
-function publishedOf(input: EvaluateInput): { published?: readonly PublishedEvidence[] } {
+function publishedOf(input: EvaluateInput): {
+  published?: readonly PublishedEvidence[];
+  approvals?: readonly EvidenceApproval[];
+} {
   const published = input.published?.();
-  return published ? { published } : {};
+  const approvals = input.approvals?.();
+  return { ...(published ? { published } : {}), ...(approvals ? { approvals } : {}) };
 }
 
 export function snapshotRetryBaseline(taskId: string, pawsHome?: string): Promise<string[]> {

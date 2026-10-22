@@ -48,6 +48,7 @@ export type CloseoutGateOptions = {
   progress?: GateInput["progress"];
   commandRunner?: Pick<PawsCommandRunner, "runLogged">;
   published?: GateInput["published"];
+  approvals?: GateInput["approvals"];
 };
 
 /**
@@ -84,6 +85,7 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.progress ? { progress: options.progress } : {}),
         ...(options.commandRunner ? { commandRunner: options.commandRunner } : {}),
         ...(options.published ? { published: options.published } : {}),
+        ...(options.approvals ? { approvals: options.approvals } : {}),
       });
       return toVerdict(result, input.attempt);
     },

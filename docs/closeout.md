@@ -64,6 +64,24 @@ The agent publishes each file with `publish_artifact` and `checkId: "visual-proo
 
 Paws Closeout counts the same files. With too few, the check fails, and a fix round asks the agent to publish the proof. That fix round does not need a new commit. Evidence checks use the same fix budget as other checks, and `/paws bypass visual-proof -- reason` accepts one without proof. The run page shows the published files in its evidence gallery.
 
+### Human visual review
+
+`approval: human` on an evidence check also requires a person to accept the files:
+
+```yaml
+- id: visual-proof
+  kind: evidence
+  gate: beforePR
+  paths: ["src/web/**", "landing/**"]
+  approval: human
+```
+
+The setting is optional. Without it, published files are enough, as above.
+
+With it, `get_closeout` adds "Publish the screenshots, then Paws asks for a visual review in Linear." to the hint. Once enough files are published, it lists the check as `pending` and leaves it out of the pending ids, so the agent can finish its turn.
+
+Paws Closeout judges the check from an approval record: the task, the check id, the ids of the files the reviewer saw, who approved, and when. The check passes when an approval for this task and check names every file the check counts at the candidate commit. A file published after the review, for example after the reviewer asked for changes, is not covered, so the old approval no longer counts. Without a matching approval the check is `missing`: the decision is blocked, not rejected, so no fix round starts. Too few files still fail as above.
+
 ## Paws Closeout
 
 When the turn ends, the item moves to `verifying` and Paws runs the policy against the candidate commit:

@@ -7,6 +7,6 @@
   "files": {
     "decision.schema.json": "f6db18d3e20add29b078615277517dd124f9d380ac5f2da4c20e2084f2549ea1",
     "evidence.schema.json": "9677e4a039862b836e502638c0fbbfa5f8375bb4fa628fdcdcb076e5fc653c6f",
-    "policy.schema.json": "918d8f5dd2b674084a74c1c0a0db7a09122cce8e2145d35cb142d5551959a880"
+    "policy.schema.json": "0f3ff4e472fc95d67c7e5557a53360c46b69f8f0aca2059a81c375ac38f9bbd9"
   }
 }

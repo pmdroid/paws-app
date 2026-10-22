@@ -15,6 +15,7 @@ import {
   type DecisionItem,
   type DecisionName,
   type DecisionWarning,
+  type EvidenceApproval,
   type EvidenceRecord,
   type Finding,
   type Gate,
@@ -69,6 +70,10 @@ const BLOCKING: readonly ItemState[] = [
  * `published` is the task's videos and screenshots at `head` or an ancestor
  * of it. An `evidence` requirement counts them. Without it, that requirement
  * fails.
+ *
+ * `approvals` are the reviews of this task's files. An `approval: human`
+ * requirement with enough files and no approval covering all of them is
+ * `missing`, which blocks the decision without starting a fix round.
  */
 export type EvaluateRequest = {
   base: string;
@@ -81,6 +86,7 @@ export type EvaluateRequest = {
   evidenceError?: string;
   policyLoadError?: string;
   published?: readonly PublishedEvidence[];
+  approvals?: readonly EvidenceApproval[];
 };
 
 export function decisionExit(decision: DecisionName): 0 | 1 | 3 {
@@ -216,7 +222,9 @@ function judgeItem(
   if (isUnsupported(item)) {
     return row(item, "unsupported", `kind ${item.kind} is not supported`);
   }
-  if (item.kind === "evidence") return judgeEvidence(item, request.published ?? []);
+  if (item.kind === "evidence") {
+    return judgeEvidence(item, request.published ?? [], request.approvals ?? [], taskOf(request));
+  }
   const retry = policy.source === "none" ? undefined : policy.retry;
   const blocked = retryBlock(item, retry, policy.digest ?? "", records, request, trust);
   if (blocked) return blocked;
@@ -353,15 +361,35 @@ function judgeRecord(
 function judgeEvidence(
   item: ResolvedEvidence,
   published: readonly PublishedEvidence[],
+  approvals: readonly EvidenceApproval[],
+  task: string,
 ): DecisionItem {
   const found = countEvidence(item, published);
-  if (found >= item.minimum)
-    return row(item, "passed", `${found} ${mediaNoun(item, found)} published`);
+  if (found < item.minimum) {
+    return row(
+      item,
+      "failed",
+      `${found} of ${item.minimum} ${mediaNoun(item, item.minimum)} published. ${evidenceRequest(item)}`,
+    );
+  }
+  const counted = `${found} ${mediaNoun(item, found)}`;
+  if (item.approval !== "human") return row(item, "passed", `${counted} published`);
+  const approval = approvalFor(item, published, approvals, task);
+  if (approval === undefined) {
+    return row(item, "missing", `${counted} published, waiting for a visual review in Linear`);
+  }
   return row(
     item,
-    "failed",
-    `${found} of ${item.minimum} ${mediaNoun(item, item.minimum)} published. ${evidenceRequest(item)}`,
+    "passed",
+    `${counted} approved by ${approval.approvedBy} at ${approval.approvedAt}`,
   );
+}
+
+function countedEvidence(
+  item: ResolvedEvidence,
+  published: readonly PublishedEvidence[],
+): PublishedEvidence[] {
+  return published.filter((entry) => entry.checkId === item.id && item.media.includes(entry.media));
 }
 
 /** Files published for this requirement in an allowed media kind. */
@@ -369,14 +397,42 @@ export function countEvidence(
   item: ResolvedEvidence,
   published: readonly PublishedEvidence[],
 ): number {
-  return published.filter((entry) => entry.checkId === item.id && item.media.includes(entry.media))
-    .length;
+  return countedEvidence(item, published).length;
 }
+
+/**
+ * The latest approval of this task's check that names every counted file.
+ * A file published after the review, or one without an id, has no approval.
+ */
+export function approvalFor(
+  item: ResolvedEvidence,
+  published: readonly PublishedEvidence[],
+  approvals: readonly EvidenceApproval[],
+  task: string,
+): EvidenceApproval | undefined {
+  const ids = countedEvidence(item, published).map((entry) => entry.id);
+  if (ids.length === 0) return undefined;
+  let latest: EvidenceApproval | undefined;
+  for (const approval of approvals) {
+    if (approval.task !== task || approval.checkId !== item.id) continue;
+    if (!ids.every((id) => id !== undefined && approval.evidenceIds.includes(id))) continue;
+    if (latest === undefined || approval.approvedAt > latest.approvedAt) latest = approval;
+  }
+  return latest;
+}
+
+/** Shown with an `approval: human` requirement. */
+export const VISUAL_REVIEW_HINT =
+  "Publish the screenshots, then Paws asks for a visual review in Linear.";
 
 /** What the agent does to satisfy an evidence requirement. */
 export function evidenceRequest(item: ResolvedEvidence): string {
-  const call = `Call publish_artifact with checkId "${item.id}" for each file.`;
-  return item.hint === undefined ? call : `${item.hint} ${call}`;
+  const parts = [
+    item.hint,
+    `Call publish_artifact with checkId "${item.id}" for each file.`,
+    item.approval === "human" ? VISUAL_REVIEW_HINT : undefined,
+  ];
+  return parts.filter((part) => part !== undefined).join(" ");
 }
 
 function mediaNoun(item: ResolvedEvidence, count: number): string {
