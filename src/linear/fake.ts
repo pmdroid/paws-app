@@ -1,3 +1,4 @@
+import type { LinearMergeContext } from "./merge-context";
 import type { TrackerRequestOptions } from "./adapter";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
@@ -39,6 +40,9 @@ export type FakeTracker = LinearSessionAdapter &
       options?: TrackerRequestOptions,
     ): Promise<ProjectOverview | null>;
     repositoryLabels: { issueId: string; repository: string }[];
+    /** Project and labels per issue. A missing issue has neither. */
+    mergeContexts: Map<string, LinearMergeContext>;
+    issueMergeContext(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
     epics: Map<string, EpicSnapshot>;
     deps: Map<string, readonly DependencyEdge[]>;
     progress: ProgressUpdate[];
@@ -66,6 +70,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
   const repositoryHints = new Map<string, RepositoryHints>();
   const projectOverviews = new Map<string, ProjectOverview>();
   const repositoryLabels: { issueId: string; repository: string }[] = [];
+  const mergeContexts = new Map<string, LinearMergeContext>();
   async function createActivity(update: ProgressUpdate, options?: TrackerRequestOptions) {
     options?.signal?.throwIfAborted();
     activityInput(update);
@@ -113,6 +118,11 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
     repositorySuggestions,
     repositoryHints,
     repositoryLabels,
+    mergeContexts,
+    async issueMergeContext(issueId, options) {
+      options?.signal?.throwIfAborted();
+      return structuredClone(mergeContexts.get(issueId) ?? { projectId: null, labels: [] });
+    },
     projectOverviews,
     async projectOverview(issueId, options) {
       options?.signal?.throwIfAborted();

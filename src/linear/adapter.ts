@@ -14,6 +14,7 @@ import type {
 import type { LinearRepositoryAdapter } from "./repositories";
 import type { LinearProjectSnapshot, ProjectOverview } from "./project-scope";
 import type { IssuePullRequest } from "./issue-pulls";
+import type { LinearMergeChoices, LinearMergeContext } from "./merge-context";
 
 export type TrackerRequestOptions = {
   signal?: AbortSignal;
@@ -47,6 +48,9 @@ export interface TrackerAdapter {
     options?: TrackerRequestOptions,
   ): Promise<ProjectOverview | null>;
   addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
+  /** The issue's project and labels, matched by Settings → Merging when a task starts. */
+  issueMergeContext?(id: string, options?: TrackerRequestOptions): Promise<LinearMergeContext>;
+  mergeChoices?(options?: TrackerRequestOptions): Promise<LinearMergeChoices>;
   supportsActivityReconciliation?: true;
   loadEpic(linearIssueId: string): Promise<EpicSnapshot>;
   listDeps(linearIssueId: string): Promise<readonly DependencyEdge[]>;

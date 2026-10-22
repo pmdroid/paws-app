@@ -11,7 +11,7 @@ import {
 import { dirname } from "node:path";
 import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
-import { setMergeSettingsText, type MergeSettings } from "./merge";
+import { setMergeSettingsText, type StoredMerge } from "./merge";
 import { setQueueSettingsText, type QueueSettings } from "./queue";
 
 export type AgentProfile = { agent: ImplementerName; model: string | null; effort?: string };
@@ -139,7 +139,7 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
   const retained = current
     .split(/\r?\n/)
     .filter((line) => {
-      const heading = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line);
+      const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
       if (heading?.[1]) section = heading[1].trim();
       return !/^agents\.(defaults|projects)(?:\.|$)/i.test(section);
     })
@@ -186,13 +186,17 @@ export function selectDefaultImplementer(
 export function writeAgentSettings(
   path: string,
   input: AgentSettings,
-  merge?: MergeSettings,
+  merge?: StoredMerge,
   queue?: QueueSettings,
 ): void {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const agents = renderAgentSettingsText(current, input);
   const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
-  const next = queue === undefined ? merged : setQueueSettingsText(merged, queue);
+  replaceConfigText(path, queue === undefined ? merged : setQueueSettingsText(merged, queue));
+}
+
+/** Atomically replace `config.toml`, keeping its mode at most 0600. */
+export function replaceConfigText(path: string, next: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
   const temp = `${path}.${crypto.randomUUID()}.tmp`;

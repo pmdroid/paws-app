@@ -42,11 +42,29 @@ export type { AgentProfile, AgentProfiles, AgentSettings, ProjectAgentProfiles }
 
 export {
   DEFAULT_CI_FIX_ATTEMPTS,
+  DEFAULT_MERGE_CHOICE,
+  MAIN_MOVED,
   MAX_CI_FIX_ATTEMPTS,
+  MERGE_ORDERS,
+  parseMergePolicy,
   parseMergeSettings,
   readMergeSettings,
+  resolveMergeSettings,
+  storedMerge,
+  writeMergePolicy,
 } from "./merge";
-export type { MergeSettings } from "./merge";
+export type {
+  MainMoved,
+  MergeChoice,
+  MergeLevel,
+  MergeOrder,
+  MergeOverride,
+  MergePolicy,
+  MergeRule,
+  MergeSettings,
+  ResolvedMergeSettings,
+  StoredMerge,
+} from "./merge";
 
 export {
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,

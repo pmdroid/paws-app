@@ -37,6 +37,7 @@ import {
   readMergeSettings,
   readQueueSettings,
   resolveAgentProfiles,
+  resolveMergeSettings,
   type AgentProfile,
 } from "../config";
 import {
@@ -160,6 +161,9 @@ import {
   type JobContext,
   type OutboxDispatcher,
   type WorkItemRecord,
+  getTaskMergeSettings,
+  keepTaskMergeSettings,
+  type TaskMergeSettings,
 } from "../db";
 import {
   publishAccepted,
@@ -183,6 +187,7 @@ import type {
   LinearActivitySnapshot,
   LinearFileTransfer,
   RepositorySuggestion,
+  LinearMergeContext,
 } from "../linear";
 import {
   FIRST_ACTIVITY_BODY,
@@ -1135,6 +1140,8 @@ export class Orchestrator {
         }
       }
       if (!(await this.selectRepository(item))) return;
+      // A rule matches the issue's labels as they are when the task starts.
+      await this.mergeSettingsFor(item, this.signalForItem(item.id)).catch(() => undefined);
       await this.runItem(item, handoff);
     }
   }
@@ -2473,6 +2480,9 @@ export class Orchestrator {
     let closeoutFailure: CloseoutVerdict | null = null;
     let verifying = item;
     const acceptedHead = readString(payload, "head") ?? item.checkpoint?.wipCommit ?? null;
+    // Overlap-only updates (PAS-394) wait for CI like `ci` until they land.
+    const closeoutAfterUpdate =
+      (await this.mergeSettingsFor(item, live.controller.signal)).mainMoved === "closeout";
     const merged = await serialMerge({
       worktree,
       issue: item.linearIdentifier,
@@ -2499,7 +2509,7 @@ export class Orchestrator {
       },
       reverify: async (input) => {
         const updated = acceptedHead !== null && input.head !== acceptedHead;
-        if (updated && !this.closeoutAfterUpdate()) {
+        if (updated && !closeoutAfterUpdate) {
           publicationCandidate = { sha: input.head, baseSha: input.base };
           this.postBranchUpdate(item, input.head, branchUpdatedMessage(input.base));
           await this.flush();
@@ -2613,7 +2623,7 @@ export class Orchestrator {
         item.state === "merge_queue" &&
         (merged.outcome === "sha_moved" || merged.outcome === "rejected")
       ) {
-        if (!this.closeoutAfterUpdate()) {
+        if (!closeoutAfterUpdate) {
           // Back to the CI wait: the next pass updates the branch onto main again.
           return {
             message: "Main moved again before the merge. Updating the branch and waiting for CI.",
@@ -2708,10 +2718,47 @@ export class Orchestrator {
     });
   }
 
-  /** `[merge] closeout_after_update`, read when main moved. Missing means off. */
-  private closeoutAfterUpdate(): boolean {
-    return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
-      .closeoutAfterUpdate;
+  /**
+   * Settings → Merging for this task: an issue rule, then the Linear project, then the workspace
+   * default. Resolved from the issue's project and labels once, then kept with the task. A failed
+   * Linear read uses the workspace default for now and tries again next time.
+   */
+  private async mergeSettingsFor(
+    item: WorkItemRecord,
+    signal?: AbortSignal,
+  ): Promise<TaskMergeSettings> {
+    const kept = getTaskMergeSettings(this.db, item.id);
+    if (kept) return kept;
+    const policy = readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")));
+    let context: LinearMergeContext | null = { projectId: null, labels: [] };
+    if (this.tracker?.issueMergeContext) {
+      try {
+        context = await this.tracker.issueMergeContext(
+          item.linearIssueId,
+          signal ? { signal } : undefined,
+        );
+      } catch (error) {
+        signal?.throwIfAborted();
+        context = null;
+        console.error(
+          `merge settings for ${item.linearIdentifier} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    const resolved = resolveMergeSettings(context ?? { projectId: null, labels: [] }, policy);
+    const settings: TaskMergeSettings = {
+      order: resolved.order,
+      mainMoved: resolved.mainMoved,
+      resolved: {
+        sources: resolved.sources,
+        ...(resolved.rule ? { rule: resolved.rule } : {}),
+        ...(context ? { projectId: context.projectId, labels: context.labels } : {}),
+      },
+    };
+    if (context !== null) keepTaskMergeSettings(this.db, item.id, settings, this.now());
+    return settings;
   }
 
   private returnToAgent(
@@ -4971,7 +5018,7 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 }
 
 function branchUpdatedMessage(base: string): string {
-  return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "Run Closeout again after a branch update" is off in Settings → Agents.`;
+  return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
 }
 
 function readString(payload: unknown, key: string): string | null {
