@@ -221,6 +221,34 @@ describe("streamed activity", () => {
     expect(posted).toEqual([]);
   });
 
+  test("an allowed tool permission posts nothing to Linear", () => {
+    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
+    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
+    for (const decision of ["allow", "cancelled"] as const)
+      reporter.onEvent({
+        type: "permission",
+        toolCallId: "closeout",
+        decision,
+        reason: "allowed",
+        title: "mcp__paws__run_closeout",
+        kind: "other",
+      });
+    reporter.flush();
+    expect(posted).toEqual([]);
+  });
+
+  test("a refused tool call still tells Linear why", () => {
+    expect(
+      activityFromAcpEvent({
+        type: "permission",
+        toolCallId: "find",
+        decision: "deny",
+        reason: "path is outside the worktree",
+        title: "find /",
+      }),
+    ).toEqual({ kind: "action", body: "find /" });
+  });
+
   test("a title-free tool update does not publish its opaque identifier", () => {
     expect(
       activityFromAcpEvent({

@@ -68,14 +68,33 @@ export async function probeRunnerLinearOutput(root: string) {
       rawOutput: "hidden-reasoning",
     },
   ];
+  const permissions = [
+    {
+      toolCallId: "closeout",
+      decision: "allow",
+      reason: "allowed",
+      title: "mcp__paws__run_closeout",
+      kind: "other",
+    },
+    {
+      toolCallId: "script",
+      decision: "allow",
+      reason: "allowed",
+      title: "python3 - <<'EOF'\nprint(1)\nEOF",
+      kind: "execute",
+    },
+  ];
   journal.ingest(
     execution.id,
     Buffer.from(
-      updates
-        .map(
-          (update) =>
-            JSON.stringify({ type: "acp", event: { type: "session_update", update } }) + "\n",
-        )
+      [
+        ...updates.map((update) => ({ type: "acp", event: { type: "session_update", update } })),
+        ...permissions.map((permission) => ({
+          type: "acp",
+          event: { type: "permission", ...permission },
+        })),
+      ]
+        .map((line) => JSON.stringify(line) + "\n")
         .join(""),
     ),
   );
@@ -83,10 +102,13 @@ export async function probeRunnerLinearOutput(root: string) {
   journal = openExecutionJournal(join(root, "journal"));
   const published: Omit<ProgressUpdate, "sessionId">[] = [];
   const reporter = createAcpActivityReporter((activity) => published.push(activity));
-  for (const row of journal.pending(execution.id)) {
-    assert.equal(row.event.type, "activity");
+  const rows = journal.pending(execution.id);
+  assert.equal(rows.filter((row) => row.event.type === "permission").length, permissions.length);
+  for (const row of rows) {
     if (row.event.type === "activity")
       reporter.onEvent({ type: "session_update", sessionId: command.id, update: row.event.update });
+    if (row.event.type === "permission")
+      reporter.onEvent({ type: "permission", ...row.event.permission });
   }
   reporter.flush();
   const received: Record<string, unknown>[] = [];
@@ -131,6 +153,8 @@ export async function probeRunnerLinearOutput(root: string) {
     assert(published.every((activity) => !activity.ephemeral && activity.body.length <= 3500));
     assert(!JSON.stringify(received).includes("private-value"));
     assert(!JSON.stringify(received).includes("hidden-reasoning"));
+    assert(!JSON.stringify(received).includes("mcp__paws__run_closeout"));
+    assert(!JSON.stringify(received).includes("python3"));
     const observations = {
       passed: true,
       journalReopened: true,

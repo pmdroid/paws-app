@@ -34,6 +34,7 @@ export function activityFromAcpEvent(event: AcpEvent): AcpActivity | null {
     case "error":
       return clip("error", event.message);
     case "permission":
+      if (event.decision !== "deny") return null;
       return clip("action", event.title?.trim() || event.reason);
     case "prompt_complete":
       return clip("thought", `Agent turn ended (${event.stopReason}).`);

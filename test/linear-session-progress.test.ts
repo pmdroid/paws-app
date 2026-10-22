@@ -58,7 +58,7 @@ test("ACP plans preserve status and append host verification and publication ste
   ]);
   const recovered = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
   recovered.phase("verifying");
-  clock.advance(30_000);
+  clock.advance(120_000);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.findLast((update) => update.plan)?.plan?.[3]).toEqual({
     content: "Verify changes",
@@ -112,7 +112,7 @@ test("ten plan updates in ten seconds send one request carrying the last plan", 
   }
   expect(listOutbox(db, "session").filter((row) => row.status === "pending")).toHaveLength(1);
   expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
-  clock.advance(19_999);
+  clock.advance(109_999);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
   clock.advance(1);
@@ -120,6 +120,51 @@ test("ten plan updates in ten seconds send one request carrying the last plan", 
   const plans = tracker.sessionUpdates.filter((update) => update.plan);
   expect(plans).toHaveLength(2);
   expect(plans[1]?.plan?.[0]).toEqual({ content: "Step 10", status: "inProgress" });
+  db.close();
+});
+
+test("a session flapping between phases sends one plan and summary every two minutes", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  const phases = ["verifying", "publishing", "merging"] as const;
+  for (let tick = 0; tick < 40; tick++) {
+    progress.phase(phases[tick % phases.length]!);
+    await flush(dispatcher);
+    clock.advance(30_000);
+  }
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(10);
+  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(10);
+  db.close();
+});
+
+test("a summary equal to the last one sent is not sent again", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(1_000);
+  const progress = createLinearSessionProgress(db, "session", "ENG-1", () => clock.now());
+  const tracker = createFakeTracker();
+  const dispatcher = new OutboxDispatcher(db, clock);
+  dispatcher.setHandler((row, context) =>
+    deliverLinearOutbox(row, tracker, async () => {}, context),
+  );
+  progress.phase("merging");
+  await flush(dispatcher);
+  clock.advance(1_000);
+  progress.phase("publishing");
+  progress.phase("merging");
+  clock.advance(120_000);
+  await flush(dispatcher);
+  progress.phase("merging");
+  clock.advance(120_000);
+  await flush(dispatcher);
+  expect(tracker.sessionUpdates.filter((update) => update.summary)).toHaveLength(1);
+  expect(tracker.sessionUpdates.filter((update) => update.plan)).toHaveLength(1);
   db.close();
 });
 
@@ -142,7 +187,7 @@ test("a summary waiting on the interval takes the newest text in place", async (
     listOutbox(db, "session").filter((row) => row.op === "linear.session.summary");
   expect(summaries()).toHaveLength(2);
   expect(summaries()[1]?.payload).toMatchObject({ summary: "ENG-1: publishing" });
-  clock.advance(30_000);
+  clock.advance(120_000);
   await flush(dispatcher);
   expect(tracker.sessionUpdates.filter((update) => update.summary).map((u) => u.summary)).toEqual([
     "ENG-1: implementing",
