@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   createLinearClient,
+  createLinearIssueLifecycle,
   createLinearLedger,
+  createLinearTracker,
   linearCaller,
+  linearItem,
   LinearRateLimitError,
 } from "../src/linear";
 import { startServer } from "../src/server";
@@ -188,6 +191,54 @@ describe("shared Linear budget", () => {
     expect(calls).toBe(2);
   });
 
+  test("tracker reads count under their own caller unless a caller already holds them", async () => {
+    const ledger = createLinearLedger({ log: () => {} });
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async () => linearResponse(budgetHeaders(4000, 10, START + 3_600_000)),
+      ledger,
+    });
+    const tracker = createLinearTracker(client);
+    const lifecycle = createLinearIssueLifecycle(client);
+    const ignore = () => {};
+    await tracker.loadEpic("issue").catch(ignore);
+    await tracker.getIssueContext("issue").catch(ignore);
+    await tracker.listProjectMembers("project").catch(ignore);
+    await lifecycle.inspect("issue").catch(ignore);
+    await linearCaller("intake", () => tracker.loadEpic("issue").catch(ignore));
+    expect(Object.keys(ledger.usage().callers).sort()).toEqual([
+      "intake",
+      "issue-context",
+      "issue-inspect",
+      "issue-snapshot",
+      "project-members",
+    ]);
+  });
+
+  test("counts requests per work item over the rolling hour", async () => {
+    let now = START;
+    const ledger = createLinearLedger({ now: () => now, log: () => {} });
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async () => linearResponse(budgetHeaders(4000, 10, START + 3_600_000)),
+      ledger,
+    });
+    const viewer = () => client.query("query { viewer { id } }");
+    await linearItem("PAS-1", () => linearCaller("outbox", viewer));
+    await linearCaller("context", () => linearItem("PAS-2", viewer));
+    now += 31 * 60_000;
+    await linearItem("PAS-2", viewer);
+    await linearItem("PAS-2", () => linearCaller("outbox", viewer));
+    await viewer();
+    expect(ledger.usage().items).toEqual([
+      { item: "PAS-2", requests: 3 },
+      { item: "PAS-1", requests: 1 },
+    ]);
+    expect(ledger.usage().callers["context"]?.requests).toBe(1);
+    now += 30 * 60_000;
+    expect(ledger.usage().items).toEqual([{ item: "PAS-2", requests: 2 }]);
+  });
+
   test("/health reports the Linear usage", async () => {
     const ledger = createLinearLedger({ log: () => {} });
     const server = startServer({
@@ -201,7 +252,13 @@ describe("shared Linear budget", () => {
       expect(await response.json()).toMatchObject({
         ok: true,
         service: "paws",
-        linear: { budget: null, holdUntilMs: null, windowMs: 3_600_000, callers: {} },
+        linear: {
+          budget: null,
+          holdUntilMs: null,
+          windowMs: 3_600_000,
+          callers: {},
+          items: [],
+        },
       });
     } finally {
       await server.stop(true);
