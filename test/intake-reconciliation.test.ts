@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeEpicReconciliation } from "./local/intake-reconciliation";
 
-test("Authoritative issue reconciliation fences edits, children, events and five-minute sweeps", async () => {
+test("Authoritative issue reconciliation fences edits, children, events and change-driven sweeps", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-reconciliation-"));
   try {
     const observations = await probeEpicReconciliation(root);
