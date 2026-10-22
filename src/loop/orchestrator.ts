@@ -3791,7 +3791,7 @@ export class Orchestrator {
     ) {
       failWorkItem(this.db, current, reason, text, this.now());
     } else {
-      this.post(current, "error", text, `fail:${current.id}:${reason}`);
+      this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
     this.pump();
   }

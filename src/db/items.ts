@@ -258,7 +258,7 @@ export function failWorkItem(
   text: string,
   now: number,
 ): void {
-  moveToFailed(db, item);
+  const version = moveToFailed(db, item);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   cancelOpenJobs(db, { itemId: item.id, reason, now });
@@ -266,7 +266,7 @@ export function failWorkItem(
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `fail:${item.id}:${reason}`,
+    idempotencyKey: `fail:${item.id}:${version}:${reason}`,
     payload: { sessionId: item.sessionKey ?? item.id, kind: "error", body: text },
     now,
   });
@@ -278,7 +278,7 @@ function failForCap(
   reason: "turns" | "time",
   now: number,
 ): void {
-  moveToFailed(db, item);
+  const version = moveToFailed(db, item);
   db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
   if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
   cancelOpenJobs(db, { itemId: item.id, reason: `cap:${reason}`, now });
@@ -286,7 +286,7 @@ function failForCap(
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.sessionKey ?? item.id,
-    idempotencyKey: `cap:${item.id}:${reason}`,
+    idempotencyKey: `cap:${item.id}:${version}:${reason}`,
     payload: {
       sessionId: item.sessionKey ?? item.id,
       kind: "error",
@@ -296,18 +296,17 @@ function failForCap(
   });
 }
 
-function moveToFailed(db: Database, item: WorkItemRecord): void {
-  if (item.state === "failed") return;
+function moveToFailed(db: Database, item: WorkItemRecord): number {
+  if (item.state === "failed") return item.version;
   if (item.state === "merge_queue") {
     applyWorkItemEvent(db, item.id, "lease_expired");
-    applyWorkItemEvent(db, item.id, "closeout_infra_failed");
-    return;
+    return applyWorkItemEvent(db, item.id, "closeout_infra_failed").version;
   }
   const event = failureEvent(item.state);
   if (event === null) {
     throw new TransitionRejectedError("illegal_transition");
   }
-  applyWorkItemEvent(db, item.id, event);
+  return applyWorkItemEvent(db, item.id, event).version;
 }
 
 function failureEvent(state: WorkItemState): WorkItemEvent | null {

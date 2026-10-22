@@ -181,7 +181,7 @@ describe("shutdown WIP", () => {
           .query<{ body: string }, [string]>(
             "SELECT json_extract(payload,'$.body') AS body FROM outbox WHERE idempotency_key=?",
           )
-          .get(`fail:${answer.id}:answer_error`)?.body,
+          .get(`fail:${answer.id}:${getWorkItem(paws.db, answer.id)!.version}:answer_error`)?.body,
       ).toContain("remote runner");
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
