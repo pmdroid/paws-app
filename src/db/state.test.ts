@@ -93,6 +93,21 @@ describe("restart recovery", () => {
     }).toMatchObject({ item: { state: "running", recoveryAttempts: 0 }, run: "active" });
   });
 
+  test("a verifying task whose runner holds Closeout work resumes instead of reattaching", () => {
+    const { db, clock } = harness();
+    const item = insertQueuedItem(db, { now: clock.now() });
+    const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+    applyWorkItemEvent(db, item.id, "turn_ended");
+    db.run("PRAGMA foreign_keys=OFF");
+    db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
+      [run.id, "runner", "workspace", 1, 0, "command", clock.now() + 60_000],
+    );
+    prepareShutdown(db, clock.now());
+    recoverOnStartup(db, clock.now());
+    expect(getWorkItem(db, item.id)).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
+  });
+
   test("shutdown leaves the run recoverable and the next start can resume it once", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
