@@ -6,7 +6,7 @@ import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
-import { callerClient, createLinearClient } from "./graphql";
+import { callerClient, createLinearClient, defaultCallerClient } from "./graphql";
 import { createLinearLedger, linearCaller, type LinearLedger, type LinearUsage } from "./budget";
 import { createInboxStore } from "./inbox";
 import {
@@ -105,7 +105,7 @@ export function openLinear(options: {
     client === null
       ? null
       : createLinearFileTransfer({
-          client,
+          client: defaultCallerClient(client, "file-transfer"),
           auth,
           fetch: options.fetch,
           // Closeout videos embed in Linear up to 50 MB.
@@ -129,7 +129,12 @@ export function openLinear(options: {
     startSession:
       client === null || onEvent === undefined
         ? null
-        : createSessionStarter({ client, store, appUserId: settings.appUserId, onEvent }),
+        : createSessionStarter({
+            client: defaultCallerClient(client, "session-start"),
+            store,
+            appUserId: settings.appUserId,
+            onEvent,
+          }),
     files,
     access:
       client === null

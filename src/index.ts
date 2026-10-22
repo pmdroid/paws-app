@@ -109,6 +109,7 @@ import {
   createLinearTracker,
   linearCaller,
   linearCallerFor,
+  linearItem,
   openLinear,
   readStoredToken,
   startCatchUpPoller,
@@ -1128,9 +1129,17 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             ),
           );
         });
+        const forItem = <T>(itemId: string, run: () => T): T => {
+          const item = getWorkItem(db, itemId);
+          return item ? linearItem(item.linearIdentifier, run) : run();
+        };
         created.jobs.register("linear.item.reconcile", async (job) => {
           const target = job.payload as { itemId: string; workspaceId: string };
-          await reconciler?.reconcile({ ...target, signal: abort.signal });
+          await linearCaller("item-reconcile", () =>
+            forItem(target.itemId, () =>
+              reconciler?.reconcile({ ...target, signal: abort.signal }),
+            ),
+          );
           attached.reconcileExecution();
         });
         created.jobs.register("linear.epic.reconcile", async (job) => {
@@ -1143,11 +1152,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             )
             .get(legacy.epicId);
           if (item)
-            await reconciler?.reconcile({
-              itemId: item.id,
-              workspaceId: legacy.workspaceId,
-              signal: abort.signal,
-            });
+            await linearCaller("epic-reconcile", () =>
+              forItem(item.id, () =>
+                reconciler?.reconcile({
+                  itemId: item.id,
+                  workspaceId: legacy.workspaceId,
+                  signal: abort.signal,
+                }),
+              ),
+            );
           attached.reconcileExecution();
         });
         dispatch = registerScheduler(
@@ -1174,7 +1187,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           now: Date.now(),
         });
         created.jobs.register("linear.epics.reconcile", async () => {
-          await reconciler?.sweep({ signal: abort.signal });
+          await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
           attached.reconcileExecution();
         });
         enqueueJobOnce(db, {
