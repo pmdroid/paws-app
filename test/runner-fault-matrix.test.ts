@@ -32,7 +32,7 @@ import { createRunnerWork } from "../src/runner-work";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
-type Fault = "fenced" | "busy" | "unpaired" | "usage-limit";
+type Fault = "fenced" | "busy" | "unpaired" | "usage-limit" | "preparation-usage-limit";
 type Agent = Extract<RunnerCommand, { type: "run" }>["profile"]["agent"];
 
 const GITHUB_URL = "https://github.com/acme/fixture.git";
@@ -88,6 +88,21 @@ test("a usage limit is waited out inside failover and the task reaches Closeout 
     result.thoughts.some((body) => body.includes("reached its usage limit")),
     result.detail,
   ).toBe(true);
+}, 60_000);
+
+test("a usage limit while the implementer is prepared posts one thought naming the agent and the reset time", async () => {
+  const result = await runRemoteFault("preparation-usage-limit");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.faultedAttempts, result.detail).toBe(1);
+  expect(
+    result.thoughts.filter((body) => body.includes("reached its usage limit")),
+    result.detail,
+  ).toEqual([
+    expect.stringMatching(
+      /^Paused: Claude reached its usage limit\. Paws continues at \d{2}:\d{2} UTC\.$/,
+    ),
+  ]);
 }, 60_000);
 
 async function runRemoteFault(fault: Fault) {
@@ -323,7 +338,14 @@ async function runRemoteFault(fault: Fault) {
             ...receipt(command),
             login: { agent: command.agent, authenticated: true, method: "subscription" },
           });
-        if (command.type === "probe")
+        if (command.type === "probe" && fault === "preparation-usage-limit" && runner.faulty) {
+          runner.faultedAttempts++;
+          health.submit(runnerId, {
+            ...receipt(command),
+            stopReason: "error",
+            errorMessage: "You've hit your session limit. Retry-After: 120",
+          });
+        } else if (command.type === "probe")
           health.submit(runnerId, {
             ...receipt(command),
             models: [{ id: "fixture-implement-model", name: "Fixture" }],
