@@ -1,17 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 const ledgers = new WeakMap<object, LinearLedger>();
-const callers = new AsyncLocalStorage<LinearCallerContext>();
+const callers = new AsyncLocalStorage<LinearCallerStore>();
 
 export const LINEAR_USAGE_WINDOW_MS = 60 * 60_000;
 export const DEFAULT_LINEAR_CALLER = "tracker";
 export const BACKGROUND_BUDGET_FRACTION = 0.2;
 export const NORMAL_BUDGET_FRACTION = 0.05;
+export const LINEAR_TOP_ITEMS = 20;
 const UNKNOWN_RESET_WAIT_MS = 60_000;
 
 export type LinearPriority = "critical" | "normal" | "background";
 
-type LinearCallerContext = { caller: string; priority: LinearPriority };
+type LinearCallerContext = { caller: string; priority: LinearPriority; item?: string };
+type LinearCallerStore = { caller?: string; priority?: LinearPriority; item?: string };
 
 const CALLER_PRIORITY: Record<string, LinearPriority> = {
   poller: "background",
@@ -55,20 +57,53 @@ export type LinearUsage = {
   holdUntilMs: number | null;
   windowMs: number;
   callers: Record<string, LinearCallerUsage>;
+  items: LinearItemUsage[];
 };
+
+export type LinearItemUsage = { item: string; requests: number };
 
 export type LinearLedger = {
   admit(caller: string, priority?: LinearPriority): LinearRateLimitError | null;
-  observe(caller: string, budget: LinearRateBudget): void;
+  observe(caller: string, budget: LinearRateBudget, item?: string): void;
   limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
   usage(): LinearUsage;
   now(): number;
 };
 
-type LedgerEntry = { at: number; caller: string } & LinearCallerUsage;
+type LedgerEntry = { at: number; caller: string; item: string | null } & LinearCallerUsage;
 
 export function linearCaller<T>(caller: string, run: () => T, priority?: LinearPriority): T {
-  return callers.run({ caller, priority: priority ?? CALLER_PRIORITY[caller] ?? "normal" }, run);
+  return callers.run(
+    {
+      ...callers.getStore(),
+      caller,
+      priority: priority ?? CALLER_PRIORITY[caller] ?? "normal",
+    },
+    run,
+  );
+}
+
+export function linearDefaultCaller<T>(caller: string, run: () => T): T {
+  return callers.getStore()?.caller === undefined ? linearCaller(caller, run) : run();
+}
+
+export function linearItem<T>(item: string, run: () => T): T {
+  return callers.run({ ...callers.getStore(), item }, run);
+}
+
+export function linearDefaultCallers<T extends object>(
+  target: T,
+  caller: string | { readonly [K in keyof T]?: string },
+): T {
+  return new Proxy(target, {
+    get(object, key) {
+      const value: unknown = Reflect.get(object, key);
+      if (typeof value !== "function") return value;
+      const name = typeof caller === "string" ? caller : caller[key as keyof T];
+      if (name === undefined) return value;
+      return (...args: unknown[]) => linearDefaultCaller(name, () => value.apply(object, args));
+    },
+  });
 }
 
 export function linearCallerFor<T extends object>(
@@ -87,7 +122,12 @@ export function linearCallerFor<T extends object>(
 }
 
 export function currentLinearCaller(): LinearCallerContext {
-  return callers.getStore() ?? { caller: DEFAULT_LINEAR_CALLER, priority: "normal" };
+  const store = callers.getStore();
+  return {
+    caller: store?.caller ?? DEFAULT_LINEAR_CALLER,
+    priority: store?.priority ?? "normal",
+    ...(store?.item === undefined ? {} : { item: store.item }),
+  };
 }
 
 export function createLinearLedger(
@@ -105,11 +145,12 @@ export function createLinearLedger(
     while (stale < entries.length && entries[stale]!.at <= since) stale += 1;
     if (stale > 0) entries.splice(0, stale);
   };
-  const record = (caller: string, usage: Partial<LinearCallerUsage>) => {
+  const record = (caller: string, usage: Partial<LinearCallerUsage>, item?: string) => {
     prune();
     entries.push({
       at: now(),
       caller,
+      item: item ?? null,
       requests: usage.requests ?? 0,
       complexity: usage.complexity ?? 0,
       rateLimited: usage.rateLimited ?? 0,
@@ -128,7 +169,10 @@ export function createLinearLedger(
   const usage = (): LinearUsage => {
     prune();
     const totals: Record<string, LinearCallerUsage> = {};
+    const items = new Map<string, number>();
     for (const entry of entries) {
+      if (entry.item !== null && entry.requests > 0)
+        items.set(entry.item, (items.get(entry.item) ?? 0) + entry.requests);
       const total = (totals[entry.caller] ??= {
         requests: 0,
         complexity: 0,
@@ -141,7 +185,18 @@ export function createLinearLedger(
       total.held += entry.held;
     }
     holdMs();
-    return { budget, holdUntilMs, windowMs: LINEAR_USAGE_WINDOW_MS, callers: totals };
+    return {
+      budget,
+      holdUntilMs,
+      windowMs: LINEAR_USAGE_WINDOW_MS,
+      callers: totals,
+      items: [...items]
+        .map(([item, requests]) => ({ item, requests }))
+        .sort(
+          (left, right) => right.requests - left.requests || left.item.localeCompare(right.item),
+        )
+        .slice(0, LINEAR_TOP_ITEMS),
+    };
   };
   return {
     admit(caller, priority = "normal") {
@@ -150,8 +205,8 @@ export function createLinearLedger(
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
     },
-    observe(caller, seen) {
-      record(caller, { requests: 1, complexity: seen.complexity ?? 0 });
+    observe(caller, seen, item) {
+      record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
       if (Object.values(seen).some((value) => value !== null)) budget = seen;
     },
     limited(caller, error) {
