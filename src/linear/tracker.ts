@@ -7,6 +7,7 @@ import type { createLinearSessionReads } from "./history";
 import type { LinearSessionAdapter } from "./sessions";
 import { createLinearSessionMethods } from "./sessions";
 import type { LinearClient } from "./graphql";
+import { createLinearMergeReads } from "./merge-context";
 import { createLinearRepositoryMethods, type LinearRepositoryAdapter } from "./repositories";
 import { isRecord, readNumber, readString } from "./read";
 import { schedulingMetadata } from "./scheduling";
@@ -68,7 +69,8 @@ export function createLinearTracker(
 ): LinearSessionAdapter &
   ReturnType<typeof createLinearSessionReads> &
   LinearRepositoryAdapter &
-  ReturnType<typeof createLinearAttributionReads> {
+  ReturnType<typeof createLinearAttributionReads> &
+  ReturnType<typeof createLinearMergeReads> {
   const sessions = createLinearSessionMethods(client);
   return {
     supportsActivityReconciliation: true,
@@ -77,6 +79,7 @@ export function createLinearTracker(
     ...createLinearProjectScopeReads(client),
     ...createLinearAttributionReads(client),
     ...createLinearRepositoryMethods(client),
+    ...createLinearMergeReads(client),
     ...createLinearAttachmentMethods(client),
     listIssuePullRequests: createIssuePullRequestReads(client),
     async loadEpic(linearIssueId) {

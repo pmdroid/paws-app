@@ -418,6 +418,9 @@ export function withCommentActivities(
     ...(tracker.issueRepositoryHints
       ? { issueRepositoryHints: tracker.issueRepositoryHints.bind(tracker) }
       : {}),
+    ...(tracker.issueMergeContext
+      ? { issueMergeContext: tracker.issueMergeContext.bind(tracker) }
+      : {}),
     ...(tracker.addRepositoryLabel
       ? { addRepositoryLabel: tracker.addRepositoryLabel.bind(tracker) }
       : {}),

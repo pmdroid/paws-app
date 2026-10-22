@@ -782,6 +782,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       agentSettings: {
         configPath: paths.configFile,
         repos: repositories.map((value) => `${value.owner}/${value.repo}`),
+        ...(linear?.tracker?.mergeChoices
+          ? {
+              mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),
+            }
+          : {}),
       },
     });
   } catch (error) {
