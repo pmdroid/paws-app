@@ -9,6 +9,7 @@ import {
   decodePolicyFiles,
   encodePolicyFiles,
   workspacePolicyFiles,
+  type EvidenceApproval,
   type PublishedEvidence,
 } from "../src/closeout-spec";
 
@@ -150,6 +151,62 @@ test("the policy schema rejects unknown media and the runner transfer keeps publ
   expect(decoded).toMatchObject({ ok: true, absent: false, published });
 });
 
+test("approval: human is pending in get_closeout and in Paws Closeout until a reviewer accepts", async () => {
+  const f = fixture([...VISUAL_PROOF, "    approval: human"]);
+  const head = f.commit("src/web/page.ts", "export {};\n");
+  const shot: PublishedEvidence = {
+    id: "ev-1",
+    checkId: "visual-proof",
+    media: "image",
+    commit: head,
+  };
+  const hint =
+    'Screenshot each changed screen at desktop width and at 390 px. Call publish_artifact with checkId "visual-proof" for each file. Publish the screenshots, then Paws asks for a visual review in Linear.';
+
+  const before = await f.report([]);
+  expect(before.required.find((item) => item.id === "visual-proof")).toMatchObject({
+    status: "missing",
+    hint,
+  });
+  expect(before.pending).toEqual(["lint", "visual-proof"]);
+
+  const published = await f.report([shot]);
+  expect(published.required.find((item) => item.id === "visual-proof")).toMatchObject({
+    status: "pending",
+    hint,
+  });
+  expect(published.pending).toEqual(["lint"]);
+  expect(await f.session([shot]).run("visual-proof")).toContain("asks for a visual review");
+  expect(await f.judge([shot])).toEqual({ decision: "blocked", state: "missing" });
+  expect(f.message).toContain("waiting for a visual review in Linear");
+
+  const approval: EvidenceApproval = {
+    task: "task",
+    checkId: "visual-proof",
+    evidenceIds: ["ev-1"],
+    approvedBy: "Pascal",
+    approvedAt: "2026-10-22T09:00:00.000Z",
+  };
+  expect(await f.judge([shot], [approval])).toEqual({ decision: "accepted", state: "passed" });
+  const newer = { ...shot, id: "ev-2" };
+  expect(await f.judge([shot, newer], [approval])).toEqual({
+    decision: "blocked",
+    state: "missing",
+  });
+});
+
+test("the runner transfer leaves evidence ids behind", () => {
+  const f = fixture(VISUAL_PROOF);
+  const files = workspacePolicyFiles(f.root);
+  if (!files.ok || files.absent) throw new Error("policy did not load");
+  const shot = { checkId: "visual-proof", media: "image", commit: "a".repeat(40) } as const;
+  const decoded = decodePolicyFiles(
+    encodePolicyFiles({ ...files, published: [{ ...shot, id: "ev-1" }] }),
+  );
+  if (!decoded.ok || decoded.absent) throw new Error("transfer did not decode");
+  expect(decoded.published).toEqual([shot]);
+});
+
 function fixture(evidence: string[]) {
   const root = mkdtempSync(join(tmpdir(), "paws-closeout-evidence-"));
   roots.push(root);
@@ -214,7 +271,7 @@ function fixture(evidence: string[]) {
     async report(published: PublishedEvidence[]): Promise<Report> {
       return JSON.parse(await f.session(published).report()) as Report;
     },
-    async judge(published: PublishedEvidence[]) {
+    async judge(published: PublishedEvidence[], approvals?: EvidenceApproval[]) {
       const document = await run({
         repo: root,
         base,
@@ -226,6 +283,7 @@ function fixture(evidence: string[]) {
         pawsHome: join(root, ".git", "paws"),
         evidenceDir: join(root, ".git", "closeout"),
         published,
+        ...(approvals ? { approvals } : {}),
       });
       const item = document.items.find((entry) => entry.id === "visual-proof");
       f.message = item?.message ?? "";

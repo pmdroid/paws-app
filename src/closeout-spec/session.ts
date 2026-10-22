@@ -8,7 +8,7 @@ import type { PolicyFilesLoad } from "./policy/load";
 import { credentialSecrets, scrubCommandEnv } from "./run/env";
 import { scrubText } from "./run/scrub";
 import { git } from "./run/exec";
-import { countEvidence, evidenceRequest } from "./evaluate/evaluate";
+import { countEvidence, evidenceRequest, VISUAL_REVIEW_HINT } from "./evaluate/evaluate";
 import { publishedAtHead } from "./published";
 import type {
   PublishedEvidence,
@@ -276,7 +276,7 @@ function reportOf(prepared: Prepared, memory: Map<string, ItemMemory>): Record<s
     .filter(
       (item) =>
         item.kind !== "review" &&
-        (item.evidence ? status(item) !== "passed" : runnable(memory.get(item.id), max)),
+        (item.evidence ? status(item) === "missing" : runnable(memory.get(item.id), max)),
     )
     .map((item) => item.id);
   const exhausted = prepared.required.filter(
@@ -322,8 +322,14 @@ function statusOf(state: ItemMemory | undefined, max: number | null): string {
   return "missing";
 }
 
+/**
+ * `pending` means the files are published and a visual review in Linear comes
+ * after this turn, so the check does not hold the agent back. The session has
+ * no approvals; Paws Closeout judges them.
+ */
 function evidenceStatus(item: ResolvedEvidence, published: readonly PublishedEvidence[]): string {
-  return countEvidence(item, published) >= item.minimum ? "passed" : "missing";
+  if (countEvidence(item, published) < item.minimum) return "missing";
+  return item.approval === "human" ? "pending" : "passed";
 }
 
 function runnable(state: ItemMemory | undefined, max: number | null): boolean {
@@ -348,6 +354,9 @@ async function runId(
   }
   if (item.evidence) {
     const found = countEvidence(item.evidence, prepared.published);
+    if (found >= item.evidence.minimum && item.evidence.approval === "human") {
+      return `${id} has ${found} published. ${VISUAL_REVIEW_HINT}`;
+    }
     if (found >= item.evidence.minimum) return `${id} passed. ${found} published.`;
     return `${id} runs nothing. It needs ${item.evidence.minimum - found} more of: ${item.evidence.media.join(", ")}. ${evidenceRequest(item.evidence)}`;
   }
