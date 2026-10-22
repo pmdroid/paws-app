@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type {
+  AcpEvent,
   AskTeamHook,
   AgentIdentity,
   CloseoutProgressHook,
@@ -1705,7 +1706,7 @@ export class Orchestrator {
       await this.flush();
       if (this.stopped(item.id)) return;
       try {
-        await this.preflight(item, run.id, profiles, controller.signal);
+        await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
@@ -4900,6 +4901,7 @@ export class Orchestrator {
     runId: string,
     profiles: { implementer: AgentProfile; reviewer: AgentProfile },
     signal: AbortSignal,
+    onRemoteEvent: (event: AcpEvent) => void,
   ): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (repository === null) throw new Error("The work item has no repository");
@@ -4932,8 +4934,10 @@ export class Orchestrator {
         worktree: worktree.path,
         prompt: "",
       });
-      const result = await (this.remoteAgentForItem(item.id) ?? runAgent)({
+      const remote = this.remoteAgentForItem(item.id);
+      const result = await (remote ?? runAgent)({
         ...launched,
+        ...(remote ? { onEvent: onRemoteEvent } : {}),
         profile,
         role,
         itemId: itemPathId(item),
