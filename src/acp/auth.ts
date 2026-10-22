@@ -9,6 +9,7 @@ export interface AuthMethodSummary {
 export interface AuthCheckResult {
   protocolVersion: number;
   agentName?: string;
+  agentVersion?: string;
   authMethods: AuthMethodSummary[];
   /** Paws never sends `authenticate`. */
   authenticateCalled: false;
@@ -23,6 +24,7 @@ export function summarizeAuth(response: InitializeResponse): AuthCheckResult {
   return {
     protocolVersion: response.protocolVersion,
     ...(response.agentInfo?.name ? { agentName: response.agentInfo.name } : {}),
+    ...(response.agentInfo?.version ? { agentVersion: response.agentInfo.version } : {}),
     authMethods,
     authenticateCalled: false,
     credentialsRead: false,

@@ -63,7 +63,12 @@ export const RunnerCloseoutProgressSchema = z.discriminatedUnion("type", [
 
 export const RunnerEventSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("artifact"), artifact: RunnerArtifactSchema }),
-  z.strictObject({ type: z.literal("progress"), text: z.string().min(1).max(500) }),
+  z.strictObject({
+    type: z.literal("progress"),
+    text: z.string().min(1).max(500),
+    /** Set by the runner itself, so Paws posts it even inside the update interval. */
+    notice: z.literal(true).optional(),
+  }),
   z.strictObject({ type: z.literal("activity"), update: RunnerActivitySchema }),
   z.strictObject({ type: z.literal("permission"), permission: RunnerPermissionSchema }),
   z.strictObject({
