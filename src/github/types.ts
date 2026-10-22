@@ -111,6 +111,10 @@ export type ReverifyInput = {
   base: string;
   head: string;
   cycle: number;
+  /** Main changed other files only, so the branch was not updated (PAS-394). */
+  kept?: true;
+  /** The files or packages main and the pull request both changed, when that forced the update. */
+  overlap?: string[];
 };
 
 export type ReverifyResult = {

@@ -5,6 +5,7 @@ import type { GitHubTokenProvider } from "./auth/types";
 import { branchForIssue, fixesLine, githubHttpsUrl } from "./branch";
 import { repoApiPath } from "./client";
 import { defaultGitExec, git, redact, withCredential } from "./git";
+import { mainOverlap, readUpToDateRule } from "./overlap";
 import { waitForMergeReadiness } from "./readiness";
 import {
   GitCommandError,
@@ -48,7 +49,20 @@ export type SerialMergeInput = {
     head: string;
     summary: string;
   };
+  /**
+   * Update the branch only when main changed the same files or package (PAS-394). Otherwise the
+   * pull request's head merges on its own green CI. GitHub's "Require branches to be up to date"
+   * rule turns this off for the pass.
+   */
+  updateOnOverlap?: {
+    /** Package roots such as `apps/*`. Without them, only the same file overlaps. */
+    packages: readonly string[];
+    /** Called with each read of the rule. `true` means the branch is updated anyway. */
+    onUpToDateRule?: (required: boolean) => Promise<void>;
+  };
 };
+
+type Pushed = { base: string; head: string; kept?: boolean; overlap?: string[] };
 
 /**
  * Rebase onto the fetched main, re-run Closeout, and squash-merge only if
@@ -73,12 +87,34 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
   }
 
   let lastGuard: "sha" | "http_409" = "sha";
+  // Turned off by GitHub's up-to-date rule, or when GitHub refuses the head without an update.
+  let keepWhenApart = input.updateOnOverlap !== undefined;
+  let rule: boolean | null | undefined;
   for (let cycle = 1; cycle <= MAX_SHA_GUARD_CYCLES; cycle++) {
     if (input.isCancelled?.()) {
       return { merged: false, outcome: "blocked", branch, message: "merge cancelled" };
     }
-    const pushed = await pushRebased(input, url, branch, gitExec);
-    if (!pushed.ok) return { ...pushed.result, cycle };
+    let pushed: Pushed | undefined;
+    let overlap: string[] | undefined;
+    if (keepWhenApart) {
+      const apart = await keepHead(input, url, branch, gitExec, async (token) => {
+        if (rule === undefined) {
+          rule = await readUpToDateRule({ ...input, token, branch: "main" }).catch(() => null);
+          if (rule !== null) await input.updateOnOverlap?.onUpToDateRule?.(rule);
+        }
+        return rule === true;
+      });
+      if ("kept" in apart) pushed = apart.kept;
+      else {
+        overlap = apart.overlap;
+        if (apart.ruleOn) keepWhenApart = false;
+      }
+    }
+    if (pushed === undefined) {
+      const rebased = await pushRebased(input, url, branch, gitExec);
+      if (!rebased.ok) return { ...rebased.result, cycle };
+      pushed = { base: rebased.base, head: rebased.head, ...(overlap ? { overlap } : {}) };
+    }
 
     const verified =
       reuseVerification(input, pushed) ??
@@ -87,6 +123,8 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
         base: pushed.base,
         head: pushed.head,
         cycle,
+        ...(pushed.kept ? { kept: true } : {}),
+        ...(pushed.overlap?.length ? { overlap: pushed.overlap } : {}),
       }));
     if (!verified.accepted) {
       return {
@@ -135,8 +173,17 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     await fetchMain(input.worktree, url, mergeToken, gitExec);
     const baseNow = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
     if (headNow !== pushed.head || baseNow !== pushed.base) {
-      lastGuard = "sha";
-      continue;
+      // A kept head still merges if main's newer changes stay apart from it too.
+      const apart =
+        pushed.kept === true &&
+        headNow === pushed.head &&
+        (await mainOverlap(input.worktree, input.updateOnOverlap?.packages ?? [], gitExec)).shared
+          .length === 0;
+      if (!apart) {
+        lastGuard = "sha";
+        continue;
+      }
+      pushed = { ...pushed, base: baseNow };
     }
 
     if (input.isCancelled?.()) {
@@ -176,6 +223,12 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
       lastGuard = "http_409";
       continue;
     }
+    if (pushed.kept && (merged.status !== 200 || !isRecord(merged.body) || !merged.body.merged)) {
+      // GitHub refused the head without an update: update the branch and wait for CI instead.
+      keepWhenApart = false;
+      lastGuard = "sha";
+      continue;
+    }
     if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true) {
       return {
         merged: false,
@@ -208,6 +261,41 @@ export async function serialMerge(input: SerialMergeInput): Promise<SerialMergeR
     message:
       lastGuard === "http_409" ? "merge API returned 409" : "head or base changed before merge",
   };
+}
+
+/**
+ * Fetch main and keep the pull request's head when main's changes since its base don't overlap
+ * it. Otherwise say what overlapped, or that GitHub's up-to-date rule is on.
+ */
+async function keepHead(
+  input: SerialMergeInput,
+  url: string,
+  branch: string,
+  gitExec: GitExec,
+  upToDateRule: (token: string) => Promise<boolean>,
+): Promise<{ kept: Pushed } | { overlap?: string[]; ruleOn?: true }> {
+  const minted = await operationToken(input, "push");
+  input.onCredential?.("push", minted);
+  try {
+    await fetchMain(input.worktree, url, minted, gitExec);
+    const base = await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+    const head = await git(input.worktree, ["rev-parse", "HEAD"], gitExec);
+    const compared = await mainOverlap(
+      input.worktree,
+      input.updateOnOverlap?.packages ?? [],
+      gitExec,
+    );
+    // Main has not moved past the branch: the usual pass changes nothing.
+    if (compared.base === base) return {};
+    if (compared.shared.length > 0) return { overlap: compared.shared };
+    if (await upToDateRule(minted)) return { ruleOn: true };
+    // Only the head GitHub already has, and its CI, can merge without an update.
+    if ((await remoteBranchSha(input.worktree, url, branch, minted, gitExec)) !== head) return {};
+    return { kept: { base, head, kept: true } };
+  } catch {
+    // The usual pass reports a fetch or git failure.
+    return {};
+  }
 }
 
 async function pushRebased(
@@ -377,10 +465,7 @@ function operationToken(input: FetchUpstreamMainInput, purpose: "push" | "merge"
   );
 }
 
-function reuseVerification(
-  input: SerialMergeInput,
-  pushed: { base: string; head: string },
-): ReverifyResult | undefined {
+function reuseVerification(input: SerialMergeInput, pushed: Pushed): ReverifyResult | undefined {
   const prior = input.priorVerification;
   if (prior === undefined || prior.base !== pushed.base || prior.head !== pushed.head) {
     return undefined;
