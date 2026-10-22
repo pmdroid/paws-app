@@ -60,7 +60,7 @@ An `evidence` check asks the agent for screenshots or videos instead of running 
 - `minimum` is how many files the check needs, from 1 to 100. The default is 1.
 - `hint` is shown to the agent by `get_closeout` and in the fix round.
 
-The agent publishes each file with `publish_artifact` and `checkId: "visual-proof"`. Paws keeps it in the evidence store and posts its link to Linear. A file counts when it was published by this task at the candidate commit or at an earlier commit that the candidate contains, so a screenshot taken before the last commit still counts. Until enough files exist, `get_closeout` lists the check as pending and the agent cannot finish.
+The agent publishes each file with `publish_artifact` and `checkId: "visual-proof"`. Paws keeps it in the evidence store, uploads it to Linear through the outbox, and embeds it in the task's session with the Paws link on the line below. Images up to 10 MB and videos up to 50 MB show inline; larger files post only the Paws link, with a note. A failed upload retries, and the last attempt posts the link instead. A file counts when it was published by this task at the candidate commit or at an earlier commit that the candidate contains, so a screenshot taken before the last commit still counts. Until enough files exist, `get_closeout` lists the check as pending and the agent cannot finish.
 
 Paws Closeout counts the same files. With too few, the check fails, and a fix round asks the agent to publish the proof. That fix round does not need a new commit. Evidence checks use the same fix budget as other checks, and `/paws bypass visual-proof -- reason` accepts one without proof. The run page shows the published files in its evidence gallery.
 
