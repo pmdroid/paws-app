@@ -1,4 +1,10 @@
-const budgets = new WeakMap<object, LinearRateBudget>();
+import { AsyncLocalStorage } from "node:async_hooks";
+
+const ledgers = new WeakMap<object, LinearLedger>();
+const callers = new AsyncLocalStorage<string>();
+
+export const LINEAR_USAGE_WINDOW_MS = 60 * 60_000;
+export const DEFAULT_LINEAR_CALLER = "tracker";
 
 /** Latest Linear rate-limit headers seen for a client. Complexity and request budget. */
 export type LinearRateBudget = {
@@ -23,12 +29,174 @@ export class LinearRateLimitError extends Error {
   }
 }
 
-export function rememberLinearBudget(client: object, budget: LinearRateBudget): void {
-  budgets.set(client, budget);
+export type LinearCallerUsage = {
+  requests: number;
+  complexity: number;
+  rateLimited: number;
+  held: number;
+};
+
+export type LinearUsage = {
+  budget: LinearRateBudget | null;
+  holdUntilMs: number | null;
+  windowMs: number;
+  callers: Record<string, LinearCallerUsage>;
+};
+
+export type LinearLedger = {
+  admit(caller: string): LinearRateLimitError | null;
+  observe(caller: string, budget: LinearRateBudget): void;
+  limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
+  usage(): LinearUsage;
+  now(): number;
+};
+
+type LedgerEntry = { at: number; caller: string } & LinearCallerUsage;
+
+export function linearCaller<T>(caller: string, run: () => T): T {
+  return callers.run(caller, run);
+}
+
+export function linearCallerFor<T extends object>(target: T, caller: string): T {
+  return new Proxy(target, {
+    get(object, key) {
+      const value: unknown = Reflect.get(object, key);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => linearCaller(caller, () => value.apply(object, args));
+    },
+  });
+}
+
+export function currentLinearCaller(): string {
+  return callers.getStore() ?? DEFAULT_LINEAR_CALLER;
+}
+
+export function createLinearLedger(
+  options: { now?: () => number; random?: () => number; log?: (line: string) => void } = {},
+): LinearLedger {
+  const now = options.now ?? Date.now;
+  const random = options.random ?? Math.random;
+  const log = options.log ?? ((line: string) => console.warn(line));
+  const entries: LedgerEntry[] = [];
+  let budget: LinearRateBudget | null = null;
+  let holdUntilMs: number | null = null;
+  const prune = () => {
+    const since = now() - LINEAR_USAGE_WINDOW_MS;
+    let stale = 0;
+    while (stale < entries.length && entries[stale]!.at <= since) stale += 1;
+    if (stale > 0) entries.splice(0, stale);
+  };
+  const record = (caller: string, usage: Partial<LinearCallerUsage>) => {
+    prune();
+    entries.push({
+      at: now(),
+      caller,
+      requests: usage.requests ?? 0,
+      complexity: usage.complexity ?? 0,
+      rateLimited: usage.rateLimited ?? 0,
+      held: usage.held ?? 0,
+    });
+  };
+  const holdMs = () => {
+    if (holdUntilMs === null) return 0;
+    const left = holdUntilMs - now();
+    if (left > 0) return left;
+    holdUntilMs = null;
+    return 0;
+  };
+  const jitter = (delayMs: number) =>
+    Math.round(random() * Math.min(5_000, Math.max(250, delayMs / 10)));
+  const usage = (): LinearUsage => {
+    prune();
+    const totals: Record<string, LinearCallerUsage> = {};
+    for (const entry of entries) {
+      const total = (totals[entry.caller] ??= {
+        requests: 0,
+        complexity: 0,
+        rateLimited: 0,
+        held: 0,
+      });
+      total.requests += entry.requests;
+      total.complexity += entry.complexity;
+      total.rateLimited += entry.rateLimited;
+      total.held += entry.held;
+    }
+    holdMs();
+    return { budget, holdUntilMs, windowMs: LINEAR_USAGE_WINDOW_MS, callers: totals };
+  };
+  return {
+    admit(caller) {
+      const left = holdMs();
+      if (left === 0) return null;
+      record(caller, { held: 1 });
+      return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
+    },
+    observe(caller, seen) {
+      record(caller, { requests: 1, complexity: seen.complexity ?? 0 });
+      if (Object.values(seen).some((value) => value !== null)) budget = seen;
+    },
+    limited(caller, error) {
+      const until = now() + error.retryAfterMs;
+      holdUntilMs = Math.max(holdUntilMs ?? 0, until);
+      record(caller, { rateLimited: 1 });
+      log(rateLimitLine(caller, error.budget, error.retryAfterMs, usage()));
+      const left = holdUntilMs - now();
+      return new LinearRateLimitError(left + jitter(left), error.budget);
+    },
+    usage,
+    now,
+  };
+}
+
+export function useLinearLedger(client: object, ledger: LinearLedger): void {
+  ledgers.set(client, ledger);
+}
+
+export function linearLedger(client: object): LinearLedger | null {
+  return ledgers.get(client) ?? null;
 }
 
 export function linearBudget(client: object): LinearRateBudget | null {
-  return budgets.get(client) ?? null;
+  return ledgers.get(client)?.usage().budget ?? null;
+}
+
+function rateLimitLine(
+  caller: string,
+  budget: LinearRateBudget,
+  holdMs: number,
+  usage: LinearUsage,
+): string {
+  const reset = budget.requestsResetMs ?? budget.complexityResetMs;
+  const top = Object.entries(usage.callers)
+    .sort(
+      ([, left], [, right]) => right.complexity - left.complexity || right.requests - left.requests,
+    )
+    .slice(0, 5)
+    .map(([name, spent]) => `${name} ${spent.requests} req/${spent.complexity} cx`)
+    .join(", ");
+  return [
+    `linear RATELIMITED caller=${caller} hold ${Math.ceil(holdMs / 1000)}s`,
+    `requests ${count(budget.requestsRemaining)}/${count(budget.requestsLimit)}`,
+    `complexity ${count(budget.complexityRemaining)}/${count(budget.complexityLimit)}`,
+    `reset ${reset === null ? "unknown" : new Date(reset).toISOString()}`,
+    `last hour: ${top.length > 0 ? top : "none"}`,
+  ].join("; ");
+}
+
+function count(value: number | null): string {
+  return value === null ? "?" : String(value);
+}
+
+function emptyBudget(): LinearRateBudget {
+  return {
+    requestsRemaining: null,
+    requestsLimit: null,
+    requestsResetMs: null,
+    complexityRemaining: null,
+    complexityLimit: null,
+    complexityResetMs: null,
+    complexity: null,
+  };
 }
 
 export function budgetFromHeaders(headers: Headers): LinearRateBudget {

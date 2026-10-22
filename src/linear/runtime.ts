@@ -6,7 +6,8 @@ import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
-import { createLinearClient } from "./graphql";
+import { callerClient, createLinearClient } from "./graphql";
+import { createLinearLedger, linearCaller, type LinearLedger, type LinearUsage } from "./budget";
 import { createInboxStore } from "./inbox";
 import {
   createLinearAuth,
@@ -45,6 +46,7 @@ export type OpenLinear = {
   files: LinearFileTransfer | null;
   access: LinearAccessReads | null;
   issueLifecycle: LinearIssueLifecycle | null;
+  usage(): LinearUsage;
   start(port: number): LinearRunning;
 };
 
@@ -94,7 +96,10 @@ export function openLinear(options: {
     isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
-  const client = auth.hasToken() ? createLinearClient({ auth, fetch: options.fetch }) : null;
+  const ledger = createLinearLedger();
+  const client = auth.hasToken()
+    ? createLinearClient({ auth, fetch: options.fetch, ledger })
+    : null;
   const tracker = client === null ? null : createLinearTracker(client);
   const files =
     client === null
@@ -118,7 +123,7 @@ export function openLinear(options: {
         );
   let running: LinearRunning | null = null;
   return {
-    memberships: client === null ? null : createLinearMembershipReads(client),
+    memberships: client === null ? null : createLinearMembershipReads(callerClient(client, "auth")),
     webhook: { store, onEvent },
     tracker,
     startSession:
@@ -126,8 +131,12 @@ export function openLinear(options: {
         ? null
         : createSessionStarter({ client, store, appUserId: settings.appUserId, onEvent }),
     files,
-    access: client === null ? null : createLinearAccessReads(client, settings.clientId),
+    access:
+      client === null
+        ? null
+        : createLinearAccessReads(callerClient(client, "task-access"), settings.clientId),
     issueLifecycle: client === null ? null : createLinearIssueLifecycle(client),
+    usage: () => ledger.usage(),
     start(port) {
       if (running !== null) return running;
       const webhooks = options.webhooks ?? settings.webhooks;
@@ -146,6 +155,7 @@ export function openLinear(options: {
             store,
             tunnel,
             fetchImpl: options.fetch,
+            ledger,
             db: options.db,
             teamId: settings.teamId,
             appUserId: settings.appUserId,
@@ -197,7 +207,7 @@ function shareEvents(
     if (existing !== undefined) return existing;
     const request = initialActivityRequest(event);
     const reportProgress = progressReporter?.(event);
-    const work = (async () => {
+    const work = linearCaller("events", async () => {
       signal.throwIfAborted();
       if (beforeEvent !== undefined && !(await beforeEvent(event, request))) return false;
       signal.throwIfAborted();
@@ -216,7 +226,7 @@ function shareEvents(
         request,
         { acknowledged, signal },
       );
-    })().finally(() => {
+    }).finally(() => {
       inflight.delete(event.dedupeKey);
     });
     inflight.set(event.dedupeKey, work);
@@ -254,15 +264,20 @@ function startPoller(options: {
   store: ReturnType<typeof createInboxStore>;
   tunnel: Tunnel;
   fetchImpl: FetchLike | undefined;
+  ledger: LinearLedger;
   db: Database;
   teamId: string | null;
   appUserId: string | null;
   submitCommand: (command: LinearCommand) => void;
 }): CatchUpPoller | null {
   if (!options.auth.hasToken() || options.onEvent === undefined) return null;
-  const client = createLinearClient({ auth: options.auth, fetch: options.fetchImpl });
+  const client = createLinearClient({
+    auth: options.auth,
+    fetch: options.fetchImpl,
+    ledger: options.ledger,
+  });
   return startCatchUpPoller({
-    source: createIntakePollSource(client, {
+    source: createIntakePollSource(callerClient(client, "poller"), {
       teamId: options.teamId,
       appUserId: options.appUserId,
     }),

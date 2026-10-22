@@ -20,6 +20,8 @@ import {
   createLinearTracker,
   LinearEntityNotFoundError,
   linearBudget,
+  createLinearLedger,
+  type LinearLedger,
   linearWorkIsHot,
   openLinear,
   pollIntervalMs,
@@ -573,6 +575,8 @@ describe("linear intake poll", () => {
     const store = createInboxStore(db);
     const seen: string[] = [];
     let calls = 0;
+    let clock = NOW;
+    const ledger = createLinearLedger({ now: () => clock, log: () => {} });
     const { client } = scripted(() => {
       calls += 1;
       if (calls === 1) {
@@ -605,7 +609,7 @@ describe("linear intake poll", () => {
         "x-ratelimit-requests-remaining": "1490",
         "x-ratelimit-complexity-remaining": "240000",
       });
-    });
+    }, ledger);
     const waits: number[] = [];
     const gate = hold();
     const poller = startCatchUpPoller({
@@ -628,6 +632,7 @@ describe("linear intake poll", () => {
       complexityRemaining: 0,
     });
     expect(linearBudget(client)?.complexity).toBe(80);
+    clock = NOW + 60_000;
     gate.release?.();
     await waitFor(() => seen.length === 1);
     expect(seen).toEqual(["iss_later"]);
@@ -894,6 +899,7 @@ const AUTH: LinearAuth = {
 
 function scripted(
   handler: (input: { query: string; variables: Record<string, unknown> }) => unknown,
+  ledger?: LinearLedger,
 ): { client: ReturnType<typeof createLinearClient> } {
   const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as {
@@ -904,7 +910,7 @@ function scripted(
     if (result instanceof Response) return result;
     return json(result);
   };
-  return { client: createLinearClient({ auth: AUTH, fetch: fetchImpl }) };
+  return { client: createLinearClient({ auth: AUTH, fetch: fetchImpl, ledger }) };
 }
 
 function sourceFrom(handler: () => Promise<unknown>) {
