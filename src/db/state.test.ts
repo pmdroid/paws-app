@@ -239,9 +239,7 @@ describe("restart recovery", () => {
     beginImplementRun(db, item.id, clock.now(), checkpoint);
     enterMergeQueue(db, item.id, checkpoint);
     recoverOnStartup(db, clock.now());
-    db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [
-      clock.now(),
-    ]);
+    db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [clock.now()]);
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     clock.advance(10 * 60_000);
 
