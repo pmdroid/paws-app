@@ -35,6 +35,7 @@ export const WORK_ITEM_EDGES: readonly Edge<WorkItemState, WorkItemEvent>[] = [
   { from: "running", event: "blocking_question", to: "awaiting_input" },
   { from: "verifying", event: "blocking_question", to: "awaiting_input" },
   { from: "merge_queue", event: "blocking_question", to: "awaiting_input" },
+  { from: "recovering", event: "blocking_question", to: "awaiting_input" },
   { from: "awaiting_input", event: "answer_received", to: "running" },
   { from: "running", event: "pause", to: "paused" },
   { from: "paused", event: "resume", to: "running" },
