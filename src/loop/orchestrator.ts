@@ -77,6 +77,10 @@ import {
   mergeQueueLine,
   systemClock,
   parseLinearCommand,
+  isTransientFailure,
+  MAX_TRANSIENT_RETRIES,
+  retryNote,
+  transientRetryDelayMs,
 } from "../core";
 import {
   getTaskMode,
@@ -158,10 +162,12 @@ import {
   applyLinearCommand,
   listRepositoryCatalog,
   listRepositoryCandidates,
+  type Job,
   type JobLoop,
   type JobContext,
   type OutboxDispatcher,
   type WorkItemRecord,
+  deferWorkItem,
   getTaskMergeSettings,
   keepTaskMergeSettings,
   type TaskMergeSettings,
@@ -342,6 +348,7 @@ export type OrchestratorOptions = {
   /** Comment mode posts on the Linear issue. Agent-session mode keeps the session id. */
   channel?: "comments" | "agent-session";
   caps?: { maxTurns: number; maxAwakeMs: number };
+  retryBaseMs?: number;
 };
 
 export type ExecutionChanges = {
@@ -1001,10 +1008,10 @@ export class Orchestrator {
       });
     });
     jobs.register(JOB_KIND.start, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
+      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.resume, (job, context) =>
-      this.runLeasedJob(job.payload, context, () => this.executeQueued(job.payload)),
+      this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.reverify, (job, context) =>
       this.runLeasedJob(job.payload, context, () =>
@@ -1115,6 +1122,52 @@ export class Orchestrator {
         files && root ? { files, root } : undefined,
       );
     });
+  }
+
+  private async executeRetried(job: Job, context: JobContext): Promise<void> {
+    try {
+      await this.executeQueued(job.payload);
+    } catch (error) {
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (
+        this.shuttingDown ||
+        !item ||
+        !context.isCurrent() ||
+        item.cancelRequested ||
+        (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
+      )
+        throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (isTransientFailure(error)) {
+        const retry = retryCount(job.payload) + 1;
+        if (retry > MAX_TRANSIENT_RETRIES) {
+          this.fail(
+            item,
+            "run_error",
+            `Stopped after ${MAX_TRANSIENT_RETRIES} retries. ${message}`,
+            error,
+          );
+          return;
+        }
+        const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
+        console.error(
+          `${item.linearIdentifier} retry ${retry} of ${MAX_TRANSIENT_RETRIES} in ${delayMs} ms: ${message}`,
+          error,
+        );
+        deferWorkItem(this.db, item, {
+          retry,
+          delayMs,
+          handoff: readString(job.payload, "handoff"),
+          message: retryNote(message, delayMs),
+          now: this.now(),
+        });
+        return;
+      }
+      if (job.attempts >= job.maxAttempts)
+        this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      throw error;
+    }
   }
 
   private async executeQueued(payload: unknown): Promise<void> {
@@ -1482,8 +1535,15 @@ export class Orchestrator {
         !this.stopped(item.id) &&
         !controller.signal.aborted &&
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
-      )
-        this.fail(item, "answer_error", error instanceof Error ? error.message : String(error));
+      ) {
+        if (isTransientFailure(error)) throw error;
+        this.fail(
+          item,
+          "answer_error",
+          error instanceof Error ? error.message : String(error),
+          error,
+        );
+      }
     } finally {
       clearInterval(keepAlive);
       this.releaseAskedRun(run.id);
@@ -1670,8 +1730,9 @@ export class Orchestrator {
         current.state !== "awaiting_input" &&
         !current.cancelRequested
       ) {
+        if (isTransientFailure(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
-        this.fail(current, "run_error", message);
+        this.fail(current, "run_error", message, error);
       }
     } finally {
       activity.flush();
@@ -3780,9 +3841,13 @@ export class Orchestrator {
     return run;
   }
 
-  private fail(item: WorkItemRecord, reason: string, text: string): void {
+  private fail(item: WorkItemRecord, reason: string, text: string, cause?: unknown): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     const current = getWorkItem(this.db, item.id) ?? item;
+    console.error(
+      `${current.linearIdentifier} failed (${reason}): ${text}`,
+      ...(cause === undefined ? [] : [cause]),
+    );
     if (
       current.state === "running" ||
       current.state === "verifying" ||
@@ -5114,6 +5179,11 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 
 function branchUpdatedMessage(base: string): string {
   return `Branch updated onto main ${base.slice(0, 7)}, waiting for CI. Closeout does not run again, because "When main moved before the merge" for this task is set to wait for CI in Settings → Merging.`;
+}
+
+function retryCount(payload: unknown): number {
+  const retry = (payload as { retry?: unknown } | null)?.retry;
+  return typeof retry === "number" ? retry : 0;
 }
 
 function readString(payload: unknown, key: string): string | null {
