@@ -11,6 +11,8 @@ export type PlacementRequest = {
   role: "implementer" | "reviewer";
   purpose: PlacementPurpose;
   excludeRunnerIds?: readonly string[];
+  /** The runner and member account holding the item's last agent session, for implementer work. */
+  session?: { runnerId: string; memberId?: string };
   signal?: AbortSignal;
 };
 export type RunnerPlacement = {
@@ -38,6 +40,6 @@ export type RunnerPlacement = {
   }): { retryable: boolean; usageLimit?: { resetsAt: number | null } };
 };
 
-export { createRunnerPlacement } from "./placement";
+export { createRunnerPlacement, SESSION_GRACE_MS } from "./placement";
 
 export { createRunnerPlacementBrowser } from "./browser";
