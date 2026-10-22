@@ -431,13 +431,15 @@ export function createRemoteAgentRunner(options: {
           const placed =
             attached ??
             (await (async () => {
+              // A runner command does not carry the caller's session, so a resume replays.
+              const prompt = input.resume?.replayPrompt ?? input.prompt;
               const prepared = input.prepareInputFiles
                 ? await input.prepareInputFiles({
                     workspace: input.worktreePath,
-                    prompt: input.prompt,
+                    prompt,
                     signal,
                   })
-                : { prompt: input.prompt, inputFiles: [] };
+                : { prompt, inputFiles: [] };
               const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               const files = snapshotAgentInputs(input.worktreePath, [
                 ...suppliedInputs,
