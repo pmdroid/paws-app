@@ -42,15 +42,7 @@ import {
   openDatabase,
   type CiRound,
 } from "../src/db";
-import {
-  INSTALLATION_PERMISSIONS,
-  createFakeGitHub,
-  fakeMergeReadiness,
-  fakeRequiredChecks,
-  type GitHubClient,
-  type GitHubResponse,
-  type GitHubTokenProvider,
-} from "../src/github";
+import { createFakeGitHub, fakeMergeReadiness, type GitHubTokenProvider } from "../src/github";
 import {
   createFakeTracker,
   createFakeLinearAccessReads,
@@ -74,6 +66,16 @@ import {
   FakeHostGitHubAuth,
   type AgentLaunch,
 } from "../src/loop";
+import {
+  CLOSEOUT_POLICY,
+  emptyReview,
+  gitIdentity,
+  githubClient,
+  isMergeReadiness,
+  repoLayout,
+  stateOf,
+  writeOk,
+} from "./e2e-harness";
 
 const exec = promisify(execFile);
 const fakeAgent = new URL("../src/acp/testing/fake-agent.ts", import.meta.url).pathname;
@@ -87,7 +89,7 @@ const PRIVATE_KEY = privateKey as string;
 test.each([false, true, "cap"] as const)(
   "Closeout repairs publish live progress to Linear and the dashboard, stopped: %s",
   async (stop) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
     migrate(db);
     const tracker = createFakeTracker([
@@ -275,7 +277,7 @@ test.each([false, true, "cap"] as const)(
 );
 
 test("a task retried after failing moves its Linear issue to started again", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const tracker = createFakeTracker([
@@ -359,7 +361,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
 }, 30_000);
 
 test("a frontend change without visual proof gets a fix round, publishes a screenshot, and Closeout accepts", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const seed = path.join(layout.root, "seed");
   await writeFile(
     path.join(seed, ".agents", "closeout.yaml"),
@@ -457,7 +459,7 @@ test("a frontend change without visual proof gets a fix round, publishes a scree
 }, 20000);
 
 test("a bound two-item delegation asks, verifies and merges in its repository after the default changes", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",
@@ -716,7 +718,7 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
   const seed = JSON.parse(
     await readFile(new URL("../examples/paws-demo/epic/epic.json", import.meta.url), "utf8"),
   ) as DemoSeed;
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const parentId = "lin-parent";
   const children = seed.children.map((child, index) => ({
     ...child,
@@ -928,7 +930,7 @@ test("the demo delegation merges three pull requests in comment mode with gh aut
 test.each(["claude", "codex", "grok"])(
   "stop from Linear cancels the live %s run",
   async (implementer) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     await writeFile(
       path.join(layout.pawsRoot, "config.toml"),
       `[agents]\nimplementer = "${implementer}"\n`,
@@ -997,7 +999,7 @@ test.each(["claude", "codex", "grok"])(
 test.each([false, true])(
   "mixed code publication blocks an ignored artifact failure and permits a corrected retry: %s",
   async (retry) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
     migrate(db);
     const tracker = createFakeTracker([
@@ -1168,7 +1170,7 @@ test("an unconfigured repository halts with an error and never completes the ses
 });
 
 test("a missing reviewer blocks the item and needs a person", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "iss-7",
@@ -1228,7 +1230,7 @@ test("a missing reviewer blocks the item and needs a person", async () => {
 }, 60_000);
 
 test("a failed implementer preparation names the implementer in its question", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "iss-8",
@@ -1296,7 +1298,7 @@ for (const recovery of [
   "unfailed bypass check",
 ] as const) {
   test(`Closeout ${recovery} survives restart`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const seed = path.join(layout.root, "seed");
     await writeFile(
       path.join(seed, ".agents", "closeout.yaml"),
@@ -1471,7 +1473,7 @@ for (const recovery of [
 }
 
 test("grok implementer runs the demo delegation with ask_team and one Closeout fix", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const argvLog = path.join(layout.root, "grok-argv.log");
   const wrapper = path.join(layout.root, "grok-wrapper");
   await writeFile(
@@ -1677,7 +1679,7 @@ const invalidReviews: Array<{
 
 for (const review of invalidReviews) {
   test(`ACP review ${review.name} blocks publication and merge`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "parent",
@@ -1758,7 +1760,7 @@ for (const review of invalidReviews) {
 }
 
 test("ACP review timeout rejects a partial clean array", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const scriptPath = path.join(layout.root, "timeout-review.json");
   const script: FakeScript = {
     steps: [
@@ -1798,7 +1800,7 @@ test("ACP review timeout rejects a partial clean array", async () => {
 }, 15_000);
 
 test("an ACP reviewer refused a terminal tool with only allow options finishes its review", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const scriptPath = path.join(layout.root, "allow-only-review.json");
   const tracePath = path.join(layout.root, "allow-only-review.trace.json");
   const script: FakeScript = {
@@ -1856,7 +1858,7 @@ test("an ACP reviewer refused a terminal tool with only allow options finishes i
 }, 15_000);
 
 test("a 1M reviewer profile without its entry reviews on the standard model with one Linear line", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const scriptPath = path.join(layout.root, "standard-window-review.json");
   const tracePath = path.join(layout.root, "standard-window-review.trace.json");
   const script: FakeScript = {
@@ -1924,7 +1926,7 @@ type DemoSeed = {
 
 for (const sameModel of [true, false]) {
   test(`configured Codex role models ${sameModel ? "block identical models before implementation" : "use project overrides and retain their candidate snapshot"}`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const configPath = path.join(layout.pawsRoot, "config.toml");
     writeFileSync(
       configPath,
@@ -2012,7 +2014,7 @@ for (const sameModel of [true, false]) {
 
 for (const savedState of ["verifying", "merge_queue"] as const) {
   test(`upgraded ${savedState} candidate without model evidence asks for fresh implementation`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "legacy-item",
@@ -2119,7 +2121,7 @@ for (const [movedHead, closeoutAfterUpdate] of [
   [true, false],
 ] as const) {
   test(`a restarted merge re-verifies the same head after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once${movedHead ? ` (Closeout after update ${closeoutAfterUpdate ? "on" : "off"})` : ""}`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     await writeFile(
       path.join(layout.pawsRoot, "config.toml"),
       `[merge]\ncloseout_after_update = ${closeoutAfterUpdate}\n`,
@@ -2333,7 +2335,7 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
 }, 120_000);
 
 test("the active task merges while a later task in its session also waits to merge", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent-pair",
@@ -2428,7 +2430,7 @@ test("the active task merges while a later task in its session also waits to mer
 test.each(["pending", "merged"] as const)(
   "PR publication completes Linear and a follow-up resumes while merge is %s",
   async (followupAt) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "pr-tool",
@@ -2642,7 +2644,7 @@ async function runMergeQueue(options: {
   hotfix?: string[];
   failFirstCi?: boolean;
 }): Promise<MergeQueueRun> {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const all = [...options.queue, ...(options.review ?? []), ...(options.hotfix ?? [])];
   const issueId = (identifier: string) => `mq-${identifier}`;
   const tracker = createFakeTracker(
@@ -2877,7 +2879,7 @@ test("a CI failure at the front goes back to the agent, the next task moves, and
 }, 180_000);
 
 test("post_update posts one Linear thought and refuses a second update within a minute", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "update-tool",
@@ -2963,7 +2965,7 @@ test("post_update posts one Linear thought and refuses a second update within a 
 test.each([false, true])(
   "CI repair continues after PR completion and can ask for help: %s",
   async (ask) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "ci-fail",
@@ -3185,7 +3187,7 @@ async function runCiFix(options: {
   rounds: CiRound[];
   detail: string;
 }> {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const configPath = path.join(layout.pawsRoot, "config.toml");
   if (options.withoutReview)
     await withGitIdentity(() =>
@@ -3332,7 +3334,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
   };
   const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
   Object.assign(process.env, identity);
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "rebase-base",
@@ -3438,7 +3440,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
 }, 120_000);
 
 test("an unreadable CI read retries the merge job and fails the task with the reason on its last attempt", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const tracker = createFakeTracker([
     {
       linearIssueId: "unreadable-ci",
@@ -3534,7 +3536,7 @@ test.each([
 ])(
   "a reverify whose worktree read times out %p time(s) is retried and %s",
   async (timeouts, outcome) => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "reverify-timeout",
@@ -3689,7 +3691,7 @@ async function runRebaseConflict(
   linearRequest?: { jobs: { reason?: string; handoff?: string }[]; upstreamMain: string };
   detail: string;
 }> {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   const identifier =
     mode === "resolve"
       ? "ENG-70"
@@ -3959,25 +3961,6 @@ async function installRebaseHook(pawsRoot: string): Promise<void> {
   await exec("git", ["--git-dir", mirror, "config", "core.hooksPath", hooks]);
 }
 
-function emptyReview(): FakeScript {
-  return {
-    steps: [
-      {
-        type: "update",
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "[]" },
-        },
-      },
-      { type: "end", stopReason: "end_turn" },
-    ],
-  };
-}
-
-function writeOk(worktree: string, content = "ok\n"): FakeScript["steps"][number] {
-  return { type: "fs_write", path: path.join(worktree, "ok.txt"), content };
-}
-
 function demoScript(input: {
   purpose: string;
   itemId: string;
@@ -4148,167 +4131,6 @@ function linearEvent(
   };
 }
 
-/** The CI read for one head. The merge queue's review read carries no head. */
-function isMergeReadiness(req: { path: string; body?: unknown }): boolean {
-  return (
-    req.path === "/graphql" &&
-    typeof (req.body as { variables?: { head?: unknown } } | undefined)?.variables?.head ===
-      "string"
-  );
-}
-
-function githubClient(
-  bare: string,
-  github: ReturnType<typeof createFakeGitHub>,
-  seen: string[] = [],
-): GitHubClient {
-  let n = 0;
-  return {
-    async request(req): Promise<GitHubResponse> {
-      seen.push(req.path);
-      if (req.path === "/graphql") {
-        const { head } = (req.body as { variables: { head: string } }).variables;
-        return { status: 200, body: fakeMergeReadiness(head) };
-      }
-      const required = fakeRequiredChecks(req);
-      if (required) return required;
-      if (req.path.endsWith("/access_tokens")) {
-        n += 1;
-        await github.mintInstallationToken({
-          installationId: "2",
-          repository: "pmdroid/paws-demo",
-        });
-        return {
-          status: 201,
-          body: {
-            token: `ghs_e2e_${n}`,
-            expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-            repository_selection: "selected",
-            repositories: [{ name: "paws-demo", full_name: "pmdroid/paws-demo" }],
-            permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read" },
-          },
-        };
-      }
-      if (req.method === "POST" && req.path.endsWith("/labels")) {
-        if (req.path.includes("/issues/")) return { status: 200, body: [{ name: "paws" }] };
-        return { status: 201, body: { name: "paws" } };
-      }
-      if (req.method === "POST" && req.path.endsWith("/pulls")) {
-        const body = req.body as { title: string; head: string; base: string; body: string };
-        const opened = await github.open({
-          repository: "pmdroid/paws-demo",
-          title: body.title,
-          head: body.head,
-          base: body.base,
-          body: body.body,
-        });
-        return {
-          status: 201,
-          body: { number: opened.number, html_url: opened.url, body: body.body },
-        };
-      }
-      if (req.method === "PUT" && req.path.endsWith("/merge")) {
-        const body = req.body as { sha?: string };
-        const number = Number(req.path.split("/").at(-2));
-        await github.merge({
-          repository: "pmdroid/paws-demo",
-          number,
-          expectedHeadSha: body.sha ?? "",
-        });
-        const sha = await squashBranch(bare, body.sha ?? "", body);
-        return { status: 200, body: { sha, merged: true } };
-      }
-      return { status: 404, body: {} };
-    },
-  };
-}
-
-async function squashBranch(
-  bare: string,
-  expected: string,
-  body: { sha?: string; commit_message?: string },
-): Promise<string> {
-  const tmp = await mkdtemp(path.join(tmpdir(), "paws-squash-"));
-  try {
-    await exec("git", ["clone", bare, tmp]);
-    await gitIdentity(tmp);
-    const listed = (
-      await exec("git", [
-        "-C",
-        tmp,
-        "for-each-ref",
-        "--format=%(objectname) %(refname)",
-        "refs/remotes/origin/paws",
-      ])
-    ).stdout.trim();
-    const match = listed.split("\n").find((line) => line.startsWith(`${expected} `));
-    if (!match) throw new Error(`no pushed branch at ${expected}`);
-    const ref = match.slice(expected.length).trim();
-    await exec("git", ["-C", tmp, "merge", "--squash", ref]);
-    await exec("git", ["-C", tmp, "commit", "-m", body.commit_message ?? "squash"]);
-    await exec("git", ["-C", tmp, "push", "origin", "HEAD:main"]);
-    return (await exec("git", ["-C", tmp, "rev-parse", "HEAD"])).stdout.trim();
-  } finally {
-    await rm(tmp, { recursive: true, force: true });
-  }
-}
-
-async function repoLayout(): Promise<{
-  root: string;
-  bare: string;
-  pawsRoot: string;
-  home: string;
-  cleanup: () => Promise<void>;
-}> {
-  const root = await mkdtemp(path.join(tmpdir(), "paws-e2e-"));
-  const bare = path.join(root, "origin.git");
-  const seed = path.join(root, "seed");
-  const pawsRoot = path.join(root, "paws");
-  const home = path.join(root, "home");
-  await mkdir(home, { recursive: true });
-  await mkdir(pawsRoot, { recursive: true });
-  await exec("git", ["init", "--bare", "-b", "main", bare]);
-  await exec("git", ["clone", bare, seed]);
-  await gitIdentity(seed);
-  await seedCloseoutPolicy(seed);
-  await exec("git", ["-C", seed, "add", "."]);
-  await exec("git", ["-C", seed, "commit", "-m", "init"]);
-  await exec("git", ["-C", seed, "push", "origin", "HEAD:main"]);
-  return {
-    root,
-    bare,
-    pawsRoot,
-    home,
-    cleanup: () => rm(root, { recursive: true, force: true }),
-  };
-}
-
-async function gitIdentity(dir: string): Promise<void> {
-  await exec("git", ["-C", dir, "config", "user.email", "paws-test@example.com"]);
-  await exec("git", ["-C", dir, "config", "user.name", "Paws Test"]);
-  await exec("git", ["-C", dir, "config", "commit.gpgsign", "false"]);
-}
-
-const CLOSEOUT_POLICY = `specVersion: "0.1"
-retry:
-  maxFailedAttemptsPerItem: 3
-  scope: task
-items:
-  - id: test
-    kind: command
-    gate: beforePR
-    exec: ["bun", "test", "check.test.ts"]
-    timeoutSeconds: 60
-  - id: adversarial-review
-    kind: review
-    gate: beforePR
-    skill: .agents/skills/adversarial-review/SKILL.md
-    independence:
-      differentSession: true
-      differentModel: true
-    failOn: P1
-`;
-
 const CLOSEOUT_POLICY_WITHOUT_REVIEW = `specVersion: "0.1"
 retry:
   maxFailedAttemptsPerItem: 3
@@ -4320,38 +4142,6 @@ items:
     exec: ["bun", "test", "check.test.ts"]
     timeoutSeconds: 60
 `;
-
-const REVIEW_SKILL = `---
-name: adversarial-review
-description: Review the candidate. Report findings. Do not decide acceptance.
----
-
-# Review
-
-Report findings. An empty list means the change is fine.
-`;
-
-const SEEDED_TEST = `import { expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-
-test("seeded check", () => {
-  expect(existsSync("ok.txt")).toBe(true);
-  if (existsSync("header.txt")) {
-    expect(readFileSync("ok.txt", "utf8").includes("header")).toBe(true);
-  }
-});
-`;
-
-async function seedCloseoutPolicy(seed: string): Promise<void> {
-  await mkdir(path.join(seed, ".agents", "skills", "adversarial-review"), { recursive: true });
-  await writeFile(path.join(seed, ".agents", "closeout.yaml"), CLOSEOUT_POLICY);
-  await writeFile(
-    path.join(seed, ".agents", "skills", "adversarial-review", "SKILL.md"),
-    REVIEW_SKILL,
-  );
-  await writeFile(path.join(seed, "check.test.ts"), SEEDED_TEST);
-  await writeFile(path.join(seed, "README.md"), "paws demo\n");
-}
 
 function checkpointBaseOf(db: Database, identifier: string): string | null {
   const row = db
@@ -4365,14 +4155,6 @@ function checkpointPhaseOf(db: Database, identifier: string): string | null {
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
     .get(identifier);
   return row ? (getWorkItem(db, row.id)?.checkpoint?.phase ?? null) : null;
-}
-
-function stateOf(db: Database, identifier: string): string | null {
-  const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
-    .get(identifier);
-  if (!row) return null;
-  return getWorkItem(db, row.id)?.state ?? null;
 }
 
 function delegationMerged(db: Database): boolean {
@@ -4408,7 +4190,7 @@ function taskPath(db: Database, identifier: string): string {
 
 for (const race of ["token", "merge", "followup"] as const) {
   test(`Stop during GitHub ${race} publication preserves verified external truth`, async () => {
-    const layout = await repoLayout();
+    const layout = await repoLayout("paws-e2e-");
     const tracker = createFakeTracker([
       {
         linearIssueId: "publication",
@@ -4530,7 +4312,7 @@ for (const race of ["token", "merge", "followup"] as const) {
 }
 
 test("a Linear correction interrupts code, returns a screenshot, and completes after verified merge through Linear", async () => {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   let db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const tracker = createFakeTracker([
