@@ -108,6 +108,7 @@ export const RunnerCommandSchema = z
       checkpointBot: RunnerCheckpointBotSchema.optional(),
       commitPolicy: RunnerCommitPolicySchema.optional(),
       checkpoint: z.literal(false).optional(),
+      resumeSessionId: id.optional(),
     }),
     z.strictObject({ ...common, type: z.literal("review"), ...work }),
     z.strictObject({

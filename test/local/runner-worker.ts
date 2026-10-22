@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { encodePolicyFiles, git } from "../../src/acp";
+import { encodePolicyFiles, git, reconstructAcpPrompt } from "../../src/acp";
 import { workspacePolicyFiles } from "../../src/closeout-spec";
 import { publishRunnerAnswer, readRunnerAnswer } from "../../src/runner-answers";
 import {
@@ -98,7 +98,7 @@ export async function probeRunnerWorker(
   };
   mkdirSync(spool.root, { mode: 0o750 });
   chmodSync(spool.root, 0o750);
-  function launch(index: number, steps: unknown[]) {
+  function launch(index: number, steps: unknown[], extra: Record<string, unknown> = {}) {
     const script = join(root, `script-${index}.json`);
     const result = join(root, `agent-${index}.json`);
     writeFileSync(
@@ -106,6 +106,7 @@ export async function probeRunnerWorker(
       JSON.stringify({
         model: "fixture-model",
         steps,
+        ...extra,
         ...(privateInputs ? { promptCapabilities: { embeddedContext: true } } : {}),
       }),
     );
@@ -780,6 +781,42 @@ export async function probeRunnerWorker(
     mainSha: laterSha,
     candidateSha: rebased.candidateSha,
   });
+  const resumedPrompts: Record<string, string> = {};
+  for (const [index, loadSession] of [
+    [42, true],
+    [43, false],
+  ] as const) {
+    const resume = { ...job(7), executionId: `01J00000000000000000000R${index}` };
+    if (resume.command.type !== "run") throw new Error("Expected run");
+    resume.command.prompt = reconstructAcpPrompt("Fix the findings.", [
+      { kind: "request", body: "Implement the earlier task." },
+    ]);
+    resume.command.resumeSessionId = "earlier-session";
+    resume.command.checkpoint = false;
+    const resumeAgent = launch(index, [{ type: "end" }], { loadSession });
+    await execute({
+      job: resume,
+      repositoryBundle,
+      outputDirectory: output(index),
+      workRoot: join(root, "work"),
+      home,
+      resultsGid: process.getgid!(),
+      launch: resumeAgent.launch,
+    });
+    const recorded = JSON.parse(readFileSync(resumeAgent.result, "utf8")) as {
+      loaded?: { sessionId?: string };
+      prompts?: unknown[];
+    };
+    resumedPrompts[String(loadSession)] = JSON.stringify(recorded.prompts ?? []);
+    if (loadSession) assert.equal(recorded.loaded?.sessionId, "earlier-session");
+  }
+  observe(
+    "a run resumes the agent's earlier session with only the new request, and replays history without one",
+    resumedPrompts.true!.includes("Fix the findings.") &&
+      !resumedPrompts.true!.includes("Implement the earlier task.") &&
+      resumedPrompts.false!.includes("Implement the earlier task."),
+    resumedPrompts,
+  );
   const abort = new AbortController();
   const cancelledAgent = launch(4, [{ type: "hang" }]);
   const cancelOutput = output(4);
