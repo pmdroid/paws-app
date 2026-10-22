@@ -19,7 +19,9 @@ export type AgentSignIn = {
   status: "signed_in" | "signed_out" | "checking" | "usage_limit" | "unknown";
   checkedAt: number | null;
   resetsAt?: number | null;
+  limits?: AgentLimit[];
 };
+export type AgentLimit = { window: string; usedPercent: number; resetsAt: number | null };
 export type Runner = {
   id: string;
   name: string;
@@ -258,34 +260,54 @@ function elapsedLabel(ms: number): string {
   return `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
 }
 
-/** The sessions a runner holds now. Read-only for every member. */
-export function runnerRunningMarkup(sessions: readonly RunningSession[], now: number): string {
-  if (!sessions.length) return '<p class="muted">Nothing running</p>';
+/** One row per busy slot with the session it holds, then one row for the free slots. */
+export function runnerRunningMarkup(
+  sessions: readonly RunningSession[],
+  now: number,
+  slots?: { used: number; total: number },
+): string {
+  const total = Math.max(slots?.total ?? 0, sessions.length);
+  const free = total - Math.max(slots?.used ?? 0, sessions.length);
+  if (!sessions.length && !slots?.used && free <= 0) return '<p class="muted">Nothing running</p>';
+  const full = total > 0 && free <= 0;
   const rows = sessions
     .map((session) => {
       const [tone, phase] = PHASES[session.phase] ?? PHASES.working;
-      return `<li class="issue-row" data-running-run="${esc(session.runId)}"><a class="work-title" href="${esc(routeHref({ view: "runs", id: session.runId }))}"><span class="lin-id">${esc(session.identifier)}</span> <b>${esc(session.title)}</b></a>${statePill(tone, phase)}<div class="issue-facts"><span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">Running for ${esc(elapsedLabel(now - session.startedAt))}</span></div></li>`;
+      return `<li class="slot-row" data-running-run="${esc(session.runId)}"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span><span class="lin-id">${esc(session.identifier)}</span><a class="work-title" href="${esc(routeHref({ view: "runs", id: session.runId }))}">${esc(session.title)}</a><span class="slot-facts">${statePill(tone, phase)}<span class="muted" title="Started ${esc(new Date(session.startedAt).toLocaleString())}">${esc(elapsedLabel(now - session.startedAt))}</span></span></li>`;
     })
     .join("");
-  return `<ul class="issue-list" role="list" aria-label="Running sessions">${rows}</ul>`;
+  const other = Math.max(0, (slots?.used ?? 0) - sessions.length);
+  const busy = other
+    ? `<li class="slot-row"><span class="slot-mark used${full ? " high" : ""}" aria-hidden="true"></span><span class="muted">${other} ${sessions.length ? "more " : ""}${other === 1 ? "slot" : "slots"} busy</span></li>`
+    : "";
+  const idle =
+    free > 0
+      ? `<li class="slot-row"><span class="slot-mark" aria-hidden="true"></span><span class="muted">${free === total ? "Nothing running · " : ""}${free} ${free === 1 ? "slot" : "slots"} free</span></li>`
+      : "";
+  return `<ul class="slot-list" role="list" aria-label="Slots">${rows}${busy}${idle}</ul>`;
 }
 
 export function runnerActionsMarkup(
   runner: { id: string; status: RunnerStatus },
   state: { manages: boolean; busy: boolean },
+  copy = "",
 ): string {
-  if (!state.manages || runner.status === "revoked") return "";
+  if (!state.manages || runner.status === "revoked")
+    return copy ? `<div class="row">${copy}</div>` : "";
   const disabled = state.busy ? " disabled" : "";
   const id = esc(runner.id);
-  const pause =
-    runner.status === "active"
-      ? `<button class="btn" data-runner-status="paused" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Pause</button>`
-      : `<button class="btn" data-runner-status="active" data-runner="${id}" data-focus="status:${id}:toggle"${disabled}>Resume</button>`;
   const drain =
     runner.status !== "draining"
       ? `<button class="btn" data-runner-status="draining" data-runner="${id}" data-focus="status:${id}:draining"${disabled}>Drain</button>`
       : "";
-  return `<div class="row">${pause}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
+  return `<div class="row">${copy}${drain}<details data-details="revoke:${id}"><summary data-focus="revoke:${id}">Revoke access</summary><p>Disconnect this runner and stop accepting its work.</p><button class="btn" data-runner-status="revoked" data-runner="${id}" data-focus="status:${id}:revoked"${disabled}>Revoke runner</button></details></div>`;
+}
+
+function pauseMarkup(runner: Runner, state: { manages: boolean; busy: boolean }): string {
+  if (!state.manages || runner.status === "revoked") return "";
+  const id = esc(runner.id);
+  const [next, label] = runner.status === "active" ? ["paused", "Pause"] : ["active", "Resume"];
+  return `<button class="btn" data-runner-status="${next}" data-runner="${id}" data-focus="status:${id}:toggle"${state.busy ? " disabled" : ""}>${label}</button>`;
 }
 
 /** The concurrency field for owners and admins, or the values for everyone else. */
@@ -328,7 +350,7 @@ function gaugeMarkup(gauge: Gauge): string {
   const value = gauge.high
     ? `<span class="gauge-value high">${esc(gauge.value)}<span class="sr-only">, high</span></span>`
     : `<span class="gauge-value">${esc(gauge.value)}</span>`;
-  return `<div class="runner-gauge" data-gauge="${esc(gauge.label.toLowerCase())}" data-level="${level}"><dt>${esc(gauge.label)}</dt><dd>${value}</dd>${bar ? `<dd class="gauge-bar">${bar}</dd>` : ""}${gauge.detail ? `<dd class="muted">${esc(gauge.detail)}</dd>` : ""}</div>`;
+  return `<div class="runner-gauge" data-gauge="${esc(gauge.label.toLowerCase())}" data-level="${level}"><dt>${esc(gauge.label)}</dt><dd>${value}</dd><dd class="gauge-bar">${bar}</dd>${gauge.detail ? `<dd class="muted">${esc(gauge.detail)}</dd>` : ""}</div>`;
 }
 
 /** CPU, memory, disk and load from the latest heartbeat only, as bars that turn orange when high. */
@@ -390,32 +412,50 @@ export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): st
             high: false,
           },
   ];
-  const updated = `<p class="runner-updated" title="${esc(new Date(metrics.reportedAt).toLocaleString())}">${stale ? '<span class="tag warn">Stale</span> ' : ""}Updated ${esc(updatedLabel(metrics.reportedAt, now))}</p>`;
-  return `<section class="runner-host" aria-label="Host metrics"${stale ? ' data-stale=""' : ""}>${updated}<dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
+  return `<section class="runner-host" aria-label="Host metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
 }
 
-/** One segment per slot, filled when in use, with the concurrency control beside it. */
-function slotsMarkup(runner: Runner, concurrency: string): string {
-  const slots = runner.slots;
-  if (!slots && !concurrency) return "";
-  const full = slots !== undefined && slots.total > 0 && slots.used >= slots.total;
-  const segments = slots
-    ? `<span class="slots" aria-hidden="true">${Array.from(
-        { length: Math.min(slots.total, 16) },
-        (_, index) =>
-          `<span class="slot${index < slots.used ? ` used${full ? " high" : ""}` : ""}"></span>`,
-      ).join("")}</span>`
-    : "";
-  const summary = slots
-    ? `<span class="gauge-value${full ? " high" : ""}">${esc(`${slots.used} of ${slots.total} in use`)}${full ? '<span class="sr-only">, all slots busy</span>' : ""}</span>`
-    : "";
-  return `<dl class="runner-slots">${slots ? `<div class="runner-gauge" data-gauge="slots" data-level="${full ? "high" : "normal"}"><dt>Slots</dt><dd>${summary}</dd><dd class="gauge-bar">${segments}</dd></div>` : ""}${concurrency ? `<div class="runner-concurrency"><dt>Concurrency</dt><dd>${concurrency}</dd></div>` : ""}</dl>`;
+function resetLabel(at: number, now: number): string {
+  const options: Intl.DateTimeFormatOptions =
+    at - now < 24 * 60 * 60_000
+      ? { hour: "numeric", minute: "2-digit" }
+      : { weekday: "short", month: "short", day: "numeric" };
+  return `Resets ${new Date(at).toLocaleString([], options)}`;
+}
+
+function agentMarkup(entry: AgentSignIn, now: number): string {
+  const label = AGENT_LABELS[entry.agent] ?? entry.agent;
+  const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
+  const limits = entry.status === "signed_out" ? [] : (entry.limits ?? []);
+  const usage = limits.length
+    ? `<dl class="agent-limits">${limits
+        .map((limit) =>
+          gaugeMarkup({
+            label: limit.window,
+            value: `${Math.round(limit.usedPercent)}% used`,
+            fill: limit.usedPercent,
+            high: limit.usedPercent >= 90,
+            ...(limit.resetsAt ? { detail: resetLabel(limit.resetsAt, now) } : {}),
+          }),
+        )
+        .join("")}</dl>`
+    : entry.status === "usage_limit" && entry.resetsAt
+      ? `<p class="muted">${esc(resetLabel(entry.resetsAt, now))}</p>`
+      : entry.status === "signed_in"
+        ? '<p class="muted">Usage not reported</p>'
+        : "";
+  return `<li class="runner-agent" data-agent="${esc(entry.agent)}"><span class="runner-agent-name"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span></span>${usage}</li>`;
 }
 
 function statusLine(runner: Runner, view: { now: number; serverVersion: string | null }): string {
   const [tone, state] = availability(runner, view.now);
+  const stale =
+    runner.metrics !== null &&
+    runnerOnline(runner, view.now) &&
+    view.now - runner.metrics.reportedAt > RUNNER_STALE_MS;
   const notes = [
     runner.status === "paused" ? "Paused" : runner.status === "draining" ? "Draining" : "",
+    stale ? "Stale" : "",
     updateAvailable(runner, view.serverVersion) ? "Update available" : "",
   ].filter(Boolean);
   return `<p class="runner-status"><span class="tag ${tone}">${esc(state)}</span>${notes.map((note) => `<span>${esc(note)}</span>`).join("")}</p>`;
@@ -436,22 +476,16 @@ export function runnerDetailMarkup(
 ): string {
   const id = esc(runner.id);
   const metrics = runner.metrics;
+  const revoked = runner.status === "revoked";
+  const manages = view.role === "owner" || view.role === "admin";
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
   const meta = [
     runner.version ? `Runner ${runner.version}` : "Version not reported",
     os || "OS not reported",
-    metrics
-      ? `Last seen ${new Date(metrics.reportedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
-      : "Never seen",
+    metrics ? `Seen ${updatedLabel(metrics.reportedAt, view.now)}` : "Never seen",
   ]
     .map((part) => `<span>${esc(part)}</span>`)
     .join("");
-  const concurrency = runnerConcurrencyMarkup(runner, {
-    manages: view.role === "owner" || view.role === "admin",
-    busy: view.busy,
-    ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
-  });
-  const revoked = runner.status === "revoked";
   const owns =
     view.policy !== null &&
     view.userId === view.policy.ownerUserId &&
@@ -462,32 +496,54 @@ export function runnerDetailMarkup(
   const signIns = runner.agents?.length
     ? runner.agents
     : AGENTS.map((agent): AgentSignIn => ({ agent, status: "unknown", checkedAt: null }));
-  const agents = signIns
-    .map((entry) => {
-      const label = AGENT_LABELS[entry.agent] ?? entry.agent;
-      const [tone, text] = SIGN_IN[entry.status] ?? SIGN_IN.unknown;
-      const resets =
-        entry.status === "usage_limit" && entry.resetsAt
-          ? ` <span class="muted">Resets ${esc(new Date(entry.resetsAt).toLocaleString())}</span>`
-          : "";
-      return `<li class="runner-agent"><b>${esc(label)}</b><span class="tag ${tone}">${text}</span>${resets}</li>`;
-    })
-    .join("");
   const signIn =
     revoked || view.role === null || view.role === "observer"
       ? ""
       : `<button class="btn" data-runner-signin="${id}" data-focus="signin:${id}">Sign in to agents</button>`;
+  const slots = runner.slots;
+  const capacity = slots
+    ? `<span class="gauge-value${slots.total > 0 && slots.used >= slots.total ? " high" : ""}">${esc(`${slots.used} of ${slots.total} in use`)}</span>`
+    : "";
+  const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages, busy: view.busy })}</div>`;
+  const block = (key: string, title: string, aside: string, body: string) =>
+    `<section class="runner-block" aria-labelledby="runner-${id}-${key}"><div class="runner-block-head"><h3 id="runner-${id}-${key}">${title}</h3>${aside}</div>${body}</section>`;
+  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${
+    revoked
+      ? ""
+      : block(
+          "slots",
+          "Slots",
+          capacity,
+          runnerRunningMarkup(runner.running ?? [], view.now, slots),
+        )
+  }${
+    revoked
+      ? ""
+      : block(
+          "agents",
+          "Agents",
+          signIn,
+          `<ul class="runner-agent-list" role="list" aria-label="Agent sign-in and usage">${signIns.map((entry) => agentMarkup(entry, view.now)).join("")}</ul>`,
+        )
+  }${block("host", "Host", "", runnerMetricsMarkup(metrics, view.now))}</section>`;
+  const concurrency = runnerConcurrencyMarkup(runner, {
+    manages,
+    busy: view.busy,
+    ...(view.concurrencyDraft === undefined ? {} : { draft: view.concurrencyDraft }),
+  });
   const sharing =
     view.policy === null || revoked
       ? ""
       : `<label class="runner-consent"><input type="checkbox" data-runner-sharing="${id}" data-focus="sharing:${id}"${view.policy.sharing ? " checked" : ""}${editable}><span>Share this host with members of the same Linear project</span></label>${owns ? "" : '<p class="muted">The host owner controls its sharing settings.</p>'}`;
-  return `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name"><div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta">${meta}</p></div><button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button></div>${runnerMetricsMarkup(metrics, view.now)}${slotsMarkup(runner, concurrency)}<div class="runner-agents-row"><h3 class="sr-only">Agents</h3><ul class="runner-agent-list" role="list" aria-label="Agent sign-in">${agents}</ul>${signIn}</div>${sharing}${runnerActionsMarkup(
-    runner,
-    {
-      manages: view.role === "owner" || view.role === "admin",
-      busy: view.busy,
-    },
-  )}</section>`;
+  const copy = `<button class="btn" data-runner-copy="${id}" data-focus="copy:${id}" title="${id}" aria-label="Copy runner ID ${id}">Copy ID</button>`;
+  const settings = [
+    concurrency
+      ? `<div class="runner-setting"><h3>Concurrency</h3><div>${concurrency}</div></div>`
+      : "",
+    sharing ? `<div class="runner-setting"><h3>Sharing</h3><div>${sharing}</div></div>` : "",
+    runnerActionsMarkup(runner, { manages, busy: view.busy }, copy),
+  ].join("");
+  return `${card}<section class="runner-section" aria-labelledby="runner-${id}-settings"><h2 id="runner-${id}-settings">Settings</h2><div class="runner-settings">${settings}</div></section>`;
 }
 
 export function createRunners() {
@@ -675,7 +731,7 @@ export function createRunners() {
       ...(concurrencyDrafts.has(runner.id)
         ? { concurrencyDraft: concurrencyDrafts.get(runner.id)! }
         : {}),
-    })}<section class="runner-section" aria-labelledby="runner-running-heading"><h2 id="runner-running-heading">Running now</h2>${runnerRunningMarkup(runner.running ?? [], now)}</section><section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
+    })}<section class="runner-section" aria-labelledby="runner-history-heading"><h2 id="runner-history-heading">Execution history</h2>${usageRunner === id ? runnerHistoryMarkup(usage) : '<p class="muted">Loading execution history…</p>'}</section>`;
   }
   function markup(open: ReadonlySet<string>): string {
     if (setupRequired)
