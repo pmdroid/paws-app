@@ -2074,6 +2074,7 @@ export class Orchestrator {
     };
     const runner = deps.agentRunner;
     let reason = "remote execution is unavailable";
+    const rateLimitDeadline = this.now() + CHECKS_RATE_LIMIT_WAIT_MS;
     for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
       assertCurrent();
       await this.waitForTaskRunner(item, head, input.stepId, deps.signal, assertCurrent);
@@ -2122,6 +2123,23 @@ export class Orchestrator {
         assertCurrent();
         if (deps.signal?.aborted) throw error;
         reason = error instanceof Error ? error.message : String(error);
+        if (
+          (error instanceof LinearRateLimitError || LINEAR_RATE_LIMITED.test(reason)) &&
+          this.now() < rateLimitDeadline
+        ) {
+          input.report(
+            `Linear is rate-limiting Paws. The Closeout checks for ${item.linearIdentifier} run again when the limit resets.`,
+          );
+          await delay(
+            error instanceof LinearRateLimitError
+              ? Math.min(error.retryAfterMs, CHECKS_RATE_LIMIT_WAIT_MS)
+              : CHECKS_RATE_LIMIT_RETRY_MS,
+            undefined,
+            deps.signal ? { signal: deps.signal } : {},
+          );
+          assertCurrent();
+          attempt -= 1;
+        }
       }
     }
     throw new Error(
@@ -5157,6 +5175,8 @@ export class Orchestrator {
 
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
+const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
+const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
