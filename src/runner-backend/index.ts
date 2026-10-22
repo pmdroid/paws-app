@@ -39,7 +39,7 @@ import {
   type RunAgentOptions,
   encodePolicyFiles,
 } from "../acp";
-import type { RunnerWork } from "../runner-work";
+import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import type { RunnerResults } from "../runner-results";
 import type { RunnerHealth } from "../runner-health";
 import type { RunnerArtifactStore } from "../runner-artifacts";
@@ -231,7 +231,11 @@ export function createRemoteAgentRunner(options: {
         offered[0] === placement.session.runnerId;
       if (
         (resetsAt === null || heldForSession) &&
-        rejected.some((reason) => reason.endsWith(": no free capacity")) &&
+        (rejected.some((reason) => reason.endsWith(": no free capacity")) ||
+          (offered.length === 0 &&
+            db
+              .query("SELECT 1 FROM runner WHERE status='active' AND revoked_at IS NULL LIMIT 1")
+              .get() !== null)) &&
         performance.now() < capacityDeadline
       ) {
         await delay(interval, undefined, { signal: placement.signal });
@@ -787,7 +791,30 @@ export function createRemoteAgentRunner(options: {
           let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           while (now() < deadline) {
             signal.throwIfAborted();
-            work.current(assigned.runId, assigned.generation);
+            try {
+              work.current(assigned.runId, assigned.generation);
+            } catch (error) {
+              if (!(error instanceof RunnerWorkFencedError) || !options.placement) throw error;
+              signal.throwIfAborted();
+              const interrupted = immediate(db, () =>
+                options.placement?.finished({
+                  commandId: assigned.id,
+                  runnerId: selected.id,
+                  profile,
+                  failure: "heartbeat_lost",
+                  finishedAt: now(),
+                }),
+              );
+              if (!interrupted?.retryable) throw error;
+              throw new RetryableRunnerError(
+                selected.id,
+                "The runner restarted or lost its lease during the run.",
+                transcript,
+                publishedEffects,
+                undefined,
+                true,
+              );
+            }
             if (questionError) throw questionError;
             complete = results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && !disposition)
