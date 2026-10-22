@@ -224,6 +224,34 @@ test("an answer that arrives before the asking turn ends resumes once after the 
   }
 }, 90_000);
 
+test("a resume after a restart repeats no Linear read the first run already made", async () => {
+  const fixture = await askOnce();
+  let orchestrator = fixture.orchestrator;
+  try {
+    expect(fixture.reads).toEqual(
+      expect.arrayContaining(["project overview issue", "merge context issue", "activities ses_1"]),
+    );
+    const firstRun = [...fixture.reads];
+    const restarted = await fixture.restart();
+    orchestrator = restarted.orchestrator;
+    const open = findOpenQuestion(fixture.db, "ses_1")!;
+    answerQuestion(fixture.db, open.id, {
+      answer: "parquet",
+      answeredBy: "human-1",
+      now: Date.now(),
+    });
+    recoverOnStartup(fixture.db);
+    await drive({ db: fixture.db, jobs: restarted.jobs }, ["verifying", "merge_queue", "merged"]);
+    const resumed = fixture.prompts.find((prompt) => prompt.includes("Answer: parquet"));
+    expect(resumed).toContain("Project overview: Exports");
+    expect(fixture.reads).toEqual(firstRun);
+  } finally {
+    await orchestrator.shutdown();
+    fixture.db.close();
+    await fixture.layout.cleanup();
+  }
+}, 90_000);
+
 async function askOnce(answerDuringTurn?: string): Promise<{
   layout: { pawsRoot: string; cleanup: () => Promise<void> };
   db: Database;
@@ -235,6 +263,8 @@ async function askOnce(answerDuringTurn?: string): Promise<{
   resumeHeads: string[];
   runnerId: string;
   resumeJobsDuringTurn: number[];
+  reads: string[];
+  restart: () => Promise<{ jobs: JobLoop; orchestrator: ReturnType<typeof attachOrchestrator> }>;
 }> {
   const layout = await repoLayout();
   const tracker = createFakeTracker([
@@ -246,6 +276,22 @@ async function askOnce(answerDuringTurn?: string): Promise<{
       subIssues: [],
     },
   ]);
+  const reads: string[] = [];
+  tracker.projectOverviews.set("issue", { name: "Exports", content: "Rows leave as files." });
+  const projectOverview = tracker.projectOverview.bind(tracker);
+  tracker.projectOverview = async (issueId, options) => {
+    reads.push(`project overview ${issueId}`);
+    return projectOverview(issueId, options);
+  };
+  const issueMergeContext = tracker.issueMergeContext.bind(tracker);
+  tracker.issueMergeContext = async (issueId, options) => {
+    reads.push(`merge context ${issueId}`);
+    return issueMergeContext(issueId, options);
+  };
+  tracker.listSessionActivities = async (sessionId) => {
+    reads.push(`activities ${sessionId}`);
+    return [];
+  };
   const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
   migrate(db);
   const jobs = new JobLoop(db, systemClock);
@@ -360,26 +406,28 @@ async function askOnce(answerDuringTurn?: string): Promise<{
       });
     };
   }
-  const orchestrator = attachOrchestrator({
-    db,
-    jobs,
-    outbox,
-    pawsRoot: layout.pawsRoot,
-    home: layout.home,
-    tracker,
-    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
-    github: {
-      appId: "1",
-      installationId: "2",
-      privateKeyPem: "unused",
-      client: {
-        async request() {
-          return { status: 404, body: {} };
+  const attach = (loop: JobLoop, dispatcher: OutboxDispatcher) =>
+    attachOrchestrator({
+      db,
+      jobs: loop,
+      outbox: dispatcher,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: {
+        appId: "1",
+        installationId: "2",
+        privateKeyPem: "unused",
+        client: {
+          async request() {
+            return { status: 404, body: {} };
+          },
         },
       },
-    },
-    launch,
-  });
+      launch,
+    });
+  const orchestrator = attach(jobs, outbox);
   await orchestrator.onLinearEvent(created());
   const running = jobs.tick();
   const runnerId = leaseActiveRun(db);
@@ -396,6 +444,15 @@ async function askOnce(answerDuringTurn?: string): Promise<{
     resumeHeads,
     runnerId: await runnerId,
     resumeJobsDuringTurn,
+    reads,
+    restart: async () => {
+      await orchestrator.shutdown();
+      const restarted = new JobLoop(db, systemClock);
+      return {
+        jobs: restarted,
+        orchestrator: attach(restarted, new OutboxDispatcher(db, systemClock)),
+      };
+    },
   };
 }
 
