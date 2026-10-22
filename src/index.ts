@@ -92,6 +92,7 @@ import {
   checkRepositoryWriteAccess,
   checkRepositoryReadAccess,
   createFetchGitHubClient,
+  repositoriesWithMergeQueue,
   listAppRepositories,
   listUserRepositories,
   readGhUserToken,
@@ -743,6 +744,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               mergeChoices: (signal: AbortSignal) => linear.tracker!.mergeChoices!({ signal }),
             }
           : {}),
+        githubQueues: (signal: AbortSignal) =>
+          repositoriesWithMergeQueue({
+            repositories,
+            client: createFetchGitHubClient(),
+            signal,
+            token: async (candidate) =>
+              (await authProvider(runtime, candidate, "read", resolveApp)?.token()) ?? null,
+          }),
       },
     });
   } catch (error) {

@@ -425,3 +425,35 @@ function safeMessage(error: unknown): string {
     .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]")
     .slice(0, 300);
 }
+
+/**
+ * The repositories (`owner/repo`) whose `branch` has a GitHub merge queue. A repository Paws
+ * cannot read is left out. Throws only when none of them could be read.
+ */
+export async function repositoriesWithMergeQueue<R extends { owner: string; repo: string }>(input: {
+  repositories: readonly R[];
+  token: (repository: R) => Promise<string | null>;
+  client: GitHubClient;
+  branch?: string;
+  signal?: AbortSignal;
+}): Promise<string[]> {
+  const results = await Promise.all(
+    input.repositories.map(async (repository) => {
+      const token = await input.token(repository).catch(() => null);
+      if (token === null) return null;
+      const found = await hasMergeQueue({
+        client: input.client,
+        token,
+        owner: repository.owner,
+        repo: repository.repo,
+        branch: input.branch ?? "main",
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      return found === null ? null : { name: `${repository.owner}/${repository.repo}`, found };
+    }),
+  );
+  const read = results.filter((entry) => entry !== null);
+  if (read.length === 0 && input.repositories.length > 0)
+    throw new Error("No repository's merge queue could be read.");
+  return read.filter((entry) => entry.found).map((entry) => entry.name);
+}

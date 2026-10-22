@@ -22,6 +22,7 @@ export {
   githubQueueMerge,
   hasMergeQueue,
   readMergeQueueEntry,
+  repositoriesWithMergeQueue,
 } from "./merge-queue";
 export type {
   EnqueueResult,

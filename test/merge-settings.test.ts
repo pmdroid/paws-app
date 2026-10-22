@@ -8,6 +8,7 @@ import {
   resolveMergeSettings,
   type MergePolicy,
 } from "../src/config";
+import { createFakeMergeQueue, repositoriesWithMergeQueue, type GitHubClient } from "../src/github";
 import { handleMergeSettingsRequest, type MergeSettingsOptions } from "../src/settings";
 import { tempHome } from "./helpers";
 
@@ -238,6 +239,61 @@ describe("Merging settings API", () => {
       (await handleMergeSettingsRequest(request("PUT", valid, "wrong"), options))?.status,
     ).toBe(403);
     expect(audits).toEqual([]);
+  });
+
+  test("GET lists the repositories whose main has a GitHub merge queue", async () => {
+    const { options } = fixture();
+    const queue = createFakeMergeQueue({ branches: ["main"] });
+    const client: GitHubClient = {
+      async request(req) {
+        const body = req.body as { variables?: { repo?: string } };
+        // Only acme/platform has a merge queue on main.
+        if (body?.variables?.repo === "web") {
+          queue.branches.clear();
+          const answer = await queue.respond(req);
+          queue.branches.add("main");
+          return answer!;
+        }
+        return (await queue.respond(req)) ?? { status: 404, body: {} };
+      },
+    };
+    options.githubQueues = (signal) =>
+      repositoriesWithMergeQueue({
+        repositories: [
+          { owner: "acme", repo: "platform" },
+          { owner: "acme", repo: "web" },
+        ],
+        client,
+        signal,
+        token: async () => "ghs_test",
+      });
+    const body = await (await handleMergeSettingsRequest(request(), options))!.json();
+    expect(body.githubQueue).toEqual({ repositories: ["acme/platform"] });
+  });
+
+  test("a workspace whose repositories have no GitHub merge queue cannot choose it", async () => {
+    const { options, audits } = fixture();
+    options.githubQueues = async () => [];
+    const body = await (await handleMergeSettingsRequest(request(), options))!.json();
+    expect(body.githubQueue).toEqual({ repositories: [] });
+    const choice = {
+      default: { order: "github-queue", mainMoved: "ci" },
+      projects: [],
+      rules: [],
+    };
+    const refused = await handleMergeSettingsRequest(request("PUT", choice), options);
+    expect(refused?.status).toBe(400);
+    expect(((await refused!.json()) as { error: string }).error).toContain(
+      "No configured repository has a GitHub merge queue",
+    );
+    expect(audits).toEqual([]);
+    // A failed check does not block the save; GitHub is read again when the task merges.
+    options.githubQueues = async () => {
+      throw new Error("offline");
+    };
+    expect((await handleMergeSettingsRequest(request("PUT", choice), options))?.status).toBe(200);
+    const failed = await (await handleMergeSettingsRequest(request(), options))!.json();
+    expect(failed).toMatchObject({ githubQueue: null, githubQueueError: expect.any(String) });
   });
 
   test("GET still answers when Linear choices cannot be loaded", async () => {
