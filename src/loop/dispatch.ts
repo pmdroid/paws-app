@@ -6,18 +6,27 @@ import type {
   SessionPlanStep,
   SessionUpdate,
   SessionUrl,
+  LinearFileTransfer,
   TrackerAdapter,
   TrackerRequestOptions,
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
-import { prepareLinearActivity } from "../db";
+import { getEvidence, prepareLinearActivity, setEvidenceAssetUrl } from "../db";
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { evidenceActivityBody } from "./artifacts";
+
+/** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
+export type EvidenceUploads = { files: LinearFileTransfer; root: string };
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
 
 /**
  * Deliver `linear` outbox rows to the tracker.
  * `activity` / `linear.activity` post progress. `linear.catchup` runs the poller.
+ * `linear.evidence` uploads a Closeout file and posts it inline.
  */
 export async function deliverLinearOutbox(
   message: OutboxRow,
@@ -25,6 +34,7 @@ export async function deliverLinearOutbox(
   catchUp: () => Promise<void>,
   context?: OutboxDeliveryContext,
   db?: Database,
+  uploads?: EvidenceUploads,
 ): Promise<void> {
   context?.signal.throwIfAborted();
   if (context && !context.isCurrent())
@@ -54,6 +64,10 @@ export async function deliverLinearOutbox(
   }
   if (message.op === "activity" || message.op === "linear.activity") {
     return postActivity(message, payload, tracker, options);
+  }
+  if (message.op === "linear.evidence") {
+    if (!db) throw new Error("Evidence delivery needs the database");
+    return postEvidence(message, payload, tracker, db, uploads, options);
   }
   if (message.op.startsWith("linear.session.")) {
     return postSession(payload, tracker, options);
@@ -99,6 +113,70 @@ async function postActivity(
       ...(id === undefined ? {} : { id }),
       ...(action === undefined ? {} : { action }),
       ...(ephemeral === undefined ? {} : { ephemeral }),
+    },
+    options,
+  );
+}
+
+/**
+ * Uploads the evidence file once and keeps its asset URL on the evidence row, so a retry
+ * after a failed post does not upload again. A failed upload throws for the outbox to retry;
+ * the last attempt posts the Paws link with a note instead.
+ */
+async function postEvidence(
+  message: OutboxRow,
+  payload: Record<string, unknown>,
+  tracker: TrackerAdapter,
+  db: Database,
+  uploads: EvidenceUploads | undefined,
+  options: TrackerRequestOptions,
+): Promise<void> {
+  const id = readString(payload, "id");
+  const sessionId = readString(payload, "sessionId");
+  const evidenceId = readString(payload, "evidenceId");
+  const checkId = readString(payload, "checkId");
+  const link = readString(payload, "link");
+  if (!id || !sessionId || !evidenceId || !checkId || !link)
+    throw new Error("Evidence activity is missing required fields");
+  const evidence = getEvidence(db, evidenceId);
+  if (evidence === null) throw new Error("Evidence activity has no evidence row");
+  let assetUrl = evidence.assetUrl ?? undefined;
+  let note: string | undefined;
+  if (assetUrl === undefined) {
+    try {
+      if (!uploads) throw new Error("Linear file uploads are unavailable");
+      const bytes = new Uint8Array(await readFile(join(uploads.root, evidence.id)));
+      if (
+        bytes.byteLength !== evidence.sizeBytes ||
+        createHash("sha256").update(bytes).digest("hex") !== evidence.sha256
+      )
+        throw new Error("Evidence file integrity check failed");
+      const uploaded = await uploads.files.upload({
+        filename: evidence.displayName,
+        contentType: evidence.mediaType,
+        bytes,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      assetUrl = uploaded.assetUrl;
+      setEvidenceAssetUrl(db, evidence.id, assetUrl);
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      if (message.attempts < message.maxAttempts) throw error;
+      note = "Paws could not upload this file to Linear.";
+    }
+  }
+  await tracker.postProgress(
+    {
+      sessionId,
+      kind: "thought",
+      id,
+      body: evidenceActivityBody({
+        checkId,
+        displayName: evidence.displayName,
+        link,
+        ...(assetUrl === undefined ? {} : { assetUrl }),
+        ...(note === undefined ? {} : { note }),
+      }),
     },
     options,
   );

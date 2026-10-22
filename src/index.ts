@@ -942,6 +942,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         evidence: runtime.publicUrl
           ? {
               publicUrl: runtime.publicUrl,
+              root: paths.evidenceDir,
               store: {
                 save: (input) =>
                   createEvidenceStore({ db, root: paths.evidenceDir })

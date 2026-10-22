@@ -16,6 +16,7 @@ import {
   completeArtifactAttempt,
   enqueueOutboxOnce,
   getArtifact,
+  getEvidence,
   immediate,
   listEvidence,
   markArtifact,
@@ -69,9 +70,36 @@ export type EvidenceSink = {
   }): Promise<{ id: string }>;
 };
 
+const MB = 1024 * 1024;
+
+/** The largest evidence files Paws uploads to Linear. Larger ones keep only the Paws link. */
+export const EVIDENCE_INLINE_LIMITS = { image: 10 * MB, video: 50 * MB };
+
+/**
+ * The Linear activity for one Closeout video or screenshot: the embedded upload when there is
+ * one, then the Paws link, then an optional note.
+ */
+export function evidenceActivityBody(input: {
+  checkId: string;
+  displayName: string;
+  link: string;
+  assetUrl?: string;
+  note?: string;
+}): string {
+  const label = input.displayName.replace(/[\\[\]]/g, "\\$&");
+  const heading = `Closeout evidence for check \`${input.checkId}\``;
+  const lines =
+    input.assetUrl === undefined
+      ? [`${heading}: [${label}](<${input.link}>)`]
+      : [`${heading}:`, `![${label}](<${input.assetUrl}>)`, `In Paws: [${label}](<${input.link}>)`];
+  return [...lines, ...(input.note === undefined ? [] : [input.note])].join("\n\n");
+}
+
 /**
  * Keeps a video or screenshot published with a Closeout check id in the evidence store and
- * posts its Paws link to Linear. Every other artifact goes to `linear`, unchanged.
+ * posts it to Linear. With `uploads`, files within `EVIDENCE_INLINE_LIMITS` go out as a
+ * `linear.evidence` outbox row that uploads the file and embeds it; others get the Paws link.
+ * Every other artifact goes to `linear`, unchanged.
  */
 export function createEvidenceArtifactPublisher(options: {
   db: Database;
@@ -79,6 +107,8 @@ export function createEvidenceArtifactPublisher(options: {
   publicUrl: string;
   itemId: string;
   sessionId: string;
+  /** Upload evidence to Linear. The outbox handler needs the Linear file transfer. */
+  uploads?: boolean;
   linear?: PublishArtifactHook;
   now?: () => number;
 }): PublishArtifactHook {
@@ -127,22 +157,39 @@ export function createEvidenceArtifactPublisher(options: {
             source: artifact.bytes,
           }));
         const url = `${options.publicUrl.replace(/\/+$/, "")}/evidence/${encodeURIComponent(stored.id)}`;
-        const label = artifact.displayName.replace(/[\\[\]]/g, "\\$&");
+        const row = getEvidence(options.db, stored.id);
+        const kind = row?.mediaType.startsWith("video/") ? "video" : "image";
+        const inline = row !== null && row.sizeBytes <= EVIDENCE_INLINE_LIMITS[kind];
+        const activity = {
+          id: randomUUID(),
+          sessionId: options.sessionId,
+          kind: "thought",
+        };
         enqueueOutboxOnce(options.db, {
           target: "linear",
-          op: "activity",
+          op: inline && options.uploads ? "linear.evidence" : "activity",
           delivery: "ordered",
           priority: 0,
           orderingKey: options.sessionId,
           idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
           generation,
           now: now(),
-          payload: {
-            id: randomUUID(),
-            sessionId: options.sessionId,
-            kind: "thought",
-            body: `Closeout evidence for check \`${evidence.checkId}\`: [${label}](<${url}>)`,
-          },
+          payload:
+            inline && options.uploads
+              ? { ...activity, evidenceId: stored.id, checkId: evidence.checkId, link: url }
+              : {
+                  ...activity,
+                  body: evidenceActivityBody({
+                    checkId: evidence.checkId,
+                    displayName: artifact.displayName,
+                    link: url,
+                    ...(row !== null && !inline
+                      ? {
+                          note: `This ${kind} is larger than ${EVIDENCE_INLINE_LIMITS[kind] / MB} MB, so it is only in Paws.`,
+                        }
+                      : {}),
+                  }),
+                },
         });
         return { url, displayName: artifact.displayName };
       })().finally(() => inflight.delete(key));
