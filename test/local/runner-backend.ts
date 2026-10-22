@@ -2247,6 +2247,66 @@ export async function probeRunnerBackend(
         true,
         { legacy: legacy.repository.baseSha, current: current.repository.mainSha },
       );
+      const nextRun = async () => {
+        for (let attempt = 0; attempt < 500; attempt++) {
+          for (const hostId of hostIds)
+            while (work.commands(hostId).length) {
+              const command = await next(hostId);
+              if (command.type === "run") return command;
+            }
+          await delay(2);
+        }
+        throw new Error("No dispatched run command");
+      };
+      await drain();
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const restarted = tracked();
+      const restartAbort = new AbortController();
+      let restartFailure: unknown = null;
+      const restartedRun = placedBackend.forItem(restarted.id)(
+        input(restarted, { signal: restartAbort.signal }),
+      );
+      void restartedRun.catch((error: unknown) => (restartFailure = error));
+      const beforeRestart = await nextRun();
+      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [now - 1, beforeRestart.runId]);
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      await delay(50);
+      assert.equal(restartFailure, null);
+      const afterRestart = await nextRun();
+      assert.equal(afterRestart.runId, beforeRestart.runId);
+      assert.equal(afterRestart.generation, beforeRestart.generation + 1);
+      restartAbort.abort();
+      await restartedRun.catch(() => undefined);
+      await drain();
+      observe(
+        "a runner restart that expires the work's lease places the run again instead of failing",
+        true,
+        { generations: [beforeRestart.generation, afterRestart.generation] },
+      );
+      const offlineAt = now - 120_000;
+      for (const hostId of hostIds)
+        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
+      const offline = tracked();
+      const offlineAbort = new AbortController();
+      let offlineSettled = false;
+      const offlineRun = placedBackend.forItem(offline.id)(
+        input(offline, { signal: offlineAbort.signal }),
+      );
+      void offlineRun.then(
+        () => (offlineSettled = true),
+        () => (offlineSettled = true),
+      );
+      await delay(60);
+      assert.equal(offlineSettled, false);
+      for (const hostId of hostIds) work.heartbeat(hostId);
+      const placedWhenOnline = await dispatched();
+      assert.notEqual(placedWhenOnline, null);
+      offlineAbort.abort();
+      await offlineRun.catch(() => undefined);
+      await drain();
+      observe("placement waits for a paired runner to come online instead of failing", true, {
+        placedWhenOnline,
+      });
     }
   } finally {
     failoverAbort.abort();
