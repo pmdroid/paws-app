@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
+import { createRunnerSkillInstaller } from "../runner-execution";
 import { openRunnerRuntime } from "../runner-runtime";
 
 export async function runPairedDaemon(
@@ -19,7 +20,7 @@ export async function runPairedDaemon(
   signal.throwIfAborted();
   if (daemon.status().phase !== "paired") throw new Error("Runner must be paired");
   const root = "/var/lib/paws-runner";
-  for (const name of ["runtime", "health", "repositories"]) {
+  for (const name of ["runtime", "health", "repositories", "skills"]) {
     const path = join(root, name);
     mkdirSync(path, { recursive: true, mode: 0o700 });
     const info = lstatSync(path);
@@ -36,11 +37,18 @@ export async function runPairedDaemon(
     },
     onError: report,
   };
+  const skills = createRunnerSkillInstaller({
+    root: join(root, "skills"),
+    owner: { uid: ids.agentUid, gid: process.getgid?.() ?? ids.agentUid },
+    download: (skill) => daemon.downloadSkill(skill),
+    onError: report,
+  });
   const runtime = await openRunnerRuntime({
     ...shared,
     root: join(root, "runtime"),
     repositoryRoot: join(root, "repositories"),
     home: root,
+    skills,
     concurrency: () => daemon.capacity(),
   });
   let health: Awaited<ReturnType<typeof openRunnerHealthRuntime>> | undefined;

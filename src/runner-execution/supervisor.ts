@@ -16,6 +16,7 @@ import { ExecutionIdSchema } from "./jobs";
 import { readRunnerJob, type RunnerSpool } from "./spool";
 import type { RunnerResults } from "./results";
 import type { RunnerBrokerClient } from "./broker";
+import type { RunnerSkillInstaller } from "./skills";
 
 function startTime(pid: number): string | undefined {
   try {
@@ -130,6 +131,10 @@ export function createDirectWorkerSupervisor(options: {
   spool?: RunnerSpool;
   results?: RunnerResults;
   taskRoot?: string;
+  /** The home every agent runs from. */
+  agentHome?: string;
+  /** Installs current skills into a home before its worker starts, and pins them for the run. */
+  skills?: Pick<RunnerSkillInstaller, "prepareHome" | "hold" | "release">;
   launch?: (
     executionId: string,
     home: string,
@@ -142,6 +147,7 @@ export function createDirectWorkerSupervisor(options: {
   };
 }): RunnerBrokerClient {
   const taskRoot = options.taskRoot ?? "/var/lib/paws-agent-tasks";
+  const agentHome = options.agentHome ?? "/var/lib/paws-agent";
   const launch = options.launch ?? workerLaunch;
   mkdirSync(options.stateRoot, { recursive: true, mode: 0o700 });
   function homeFor(executionId: string): string {
@@ -156,7 +162,7 @@ export function createDirectWorkerSupervisor(options: {
     const gid = process.getgid?.() ?? options.results.agentUid;
     if (job.command.type === "task")
       ensureDirectory(join(taskRoot, executionId), options.results.agentUid, gid, 0o700);
-    return "/var/lib/paws-agent";
+    return agentHome;
   }
   function receipt(executionId: string): string {
     ExecutionIdSchema.parse(executionId);
@@ -205,12 +211,18 @@ export function createDirectWorkerSupervisor(options: {
     },
     async stop(executionId) {
       const worker = recorded(executionId);
-      if (!worker || startTime(worker.pid) !== worker.born) return;
+      if (!worker || startTime(worker.pid) !== worker.born) {
+        options.skills?.release(executionId);
+        return;
+      }
       const { pid, born } = worker;
       killRecorded(pid);
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
-        if (startTime(pid) !== born) return;
+        if (startTime(pid) !== born) {
+          options.skills?.release(executionId);
+          return;
+        }
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       throw new Error("Runner worker did not exit");
@@ -233,6 +245,8 @@ export function createDirectWorkerSupervisor(options: {
       0o600,
     );
     try {
+      options.skills?.prepareHome(home);
+      options.skills?.hold(home, executionId);
       child = launch(executionId, home, log, resume);
       child.on?.("exit", (code, signal) => {
         try {
@@ -263,6 +277,7 @@ export function createDirectWorkerSupervisor(options: {
       }
       syncDirectory(options.stateRoot);
       if (child?.pid !== undefined) killRecorded(child.pid);
+      options.skills?.release(executionId);
       throw error;
     } finally {
       closeSync(fd);
