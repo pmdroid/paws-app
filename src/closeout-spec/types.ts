@@ -102,6 +102,9 @@ export type PolicyReview = {
 /** Media an evidence requirement counts. */
 export type EvidenceMedia = "image" | "video";
 
+/** `human`: a reviewer accepts the published files in Linear before the requirement passes. */
+export type EvidenceApprovalMode = "human";
+
 /**
  * Paws extension to draft 0.1. Screenshots or videos the agent publishes with
  * `publish_artifact` and this `checkId`. Nothing runs. The requirement passes
@@ -118,6 +121,8 @@ export type PolicyEvidence = {
   minimum?: number;
   /** Shown to the agent by `get_closeout`. 1 to 500 characters. */
   hint?: string;
+  /** Omitted means publishing is enough. */
+  approval?: EvidenceApprovalMode;
   paths?: PolicyPaths;
 };
 
@@ -215,15 +220,32 @@ export type ResolvedEvidence = {
   media: EvidenceMedia[];
   minimum: number;
   hint?: string;
+  approval?: EvidenceApprovalMode;
   paths?: string[];
 };
 
 /** One video or screenshot Paws keeps for a check of this task. */
 export type PublishedEvidence = {
+  /** Evidence store id. An approval names the files it accepted by this id. */
+  id?: string;
   checkId: string;
   media: EvidenceMedia;
   /** Lowercase hex commit the workspace was at when the file was published. */
   commit: string;
+};
+
+/**
+ * A reviewer accepted the files published for an `approval: human` check.
+ * It counts only while `evidenceIds` covers every file the check counts at the
+ * candidate head, so evidence published after the review needs a new approval.
+ */
+export type EvidenceApproval = {
+  task: string;
+  checkId: string;
+  evidenceIds: string[];
+  approvedBy: string;
+  /** ISO 8601 time of the approval. */
+  approvedAt: string;
 };
 
 /**

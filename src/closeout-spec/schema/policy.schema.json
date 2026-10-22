@@ -112,6 +112,7 @@
         },
         "minimum": { "type": "integer", "minimum": 1, "maximum": 100 },
         "hint": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "approval": { "const": "human" },
         "paths": { "$ref": "#/$defs/paths" }
       }
     },

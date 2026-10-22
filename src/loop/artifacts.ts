@@ -51,6 +51,7 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
 /** The item's Closeout videos and screenshots, for `evidence` checks. */
 export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
   return listEvidence(db, itemId).map((row) => ({
+    id: row.id,
     checkId: row.checkId,
     media: row.mediaType.startsWith("video/") ? "video" : "image",
     commit: row.headCommit,
