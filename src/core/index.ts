@@ -104,3 +104,17 @@ export {
   transientRetryDelayMs,
 } from "./failure";
 export { mergeQueueLine, ordinal, queueLine } from "./queue-line";
+export {
+  HOOK_AGENTS,
+  HOOK_COMMAND_MAX_LENGTH,
+  HOOK_EVENTS,
+  HOOK_EVENT_LABELS,
+  HOOK_MATCHER_MAX_LENGTH,
+  HOOK_TIMEOUT_DEFAULT_SECONDS,
+  HOOK_TIMEOUT_MAX_SECONDS,
+  WORKSPACE_HOOK_LIMIT,
+  workspaceHookProblem,
+  type HookAgent,
+  type HookEvent,
+  type WorkspaceHook,
+} from "./hooks";

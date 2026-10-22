@@ -21,6 +21,7 @@ import {
   getTaskMode,
   getWorkItem,
   immediate,
+  listHooks,
   runnerHasCapacity,
   saveCheckpoint,
   startUsagePause,
@@ -56,7 +57,7 @@ import {
   type UsageLimit,
   type UsageLimitWait,
 } from "./failover";
-import { PawsShutdown } from "../core";
+import { PawsShutdown, WORKSPACE_HOOK_LIMIT, type WorkspaceHook } from "../core";
 import { quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 class RunnerUnavailableError extends Error {
@@ -207,6 +208,13 @@ export function createRemoteAgentRunner(options: {
         )
         .get(agent, sessionId, now())?.resetsAt ?? null
     );
+  }
+  /** Workspace hooks for the run's agent, signed into the command with everything else. */
+  function runHooks(agent: string): { hooks?: WorkspaceHook[] } {
+    const hooks = listHooks(db).filter((hook) =>
+      (hook.agents as readonly string[]).includes(agent),
+    );
+    return hooks.length ? { hooks: hooks.slice(0, WORKSPACE_HOOK_LIMIT) } : {};
   }
   async function select(
     itemId: string,
@@ -716,6 +724,7 @@ export function createRemoteAgentRunner(options: {
                   : {
                       type: input.role === "reviewer" ? ("review" as const) : ("run" as const),
                       ...(skillsInputId !== undefined ? { skillsInputId } : {}),
+                      ...(input.role === "reviewer" ? {} : runHooks(profile.agent)),
                       repository: {
                         ...scoped.repository!,
                         baseSha: baseSha!,
@@ -857,6 +866,7 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "permission")
                 await emit({ type: "permission", ...event.permission });
+              if (event.type === "hook_failed") await emit(event);
               if (event.type === "progress") {
                 if (input.postUpdate && !event.notice)
                   await input.postUpdate.post(event.text).catch(() => undefined);

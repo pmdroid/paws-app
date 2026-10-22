@@ -163,3 +163,28 @@ test("the transcript route answers JSON entries when the page asks for them", as
   expect(hidden.status).toBe(404);
   db.close();
 });
+
+test("a failing workspace hook shows on the run page as an error", () => {
+  const home = tempHome();
+  mkdirSync(join(home, "runs", "hook-run"), { recursive: true });
+  writeFileSync(
+    join(home, "runs", "hook-run", "acp.jsonl"),
+    `${JSON.stringify({
+      t: "2026-10-22T10:00:00.000Z",
+      event: {
+        type: "hook_failed",
+        hookId: "hook_fmt",
+        hookEvent: "after_edit",
+        command: "bun run fmt",
+        reason: "exited with 1: fmt failed",
+      },
+    })}\n`,
+  );
+  expect([...fullAgentTranscript(home, "hook-run", new Date(0).toISOString(), {})]).toEqual([
+    {
+      at: "2026-10-22T10:00:00.000Z",
+      kind: "err",
+      text: "Workspace hook failed (after a file edit): bun run fmt · exited with 1: fmt failed",
+    },
+  ]);
+});

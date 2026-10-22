@@ -1,4 +1,4 @@
-import type { GitCommitIdentity, GitCommitPolicy } from "../core";
+import type { GitCommitIdentity, GitCommitPolicy, HookEvent, WorkspaceHook } from "../core";
 import type { AgentInputFile } from "./input-files";
 import type { AgentProfile } from "../config";
 import type { PolicyFilesLoad } from "../closeout-spec";
@@ -25,6 +25,8 @@ export type RunOutcome = StopReason | "timeout" | "error";
 /** Events the Linear module can map onto agent activities. */
 export type AcpEvent =
   | { type: "progress"; text: string; messageChunk?: boolean }
+  /** A workspace hook exited with an error or timed out. The run goes on. */
+  | { type: "hook_failed"; hookId: string; hookEvent: HookEvent; command: string; reason: string }
   | {
       type: "auth_checked";
       role: AgentRole;
@@ -83,6 +85,8 @@ export type AgentIdentity = { session: string; model: string; provider: string }
 export interface RunAgentOptions {
   repository?: string;
   skillsRoot?: string;
+  /** Registered workspace hooks, injected next to Closeout's Stop hook. */
+  workspaceHooks?: readonly WorkspaceHook[];
   checkoutExclusions?: readonly string[];
   networkGit?: (args: string[]) => Promise<string>;
   profile?: AgentProfile;
