@@ -24,7 +24,7 @@ describe("activity mapping", () => {
     expect(shouldKeepAlive(KEEPALIVE_MS)).toBe(true);
   });
 
-  test("keeps reasoning private and maps public messages to progress", () => {
+  test("keeps reasoning and agent narration out of Linear", () => {
     expect(
       activityFromAcpEvent({
         type: "session_update",
@@ -50,8 +50,9 @@ describe("activity mapping", () => {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "done" },
         },
-      })?.kind,
-    ).toBe("thought");
+      }),
+    ).toBeNull();
+    expect(activityFromAcpEvent({ type: "prompt_complete", stopReason: "end_turn" })).toBeNull();
     expect(activityFromAcpEvent({ type: "error", message: "boom" })?.kind).toBe("error");
     expect(activityFromAcpEvent({ type: "error", message: GROK_LOGIN_MESSAGE })).toEqual({
       kind: "error",
@@ -86,18 +87,16 @@ describe("streamed activity", () => {
     reporter.onEvent(chunk("The screenshot is ready."));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
     expect(reporter.resultBody()).toBe("The screenshot is ready.");
-    expect(posted).toEqual([
-      { kind: "thought", body: "Reading the selected repository." },
-      { kind: "thought", body: "The screenshot is ready." },
-    ]);
+    expect(posted).toEqual([{ kind: "thought", body: "Reading the selected repository." }]);
   });
 
-  test("remote public fragments join at tool boundaries without entering the final answer", () => {
+  test("agent narration stays out of Linear and the final message stays the result", () => {
     const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     for (const text of ["Set", "ting", " ", "up."])
       reporter.onEvent({ type: "progress", text, messageChunk: true });
-    expect(posted).toEqual([]);
+    reporter.onEvent(chunk("I"));
+    reporter.onEvent(chunk(" will check."));
     reporter.onEvent({
       type: "session_update",
       sessionId: "s",
@@ -110,12 +109,20 @@ describe("streamed activity", () => {
         rawInput: { command: "chromium" },
       },
     });
-    expect(posted).toEqual([{ kind: "thought", body: "Setting up." }]);
-    expect(reporter.resultBody()).toBe("");
-    reporter.onEvent(chunk("The screenshot is ready."));
+    reporter.onEvent({
+      type: "session_update",
+      sessionId: "s",
+      update: {
+        sessionUpdate: "plan",
+        entries: [{ content: "Check the page", status: "in_progress", priority: "medium" }],
+      },
+    });
+    reporter.onEvent(chunk("Verified"));
+    reporter.onEvent(chunk(" locally."));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
-    expect(reporter.resultBody()).toBe("The screenshot is ready.");
-    expect(posted.filter((activity) => activity.body === "Setting up.")).toHaveLength(1);
+    reporter.flush();
+    expect(posted).toEqual([]);
+    expect(reporter.resultBody()).toBe("Verified locally.");
   });
 
   function chunk(text: string, thought = false): AcpEvent {
@@ -129,36 +136,13 @@ describe("streamed activity", () => {
     };
   }
 
-  test("joins public fragments and preserves final content without completing the session", () => {
-    const posted: Omit<ProgressUpdate, "sessionId">[] = [];
-    const reporter = createAcpActivityReporter((activity) => posted.push(activity));
-    reporter.onEvent(chunk("I"));
-    reporter.onEvent(chunk(" will"));
-    reporter.onEvent(chunk(" "));
-    reporter.onEvent(chunk("check."));
-    expect(posted).toEqual([]);
-    reporter.onEvent({
-      type: "session_update",
-      sessionId: "s",
-      update: { sessionUpdate: "tool_call", toolCallId: "check", title: "Run checks" },
-    });
-    expect(posted).toEqual([{ kind: "thought", body: "I will check." }]);
-    reporter.onEvent(chunk("Verified"));
-    reporter.onEvent(chunk(" locally."));
-    reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
-    reporter.flush();
-    expect(posted.slice(1)).toEqual([{ kind: "thought", body: "Verified locally." }]);
-    expect(reporter.resultBody()).toBe("Verified locally.");
-  });
-
-  test("retains the entire public message across ordered Linear activities", () => {
+  test("retains the entire public message as the result without posting it", () => {
     const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     const body = "a".repeat(4000) + " Required final detail.";
     reporter.onEvent(chunk(body));
     reporter.onEvent({ type: "prompt_complete", stopReason: "end_turn" });
-    expect(posted.map((activity) => activity.body).join("")).toBe(body);
-    expect(posted.every((activity) => activity.body.length <= 3500)).toBe(true);
+    expect(posted).toEqual([]);
     expect(reporter.resultBody()).toBe(body);
   });
 
@@ -171,10 +155,7 @@ describe("streamed activity", () => {
     reporter.onEvent(chunk("done."));
     reporter.onEvent({ type: "cancelled", reason: "timeout" });
     reporter.flush();
-    expect(posted).toEqual([
-      { kind: "thought", body: "Partially done." },
-      { kind: "error", body: "Run timed out." },
-    ]);
+    expect(posted).toEqual([{ kind: "error", body: "Run timed out." }]);
   });
 
   test("quoted credentials in tool output remain private", () => {
