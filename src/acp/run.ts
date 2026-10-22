@@ -650,7 +650,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       ).trim();
       await validateCandidateAttribution(
         options.worktreePath,
-        commitBase!,
+        options.mainSha ? [commitBase!, options.mainSha] : commitBase!,
         head,
         commitPolicy,
         options.checkpointEnv ?? sourceEnv,

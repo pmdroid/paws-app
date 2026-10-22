@@ -284,3 +284,48 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
     db.close();
   }
 });
+
+test("an agent rebase onto the run's main passes attribution only when that main is named", async () => {
+  const f = await fixture();
+  expect((await agent(f)).errorMessage).toBeUndefined();
+  const head = (await f.invoke(["rev-parse", "HEAD"])).trim();
+  await f.invoke(["checkout", "-q", "-b", "upstream", f.base]);
+  writeFileSync(join(f.tree, "upstream"), "moved main");
+  await f.invoke(["add", "."]);
+  await f.invoke(["commit", "-m", "moved main"]);
+  const main = (await f.invoke(["rev-parse", "HEAD"])).trim();
+  const rebase = async (mainSha?: string) => {
+    await f.invoke(["checkout", "-q", "-B", "main", head]);
+    const script = join(f.root, `rebase-${mainSha ?? "none"}.json`);
+    writeFileSync(
+      script,
+      JSON.stringify({
+        model: "fixture-model",
+        steps: [{ type: "terminal", command: "git", args: ["rebase", main] }, { type: "end" }],
+      }),
+    );
+    return runAgent({
+      role: "implementer",
+      profile: { agent: "claude", model: "fixture-model" },
+      itemId: "item",
+      runId: `rebase-${mainSha ?? "none"}`,
+      worktreePath: f.tree,
+      pawsRoot: join(f.root, "paws"),
+      home: f.home,
+      env: f.env,
+      command: process.execPath,
+      args: [
+        join(import.meta.dir, "../src/acp/testing/fake-agent.ts"),
+        join(f.root, `rebase-result-${mainSha ?? "none"}.json`),
+        script,
+      ],
+      prompt: "Rebase onto main",
+      commitPolicy: policy,
+      ...(mainSha ? { mainSha } : {}),
+    });
+  };
+  expect({
+    withoutMain: (await rebase()).errorMessage !== undefined,
+    withMain: (await rebase(main)).errorMessage ?? null,
+  }).toEqual({ withoutMain: true, withMain: null });
+});
