@@ -164,6 +164,16 @@ describe("job queue", () => {
     expect(next?.id).toBe(created);
   });
 
+  test("a retry waits out the error's retryAfterMs when it is longer than the backoff", () => {
+    const { db, clock } = queue();
+    enqueueJob(db, { queue: "work", now: clock.now() });
+    const claimed = claim(db, clock, ["work"]);
+    const rateLimited = Object.assign(new Error("rate limited"), { retryAfterMs: 90_000 });
+    const next = claimed === null ? null : failJob(db, claimed, rateLimited, { now: clock.now() });
+    expect(next?.status).toBe("pending");
+    expect(next?.runAt).toBe(clock.now() + 90_000);
+  });
+
   test("two connections never claim the same row", () => {
     const dir = mkdtempSync(join(tmpdir(), "paws-jobs-"));
     const path = join(dir, "paws.db");

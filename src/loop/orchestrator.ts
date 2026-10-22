@@ -1038,36 +1038,40 @@ export class Orchestrator {
       this.runLeasedJob(job.payload, context, () => this.executeRetried(job, context)),
     );
     jobs.register(JOB_KIND.reverify, (job, context) =>
-      this.runLeasedJob(job.payload, context, () =>
-        this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+      this.failOnLastAttempt(job, context, "reverify", () =>
+        this.runLeasedJob(job.payload, context, () =>
+          this.runOwnedJob(job.payload, () => this.reverify(job.payload, job.id)),
+        ),
       ),
     );
     jobs.register(JOB_KIND.merge, async (job, context) => {
       let waiting: MergeWait | undefined;
-      await this.runLeasedJob(job.payload, context, async () => {
-        try {
-          await this.runOwnedJob(job.payload, async () => {
-            waiting = await this.merge(job.payload, job.id);
-          });
-        } catch (error) {
-          if (!(error instanceof LinearReconciliationPendingError)) throw error;
-          immediate(this.db, () => {
-            if (!context.isCurrent()) throw context.signal.reason;
-            enqueueJobOnce(this.db, {
-              queue:
-                getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
-                  ? JOB_KIND.reverify
-                  : job.queue,
-              lane: job.lane,
-              priority: job.priority,
-              payload: job.payload,
-              jobKey: `merge-reconciliation:${job.id}`,
-              now: this.now(),
-              runAt: this.now() + 30000,
+      await this.failOnLastAttempt(job, context, "merge", () =>
+        this.runLeasedJob(job.payload, context, async () => {
+          try {
+            await this.runOwnedJob(job.payload, async () => {
+              waiting = await this.merge(job.payload, job.id);
             });
-          });
-        }
-      });
+          } catch (error) {
+            if (!(error instanceof LinearReconciliationPendingError)) throw error;
+            immediate(this.db, () => {
+              if (!context.isCurrent()) throw context.signal.reason;
+              enqueueJobOnce(this.db, {
+                queue:
+                  getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
+                    ? JOB_KIND.reverify
+                    : job.queue,
+                lane: job.lane,
+                priority: job.priority,
+                payload: job.payload,
+                jobKey: `merge-reconciliation:${job.id}`,
+                now: this.now(),
+                runAt: this.now() + 30000,
+              });
+            });
+          }
+        }),
+      );
       if (waiting === undefined) return;
       if (
         parkMergeForCi(
@@ -1206,6 +1210,33 @@ export class Orchestrator {
       }
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      throw error;
+    }
+  }
+
+  private async failOnLastAttempt(
+    job: Job,
+    context: JobContext,
+    reason: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      const itemId = readString(job.payload, "itemId");
+      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      if (
+        job.attempts >= job.maxAttempts &&
+        item &&
+        !this.shuttingDown &&
+        context.isCurrent() &&
+        !this.jobContexts.has(item.id) &&
+        !item.cancelRequested &&
+        (item.state === "verifying" || item.state === "merge_queue")
+      ) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.fail(item, reason, `Stopped after ${job.attempts} attempts. ${message}`, error);
+      }
       throw error;
     }
   }
@@ -2453,8 +2484,9 @@ export class Orchestrator {
         base = (await git(["-C", worktree, "merge-base", "HEAD", upstream])).trim();
       }
     } catch (error) {
+      if (isTransientFailure(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      this.fail(item, "reverify", message);
+      this.fail(item, "reverify", message, error);
       return;
     }
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
@@ -2707,8 +2739,11 @@ export class Orchestrator {
     });
     // The first task keeps its place while it waits for CI or runs Closeout again after main moved.
     // Any other outcome takes it out of the queue; after a fix it rejoins at the end.
+    const unreadable =
+      merged.outcome === "blocked" && merged.message?.startsWith("could not read") === true;
     if (
       queued &&
+      !unreadable &&
       merged.outcome !== "waiting" &&
       !(
         closeoutAfterUpdate &&
@@ -2750,6 +2785,7 @@ export class Orchestrator {
       );
     if (!merged.merged && getWorkItem(this.db, item.id)?.state === "awaiting_input") return;
     if (!merged.merged) {
+      if (unreadable) throw new Error(merged.message);
       if (closeoutFailure !== null) {
         const failure = closeoutFailure as CloseoutVerdict;
         await this.askCloseoutHelp(item, failure.result, failure.summary);
