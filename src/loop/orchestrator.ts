@@ -126,6 +126,8 @@ import {
   listCloseoutRecoveries,
   saveCloseoutRecovery,
   listCloseoutRounds,
+  runRunnerAvailability,
+  setRunningCloseoutStepDetail,
   startCloseoutRound,
   type CloseoutRecovery,
   markRun,
@@ -227,6 +229,12 @@ import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { sweepWorktrees } from "./worktree-sweep";
+import {
+  KEEP_WAITING,
+  MOVE_TO_ANOTHER_RUNNER,
+  waitForRunner,
+  type RunnerWaitQuestion,
+} from "./runner-wait";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
@@ -302,6 +310,8 @@ export type OrchestratorOptions = {
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
   };
   remoteCloseoutRetry?: { attempts: number; delayMs: number };
+  /** How often Closeout rechecks an unavailable runner, and when it asks the team. */
+  runnerWait?: { pollMs: number; askAfterMs: number };
   publicationReady?: (
     itemId: string,
     phase: "publish" | "merge",
@@ -1851,6 +1861,7 @@ export class Orchestrator {
                   worktree,
                   base,
                   head: commit,
+                  stepId: request.itemId,
                   sessionPath,
                   policy,
                   assertCurrent,
@@ -1988,6 +1999,7 @@ export class Orchestrator {
       worktree: string;
       base: string;
       head: string;
+      stepId: string | undefined;
       sessionPath: string;
       policy: GitCommitPolicy | undefined;
       assertCurrent: () => void;
@@ -2004,6 +2016,7 @@ export class Orchestrator {
     let reason = "remote execution is unavailable";
     for (let attempt = 1; attempt <= (runner ? attempts : 0); attempt++) {
       assertCurrent();
+      await this.waitForTaskRunner(item, head, input.stepId, deps.signal, assertCurrent);
       if (attempt > 1) {
         input.report(
           `Closeout could not run the checks for ${item.linearIdentifier} on its runner (${reason}). Retrying in ${Math.round(delayMs / 1000)} s.`,
@@ -2054,6 +2067,111 @@ export class Orchestrator {
     throw new Error(
       `The Closeout checks could not run on the runner for commit ${short}: ${reason}. No check failed; they have no result for this commit. Reply once the runner is back to try again.`,
     );
+  }
+
+  /**
+   * Holds the Closeout checks while the task's runner is paused, revoked or
+   * offline. The waiting step shows why, Linear gets one thought, and no
+   * attempt is used. A long wait asks the team whether to move the task.
+   */
+  private async waitForTaskRunner(
+    item: WorkItemRecord,
+    head: string,
+    stepId: string | undefined,
+    signal: AbortSignal | undefined,
+    assertCurrent: () => void,
+  ): Promise<void> {
+    const runId = item.currentRunId;
+    if (runId === null) return;
+    const { pollMs, askAfterMs } = this.options.runnerWait ?? {};
+    let runnerName = "";
+    const outcome = await waitForRunner({
+      runner: () => {
+        assertCurrent();
+        const runner = runRunnerAvailability(this.db, runId);
+        if (runner) runnerName = runner.name;
+        return runner;
+      },
+      now: () => this.now(),
+      sleep: (ms) => delay(ms, undefined, signal ? { signal } : {}),
+      waiting: (reason) => {
+        if (stepId)
+          setRunningCloseoutStepDetail(this.db, item.id, head, stepId, reason, this.now());
+      },
+      notify: (reason) => {
+        this.post(item, "thought", reason, `${runId}:closeout-runner-wait:${head}:${reason}`);
+        void this.flush().catch(() => {});
+      },
+      ask: (runner, reason) => this.askRunnerWait(item, runId, runner.name, reason),
+      ...(pollMs === undefined ? {} : { pollMs }),
+      ...(askAfterMs === undefined ? {} : { askAfterMs }),
+    });
+    if (outcome === "move")
+      throw new Error(
+        `The team asked to move ${item.linearIdentifier} off runner ${runnerName}, so Closeout stopped waiting. No check failed. Paws cannot move a task to another runner yet; reply once a runner is available to run Closeout again.`,
+      );
+  }
+
+  private askRunnerWait(
+    item: WorkItemRecord,
+    runId: string,
+    runnerName: string,
+    reason: string,
+  ): RunnerWaitQuestion {
+    const pending: RunnerWaitQuestion = { answer: new Promise<string>(() => {}), cancel() {} };
+    const sessionId = this.activitySession(item);
+    if (sessionId === null) return pending;
+    const minutes = Math.round((this.options.runnerWait?.askAfterMs ?? 30 * 60_000) / 60_000);
+    const body = `Runner ${runnerName} has been unavailable for ${minutes} minutes, so Closeout for ${item.linearIdentifier} has not started. Move the task to another runner, or keep waiting?`;
+    const options = [MOVE_TO_ANOTHER_RUNNER, KEEP_WAITING];
+    const opened = immediate(this.db, () => {
+      const open = findOpenQuestion(this.db, sessionId);
+      // A wait question from before a restart has nobody waiting for its answer.
+      if (
+        open !== null &&
+        open.itemId === item.id &&
+        !this.waiters.has(open.id) &&
+        JSON.stringify(open.options) === JSON.stringify(options)
+      )
+        this.db.run("UPDATE question SET cancelled_at=? WHERE id=?", [this.now(), open.id]);
+      else if (open !== null) return null;
+      const stored = openQuestion(this.db, {
+        itemId: item.id,
+        runId,
+        sessionId,
+        body,
+        options,
+        now: this.now(),
+      });
+      enqueueOutboxOnce(this.db, {
+        target: "linear",
+        op: "elicitation",
+        orderingKey: sessionId,
+        idempotencyKey: `runner-wait:${stored.id}`,
+        payload: {
+          id: stored.id,
+          sessionId,
+          questionId: stored.id,
+          body: elicitationBody(body, reason),
+          options,
+        },
+        now: this.now(),
+      });
+      return stored;
+    });
+    if (opened === null) return pending;
+    const answer = new Promise<string>((resolve) => this.waiters.set(opened.id, resolve));
+    void this.flush().catch(() => {});
+    return {
+      answer,
+      cancel: () => {
+        this.waiters.delete(opened.id);
+        this.db.run(
+          "UPDATE question SET cancelled_at=? WHERE id=? AND status='open' AND cancelled_at IS NULL",
+          [this.now(), opened.id],
+        );
+      },
+    };
   }
 
   /**
@@ -2805,6 +2923,28 @@ export class Orchestrator {
       });
       await this.flush();
       return accepted ? "answered" : "rejected";
+    }
+    const runnerWaiter = recovery ? undefined : this.waiters.get(open.id);
+    if (runnerWaiter) {
+      const accepted = immediate(this.db, () => {
+        if (
+          answerQuestion(this.db, open.id, {
+            answer,
+            answeredBy,
+            eventKey: event.dedupeKey,
+            now: this.now(),
+          }) === null
+        )
+          return false;
+        if (getWorkItem(this.db, open.itemId)?.sessionKey === sessionId)
+          applyLinearTurns(this.db, sessionId, [event.dedupeKey], open.itemId);
+        return true;
+      });
+      if (!accepted) return "rejected";
+      this.waiters.delete(open.id);
+      runnerWaiter(answer);
+      await this.flush();
+      return "answered";
     }
     if (recovery) {
       const parsed = parseRecoveryAnswer(answer, recovery.failedChecks);

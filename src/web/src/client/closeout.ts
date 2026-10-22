@@ -155,11 +155,16 @@ export function renderCloseoutChecks(
           .map((check) => check.id)
           .join(", ") || "Checks",
       )} ${decision === "running" ? "are running" : "did not pass"}${head}.`;
-  const result = options.result ?? {
-    title: esc(title),
-    description,
-    icon: accepted ? "✓" : decision === "running" ? "…" : "✕",
-  };
+  const waiting = decision === "running" ? attempt.checks.find(waitingForRunner) : undefined;
+  const result =
+    options.result ??
+    (waiting
+      ? { title: esc(`${waiting.id} is waiting`), description: esc(waiting.detail!), icon: "…" }
+      : {
+          title: esc(title),
+          description,
+          icon: accepted ? "✓" : decision === "running" ? "…" : "✕",
+        });
   const heading =
     options.heading === undefined
       ? "<h2>Closeout</h2>"
@@ -253,6 +258,11 @@ function checkBody(
   return `<div class="between"><span class="mono check-command">$ ${esc(check.kind === "review" ? "closeout review --independent" : check.command)}</span>${tools}</div><div class="check-terminal"><div class="between terminal-toolbar"><div class="row" role="group" aria-label="Output stream">${tabs}</div><span>attempt ${shown} · ${esc(checkMeta(check))}</span></div>${output(verdict.itemId, attempt.number, check, wrap, selectedStream)}${truncated}</div>${findings}`;
 }
 
+/** A running check that Paws has not sent to its runner yet; `detail` says why. */
+function waitingForRunner(check: StatusCheck): boolean {
+  return check.state === "running" && check.detail?.startsWith("Waiting:") === true;
+}
+
 function output(
   itemId: string,
   attempt: number,
@@ -264,7 +274,7 @@ function output(
   return (["stdout", "stderr"] as const)
     .map(
       (stream) =>
-        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
+        `<pre class="out ${lines}" tabindex="0" aria-label="${stream}" data-log="${logKey(itemId, attempt, check.id, stream)}"${selected === stream ? "" : " hidden"}>${ansiToHtml(check[stream] || (waitingForRunner(check) ? check.detail! : check.state === "running" ? "Waiting for output." : "No output."))}</pre>`,
     )
     .join("");
 }
