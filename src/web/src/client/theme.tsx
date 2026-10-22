@@ -489,6 +489,7 @@ function replace(node: DOMNode): ReactElement | undefined {
       "grid min-w-0 grid-cols-1 items-end gap-4 sm:grid-cols-2 xl:grid-cols-3 [&>*]:min-w-0 [&>button]:justify-self-start",
     );
   if (has("settings-field")) return styled("flex min-w-0 flex-col gap-2");
+  if (has("settings-duration")) return styled("grid max-w-sm grid-cols-2 gap-3 [&>*]:min-w-0");
   if (name === "dialog")
     return styled(
       "m-auto w-full max-w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-base border-2 border-border bg-background p-0 text-foreground shadow-shadow outline-none backdrop:bg-overlay sm:max-w-lg",
