@@ -81,3 +81,30 @@ async function initRepo(dir: string): Promise<void> {
     "init",
   ]);
 }
+
+test("concurrent mirror refreshes fetch one at a time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paws-wt-"));
+  roots.push(root);
+  const source = join(root, "checkout");
+  const pawsRoot = join(root, "home", ".paws");
+  await initRepo(source);
+  await ensureBareMirror({ remoteUrl: source, owner: "acme", repo: "demo", pawsRoot });
+  let active = 0;
+  let overlapped = 0;
+  const networkGit = async (args: string[]) => {
+    active++;
+    if (active > 1) overlapped++;
+    await Bun.sleep(20);
+    try {
+      return await git(args);
+    } finally {
+      active--;
+    }
+  };
+  await Promise.all(
+    Array.from({ length: 4 }, () =>
+      ensureBareMirror({ remoteUrl: source, owner: "acme", repo: "demo", pawsRoot, networkGit }),
+    ),
+  );
+  expect(overlapped).toBe(0);
+});

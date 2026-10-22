@@ -46,6 +46,8 @@ async function revParse(gitDir: string, ref: string): Promise<string | undefined
  * Fetch stores remote branches at `origin/*` so a worktree can be added from
  * `origin/main` without moving a branch that is already checked out.
  */
+const mirrorRefreshes = new Map<string, Promise<unknown>>();
+
 export async function ensureBareMirror(options: {
   remoteUrl: string;
   owner: string;
@@ -54,6 +56,20 @@ export async function ensureBareMirror(options: {
   networkGit?: (args: string[]) => Promise<string>;
 }): Promise<Mirror> {
   const path = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const previous = mirrorRefreshes.get(path) ?? Promise.resolve();
+  const refresh = previous.catch(() => undefined).then(() => refreshMirror(path, options));
+  mirrorRefreshes.set(path, refresh);
+  try {
+    return await refresh;
+  } finally {
+    if (mirrorRefreshes.get(path) === refresh) mirrorRefreshes.delete(path);
+  }
+}
+
+async function refreshMirror(
+  path: string,
+  options: Parameters<typeof ensureBareMirror>[0],
+): Promise<Mirror> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await mkdir(options.pawsRoot, { recursive: true, mode: 0o700 });
 
