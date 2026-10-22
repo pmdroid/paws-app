@@ -2268,7 +2268,10 @@ export async function probeRunnerBackend(
       );
       void restartedRun.catch((error: unknown) => (restartFailure = error));
       const firstPlacement = await nextRun();
-      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [now - 1, firstPlacement.runId]);
+      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [
+        now - 1,
+        firstPlacement.runId,
+      ]);
       for (const hostId of hostIds) work.heartbeat(hostId);
       await delay(50);
       assert.equal(restartFailure, null);
