@@ -222,7 +222,16 @@ async function runWithFault(fault: { error: () => unknown; times: number }): Pro
         await Bun.sleep(25);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    // The fault also hits the outbox's session read while the task runs, so a delivery can be
+    // backing off when the task stops; wait it out, since later rows in the session queue behind it.
+    const drained = Date.now() + 15_000;
+    while (
+      Date.now() < drained &&
+      db.query("SELECT 1 FROM outbox WHERE status='pending' LIMIT 1").get() !== null
+    ) {
+      if (outbox.tick().length > 0) await outbox.idle();
+      else await Bun.sleep(50);
+    }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {
