@@ -106,8 +106,6 @@ export type PawsConfigFile = {
   ciFixAttempts?: number;
   /** `[queue] start_timeout_hours`. Missing means the default of 24. */
   queueStartTimeoutHours?: number;
-  /** `[update] automatic`. Missing means Paws checks `origin/main` every 10 minutes. */
-  updateAutomatic?: boolean;
   projectSkills?: ProjectSkills[];
   checkoutProjects?: CheckoutProjects;
 };
@@ -449,10 +447,6 @@ function assignConfig(
   }
   if (section === "queue") {
     if (key === "start_timeout_hours") config.queueStartTimeoutHours = asInt(value, line);
-    return;
-  }
-  if (section === "update") {
-    if (key === "automatic") config.updateAutomatic = asBoolean(value, line);
     return;
   }
   if (section === "checkout") {
