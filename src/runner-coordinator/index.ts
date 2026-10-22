@@ -66,6 +66,8 @@ export async function openRunnerCoordinator(options: {
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
   checkSignIn?: boolean;
+  /** Registered skill bundles runners download, `<name>/<version>/skill.tar.gz`. */
+  skillsRoot?: string;
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -84,7 +86,7 @@ export async function openRunnerCoordinator(options: {
     privateKey: signing.privateKey,
     now: options.now,
   });
-  const workHttp = createRunnerWorkHttp(work);
+  const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
   const inputs = createRunnerInputStore({ root: join(options.root, "inputs"), work });
   const helpers = createRunnerHelpers({
     db: options.db,
