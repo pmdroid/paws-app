@@ -6,6 +6,7 @@ import {
 } from "../acp";
 
 export class RetryableRunnerError extends Error {
+  override readonly name = "RetryableRunnerError";
   constructor(
     readonly runnerId: string,
     message: string,
@@ -24,6 +25,7 @@ export const USAGE_LIMIT_RETRY_MS = 15 * 60_000;
 
 /** No runner can take the work until the agent's usage limit resets. */
 export class UsageLimitPause extends Error {
+  override readonly name = "UsageLimitPause";
   constructor(
     readonly agent: string,
     readonly resumeAt: number,

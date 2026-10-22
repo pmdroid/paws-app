@@ -59,7 +59,9 @@ import {
 import { PawsShutdown } from "../core";
 import type { RunnerPlacement } from "../runner-placement";
 
-class RunnerUnavailableError extends Error {}
+class RunnerUnavailableError extends Error {
+  override readonly name = "RunnerUnavailableError";
+}
 
 const CAPACITY_WAIT_MS = 60 * 60_000;
 const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];

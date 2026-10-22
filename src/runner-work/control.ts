@@ -42,7 +42,9 @@ type Assignment = {
 const columns =
   "run_id AS runId,runner_id AS runnerId,workspace_id AS workspaceId,generation,runner_fence AS runnerFence,command_id AS commandId,lease_until AS leaseUntil,last_sequence AS lastSequence,ended_at AS endedAt";
 
-export class RunnerWorkFencedError extends Error {}
+export class RunnerWorkFencedError extends Error {
+  override readonly name = "RunnerWorkFencedError";
+}
 
 export function createRunnerWork(options: {
   db: Database;
