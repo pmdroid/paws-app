@@ -1075,7 +1075,16 @@ export class Orchestrator {
       });
     });
     this.options.outbox.setHandler((message, context) =>
-      linearCaller("outbox", () => this.deliverLinearMessage(message, context)),
+      linearCaller(
+        "outbox",
+        () => this.deliverLinearMessage(message, context),
+        message.op === "elicitation" ||
+          message.delivery === "critical" ||
+          message.delivery === "stop" ||
+          message.delivery === "terminal"
+          ? "critical"
+          : "normal",
+      ),
     );
   }
 
@@ -4412,8 +4421,22 @@ export class Orchestrator {
         }),
       );
     }
-    if (!this.tracker?.listSessionActivities) return;
-    const activities = await this.tracker.listSessionActivities(sessionId, { signal });
+    const tracker = this.tracker;
+    if (!tracker?.listSessionActivities) return;
+    let activities;
+    try {
+      activities = await linearCaller("context", () =>
+        tracker.listSessionActivities!(sessionId, { signal }),
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      if (
+        error instanceof LinearRateLimitError &&
+        listLinearActivitySnapshots(this.db, sessionId).length > 0
+      )
+        return;
+      throw error;
+    }
     signal.throwIfAborted();
     immediate(this.db, () => {
       for (const activity of activities)
@@ -4977,9 +5000,11 @@ export class Orchestrator {
         try {
           hinted = hintedRepository(
             candidates,
-            await this.tracker.issueRepositoryHints(item.linearIssueId, {
-              signal: controller.signal,
-            }),
+            await linearCaller("repository-hints", () =>
+              this.tracker!.issueRepositoryHints!(item.linearIssueId, {
+                signal: controller.signal,
+              }),
+            ),
           );
         } catch (error) {
           controller.signal.throwIfAborted();
@@ -4996,15 +5021,17 @@ export class Orchestrator {
         !(hinted && "bind" in hinted) && this.tracker?.issueRepositorySuggestions ? 3 : 0;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
-          const read = await this.tracker!.issueRepositorySuggestions!(
-            {
-              issueId: item.linearIssueId,
-              candidateRepositories: pool.map((candidate) => ({
-                hostname: "github.com",
-                repositoryFullName: `${candidate.owner}/${candidate.repo}`,
-              })),
-            },
-            { signal: controller.signal },
+          const read = await linearCaller("repository-hints", () =>
+            this.tracker!.issueRepositorySuggestions!(
+              {
+                issueId: item.linearIssueId,
+                candidateRepositories: pool.map((candidate) => ({
+                  hostname: "github.com",
+                  repositoryFullName: `${candidate.owner}/${candidate.repo}`,
+                })),
+              },
+              { signal: controller.signal },
+            ),
           );
           for (const suggestion of read) {
             const key = suggestion.repositoryFullName.toLowerCase();

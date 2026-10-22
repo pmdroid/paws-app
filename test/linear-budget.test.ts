@@ -127,6 +127,67 @@ describe("shared Linear budget", () => {
     expect(ledger.usage().holdUntilMs).toBeNull();
   });
 
+  test("a low budget holds background calls, then normal calls, while critical calls go", async () => {
+    const now = START;
+    const ledger = createLinearLedger({ now: () => now, random: () => 0, log: () => {} });
+    const reset = START + 600_000;
+    let remaining = 900;
+    const sent: string[] = [];
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async (_url, init) => {
+        sent.push(String(JSON.parse(String(init?.body)).query));
+        return linearResponse(budgetHeaders(remaining, 10, reset));
+      },
+      ledger,
+    });
+    const ask = (caller: string, priority?: "critical" | "normal" | "background") =>
+      linearCaller(caller, () => client.query(`query { ${caller} }`), priority).then(
+        () => "sent",
+        (error: unknown) =>
+          error instanceof LinearRateLimitError ? `held ${error.retryAfterMs}` : "failed",
+      );
+
+    expect(await ask("tracker")).toBe("sent");
+    expect(await ask("poller")).toBe("held 600000");
+    expect(await ask("repository-hints", "background")).toBe("held 600000");
+    expect(await ask("outbox")).toBe("sent");
+    remaining = 200;
+    expect(await ask("outbox")).toBe("sent");
+    expect(await ask("outbox")).toBe("held 600000");
+    expect(await ask("events", "critical")).toBe("sent");
+    expect(await ask("outbox", "critical")).toBe("sent");
+    expect(sent).toEqual([
+      "query { tracker }",
+      "query { outbox }",
+      "query { outbox }",
+      "query { events }",
+      "query { outbox }",
+    ]);
+    expect(ledger.usage().callers["poller"]).toMatchObject({ requests: 0, held: 1 });
+  });
+
+  test("a low budget is forgotten once its reset passes", async () => {
+    let now = START;
+    const ledger = createLinearLedger({ now: () => now, random: () => 0, log: () => {} });
+    let calls = 0;
+    const client = createLinearClient({
+      auth: AUTH,
+      fetch: async () => {
+        calls += 1;
+        return linearResponse(budgetHeaders(10, 10, START + 60_000));
+      },
+      ledger,
+    });
+    await client.query("query { viewer { id } }");
+    await expect(
+      linearCaller("poller", () => client.query("query { viewer { id } }")),
+    ).rejects.toBeInstanceOf(LinearRateLimitError);
+    now = START + 60_001;
+    await linearCaller("poller", () => client.query("query { viewer { id } }"));
+    expect(calls).toBe(2);
+  });
+
   test("/health reports the Linear usage", async () => {
     const ledger = createLinearLedger({ log: () => {} });
     const server = startServer({
