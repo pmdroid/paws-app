@@ -68,6 +68,7 @@ import {
   type Clock,
   type LinearCommand,
   type RepositoryBinding,
+  RunnerSlotsBusyError,
   systemClock,
   parseLinearCommand,
 } from "../core";
@@ -292,6 +293,7 @@ export type OrchestratorOptions = {
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
+    slotFree?(): boolean;
     agentForSession(sessionId: string, purpose: "classify" | "select_repository"): typeof runAgent;
     agentForItem(itemId: string): (options: RunAgentOptions) => Promise<RunAgentResult>;
   };
@@ -731,29 +733,28 @@ export class Orchestrator {
       ...progressTracker,
       loadEpic: async (id: string) => authorizeSnapshot(await progressTracker.loadEpic(id)),
     };
+    const deferred = !savedRequest && this.options.remoteExecution?.slotFree?.() === false;
     const classification =
-      this.options.linearTaskModes && sessionId && taskKey && this.options.channel !== "comments"
-        ? await this.taskPlanner.plan({
-            taskKey,
-            sessionId,
-            request: async (signal) => {
-              const snapshot = authorizeSnapshot(await tracker.loadEpic(issueId));
-              signal.throwIfAborted();
-              intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
-              await this.hydrateLinearContext(sessionId, signal);
-              const history = listLinearActivitySnapshots(this.db, sessionId)
-                .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)
-                .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral);
-              return [
-                JSON.stringify(snapshot),
-                getLinearSessionContext(this.db, sessionId),
-                JSON.stringify(history),
-                options.conversation ?? "",
-                ...(options.followupBodies ??
-                  listPendingLinearTurns(this.db, sessionId).map((turn) => turn.body)),
-              ].join("\n\n");
-            },
-          })
+      this.options.linearTaskModes &&
+      sessionId &&
+      taskKey &&
+      this.options.channel !== "comments" &&
+      !deferred
+        ? await this.taskPlanner
+            .plan({
+              taskKey,
+              sessionId,
+              request: async (signal) => {
+                const snapshot = authorizeSnapshot(await tracker.loadEpic(issueId));
+                signal.throwIfAborted();
+                intakeTracker = { ...progressTracker, loadEpic: async () => snapshot };
+                return this.classificationRequest(sessionId, snapshot, signal, options);
+              },
+            })
+            .catch((error: unknown) => {
+              if (error instanceof RunnerSlotsBusyError && !savedRequest) return null;
+              throw error;
+            })
         : null;
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
     const retireRedirectedItem = () => {
@@ -839,6 +840,26 @@ export class Orchestrator {
       }
     }
     return result;
+  }
+
+  private async classificationRequest(
+    sessionId: string,
+    snapshot: EpicSnapshot,
+    signal: AbortSignal,
+    options: { followupBodies?: readonly string[]; conversation?: string } = {},
+  ): Promise<string> {
+    await this.hydrateLinearContext(sessionId, signal);
+    const history = listLinearActivitySnapshots(this.db, sessionId)
+      .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)
+      .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral);
+    return [
+      JSON.stringify(snapshot),
+      getLinearSessionContext(this.db, sessionId),
+      JSON.stringify(history),
+      options.conversation ?? "",
+      ...(options.followupBodies ??
+        listPendingLinearTurns(this.db, sessionId).map((turn) => turn.body)),
+    ].join("\n\n");
   }
 
   private async reconcilePreviousSessions(
@@ -1105,7 +1126,27 @@ export class Orchestrator {
     const saved = getTaskMode(this.db, item.id);
     const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
     const taskKey = this.parentTaskKey(item);
-    const classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    let classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    const sessionKey = item.sessionKey;
+    const delegatedIssueId = this.delegationIssueId(item);
+    if (
+      !saved &&
+      !classification &&
+      taskKey &&
+      sessionKey &&
+      delegatedIssueId &&
+      this.options.remoteExecution
+    )
+      classification = await this.taskPlanner.plan({
+        taskKey,
+        sessionId: sessionKey,
+        request: async (signal) =>
+          this.classificationRequest(
+            sessionKey,
+            await this.tracker!.loadEpic(delegatedIssueId),
+            signal,
+          ),
+      });
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
       this.pump();

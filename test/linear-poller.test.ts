@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
 import { configureWorkItem } from "../src/db";
+import { RunnerSlotsBusyError } from "../src/core";
 import {
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_IDLE_MS,
@@ -130,6 +131,39 @@ describe("linear intake poll", () => {
     db.close();
     expect(seen).toEqual(["session-live"]);
     expect(attempts.filter((id) => id === "session-gone")).toEqual(["session-gone"]);
+  });
+
+  test("a session waiting for a runner slot does not block later sessions and is retried", async () => {
+    const db = tempDb();
+    const store = createInboxStore(db);
+    const seen: (string | null)[] = [];
+    let busy = true;
+    const { client } = scripted(() => ({
+      ...page([issue("iss_busy", "ENG-8", [], "app_1"), issue("iss_next", "ENG-9", [], "app_1")]),
+      agentSessions: {
+        nodes: [
+          session("session-busy", "iss_busy", NOW - 1_000),
+          session("session-next", "iss_next", NOW),
+        ],
+      },
+    }));
+    const poller = startCatchUpPoller({
+      source: createIntakePollSource(client, { teamId: TEAM }),
+      store,
+      onEvent: (event) => {
+        if (event.sessionId === "session-busy" && busy) throw new RunnerSlotsBusyError();
+        seen.push(event.sessionId);
+      },
+      sleeper: blockedSleeper(),
+      now: () => NOW,
+    });
+    await waitFor(() => seen.includes("session-next"));
+    busy = false;
+    await poller.pollNow();
+    await poller.stop();
+    await poller.settled;
+    db.close();
+    expect(seen).toEqual(["session-next", "session-busy"]);
   });
 
   test.each([true, false])(
