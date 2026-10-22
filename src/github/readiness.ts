@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readLogTail } from "./ci-logs";
 import { repoApiPath } from "./client";
-import type { CiCheck, CiCheckState, GitHubClient } from "./types";
+import type { CiCheck, CiCheckState, CiOutcome, GitHubClient } from "./types";
 
 const pageInfoSchema = z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() });
 
@@ -114,6 +114,8 @@ export type Readiness = {
   failedChecks?: FailedCheck[];
   /** Every check on the head, once the head's checks were read. */
   checks?: CiCheck[];
+  /** CI alone, without review threads: a missing expected check keeps it running. */
+  ciOutcome?: CiOutcome;
 };
 
 /** Conclusions and states that fail the pull request. Anything else that is not green waits. */
@@ -268,18 +270,23 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     if (required === null) return unreadable();
     const judged = judgeChecks(checks, baseChecks, required);
     const read = await ciChecks(input, token, checks, judged.outcome);
+    const ciOutcome: CiOutcome =
+      judged.outcome === "ci_failed" ? "failed" : judged.outcome === "ready" ? "passed" : "running";
     const ci: Readiness = {
       ...judged,
       checks: read,
+      ciOutcome,
+      // Each failed check keeps its own log tail; names can repeat across workflows.
       ...(judged.failedChecks === undefined
         ? {}
         : {
-            failedChecks: judged.failedChecks.map((failed) => {
-              const logTail = read.find(
-                (check) => check.name === failed.name && check.state === "failed",
-              )?.logTail;
-              return logTail ? { ...failed, logTail } : failed;
-            }),
+            failedChecks: read
+              .filter((check) => check.state === "failed")
+              .map((check) => ({
+                name: check.name,
+                url: check.url,
+                ...(check.logTail ? { logTail: check.logTail } : {}),
+              })),
           }),
     };
     if (ci.outcome !== "ready") return ci;
@@ -288,11 +295,13 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
           outcome: "pending",
           message: `Waiting for ${unresolved} unresolved review thread(s).`,
           checks: read,
+          ciOutcome,
         }
       : {
           outcome: "ready",
           message: "CI passed and all review threads are resolved",
           checks: read,
+          ciOutcome,
         };
   } catch (error) {
     console.error(
