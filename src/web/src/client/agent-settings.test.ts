@@ -136,6 +136,39 @@ describe("agent settings", () => {
     expect(html).toContain("Sign in on a runner to load model choices.");
   });
 
+  test("a 1M entry is listed next to its standard model and only its selection shows the hint", () => {
+    const hint = "1M context uses more of your Claude usage.";
+    const withLongContext = (model: string | null) => {
+      const current = view();
+      current.catalogs[0]!.models.push(
+        { id: "opus", name: "Opus 5.5", efforts: [{ id: "high", name: "High" }] },
+        {
+          id: "opus[1m]",
+          name: "Opus 5.5 · 1M context",
+          longContext: true,
+          efforts: [{ id: "high", name: "High" }],
+        },
+      );
+      current.data!.defaults.implementer = { agent: "claude", model };
+      current.data!.projects = [];
+      return renderAgentSettings(current);
+    };
+    const standard = withLongContext("opus");
+    expect(standard).toContain('<option value="opus" selected>Opus 5.5</option>');
+    expect(standard).toContain('<option value="opus[1m]" >Opus 5.5 · 1M context</option>');
+    expect(standard).not.toContain(hint);
+    const long = withLongContext("opus[1m]");
+    expect(long).toContain('<option value="opus[1m]" selected>Opus 5.5 · 1M context</option>');
+    expect(long.split(hint)).toHaveLength(2);
+    expect(long).toContain(
+      'id="defaults-implementer-model" name="defaults-implementer-model" aria-describedby="defaults-implementer-model-hint"',
+    );
+    expect(long).toMatch(
+      /<div class="settings-field"><label for="defaults-implementer-model">Model<\/label><select[^]*?<\/select><small class="sub" id="defaults-implementer-model-hint">1M context uses more of your Claude usage\.<\/small><\/div>/,
+    );
+    expect(withLongContext(null)).not.toContain(hint);
+  });
+
   test("persisted values escape untrusted text", () => {
     const state = view();
     state.data!.projects[0]!.repo = '<img src=x onerror="alert(1)">';

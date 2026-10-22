@@ -61,6 +61,8 @@ export type Usage = {
   runId: string | null;
   agent: string | null;
   resolvedModel: string | null;
+  /** The model entry's label, such as "Opus 5.5 · 1M context". */
+  modelLabel?: string | null;
   purpose: string;
   outcome: string | null;
   startedAt: number;
@@ -230,7 +232,7 @@ export function runnerHistoryMarkup(usage: Usage[]): string {
           : `<span class="tag ${entry.outcome === "success" ? "ok" : entry.outcome === "cancelled" ? "warn" : "bad"}">${esc(entry.outcome[0]!.toUpperCase() + entry.outcome.slice(1).replaceAll("_", " "))}</span>`;
       const duration =
         entry.endedAt === null ? "Running" : durationLabel(entry.endedAt - entry.startedAt);
-      return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td>${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;
+      return `<tr><td><span title="${esc(new Date(entry.startedAt).toLocaleString())}">${esc(new Date(entry.startedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}</span></td><td>${work}</td><td>${esc(agent)}${entry.resolvedModel ? `<p class="muted">${esc(entry.modelLabel ?? entry.resolvedModel)}</p>` : ""}</td><td class="hide-phone">${esc(duration)}</td><td>${outcome}</td></tr>`;
     })
     .join("");
   return `<table class="runner-history"><thead><tr><th>Started</th><th>Task</th><th>Agent</th><th class="hide-phone">Duration</th><th>Outcome</th></tr></thead><tbody>${rows}</tbody></table>`;

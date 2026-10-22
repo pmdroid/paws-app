@@ -14,7 +14,7 @@ export async function probeAgentProfile(input: {
   ok: boolean;
   agent: AgentProfile["agent"];
   model: string | null;
-  models: Array<{ id: string; name: string }>;
+  models: Array<{ id: string; name: string; description?: string }>;
   effort: string | null;
   efforts: Array<{ id: string; name: string }>;
   message: string;
