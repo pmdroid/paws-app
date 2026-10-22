@@ -107,6 +107,10 @@ try {
   await page.waitForTimeout(200);
   const widths = await scroll();
   await section.screenshot({ path: `${output}/skills-390.png` });
+  // The section screenshot scrolls it into view; the full page starts at the top.
+  await page.evaluate(() =>
+    (globalThis as unknown as { scrollTo(x: number, y: number): void }).scrollTo(0, 0),
+  );
   await page.screenshot({ path: `${output}/agents-390.png`, fullPage: true });
   console.log(JSON.stringify({ output, desktop, widths }));
   for (const measured of [desktop, widths])
