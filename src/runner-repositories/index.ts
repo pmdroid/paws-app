@@ -1,4 +1,4 @@
-import { commitCoauthorTrailers, validateCommitAttribution } from "../core";
+import { assertDescendsFromAny, commitCoauthorTrailers, validateCommitAttribution } from "../core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -22,6 +22,7 @@ type NetworkOperation = {
   cwd: string;
   dest?: string;
   refspec?: string;
+  lease?: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 };
@@ -161,22 +162,36 @@ export function createRunnerRepositories(options: {
           )
         ).trim();
         if (base !== command.repository.baseSha) throw new Error("Assigned base is unavailable");
+        const main = command.repository.mainSha;
+        if (
+          main &&
+          (
+            await invoke(["--git-dir", mirror, "rev-parse", "--verify", `${main}^{commit}`], signal)
+          ).trim() !== main
+        )
+          throw new Error("Assigned main is unavailable");
         const snapshot = join(
           options.root,
           `snapshot-${createHash("sha256").update(command.id).digest("hex")}.bundle`,
         );
         const ref = `refs/heads/paws-snapshot-${createHash("sha256").update(command.id).digest("hex")}`;
         try {
+          const mainRef = `${ref}-main`;
           await invoke(["--git-dir", mirror, "update-ref", ref, base]);
           try {
+            if (main) await invoke(["--git-dir", mirror, "update-ref", mainRef, main]);
             signal?.throwIfAborted();
-            await invoke(["--git-dir", mirror, "bundle", "create", snapshot, ref], signal);
+            await invoke(
+              ["--git-dir", mirror, "bundle", "create", snapshot, ref, ...(main ? [mainRef] : [])],
+              signal,
+            );
             chmodSync(snapshot, 0o600);
             if (statSync(snapshot).size > 536_870_912)
               throw new Error("Runner snapshot exceeds size limit");
             signal?.throwIfAborted();
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
+            if (main) await invoke(["--git-dir", mirror, "update-ref", "-d", mainRef]);
           }
           signal?.throwIfAborted();
           return { mirror, bundle: snapshot };
@@ -213,20 +228,25 @@ export function createRunnerRepositories(options: {
           ).trim();
           if (sha !== candidate.sha)
             throw new Error("Runner candidate commit does not match its bundle");
-          await invoke(
+          const bases = [command.repository.baseSha];
+          if (command.repository.mainSha) bases.push(command.repository.mainSha);
+          const excluded = bases.map((base) => `^${base}`);
+          await assertDescendsFromAny(
+            (args) => invoke(["--git-dir", mirror, ...args], signal),
+            bases,
+            sha,
+          );
+          const rebased = await invoke(
             ["--git-dir", mirror, "merge-base", "--is-ancestor", command.repository.baseSha, sha],
             signal,
+          ).then(
+            () => false,
+            () => true,
           );
           if (command.commitPolicy) {
             const commits = (
               await invoke(
-                [
-                  "--git-dir",
-                  mirror,
-                  "--no-replace-objects",
-                  "rev-list",
-                  `${command.repository.baseSha}..${sha}`,
-                ],
+                ["--git-dir", mirror, "--no-replace-objects", "rev-list", sha, ...excluded],
                 signal,
               )
             )
@@ -273,7 +293,8 @@ export function createRunnerRepositories(options: {
                   "-z",
                   "-m",
                   "--no-renames",
-                  `${command.repository.baseSha}..${sha}`,
+                  sha,
+                  ...excluded,
                   "--",
                 ],
                 signal,
@@ -297,15 +318,19 @@ export function createRunnerRepositories(options: {
             signal?.throwIfAborted();
             const token = await options.credential(command, "write");
             signal?.throwIfAborted();
-            await network({
-              operation: "push",
-              remoteUrl: command.repository.remoteUrl,
-              token,
-              cwd: mirror,
-              refspec: `${sha}:refs/heads/${candidate.branch}`,
-              env,
-              signal,
-            });
+            const push = (lease?: string) =>
+              network({
+                operation: "push",
+                remoteUrl: command.repository.remoteUrl,
+                token,
+                cwd: mirror,
+                refspec: `${sha}:refs/heads/${candidate.branch}`,
+                ...(lease ? { lease } : {}),
+                env,
+                signal,
+              });
+            if (!rebased) await push();
+            else await push().catch(() => push(command.repository.baseSha));
           } finally {
             await invoke(["--git-dir", mirror, "update-ref", "-d", ref]);
           }

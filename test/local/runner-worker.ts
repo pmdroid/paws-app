@@ -775,11 +775,11 @@ export async function probeRunnerWorker(
   ]);
   assert(rebased.candidateSha && rebased.candidateSha !== featureSha);
   assert(rebasedHeads.startsWith(rebased.candidateSha));
-  observe(
-    "a run rebased onto a newer main returns the rebased candidate",
-    true,
-    { baseSha: featureSha, mainSha: laterSha, candidateSha: rebased.candidateSha },
-  );
+  observe("a run rebased onto a newer main returns the rebased candidate", true, {
+    baseSha: featureSha,
+    mainSha: laterSha,
+    candidateSha: rebased.candidateSha,
+  });
   const abort = new AbortController();
   const cancelledAgent = launch(4, [{ type: "hang" }]);
   const cancelOutput = output(4);

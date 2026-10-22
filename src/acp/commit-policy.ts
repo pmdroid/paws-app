@@ -1,4 +1,5 @@
 import {
+  assertDescendsFromAny,
   commitCoauthorTrailers,
   policyCoauthors,
   validateCommitAttribution,
@@ -36,21 +37,4 @@ export async function validateCandidateAttribution(
     const message = await invoke(["show", "-s", "--format=%B", sha]);
     validateCommitAttribution(policy, metadata, commitCoauthorTrailers(message));
   }
-}
-
-export async function assertDescendsFromAny(
-  invoke: (args: string[]) => Promise<string>,
-  bases: readonly string[],
-  head: string,
-): Promise<void> {
-  let failure: unknown;
-  for (const base of bases) {
-    try {
-      await invoke(["merge-base", "--is-ancestor", base, head]);
-      return;
-    } catch (error) {
-      failure = error;
-    }
-  }
-  throw failure;
 }
