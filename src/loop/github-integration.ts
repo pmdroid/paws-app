@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, sleep } from "../core";
+import { LinearRateLimitError } from "../linear";
 import {
   applyWorkItemEvent,
   applyLinearCommand,
@@ -250,6 +251,16 @@ export class GitHubIntegrationHolds {
       else this.lastReady.delete(item.id);
       return result;
     } catch (error) {
+      const limited =
+        error instanceof LinearRateLimitError
+          ? error.retryAfterMs
+          : error instanceof Error && /\bRATELIMITED\b/.test(error.message)
+            ? 60_000
+            : null;
+      if (limited !== null && !this.closed && !signal.aborted) {
+        await sleep(limited, signal);
+        if (!this.closed && !signal.aborted) return this.probe(item, signal, retryMs);
+      }
       const [delay, ...rest] = retryMs;
       if (delay !== undefined && !this.closed && !signal.aborted) {
         await sleep(delay, signal);
