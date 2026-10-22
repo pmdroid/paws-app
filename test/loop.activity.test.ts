@@ -53,11 +53,8 @@ describe("activity mapping", () => {
       }),
     ).toBeNull();
     expect(activityFromAcpEvent({ type: "prompt_complete", stopReason: "end_turn" })).toBeNull();
-    expect(activityFromAcpEvent({ type: "error", message: "boom" })?.kind).toBe("error");
-    expect(activityFromAcpEvent({ type: "error", message: GROK_LOGIN_MESSAGE })).toEqual({
-      kind: "error",
-      body: GROK_LOGIN_MESSAGE,
-    });
+    expect(activityFromAcpEvent({ type: "error", message: "boom" })).toBeNull();
+    expect(activityFromAcpEvent({ type: "error", message: GROK_LOGIN_MESSAGE })).toBeNull();
     expect(
       activityFromAcpEvent({
         type: "ask_team",
@@ -146,16 +143,19 @@ describe("streamed activity", () => {
     expect(reporter.resultBody()).toBe(body);
   });
 
-  test("private reasoning is discarded and interruption emits an error", () => {
+  test("an agent error or interruption posts no error activity", () => {
     const posted: Omit<ProgressUpdate, "sessionId">[] = [];
     const reporter = createAcpActivityReporter((activity) => posted.push(activity));
     reporter.onEvent(chunk("Thinking", true));
     reporter.onEvent(chunk(" through it.", true));
     reporter.onEvent(chunk("Partially "));
     reporter.onEvent(chunk("done."));
+    reporter.onEvent({ type: "error", message: "runner restarted" });
     reporter.onEvent({ type: "cancelled", reason: "timeout" });
+    reporter.onEvent({ type: "cancelled", reason: "cancel" });
     reporter.flush();
-    expect(posted).toEqual([{ kind: "error", body: "Run timed out." }]);
+    expect(posted).toEqual([]);
+    expect(reporter.resultBody()).toBe("Partially done.");
   });
 
   test("quoted credentials in tool output remain private", () => {
@@ -250,7 +250,7 @@ describe("streamed activity", () => {
     reporter.onEvent({ type: "cancelled", reason: "follow_up" });
     reporter.flush();
     expect(posted).toEqual([]);
-    expect(activityFromAcpEvent({ type: "cancelled", reason: "cancel" })?.kind).toBe("error");
+    expect(activityFromAcpEvent({ type: "cancelled", reason: "cancel" })).toBeNull();
   });
 });
 
