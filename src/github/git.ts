@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { controlledGit } from "./controlled-git";
 import { publicationExec } from "./publication";
+import { retryGitTransport } from "./transport";
 import { GitCommandError, type GitExec } from "./types";
 
 const exec = promisify(execFile);
@@ -57,8 +58,9 @@ export async function withCredential<T>(
   token: string,
   gitExec: GitExec,
   fn: (helper: { argsPrefix: string[]; env: NodeJS.ProcessEnv; exec: GitExec }) => Promise<T>,
-  tokenInFile = false,
+  options: { tokenInFile?: boolean; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<T> {
+  const tokenInFile = options.tokenInFile === true;
   if (/\s/.test(token)) throw new Error("refusing to pass a token that contains whitespace");
   const dir = await mkdtemp(path.join(tmpdir(), "paws-git-"));
   const helperPath = path.join(dir, "cred.sh");
@@ -79,7 +81,10 @@ export async function withCredential<T>(
         `credential.helper=${helperPath}`,
       ],
       env: gitEnv(tokenInFile ? undefined : token),
-      exec: publicationExec(gitExec, tokenInFile ? { path: tokenPath, token } : undefined),
+      exec: retryGitTransport(
+        publicationExec(gitExec, tokenInFile ? { path: tokenPath, token } : undefined),
+        options.sleep,
+      ),
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -96,6 +101,12 @@ export async function git(
 }
 
 export function redact(token: string, text: string): string {
-  if (token.length === 0) return text;
-  return text.split(token).join("[redacted]");
+  const scrubbed = token.length === 0 ? text : text.split(token).join("[redacted]");
+  return scrubbed.replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[redacted]");
+}
+
+export function gitFailureReason(token: string, error: unknown): string {
+  const stderr = error instanceof GitCommandError ? error.stderr.trim() : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return redact(token, stderr === "" ? message : stderr);
 }
