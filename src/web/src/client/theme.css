@@ -608,3 +608,16 @@ dialog[aria-label="Evidence"] {
   max-height: calc(100dvh - 2rem);
   overflow-y: auto;
 }
+
+.usage-pause {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+.usage-pause .result-icon {
+  white-space: nowrap;
+}
+#execution-controls > p:empty {
+  display: none;
+}

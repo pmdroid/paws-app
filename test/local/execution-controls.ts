@@ -11,6 +11,8 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   getWorkItem,
+  startUsagePause,
+  usagePause,
   insertQueuedItem,
   migrate,
   openDatabase,
@@ -229,6 +231,29 @@ export async function probeExecutionControls(root: string) {
       "Production workspace HTTP authorization permits active teammates and owner team bypass while rejecting anonymous, observer, other-team, organization and repository scopes",
       { owner: 200, member: 200, denied: 5 },
     );
+    const resetsAt = Date.now() + 3_600_000;
+    startUsagePause(db, {
+      runId: fixture.runId,
+      itemId: "controlled",
+      agent: "claude",
+      runnerId: null,
+      resetsAt,
+      resumeAt: resetsAt + 60_000,
+      pausedAt: Date.now(),
+    });
+    assert.deepEqual(((await (await call()).json()) as { actions: string[] }).actions, [
+      "stop",
+      "resume_now",
+    ]);
+    assert.equal((await call("resume_now", "observer")).status, 403);
+    assert.equal((await call("resume_now")).status, 200);
+    assert(usagePause(db, fixture.runId)!.resumeAt <= Date.now());
+    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    db.run("DELETE FROM usage_pause");
+    assert.equal((await call("resume_now")).status, 409);
+    observe("Resume now ends a usage-limit wait without changing the item state", {
+      state: "running",
+    });
     for (const extra of [
       { origin: "https://example.invalid" },
       { "x-paws-csrf": "wrong" },
@@ -356,7 +381,7 @@ export async function probeExecutionControls(root: string) {
       .all();
     assert.deepEqual(
       audit.map((row) => row.action),
-      ["execution.pause", "execution.resume", "execution.stop"],
+      ["execution.resume_now", "execution.pause", "execution.resume", "execution.stop"],
     );
     assert(audit.every((row) => row.userId === "member"));
     observe(

@@ -2,6 +2,12 @@ import { renderMarkup } from "./theme";
 import { readCsrfToken } from "./github-auth";
 import { esc } from "./format";
 
+const LABELS: Record<string, string> = {
+  pause: "Pause item",
+  resume: "Resume item",
+  resume_now: "Resume now",
+};
+
 export function createExecutionControls(reload: () => Promise<void>) {
   let root: HTMLElement | null = null;
   let itemId = "";
@@ -18,11 +24,11 @@ export function createExecutionControls(reload: () => Promise<void>) {
       .filter((action) => action !== "stop")
       .map(
         (action) =>
-          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${pending === action ? `${action === "pause" ? "Pausing" : "Resuming"}…` : action === "pause" ? "Pause item" : "Resume item"}</button>`,
+          `<button class="btn sm" type="button" data-control="${action}"${pending ? ' disabled=""' : ""}>${pending === action ? `${action === "pause" ? "Pausing" : "Resuming"}…` : LABELS[action]}</button>`,
       )
       .join(
         "",
-      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">Stop this item</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
+      )}${actions.includes("stop") ? `<details${confirming ? ' open=""' : ""}><summary class="btn sm">${actions.includes("resume_now") ? "Stop" : "Stop this item"}</summary><p>Stop this item and keep its branch?</p><button class="btn sm" type="button" data-control="stop"${pending ? ' disabled=""' : ""}>${pending === "stop" ? "Stopping…" : "Confirm stop"}</button></details>` : ""}</div><p class="muted" role="status">${esc(message)}</p>`;
     if (painted === html) return;
     painted = html;
     renderMarkup(root, html);
@@ -58,7 +64,9 @@ export function createExecutionControls(reload: () => Promise<void>) {
             ? "Item stopped."
             : action === "pause"
               ? "Item paused."
-              : "Item resumed.";
+              : action === "resume_now"
+                ? "Paws is trying the agent again."
+                : "Item resumed.";
         actions = [];
       }
       pending = "";
@@ -103,7 +111,7 @@ export function createExecutionControls(reload: () => Promise<void>) {
             "actions" in body &&
             Array.isArray(body.actions)
               ? body.actions.filter((action): action is string =>
-                  ["stop", "pause", "resume"].includes(action),
+                  ["stop", "pause", "resume", "resume_now"].includes(action),
                 )
               : [];
           paint();

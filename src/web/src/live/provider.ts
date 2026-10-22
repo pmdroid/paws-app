@@ -50,6 +50,7 @@ import {
   listOutbox,
   listRuns,
   runRunnerName,
+  usagePause,
   listTaskBlockers,
   listUpdateHolders,
   listWorkItemFacts,
@@ -326,6 +327,7 @@ function runsFor(
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
     const activity = activityFor(db, record, stored, rows, generatedAt);
     const recent = activity.at(-1);
+    const pause = record.currentRunId === current.id ? usagePause(db, current.id) : null;
     runs.push({
       id: first.id,
       attempts: stored.map((run) => run.id),
@@ -341,6 +343,14 @@ function runsFor(
       summary: recent?.text ?? textOr(record.title, publicId(record)),
       activity,
       links: [],
+      ...(pause
+        ? {
+            usagePause: {
+              agent: agentName(pause.agent),
+              resumeAt: iso(pause.resumeAt, generatedAt),
+            },
+          }
+        : {}),
     });
   }
   return runs;

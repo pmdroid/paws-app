@@ -5,7 +5,9 @@ import {
   getLinearSession,
   getWorkItem,
   getWorkspace,
+  resumeUsagePauseNow,
   submitCommand,
+  usagePause,
   workspaceMember,
   workspaceSessionIds,
 } from "../db";
@@ -119,7 +121,13 @@ export function createExecutionControls(input: {
         ? []
         : [
             "stop",
-            ...(item.state === "running" ? ["pause"] : item.state === "paused" ? ["resume"] : []),
+            ...(item.currentRunId && usagePause(input.db, item.currentRunId)
+              ? ["resume_now"]
+              : item.state === "running"
+                ? ["pause"]
+                : item.state === "paused"
+                  ? ["resume"]
+                  : []),
           ];
       if (request.method === "GET")
         return Response.json(
@@ -173,6 +181,9 @@ export function createExecutionControls(input: {
             })
             .immediate();
           if (applied) await port.interruptItem(item.id);
+        } else if (action === "resume_now") {
+          applied = canAct() && resumeUsagePauseNow(input.db, item.currentRunId!, now());
+          if (applied) onCommitted();
         } else
           applied = await port[action === "pause" ? "pauseItem" : "resumeItem"](
             item.id,
