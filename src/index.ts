@@ -403,6 +403,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                   await linearTaskAccess.revalidateSessions(sessionIds);
                 },
                 reconcile: async (notification) => {
+                  if (notification.action === "issueAssignedToYou")
+                    inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
                   if (linearTaskAccess === null) throw new Error("Linear is not connected.");
                   if (reconciler)
                     await reconciler.issueChanged({

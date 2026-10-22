@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
-import { configureWorkItem } from "../src/db";
+import { configureWorkItem, insertQueuedItem } from "../src/db";
 import { RunnerSlotsBusyError } from "../src/core";
 import {
   POLL_INTERVAL_ACTIVE_MS,
@@ -165,6 +165,50 @@ describe("linear intake poll", () => {
     db.close();
     expect(seen).toEqual(["session-next", "session-busy"]);
   });
+
+  test.each([false, true])(
+    "an issue delegated again into its earlier session is taken in again unless it has a task (task=%s)",
+    async (withTask) => {
+      const db = tempDb();
+      const store = createInboxStore(db);
+      if (withTask) insertQueuedItem(db, { sessionKey: "session-reused" });
+      const created: string[] = [];
+      let polls = 0;
+      const { client } = scripted(() => {
+        polls += 1;
+        return {
+          ...page([
+            {
+              ...issue("iss_back", "ENG-8", [], "app_1"),
+              updatedAt: new Date(NOW + polls * 1_000).toISOString(),
+            },
+          ]),
+          agentSessions: { nodes: [session("session-reused", "iss_back", NOW - 1_000)] },
+        };
+      });
+      const poller = startCatchUpPoller({
+        source: createIntakePollSource(client, { teamId: TEAM }),
+        store,
+        db,
+        onEvent: (event) => {
+          if (event.action !== "created") return;
+          created.push(event.dedupeKey);
+          return created.length > 1;
+        },
+        sleeper: blockedSleeper(),
+        now: () => NOW,
+      });
+      await waitFor(() => created.length > 0);
+      await poller.pollNow();
+      store.setCursor("delegated:iss_back", NOW + 60_000);
+      await poller.pollNow();
+      await poller.pollNow();
+      await poller.stop();
+      await poller.settled;
+      db.close();
+      expect(created.length).toBe(withTask ? 1 : 2);
+    },
+  );
 
   test.each([true, false])(
     "attaches a late session once with issue present=%s",
