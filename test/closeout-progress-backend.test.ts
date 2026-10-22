@@ -380,7 +380,7 @@ describe("closeout progress backend", () => {
     }
   });
 
-  test("a thrown evaluation stops its running step and the retry starts clean", async () => {
+  test("a temporary error puts its running step back as retrying, not blocked, and the retry starts clean", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")], 3),
       ".agents/skills/adversarial-review/SKILL.md": SKILL,
@@ -412,15 +412,15 @@ describe("closeout progress backend", () => {
       const step = stopped?.steps.find((entry) => entry.kind === "review");
       expect(stopped?.steps.some((entry) => entry.state === "running")).toBe(false);
       expect(stopped?.finishedAt).not.toBeNull();
-      expect(step?.state).toBe("blocked");
-      expect(step?.detail).toStartWith("Stopped:");
-      expect(step?.finishedAt).not.toBeNull();
-      const check = createLiveStatusProvider(db)
-        .snapshot()
-        .verdicts[0]?.checks.find((entry) => entry.id === "adversarial-review");
+      expect(stopped?.decision).toBe("running");
+      expect(step?.state).toBe("pending");
+      expect(step?.detail).toBe("Retrying: 503 Service Unavailable");
+      const verdict = createLiveStatusProvider(db).snapshot().verdicts[0];
+      const check = verdict?.checks.find((entry) => entry.id === "adversarial-review");
+      expect(verdict?.summary).toBe("Closeout is running.");
       expect(check?.active).toBe(false);
-      expect(check?.state).toBe("blocked");
-      expect(check?.detail).toStartWith("Stopped:");
+      expect(check?.state).toBe("pending");
+      expect(check?.detail).toBe("Retrying: 503 Service Unavailable");
 
       const retried = await evaluateCandidate({
         ...evalInput(repo, progress),
