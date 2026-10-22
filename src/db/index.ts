@@ -344,4 +344,10 @@ export {
 export type { VerifiedGitHubAttribution, AttributionBinding } from "./github-attribution";
 
 export { saveBrowserInstallation, consumeBrowserInstallation } from "./browser-installation";
-export { queueWaitSince } from "./queue-wait";
+export {
+  getQueuePosition,
+  listQueuePositions,
+  queueWaitSince,
+  replaceQueueLine,
+} from "./queue-wait";
+export type { QueuePosition } from "./queue-wait";

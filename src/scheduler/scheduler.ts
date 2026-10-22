@@ -6,7 +6,7 @@ import {
   type RepositoryBinding,
   type WorkBrief,
 } from "../core";
-import { enqueueJob, enqueueJobOnce, immediate, type JobLoop } from "../db";
+import { enqueueJob, enqueueJobOnce, immediate, replaceQueueLine, type JobLoop } from "../db";
 import { readyItems } from "../intake";
 
 const TICK = "scheduler.tick";
@@ -289,7 +289,8 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       const item = byId.get(entry.itemId);
       return item?.state === "queued" && !holdsExecution(item);
     }).length;
-    let free = slots === null ? Infinity : slots - items.filter(holdsExecution).length - reserved;
+    const busy = items.filter(holdsExecution).length + reserved;
+    let free = slots === null ? Infinity : slots - busy;
     const admitted: string[] = [];
     for (const item of candidates) {
       if (held.some((entry) => entry.itemId === item.id)) continue;
@@ -316,6 +317,18 @@ export function dispatchReadyItems(db: Database, options: SchedulerOptions = {})
       admitted.push(item.id);
       free -= 1;
     }
+    // Ready items that are still not admitted wait in line, in the order they will start.
+    replaceQueueLine(db, {
+      itemIds:
+        slots === null
+          ? []
+          : candidates
+              .filter((item) => !held.some((entry) => entry.itemId === item.id))
+              .map((item) => item.id),
+      busySlots: Math.min(busy + admitted.length, slots ?? 0),
+      totalSlots: slots ?? 0,
+      now,
+    });
     return admitted;
   });
 }
