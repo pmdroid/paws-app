@@ -232,6 +232,7 @@ export {
   getEvidence,
   listEvidence,
   saveEvidence,
+  setEvidenceAssetUrl,
   type EvidenceMediaType,
   type StoredEvidence,
 } from "./evidence";

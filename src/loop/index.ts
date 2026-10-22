@@ -8,7 +8,7 @@ export {
   shouldKeepAlive,
   shouldPostFirstActivity,
 } from "./activity";
-export { deliverLinearOutbox } from "./dispatch";
+export { deliverLinearOutbox, type EvidenceUploads } from "./dispatch";
 export { hintedRepository, repositoryAnswer, rankRepositories } from "./repository-selection";
 export {
   GitHubAuthQuestions,
@@ -45,6 +45,8 @@ export { createLinearSessionProgress } from "./session-progress";
 export {
   createEvidenceArtifactPublisher,
   createLinearArtifactPublisher,
+  EVIDENCE_INLINE_LIMITS,
+  evidenceActivityBody,
   createLinearArtifactReader,
   type EvidenceSink,
 } from "./artifacts";
