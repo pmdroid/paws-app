@@ -43,14 +43,10 @@ import {
   type CiRound,
 } from "../src/db";
 import {
-  INSTALLATION_PERMISSIONS,
   createFakeGitHub,
   createFakeMergeQueue,
   fakeMergeReadiness,
   type FakeMergeQueue,
-  fakeRequiredChecks,
-  type GitHubClient,
-  type GitHubResponse,
   type GitHubTokenProvider,
 } from "../src/github";
 import {
@@ -3314,7 +3310,7 @@ async function runGitHubQueue(
   dashboard: (string | null)[];
   detail: string;
 }> {
-  const layout = await repoLayout();
+  const layout = await repoLayout("paws-e2e-");
   await writeFile(path.join(layout.pawsRoot, "config.toml"), '[merge]\norder = "github-queue"\n');
   const dashboard: (string | null)[] = [];
   const tracker = createFakeTracker([
