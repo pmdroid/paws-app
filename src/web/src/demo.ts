@@ -311,13 +311,28 @@ const DEMO: StatusSnapshot = {
     {
       position: 1,
       itemId: "ENG-101",
+      repository: "acme/platform",
       enqueuedAt: "2026-10-09T21:05:00.000Z",
+      acceptedAt: "2026-10-09T21:05:00.000Z",
+      waitingFor: "ci",
+      detail: "Branch updated onto main a1c9e07. CI 4 of 6 checks done.",
+      settings: { order: "queue", mainMoved: "ci", rule: null },
       steps: [
         { name: "Rebase onto main", state: "run", detail: "a1c9e07 → main" },
         { name: "Re-run Closeout", state: "wait", detail: "evidence goes stale after a rebase" },
         { name: "Required check closeout-verified", state: "wait", detail: null },
         { name: "Squash merge", state: "wait", detail: null },
       ],
+    },
+  ],
+  mergeHistory: [
+    {
+      itemId: "ENG-99",
+      repository: "acme/platform",
+      outcome: "merged",
+      reason: null,
+      at: "2026-10-09T20:15:00.000Z",
+      settings: { order: "queue", mainMoved: "ci", rule: null },
     },
   ],
   events: [

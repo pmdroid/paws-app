@@ -11,9 +11,12 @@ import {
   enterMergeQueue,
   finishCloseoutProgress,
   insertQueuedItem,
+  joinMergeQueue,
+  keepTaskMergeSettings,
   migrate,
   openDatabase,
   recordCiRound,
+  recordConfirmedRemoteMerge,
   saveTaskBlocks,
   startCloseoutRound,
   upsertCloseoutStep,
@@ -338,14 +341,124 @@ describe("live status provider", () => {
       ["typecheck", "command", "passed"],
       ["adversarial-review", "review", "passed"],
     ]);
+    // The merge job has not run yet, so the task holds no place in its repository's queue.
     expect(parsed.snapshot.mergeQueue).toEqual([
-      expect.objectContaining({ position: 1, itemId: "ENG-3" }),
+      expect.objectContaining({
+        position: null,
+        itemId: "ENG-3",
+        repository: "pmdroid/paws-demo",
+        waitingFor: "ci",
+        acceptedAt: new Date(now).toISOString(),
+        settings: { order: "queue", mainMoved: "ci", rule: null },
+      }),
     ]);
     expect(parsed.snapshot.items.find((item) => item.id === "ENG-3")?.pr).toEqual({
       number: 7,
       url: "https://github.com/pmdroid/paws-demo/pull/7",
     });
     expect(JSON.stringify(snapshot)).not.toContain("Audit log export");
+  });
+
+  test("the merge queue lists each repository's tasks in order, with what each waits for", () => {
+    const db = database();
+    const now = 1_700_000_000_000;
+    const head = "c".repeat(40);
+    const merging = (id: string, repository: string, ready: number | null, at: number) => {
+      const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_q", now: at });
+      beginImplementRun(db, item.id, at);
+      enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+      enqueueJob(db, {
+        queue: "github.merge",
+        lane: "merge",
+        jobKey: `merge:${item.id}`,
+        payload: { itemId: item.id, head },
+        now: at,
+      });
+      enqueueOutbox(db, {
+        target: "linear",
+        op: "activity",
+        orderingKey: "ses_q",
+        idempotencyKey: `${item.id}:pr:${at}`,
+        payload: {
+          sessionId: "ses_q",
+          kind: "response",
+          body: `Opened https://github.com/${repository}/pull/${at}.`,
+        },
+        now: at,
+      });
+      if (ready !== null) joinMergeQueue(db, { itemId: item.id, repository, now: ready });
+      return item;
+    };
+    const first = merging("ENG-11", "acme/platform", 10, 1);
+    merging("ENG-12", "acme/platform", 20, 2);
+    const review = merging("ENG-13", "acme/web", null, 3);
+    db.run("UPDATE job SET payload=? WHERE json_extract(payload,'$.itemId')=?", [
+      JSON.stringify({
+        itemId: review.id,
+        head,
+        mergeWait: { reason: "review", message: "Waiting for an approving review.", at: 4 },
+      }),
+      review.id,
+    ]);
+    keepTaskMergeSettings(
+      db,
+      review.id,
+      {
+        order: "ci-green",
+        mainMoved: "closeout",
+        resolved: { sources: { order: "rule", mainMoved: "rule" }, rule: { label: "Bug" } },
+      },
+      4,
+    );
+    const merged = merging("ENG-14", "acme/platform", null, 5);
+    applyWorkItemEvent(db, merged.id, "merge_accepted");
+    recordConfirmedRemoteMerge(db, {
+      itemId: merged.id,
+      repositoryOwner: "acme",
+      repositoryName: "platform",
+      pullNumber: 5,
+      pullUrl: null,
+      mergeSha: null,
+      confirmedAt: now - 60_000,
+    });
+    const back = merging("ENG-15", "acme/platform", null, 6);
+    applyWorkItemEvent(db, back.id, "ejected");
+    enqueueJob(db, {
+      queue: "run.resume",
+      jobKey: `ci-failed:${back.id}:0`,
+      payload: { itemId: back.id, reason: "ci-failed" },
+      now: now - 120_000,
+    });
+
+    const snapshot = createLiveStatusProvider(db, { now: () => new Date(now) }).snapshot();
+    const parsed = parseStatusSnapshot(snapshot);
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(statusIntegrity(parsed.snapshot)).toEqual([]);
+    expect(
+      parsed.snapshot.mergeQueue.map((entry) => [
+        entry.repository,
+        entry.position,
+        entry.itemId,
+        entry.waitingFor,
+        entry.detail,
+      ]),
+    ).toEqual([
+      ["acme/platform", 1, "ENG-11", "ci", null],
+      ["acme/platform", 2, "ENG-12", "ahead", "Starts when #1 merges"],
+      ["acme/web", null, "ENG-13", "review", "Waiting for an approving review."],
+    ]);
+    expect(parsed.snapshot.mergeQueue[2]?.settings).toEqual({
+      order: "ci-green",
+      mainMoved: "closeout",
+      rule: "Bug",
+    });
+    expect(first.id).toBe("ENG-11");
+    expect(
+      parsed.snapshot.mergeHistory?.map((entry) => [entry.itemId, entry.outcome, entry.reason]),
+    ).toEqual([
+      ["ENG-14", "merged", null],
+      ["ENG-15", "back_with_agent", "ci_failed"],
+    ]);
   });
 
   test("Closeout checks leave out policy items that did not apply to the change", () => {
