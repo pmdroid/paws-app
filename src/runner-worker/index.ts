@@ -33,6 +33,7 @@ import {
   runAgent,
   minimalAgentEnv,
   reconstructAcpPrompt,
+  currentRequest,
   recoverAcpConversation,
   materializeImplementationSkills,
   type AcpEvent,
@@ -473,6 +474,7 @@ export async function executeRunnerCommand(
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
+    const earlierSession = command.type === "run" ? command.resumeSessionId : undefined;
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -502,7 +504,14 @@ export async function executeRunnerCommand(
       prepareOnly: !repository && command.type !== "helper" && !task,
       itemId: repository || task ? command.itemId : job.executionId,
       runId: job.executionId,
-      prompt: resumed ? RESUME_PROMPT : prompt,
+      prompt: resumed
+        ? RESUME_PROMPT
+        : earlierSession
+          ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
+          : prompt,
+      ...(earlierSession && !resumed
+        ? { resume: { sessionId: earlierSession, replayPrompt: prompt } }
+        : {}),
       ...(resumed
         ? {
             resume: {

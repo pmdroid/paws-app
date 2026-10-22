@@ -132,6 +132,11 @@ function withinBudget(context: readonly AcpConversationEntry[]): AcpConversation
       ];
 }
 
+export function currentRequest(prompt: string): string {
+  const [lead, , , marker, ...rest] = prompt.split("\n\n");
+  return lead === REPLAY_LEAD && marker === "Current user request:" ? rest.join("\n\n") : prompt;
+}
+
 export function requestText(prompt: string): string {
   const [lead, , context, marker, ...rest] = prompt.split("\n\n");
   if (lead !== REPLAY_LEAD || marker !== "Current user request:" || context === undefined)
