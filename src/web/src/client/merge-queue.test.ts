@@ -185,7 +185,7 @@ describe("merge queue page", () => {
   test("an issue waiting on review approval holds no place and says why", () => {
     const html = page(twoRepositories());
     expect(rowText(html, "ENG-121")).toBe(
-      "ENG-121 Footer links Audit log export Aisha Khan #32 2h 5m Waiting for review Waiting for an approving review on #32. It joins the queue once approved",
+      "ENG-121 Footer links Audit log export Aisha Khan #32 2h 5m Waiting for review Waiting for an approving review on #32. It merges once approved and green",
     );
     const queued = twoRepositories();
     queued.mergeQueue[0] = entry("ENG-101", "acme/platform", null, "review", 3);

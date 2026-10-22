@@ -114,9 +114,9 @@ function detail(group: Group, entry: StatusMergeEntry, item: StatusItem | undefi
   if (entry.detail) lines.push(entry.detail.replace(/\.$/, ""));
   else if (entry.waitingFor === "review")
     lines.push(
-      `Waiting for an approving review${item?.pr ? ` on #${item.pr.number}` : ""}. It joins the queue once approved`,
+      `Waiting for an approving review${item?.pr ? ` on #${item.pr.number}` : ""}. ${group.settings.order === "queue" ? "It joins the queue once approved" : "It merges once approved and green"}`,
     );
-  else if (entry.waitingFor === "ci") lines.push("Waiting for CI on the updated commit");
+  else if (entry.waitingFor === "ci") lines.push("Waiting for CI on the pull request's commit");
   const own = entry.settings;
   if (
     own.rule &&
