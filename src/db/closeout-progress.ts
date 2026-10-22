@@ -337,3 +337,29 @@ function clipUtf8(text: string, maxBytes: number): string {
   }
   return bytes.subarray(0, end).toString("utf8");
 }
+
+/**
+ * Notes on a running step why it has not reached its runner yet. Null clears
+ * the note. The step's own state and attempt stay as they are.
+ */
+export function setRunningCloseoutStepDetail(
+  db: Database,
+  itemId: string,
+  head: string,
+  stepId: string,
+  detail: string | null,
+  now: number,
+): void {
+  immediate(db, () => {
+    db.run(
+      `UPDATE closeout_step SET detail = ? WHERE step_id = ? AND state = 'running'
+       AND progress_id IN (SELECT id FROM closeout_progress WHERE item_id = ? AND head = ?)`,
+      [detail, stepId, itemId, head],
+    );
+    db.run(
+      `UPDATE closeout_progress SET updated_at = ? WHERE item_id = ? AND head = ?
+       AND id IN (SELECT progress_id FROM closeout_step WHERE step_id = ? AND state = 'running')`,
+      [now, itemId, head, stepId],
+    );
+  });
+}
