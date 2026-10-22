@@ -48,6 +48,7 @@ const thrown: Record<Fault, () => unknown> = {
 const phases: Phase[] = ["command runner", "reviewer launch", "merge readiness read", "token mint"];
 const faults: Fault[] = ["a timeout", "a dropped connection", "a rate limit"];
 const cells = phases.flatMap((phase) => faults.map((fault) => [phase, fault] as const));
+const MINT_RETRY_AFTER_MS = 400;
 
 test.each(cells)(
   "%s: %s once is retried and the task merges",
@@ -70,6 +71,13 @@ test.each(cells)(
     expect(result.errors[0], result.detail).toStartWith("Stopped after");
     expect(result.questions, result.detail).toEqual([]);
     expect(result.pending, result.detail).toEqual([]);
+    if (phase === "token mint" && fault === "a rate limit") {
+      expect(result.errors[0], result.detail).toContain("rate limited");
+      const gaps = result.injectedAt.slice(1).map((at, i) => at - result.injectedAt[i]!);
+      expect(gaps.length, result.detail).toBeGreaterThan(0);
+      for (const gap of gaps)
+        expect(gap, result.detail).toBeGreaterThanOrEqual(MINT_RETRY_AFTER_MS);
+    }
   },
   120_000,
 );
@@ -84,6 +92,7 @@ async function runWithFault(
   questions: string[];
   pending: string[];
   injected: number;
+  injectedAt: number[];
   detail: string;
 }> {
   const layout = await repoLayout();
@@ -103,10 +112,12 @@ async function runWithFault(
   const client = githubClient(layout.bare, createFakeGitHub());
   let remaining = times;
   let injected = 0;
+  const injectedAt: number[] = [];
   const inject = (active: boolean): boolean => {
     if (!active || remaining <= 0) return false;
     remaining -= 1;
     injected += 1;
+    injectedAt.push(Date.now());
     return true;
   };
   const realSetTimeout = globalThis.setTimeout;
@@ -151,7 +162,11 @@ async function runWithFault(
                 stateOf(db) === "merge_queue";
           if (inject(target)) {
             if (fault === "a rate limit")
-              return { status: 429, body: { message: "API rate limit exceeded" } };
+              return {
+                status: 429,
+                body: { message: "API rate limit exceeded" },
+                retryAfterMs: MINT_RETRY_AFTER_MS,
+              };
             throw thrown[fault]();
           }
           return client.request(req);
@@ -215,6 +230,7 @@ async function runWithFault(
         .filter((job) => job.status === "pending" || job.status === "running")
         .map((job) => job.queue),
       injected,
+      injectedAt,
       detail: JSON.stringify({
         state: stateOf(db),
         jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
