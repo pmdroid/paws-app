@@ -1709,6 +1709,7 @@ export class Orchestrator {
       } catch (error) {
         if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
           return;
+        if (isTransientFailure(error)) throw error;
         markRunEnded(this.db, run.id, this.now());
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
         this.post(item, "thought", summary, `${run.id}:profile-preflight`);
@@ -4948,6 +4949,7 @@ export class Orchestrator {
       }).catch((error: unknown) => {
         throw new Error(
           `${role} preparation failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
         );
       });
       if (!result.agentExited) this.blockConversation(item.id);
