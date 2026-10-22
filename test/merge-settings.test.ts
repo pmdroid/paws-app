@@ -5,6 +5,7 @@ import {
   loadConfigFile,
   parseConfigToml,
   readMergeSettings,
+  repositoryPackages,
   resolveMergeSettings,
   type MergePolicy,
 } from "../src/config";
@@ -89,6 +90,9 @@ order = "queue"
 [[merge.rules]]
 project = "${PAYMENTS}"
 label = "Needs \\"care\\""
+
+[merge.repositories."acme/platform"]
+packages = ["apps/*", "packages/*"]
 `;
     const config = parseConfigToml(text);
     expect(config.maxTurns).toBe(40);
@@ -99,8 +103,23 @@ label = "Needs \\"care\\""
         { label: "Bug", order: "queue" },
         { project: PAYMENTS, label: 'Needs "care"' },
       ],
+      repositories: { "acme/platform": { packages: ["apps/*", "packages/*"] } },
       ciFixAttempts: 2,
     });
+    expect(repositoryPackages(readMergeSettings(config), "Acme/Platform")).toEqual([
+      "apps/*",
+      "packages/*",
+    ]);
+    expect(repositoryPackages(readMergeSettings(config), "acme/web")).toEqual([]);
+  });
+
+  test("package roots must be relative paths in the repository", () => {
+    for (const root of ["../apps/*", "/apps", "apps/**x", ""])
+      expect(() =>
+        parseConfigToml(
+          `[merge.repositories."acme/platform"]\npackages = [${JSON.stringify(root)}]\n`,
+        ),
+      ).toThrow();
   });
 
   test("the PAS-389 switch is the workspace default for when main moved", () => {
@@ -164,11 +183,20 @@ describe("Merging settings API", () => {
     });
   });
 
+  test("GET lists repositories where GitHub requires branches to be up to date", async () => {
+    const { options } = fixture();
+    const body = (await (await handleMergeSettingsRequest(request(), {
+      ...options,
+      upToDateRule: () => ["acme/platform"],
+    }))!.json()) as { upToDateRule?: string[] };
+    expect(body.upToDateRule).toEqual(["acme/platform"]);
+  });
+
   test("PUT saves to config.toml, keeps other settings and audits each change", async () => {
     const { options, audits } = fixture();
     writeFileSync(
       options.configPath,
-      '[caps]\nmax_turns = 31\n\n[merge]\ncloseout_after_update = true\nci_fix_attempts = 5\n\n[agents.defaults.implementer]\nagent = "claude"\n',
+      '[caps]\nmax_turns = 31\n\n[merge]\ncloseout_after_update = true\nci_fix_attempts = 5\n\n[merge.repositories."acme/platform"]\npackages = ["apps/*"]\n\n[agents.defaults.implementer]\nagent = "claude"\n',
     );
     const body = {
       default: { order: "queue", mainMoved: "ci" },
@@ -189,6 +217,7 @@ describe("Merging settings API", () => {
       default: { order: "queue", mainMoved: "ci" },
       projects: { [PAWS]: {}, [PAYMENTS]: { order: "github-queue", mainMoved: "overlap" } },
       rules: [{ label: "Bug", mainMoved: "closeout" }],
+      repositories: { "acme/platform": { packages: ["apps/*"] } },
       ciFixAttempts: 5,
     });
     expect(
