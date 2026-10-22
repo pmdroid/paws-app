@@ -1964,4 +1964,16 @@ ALTER TABLE runner_work ADD COLUMN consumed_sequence INTEGER NOT NULL DEFAULT 0 
 ALTER TABLE evidence ADD COLUMN asset_url TEXT;
 `,
   },
+  {
+    id: "084_queue_position",
+    sql: `
+CREATE TABLE queue_position (
+  item_id TEXT PRIMARY KEY REFERENCES work_item(id),
+  position INTEGER NOT NULL CHECK(position>=1),
+  busy_slots INTEGER NOT NULL CHECK(busy_slots>=0),
+  total_slots INTEGER NOT NULL CHECK(total_slots>=0),
+  updated_at INTEGER NOT NULL
+) STRICT;
+`,
+  },
 ];

@@ -32,8 +32,11 @@ import {
   prepareRepositorySnapshot,
 } from "../acp";
 import {
+  DEFAULT_QUEUE_START_TIMEOUT_HOURS,
+  formatQueueTimeout,
   loadConfigFile,
   readMergeSettings,
+  readQueueSettings,
   resolveAgentProfiles,
   type AgentProfile,
 } from "../config";
@@ -102,6 +105,7 @@ import {
   enqueueOutboxOnce,
   failWorkItem,
   queueWaitSince,
+  getQueuePosition,
   getRun,
   getConversation,
   saveConversation,
@@ -227,6 +231,7 @@ import { classifyTask } from "./task-classifier";
 import type { LinearTaskAccess } from "./linear-task-access";
 import { guardGitHubPublication } from "./publication";
 import { sweepWorktrees } from "./worktree-sweep";
+import { queuePositionText } from "./queue-position";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { createRepositoryGit } from "./repository-git";
 import { GitHubAuthQuestions, type HostGitHubAuth } from "./github-auth";
@@ -331,7 +336,6 @@ class LinearReconciliationPendingError extends Error {}
 
 /** Rebase conflicts keep a fixed limit. CI failures use the `[merge] ci_fix_attempts` setting. */
 const MAX_REBASE_RETURNS = 3;
-const QUEUE_START_TIMEOUT_MS = 24 * 3_600_000;
 export const REBASE_CONFLICT_INSTRUCTION =
   "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 const REBASE_CONFLICT_THOUGHT =
@@ -2539,6 +2543,16 @@ export class Orchestrator {
     );
   }
 
+  /** `[queue] start_timeout_hours`, read on every dispatch. Missing or unreadable means 24. */
+  private queueStartTimeoutHours(): number {
+    try {
+      return readQueueSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
+        .startTimeoutHours;
+    } catch {
+      return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+    }
+  }
+
   /** `[merge] ci_fix_attempts`, read for every CI round. Missing means 3. */
   private ciFixAttempts(): number {
     return readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml")))
@@ -3315,6 +3329,7 @@ export class Orchestrator {
 
   private noteQueued(ready: readonly WorkItemRecord[]): void {
     const now = this.now();
+    const timeoutHours = this.queueStartTimeoutHours();
     for (const { id } of ready) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
@@ -3327,18 +3342,19 @@ export class Orchestrator {
       )
         continue;
       const name = item.linearIdentifier ?? "this issue";
-      if (now - queueWaitSince(this.db, item.id, item.version, now) >= QUEUE_START_TIMEOUT_MS) {
+      if (now - queueWaitSince(this.db, item.id, item.version, now) >= timeoutHours * 3_600_000) {
         failWorkItem(
           this.db,
           item,
           "start_timeout",
-          `Paws couldn't start ${name} within ${QUEUE_START_TIMEOUT_MS / 3_600_000} hours because every runner slot stayed busy. Delegate it again to retry.`,
+          `Paws couldn't start ${name} within ${formatQueueTimeout(timeoutHours)} because every runner slot stayed busy. Delegate it again to retry.`,
           now,
         );
         continue;
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
+      const queued = getQueuePosition(this.db, item.id);
       enqueueOutboxOnce(this.db, {
         target: OUTBOX_ACTIVITY.target,
         op: OUTBOX_ACTIVITY.op,
@@ -3347,7 +3363,7 @@ export class Orchestrator {
         payload: {
           sessionId,
           kind: "thought",
-          body: `Queued: every runner slot is busy. Paws starts ${name} when a slot frees.`,
+          body: `${queued ? queuePositionText(queued) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
         },
         now,
       });
