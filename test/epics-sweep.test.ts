@@ -11,6 +11,7 @@ async function sweepFixture() {
       linearIssueId: "parent",
       identifier: "SYNC-1",
       title: "Parent",
+      description: null,
       subIssues: [{ linearIssueId: "child", identifier: "SYNC-2", title: "Child" }],
     },
   ]);
@@ -42,7 +43,6 @@ async function sweepFixture() {
     tracker: {
       ...tracker,
       listDeps: tracker.listDeps.bind(tracker),
-      listIssuePullRequests: tracker.listIssuePullRequests.bind(tracker),
       async loadEpic(id) {
         reads++;
         if (failNext) {

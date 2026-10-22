@@ -1194,7 +1194,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         enqueueJobOnce(db, {
           queue: "linear.epics.reconcile",
           jobKey: "linear.epics.reconcile",
-          recurringEveryMs: 300_000,
+          recurringEveryMs: 1_800_000,
           now: Date.now(),
         });
       }
