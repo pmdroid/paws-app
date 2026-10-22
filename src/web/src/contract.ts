@@ -253,6 +253,42 @@ export interface StatusAgentCloseoutStep {
   headSha: string | null;
 }
 
+export const CI_CHECK_STATES = ["passed", "failed", "running", "skipped"] as const;
+export const CI_LOG_SOURCES = ["actions", "summary"] as const;
+/** What Paws did after a failed CI read: sent it back to the agent, asked in Linear, or stopped. */
+export const CI_ROUND_NEXT = ["agent", "asked", "failed"] as const;
+export type CiCheckState = (typeof CI_CHECK_STATES)[number];
+export type CiLogSource = (typeof CI_LOG_SOURCES)[number];
+export type CiRoundNext = (typeof CI_ROUND_NEXT)[number];
+
+/** One check on the pull request's head commit. */
+export interface StatusCiCheck {
+  name: string;
+  state: CiCheckState;
+  url: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** The end of a failing check's log: the GitHub Actions job log, otherwise its summary text. */
+  logTail: string | null;
+  logSource: CiLogSource | null;
+}
+
+/** One failed CI read of a head, oldest first in `StatusSnapshot.ciRounds`. */
+export interface StatusCiRound {
+  itemId: string;
+  /** The stored run (an attempt in `StatusRun.attempts`) that was current when CI failed. */
+  runId: string | null;
+  /** 1-based, per item. */
+  round: number;
+  head: string;
+  next: CiRoundNext;
+  /** The fix number when `next` is `agent`, for example 1 in "fix 1 of 3". */
+  fix: number | null;
+  fixLimit: number;
+  recordedAt: string;
+  checks: StatusCiCheck[];
+}
+
 export interface StatusMergeStep {
   name: string;
   state: StepState;
@@ -293,6 +329,8 @@ export interface StatusSnapshot {
   /** Closeout videos and screenshots of the visible items, oldest first. */
   evidence?: StatusEvidence[];
   agentCloseout?: StatusAgentCloseout[];
+  /** Failed CI reads of the visible items' pull requests, with every check on each head. */
+  ciRounds?: StatusCiRound[];
 }
 
 export const EVIDENCE_KINDS = ["video", "image"] as const;
@@ -424,6 +462,41 @@ function readSnapshot(input: unknown): StatusSnapshot {
             readAgentCloseout(entry, `agentCloseout[${index}]`),
           ),
         }),
+    ...(body.ciRounds === undefined
+      ? {}
+      : {
+          ciRounds: array(body, "ciRounds", "status").map((entry, index) =>
+            readCiRound(entry, `ciRounds[${index}]`),
+          ),
+        }),
+  };
+}
+
+function readCiRound(input: unknown, path: string): StatusCiRound {
+  const body = object(input, path);
+  return {
+    itemId: text(body, "itemId", path),
+    runId: optionalText(body, "runId"),
+    round: positiveInteger(body, "round", path),
+    head: text(body, "head", path),
+    next: oneOf(string(body, "next", path), CI_ROUND_NEXT, `${path}.next`),
+    fix: body.fix === null || body.fix === undefined ? null : positiveInteger(body, "fix", path),
+    fixLimit: count(body, "fixLimit", path),
+    recordedAt: dateString(body, "recordedAt", path),
+    checks: array(body, "checks", path).map((entry, index) => {
+      const at = `${path}.checks[${index}]`;
+      const check = object(entry, at);
+      const source = optionalText(check, "logSource");
+      return {
+        name: text(check, "name", at),
+        state: oneOf(string(check, "state", at), CI_CHECK_STATES, `${at}.state`),
+        url: optionalText(check, "url"),
+        startedAt: optionalText(check, "startedAt"),
+        completedAt: optionalText(check, "completedAt"),
+        logTail: optionalText(check, "logTail"),
+        logSource: source === null ? null : oneOf(source, CI_LOG_SOURCES, `${at}.logSource`),
+      };
+    }),
   };
 }
 

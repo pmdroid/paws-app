@@ -1,13 +1,30 @@
 /** Messages for a CI fix round: the agent handoff, the Linear line, and the question when attempts run out. */
 
-export type FailedCiCheck = { name: string; url: string | null };
+export type FailedCiCheck = { name: string; url: string | null; logTail?: string | null };
 
 export function ciFixHandoff(checks: readonly FailedCiCheck[]): string {
   return [
     "CI failed on the pull request. Failed checks:",
     ...checkList(checks),
+    ...checks.flatMap(logSection),
     "Run the same checks in this repository to reproduce the failures, fix the code so the change still does what the issue asks, and run the checks again.",
   ].join("\n");
+}
+
+/** The end of a failing check's log, fenced so its text cannot close the block. */
+function logSection(check: FailedCiCheck): string[] {
+  if (!check.logTail) return [];
+  const fence = "`".repeat(
+    Math.max(3, ...[...check.logTail.matchAll(/`+/g)].map((run) => run[0].length + 1)),
+  );
+  return [
+    "",
+    `End of the \`${check.name.replaceAll("`", "'")}\` log:`,
+    fence,
+    check.logTail,
+    fence,
+    "",
+  ];
 }
 
 /** One line per round, for example "CI: `check / test` failed. Sent back to the agent, fix 1 of 3." */
