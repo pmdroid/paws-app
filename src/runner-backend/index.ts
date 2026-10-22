@@ -66,12 +66,24 @@ const MAIN_COMMIT_RUNNER_VERSION = [0, 1, 19];
 const REBASE_RUNNER_VERSION = [0, 1, 23];
 const SESSION_RESUME_RUNNER_VERSION = [0, 1, 24];
 
+type SessionHolder = { runnerId: string; memberId?: string; agent: string; sessionId: string };
+
 function earlierSession(
   db: Database,
   itemId: string,
-  runnerId: string,
+  runner: { id: string; memberId?: string },
   agent: string,
 ): string | undefined {
+  const holder = sessionHolder(db, itemId);
+  return holder?.runnerId === runner.id &&
+    holder.memberId === runner.memberId &&
+    holder.agent === agent
+    ? holder.sessionId
+    : undefined;
+}
+
+/** The runner, member account and agent that hold the item's last resumable agent session. */
+function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
   const rows = db
     .query<{ envelope: string; payload: string }, [string]>(
       `SELECT c.envelope, rr.payload FROM runner_result rr
@@ -86,14 +98,24 @@ function earlierSession(
       Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
         "utf8",
       ),
-    ) as { runnerId?: string; checkpoint?: boolean; profile?: { agent?: string } };
+    ) as {
+      runnerId?: string;
+      memberId?: string;
+      checkpoint?: boolean;
+      profile?: { agent?: string };
+    };
     if (command.checkpoint === false) continue;
     const result = JSON.parse(row.payload) as { stopReason?: string; sessionId?: string };
-    return command.runnerId === runnerId &&
-      command.profile?.agent === agent &&
+    return command.runnerId &&
+      command.profile?.agent &&
       result.stopReason !== "error" &&
       result.sessionId
-      ? result.sessionId
+      ? {
+          runnerId: command.runnerId,
+          ...(command.memberId ? { memberId: command.memberId } : {}),
+          agent: command.profile.agent,
+          sessionId: result.sessionId,
+        }
       : undefined;
   }
   return undefined;
@@ -195,14 +217,20 @@ export function createRemoteAgentRunner(options: {
     const capacityDeadline = performance.now() + CAPACITY_WAIT_MS;
     for (;;) {
       const rejected: string[] = [];
-      const selected = await place(itemId, placement, rejected);
-      if (selected) return selected;
+      const offered: string[] = [];
+      const selected = await place(itemId, placement, rejected, offered);
+      if (selected) return { ...selected, offered };
       const agent = placement.profile?.agent;
       const resetsAt = agent
         ? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null)
         : null;
+      // Placement offers only the busy runner holding the agent's session during its grace period.
+      const heldForSession =
+        placement.session !== undefined &&
+        offered.length === 1 &&
+        offered[0] === placement.session.runnerId;
       if (
-        resetsAt === null &&
+        (resetsAt === null || heldForSession) &&
         rejected.some((reason) => reason.endsWith(": no free capacity")) &&
         performance.now() < capacityDeadline
       ) {
@@ -222,6 +250,7 @@ export function createRemoteAgentRunner(options: {
     itemId: string,
     placement: Parameters<RunnerPlacement["candidates"]>[0],
     rejected: string[],
+    offered: string[] = [],
   ) {
     const item = getWorkItem(db, itemId);
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
@@ -237,6 +266,7 @@ export function createRemoteAgentRunner(options: {
           )
           .all();
     placement.signal?.throwIfAborted();
+    offered.push(...candidates.map((runner) => runner.id));
     for (const runner of candidates) {
       if (placement.excludeRunnerIds?.includes(runner.id)) continue;
       const reserved = [...reservations].filter(
@@ -367,17 +397,37 @@ export function createRemoteAgentRunner(options: {
           throw new Error("Read-only remote work requires the reviewer role");
         const suppliedInputs = snapshotAgentInputs(input.worktreePath, input.inputFiles);
         const profile = { ...input.profile, model: input.profile.model ?? null };
+        const holder =
+          !responseTask &&
+          !input.prepareOnly &&
+          input.role === "implementer" &&
+          input.checkpoint !== false
+            ? sessionHolder(db, itemId)
+            : undefined;
+        const session =
+          holder?.agent === profile.agent
+            ? {
+                runnerId: holder.runnerId,
+                ...(holder.memberId ? { memberId: holder.memberId } : {}),
+              }
+            : undefined;
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
           profile,
           role: input.role,
           purpose: input.prepareOnly ? "prepare" : "work",
           excludeRunnerIds: excluded,
+          ...(session ? { session } : {}),
           signal: input.signal,
         };
         const attached =
           !input.prepareOnly && !responseTask ? attachedWork(itemId, input.role) : undefined;
-        const selected = attached?.selected ?? (await select(itemId, placementRequest, limit));
+        const chosen = attached ? undefined : await select(itemId, placementRequest, limit);
+        const selected = attached?.selected ?? chosen!;
+        const sessionBusy =
+          session !== undefined &&
+          chosen?.offered.includes(session.runnerId) === true &&
+          !runnerHasCapacity(db, session.runnerId, now());
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -640,7 +690,7 @@ export function createRemoteAgentRunner(options: {
                     .get(selected.id)?.version,
                   SESSION_RESUME_RUNNER_VERSION,
                 )
-                  ? earlierSession(db, itemId, selected.id, profile.agent)
+                  ? earlierSession(db, itemId, selected, profile.agent)
                   : undefined;
               const assigned: WorkCommand = {
                 id: commandId,
@@ -714,6 +764,19 @@ export function createRemoteAgentRunner(options: {
                   startedAt: issuedAt,
                 });
               });
+              if (session) {
+                const name = (id: string) =>
+                  db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
+                    ?.name ?? id;
+                await emit({
+                  type: "progress",
+                  text: resumeSessionId
+                    ? `Continuing the agent's session on ${name(selected.id)}.\n`
+                    : selected.id === session.runnerId
+                      ? `Starting a new session on ${name(selected.id)}; ${selected.memberId === session.memberId ? "this runner version can't resume the earlier session" : "the earlier session belongs to another account"}.\n`
+                      : `Starting a new session on ${name(selected.id)}; ${name(session.runnerId)} is ${sessionBusy ? "busy" : "unavailable"}.\n`,
+                });
+              }
               return { assigned, baseSha, mainSha, deadline };
             })());
           const { assigned, baseSha, mainSha, deadline } = placed;
