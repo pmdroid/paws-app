@@ -389,3 +389,21 @@ test("a failed read logs the error message with GitHub tokens redacted", async (
   expect(logged[0]).toContain("The Linear publication was superseded.");
   expect(logged.join("\n")).not.toContain(token);
 });
+
+test("a Linear rate limit while minting the token waits instead of blocking the merge", async () => {
+  const f = fixture(() => withChecks([run("build", "SUCCESS")]));
+  let mints = 0;
+  const waits: string[] = [];
+  const result = await waitForMergeReadiness({
+    ...f.input,
+    token: async () => {
+      if (++mints <= 4) throw new Error("Linear GraphQL: RATELIMITED");
+      return "synthetic-token-after-reset";
+    },
+    onWait: async (message) => {
+      waits.push(message);
+    },
+  });
+  expect(result.outcome).toBe("ready");
+  expect(waits).toEqual(["Waiting for Linear's rate limit to reset before reading GitHub."]);
+});
