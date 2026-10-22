@@ -7,12 +7,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { expect, spyOn, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
 import { createCommentMode, createFakeCommentBoard, withCommentActivities } from "../src/comments";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
+  applyWorkItemEvent,
   bindWorkItemRepository,
   accrueAwake,
   configureWorkItem,
@@ -3434,6 +3436,198 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
     }
   }
 }, 120_000);
+
+test("an unreadable CI read retries the merge job and fails the task with the reason on its last attempt", async () => {
+  const layout = await repoLayout();
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "unreadable-ci",
+      identifier: "ENG-93",
+      title: "Write ok.txt",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const client = githubClient(layout.bare, createFakeGitHub());
+  let reads = 0;
+  let sequence = 0;
+  const realSetTimeout = globalThis.setTimeout;
+  const quickReadRetries = spyOn(globalThis, "setTimeout").mockImplementation(((
+    handler: () => void,
+    ms?: number,
+  ) => realSetTimeout(handler, ms === 10_000 ? 1 : ms)) as unknown as typeof setTimeout);
+  const orchestrator = attachOrchestrator({
+    db,
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+    github: {
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: {
+        async request(req) {
+          if (!isMergeReadiness(req)) return client.request(req);
+          reads += 1;
+          return { status: 502, body: {} };
+        },
+      },
+    },
+    launch(input) {
+      sequence += 1;
+      const scriptPath = path.join(layout.root, `unreadable-${sequence}.json`);
+      const steps: FakeScript["steps"] =
+        input.purpose === "implement"
+          ? [writeOk(input.worktree), { type: "end" }]
+          : emptyReview().steps;
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps,
+        }),
+      );
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "unreadable-ci"));
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-93") ?? "")) {
+      db.run("UPDATE job SET max_attempts = 2 WHERE queue = ? AND status = 'pending'", [
+        JOB_KIND.merge,
+      ]);
+      if ((await jobs.tick()) === null) {
+        outbox.tick();
+        await Bun.sleep(25);
+      }
+    }
+    while (outbox.tick().length > 0) await outbox.idle();
+    expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("failed");
+    expect(reads, debug(layout, db)).toBe(6);
+    expect(
+      tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
+    ).toEqual(["Stopped after 2 attempts. could not read GitHub CI and review threads"]);
+    expect(
+      listJobs(db)
+        .filter((job) => job.queue === JOB_KIND.merge)
+        .map((job) => job.status),
+    ).toEqual(["cancelled"]);
+  } finally {
+    quickReadRetries.mockRestore();
+    await orchestrator.shutdown().catch(() => undefined);
+    db.close();
+    await layout.cleanup();
+  }
+}, 120_000);
+
+test.each([
+  [1, "merges"],
+  [Infinity, "fails"],
+])(
+  "a reverify whose worktree read times out %p time(s) is retried and %s",
+  async (timeouts, outcome) => {
+    const layout = await repoLayout();
+    const tracker = createFakeTracker([
+      {
+        linearIssueId: "reverify-timeout",
+        identifier: "ENG-94",
+        title: "Write ok.txt",
+        description: null,
+        subIssues: [],
+      },
+    ]);
+    const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+    migrate(db);
+    const jobs = new JobLoop(db, systemClock, { backoffBaseMs: 10 });
+    const outbox = new OutboxDispatcher(db, systemClock);
+    const client = githubClient(layout.bare, createFakeGitHub());
+    let remaining = 0;
+    let sequence = 0;
+    const realGit = acp.git;
+    const flakyGit = spyOn(acp, "git").mockImplementation(async (args, options) => {
+      if (remaining > 0 && args.includes("rev-parse")) {
+        remaining -= 1;
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
+      return realGit(args, options);
+    });
+    const orchestrator = attachOrchestrator({
+      db,
+      jobs,
+      outbox,
+      pawsRoot: layout.pawsRoot,
+      home: layout.home,
+      tracker,
+      repository: { owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare },
+      github: { appId: "1", installationId: "2", privateKeyPem: PRIVATE_KEY, client },
+      launch(input) {
+        sequence += 1;
+        const scriptPath = path.join(layout.root, `reverify-${sequence}.json`);
+        const steps: FakeScript["steps"] =
+          input.purpose === "implement"
+            ? [writeOk(input.worktree), { type: "end" }]
+            : emptyReview().steps;
+        writeFileSync(
+          scriptPath,
+          JSON.stringify({
+            model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+            steps,
+          }),
+        );
+        return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+      },
+    });
+    try {
+      await orchestrator.onLinearEvent(linearEvent("created", null, null, "reverify-timeout"));
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && stateOf(db, "ENG-94") !== "merge_queue") {
+        if ((await jobs.tick()) === null) await Bun.sleep(25);
+      }
+      const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-94")!;
+      db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
+      applyWorkItemEvent(db, item.id, "main_moved");
+      remaining = timeouts;
+      enqueueJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id },
+        maxAttempts: 2,
+        now: Date.now(),
+      });
+      while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-94") ?? "")) {
+        if ((await jobs.tick()) === null) {
+          outbox.tick();
+          await Bun.sleep(25);
+        }
+      }
+      while (outbox.tick().length > 0) await outbox.idle();
+      expect(stateOf(db, "ENG-94"), debug(layout, db)).toBe(
+        outcome === "merges" ? "merged" : "failed",
+      );
+      expect(
+        tracker.progress.filter((update) => update.kind === "error").map((update) => update.body),
+      ).toEqual(outcome === "merges" ? [] : ["Stopped after 2 attempts. The operation timed out."]);
+      expect(
+        listJobs(db)
+          .filter((job) => job.queue === JOB_KIND.reverify)
+          .map((job) => job.status),
+      ).toEqual([outcome === "merges" ? "done" : "cancelled"]);
+    } finally {
+      flakyGit.mockRestore();
+      await orchestrator.shutdown().catch(() => undefined);
+      db.close();
+      await layout.cleanup();
+    }
+  },
+  120_000,
+);
 
 test("after 3 rebase conflict returns the item fails", async () => {
   const result = await runRebaseConflict("repeat");

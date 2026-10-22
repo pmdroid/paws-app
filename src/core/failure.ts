@@ -53,10 +53,16 @@ export function transientRetryDelayMs(
   error: unknown,
   baseMs = TRANSIENT_RETRY_BASE_MS,
 ): number {
-  const retryAfter = (error as { retryAfterMs?: unknown } | null)?.retryAfterMs;
-  if (typeof retryAfter === "number" && Number.isSafeInteger(retryAfter) && retryAfter >= 0)
-    return Math.max(retryAfter, baseMs);
+  const retryAfter = retryAfterMs(error);
+  if (retryAfter !== null) return Math.max(retryAfter, baseMs);
   return retryBackoffMs(retry, baseMs, TRANSIENT_RETRY_CAP_MS);
+}
+
+export function retryAfterMs(error: unknown): number | null {
+  const retryAfter = (error as { retryAfterMs?: unknown } | null)?.retryAfterMs;
+  return typeof retryAfter === "number" && Number.isSafeInteger(retryAfter) && retryAfter >= 0
+    ? retryAfter
+    : null;
 }
 
 export function retryNote(message: string, delayMs: number): string {

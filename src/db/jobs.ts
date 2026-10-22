@@ -8,6 +8,7 @@ import {
   isMergeWork,
   JOB_KIND,
   MERGE_LANE,
+  retryAfterMs,
   retryBackoffMs,
 } from "../core";
 import { journal } from "./journal";
@@ -283,10 +284,13 @@ export function failJob(
     return result.changes > 0 ? getJob(db, job.id) : null;
   }
   if (job.attempts < job.maxAttempts) {
-    const delay = retryBackoffMs(
-      job.attempts,
-      options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
-      options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
+    const delay = Math.max(
+      retryBackoffMs(
+        job.attempts,
+        options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
+        options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
+      ),
+      retryAfterMs(error) ?? 0,
     );
     const result = db.run(
       `UPDATE job
