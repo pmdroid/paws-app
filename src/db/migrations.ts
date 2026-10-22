@@ -1980,4 +1980,8 @@ CREATE TABLE paws_update (
 ) STRICT;
 `,
   },
+  {
+    id: "085_work_item_resumed_at",
+    sql: `ALTER TABLE work_item ADD COLUMN resumed_at INTEGER;`,
+  },
 ];

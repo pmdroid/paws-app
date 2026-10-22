@@ -15,7 +15,7 @@ import {
   getWorkItem,
   saveCheckpoint,
   setCurrentRun,
-  setRecoveryAttempts,
+  markResumed,
   type WorkItemRecord,
 } from "./items";
 import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
@@ -104,7 +104,7 @@ function applyResume(
   if (!reattach && (item.state === "running" || item.state === "verifying")) {
     applyWorkItemEvent(db, item.id, "lease_expired");
   }
-  if (!reattach) setRecoveryAttempts(db, item.id, 1);
+  if (!reattach) markResumed(db, item.id, now);
   const current = getWorkItem(db, item.id) ?? item;
   if (current.currentRunId !== null) {
     const run = getRun(db, current.currentRunId);
